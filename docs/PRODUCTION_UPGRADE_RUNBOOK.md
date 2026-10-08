@@ -224,6 +224,12 @@ matter for this upgrade:
   [§2.1a](#21a-step-1320-stopped-on-a-lock-timeout) for what to do when it fires.
 - **Step 14/20 / Step 15/20 — starts the new (target) web color and refreshes
   the cron leader on the new release, both before cutover.**
+  Each container is asked for its release, role and environment role through
+  `/api/deploy/runtime-status`. A container that is healthy but not yet
+  answering 200 is asked again every 2 seconds for up to
+  `RUNTIME_STATUS_TIMEOUT_SECONDS` (60 by default); if it never does, the step
+  prints the last HTTP status and response body and the deploy stops with the
+  old colour still serving (#3965).
 - **Step 16/20 — "Warming the new release and verifying its page cache before
   cutover".** The #2566 gate: it renders every eligible public page on the new
   colour, proves the page cache was populated for the addresses this release stores,

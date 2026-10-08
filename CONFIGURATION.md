@@ -2701,6 +2701,7 @@ rate-limited, or temporarily unavailable.
 | `PRUNE_STALE_DEPLOY_WORKSPACES`        | Whether the wrapper removes stale deployment workspaces.              |
 | `PROJECT_DIR`                          | Low-level blue/green deploy project directory.                        |
 | `HEALTH_TIMEOUT_SECONDS`               | Readiness wait timeout for blue/green deploy.                         |
+| `RUNTIME_STATUS_TIMEOUT_SECONDS`       | How long steps 14 and 15 of the blue/green deploy keep asking a newly started container's `/api/deploy/runtime-status` for an HTTP 200, in seconds (#3965). Default `60`, retried every 2 seconds, accepted `0`-`600` and checked at step 3. On giving up the deploy prints the last HTTP status and response body and stops before the cutover. |
 | `DEPLOY_WARMUP_ENABLED`                | Whether the pre-cutover warm-up gate runs at step 16 of 20 (#2566). Default `1`; `1`, `true`, `yes`, and `on` enable it and any other value disables it. Disabling is refused unless `DEPLOY_WARMUP_OVERRIDE_REASON` is also set. |
 | `DEPLOY_WARMUP_OVERRIDE_REASON`        | The written justification required when `DEPLOY_WARMUP_ENABLED` is off. Default empty. Printed in the deploy log and repeated after the completion banner. |
 | `DEPLOY_WARMUP_SERVICES`               | Which app services the gate warms, space-separated. Default empty, meaning the target colour plus the `app` cron leader. Only `app`, `app_blue`, and `app_green` are accepted, and a value that resolves to no services is refused rather than treated as "nothing to check". |
