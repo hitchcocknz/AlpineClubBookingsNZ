@@ -11,6 +11,7 @@ This runbook covers the production audit-log retention job and the optional arch
 
 ## Retention Policy
 
+- A row with `incidentPreserved=true` is never pruned, from the main database or the archive, whatever its class, severity or `expiresAt` (#3939). See "Incident-preserved rows are never pruned" below.
 - Raw request data (`ipAddress`, `userAgent`) is anonymized after 90 days unless `incidentPreserved=true`.
 - `sensitive_access` and `standard` audit logs older than 12 months are copied to the archive database and then deleted from the main database when an archive database is configured.
 - `critical` audit logs remain in the main database for 7 years before pruning, subject to `expiresAt`.
@@ -45,6 +46,33 @@ AUDIT_LOG_ARCHIVE_DATABASE_URL=postgresql://...
 `AUDIT_ARCHIVE_DATABASE_URL` is preferred. If neither variable is set, the retention job logs `archive-db-not-configured`, still anonymizes request data, and still prunes expired main-database audit rows on `expiresAt`. That applies only when no archive is *configured*. When an archive **is** configured, pruning of the archivable classes is gated on archival — a configured archive that **fails** stops the pruning entirely ("Adding a column to AuditLog", step 3), and a configured archive that merely **lags** retains the not-yet-archived rows ("Hard invariant: prune never outruns archival").
 
 The archive database can be a separate PostgreSQL database. The job creates and maintains the `AuditLogArchive` table and supporting indexes automatically. Do not point the archive URL at the primary `DATABASE_URL`; archive movement deletes copied eligible rows from the main audit table.
+
+## Incident-preserved rows are never pruned (#3939)
+
+`AuditLog.incidentPreserved` marks a row kept as evidence of an incident. Today the app sets it on the audit entry for an admin capacity hold or force-confirm that overbooked the lodge, which is also recorded as `critical`.
+
+**What the flag does.** Every retention step honours it:
+
+- The 90-day request-data clean-up keeps the row's `ipAddress` and `userAgent`.
+- The main prune (`pruneExpiredAuditLogs`) never deletes the row. The exemption is one top-level condition on the whole `DELETE … WHERE`, so it covers every class and severity branch, archived or not.
+- The archive prune (`pruneAuditArchive`) never deletes an archived copy whose `incidentPreserved` is true, so the exemption survives archival. The archive table has carried the column since it was first provisioned, so no archive database needs a migration for this.
+- Archival itself still moves an archivable-class preserved row (`sensitive_access`, `standard`) into the archive, flag, IP and user agent included. That relocates the row; it does not lose it. Today's preserving writers record `critical`, which is never archived.
+
+**Before #3939** only the request-data clean-up honoured the flag: the prunes deleted a preserved row at its expiry, seven years after creation for a `critical` one. The flag dates from May 2026 and the app's preserving writers record `critical` (seven years), so no row the app preserved should have reached that point yet; a row that did is not recoverable.
+
+**The cost.** A preserved row is now kept indefinitely. There is no in-app control to release one, and the audit log is append-only evidence, so do not clear the flag by hand to make the prune take it. If the club needs a way to release preserved entries, raise it as an issue. To see how many there are, run this read-only query on a **restored copy**, never on production or the primary:
+
+```sql
+BEGIN TRANSACTION READ ONLY;
+
+SELECT "retentionClass", "action", count(*), min("createdAt") AS "oldest"
+FROM "AuditLog"
+WHERE "incidentPreserved"
+GROUP BY 1, 2
+ORDER BY 3 DESC;
+
+ROLLBACK;
+```
 
 ## Archive Table Columns
 
