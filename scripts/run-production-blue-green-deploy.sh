@@ -661,6 +661,10 @@ if [[ ! -d "$DEFAULT_PROJECT_DIR" && -d "$HOME/AlpineClubBookingsNZ" ]]; then
 fi
 PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
+# How long the pre-cutover runtime-status read keeps retrying a container that is
+# healthy but not yet answering /api/deploy/runtime-status with 200 (#3965). See
+# get_service_runtime_payload. Checked at step 3 like the other bounds.
+RUNTIME_STATUS_TIMEOUT_SECONDS="${RUNTIME_STATUS_TIMEOUT_SECONDS:-60}"
 PRUNE_UNTIL="${PRUNE_UNTIL:-12h}"
 FORCE_NO_CACHE="${FORCE_NO_CACHE:-0}"
 SKIP_APP_IMAGE_BUILD="${SKIP_APP_IMAGE_BUILD:-0}"
@@ -2350,6 +2354,15 @@ get_expected_cron_enabled() {
 
 get_service_runtime_payload() {
   local service="$1"
+  local timeout="$RUNTIME_STATUS_TIMEOUT_SECONDS"
+  local waited=0
+  local attempts=0
+  local rc
+  local response
+  local status
+  local body
+  local last_status=""
+  local last_body=""
 
   # THE APPLICATION'S OWN ANSWER, asked of the container from inside it.
   #
@@ -2374,14 +2387,24 @@ get_service_runtime_payload() {
   # rather than by interpolating the secret into a `docker compose exec` argument
   # list, where it would be readable in the host`s process table. That is the same
   # care `verify_external_health` takes by feeding curl its header on stdin.
-  # busybox wget (v1.37 in node:24.17-alpine) supports --header; the readiness
-  # fetch above already relies on the same wget being present.
+  # The request is made by `node`, which the app image runs as its server, rather
+  # than by busybox wget: busybox wget (v1.37 in node:24.17-alpine) has no
+  # --content-on-error, so on a non-2xx status it writes no body at all, and the
+  # body is half of what an operator needs when this read gives up (#3965).
   #
-  # REACHABLE AT THIS POINT, verified from the step order: step 14 runs
-  # `up -d --force-recreate` then wait_for_health, and the container`s own
+  # REACHABLE AT THIS POINT, but not necessarily READY (#3965). Steps 14 and 15
+  # run `up -d --force-recreate` then wait_for_health, and the container`s own
   # healthcheck polls /api/health/ready on this exact loopback address, so the
   # server is answering before this runs. The route is force-dynamic and touches
-  # no database.
+  # no database. Even so, the 7 Oct 2026 deploy died at step 15 on this read with
+  # nothing printed, and a hand check moments later passed; so the read is retried
+  # for RUNTIME_STATUS_TIMEOUT_SECONDS (default 60), every 2 seconds -- the same
+  # cadence verify_cron_registration polls at -- and when it gives up it prints
+  # the last HTTP status and response body before failing.
+  #
+  # SAFE UNDER `set -Eeuo pipefail` AND THE ERR TRAP. Each attempt runs as the
+  # left-hand side of `||`, so a failed attempt neither exits the script nor
+  # fires `fail`; only the give-up below returns non-zero.
   #
   # ONE DELIBERATE BEHAVIOUR CHANGE, which is a correctness gain: cronEnabled now
   # comes from the application`s rule (CRON_ENABLED lowercased must equal "true")
@@ -2391,17 +2414,91 @@ get_service_runtime_payload() {
   # cron-leader that does nothing. Every documented value is true or false
   # (CONFIGURATION.md, .env.staging.example), so this refuses nothing that was
   # ever documented, and where the two differ the application is right.
-  #
-  # The path is passed as a positional argument rather than interpolated into the
-  # single-quoted script, so no quoting of a host variable happens inside it.
+  while true; do
+    attempts=$((attempts + 1))
+    rc=0
+    response="$(read_service_runtime_status_once "$service")" || rc=$?
+
+    if [ "$rc" -eq "$RUNTIME_STATUS_NO_SECRET_EXIT" ]; then
+      # CRON_SECRET is empty inside the container (the message is already on
+      # stderr). That is configuration, not start-up, so waiting cannot fix it.
+      return 1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+      # First line is the HTTP status (000 when no HTTP response came back), the
+      # rest is the body (or the client error for 000).
+      status="${response%%$'\n'*}"
+      if [ "$status" = "$response" ]; then
+        body=""
+      else
+        body="${response#*$'\n'}"
+      fi
+      if [ "$status" = "200" ]; then
+        printf '%s' "$body"
+        return 0
+      fi
+      last_status="$status"
+      last_body="$body"
+    else
+      last_status="none (docker compose exec exited ${rc})"
+      last_body=""
+    fi
+
+    if [ "$waited" -ge "$timeout" ]; then
+      if [ "$last_status" = "000" ]; then
+        last_status="none (no HTTP response)"
+      fi
+      echo "Internal ${service}: ${DEPLOY_RUNTIME_STATUS_PATH} did not answer HTTP 200 within ${timeout}s (${attempts} attempts)." >&2
+      echo "Last HTTP status: ${last_status}" >&2
+      echo "Last response body: ${last_body:0:2000}" >&2
+      echo "The container passed its health check, so the server is up; the deploy cannot confirm which release, role and environment role it is running, and stops before the cutover. Set RUNTIME_STATUS_TIMEOUT_SECONDS to wait longer." >&2
+      return 1
+    fi
+
+    sleep 2
+    waited=$((waited + 2))
+  done
+}
+
+# One read of the container's /api/deploy/runtime-status, from inside it.
+#
+# Prints the HTTP status on the first line and the response body after it, and
+# exits 0 whenever the request was MADE, whatever came back: a non-200 is for
+# get_service_runtime_payload to retry or report, not for this to swallow. A
+# request that got no HTTP response at all (connection refused, timeout) prints
+# status 000 with the client error as the body. Exits
+# RUNTIME_STATUS_NO_SECRET_EXIT, having said why on stderr, when the container
+# has no CRON_SECRET.
+#
+# The path and the exit status are passed as positional arguments rather than
+# interpolated into the single-quoted script, so no quoting of a host variable
+# happens inside it. The secret is read by node from its own environment, never
+# from an argument.
+RUNTIME_STATUS_NO_SECRET_EXIT=3
+read_service_runtime_status_once() {
+  local service="$1"
+
   docker compose exec -T "$service" /bin/sh -c '
 secret="${CRON_SECRET:-}"
 if [ -z "$secret" ]; then
   echo "CRON_SECRET is empty inside this container, so the deploy cannot ask the application which release and which environment role it is running." >&2
-  exit 1
+  exit "$2"
 fi
-wget -q -O- --header "x-cron-secret: $secret" "http://127.0.0.1:3000$1"
-' sh "$DEPLOY_RUNTIME_STATUS_PATH"
+node - "http://127.0.0.1:3000$1" <<"NODE"
+const url = process.argv[2];
+fetch(url, {
+  headers: { "x-cron-secret": process.env.CRON_SECRET },
+  signal: AbortSignal.timeout(10000),
+})
+  .then(async (response) => {
+    process.stdout.write(response.status + "\n" + (await response.text()));
+  })
+  .catch((error) => {
+    process.stdout.write("000\n" + String((error && error.cause) || error));
+  });
+NODE
+' sh "$DEPLOY_RUNTIME_STATUS_PATH" "$RUNTIME_STATUS_NO_SECRET_EXIT"
 }
 
 assert_logs_contain_any() {
@@ -3132,6 +3229,10 @@ validate_image_reference_contract
 # used: a mistyped or removed lock-timeout bound should stop the deploy before
 # it pulls an image, never after a migration has already started waiting (#3377).
 validate_migration_lock_timeout_contract
+# Same reasoning (#3965): an unreadable bound must stop the deploy here, not
+# make the runtime-status retry at step 14 compare against a non-number.
+require_integer_setting_in_range RUNTIME_STATUS_TIMEOUT_SECONDS "$RUNTIME_STATUS_TIMEOUT_SECONDS" 0 600 \
+  "how long step 14 and 15 wait for /api/deploy/runtime-status to answer 200, in seconds"
 info ".env contains the required production settings."
 info "Migrations will wait at most ${MIGRATION_LOCK_TIMEOUT_MS_EFFECTIVE}ms for any lock."
 

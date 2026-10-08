@@ -463,7 +463,12 @@ describe("the deploy re-reads the declaration from the container itself", () => 
       whose `environmentRole` comes from `readEnvironmentRoleDeclaration` itself.
       There is nothing left to drift, which is why this case asserts an ABSENCE.
     */
-    const payload = functionBody("get_service_runtime_payload");
+    // The request itself lives in the single-attempt reader that
+    // `get_service_runtime_payload` retries (#3965).
+    expect(functionBody("get_service_runtime_payload")).toContain(
+      "read_service_runtime_status_once",
+    );
+    const payload = functionBody("read_service_runtime_status_once");
 
     // It asks the application, on the container`s own loopback address.
     expect(payload).toContain("$DEPLOY_RUNTIME_STATUS_PATH");
@@ -495,9 +500,12 @@ describe("the deploy re-reads the declaration from the container itself", () => 
     }
     // And no case-folding of the declaration in shell either, which is the other
     // half of a parser.
-    expect(functionBody("get_service_runtime_payload")).not.toContain(
-      `tr "[:upper:]" "[:lower:]"`,
-    );
+    for (const reader of [
+      "get_service_runtime_payload",
+      "read_service_runtime_status_once",
+    ]) {
+      expect(functionBody(reader)).not.toContain(`tr "[:upper:]" "[:lower:]"`);
+    }
   });
 
   it("fails the deploy when a container reports anything else", () => {
