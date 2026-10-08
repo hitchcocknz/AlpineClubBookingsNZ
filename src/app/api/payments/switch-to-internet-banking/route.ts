@@ -14,7 +14,10 @@ import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { CreatePaymentIntentSchema } from "@/types/payments";
-import { canCreateImmediatePaymentIntent } from "@/lib/booking-payment-flow";
+import {
+  canCreateImmediatePaymentIntent,
+  isSwitchableToInternetBanking,
+} from "@/lib/booking-payment-flow";
 import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
@@ -162,9 +165,14 @@ export async function POST(request: NextRequest) {
   }
 
   // Only an immediately-payable (charge-now) booking can switch; a saved-card
-  // hold or organiser-settled / draft booking cannot.
+  // hold or organiser-settled / draft booking cannot. The status rule is the
+  // page's own (`isSwitchableToInternetBanking`): PAYMENT_PENDING, or an
+  // approved member whole-lodge booking — CONFIRMED and held, but owing its
+  // whole price with no receivable yet (fork, booking-fixes).
+  const wholeLodgeConfirmed =
+    booking.status === "CONFIRMED" && booking.wholeLodgeHold === true;
   if (
-    booking.status !== "PAYMENT_PENDING" ||
+    !isSwitchableToInternetBanking(booking) ||
     !canCreateImmediatePaymentIntent({
       status: booking.status,
       hasNonMembers: booking.hasNonMembers,
@@ -235,8 +243,17 @@ export async function POST(request: NextRequest) {
   // mirror) and set the IB payment to the effective amount the member now owes.
   // The invoice is reduced to this effective amount by the applied-credit
   // allocation op enqueued below (Option A: member pays effective).
-  const holdBedSlots = internetBankingSettings.holdBedSlots;
-  const holdUntil = buildInternetBankingHoldUntil(internetBankingSettings);
+  // A whole-lodge booking is already CONFIRMED and capacity-holding through
+  // its exclusive hold, with no bed-hold clock by design (the approval stamps
+  // no deadline onto the one booking that must not be bumped). So it takes no
+  // Internet Banking bed hold and no holdUntil: the hold-expiry cron selects on
+  // `internetBankingHoldSlots: true`, and this keeps it out of that sweep.
+  const holdBedSlots = wholeLodgeConfirmed
+    ? false
+    : internetBankingSettings.holdBedSlots;
+  const holdUntil = wholeLodgeConfirmed
+    ? null
+    : buildInternetBankingHoldUntil(internetBankingSettings);
   const paymentResult = await prisma.$transaction(async (tx) => {
     // #1881 two-tier protocol. Switching to Internet Banking with holdBedSlots
     // flips the booking to CONFIRMED (a capacity-holding status) — a net-new
@@ -261,7 +278,14 @@ export async function POST(request: NextRequest) {
         payment: { select: { changeFeeCents: true } },
       },
     });
-    if (!locked || locked.status !== BookingStatus.PAYMENT_PENDING) {
+    // The same status the pre-lock snapshot was admitted on, re-checked under
+    // the locks: a PAYMENT_PENDING booking a concurrent writer confirmed, or a
+    // whole-lodge booking whose hold was cleared, is no longer switchable.
+    if (
+      !locked ||
+      locked.status !== booking.status ||
+      !isSwitchableToInternetBanking(locked)
+    ) {
       return { type: "notSwitchable" as const };
     }
 
