@@ -1,5 +1,5 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
-import { bookingModifiedRefundSentence } from "@/lib/booking-modified-email-copy";
+import { bookingModifiedRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
 import {
   type BookingCalendarLinks,
@@ -46,6 +46,7 @@ import {
   composeChoreLine,
   composeOptionalEmailLine,
   creditRestoredSentenceTail,
+  type BookingCancelledRefundMethod,
   type CreditRestoredBasis,
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
@@ -829,8 +830,8 @@ export async function sendBookingCancelledEmail(
   refundCents: number,
   /** The club's format (#3565); see sendBookingConfirmedEmail. */
   format: ClubFormat,
-  // B5 (#2262): "manual" — a cash / off-Xero settlement handed back by a person.
-  refundMethod: "card" | "credit" | "manual" = "card",
+  // B5 (#2262) "manual", #3973 "organiser_card": see `BookingCancelledRefundMethod`.
+  refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
@@ -860,11 +861,13 @@ export async function sendBookingCancelledEmail(
       refundMessage:
         refundCents > 0 && refundMethod === "manual"
           ? `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${formatMoneyCents(refundCents, format)} directly and will be in touch.`
-          : refundCents > 0 && refundMethod === "credit"
-            ? `A credit of ${formatMoneyCents(refundCents, format)} has been added to your account for future bookings.`
-            : refundCents > 0
-              ? `A refund of ${formatMoneyCents(refundCents, format)} has been processed to your original payment method.`
-              : "No refund was applicable based on the cancellation policy.",
+          : refundCents > 0 && refundMethod === "organiser_card"
+            ? organiserCardRefundSentence(formatMoneyCents(refundCents, format))
+            : refundCents > 0 && refundMethod === "credit"
+              ? `A credit of ${formatMoneyCents(refundCents, format)} has been added to your account for future bookings.`
+              : refundCents > 0
+                ? `A refund of ${formatMoneyCents(refundCents, format)} has been processed to your original payment method.`
+                : "No refund was applicable based on the cancellation policy.",
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).

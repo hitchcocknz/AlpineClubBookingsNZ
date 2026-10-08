@@ -2281,7 +2281,7 @@ async function performBookingCancellation(
         fresh.checkOut,
         refundAmountCents,
         format,
-        "card",
+        "organiser_card", // #3973: the email's wording only; the audit and result still say "card"
         creditRestoredCents,
         fresh.lodgeId
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));

@@ -589,6 +589,21 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
         3000,
       ),
   },
+  // #3973: a joiner's refund to the group organiser's card names that card; its
+  // own pin, so the card, credit and manual pins stay byte-identical.
+  {
+    id: "bookingCancelledTemplate:refund-organiser-card",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        12000,
+        CLUB_FORMAT_TEST,
+        "organiser_card",
+      ),
+  },
 ];
 
 /** Generated from the exported signatures; see the module docblock. */

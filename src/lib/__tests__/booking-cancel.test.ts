@@ -2090,6 +2090,16 @@ describe("cancelBooking credit refunds", () => {
       expect(result).toMatchObject({
         data: { refundAmountCents: 2500, refundMethod: "card", message: expect.stringContaining("organiser's card") },
       });
+      // #3973: the joiner's email names the organiser's card, from this branch's
+      // own settlement answer; the audit row still records "card", as before.
+      expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][5]).toBe(2500);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("organiser_card");
+      expect(mocks.logAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ refundMethod: "card", refundTo: "organiser" }),
+        }),
+      );
     });
 
     it("clamps to what the combined payment still holds", async () => {

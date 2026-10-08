@@ -24,7 +24,7 @@ import {
 } from "@/lib/booking-money-lines";
 import type { PromoCodeAdjustment } from "@/lib/booking-promo-redemptions";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
-import { bookingModifiedRefundSentence } from "@/lib/booking-modified-email-copy";
+import { bookingModifiedRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
 import { appliedCreditGiveBackNote } from "@/lib/booking-credit-give-back-copy";
 import { escapeHtml } from "./escape";
 import {
@@ -50,6 +50,7 @@ import {
   bookingPaymentDueNote,
   creditRestoredSentenceTail,
   splitGuestPortionOwnBookingLine,
+  type BookingCancelledRefundMethod,
   type CreditRestoredBasis,
 } from "@/lib/email-message-notes";
 import { emailCalendarDay, emailClubDateTime } from "@/lib/email-templates-club-time";
@@ -368,8 +369,9 @@ export function bookingCancelledTemplate(
   // B5 (#2262): "manual" is a cash / off-Xero settlement being handed back by a
   // person. It must NEVER read as "on its way to your card" (no card was
   // charged) nor as account credit (none was minted — a hand-back task was
-  // raised instead), so it gets its own honest copy.
-  refundMethod: "card" | "credit" | "manual" = "card",
+  // raised instead), so it gets its own honest copy. #3973: "organiser_card"
+  // names the group organiser's card, as Booking Modified does (#3916).
+  refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // #3792: a cancel the member did not choose (capacity, hold expiry) restores
   // the applied credit in full, so no cancellation policy applies to it.
@@ -383,6 +385,8 @@ export function bookingCancelledTemplate(
         " directly and will be in touch.",
       "info"
     );
+  } else if (refundCents > 0 && refundMethod === "organiser_card") {
+    refundInfo = alertBox(organiserCardRefundSentence(formatCents(refundCents, format)), "success");
   } else if (refundCents > 0 && refundMethod === "credit") {
     refundInfo = alertBox(
       "A credit of " + formatCents(refundCents, format) + " has been added to your account for future bookings.",
