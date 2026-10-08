@@ -11,10 +11,10 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * (`organiserCardRefundSentence`), so the two emails cannot drift apart.
  *
  * MUTATION PROOF. Drop the "organiser_card" branch from the template or the
- * sender and that path's organiser-card assertion fails; change the shared
- * sentence and "is the Booking Modified sentence" still passes while the exact
- * pins here fail. `booking-cancel.test.ts` (#3653) pins that the cancel passes
- * "organiser_card" to the email and still records "card" everywhere else.
+ * sender and "organiser's card" fails for that path; reword the shared sentence
+ * and both "organiser's card" and "from the one home" fail. In
+ * `booking-cancel.test.ts` (#3653), passing "card" to the email from the
+ * organiser-card branch fails; the audit there must still record "card".
  */
 
 const sendEmail = vi.hoisted(() => vi.fn(async () => ({ delivered: true })));

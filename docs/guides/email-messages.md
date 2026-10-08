@@ -328,6 +328,11 @@ Two consequences worth knowing before you edit one:
   bank transfer the club will send, or, on a group booking the organiser paid
   for by card, the group organiser's card.
   Keep it on a line of its own, with no `$` or label in front.
+- **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
+  says where the refund went (the member's original payment method, account
+  credit, a refund the club will arrange directly, or, on a group booking the
+  organiser paid for by card, the group organiser's card), or that no refund
+  applied. Keep it on a line of its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check
