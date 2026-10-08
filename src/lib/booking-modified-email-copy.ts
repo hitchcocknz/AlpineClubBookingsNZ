@@ -10,6 +10,44 @@ export function organiserCardRefundSentence(amount: string): string {
 }
 
 /**
+ * Where a "Booking Cancelled" email says the refund went. B5 (#2262): "manual"
+ * is a cash / off-Xero settlement a person hands back, so it must never read as
+ * "on its way to your card" (no card was charged) nor as account credit (none
+ * was minted; a hand-back task was raised). #3973: "organiser_card" is a
+ * joiner's booking the group organiser paid for by card, refunded to the
+ * organiser's card (#3653); only the cancel's organiser-card branch passes it.
+ */
+export type BookingCancelledRefundMethod = "card" | "credit" | "manual" | "organiser_card";
+
+/**
+ * #3973: the refund line of a "Booking Cancelled" email, ONE wording for the
+ * HTML template and the admin-editable body's `{{refundMessage}}` (`INV-SSOT`).
+ * `amount` is `refundCents` formatted in the club's format.
+ */
+export function bookingCancelledRefundSentence(
+  refundCents: number,
+  amount: string,
+  refundMethod: BookingCancelledRefundMethod,
+): string {
+  if (refundCents <= 0) return "No refund was applicable based on the cancellation policy.";
+  switch (refundMethod) {
+    case "manual":
+      return `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${amount} directly and will be in touch.`;
+    case "organiser_card":
+      return organiserCardRefundSentence(amount);
+    case "credit":
+      return `A credit of ${amount} has been added to your account for future bookings.`;
+    case "card":
+      return ownCardRefundSentence(amount);
+  }
+}
+
+/** A card refund back to what the member paid with; Booking Modified and Booking Cancelled alike. */
+function ownCardRefundSentence(amount: string): string {
+  return `A refund of ${amount} has been processed to your original payment method.`;
+}
+
+/**
  * #3827 (owner decision D-3813-6, `INV-PAY-117`): the refund half of a
  * "Booking Modified" email's money note, ONE wording for the HTML template and
  * the admin-editable body (`INV-SSOT`). A card refund has already been made by
@@ -30,7 +68,7 @@ export function bookingModifiedRefundSentence(
   if (refundReturnedToOrganiser) return organiserCardRefundSentence(amount);
   return refundByBankTransfer
     ? `The club will refund ${amount} to you by bank transfer.`
-    : `A refund of ${amount} has been processed to your original payment method.`;
+    : ownCardRefundSentence(amount);
 }
 
 /**

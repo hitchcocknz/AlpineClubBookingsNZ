@@ -1,5 +1,9 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
-import { bookingModifiedRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  bookingCancelledRefundSentence,
+  type BookingCancelledRefundMethod,
+  bookingModifiedRefundSentence,
+} from "@/lib/booking-modified-email-copy";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
 import {
   type BookingCalendarLinks,
@@ -46,7 +50,6 @@ import {
   composeChoreLine,
   composeOptionalEmailLine,
   creditRestoredSentenceTail,
-  type BookingCancelledRefundMethod,
   type CreditRestoredBasis,
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
@@ -858,16 +861,7 @@ export async function sendBookingCancelledEmail(
       checkIn: emailCalendarDay(checkIn),
       checkOut: emailCalendarDay(checkOut),
       refundAmount: formatMoneyCents(refundCents, format),
-      refundMessage:
-        refundCents > 0 && refundMethod === "manual"
-          ? `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${formatMoneyCents(refundCents, format)} directly and will be in touch.`
-          : refundCents > 0 && refundMethod === "organiser_card"
-            ? organiserCardRefundSentence(formatMoneyCents(refundCents, format))
-            : refundCents > 0 && refundMethod === "credit"
-              ? `A credit of ${formatMoneyCents(refundCents, format)} has been added to your account for future bookings.`
-              : refundCents > 0
-                ? `A refund of ${formatMoneyCents(refundCents, format)} has been processed to your original payment method.`
-                : "No refund was applicable based on the cancellation policy.",
+      refundMessage: bookingCancelledRefundSentence(refundCents, formatMoneyCents(refundCents, format), refundMethod),
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).

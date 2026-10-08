@@ -639,14 +639,6 @@ export function bookingBumpedRebookAction(
  */
 export type CreditRestoredBasis = "cancellation-policy" | "in-full";
 
-/**
- * Where a "Booking Cancelled" email says the refund went. B5 (#2262): "manual"
- * is a cash / off-Xero settlement a person hands back. #3973: "organiser_card"
- * is a joiner's booking the group organiser paid for by card, refunded to the
- * organiser's card (#3653); the cancel's settlement passes it, never a guess.
- */
-export type BookingCancelledRefundMethod = "card" | "credit" | "manual" | "organiser_card";
-
 export function creditRestoredSentenceTail(basis: CreditRestoredBasis): string {
   return basis === "in-full"
     ? " of previously applied account credit has been restored to your account in full."

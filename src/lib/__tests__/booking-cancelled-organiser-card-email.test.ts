@@ -6,13 +6,15 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * A joiner cancelling a booking the group organiser paid for by card is refunded
  * to the ORGANISER's card (#3653), but the email told the joiner the refund had
  * gone "to your original payment method". The cancel's organiser-card branch now
- * passes "organiser_card", and both the HTML email and the admin-editable body's
- * `{{refundMessage}}` read the one sentence #3916 wrote for Booking Modified
- * (`organiserCardRefundSentence`), so the two emails cannot drift apart.
+ * passes "organiser_card", and the HTML email and the admin-editable body's
+ * `{{refundMessage}}` both take their line from `bookingCancelledRefundSentence`,
+ * whose organiser-card case is the sentence #3916 wrote for Booking Modified
+ * (`organiserCardRefundSentence`), so neither the two paths nor the two emails
+ * can drift apart. The other wordings are pinned here and by the render pins.
  *
- * MUTATION PROOF. Drop the "organiser_card" branch from the template or the
- * sender and "organiser's card" fails for that path; reword the shared sentence
- * and both "organiser's card" and "from the one home" fail. In
+ * MUTATION PROOF. Drop the "organiser_card" case (it falls through to no
+ * sentence) or map it to the own-card sentence and "organiser's card" fails;
+ * reword the shared sentence and "from the one home" fails too. In
  * `booking-cancel.test.ts` (#3653), passing "card" to the email from the
  * organiser-card branch fails; the audit there must still record "card".
  */
@@ -21,10 +23,13 @@ const sendEmail = vi.hoisted(() => vi.fn(async () => ({ delivered: true })));
 
 vi.mock("@/lib/email/core", () => ({ sendEmail }));
 
-import { bookingModifiedRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  type BookingCancelledRefundMethod,
+  bookingModifiedRefundSentence,
+  organiserCardRefundSentence,
+} from "@/lib/booking-modified-email-copy";
 import { bookingCancelledTemplate } from "@/lib/email-templates/booking";
 import { sendBookingCancelledEmail } from "@/lib/email/booking";
-import type { BookingCancelledRefundMethod } from "@/lib/email-message-notes";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const CHECK_IN = new Date("2026-08-01T00:00:00.000Z");
