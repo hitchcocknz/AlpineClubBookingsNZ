@@ -111,10 +111,15 @@ type PruneRow = {
   createdAt: Date;
   expiresAt: Date | null;
   archivedAt: Date | null;
+  // #3939: optional on the fixture because the column is NOT NULL DEFAULT false;
+  // the fake store fills the same default, so the prune's top-level
+  // `incidentPreserved: false` meets a real value on every row, never a missing
+  // column the shared evaluator would (rightly) refuse.
+  incidentPreserved?: boolean;
 };
 
 function makeFakeAuditDb(rows: PruneRow[]) {
-  const state = [...rows];
+  const state = rows.map((row) => ({ incidentPreserved: false, ...row }));
   return {
     db: {
       auditLog: {
@@ -329,6 +334,7 @@ describe("audit retention lifecycle", () => {
     });
     expect(mocks.deleteMany).toHaveBeenCalledWith({
       where: {
+        incidentPreserved: false,
         OR: expect.arrayContaining([
           {
             retentionClass: "critical",
@@ -359,6 +365,11 @@ describe("audit retention lifecycle", () => {
     };
     expect(pruneQuery.strings.join("")).toContain(
       'DELETE FROM "AuditLogArchive"'
+    );
+    // #3939: an incident-preserved row is exempt in the archive too. A literal,
+    // not a bound value, so `values` below still holds only the cutoff.
+    expect(pruneQuery.strings.join("")).toMatch(
+      /WHERE "createdAt" < \s*AND "incidentPreserved" = false\s*$/
     );
     expect(pruneQuery.values).toEqual([
       new Date("2019-05-10T00:00:00.000Z"),
@@ -480,6 +491,7 @@ describe("audit retention lifecycle", () => {
       expect(mocks.deleteMany).toHaveBeenCalledTimes(1);
       expect(mocks.deleteMany).toHaveBeenCalledWith({
         where: {
+          incidentPreserved: false,
           OR: expect.arrayContaining([
             {
               retentionClass: { in: ["sensitive_access", "standard"] },
@@ -502,6 +514,7 @@ describe("audit retention lifecycle", () => {
       // Without an archive, the archivable clause carries no archivedAt gate.
       expect(mocks.deleteMany).toHaveBeenCalledWith({
         where: {
+          incidentPreserved: false,
           OR: expect.arrayContaining([
             {
               retentionClass: { in: ["sensitive_access", "standard"] },
@@ -552,6 +565,137 @@ describe("audit retention lifecycle", () => {
       // One row against a batch cap of two: no backlog, so no spurious warning.
       // A warn keyed on anything looser than a full batch would redden here.
       expect(mocks.loggerWarn).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #3939 — a row an officer preserved for an incident (`incidentPreserved`)
+  // is never pruned, whatever its class, severity or `expiresAt`. Before #3939
+  // only the 90-day IP/user-agent clean-up honoured the flag; the prune deleted
+  // a preserved row at its expiry, which defeated the point of preserving it.
+  //
+  // Every branch of the prune predicate is exercised with a PAIR of rows that
+  // differ only in the flag: the preserved one must survive, the unpreserved
+  // twin must still go (no regression). Remove the top-level
+  // `incidentPreserved: false` from pruneExpiredAuditLogs and every preserved
+  // row here is deleted.
+  // -------------------------------------------------------------------------
+  describe("incident-preserved rows are never pruned (#3939)", () => {
+    const now = new Date("2026-05-10T00:00:00.000Z");
+    // Older than the 7-year critical cutoff (2019-05-10) and long expired, so
+    // the only thing that can keep any of these rows is the preservation flag.
+    const ancient = new Date("2018-01-01T00:00:00.000Z");
+    const expired = new Date("2025-01-01T00:00:00.000Z");
+
+    type Branch = {
+      name: string;
+      row: Omit<PruneRow, "id" | "incidentPreserved">;
+      // The archivable classes are gated on `archivedAt` while an archive is
+      // active; these branches only prune when it is (or none is configured).
+      archiveActive: boolean;
+    };
+
+    const branches: Branch[] = [
+      {
+        name: "archivable class, archived, archive active",
+        row: {
+          retentionClass: "sensitive_access",
+          severity: "info",
+          createdAt: ancient,
+          expiresAt: expired,
+          archivedAt: new Date("2024-02-01T00:00:00.000Z"),
+        },
+        archiveActive: true,
+      },
+      {
+        name: "archivable class, no archive configured",
+        row: {
+          retentionClass: "standard",
+          severity: "info",
+          createdAt: ancient,
+          expiresAt: expired,
+          archivedAt: null,
+        },
+        archiveActive: false,
+      },
+      {
+        name: "diagnostic_high_volume",
+        row: {
+          retentionClass: "diagnostic_high_volume",
+          severity: "info",
+          createdAt: ancient,
+          expiresAt: expired,
+          archivedAt: null,
+        },
+        archiveActive: true,
+      },
+      {
+        name: "unclassified, not critical",
+        row: {
+          retentionClass: null,
+          severity: "important",
+          createdAt: ancient,
+          expiresAt: expired,
+          archivedAt: null,
+        },
+        archiveActive: true,
+      },
+      {
+        name: "critical class, past the seven-year cutoff",
+        row: {
+          retentionClass: "critical",
+          severity: "critical",
+          createdAt: ancient,
+          expiresAt: expired,
+          archivedAt: null,
+        },
+        archiveActive: true,
+      },
+      {
+        name: "unclassified critical severity, past the seven-year cutoff",
+        row: {
+          retentionClass: null,
+          severity: "critical",
+          createdAt: ancient,
+          expiresAt: expired,
+          archivedAt: null,
+        },
+        archiveActive: false,
+      },
+    ];
+
+    for (const branch of branches) {
+      it(`keeps a preserved row and prunes its unpreserved twin: ${branch.name}`, async () => {
+        const fake = makeFakeAuditDb([
+          { id: "preserved", incidentPreserved: true, ...branch.row },
+          { id: "unpreserved", incidentPreserved: false, ...branch.row },
+        ]);
+
+        const result = await pruneExpiredAuditLogs(fake.db as never, now, {
+          archiveActive: branch.archiveActive,
+        });
+
+        expect(result.deleted).toBe(1);
+        expect(fake.remainingIds()).toEqual(["preserved"]);
+      });
+    }
+
+    it("keeps every preserved row across all branches in one run", async () => {
+      const rows: PruneRow[] = branches.flatMap((branch, index) => [
+        { id: `preserved-${index}`, incidentPreserved: true, ...branch.row },
+        { id: `unpreserved-${index}`, incidentPreserved: false, ...branch.row },
+      ]);
+      // With no archive configured every branch above is prune-eligible.
+      const fake = makeFakeAuditDb(rows);
+
+      const result = await pruneExpiredAuditLogs(fake.db as never, now, {
+        archiveActive: false,
+      });
+
+      expect(result.deleted).toBe(branches.length);
+      expect(fake.remainingIds()).toEqual(
+        branches.map((_, index) => `preserved-${index}`)
+      );
     });
   });
 });

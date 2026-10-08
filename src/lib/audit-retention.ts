@@ -643,6 +643,11 @@ export async function pruneExpiredAuditLogs(
 
   const { count } = await db.auditLog.deleteMany({
     where: {
+      // #3939: a row an officer preserved for an incident is NEVER pruned,
+      // whatever its class, severity or `expiresAt`. Top-level, so it binds every
+      // branch below; the column is NOT NULL DEFAULT false, so `= false` has no
+      // NULL case. Mirrors `anonymizeExpiredAuditRequestData` and the archive prune.
+      incidentPreserved: false,
       OR: [
         archivableExpiredClause,
         {
@@ -690,9 +695,13 @@ export async function pruneAuditArchive(
   }
 
   await ensureAuditArchiveSchema(archiveDb);
+  // #3939: an incident-preserved row keeps its exemption once archived. The
+  // archive table has carried `incidentPreserved BOOLEAN NOT NULL DEFAULT false`
+  // since it was first provisioned, so no archive database lacks the column.
   const pruned = await archiveDb.$executeRaw(Prisma.sql`
     DELETE FROM "AuditLogArchive"
     WHERE "createdAt" < ${cutoff}
+      AND "incidentPreserved" = false
   `);
 
   return {
