@@ -802,8 +802,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // #2765's fifteen, plus #2749's three other-lodges sites classified under
     // the same rule on arrival (INV-PRIV-013), plus #2942's member-roster
     // name-detail writer, classified the same way for the same reason, plus
-    // #3819's school hut-leader kinds writer, likewise.
-    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(20);
+    // #3819's school hut-leader kinds writer, likewise; minus the two
+    // other-lodges writers #52 removed with their handlers.
+    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(18);
     expect([
       ...new Set(Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765)),
     ]).toEqual(["admin"]);
@@ -1000,10 +1001,10 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       "src/app/api/admin/lockers/bulk/route.ts",
       "src/app/api/admin/lockers/route.ts",
     ]);
-    // Eight files from #2765's fifteen sites, plus #2749's two other-lodges
-    // route files, plus #2942's roster-settings route file, plus #3819's
-    // school hut-leaders route file.
-    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(12);
+    // Eight files from #2765's fifteen sites, plus #2749's other-lodges item
+    // route file (its list route lost its only writer in #52), plus #2942's
+    // roster-settings route file, plus #3819's school hut-leaders route file.
+    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(11);
     expect(files.filter((file) => gateOf(file) === "other")).toEqual([]);
 
     /*
@@ -1421,7 +1422,15 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // 370 -> 371 (#3492, composed by #3829): the guest promo-code lookup, unpinned `privacy`.
     // 128 -> 129 pinned (#3819): the school hut-leader kinds writer, pinned in
     // LODGE_GATED_ADMIN_CATEGORIES_2765. RE-MEASURED with `pnpm run audit:census`.
-    ).toEqual({ pinned: 129, unpinned: 371 });
+    // 128 -> 126 pinned (#52, other-lodges central-server sync): the
+    // other-lodges CREATE and DELETE writers leave the keep with their
+    // handlers; the unpinned population does not move. 371 -> 372 unpinned
+    // (#3750): the executed change-request approval, unpinned `booking`.
+    // RE-MEASURED with `pnpm run audit:census`.
+    // 129/126 -> 127 pinned, 372 unpinned (hand sync of `main` f1ecdb5ff into
+    // epic #3789): #3819's +1 and #52's -2 compose. RE-MEASURED with
+    // `pnpm run audit:census` on the composed tree.
+    ).toEqual({ pinned: 127, unpinned: 372 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

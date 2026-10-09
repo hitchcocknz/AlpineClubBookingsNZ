@@ -646,8 +646,21 @@ const CENSUS_CEILING = {
    * 226 -> 227 (#3413, composed with #3817): `booking-request-pending-adult-reservations.ts`
    * uses only zone-free lodge-night helpers. Re-measured by RUNNING this suite
    * on the composed tree.
+   *
+   * 228 -> 229 (#50, composed with main): one importer, `src/lib/other-lodges.ts`, and the
+   * zone-free direction again. The other-lodges registry gains two `@db.Date`
+   * season-start columns that travel as `yyyy-MM-dd` strings, so the shared
+   * field list validates them with `isDateOnlyString`, stores them through
+   * `parseDateOnly` and serialises them with `formatDateOnly` — none of which
+   * takes a `timeZone`, and the file consults no zone anywhere else; the one
+   * comparison it makes between two stored days goes through `storedDateOnly`.
+   * Re-measured by RUNNING this suite on this tree.
+   *
+   * 227/229 -> 228 (sync of `main` f1ecdb5ff into epic #3789): #3817's removal
+   * (`member-dietary.ts`) and #50's addition (`other-lodges.ts`) are disjoint.
+   * Re-measured by RUNNING this suite on the composed tree, never added.
    */
-  dateOnlyImporters: 227,
+  dateOnlyImporters: 228,
   /**
    * `new Date(y, m, d)` — local midnight in the HOST's zone.
    *
