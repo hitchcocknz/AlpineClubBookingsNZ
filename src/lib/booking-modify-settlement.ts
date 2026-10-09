@@ -31,6 +31,7 @@ import type { CalendarDate } from "@/lib/club-time";
 import type { ClubFormat } from "@/lib/club-format";
 import { giveBackPaidReductionCredit } from "@/lib/booking-modify-credit-give-back";
 import type { PaidReductionCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
+import { NO_FOLDED_REISSUED_ASKS, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
 import { getNonMemberHoldPolicy } from "@/lib/cancellation";
 import {
   queueSupersededPrimaryIntentCancellations,
@@ -103,6 +104,8 @@ export type PaymentAdjustmentResult = {
    * `BookingModification` row exists; null for every other booking.
    */
   organiserChildRefund: { settlement: CombinedCardSettlement; amountCents: number } | null;
+  /** #3954 round 6: the waiting re-issues this increase folded into its ask, for its history (`unpaidAskOffsetHistory`). */
+  foldedReissuedAsks: FoldedReissuedAsks;
 } & UnpaidAskSettlement; // #3954: what the reduction did to the unpaid ask
 
 /**
@@ -313,6 +316,7 @@ export async function applyPaymentAdjustments(
   // #3371: zero until a card arm builds one. `NO_ADDITIONAL_ASK` never mints, so
   // every non-card ending is safe by construction rather than by remembering.
   let additionalAsk: AdditionalAsk = NO_ADDITIONAL_ASK;
+  let foldedReissuedAsks: FoldedReissuedAsks = NO_FOLDED_REISSUED_ASKS;
   let pendingRefundAmountCents = 0;
   // #3954: retire the unpaid ask the reduction was set against; what it did
   // not cover is still owed, on a fresh ask the minter mints after commit.
@@ -390,13 +394,15 @@ export async function applyPaymentAdjustments(
         // refunds. Refused before the edit commits.
         throw new OrganiserChildRefundRefusedError(organiserChargeRefusal);
       } else if (hasSucceededPayment) {
+        // #3954 round 4: a reduction's re-issue still waiting on its mint is
+        // asked for on this one fresh ask, and its recovery closed - and
+        // (round 6) recorded on this edit's history, so its replay asks again.
+        foldedReissuedAsks = await foldWaitingReissuedAsks(tx, booking);
         additionalAsk = sizeAdditionalAsk({
           priceDiffCents,
           changeFeeCents,
           payment: booking.payment,
-          // #3954 round 4: a reduction's re-issue still waiting on its mint is
-          // asked for on this one fresh ask, and its recovery closed.
-          waitingReissuedAskCents: await foldWaitingReissuedAsks(tx, booking),
+          waitingReissuedAskCents: foldedReissuedAsks.cents,
         });
         additionalAmountCents = additionalAsk.amountCents;
       } else {
@@ -439,6 +445,7 @@ export async function applyPaymentAdjustments(
     appliedCreditGivenBackCents: creditGiveBack?.givenBackCents ?? 0,
     appliedCreditGiveBack: creditGiveBack,
     organiserChildRefund,
+    foldedReissuedAsks,
     ...unpaidAskSettlement,
   };
 }

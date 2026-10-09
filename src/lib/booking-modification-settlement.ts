@@ -8,7 +8,7 @@ import {
   readReissuedAskRecovery,
   writeReissuedAskUnderRecovery,
 } from "@/lib/additional-ask-reissue";
-import { queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
+import { queueFoldedReissuedAskInvoices, queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
 import { mintReissuedAskIntent, planReissuedAskMint } from "@/lib/reissued-ask-mint";
 import {
   cancelSupersededAdditionalIntentsNow,
@@ -496,6 +496,17 @@ export async function createModificationAdditionalPaymentIntent({
         "Failed to queue superseded additional intent cancellations",
       ),
     );
+
+    // #3954 round 6: the re-issues this increase folded in are asked for on
+    // this intent now, so their own invoices wait on it. An ordinary edit's ask
+    // only: a review charge folds nothing.
+    if (!recoveryIdempotencyKey) {
+      await queueFoldedReissuedAskInvoices({
+        bookingId,
+        increaseModificationId: result.bookingModificationId,
+        paymentIntentId: pi.id,
+      });
+    }
 
     return {
       additionalPaymentClientSecret: pi.client_secret ?? undefined,

@@ -72,6 +72,7 @@ import {
   ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE,
   ASK_RETIRED_BY_REDUCTION_SUMMARY,
   isAskRetiredByReductionOperation,
+  isFoldedReissueAccountedFor,
   recordedReissuedAskInvoiceCents,
   recordedUnpaidAskOffsetCents,
   REISSUED_ASK_INVOICE_MISSING_SUMMARY,
@@ -884,9 +885,10 @@ export function classifyBookingContext(
     // #3954 decision A (owner, 9 Oct 2026): a reduction that only shrank an
     // unpaid ask re-issues it with its own supplementary invoice, raised once
     // the smaller ask is minted. Present (queued, waiting, raised or linked),
-    // deferred (its mint's recovery still open), or carried on (a later
-    // reduction retired the re-issue in turn, and names this edit) - else a
-    // person raises it.
+    // deferred (its mint's recovery still open), carried on (a later
+    // reduction retired the re-issue in turn, and names this edit), or folded
+    // into a later increase whose own ask is still to mint or was retired in
+    // turn (round 6) - else a person raises it.
     const reissuedAskInvoiceCents = recordedReissuedAskInvoiceCents(modification.newData);
     if (
       reissuedAskInvoiceCents > 0 &&
@@ -896,7 +898,8 @@ export function classifyBookingContext(
         (operation) => operation.entityType === "INVOICE" && operation.operationType === "CREATE" && operation.status !== "CANCELLED",
       ) &&
       !context.openAdditionalIntentRecoveryModificationIds.has(modification.id) &&
-      !retiringReductionFor(modification.id, booking.modifications)
+      !retiringReductionFor(modification.id, booking.modifications) &&
+      !isFoldedReissueAccountedFor(modification.id, booking.modifications, context.openAdditionalIntentRecoveryModificationIds)
     ) {
       const manualAction = addAction(actionMap, buildManualReviewAction(booking.id, REISSUED_ASK_INVOICE_MISSING_SUMMARY));
       addFinding(findings, {

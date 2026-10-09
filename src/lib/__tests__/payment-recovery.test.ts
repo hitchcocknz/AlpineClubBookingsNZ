@@ -2554,6 +2554,26 @@ describe("payment recovery worker", () => {
       });
     });
 
+    it("MUTATION (#3954 round 6): an increase that folded a waiting re-issue in asks for it again on its replay - the fold closed that re-issue's own recovery", async () => {
+      primeQueue(additionalIntentOperation({ amountCents: 5000 }));
+      mockBookingModificationFindUnique.mockResolvedValueOnce({
+        priceDiffCents: 3000,
+        changeFeeCents: 0,
+        newData: { foldedReissuedAskCents: 2000, foldedReissuedAskModificationIds: ["mod-reduction"] },
+      });
+      mockPaymentFindUnique.mockResolvedValue(paymentWithAsk(7000, PaymentStatus.SUCCEEDED));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 5000, idempotencyKey: "mod_guest_bk1_mod-9" }),
+      );
+      expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 5000, carriedAskCents: 2000 }),
+      );
+    });
+
     it("re-derives a smaller ask when the superseded one was paid in the meantime", async () => {
       primeQueue(additionalIntentOperation({ amountCents: 10000 }));
       // $70 was outstanding when edit 2 sized its $100 ask; the member has since

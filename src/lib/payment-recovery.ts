@@ -40,7 +40,7 @@ import {
   type XeroSupplementaryInvoiceEnqueueOutcome,
 } from "@/lib/xero-operation-outbox";
 import { attachRecoveredIntentToWaitingSupplementaryInvoice } from "@/lib/xero-supplementary-invoice-late-capture";
-import { queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
+import { queueFoldedReissuedAskInvoices, queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
 import { mintReissuedAskIntent, planReissuedAskMint } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
@@ -2817,7 +2817,8 @@ async function processCreateAdditionalPaymentIntentOperation(
   const modificationToBill = bookingModificationId
     ? await prisma.bookingModification.findUnique({
         where: { id: bookingModificationId },
-        select: { priceDiffCents: true, changeFeeCents: true },
+        // #3954 round 6: `newData` for the waiting re-issues it folded in.
+        select: { priceDiffCents: true, changeFeeCents: true, newData: true },
       })
     : null;
 
@@ -3084,6 +3085,13 @@ async function processCreateAdditionalPaymentIntentOperation(
         // `payment.xeroInvoiceId` here is the double-bill the helper describes.
         hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice,
         originalPaymentStatus: payment.status,
+      });
+      // #3954 round 6: the re-issues this increase folded in are asked for on
+      // this intent, so their own invoices wait on it.
+      await queueFoldedReissuedAskInvoices({
+        bookingId: operation.bookingId,
+        increaseModificationId: bookingModificationId,
+        paymentIntentId: pi.id,
       });
     } else {
       logger.error(

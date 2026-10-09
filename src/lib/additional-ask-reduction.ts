@@ -85,6 +85,7 @@ import {
 import { reconcilePaymentAggregates } from "@/lib/payment-transactions";
 import {
   ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE,
+  recordedFoldedReissuedAskInvoiceCents,
   recordedReissuedAskInvoiceCents,
 } from "@/lib/unpaid-ask-offset-marker";
 import { waitingSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
@@ -143,6 +144,12 @@ export type PendingAskRecovery = {
    * (`recordedReissuedAskInvoiceCents`), else 0.
    */
   invoiceCents: number;
+  /**
+   * #3954 round 6: what the invoices of the re-issues an increase folded in
+   * bill (`recordedFoldedReissuedAskInvoiceCents`) - queued only once that
+   * increase mints, so never parked anywhere yet; 0 for a re-issue.
+   */
+  foldedInvoiceCents: number;
 };
 
 export type UnpaidPriceAsk = {
@@ -290,7 +297,7 @@ export async function readUnpaidPriceAsk(
   return askCents > 0 ? { askCents, rows: chain.rows, recoveries } : NO_UNPAID_PRICE_ASK;
 }
 
-type EditFigures = { id: string; priceDiffCents: number; changeFeeCents: number; newData?: unknown };
+type EditFigures = { id: string; priceDiffCents: number; changeFeeCents: number; newData: unknown };
 
 type AskTransaction = {
   id: string;
@@ -466,8 +473,10 @@ function pendingAskRecoveries(
         : replay.kind === "reissue"
           ? recordedReissuedAskInvoiceCents(modification?.newData)
           : operation.hadIssuedXeroInvoice === true
-            ? askCents
+            ? askCents - replay.foldedCents
             : 0,
+      foldedInvoiceCents:
+        settled || replay.kind !== "increase" ? 0 : recordedFoldedReissuedAskInvoiceCents(modification?.newData),
     });
   }
   return pending;
@@ -588,9 +597,12 @@ export async function retireUnpaidAskChain(
   await reconcilePaymentAggregates({ paymentId, store: tx });
   // A waiting ask had no parked invoice to read: what its replay would have
   // raised once minted is carried on it (`PendingAskRecovery.invoiceCents`).
-  const unparkedInvoicedCents = ask.recoveries
-    .filter((recovery) => !parkedAnchors.has(recovery.bookingModificationId))
-    .reduce((sum, recovery) => sum + recovery.invoiceCents, 0);
+  const unparkedInvoicedCents =
+    ask.recoveries
+      .filter((recovery) => !parkedAnchors.has(recovery.bookingModificationId))
+      .reduce((sum, recovery) => sum + recovery.invoiceCents, 0) +
+    // Round 6: a folded re-issue's invoice is queued only once its increase mints.
+    ask.recoveries.reduce((sum, recovery) => sum + recovery.foldedInvoiceCents, 0);
   return {
     retired,
     invoicedCents: parkedInvoicedCents + unparkedInvoicedCents,

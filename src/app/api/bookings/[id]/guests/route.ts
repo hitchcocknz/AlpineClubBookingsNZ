@@ -71,6 +71,12 @@ import {
   type AdditionalAsk,
 } from "@/lib/additional-payment-ask";
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
+import {
+  NO_FOLDED_REISSUED_ASKS,
+  NO_UNPAID_ASK_SETTLEMENT,
+  unpaidAskOffsetHistory,
+  type FoldedReissuedAsks,
+} from "@/lib/unpaid-ask-offset-marker";
 import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
@@ -998,6 +1004,7 @@ export async function POST(
       // minting it will absorb. Zero here never mints, so the Xero-only and
       // nothing-owed endings below are safe without remembering to say so.
       let additionalAsk: AdditionalAsk = NO_ADDITIONAL_ASK;
+      let foldedReissuedAsks: FoldedReissuedAsks = NO_FOLDED_REISSUED_ASKS;
       /**
        * #3200: "has the main Xero invoice already been raised?" is asked at four
        * edit doors and DEFINED in one — `hasIssuedPrimaryXeroInvoice`
@@ -1066,15 +1073,17 @@ export async function POST(
         // exactly as `applyPaymentAdjustments` refuses the other doors' asks.
         throw new ApiError(ORGANISER_CHILD_CHARGE_REFUSAL, 409);
       } else if (hasSucceededPayment && priceDiffCents > 0) {
+        // #3954 round 4: a reduction's re-issue still waiting on its mint is
+        // asked for on this one fresh ask, and its recovery closed - and
+        // (round 6) recorded on this edit's history, so its replay asks again.
+        foldedReissuedAsks = await foldWaitingReissuedAsks(tx, booking);
         additionalAsk = sizeAdditionalAsk({
           priceDiffCents,
           // A guest add never charges one; the route passes 0 to the Xero
           // settlement and to the member's email for the same reason.
           changeFeeCents: 0,
           payment: booking.payment,
-          // #3954 round 4: a reduction's re-issue still waiting on its mint is
-          // asked for on this one fresh ask, and its recovery closed.
-          waitingReissuedAskCents: await foldWaitingReissuedAsks(tx, booking),
+          waitingReissuedAskCents: foldedReissuedAsks.cents,
         });
         additionalAmountCents = additionalAsk.amountCents;
       } else if (hasIssuedXeroInvoice && priceDiffCents > 0) {
@@ -1219,6 +1228,8 @@ export async function POST(
             // #2390: the same sentence the member was shown, kept on the
             // booking's own history so the split has an answer later.
             ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
+            // #3954 round 6: the waiting re-issues this add folded into its ask.
+            ...unpaidAskOffsetHistory({ ...NO_UNPAID_ASK_SETTLEMENT, foldedReissuedAsks }),
           },
           priceDiffCents,
           changeFeeCents: 0,

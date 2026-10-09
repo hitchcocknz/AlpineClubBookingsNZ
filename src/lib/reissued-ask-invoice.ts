@@ -19,7 +19,10 @@
  */
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { recordedReissuedAskInvoiceCents } from "@/lib/unpaid-ask-offset-marker";
+import {
+  recordedFoldedReissuedAskModificationIds,
+  recordedReissuedAskInvoiceCents,
+} from "@/lib/unpaid-ask-offset-marker";
 import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
 
 export async function queueReissuedAskSupplementaryInvoice({
@@ -49,5 +52,45 @@ export async function queueReissuedAskSupplementaryInvoice({
       { err, bookingId, bookingModificationId, paymentIntentId },
       "Failed to queue the supplementary Xero invoice for a re-issued additional ask (#3954); the booking-vs-Xero repair pass reports it",
     );
+  }
+}
+
+/**
+ * #3954 review round 6: THE RE-ISSUES AN INCREASE FOLDED IN KEEP THEIR OWN
+ * INVOICES. A later increase that folded a waiting re-issue into its own ask
+ * (`foldWaitingReissuedAsks`) closed that re-issue's recovery, so the
+ * re-issue's own mint - which queues its decision-A invoice - never runs. Once
+ * the increase's ask is minted, by its door or its recovery's replay, each
+ * folded reduction's invoice is queued here instead, anchored on that
+ * reduction as before and waiting on the INCREASE's intent, which now asks for
+ * that money. The per-anchor lock keeps a second call (door and replay) to one.
+ */
+export async function queueFoldedReissuedAskInvoices({
+  bookingId,
+  increaseModificationId,
+  paymentIntentId,
+}: {
+  bookingId: string;
+  /** The increase whose history records what it folded in. */
+  increaseModificationId: string;
+  /** Its minted intent, which collects the folded re-issues' money. */
+  paymentIntentId: string;
+}): Promise<void> {
+  let folded: string[];
+  try {
+    const increase = await prisma.bookingModification.findUnique({
+      where: { id: increaseModificationId },
+      select: { newData: true },
+    });
+    folded = recordedFoldedReissuedAskModificationIds(increase?.newData);
+  } catch (err) {
+    logger.error(
+      { err, bookingId, increaseModificationId, paymentIntentId },
+      "Failed to read the re-issues an increase folded in (#3954); the booking-vs-Xero repair pass reports their invoices",
+    );
+    return;
+  }
+  for (const bookingModificationId of folded) {
+    await queueReissuedAskSupplementaryInvoice({ bookingId, bookingModificationId, paymentIntentId });
   }
 }

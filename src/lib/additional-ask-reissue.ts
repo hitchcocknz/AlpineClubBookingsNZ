@@ -39,6 +39,11 @@ import {
   isEditFinancialReviewAdditionalIntentRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
+import {
+  NO_FOLDED_REISSUED_ASKS,
+  recordedReissuedAskInvoiceCents,
+  type FoldedReissuedAsks,
+} from "@/lib/unpaid-ask-offset-marker";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -209,11 +214,11 @@ export async function foldWaitingReissuedAsks(
   tx: UnpaidAskDb,
   booking: UnpaidAskBooking,
   now: Date = new Date(),
-): Promise<number> {
+): Promise<FoldedReissuedAsks> {
   const payment = booking.payment;
-  if (!payment) return 0;
+  if (!payment) return NO_FOLDED_REISSUED_ASKS;
   const operations = await inFlightAskRecoveries(tx, booking, payment);
-  if (operations.length === 0) return 0;
+  if (operations.length === 0) return NO_FOLDED_REISSUED_ASKS;
   const [transactions, modifications] = await Promise.all([
     tx.paymentTransaction.findMany({
       where: { paymentId: payment.id, kind: PaymentTransactionKind.ADDITIONAL },
@@ -221,7 +226,7 @@ export async function foldWaitingReissuedAsks(
     }),
     tx.bookingModification.findMany({
       where: { bookingId: booking.id },
-      select: { id: true, priceDiffCents: true, changeFeeCents: true },
+      select: { id: true, priceDiffCents: true, changeFeeCents: true, newData: true },
     }),
   ]);
   const waiting: PendingAskRecovery[] = [];
@@ -244,10 +249,24 @@ export async function foldWaitingReissuedAsks(
       processingStartedAt: operation.processingStartedAt ?? null,
       askCents: replay.frozenCents,
       invoiceCents: 0,
+      foldedInvoiceCents: 0,
     });
   }
   await closeWaitingAskRecoveries(tx, waiting, now, WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE);
-  return waiting.reduce((sum, recovery) => sum + recovery.askCents, 0);
+  // Round 6: recorded on the increase's own history (`unpaidAskOffsetHistory`),
+  // so its replay, a later reduction and each re-issue's invoice still see them.
+  return {
+    cents: waiting.reduce((sum, recovery) => sum + recovery.askCents, 0),
+    modificationIds: waiting.map((recovery) => recovery.bookingModificationId),
+    invoiceCents: waiting.reduce(
+      (sum, recovery) =>
+        sum +
+        recordedReissuedAskInvoiceCents(
+          modifications.find((row) => row.id === recovery.bookingModificationId)?.newData,
+        ),
+      0,
+    ),
+  };
 }
 
 /**

@@ -83,20 +83,68 @@ const REISSUED_ASK_INVOICE_KEY = "reissuedAskInvoiceCents" as const;
  */
 const BILLED_OFFSET_KEY = "unpaidAskBilledOffsetCents" as const;
 
-/** The `newData` fields an edit writes for what of its reduction an unpaid ask took, or none. */
+/**
+ * #3954 review round 6: the waiting re-issues a later INCREASE folded into its
+ * own ask (`foldWaitingReissuedAsks`), recorded on that increase's history row
+ * so nothing that reads the increase later loses them:
+ *
+ * - its mint's recovery replay asks for them again (`sizeRecoveryReplayAsk`) -
+ *   their own recoveries were closed by the fold, so nothing else will;
+ * - a later reduction that nets that replay off counts them, and their
+ *   invoices (`recordedFoldedReissuedAskInvoiceCents`);
+ * - each folded reduction's own supplementary invoice (decision A) is queued
+ *   on the increase's minted intent (`queueFoldedReissuedAskInvoices`), and the
+ *   repair pass reads it as accounted for (`foldingIncreaseFor`).
+ */
+const FOLDED_REISSUE_KEY = "foldedReissuedAskCents" as const;
+const FOLDED_REISSUE_IDS_KEY = "foldedReissuedAskModificationIds" as const;
+const FOLDED_REISSUE_INVOICE_KEY = "foldedReissuedAskInvoiceCents" as const;
+
+/** What an increase folded in: the re-issues' money, their reducing edits, and their invoices' figure. */
+export type FoldedReissuedAsks = {
+  readonly cents: number;
+  readonly modificationIds: readonly string[];
+  readonly invoiceCents: number;
+};
+
+export const NO_FOLDED_REISSUED_ASKS: FoldedReissuedAsks = { cents: 0, modificationIds: [], invoiceCents: 0 };
+
+/** An edit that set nothing against an unpaid ask - a guest add, which only folds. */
+export const NO_UNPAID_ASK_SETTLEMENT = {
+  unpaidAskOffsetCents: 0,
+  retiredAskModificationIds: [] as readonly string[],
+  reissuedAskInvoiceCents: 0,
+  unpaidAskBilledOffsetCents: 0,
+} as const;
+
+/** The `newData` fields an edit writes for what of its reduction an unpaid ask took, or what its increase folded in, or none. */
 export function unpaidAskOffsetHistory(settled: {
   unpaidAskOffsetCents: number;
   retiredAskModificationIds: readonly string[];
   reissuedAskInvoiceCents: number;
   unpaidAskBilledOffsetCents: number;
+  foldedReissuedAsks: FoldedReissuedAsks;
 }): {
   [HISTORY_KEY]?: number;
   [RETIRED_PENDING_ASKS_KEY]?: string[];
   [REISSUED_ASK_INVOICE_KEY]?: number;
   [BILLED_OFFSET_KEY]?: number;
+  [FOLDED_REISSUE_KEY]?: number;
+  [FOLDED_REISSUE_IDS_KEY]?: string[];
+  [FOLDED_REISSUE_INVOICE_KEY]?: number;
 } {
-  if (settled.unpaidAskOffsetCents <= 0) return {};
+  const folded = settled.foldedReissuedAsks;
+  const foldedHistory =
+    folded.cents > 0
+      ? {
+          [FOLDED_REISSUE_KEY]: folded.cents,
+          [FOLDED_REISSUE_IDS_KEY]: [...folded.modificationIds],
+          ...(folded.invoiceCents > 0 ? { [FOLDED_REISSUE_INVOICE_KEY]: folded.invoiceCents } : {}),
+        }
+      : {};
+  if (settled.unpaidAskOffsetCents <= 0) return foldedHistory;
   return {
+    ...foldedHistory,
     [HISTORY_KEY]: settled.unpaidAskOffsetCents,
     ...(settled.retiredAskModificationIds.length > 0
       ? { [RETIRED_PENDING_ASKS_KEY]: [...settled.retiredAskModificationIds] }
@@ -132,6 +180,34 @@ export function recordedUnpaidAskBilledOffsetCents(newData: unknown): number {
   return recordedPositiveCents(newData, BILLED_OFFSET_KEY);
 }
 
+/** What an increase folded in of waiting re-issues, or 0 (round 6). */
+export function recordedFoldedReissuedAskCents(newData: unknown): number {
+  return recordedPositiveCents(newData, FOLDED_REISSUE_KEY);
+}
+
+/** What the folded re-issues' own supplementary invoices bill, or 0 (round 6). */
+export function recordedFoldedReissuedAskInvoiceCents(newData: unknown): number {
+  return recordedPositiveCents(newData, FOLDED_REISSUE_INVOICE_KEY);
+}
+
+/** The reducing edits whose waiting re-issues an increase folded in (round 6). */
+export function recordedFoldedReissuedAskModificationIds(newData: unknown): string[] {
+  const ids = historyRecord(newData)?.[FOLDED_REISSUE_IDS_KEY];
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
+
+/** The increase whose history says it folded this reduction's waiting re-issue in, or null. */
+export function foldingIncreaseFor<M extends { id: string; newData: unknown }>(
+  modificationId: string,
+  modifications: readonly M[],
+): M | null {
+  return (
+    modifications.find((modification) =>
+      recordedFoldedReissuedAskModificationIds(modification.newData).includes(modificationId),
+    ) ?? null
+  );
+}
+
 /**
  * The reduction whose history names this modification as one whose unpaid ask
  * it retired, or null - the repair pass's reading for an increase whose
@@ -146,5 +222,22 @@ export function retiringReductionFor<M extends { id: string; newData: unknown }>
       const ids = historyRecord(modification.newData)?.[RETIRED_PENDING_ASKS_KEY];
       return Array.isArray(ids) && ids.includes(modificationId);
     }) ?? null
+  );
+}
+
+/**
+ * #3954 round 6: a reduction's re-issue a later increase folded in has its
+ * invoice accounted for while that increase's own ask is still to mint (its
+ * recovery open) - the invoice is queued on that mint - or once a later
+ * reduction retired that increase's ask in turn and names it.
+ */
+export function isFoldedReissueAccountedFor<M extends { id: string; newData: unknown }>(
+  reductionId: string,
+  modifications: readonly M[],
+  openRecoveryModificationIds: ReadonlySet<string>,
+): boolean {
+  const increase = foldingIncreaseFor(reductionId, modifications);
+  return Boolean(
+    increase && (openRecoveryModificationIds.has(increase.id) || retiringReductionFor(increase.id, modifications)),
   );
 }

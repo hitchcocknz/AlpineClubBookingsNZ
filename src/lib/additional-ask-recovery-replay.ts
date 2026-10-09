@@ -14,11 +14,18 @@ import {
   type AdditionalAsk,
   type AdditionalAskPayment,
 } from "@/lib/additional-payment-ask";
+import { recordedFoldedReissuedAskCents } from "@/lib/unpaid-ask-offset-marker";
 
 /** The `BookingModification` figures a failed mint's recovery re-derives from. */
 export interface RecoveryReplayModification {
   priceDiffCents: number;
   changeFeeCents: number;
+  /**
+   * Its history row - REQUIRED, so no reader can forget it: an increase that
+   * folded waiting re-issues in records them there (`recordedFoldedReissuedAskCents`),
+   * and its replay asks for them again (#3954 review round 6).
+   */
+  newData: unknown;
 }
 
 /**
@@ -38,7 +45,7 @@ export interface RecoveryReplayModification {
  *   ordinary edit's row never is. The frozen figure, with no provenance.
  */
 export type RecoveryReplayAsk =
-  | { kind: "increase"; ask: AdditionalAsk }
+  | { kind: "increase"; ask: AdditionalAsk; foldedCents: number }
   | { kind: "reissue"; ask: AdditionalAsk; frozenCents: number }
   | { kind: "frozen"; amountCents: number };
 
@@ -64,13 +71,18 @@ export function sizeRecoveryReplayAsk({
       frozenCents: frozenAmountCents,
     };
   }
+  // #3954 round 6: the waiting re-issues this increase folded in were closed
+  // by the fold, so its replay is the only thing still able to ask for them.
+  const foldedCents = recordedFoldedReissuedAskCents(modification.newData);
   return {
     kind: "increase",
     ask: sizeAdditionalAsk({
       priceDiffCents: modification.priceDiffCents,
       changeFeeCents: modification.changeFeeCents,
       payment,
+      waitingReissuedAskCents: foldedCents,
     }),
+    foldedCents,
   };
 }
 
@@ -95,15 +107,16 @@ export function sizeReissuedAskReplay({
 /**
  * What a pending recovery adds to the ask the `Payment` already shows: its whole
  * figure less the part it would carry from that ask, which a reduction counts
- * once, as the ask itself. Null for a `frozen` figure, whose carried part
- * nobody recorded - a reduction then nets nothing rather than guess.
+ * once, as the ask itself - so an increase's own money AND the re-issues it
+ * folded in, which no row shows (round 6). Null for a `frozen` figure, whose
+ * carried part nobody recorded - a reduction then nets nothing rather than guess.
  */
 export function recoveryAskBeyondPaymentAskCents(
   replay: RecoveryReplayAsk,
 ): number | null {
   if (replay.kind === "frozen") return null;
   return replay.kind === "increase"
-    ? replay.ask.amountCents - replay.ask.carriedCents
+    ? replay.ask.amountCents - replay.ask.carriedCents + replay.foldedCents
     : replay.frozenCents;
 }
 

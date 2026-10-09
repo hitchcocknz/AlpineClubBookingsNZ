@@ -7378,6 +7378,65 @@ describe("#3954: a reduction set against an unpaid ask", () => {
 
       expect(report.passes[0].bookings[0].findings.map((finding) => finding.code)).not.toContain("MISSING_SUPPLEMENTARY_INVOICE");
     });
+
+    // Round 6: a later increase folded the waiting re-issue into its own ask;
+    // the re-issue's invoice is queued on that increase's intent once it mints.
+    const foldedIntoLaterIncrease = () => {
+      const booking = shrunk();
+      booking.modifications.push({
+        ...booking.modifications[0]!,
+        id: "mod_increase_later",
+        priceDiffCents: 1000,
+        newData: { foldedReissuedAskCents: 3000, foldedReissuedAskModificationIds: ["mod_reduction"] },
+        createdAt: new Date("2026-05-04T00:00:00Z"),
+      });
+      return booking;
+    };
+
+    it.each([
+      ["MUTATION (round 6): is accounted for while the increase that folded it in still waits on its mint", "open"],
+      ["MUTATION (round 6): is accounted for once a later reduction retired that increase's ask in turn", "retired"],
+    ] as const)("%s", async (_label, state) => {
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      const booking = foldedIntoLaterIncrease();
+      if (state === "retired") {
+        booking.modifications.push({
+          ...booking.modifications[1]!,
+          id: "mod_reduction_later",
+          newData: { unpaidAskOffsetCents: 4000, unpaidAskRetiredModificationIds: ["mod_increase_later"] },
+          createdAt: new Date("2026-05-05T00:00:00Z"),
+        });
+      }
+      const deps = createDependencies({
+        bookings: [booking],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+        editReviewChargeIntentRecoveries:
+          state === "open"
+            ? [{ bookingId: "booking_1", idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey("mod_increase_later"), status: "PENDING" }]
+            : [],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      const missing = report.passes[0].bookings[0].findings.filter(
+        (finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE" && (finding.details as { modificationId?: string }).modificationId === "mod_reduction",
+      );
+      expect(missing).toEqual([]);
+    });
+
+    it("round 6: is reported once the increase that folded it in has minted and still no invoice waits on it", async () => {
+      const deps = createDependencies({
+        bookings: [foldedIntoLaterIncrease()],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      const missing = report.passes[0].bookings[0].findings.filter(
+        (finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE" && (finding.details as { modificationId?: string }).modificationId === "mod_reduction",
+      );
+      expect(missing).toHaveLength(1);
+    });
   });
 
   // #3954 round 5 (owner decision 10 Oct 2026, "Auto credit note"): the

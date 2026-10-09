@@ -67,7 +67,11 @@ const mocks = vi.hoisted(() => ({
 // #3954 decision A: the re-issue's own invoice, queued after its mint
 // (`reissued-ask-invoice.test.ts` owns what it queues).
 const queueReissueInvoice = vi.hoisted(() => vi.fn(async (params: Record<string, unknown>) => { void params; }));
-vi.mock("@/lib/reissued-ask-invoice", () => ({ queueReissuedAskSupplementaryInvoice: queueReissueInvoice }));
+const queueFoldedInvoices = vi.hoisted(() => vi.fn(async (params: Record<string, unknown>) => { void params; }));
+vi.mock("@/lib/reissued-ask-invoice", () => ({
+  queueReissuedAskSupplementaryInvoice: queueReissueInvoice,
+  queueFoldedReissuedAskInvoices: queueFoldedInvoices,
+}));
 
 vi.mock("@/lib/stripe", async (importOriginal) => ({
   ...((await importOriginal()) as object),
@@ -122,7 +126,7 @@ const { ADDITIONAL_ASK_BEING_RAISED_MESSAGE, AdditionalAskChangedDuringReduction
   "@/lib/additional-ask-reduction-error"
 );
 const { createModificationAdditionalPaymentIntent } = await import("@/lib/booking-modification-settlement");
-const { ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE } = await import("@/lib/unpaid-ask-offset-marker");
+const { ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE, unpaidAskOffsetHistory } = await import("@/lib/unpaid-ask-offset-marker");
 
 const TODAY = "2026-07-01" as CalendarDate;
 const ASK_ROW_ID = "txn_ask";
@@ -141,7 +145,7 @@ type Row = {
 
 const state = vi.hoisted(() => ({
   rows: [] as unknown[],
-  modifications: [] as { id: string; priceDiffCents?: number; changeFeeCents?: number }[],
+  modifications: [] as { id: string; priceDiffCents?: number; changeFeeCents?: number; newData?: unknown }[],
   stampCount: 1,
   recoveries: [] as unknown[],
   recoveryCloseCount: 1,
@@ -731,6 +735,18 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     );
   });
 
+  it("MUTATION (round 6): an increase's own mint queues the invoices of the re-issues it folded in, waiting on its intent", async () => {
+    const result = await adjust(grownBooking(), 1_000);
+    expect(result.additionalAsk.amountCents).toBe(6_000);
+    await mintAfter(result);
+
+    expect(queueFoldedInvoices).toHaveBeenCalledWith({
+      bookingId: "booking_3954",
+      increaseModificationId: "mod_reduction",
+      paymentIntentId: "pi_reissued_6000",
+    });
+  });
+
   it("a cancelled ask mints nothing, but its intent is still cancelled now", async () => {
     const result = await adjust(grownBooking(), -5_000);
     const { minted, order } = await mintAfter(result);
@@ -904,6 +920,19 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
     expect(recoveryUpdateMany).not.toHaveBeenCalled();
   });
 
+  it("MUTATION (round 6): an increase's waiting mint that folded a re-issue in is owed for both, and their invoices are counted - the folded one's was never parked", async () => {
+    state.modifications = [
+      { id: "mod_increase", priceDiffCents: 5_000, changeFeeCents: 0, newData: { foldedReissuedAskCents: 3_000, foldedReissuedAskInvoiceCents: 1_000 } },
+    ];
+    state.recoveries = [recoveryRow({ amountCents: 8_000, hadIssuedXeroInvoice: true })];
+    const result = await adjust(awaitingRetryBooking(), -2_000);
+
+    expect(result.unpaidAskOffsetCents).toBe(2_000);
+    expect(result.additionalAsk.amountCents).toBe(6_000);
+    // Its own $50 invoice and the folded re-issue's $10, less the $20 offset.
+    expect(result.reissuedAskInvoiceCents).toBe(4_000);
+  });
+
   it("MUTATION (round 4): a waiting re-issue a later minter overtook without folding it in is still owed, all of it", async () => {
     // A reduction re-issued $30 (its mint failed); a review charge later minted
     // $20 for its own money alone. The replay will carry that $20 and ask $50.
@@ -949,6 +978,19 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
       expect(recoveryUpdateMany).toHaveBeenCalledWith({
         where: { id: "op_reissue", status: "FAILED", attempts: 1, processingStartedAt: null },
         data: expect.objectContaining({ status: "SUCCEEDED", lastError: WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE }),
+      });
+    });
+
+    it("MUTATION (round 6): records what it folded - the re-issue's money, its reducing edit and that edit's own invoice - on the increase's history", async () => {
+      waitingReissue();
+      state.modifications = [{ id: "mod_reduction", priceDiffCents: -2_000, changeFeeCents: 0, newData: { reissuedAskInvoiceCents: 1_000 } }];
+      const result = await adjust(awaitingRetryBooking(), 1_000);
+
+      expect(result.foldedReissuedAsks).toEqual({ cents: 3_000, modificationIds: ["mod_reduction"], invoiceCents: 1_000 });
+      expect(unpaidAskOffsetHistory(result)).toEqual({
+        foldedReissuedAskCents: 3_000,
+        foldedReissuedAskModificationIds: ["mod_reduction"],
+        foldedReissuedAskInvoiceCents: 1_000,
       });
     });
 
@@ -1054,27 +1096,27 @@ describe("#3954: one sizing for a failed mint's replay and the reduction that ma
   const unpaid = { additionalAmountCents: 7_000, additionalPaymentStatus: "PENDING" };
 
   it("an increase re-derives its own net plus the ask it supersedes, and adds only its own net beyond that ask", () => {
-    const replay = sizeRecoveryReplayAsk({ frozenAmountCents: 14_000, modification: { priceDiffCents: 6_000, changeFeeCents: 1_000 }, payment: unpaid });
+    const replay = sizeRecoveryReplayAsk({ frozenAmountCents: 14_000, modification: { priceDiffCents: 6_000, changeFeeCents: 1_000, newData: null }, payment: unpaid });
     expect(replay.kind).toBe("increase");
     expect(replay.kind !== "frozen" && replay.ask.amountCents).toBe(14_000);
     expect(recoveryAskBeyondPaymentAskCents(replay)).toBe(7_000);
   });
 
   it("MUTATION (round 4): a reduction's re-issue carries its frozen figure plus any later ask it will supersede, and only the frozen figure is beyond that ask", () => {
-    const replay = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: -2_000, changeFeeCents: 0 }, payment: unpaid });
+    const replay = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: -2_000, changeFeeCents: 0, newData: null }, payment: unpaid });
     expect(replay.kind).toBe("reissue");
     expect(replay.kind !== "frozen" && [replay.ask.amountCents, replay.ask.carriedCents]).toEqual([10_000, 10_000]);
     expect(recoveryAskBeyondPaymentAskCents(replay)).toBe(3_000);
     // With no later ask - the reduction retired every ask before it - it is the frozen figure alone.
-    const alone = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: -2_000, changeFeeCents: 0 }, payment: null });
+    const alone = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: -2_000, changeFeeCents: 0, newData: null }, payment: null });
     expect(alone.kind !== "frozen" && alone.ask.amountCents).toBe(3_000);
   });
 
   it("MUTATION (round 4): a re-issue is settled only by its own row; an increase by any later ask", () => {
     const operation = { createdAt: new Date("2026-06-21T00:00:00.000Z"), paymentIntentId: "pi_own" };
     const later = { kind: "ADDITIONAL", createdAt: new Date("2026-06-22T00:00:00.000Z") };
-    const reissue = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: -2_000, changeFeeCents: 0 }, payment: null });
-    const increase = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: 3_000, changeFeeCents: 0 }, payment: null });
+    const reissue = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: -2_000, changeFeeCents: 0, newData: null }, payment: null });
+    const increase = sizeRecoveryReplayAsk({ frozenAmountCents: 3_000, modification: { priceDiffCents: 3_000, changeFeeCents: 0, newData: null }, payment: null });
     const foreign = [{ ...later, stripePaymentIntentId: "pi_later_edit" }];
     const own = [{ ...later, stripePaymentIntentId: "pi_own" }];
     expect(isRecoveryReplaySettled(reissue, operation, foreign)).toBe(false);
@@ -1082,7 +1124,17 @@ describe("#3954: one sizing for a failed mint's replay and the reduction that ma
     expect(isRecoveryReplaySettled(increase, operation, foreign)).toBe(true);
   });
 
-  it.each([null, { priceDiffCents: 0, changeFeeCents: 0 }])("no readable net (%o) replays the frozen figure, which nothing nets against", (modification) => {
+  it("MUTATION (round 6): an increase that folded waiting re-issues in asks for them again on its replay, and counts them beyond the Payment's ask", () => {
+    const replay = sizeRecoveryReplayAsk({
+      frozenAmountCents: 11_000,
+      modification: { priceDiffCents: 1_000, changeFeeCents: 0, newData: { foldedReissuedAskCents: 3_000 } },
+      payment: unpaid,
+    });
+    expect(replay.kind !== "frozen" && [replay.ask.amountCents, replay.ask.carriedCents]).toEqual([11_000, 10_000]);
+    expect(recoveryAskBeyondPaymentAskCents(replay)).toBe(4_000);
+  });
+
+  it.each([null, { priceDiffCents: 0, changeFeeCents: 0, newData: null }])("no readable net (%o) replays the frozen figure, which nothing nets against", (modification) => {
     const replay = sizeRecoveryReplayAsk({ frozenAmountCents: 5_000, modification, payment: unpaid });
     expect(replay).toEqual({ kind: "frozen", amountCents: 5_000 });
     expect(recoveryAskBeyondPaymentAskCents(replay)).toBeNull();
