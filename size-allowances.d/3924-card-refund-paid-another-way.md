@@ -51,7 +51,7 @@ reason: round 7 (M5, C8): `createXeroCreditNote` credits an invoice its caller
   key choice, so a crash-and-retry is answered with the same note.
 
 file: src/lib/xero-operation-retry.ts
-lines: 2005
+lines: 2015
 reason: round 7: an operator's retry of a refund note passes the close and the
   named invoice through, as it passes every other recorded field, so a retried
   close's note credits the same document. Three lines beside their siblings.
@@ -59,7 +59,11 @@ reason: round 7: an operator's retry of a refund note passes the close and the
   its own row (`releasedLateCaptureChangeInvoiceRequeuePayload`), beside the
   kept receipt's and the group invoice's requeue payloads it mirrors, through
   the one `requeueOutboxRowForRetry`; a second retry module would split the
-  dispatch that decides which rows requeue and which replay inline.
+  dispatch that decides which rows requeue and which replay inline. Round 10:
+  that branch asks two questions first - is the capture an approval task's,
+  and is the change already linked in Xero (a 409) - answered in their own
+  module (`late-capture-change-invoice-retry.ts`); only the call and its throw
+  sit in the dispatch.
 
 file: src/lib/xero-booking-repair-classify.ts
 lines: 2319

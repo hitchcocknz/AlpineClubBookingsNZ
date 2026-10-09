@@ -1,5 +1,9 @@
 import type { XeroContactUpdateData } from "@/lib/xero-contacts";
 import {
+  isLateCaptureApprovalChangeInvoice,
+  linkedChangeInvoiceRetryRefusal,
+} from "@/lib/late-capture-change-invoice-retry";
+import {
   readQueuedOutboxPayload,
   readQueueType,
   subscriptionInvoiceChargeId,
@@ -192,10 +196,8 @@ function keptLateCaptureInvoiceRequeuePayload(
  * invoice on this row, and queues that note. A second ask is left to its own
  * branch.
  *
- * Round 10 (both lenses): only a capture an approval task owns
- * (`lateCaptureApprovalIntentId`) - the late charge whose refund a close can
- * wait on. An ordinary card edit's invoice also names its `paymentIntentId`,
- * and keeps the inline replay (`isLateCaptureApprovalChangeInvoice`).
+ * Round 10: only for an approval task's capture, and never one already
+ * linked in Xero (`late-capture-change-invoice-retry.ts`).
  */
 function releasedLateCaptureChangeInvoiceRequeuePayload(
   operation: RetryableOperation,
@@ -220,46 +222,6 @@ function releasedLateCaptureChangeInvoiceRequeuePayload(
   // The whole stored payload: the charge day it already read
   // (`keptLateCaptureDay`) rides with it, so the retry's document date never drifts.
   return asRecord(operation.requestPayload);
-}
-
-/** Round 10: the payload's intent is a late capture an approval task owns. */
-async function isLateCaptureApprovalChangeInvoice(payload: Record<string, unknown>): Promise<boolean> {
-  const intent = payload.paymentIntentId;
-  if (typeof intent !== "string" || intent === "") return false;
-  const task = await prisma.manualRefundTask.findUnique({
-    where: { lateCaptureApprovalIntentId: intent },
-    select: { id: true },
-  });
-  return task !== null;
-}
-
-/**
- * #3924 round 10 (money, `INV-PAY-122`): a late charge's change invoice that
- * is ALREADY IN XERO - the change carries its active `SUPPLEMENTARY_INVOICE`
- * link, though the row failed after it - is never sent again: a retry could
- * raise a second invoice for one charge. The officer marks the row resolved
- * as fixed in Xero instead; the capture's receipt is that linked invoice
- * (`readLateCaptureXeroReceipt`), and the close's refund note is raised
- * against it.
- */
-async function refuseRetryOfLinkedChangeInvoice(operation: RetryableOperation): Promise<void> {
-  if (!operation.localModel || !operation.localId) return;
-  const link = await prisma.xeroObjectLink.findFirst({
-    where: {
-      localModel: operation.localModel,
-      localId: operation.localId,
-      xeroObjectType: "INVOICE",
-      role: "SUPPLEMENTARY_INVOICE",
-      active: true,
-    },
-    select: { id: true },
-  });
-  if (link) {
-    throw new XeroOperationRetryError(
-      "This late card charge's change invoice is already in Xero, so retrying it could raise a second invoice. Mark this operation resolved as fixed in Xero instead; the refund note follows against the invoice already there.",
-      409,
-    );
-  }
 }
 
 /**
@@ -1428,7 +1390,8 @@ export async function retryXeroSyncOperation(
   const releasedChangeInvoicePayload = releasedLateCaptureChangeInvoiceRequeuePayload(operation);
   if (releasedChangeInvoicePayload && (await isLateCaptureApprovalChangeInvoice(releasedChangeInvoicePayload))) {
     // Round 10: one already in Xero is marked resolved, never sent again.
-    await refuseRetryOfLinkedChangeInvoice(operation);
+    const refusal = await linkedChangeInvoiceRetryRefusal(operation);
+    if (refusal) throw new XeroOperationRetryError(refusal, 409);
     await requeueOutboxRowForRetry(
       operation,
       releasedChangeInvoicePayload,
