@@ -9,6 +9,7 @@ import {
   writeReissuedAskUnderRecovery,
 } from "@/lib/additional-ask-reissue";
 import { queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
+import { mintReissuedAskIntent, planReissuedAskMint } from "@/lib/reissued-ask-mint";
 import {
   cancelSupersededAdditionalIntentsNow,
   queueSupersededAdditionalIntentCancellationRows,
@@ -374,30 +375,38 @@ export async function createModificationAdditionalPaymentIntent({
       customerId = customer.id;
     }
 
-    const pi = await createPaymentIntent({
-      format,
-      amountCents: result.additionalAsk.amountCents,
-      customerId,
-      metadata: {
-        bookingId,
-        type: "modification_additional",
-        reason,
-      },
-      idempotencyKey: stripeIdempotencyKey,
-    });
-
     if (reissueRecovery) {
-      // #3954: the row, the recovery's completion and the supersede's durable
-      // rows commit together, or not at all (see above).
+      // #3954 round 6: the ONE request both of a re-issue's minters send
+      // (`planReissuedAskMint`) - sized on the outstanding ask as it stands
+      // now, exactly as the recovery's replay sizes it, so an ask minted since
+      // the reduction (an officer's review charge, say) is carried rather than
+      // superseded away, and the two never answer each other with an
+      // `idempotency_error`. The row, the recovery's completion and the
+      // supersede's durable rows commit together, or not at all (see above).
+      const current = await prisma.payment.findUnique({
+        where: { id: paymentId },
+        select: { additionalAmountCents: true, additionalPaymentStatus: true },
+      });
+      const plan = planReissuedAskMint({
+        bookingId,
+        recovery: { amountCents: reissueRecovery.amountCents, stripeKey: reissueRecovery.paymentIntentId },
+        payment: current,
+      });
+      const pi = await mintReissuedAskIntent({
+        format,
+        plan,
+        customerId,
+        recoveryCreatedAt: reissueRecovery.createdAt,
+      });
       const superseded = await writeReissuedAskUnderRecovery(reissueRecovery, pi.id, async (store) => {
         await upsertPaymentIntentTransaction({
           paymentId,
           kind: PaymentTransactionKind.ADDITIONAL,
           paymentIntentId: pi.id,
-          amountCents: result.additionalAsk.amountCents,
-          carriedAskCents: result.additionalAsk.carriedCents,
+          amountCents: plan.ask.amountCents,
+          carriedAskCents: plan.ask.carriedCents,
           status: PaymentStatus.PENDING,
-          reason,
+          reason: plan.reason,
           stripeCustomerId: customerId,
           store,
         });
@@ -430,6 +439,18 @@ export async function createModificationAdditionalPaymentIntent({
         additionalPaymentIntentId: pi.id,
       };
     }
+
+    const pi = await createPaymentIntent({
+      format,
+      amountCents: result.additionalAsk.amountCents,
+      customerId,
+      metadata: {
+        bookingId,
+        type: "modification_additional",
+        reason,
+      },
+      idempotencyKey: stripeIdempotencyKey,
+    });
 
     // THE NEW INTENT'S OWN ROW IS WRITTEN FIRST, AND THE ORDER IS LOAD-BEARING
     // (#3340 fix round). Cancelling a superseded intent reconciles the payment

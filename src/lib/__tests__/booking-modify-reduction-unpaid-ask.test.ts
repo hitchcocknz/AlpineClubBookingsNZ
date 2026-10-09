@@ -2,6 +2,7 @@ import { PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/cl
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LoadedBookingForModify } from "@/lib/booking-modify-validation";
+import { REISSUED_ASK_KEY_METADATA, REISSUED_ASK_REASON } from "@/lib/reissued-ask-mint";
 import type { CancellationRule } from "@/lib/cancellation";
 import type { CalendarDate } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
@@ -28,6 +29,8 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 const minterDb = vi.hoisted(() => {
   const db = {
     reissueRecovery: null as null | Record<string, unknown>,
+    // #3954 round 6: the `Payment` the door re-reads before minting a re-issue.
+    currentPayment: { additionalAmountCents: 0, additionalPaymentStatus: null as string | null },
     completeCount: 1,
     recoveryFindUnique: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
     recoveryUpdateMany: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
@@ -39,6 +42,7 @@ vi.mock("@/lib/prisma", async () => {
   minterDb.recoveryFindUnique = hoistedVi.fn(async () => minterDb.reissueRecovery);
   minterDb.recoveryUpdateMany = hoistedVi.fn(async () => ({ count: minterDb.completeCount }));
   const prisma = {
+    payment: { findUnique: async () => minterDb.currentPayment },
     paymentTransaction: { findMany: async () => [] },
     paymentRecoveryOperation: {
       findUnique: minterDb.recoveryFindUnique,
@@ -56,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   giveBack: vi.fn(),
   derive: vi.fn(),
   createIntent: vi.fn(),
+  findMinted: vi.fn(),
   upsert: vi.fn(),
 }));
 
@@ -67,6 +72,7 @@ vi.mock("@/lib/reissued-ask-invoice", () => ({ queueReissuedAskSupplementaryInvo
 vi.mock("@/lib/stripe", async (importOriginal) => ({
   ...((await importOriginal()) as object),
   createPaymentIntent: mocks.createIntent,
+  findRecentPaymentIntentByMetadata: mocks.findMinted,
   findOrCreateCustomer: vi.fn(async () => ({ id: "cus_1" })),
 }));
 
@@ -577,10 +583,14 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     attempts: 0,
     processingStartedAt: null,
     paymentIntentId: "mod_reissued_ask_mod_reduction",
+    amountCents: 3_000,
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
   };
   beforeEach(() => {
     minterDb.reissueRecovery = { ...REISSUE_RECOVERY };
+    minterDb.currentPayment = { additionalAmountCents: 0, additionalPaymentStatus: null };
     minterDb.completeCount = 1;
+    mocks.findMinted.mockReset();
   });
 
   async function mintAfter(result: Awaited<ReturnType<typeof adjust>>) {
@@ -672,6 +682,53 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(queueReissueInvoice).not.toHaveBeenCalled();
     expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined });
+  });
+
+  it("MUTATION (round 6): the door sends the one request the runner sends - the fixed reason and the key in its metadata, never the door's own wording", async () => {
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    await mintAfter(result);
+
+    expect(mocks.createIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 3_000,
+        idempotencyKey: "mod_reissued_ask_mod_reduction",
+        metadata: {
+          bookingId: "booking_3954",
+          type: "modification_additional",
+          reason: REISSUED_ASK_REASON,
+          [REISSUED_ASK_KEY_METADATA]: "mod_reissued_ask_mod_reduction",
+        },
+      }),
+    );
+    expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ reason: REISSUED_ASK_REASON }));
+  });
+
+  it("MUTATION (round 6): an ask minted since the reduction (an officer's review charge) is carried by the door's re-issue, under a key naming the amount, not superseded away", async () => {
+    minterDb.currentPayment = { additionalAmountCents: 4_000, additionalPaymentStatus: "PENDING" };
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    await mintAfter(result);
+
+    expect(mocks.createIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 7_000, idempotencyKey: "mod_reissued_ask_mod_reduction_7000" }),
+    );
+    expect(mocks.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 7_000, carriedAskCents: 7_000 }),
+    );
+  });
+
+  it("MUTATION (round 6): Stripe's idempotency_error on the re-issue's key is answered with the intent that key already minted, which the door then writes", async () => {
+    mocks.createIntent.mockRejectedValueOnce(Object.assign(new Error("Keys for idempotent requests can only be used with the same parameters"), { rawType: "idempotency_error" }));
+    mocks.findMinted.mockResolvedValueOnce({ id: "pi_minted_by_runner", amount: 3_000, client_secret: "secret_runner" });
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    const { minted } = await mintAfter(result);
+
+    expect(mocks.findMinted).toHaveBeenCalledWith(
+      expect.objectContaining({ metadataKey: REISSUED_ASK_KEY_METADATA, metadataValue: "mod_reissued_ask_mod_reduction" }),
+    );
+    expect(minted.additionalPaymentIntentId).toBe("pi_minted_by_runner");
+    expect(minterDb.recoveryUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ paymentIntentId: "pi_minted_by_runner" }) }),
+    );
   });
 
   it("a cancelled ask mints nothing, but its intent is still cancelled now", async () => {

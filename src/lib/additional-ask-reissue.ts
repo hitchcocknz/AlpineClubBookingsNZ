@@ -311,6 +311,9 @@ export type ReissuedAskRecovery = {
   processingStartedAt: Date | null;
   /** The Stripe key frozen in the edit's transaction. */
   paymentIntentId: string;
+  /** The re-issued figure frozen in the edit's transaction. */
+  amountCents: number;
+  createdAt: Date;
 };
 
 /** The recovery `queueReissuedAskRecovery` wrote for this edit, if any. */
@@ -319,7 +322,15 @@ export async function readReissuedAskRecovery(
 ): Promise<ReissuedAskRecovery | null> {
   return prisma.paymentRecoveryOperation.findUnique({
     where: { idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(bookingModificationId) },
-    select: { id: true, status: true, attempts: true, processingStartedAt: true, paymentIntentId: true },
+    select: {
+      id: true,
+      status: true,
+      attempts: true,
+      processingStartedAt: true,
+      paymentIntentId: true,
+      amountCents: true,
+      createdAt: true,
+    },
   });
 }
 

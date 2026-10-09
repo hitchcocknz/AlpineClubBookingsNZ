@@ -60,9 +60,7 @@ export function sizeRecoveryReplayAsk({
   if (ownCents < 0) {
     return {
       kind: "reissue",
-      ask: reissueUnpaidAdditionalAsk({
-        askLeftCents: frozenAmountCents + outstandingAdditionalAskCents(payment),
-      }),
+      ask: sizeReissuedAskReplay({ frozenAmountCents, payment }),
       frozenCents: frozenAmountCents,
     };
   }
@@ -74,6 +72,24 @@ export function sizeRecoveryReplayAsk({
       payment,
     }),
   };
+}
+
+/**
+ * A reduction's re-issued ask as any minter mints it - the door after commit
+ * and the recovery's replay alike (`planReissuedAskMint`): the figure frozen at
+ * the reducing edit, all carried, plus the unpaid balance of any ask minted
+ * since, which this mint supersedes and so carries (#3954 review round 6).
+ */
+export function sizeReissuedAskReplay({
+  frozenAmountCents,
+  payment,
+}: {
+  frozenAmountCents: number;
+  payment: AdditionalAskPayment | null | undefined;
+}): AdditionalAsk {
+  return reissueUnpaidAdditionalAsk({
+    askLeftCents: frozenAmountCents + outstandingAdditionalAskCents(payment),
+  });
 }
 
 /**

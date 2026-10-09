@@ -300,6 +300,38 @@ export async function getPaymentIntent(
 }
 
 /**
+ * #3954 review round 6: the intent an earlier request minted under an
+ * idempotency key whose replay Stripe refused (`idempotency_error`). Stripe
+ * cannot look an intent up by its key, so the minter stamps the key into the
+ * intent's metadata and this finds it by that stamp. A list, not the search
+ * API, because a list is read-after-write consistent; bounded to the intents
+ * created since `createdSince` and to `maxScanned` of them.
+ */
+export async function findRecentPaymentIntentByMetadata({
+  metadataKey,
+  metadataValue,
+  createdSince,
+  maxScanned = 1000,
+}: {
+  metadataKey: string;
+  metadataValue: string;
+  createdSince: Date;
+  maxScanned?: number;
+}): Promise<Stripe.PaymentIntent | null> {
+  const stripe = await getStripe();
+  let scanned = 0;
+  for await (const intent of stripe.paymentIntents.list({
+    created: { gte: Math.floor(createdSince.getTime() / 1000) },
+    limit: 100,
+  })) {
+    if (intent.metadata?.[metadataKey] === metadataValue) return intent;
+    scanned += 1;
+    if (scanned >= maxScanned) break;
+  }
+  return null;
+}
+
+/**
  * #3170 (epic #2797): raise what an EXISTING, unpaid PaymentIntent asks for.
  *
  * The one operation that lets a booking edit carry ONE request while more than

@@ -168,9 +168,11 @@ vi.mock("@/lib/stripe", () => ({
     mockCancelPaymentIntentIfCancellableWithResult(...args),
   processRefund: (...args: unknown[]) => mockProcessRefund(...args),
   createPaymentIntent: (...args: unknown[]) => mockCreatePaymentIntent(...args),
+  findRecentPaymentIntentByMetadata: (...args: unknown[]) => mockFindRecentPaymentIntentByMetadata(...args),
   findOrCreateCustomer: (...args: unknown[]) =>
     mockFindOrCreateCustomer(...args),
 }));
+const mockFindRecentPaymentIntentByMetadata = vi.fn();
 
 vi.mock("@/lib/group-cancel", () => ({
   executeGroupSettlementRefundPlan: (...args: unknown[]) =>
@@ -2489,6 +2491,43 @@ describe("payment recovery worker", () => {
         );
         expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
           expect.objectContaining({ amountCents: 5000, carriedAskCents: 5000 }),
+        );
+      });
+
+      it("MUTATION (round 6): sends the one request the door sends for the same key - the fixed reason and the key in its metadata", async () => {
+        primeQueue(additionalIntentOperation({ amountCents: 3000, paymentIntentId: REISSUE_KEY }));
+        mockPaymentFindUnique.mockResolvedValue(paymentWithAsk(2000, PaymentStatus.SUCCEEDED));
+
+        const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+        expect(result.succeeded).toBe(1);
+        const { planReissuedAskMint } = await import("@/lib/reissued-ask-mint");
+        const plan = planReissuedAskMint({
+          bookingId: "booking-1",
+          recovery: { amountCents: 3000, stripeKey: REISSUE_KEY },
+          payment: { additionalAmountCents: 2000, additionalPaymentStatus: PaymentStatus.SUCCEEDED },
+        });
+        expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ amountCents: 3000, idempotencyKey: REISSUE_KEY, metadata: plan.metadata }),
+        );
+        expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: plan.reason }),
+        );
+      });
+
+      it("MUTATION (round 6): an idempotency_error on the key the door already minted under writes the door's intent rather than failing for ever", async () => {
+        primeQueue(additionalIntentOperation({ amountCents: 3000, paymentIntentId: REISSUE_KEY }));
+        mockPaymentFindUnique.mockResolvedValue(paymentWithAsk(2000, PaymentStatus.SUCCEEDED));
+        mockCreatePaymentIntent.mockRejectedValueOnce(
+          Object.assign(new Error("Keys for idempotent requests can only be used with the same parameters"), { rawType: "idempotency_error" }),
+        );
+        mockFindRecentPaymentIntentByMetadata.mockResolvedValueOnce({ id: "pi_door_minted", amount: 3000, client_secret: "s" });
+
+        const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+        expect(result.succeeded).toBe(1);
+        expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+          expect.objectContaining({ paymentIntentId: "pi_door_minted", amountCents: 3000 }),
         );
       });
 

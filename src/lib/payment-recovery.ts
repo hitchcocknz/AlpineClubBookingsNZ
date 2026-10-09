@@ -41,6 +41,7 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { attachRecoveredIntentToWaitingSupplementaryInvoice } from "@/lib/xero-supplementary-invoice-late-capture";
 import { queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
+import { mintReissuedAskIntent, planReissuedAskMint } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
@@ -2942,21 +2943,38 @@ async function processCreateAdditionalPaymentIntentOperation(
    * that attempt; the review path builds its base fresh at every attempt and has
    * no bare form to preserve.
    */
-  const stripeIdempotencyKey =
-    askCents === operation.amountCents
-      ? operation.paymentIntentId
-      : stripeIdempotencyKeyForAskAmount(operation.paymentIntentId, askCents);
-  const pi = await createPaymentIntent({
-    format,
-    amountCents: askCents,
-    customerId,
-    metadata: {
-      bookingId: operation.bookingId,
-      type: "modification_additional",
-      reason: "modification_additional_recovery",
-    },
-    idempotencyKey: stripeIdempotencyKey,
-  });
+  // #3954 round 6: a RE-ISSUED ask sends the one request its door's mint sends
+  // under the same key (`planReissuedAskMint`), so whichever of the two runs
+  // second is answered with the first's intent, never an `idempotency_error`.
+  const reissuePlan = reissuesReducedAsk
+    ? planReissuedAskMint({
+        bookingId: operation.bookingId,
+        recovery: { amountCents: operation.amountCents, stripeKey: operation.paymentIntentId },
+        payment,
+      })
+    : null;
+  const rowReason = reissuePlan?.reason ?? "modification_additional_recovery";
+  const pi = reissuePlan
+    ? await mintReissuedAskIntent({
+        format,
+        plan: reissuePlan,
+        customerId,
+        recoveryCreatedAt: operation.createdAt,
+      })
+    : await createPaymentIntent({
+        format,
+        amountCents: askCents,
+        customerId,
+        metadata: {
+          bookingId: operation.bookingId,
+          type: "modification_additional",
+          reason: "modification_additional_recovery",
+        },
+        idempotencyKey:
+          askCents === operation.amountCents
+            ? operation.paymentIntentId
+            : stripeIdempotencyKeyForAskAmount(operation.paymentIntentId, askCents),
+      });
 
   // The new intent's row FIRST, then the supersede - see the same ordering and
   // the same reasoning in `createModificationAdditionalPaymentIntent` (#3340
@@ -2984,7 +3002,7 @@ async function processCreateAdditionalPaymentIntentOperation(
       // replay's row carries the provenance the inline mint would have written.
       carriedAskCents: ask.carriedCents,
       status: PaymentStatus.PENDING,
-      reason: "modification_additional_recovery",
+      reason: rowReason,
       stripeCustomerId: customerId,
       store,
     });
