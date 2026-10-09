@@ -414,6 +414,25 @@ describe("#3954: a card-paid booking's reduction is set against its unpaid ask f
     expect(paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment_1" }, data: { changeFeeCents: { increment: 500 } } });
   });
 
+  it("MUTATION (round 6, F4): an INCREASE whose fee the caller records on the amount owed records it once too - a credit-paid finished-stay swap", async () => {
+    const booking = grownBooking({ creditPaid: true });
+    paymentUpdate.mockClear();
+    const result = await applyPaymentAdjustments(tx, {
+      booking, priceDiffCents: 1_000, changeFeeCents: 500, reduction: noReductionAgainstUnpaidAsk(1_500),
+      todayAtClub: TODAY, format: CLUB_FORMAT_TEST, changeFeeRecordedByCaller: true,
+    });
+    expect(result.additionalAsk.amountCents).toBe(6_500);
+    expect(paymentUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { changeFeeCents: { increment: 500 } } }),
+    );
+
+    await applyPaymentAdjustments(tx, {
+      booking, priceDiffCents: 1_000, changeFeeCents: 500, reduction: noReductionAgainstUnpaidAsk(1_500),
+      todayAtClub: TODAY, format: CLUB_FORMAT_TEST,
+    });
+    expect(paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment_1" }, data: { changeFeeCents: { increment: 500 } } });
+  });
+
   it("a fully absorbed reduction needs no card-or-credit choice and raises no Xero note", async () => {
     const booking = grownBooking({ xeroInvoiceId: "INV-3954" });
     const options = await calculateModificationSettlementOptions({

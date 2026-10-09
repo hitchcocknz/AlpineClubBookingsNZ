@@ -410,7 +410,10 @@ export async function applyPaymentAdjustments(
       }
     }
 
-    if (changeFeeCents > 0) {
+    // #3954 x #3750 (round 6): recorded ONCE. A finished-stay correction on a
+    // credit-paid booking records its fee on the amount owed itself
+    // (`recordFinishedStayFeeOwed`) - on an increase as on a reduction.
+    if (changeFeeCents > 0 && !changeFeeRecordedByCaller) {
       await tx.payment.update({
         where: { id: booking.payment.id },
         data: { changeFeeCents: { increment: changeFeeCents } },
