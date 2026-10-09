@@ -3346,22 +3346,32 @@ receipt FAILED unsent -> no note; the repair tool's
   PAID_ANOTHER_WAY_LATE_CAPTURE_WITHOUT_XERO_RECEIPT retries (or queues) it,
   and the note follows
 receipt FAILED after it may have reached Xero (payment linked, or the invoice
-  call attempted) -> left FAILED for an officer, who checks Xero, then retries;
+  call attempted) -> left FAILED for an officer, who checks Xero, then retries,
+  or marks it resolved and records the refund by hand if it is there;
   a close finding it so reports receipt-held-for-officer, never queued (round 9)
 close (receipt on its way: a change invoice) -> waiting key, nothing queued
-  (refund-note-after-failed-receipt when that invoice FAILED, round 9)
+  (refund-note-after-failed-receipt when that invoice FAILED, round 9;
+  receipt-held-for-officer when it FAILED after attempting the call, round 10)
 change invoice sent -> its row SUCCEEDED, then the note step under the
   approval task's row: bank-transfer REFUND_CREDIT_NOTE PENDING
 change invoice FAILED -> an officer's retry puts that row back to PENDING with
   its queued payload (round 9), so it is sent from its own row and the note
-  step follows; never an inline replay on a new row that names no capture
+  step follows; never an inline replay on a new row that names no capture.
+  Round 10: only for a capture an approval task owns; refused (409) when the
+  change already carries an active SUPPLEMENTARY_INVOICE link - mark it
+  resolved, and the receipt is that linked invoice
 note step never ran (receipt in Xero, no note asked) -> the repair tool's
-  PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED queues it through the same step, and
-  the nightly credit reconciliation runs the step for every payment its
-  closes' notes do not cover (round 9)
-change invoice resolved by hand after the close -> no note; the repair tool's
-  report-only PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND names the close's
-  amount to record by hand (round 9)
+  PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED queues it through the same step
+  (round 8), and the nightly credit reconciliation runs the step for every
+  payment its closes' notes do not cover (round 9)
+note FAILED -> Retry in background in Xero Operations; the nightly step
+  returns the existing row and never retries it
+receipt (change invoice or own receipt) resolved by hand after the close,
+  before any note row -> no note; the repair tool's report-only
+  PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND names the close's share its notes
+  do not cover, to record by hand (round 9); not raised once a note row of
+  the close exists (round 10). A row resolved by hand after the app sent it
+  is the app's invoice: recorded against its id, and the note follows
 ```
 
 A close Stripe also paid is listed as paid twice. The treasurer marks it

@@ -1453,12 +1453,21 @@ task's row; it is safe to auto-apply and queues a close's note at most once.
 While a change's invoice for the capture is still on its way to Xero, the tool
 queues no second receipt beside it: the note follows that invoice. If that
 invoice FAILED, retry it from the Xero operations list: since #3924 round 9 the
-retry sends it back through the outbox on its own row, and the note follows. The
-nightly credit reconciliation also re-runs the note step for any payment whose
-closes' notes do not cover what they paid back. If an officer resolved the
-change's invoice by hand after the close, the report-only
-`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's amount and
-record: record that bank-transfer refund by hand in Xero.
+retry sends it back through the outbox on its own row, and the note follows.
+Since round 10 the retry refuses (409) a change invoice whose booking change is
+already linked to its invoice in Xero: mark that operation resolved instead,
+and the receipt is read from the link. A failed change invoice that attempted
+the Xero call may already be in Xero: check Xero first, retry it if it is not
+there, or mark it resolved and record the refund by hand if it is. The nightly
+credit reconciliation also re-runs the note step for any payment whose closes'
+notes do not cover what they paid back; it queues a note that was never
+queued, but a FAILED note needs **Retry in background** in Xero Operations. If
+an officer resolved the capture's receipt by hand after the close - the change
+invoice or the late charge's own receipt - the report-only
+`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's record and the
+share of it no note covers: record that bank-transfer refund by hand in Xero.
+It is not raised once any note row of the close exists, one resolved by hand
+included, so it clears once the officer acts.
 
 **Credit-paid card bookings invoiced before #3836.** A card booking paid
 entirely with account credit was invoiced at its full price, but the credit was

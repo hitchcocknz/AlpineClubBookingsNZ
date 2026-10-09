@@ -465,7 +465,8 @@ export function DeadCardRefundsPanel({
  * so a Stripe refund the treasurer never saw is never marked resolved. A 409
  * shows in the dialog and refreshes the list; if the refresh drops the row the
  * dialog closes and says why, and if the card figure moved it says so. After a
- * success focus moves to the list's status line, which says what was done.
+ * success, or the row dropping (round 10), focus moves to the list's status
+ * line, which says what happened.
  */
 export function CardRefundsPaidTwiceList({ rows }: { rows: CardRefundPaidTwicePanelRow[] }) {
   const canEdit = useAdminAreaEditAccess("finance");
