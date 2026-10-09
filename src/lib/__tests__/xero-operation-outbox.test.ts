@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 const mocks = vi.hoisted(() => ({
   createAuditLog: vi.fn(),
   findFirstLink: vi.fn(),
+  findManyLinks: vi.fn(async () => [] as unknown[]),
   findUniqueBooking: vi.fn(),
   findUniqueMember: vi.fn(),
   findUniqueMemberSubscription: vi.fn(),
@@ -114,6 +115,7 @@ vi.mock("@/lib/prisma", () => {
     },
     xeroObjectLink: {
       findFirst: mocks.findFirstLink,
+      findMany: mocks.findManyLinks,
     },
     xeroSyncOperation: {
       findFirst: mocks.findFirstOperation,
@@ -1703,6 +1705,31 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
     );
   });
 
+  it("MUTATION (#3954 round 6, F5): a scoped side note's link on the same edit never stands in for the edit's own note", async () => {
+    mocks.findManyLinks.mockResolvedValueOnce([
+      { id: "link_billed_offset", metadata: { reviewTaskId: "unpaid-ask-billed-offset" } },
+      { id: "link_give_back", metadata: { reviewTaskId: "applied-credit-give-back" } },
+    ]);
+    await expect(
+      enqueueXeroModificationCreditNoteOperation({ bookingId: "booking_1", refundAmountCents: 3200, bookingModificationId: "mod_1" }),
+    ).resolves.toEqual({
+      queueOperationId: "op_mod_credit_note_1",
+      message: "Xero modification credit note queued for background processing.",
+    });
+
+    // The edit's own note's link still answers it.
+    mocks.findManyLinks.mockResolvedValueOnce([
+      { id: "link_billed_offset", metadata: { reviewTaskId: "unpaid-ask-billed-offset" } },
+      { id: "link_own", metadata: null },
+    ]);
+    await expect(
+      enqueueXeroModificationCreditNoteOperation({ bookingId: "booking_1", refundAmountCents: 3200, bookingModificationId: "mod_1" }),
+    ).resolves.toEqual({
+      queueOperationId: null,
+      message: "Xero modification credit note already linked for this change.",
+    });
+  });
+
   // #3535 (`INV-PAY-017`): the internet-banking hold-expiry release enqueues
   // this note inside its own transaction, anchored on the booking, told it
   // clears an invoice nobody paid.
@@ -1711,11 +1738,11 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
       id: "booking_1",
       payment: { xeroInvoiceId: "inv_existing" },
     });
-    const storeLinkFindFirst = vi.fn().mockResolvedValue(null);
+    const storeLinkFindMany = vi.fn().mockResolvedValue([]);
     const storeOperationFindFirst = vi.fn().mockResolvedValue(null);
     const store = {
       booking: { findUnique: storeBookingFindUnique },
-      xeroObjectLink: { findFirst: storeLinkFindFirst },
+      xeroObjectLink: { findMany: storeLinkFindMany },
       xeroSyncOperation: { findFirst: storeOperationFindFirst },
     } as unknown as Prisma.TransactionClient;
 
@@ -1730,7 +1757,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
     });
 
     expect(storeBookingFindUnique).toHaveBeenCalledTimes(1);
-    expect(storeLinkFindFirst).toHaveBeenCalledWith(
+    expect(storeLinkFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           localModel: "Booking",
@@ -1742,7 +1769,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
     );
     expect(storeOperationFindFirst).toHaveBeenCalledTimes(1);
     expect(mocks.findUniqueBooking).not.toHaveBeenCalled();
-    expect(mocks.findFirstLink).not.toHaveBeenCalled();
+    expect(mocks.findManyLinks).not.toHaveBeenCalled();
     expect(mocks.findFirstOperation).not.toHaveBeenCalled();
     expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1776,7 +1803,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
           payment: { xeroInvoiceId: "inv_existing" },
         }),
       },
-      xeroObjectLink: { findFirst: vi.fn().mockResolvedValue({ id: "link_1" }) },
+      xeroObjectLink: { findMany: vi.fn().mockResolvedValue([{ id: "link_1", metadata: null }]) },
       xeroSyncOperation: { findFirst: vi.fn() },
     } as unknown as Prisma.TransactionClient;
 
@@ -1800,7 +1827,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
           payment: { xeroInvoiceId: "inv_existing" },
         }),
       },
-      xeroObjectLink: { findFirst: vi.fn().mockResolvedValue(null) },
+      xeroObjectLink: { findMany: vi.fn().mockResolvedValue([]) },
       xeroSyncOperation: {
         findFirst: vi.fn().mockResolvedValue({ id: "op_already_queued" }),
       },

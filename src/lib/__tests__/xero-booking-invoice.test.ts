@@ -3443,6 +3443,31 @@ describe("createXeroCreditNoteForModification", () => {
     );
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
   });
+
+  it("MUTATION (#3954 round 6, F5): a billed-offset note waits while the edit's own note is still queued, and is raised once it is not", async () => {
+    mocks.prisma.xeroSyncOperation.findMany.mockResolvedValueOnce([
+      { id: "op_own_note", status: "PENDING", requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE" } },
+    ]);
+    const call = () =>
+      createXeroCreditNoteForModification({
+        format: CLUB_FORMAT_TEST,
+        bookingId: "booking_1",
+        refundAmountCents: 2000,
+        bookingModificationId: "mod_1",
+        reviewTaskId: "unpaid-ask-billed-offset",
+        noteWording: "invoice-correction",
+        syncOperationId: "op_billed_offset",
+      });
+
+    await expect(call()).rejects.toMatchObject({ name: "XeroAppliedCreditOperationBusyError" });
+    expect(mocks.xeroClientInstance.accountingApi.createCreditNotes).not.toHaveBeenCalled();
+
+    // Only scoped notes beside it are left: the edit's own has been raised.
+    mocks.prisma.xeroSyncOperation.findMany.mockResolvedValueOnce([
+      { id: "op_give_back", status: "PENDING", requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE", reviewTaskId: "applied-credit-give-back" } },
+    ]);
+    await expect(call()).resolves.toBe("cn_1");
+  });
 });
 
 describe("createXeroCreditNote", () => {

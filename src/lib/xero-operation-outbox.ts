@@ -99,7 +99,7 @@ import {
   type QueuedOutboxExpectedOperation,
   type QueuedOutboxPayload,
 } from "@/lib/xero-operation-outbox-payload";
-import { queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
+import { linkReviewTaskId, queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import {
   OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES,
   waitingSupplementaryInvoiceOperationsWhere,
@@ -2166,18 +2166,23 @@ export async function enqueueXeroModificationCreditNoteOperation(
   // An edit's own note: one per anchor, so a link already there answers it. A
   // review task's share is one of possibly several on that anchor, so its own
   // key - including a SUCCEEDED row - is what answers it instead (#3791).
+  // #3954 round 6: and only the edit's OWN note's link answers it - a scoped
+  // side note's (a give-back, a billed offset) beside it on the same anchor
+  // records its scope on the link and never stands in for the edit's own.
   const existingLink = reviewTaskId
     ? null
-    : await db.xeroObjectLink.findFirst({
-        where: {
-          localModel,
-          localId,
-          xeroObjectType: "CREDIT_NOTE",
-          role: "MODIFICATION_CREDIT_NOTE",
-          active: true,
-        },
-        select: { id: true },
-      });
+    : (
+        await db.xeroObjectLink.findMany({
+          where: {
+            localModel,
+            localId,
+            xeroObjectType: "CREDIT_NOTE",
+            role: "MODIFICATION_CREDIT_NOTE",
+            active: true,
+          },
+          select: { id: true, metadata: true },
+        })
+      ).find((link) => !linkReviewTaskId(link)) ?? null;
 
   if (existingLink) {
     return {

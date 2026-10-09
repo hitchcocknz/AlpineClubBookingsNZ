@@ -40,7 +40,7 @@ import {
 } from "@/lib/xero-refund-method";
 import { resolveModificationDocumentLineItems } from "@/lib/xero-modification-line-items";
 import { XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
-import { reviewTaskKeyParts } from "@/lib/xero-review-task-key";
+import { isUnpaidAskBilledOffsetNoteScope, queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import {
   findUnconvergedAppliedCreditDeallocation,
   needsOperatorXeroRetry,
@@ -150,6 +150,19 @@ export async function createXeroCreditNoteForModification(params: {
       );
       if (syncOperationId) await failXeroSyncOperation(syncOperationId, failed);
       throw failed;
+    }
+  }
+
+  // #3954 round 6: a reduction's billed-offset note is raised AFTER the edit's
+  // own note on the same anchor, never before it: while that note is still
+  // queued or running, this one waits and the outbox returns it to PENDING.
+  if (bookingModificationId && isUnpaidAskBilledOffsetNoteScope(reviewTaskId)) {
+    const ownNote = await findQueuedOwnModificationNote(bookingModificationId);
+    if (ownNote) {
+      throw new XeroAppliedCreditOperationBusyError(
+        `Billed-offset credit note waits for modification ${bookingModificationId}'s own credit note ${ownNote.id} (${ownNote.status})`,
+        ownNote.status,
+      );
     }
   }
 
@@ -444,4 +457,23 @@ export async function createXeroCreditNoteForModification(params: {
     await failXeroSyncOperation(operationId!, error);
     throw error;
   }
+}
+
+/** The edit's OWN (unscoped) modification credit note, while it is still queued or running (#3954 round 6). */
+async function findQueuedOwnModificationNote(
+  bookingModificationId: string,
+): Promise<{ id: string; status: string } | null> {
+  const operations = await prisma.xeroSyncOperation.findMany({
+    where: {
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "BookingModification",
+      localId: bookingModificationId,
+      queueType: XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
+      status: { in: ["PENDING", "RUNNING"] },
+    },
+    select: { id: true, status: true, requestPayload: true },
+  });
+  return operations.find((operation) => !queuedReviewTaskId(operation)) ?? null;
 }
