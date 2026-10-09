@@ -33,6 +33,10 @@ const mocks = vi.hoisted(() => ({
   createUnappliedXeroCreditNoteForModification: vi.fn(),
   createXeroCreditNoteForModification: vi.fn(),
   findManyXeroObjectLink: vi.fn().mockResolvedValue([]),
+  // #3924 round 10: a late charge's change invoice is told by its approval
+  // task, and one already linked in Xero is refused.
+  findUniqueManualRefundTask: vi.fn().mockResolvedValue(null),
+  findFirstXeroObjectLink: vi.fn().mockResolvedValue(null),
   // #3548: the one read-back-then-settle the repair leg hands a note to.
   finishRefundCreditNoteSettlement: vi.fn().mockResolvedValue({ refundPaymentErr: null }),
   allocateCreditNoteToInvoice: vi.fn(),
@@ -72,6 +76,10 @@ vi.mock("@/lib/prisma", () => ({
     // #3535: a PARTIAL clearing note's repair skips targets already allocated.
     xeroObjectLink: {
       findMany: mocks.findManyXeroObjectLink,
+      findFirst: mocks.findFirstXeroObjectLink,
+    },
+    manualRefundTask: {
+      findUnique: mocks.findUniqueManualRefundTask,
     },
   },
 }));
@@ -2550,9 +2558,14 @@ describe("retryXeroSyncOperation", () => {
     });
     mocks.findUniqueOperation.mockResolvedValue(operation);
     mocks.updateManyOperation.mockResolvedValue({ count: 1 });
+    mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ id: "task_late" });
 
     await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).resolves.toEqual({
       message: "Queued the late card charge's change invoice for retry.",
+    });
+    expect(mocks.findUniqueManualRefundTask).toHaveBeenCalledWith({
+      where: { lateCaptureApprovalIntentId: "pi_late" },
+      select: { id: true },
     });
     expect(mocks.updateManyOperation).toHaveBeenCalledWith({
       where: { id: "op_123", status: "FAILED", manuallyResolvedAt: null },
@@ -2560,6 +2573,85 @@ describe("retryXeroSyncOperation", () => {
       data: expect.objectContaining({ status: "PENDING", requestPayload: queued }),
     });
     expect(mocks.createXeroSupplementaryInvoice).not.toHaveBeenCalled();
+  });
+
+  // #3924 round 10 (finding 2): one whose change is already linked to its
+  // invoice in Xero is never sent again.
+  it("MUTATION: round 10: refuses with a 409 a late charge's change invoice already linked in Xero, and says to mark it resolved", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        status: "FAILED",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: "mod_123",
+        queueType: "SUPPLEMENTARY_INVOICE",
+        requestPayload: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          bookingId: "book_123",
+          priceDiffCents: 3000,
+          changeFeeCents: 0,
+          bookingModificationId: "mod_123",
+          recordPayment: true,
+          paymentIntentId: "pi_late",
+        },
+      }),
+    );
+    mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ id: "task_late" });
+    mocks.findFirstXeroObjectLink.mockResolvedValueOnce({ id: "link_1" });
+
+    const refused = retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    await expect(refused).rejects.toBeInstanceOf(XeroOperationRetryError);
+    await expect(refused).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("Mark this operation resolved as fixed in Xero instead"),
+    });
+    expect(mocks.findFirstXeroObjectLink).toHaveBeenCalledWith({
+      where: {
+        localModel: "BookingModification",
+        localId: "mod_123",
+        xeroObjectType: "INVOICE",
+        role: "SUPPLEMENTARY_INVOICE",
+        active: true,
+      },
+      select: { id: true },
+    });
+    expect(mocks.updateManyOperation).not.toHaveBeenCalled();
+    expect(mocks.createXeroSupplementaryInvoice).not.toHaveBeenCalled();
+  });
+
+  // #3924 round 10 (finding 3): an ordinary card edit's invoice names its
+  // `paymentIntentId` too, but no approval task owns it: the inline replay.
+  it("MUTATION: round 10: an ordinary card edit's FAILED invoice - an intent no approval task owns - keeps the inline replay", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        status: "FAILED",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: "mod_123",
+        queueType: "SUPPLEMENTARY_INVOICE",
+        requestPayload: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          bookingId: "book_123",
+          priceDiffCents: 3000,
+          changeFeeCents: 0,
+          bookingModificationId: "mod_123",
+          recordPayment: true,
+          paymentIntentId: "pi_card_edit",
+        },
+      }),
+    );
+    mocks.findUniqueBookingModification.mockResolvedValue({ bookingId: "book_123", priceDiffCents: 3000, changeFeeCents: 0 });
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    expect(mocks.findUniqueManualRefundTask).toHaveBeenCalledWith({
+      where: { lateCaptureApprovalIntentId: "pi_card_edit" },
+      select: { id: true },
+    });
+    expect(mocks.createXeroSupplementaryInvoice).toHaveBeenCalledTimes(1);
+    expect(mocks.updateManyOperation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "PENDING" }) }),
+    );
   });
 
   it("replays a change invoice that names no late charge inline, as before", async () => {

@@ -74,6 +74,7 @@ import { findLateCaptureRefundPaidAnotherWay } from "@/lib/late-capture-paid-ano
 import {
   KEPT_INVOICE_CREATE,
   findLiveKeptReceiptRow,
+  keptReceiptHeldForOfficer,
   readFailedKeptReceiptLinks,
 } from "@/lib/kept-late-capture-receipt-rows";
 import {
@@ -190,14 +191,10 @@ export async function enqueueXeroKeptLateCaptureInvoiceOperation(params: {
   }
   const live = await findLiveKeptReceiptRow(db, params.manualRefundTaskId);
   if (live && params.requeueFailedUnsent && live.status === "FAILED" && live.manuallyResolvedAt === null) {
-    const { invoiceLinked, mayHaveReachedXero } = await readFailedKeptReceiptLinks(
-      db,
-      params.manualRefundTaskId,
-      live.requestPayload,
-    );
-    if (!invoiceLinked && mayHaveReachedXero) {
+    if (await keptReceiptHeldForOfficer(db, params.manualRefundTaskId)) {
       // #3924 round 9: the row is left FAILED, and the caller is told so - it
-      // is not queued, and its note waits for the officer's retry.
+      // is not queued, and its note waits for the officer's retry. Round 10:
+      // the one fact the close's plan reads too (`INV-SSOT`).
       return {
         queueOperationId: live.id,
         awaitingOfficerRetry: true,
@@ -205,6 +202,7 @@ export async function enqueueXeroKeptLateCaptureInvoiceOperation(params: {
           "The Xero invoice for this payment failed after it may have reached Xero, so it is not run again automatically. Check Xero, then retry it from the Xero operations list.",
       };
     }
+    const { invoiceLinked } = await readFailedKeptReceiptLinks(db, params.manualRefundTaskId, live.requestPayload);
     if (!invoiceLinked) {
       // Status-guarded: only the FAILED row this read found goes back to run.
       const requeued = await db.xeroSyncOperation.updateMany({

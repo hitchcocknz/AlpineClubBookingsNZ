@@ -149,8 +149,9 @@ export function DeadCardRefundsPanel({
   const [listNotice, setListNotice] = useState("");
   // Round 8 (UX): after a close the row is gone, so focus goes to the list's
   // status line, which says what happened, instead of to a vanished button.
+  // Round 10: so too when the dialog closes because its row vanished - any
+  // close that leaves a notice, since opening the dialog clears it.
   const listNoticeRef = useRef<HTMLParagraphElement>(null);
-  const focusNoticeOnClose = useRef(false);
   const shown = useShownOnceItHadRows(rows.length);
 
   const target = targetId === null ? null : (rows.find((row) => row.operationId === targetId) ?? null);
@@ -254,7 +255,6 @@ export function DeadCardRefundsPanel({
             )} is no longer owed.`;
       toast.success(`${recorded} ${xeroQueuedMessage(data.xeroQueued, bankNoteWording)}`);
       setListNotice(`The card refund for booking ${target.bookingReference} was closed as paid another way.`);
-      focusNoticeOnClose.current = true;
       close();
       router.refresh();
     } catch {
@@ -325,8 +325,7 @@ export function DeadCardRefundsPanel({
           <DialogContent
             className="max-h-[90vh] overflow-y-auto"
             onCloseAutoFocus={(event) => {
-              if (!focusNoticeOnClose.current) return;
-              focusNoticeOnClose.current = false;
+              if (listNotice === "") return;
               event.preventDefault();
               listNoticeRef.current?.focus();
             }}
@@ -486,8 +485,9 @@ export function CardRefundsPaidTwiceList({ rows }: { rows: CardRefundPaidTwicePa
   const [error, setError] = useState("");
   const [errorAttention, setErrorAttention] = useState(0);
   const [listNotice, setListNotice] = useState("");
+  // Round 10: focus goes to the status line on any close that leaves a notice
+  // - a success, or the row vanishing under the dialog.
   const listNoticeRef = useRef<HTMLParagraphElement>(null);
-  const focusNoticeOnClose = useRef(false);
   const shown = useShownOnceItHadRows(rows.length);
 
   const target = targetId === null ? null : (rows.find((row) => row.operationId === targetId) ?? null);
@@ -540,7 +540,6 @@ export function CardRefundsPaidTwiceList({ rows }: { rows: CardRefundPaidTwicePa
       }
       toast.success(`Marked resolved. Booking ${target.bookingReference} has left the list, and your note is in the audit log.`);
       setListNotice(`Booking ${target.bookingReference} was marked resolved.`);
-      focusNoticeOnClose.current = true;
       setTargetId(null);
       router.refresh();
     } catch {
@@ -608,8 +607,7 @@ export function CardRefundsPaidTwiceList({ rows }: { rows: CardRefundPaidTwicePa
           <DialogContent
             className="max-h-[90vh] overflow-y-auto"
             onCloseAutoFocus={(event) => {
-              if (!focusNoticeOnClose.current) return;
-              focusNoticeOnClose.current = false;
+              if (listNotice === "") return;
               event.preventDefault();
               listNoticeRef.current?.focus();
             }}

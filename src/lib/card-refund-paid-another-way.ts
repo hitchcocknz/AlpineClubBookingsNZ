@@ -652,7 +652,10 @@ export async function closeCardRefundPaidAnotherWay(
     };
   });
 
-  if (result.xeroQueued !== "nothing") {
+  // Round 10: only a close that queued a row - its note, or the receipt its
+  // note follows - kicks the outbox; a close whose note waits on another
+  // invoice, or on an officer, queued nothing to run.
+  if (result.xeroQueued === "refund-note" || result.xeroQueued === "receipt-then-refund-note") {
     // The note's (or the receipt's) row committed with the close: only the kick is left.
     await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((error: unknown) =>
       logger.error({ err: error, operationId: result.operationId }, "Failed to kick the Xero outbox after a paid-another-way close"),

@@ -8,9 +8,9 @@ import {
 import { XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 
 /**
- * #3635 / #3924 round 9: THE ROWS OF A LATE CAPTURE'S RECEIPT - the one where
- * shape of its kept-capture invoice rows, which row counts as asked for, and
- * whether a FAILED one is held for an officer. Read by the receipt's enqueue
+ * #3635 / #3924 round 9: THE ROWS OF A LATE CAPTURE'S RECEIPT - the one
+ * `where` shape of its kept-capture invoice rows, which row counts as asked
+ * for, and whether a FAILED one is held for an officer. Read by the receipt's enqueue
  * and worker (`xero-kept-late-capture-invoice.ts`) and by a paid-another-way
  * close's plan (`card-refund-paid-another-way-xero.ts`), so the dialog and the
  * close read one fact (`INV-SSOT`).

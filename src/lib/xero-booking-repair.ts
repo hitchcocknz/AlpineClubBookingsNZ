@@ -74,8 +74,9 @@ async function withPaidAnotherWayCloses(
       task.paidAnotherWayClose = {
         ...close,
         receiptState,
-        // Round 9: named in the club's format by the record-by-hand finding.
-        ...(receiptState.close ? { amountLabel: formatCents(receiptState.close.amountCents, format) } : {}),
+        // Round 9: named in the club's format by the record-by-hand finding;
+        // round 10: the close's share its own notes do not yet cover.
+        ...(receiptState.close ? { amountLabel: formatCents(receiptState.close.uncoveredCents, format) } : {}),
       };
     }
   }

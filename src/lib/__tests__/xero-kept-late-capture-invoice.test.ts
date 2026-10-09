@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   operationFindMany: vi.fn(),
   operationUpdate: vi.fn(),
   operationUpdateMany: vi.fn(),
+  operationCount: vi.fn(),
   taskFindUnique: vi.fn(),
   taskFindMany: vi.fn(),
   transactionFindFirst: vi.fn(),
@@ -33,6 +34,7 @@ const db = vi.hoisted(() => {
       findMany: (...a: unknown[]) => mocks.operationFindMany(...a),
       update: (...a: unknown[]) => mocks.operationUpdate(...a),
       updateMany: (...a: unknown[]) => mocks.operationUpdateMany(...a),
+      count: (...a: unknown[]) => mocks.operationCount(...a),
     },
     manualRefundTask: {
       findUnique: (...a: unknown[]) => mocks.taskFindUnique(...a),
@@ -172,6 +174,7 @@ beforeEach(() => {
   mocks.createXeroPaymentForInvoice.mockResolvedValue("pay_kept");
   mocks.creditBackLateCaptureRefunds.mockResolvedValue(undefined);
   mocks.findClose.mockResolvedValue(null);
+  mocks.operationCount.mockResolvedValue(0);
   mocks.upsertLink.mockResolvedValue({});
   mocks.noteClose.mockResolvedValue(null);
   mocks.getResolvedAccountMapping.mockResolvedValue({
@@ -639,6 +642,29 @@ describe("queueWaitingPaidAnotherWayNotesForPayment", () => {
     // Each read and queue under the task's row lock.
     expect(mocks.executeRaw).toHaveBeenCalledTimes(2);
     expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.readReceipt.mock.invocationCallOrder[0]);
+  });
+
+  // Round 10: the count is of notes queued NOW - a close whose note row was
+  // asked for before, read under the same lock, is not counted again.
+  it("MUTATION: round 10: counts only notes it queued now, never a close's note row asked for before", async () => {
+    mocks.taskFindMany.mockResolvedValue([{ lateCaptureApprovalIntentId: "pi_kept" }]);
+    mocks.findClose.mockResolvedValue({ id: "close-1", paymentId: "pay_1" });
+    mocks.noteClose.mockResolvedValue("op_note");
+    mocks.operationCount.mockResolvedValue(1);
+    await expect(queueWaitingPaidAnotherWayNotesForPayment("pay_1")).resolves.toBe(0);
+    expect(mocks.operationCount).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        entityType: "CREDIT_NOTE",
+        localId: "pay_1",
+        requestPayload: { path: ["paidAnotherWayTaskId"], equals: "close-1" },
+        status: { not: "CANCELLED" },
+      }),
+    });
+    // Asked under the task's row lock, before the step.
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.operationCount.mock.invocationCallOrder[0]);
+    expect(mocks.operationCount.mock.invocationCallOrder[0]).toBeLessThan(mocks.noteClose.mock.invocationCallOrder[0]);
+    mocks.operationCount.mockResolvedValue(0);
+    await expect(queueWaitingPaidAnotherWayNotesForPayment("pay_1")).resolves.toBe(1);
   });
 
   it("nothing for a payment with no approved late capture", async () => {

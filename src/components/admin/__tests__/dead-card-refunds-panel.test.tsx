@@ -302,23 +302,21 @@ describe("the Paid another way dialog", () => {
   });
 
   // #3924 round 9: a receipt only an officer's retry sends is never said to
-  // be on its way, before or after the close.
+  // be on its way, before or after the close. Round 10: a record that may
+  // already be in Xero is checked first, and if it is there it is marked
+  // resolved and this refund recorded by hand - never retried blind.
+  const HELD =
+    "This late card charge's Xero record (its change invoice or its own receipt) failed and may already be in Xero, so check Xero first. If it is not there, retry it from the Xero operations list, and ";
+  const HELD_END = ". If it is already in Xero, mark it resolved as fixed in Xero and record this refund by hand.";
+  const FAILED = "This late card charge's invoice failed before it reached Xero. Retry it from the Xero operations list, and ";
   it.each([
-    [
-      "after-receipt-held-for-officer",
-      "receipt-held-for-officer",
-      "This late card charge's Xero record failed and may already be in Xero: check Xero, then retry it from the Xero operations list",
-    ],
-    [
-      "after-receipt-failed",
-      "refund-note-after-failed-receipt",
-      "This late card charge's invoice failed to reach Xero: retry it from the Xero operations list",
-    ],
-  ] as const)("MUTATION: round 9: %s - the dialog and the message say an officer's retry is needed, and the note follows it", async (promise, queued, instruction) => {
+    ["after-receipt-held-for-officer", "receipt-held-for-officer", HELD, HELD_END],
+    ["after-receipt-failed", "refund-note-after-failed-receipt", FAILED, "."],
+  ] as const)("MUTATION: rounds 9-10: %s - the dialog and the message say what the officer does, and the note follows a retry", async (promise, queued, instruction, end) => {
     openDialog(row({ xeroRefundNote: promise }));
     expect(
       screen.getByText(
-        `${instruction}. Closing this does not send it. Once it is in Xero, a Xero refund credit note for the amount, worded "${BANK_NOTE_WORDING}", is queued against it.`,
+        `Closing this does not send the late card charge's Xero record. ${instruction}once it is in Xero a Xero refund credit note for the amount, worded "${BANK_NOTE_WORDING}", is queued against it${end}`,
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/on its way/)).not.toBeInTheDocument();
@@ -328,7 +326,7 @@ describe("the Paid another way dialog", () => {
     fireEvent.click(closeButton());
     await waitFor(() =>
       expect(mocks.toastSuccess).toHaveBeenCalledWith(
-        `Closed. $150.00 recorded as paid back in full. ${instruction}; its refund credit note, worded "${BANK_NOTE_WORDING}", follows.`,
+        `Closed. $150.00 recorded as paid back in full. ${instruction}its refund credit note, worded "${BANK_NOTE_WORDING}", follows${end}`,
       ),
     );
   });
@@ -420,14 +418,17 @@ describe("#3924 round 5 (UX F1): the dialog reads its refund from the list, so a
     );
   });
 
-  it("MUTATION: the refund left the list: the dialog closes and the page says why", () => {
+  it("MUTATION: the refund left the list: the dialog closes, the page says why, and focus moves to that status line", async () => {
     const { rerender } = openDialog();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
 
     rerender(<DeadCardRefundsPanel rows={[]} bankNoteWording={BANK_NOTE_WORDING} />);
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText(/That card refund is no longer waiting to be closed/)).toHaveAttribute("role", "status");
+    const notice = screen.getByText(/That card refund is no longer waiting to be closed/);
+    expect(notice).toHaveAttribute("role", "status");
+    // Round 10: never left on a vanished dialog's button.
+    await waitFor(() => expect(document.activeElement).toBe(notice));
   });
 });
 
@@ -567,7 +568,10 @@ describe("marking a paid-twice row Resolved", () => {
 
     rerender(<CardRefundsPaidTwiceList rows={[]} />);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText(/That card refund is no longer on this list/)).toHaveAttribute("role", "status");
+    const notice = screen.getByText(/That card refund is no longer on this list/);
+    expect(notice).toHaveAttribute("role", "status");
+    // Round 10: focus moves to the status line that says why.
+    await waitFor(() => expect(document.activeElement).toBe(notice));
   });
 
   it("a finance viewer without edit sees the row and the banner, and cannot open it", () => {

@@ -4,7 +4,8 @@ const mocks = vi.hoisted(() => ({
   taskFindUnique: vi.fn(),
   taskFindMany: vi.fn(),
   linkFindFirst: vi.fn(),
-  operationCount: vi.fn(),
+  changeLinkFindFirst: vi.fn(),
+  keptResolvedFindMany: vi.fn(),
   operationFindMany: vi.fn(),
 }));
 
@@ -15,11 +16,15 @@ vi.mock("@/lib/prisma", () => ({
       findMany: (...a: unknown[]) => mocks.taskFindMany(...a),
     },
     xeroObjectLink: {
-      findFirst: (...a: unknown[]) => mocks.linkFindFirst(...a),
+      // Round 10: a change's own invoice link is asked apart from the task's.
+      findFirst: (args: { where: { role?: string } }) =>
+        args.where.role === "SUPPLEMENTARY_INVOICE" ? mocks.changeLinkFindFirst(args) : mocks.linkFindFirst(args),
     },
     xeroSyncOperation: {
-      count: (...a: unknown[]) => mocks.operationCount(...a),
-      findMany: (...a: unknown[]) => mocks.operationFindMany(...a),
+      findMany: (args: { where: { queueType?: string } }) =>
+        args.where.queueType === "KEPT_LATE_CAPTURE_INVOICE"
+          ? mocks.keptResolvedFindMany(args)
+          : mocks.operationFindMany(args),
     },
   },
 }));
@@ -42,7 +47,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.taskFindUnique.mockResolvedValue({ id: "task_kept" });
   mocks.linkFindFirst.mockResolvedValue(null);
-  mocks.operationCount.mockResolvedValue(0);
+  mocks.changeLinkFindFirst.mockResolvedValue(null);
+  mocks.keptResolvedFindMany.mockResolvedValue([]);
   mocks.operationFindMany.mockResolvedValue([]);
   mocks.taskFindMany.mockResolvedValue([{ id: "task_kept" }]);
 });
@@ -68,10 +74,10 @@ describe("readLateCaptureXeroReceipt", () => {
   });
 
   it("is resolved by hand once an officer recorded the kept invoice and resolved it in Xero, so no automatic note is owed", async () => {
-    mocks.operationCount.mockResolvedValue(1);
+    mocks.keptResolvedFindMany.mockResolvedValue([{ xeroObjectId: null }]);
     await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "resolved-by-hand" });
     await expect(hasXeroReceiptForLateCapture("pi_late")).resolves.toBe(false);
-    expect(mocks.operationCount).toHaveBeenCalledWith({
+    expect(mocks.keptResolvedFindMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
         localModel: "ManualRefundTask",
         localId: "task_kept",
@@ -79,7 +85,42 @@ describe("readLateCaptureXeroReceipt", () => {
         status: { not: "CANCELLED" },
         manuallyResolvedAt: { not: null },
       }),
+      select: { xeroObjectId: true },
     });
+  });
+
+  // #3924 round 10 (finding 1): a row resolved by hand AFTER the app sent
+  // it is the app's own invoice in Xero, so a refund of it is noted against
+  // that id - the kept receipt's row, and a change's.
+  it("MUTATION: round 10: a row resolved by hand after the app sent it is recorded against its invoice id", async () => {
+    mocks.keptResolvedFindMany.mockResolvedValue([{ xeroObjectId: "inv_kept" }]);
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_kept" });
+    mocks.keptResolvedFindMany.mockResolvedValue([]);
+    // PARTIAL (its payment failed) and then resolved by hand.
+    mocks.operationFindMany.mockResolvedValue([
+      { status: "PARTIAL", xeroObjectId: "inv_change", manuallyResolvedAt: new Date("2026-06-20T00:00:00Z") },
+    ]);
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_change" });
+  });
+
+  // #3924 round 10 (finding 2): a change whose invoice is linked in Xero is
+  // recorded against the link, though its row failed after it.
+  it("MUTATION: round 10: a change's active SUPPLEMENTARY_INVOICE link is the receipt", async () => {
+    mocks.operationFindMany.mockResolvedValue([
+      { status: "FAILED", xeroObjectId: null, manuallyResolvedAt: null, localModel: "BookingModification", localId: "mod_1" },
+    ]);
+    mocks.changeLinkFindFirst.mockResolvedValue({ xeroObjectId: "inv_linked" });
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_linked" });
+    expect(mocks.changeLinkFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ localModel: "BookingModification", localId: "mod_1" }],
+          xeroObjectType: "INVOICE",
+          role: "SUPPLEMENTARY_INVOICE",
+          active: true,
+        }),
+      }),
+    );
   });
 
   it("is recorded for the change's supplementary invoice released for this intent, naming it once sent, never a waiting or withdrawn one", async () => {
@@ -127,6 +168,20 @@ describe("readLateCaptureXeroReceipt", () => {
     await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: null });
     mocks.operationFindMany.mockResolvedValue([failed, { status: "SUCCEEDED", xeroObjectId: "inv_change", manuallyResolvedAt: null }]);
     await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_change" });
+  });
+
+  // #3924 round 10 (finding 2): a FAILED change invoice that attempted
+  // `createInvoices` may be in Xero, so an officer checks Xero first.
+  it("MUTATION: round 10: a FAILED change invoice whose payload carries the attempted invoices may be in Xero", async () => {
+    mocks.operationFindMany.mockResolvedValue([
+      { status: "FAILED", xeroObjectId: null, manuallyResolvedAt: null, requestPayload: { invoices: [{}] } },
+    ]);
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({
+      kind: "recorded",
+      invoiceId: null,
+      invoiceFailed: true,
+      invoiceMayBeInXero: true,
+    });
   });
 });
 

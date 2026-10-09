@@ -32,9 +32,11 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   // close's receipt is in Xero - a change's invoice sent after the close, or
   // a receipt row that failed after its link - and its note was never queued.
   "PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED",
-  // #3924 round 9: that close's receipt - a change's invoice - was resolved by
-  // hand in Xero after the close, so the app raises no note for it; an officer
-  // records the close's bank-transfer refund by hand too. Report-only.
+  // #3924 round 9: that close's receipt - the change invoice or the late
+  // charge's own receipt - was resolved by hand in Xero after the close, so
+  // the app raises no note for it; an officer records by hand the share of
+  // the close's bank-transfer refund its own notes do not cover. Report-only;
+  // not raised once any note row of the close exists (round 10).
   "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
   "BLOCKED_BY_XERO_OPERATION",
   "XERO_LINK_MISMATCH",
@@ -505,7 +507,8 @@ export interface BookingClassificationContext {
         receiptState?: PaidAnotherWayReceiptState;
         /**
          * #3924 round 9: the close's amount in the club's format, for the
-         * report-only finding that asks an officer to record it by hand.
+         * report-only finding that asks an officer to record it by hand -
+         * round 10: its share its own notes do not yet cover.
          */
         amountLabel?: string;
       };

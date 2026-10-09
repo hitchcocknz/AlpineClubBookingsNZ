@@ -63,6 +63,9 @@ export type PaidAnotherWayXeroPlan =
        * #3924 round 9: the receipt the close would queue is a FAILED row that
        * may already be in Xero (`keptReceiptHeldForOfficer`): the close leaves
        * it for an officer to check Xero and retry, and the note follows that.
+       * Round 10: also, with `receipt: null`, a change's FAILED invoice that
+       * attempted `createInvoices` (`invoiceMayBeInXero`) - the same check of
+       * Xero comes first.
        */
       receiptHeldForOfficer?: true;
     };
@@ -73,7 +76,8 @@ export type PaidAnotherWayXeroPlan =
  * queues, since the treasurer reads different words for each. Round 9: and a
  * receipt that will not reach Xero until an officer retries it - a change's
  * invoice that FAILED (`after-receipt-failed`), or a receipt row that failed
- * after it may have reached Xero (`after-receipt-held-for-officer`).
+ * after it may have reached Xero (`after-receipt-held-for-officer`; round 10:
+ * or a change's invoice that did).
  */
 export type PaidAnotherWayXeroPromise =
   | PaidAnotherWayXeroNote
@@ -83,8 +87,9 @@ export type PaidAnotherWayXeroPromise =
 
 export function paidAnotherWayXeroPromise(plan: PaidAnotherWayXeroPlan): PaidAnotherWayXeroPromise {
   if (plan.xeroRefundNote !== "after-receipt") return plan.xeroRefundNote;
+  if (plan.receiptHeldForOfficer) return "after-receipt-held-for-officer";
   if (plan.receipt === null) return plan.receiptFailed ? "after-receipt-failed" : "after-receipt-on-its-way";
-  return plan.receiptHeldForOfficer ? "after-receipt-held-for-officer" : "after-receipt";
+  return "after-receipt";
 }
 
 /**
@@ -148,9 +153,11 @@ export async function paidAnotherWayXeroPlan(
   if (receipt.kind === "recorded") {
     if (receipt.invoiceId !== null) return { xeroRefundNote: "now", creditsInvoiceId: receipt.invoiceId };
     if (!task) return { xeroRefundNote: "none" };
-    return receipt.invoiceFailed
-      ? { xeroRefundNote: "after-receipt", receipt: null, receiptFailed: true }
-      : { xeroRefundNote: "after-receipt", receipt: null };
+    if (!receipt.invoiceFailed) return { xeroRefundNote: "after-receipt", receipt: null };
+    // Round 10: a failed change invoice that may be in Xero is checked first.
+    return receipt.invoiceMayBeInXero
+      ? { xeroRefundNote: "after-receipt", receipt: null, receiptFailed: true, receiptHeldForOfficer: true }
+      : { xeroRefundNote: "after-receipt", receipt: null, receiptFailed: true };
   }
   if (receipt.kind === "resolved-by-hand" || !task) return { xeroRefundNote: "none" };
   const capture = await db.paymentTransaction.findFirst({
@@ -199,8 +206,9 @@ export class PaidAnotherWayXeroChangedError extends Error {
  * Xero only through an officer's retry - a change's invoice that FAILED
  * (`refund-note-after-failed-receipt`), or the late charge's own receipt row,
  * which failed after it may have reached Xero and which the close left FAILED
- * for an officer to check Xero first (`receipt-held-for-officer`). Neither is a
- * queued receipt.
+ * for an officer to check Xero first (`receipt-held-for-officer`; round 10:
+ * also a change's FAILED invoice that may be in Xero). Neither is a queued
+ * receipt.
  */
 export type PaidAnotherWayXeroQueued =
   | "refund-note"
@@ -216,10 +224,10 @@ export type PaidAnotherWayXeroQueued =
  */
 export function paidAnotherWayXeroAuditFollowUp(queued: PaidAnotherWayXeroQueued): string {
   if (queued === "receipt-held-for-officer") {
-    return `. ${paidAnotherWayReceiptRetryInstruction("held-for-officer")}; the refund note follows.`;
+    return `. ${paidAnotherWayReceiptRetryInstruction("held-for-officer", "the refund note follows")}`;
   }
   if (queued === "refund-note-after-failed-receipt") {
-    return `. ${paidAnotherWayReceiptRetryInstruction("failed")}; the refund note follows.`;
+    return `. ${paidAnotherWayReceiptRetryInstruction("failed", "the refund note follows")}`;
   }
   return "";
 }
@@ -272,7 +280,12 @@ export async function queuePaidAnotherWayXero(
     return queued.queueOperationId !== null ? "refund-note" : "nothing";
   }
   if (plan.xeroRefundNote === "none") return "nothing";
-  if (plan.receipt === null) return plan.receiptFailed ? "refund-note-after-failed-receipt" : "refund-note-after-receipt";
+  if (plan.receipt === null) {
+    // Round 10: a failed change invoice that may be in Xero waits on an
+    // officer's check of Xero, as a held receipt row does.
+    if (plan.receiptHeldForOfficer) return "receipt-held-for-officer";
+    return plan.receiptFailed ? "refund-note-after-failed-receipt" : "refund-note-after-receipt";
+  }
   const queued = await enqueueXeroKeptLateCaptureInvoiceOperation({
     manualRefundTaskId: plan.receipt.manualRefundTaskId,
     bookingId: close.bookingId,

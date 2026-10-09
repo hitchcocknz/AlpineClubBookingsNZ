@@ -134,12 +134,22 @@ export function keptReceiptMayHaveReachedXero(input: {
   requestPayload: unknown;
   paymentLinked: boolean;
 }): boolean {
-  if (input.paymentLinked) return true;
-  const payload = input.requestPayload;
+  return input.paymentLinked || xeroCreateCallAttempted(input.requestPayload);
+}
+
+/**
+ * #3924 round 10: DID THIS INVOICE ROW ATTEMPT `createInvoices`? The kept
+ * receipt's worker and a change's supplementary invoice worker
+ * (`createXeroSupplementaryInvoice`) both write the invoice they are about to
+ * send onto the row (`invoices`, beside the queued payload) before they call
+ * Xero, so a FAILED row carrying it may be in Xero though the app never
+ * linked it. The one spelling of that test.
+ */
+export function xeroCreateCallAttempted(requestPayload: unknown): boolean {
   return (
-    typeof payload === "object" &&
-    payload !== null &&
-    !Array.isArray(payload) &&
-    Array.isArray((payload as Record<string, unknown>).invoices)
+    typeof requestPayload === "object" &&
+    requestPayload !== null &&
+    !Array.isArray(requestPayload) &&
+    Array.isArray((requestPayload as Record<string, unknown>).invoices)
   );
 }

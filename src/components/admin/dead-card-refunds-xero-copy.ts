@@ -28,8 +28,9 @@ export function xeroRefundNotePromise(xeroRefundNote: PaidAnotherWayXeroPromise,
   if (xeroRefundNote === "after-receipt-failed" || xeroRefundNote === "after-receipt-held-for-officer") {
     const instruction = paidAnotherWayReceiptRetryInstruction(
       xeroRefundNote === "after-receipt-failed" ? "failed" : "held-for-officer",
+      `once it is in Xero a Xero refund credit note for the amount, worded "${bankNoteWording}", is queued against it`,
     );
-    return `${instruction}. Closing this does not send it. Once it is in Xero, a Xero refund credit note for the amount, worded "${bankNoteWording}", is queued against it.`;
+    return `Closing this does not send the late card charge's Xero record. ${instruction}`;
   }
   // Round 7 (UX): an invoice may still be on its way to Xero, so this never
   // says there is none.
@@ -47,10 +48,10 @@ export function xeroQueuedMessage(xeroQueued: PaidAnotherWayXeroQueued | undefin
   }
   // Round 9: an officer's retry is still needed; the note follows it.
   if (xeroQueued === "refund-note-after-failed-receipt" || xeroQueued === "receipt-held-for-officer") {
-    const instruction = paidAnotherWayReceiptRetryInstruction(
+    return paidAnotherWayReceiptRetryInstruction(
       xeroQueued === "refund-note-after-failed-receipt" ? "failed" : "held-for-officer",
+      `its refund credit note, worded "${bankNoteWording}", follows`,
     );
-    return `${instruction}; its refund credit note, worded "${bankNoteWording}", follows.`;
   }
   return "No Xero refund credit note was queued: check the refund is recorded in Xero.";
 }

@@ -299,7 +299,7 @@ function createDependencies(state: {
   paidAnotherWayNoteAsked?: boolean;
   paidAnotherWayReceiptLinks?: Array<"invoice" | "payment">;
   /** #3924 round 9: the close's record, as the receipt state names it. */
-  paidAnotherWayCloseRecord?: { id: string; amountCents: number } | null;
+  paidAnotherWayCloseRecord?: { id: string; amountCents: number; uncoveredCents: number } | null;
   // #3643 F2: the organisation late-cash arm's CANCELLED_BOOKING_HAND_BACK tasks.
   handBackTasks?: { bookingId: string; paymentId: string }[];
   // #3643 (owner decision 28 Sep 2026): DECISION 2 part-payment review tasks.
@@ -683,7 +683,10 @@ function createDependencies(state: {
     // nothing in Xero and no note asked, unless a test says so.
     readPaidAnotherWayReceiptState: vi.fn().mockImplementation(async () => ({
       receipt: state.paidAnotherWayReceipt ?? { kind: "none" },
-      close: state.paidAnotherWayCloseRecord === undefined ? { id: "close_1", amountCents: 6000 } : state.paidAnotherWayCloseRecord,
+      close:
+        state.paidAnotherWayCloseRecord === undefined
+          ? { id: "close_1", amountCents: 6000, uncoveredCents: 6000 }
+          : state.paidAnotherWayCloseRecord,
       noteAsked: state.paidAnotherWayNoteAsked ?? false,
       invoiceLinked: state.paidAnotherWayReceiptLinks?.includes("invoice") ?? false,
       paymentLinked: state.paidAnotherWayReceiptLinks?.includes("payment") ?? false,
@@ -4513,6 +4516,52 @@ describe("runBookingXeroRepair", () => {
           expect(receiptFinding(bookingReport)).toBeUndefined();
           expect(noteFinding(bookingReport)).toBeUndefined();
           expect(bookingReport.actions.find((a) => a.type === "QUEUE_KEPT_LATE_CAPTURE_INVOICE")).toBeUndefined();
+        });
+
+        // #3924 round 10 (finding 1): the finding never asks for a refund
+        // already raised, and names only what is left of the close.
+        it("MUTATION: round 10: a record-by-hand close whose note row exists - resolved by hand included - raises no finding", async () => {
+          const bookingReport = await runClosed("after-receipt", [], keptBooking(), {
+            paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+            paidAnotherWayNoteAsked: true,
+          });
+          expect(
+            bookingReport.findings.find((candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND"),
+          ).toBeUndefined();
+        });
+
+        it("MUTATION: round 10: a receipt PARTIAL then resolved by hand, its note landed, raises no finding", async () => {
+          // The reader answers such a row as recorded against its invoice id
+          // (`readLateCaptureXeroReceipt`), and the note row exists.
+          const bookingReport = await runClosed("after-receipt", [], keptBooking(), {
+            paidAnotherWayReceipt: { kind: "recorded", invoiceId: "inv_change" },
+            paidAnotherWayNoteAsked: true,
+          });
+          expect(bookingReport.findings.filter((f) => f.code.startsWith("PAID_ANOTHER_WAY_"))).toEqual([]);
+          expect(bookingReport.actions).toEqual([]);
+        });
+
+        it("MUTATION: round 10: the finding names the close's uncovered share, never what it paid back in all", async () => {
+          const bookingReport = await runClosed("after-receipt", [], keptBooking(), {
+            paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+            paidAnotherWayCloseRecord: { id: "close_1", amountCents: 6000, uncoveredCents: 2500 },
+          });
+          const finding = bookingReport.findings.find(
+            (candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
+          ) as { summary: string; details: Record<string, unknown> } | undefined;
+          expect(finding?.summary).toMatch(/the change invoice or the late charge's own receipt/);
+          expect(finding?.summary).toMatch(/record the \$25\.00 bank-transfer refund by hand in Xero\.$/);
+          expect(finding?.details).toMatchObject({ closeAmountCents: 6000, uncoveredCents: 2500 });
+        });
+
+        it("round 10: a close its own notes already cover raises no record-by-hand finding", async () => {
+          const bookingReport = await runClosed("after-receipt", [], keptBooking(), {
+            paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+            paidAnotherWayCloseRecord: { id: "close_1", amountCents: 6000, uncoveredCents: 0 },
+          });
+          expect(
+            bookingReport.findings.find((candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND"),
+          ).toBeUndefined();
         });
 
         it.each([

@@ -575,6 +575,8 @@ describe("closing a dead card refund as paid another way", () => {
       expect(result.xeroQueued).toBe("refund-note-after-receipt");
       expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
       expect(mocks.enqueueKeptReceipt).not.toHaveBeenCalled();
+      // Round 10: nothing queued, so no kick.
+      expect(mocks.kick).not.toHaveBeenCalled();
       expect(mocks.createRecord).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ occurrenceKey: "card-refund-paid-another-way:op-1:note-after-receipt" }),
@@ -653,10 +655,12 @@ describe("closing a dead card refund as paid another way", () => {
         });
         const result = await close();
         expect(result.xeroQueued).toBe("receipt-held-for-officer");
+        // Round 10: nothing was queued, so the outbox is not kicked.
+        expect(mocks.kick).not.toHaveBeenCalled();
         const audit = mocks.createAuditLog.mock.calls[0]?.[0] as { summary: string; metadata: Record<string, unknown> };
         expect(audit.metadata.xeroQueued).toBe("receipt-held-for-officer");
         expect(audit.summary).toMatch(
-          /Xero record failed and may already be in Xero: check Xero, then retry it from the Xero operations list; the refund note follows\.$/,
+          /may already be in Xero, so check Xero first\. If it is not there, retry it from the Xero operations list, and the refund note follows\. If it is already in Xero, mark it resolved as fixed in Xero and record this refund by hand\.$/,
         );
       });
 
@@ -684,8 +688,33 @@ describe("closing a dead card refund as paid another way", () => {
         const result = await close();
         expect(result.xeroQueued).toBe("refund-note-after-failed-receipt");
         expect(mocks.enqueueKeptReceipt).not.toHaveBeenCalled();
+        expect(mocks.kick).not.toHaveBeenCalled();
         const audit = mocks.createAuditLog.mock.calls[0]?.[0] as { summary: string };
-        expect(audit.summary).toMatch(/invoice failed to reach Xero: retry it from the Xero operations list; the refund note follows\.$/);
+        expect(audit.summary).toMatch(
+          /invoice failed before it reached Xero\. Retry it from the Xero operations list, and the refund note follows\.$/,
+        );
+      });
+
+      // Round 10 (finding 2): a change's invoice that FAILED after it
+      // attempted `createInvoices` may be in Xero, so it is held for an
+      // officer's check of Xero, as a held receipt row is.
+      it("MUTATION: round 10: a failed change invoice that may be in Xero is held for an officer, in the list, the result and the audit", async () => {
+        const attempted = { kind: "recorded", invoiceId: null, invoiceFailed: true, invoiceMayBeInXero: true } as const;
+        mocks.readLateCaptureXeroReceipt.mockResolvedValue(attempted);
+        const late = deadOperation({ idempotencyKey: LATE_KEY });
+        mocks.listOperations.mockResolvedValue([{ ...late, payment: payment(late) }]);
+        expect(await listDeadCardRefunds()).toEqual([
+          expect.objectContaining({ operationId: "op-1", xeroRefundNote: "after-receipt-held-for-officer" }),
+        ]);
+
+        lateCharge();
+        mocks.readLateCaptureXeroReceipt.mockResolvedValue(attempted);
+        const result = await close();
+        expect(result.xeroQueued).toBe("receipt-held-for-officer");
+        expect(mocks.enqueueKeptReceipt).not.toHaveBeenCalled();
+        expect(mocks.kick).not.toHaveBeenCalled();
+        const audit = mocks.createAuditLog.mock.calls[0]?.[0] as { summary: string };
+        expect(audit.summary).toMatch(/so check Xero first\./);
       });
 
       it("a queued receipt's audit adds nothing", async () => {

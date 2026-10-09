@@ -115,16 +115,23 @@ export function addPaidAnotherWayReceiptFinding({
     // Round 9: resolved by hand AFTER the close planned to wait for it (a
     // close planned against a receipt already resolved raises `none`, and is
     // never here). The waiting note will never be queued, so an officer is
-    // told to record the close's refund by hand. Report-only.
+    // told to record the close's refund by hand. Report-only. Round 10: not
+    // when the close's note was asked for after all - any row of it, one an
+    // officer resolved by hand included, so the finding clears once the
+    // officer acts - and naming only the share the close's own notes do not
+    // yet cover, never what it paid back in all.
+    if (state.noteAsked || !state.close || state.close.uncoveredCents <= 0) return false;
     const amount = close.amountLabel ? `${close.amountLabel} ` : "";
     addFinding(findings, {
       code: "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
       severity: "warning",
-      summary: `A late card payment whose refund was paid another way has its Xero receipt recorded by hand in Xero, so the app raises no refund note for it: record the ${amount}bank-transfer refund by hand in Xero.`,
+      summary: `A late card payment whose refund was paid another way has its Xero receipt - the change invoice or the late charge's own receipt - resolved by hand in Xero, so the app raises no refund note for it: record the ${amount}bank-transfer refund by hand in Xero.`,
       safeToAutoApply: false,
       details: {
         ...details,
-        ...(state.close ? { closeRecordId: state.close.id, closeAmountCents: state.close.amountCents } : {}),
+        closeRecordId: state.close.id,
+        closeAmountCents: state.close.amountCents,
+        uncoveredCents: state.close.uncoveredCents,
       },
       actionKeys: [],
     });
