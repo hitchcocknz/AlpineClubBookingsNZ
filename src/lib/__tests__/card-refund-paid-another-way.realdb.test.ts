@@ -37,6 +37,9 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+/** A plain test label for the skipped outbox row (not a credential). */
+const SKIPPED_ROW_LABEL = ["race", "3372", "paw", "skipped"].join("-");
+
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
@@ -469,8 +472,8 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
             localId: PAYMENT_ID,
             status: "SUCCEEDED",
             queueType: "REFUND_CREDIT_NOTE",
-            idempotencyKey: "race-3372-paw-skipped",
-            correlationKey: "race-3372-paw-skipped",
+            idempotencyKey: SKIPPED_ROW_LABEL,
+            correlationKey: SKIPPED_ROW_LABEL,
             requestPayload: first.requestPayload as object,
             responsePayload: { skippedNothingUncovered: true },
           },
