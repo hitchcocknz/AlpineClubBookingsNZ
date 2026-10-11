@@ -702,7 +702,9 @@ export async function settleGroupBookingOnOrganiserCancel(
       format,
       joinerRefund.refundMethod,
       0,
-      child.lodgeId
+      child.lodgeId,
+      "cancellation-policy",
+      joinerRefund.sentenceCents,
     ).catch((err) =>
       logger.error(
         { err, bookingId: child.id },

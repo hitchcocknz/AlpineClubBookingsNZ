@@ -61,6 +61,7 @@ import {
   findGroupCancellationChildDebt,
   groupCancellationRefundNote,
   organiserChildCancelBasis,
+  organiserChildRefundMade,
   reserveOrganiserChildRefund,
 } from "@/lib/organiser-child-refund";
 import { buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
@@ -101,6 +102,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
+import type { OrganiserRefundMethod } from "@/lib/booking-modified-email-copy";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -135,9 +137,8 @@ interface CancelBookingResult {
   creditRestoredCents?: number;
   stripeRefundId?: string;
   manualRefundTaskId?: string;
-  /** #3973: the refund is the group organiser's (`refundMethod` stays "card"), or with `groupCancellationRefundCents` owed by the group's cancellation. */
-  refundTo?: "organiser";
-  groupCancellationRefundCents?: number;
+  /** #3973: a refund that is the group organiser's (`refundMethod` stays "card"), as its email words it, for the confirmation screen. */
+  organiserRefund?: { method: OrganiserRefundMethod; amountCents: number };
   message: string;
 }
 
@@ -1809,7 +1810,7 @@ async function performBookingCancellation(
     // already nets that debt out) and reports the group's refund as the
     // group's.
     let organiserChildDebtId: string | null = null;
-    let groupCancellationRefundCents = 0;
+    let groupCancellationDebt: { amountCents: number; status: string } | null = null;
     let retainedAmountCents = money.retainedAmountCents;
     if (organiserCard) {
       const key = organiserCard.settlement
@@ -1819,7 +1820,7 @@ async function performBookingCancellation(
         ? await findGroupCancellationChildDebt(tx, organiserCard.settlement.id, bookingId)
         : null;
       if (groupDebt) {
-        groupCancellationRefundCents = groupDebt.amountCents;
+        groupCancellationDebt = groupDebt;
         refundAmountCents = 0;
       } else if (key && organiserCard.settlement && refundAmountCents > 0) {
         const debt = await reserveOrganiserChildRefund(tx, {
@@ -2012,7 +2013,7 @@ async function performBookingCancellation(
       clearingOperationId,
       branch,
       organiserChildDebtId,
-      groupCancellationRefundCents,
+      groupCancellationDebt,
     };
   }).catch((err: unknown) => {
     if (err instanceof PartPaymentChangedError) return { claimed: false as const };
@@ -2044,7 +2045,7 @@ async function performBookingCancellation(
     clearingOperationId,
     branch,
     organiserChildDebtId,
-    groupCancellationRefundCents,
+    groupCancellationDebt,
   } = claim;
   const paymentId = payment.id;
 
@@ -2257,6 +2258,9 @@ async function performBookingCancellation(
   // recovery runner, which alerts on exhaustion.
   if (branch === "card" && organiserChildDebtId) {
     await runPaymentRecoveryOperationNow(organiserChildDebtId, format);
+    // #3973: made only once its debt says so; a failed or unclaimed run leaves it on its way.
+    const debtAfterRun = await prisma.paymentRecoveryOperation.findUnique({ where: { id: organiserChildDebtId }, select: { status: true } });
+    const organiserRefund = { method: organiserChildRefundMade(debtAfterRun) ? "organiser_card" : "organiser_card_pending", amountCents: refundAmountCents } as const;
     await cleanupPromoRedemption(bookingId);
     logBookingCancellationAudit({
       booking: fresh,
@@ -2284,7 +2288,7 @@ async function performBookingCancellation(
         fresh.checkOut,
         refundAmountCents,
         format,
-        "organiser_card", // #3973: the email's wording only; the audit and result still say "card"
+        organiserRefund.method, // #3973: the email's wording only; the audit and result still say "card"
         creditRestoredCents,
         fresh.lodgeId
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
@@ -2298,7 +2302,7 @@ async function performBookingCancellation(
         refundAmountCents,
         refundPercentage,
         refundMethod: "card",
-        refundTo: "organiser",
+        organiserRefund,
         creditRestoredCents: creditRestoredCents || undefined,
         message: `Booking cancelled. The group organiser paid for this booking, so ${formatCents(refundAmountCents, format)} (${refundPercentage}%) is being refunded to the organiser's card.`,
       },
@@ -2475,8 +2479,10 @@ async function performBookingCancellation(
 
   // #3653 (F4): the group's cancellation already owes this child's refund to
   // the organiser's card; this cancel adds none of its own, and says whose it is.
-  const groupRefundNote =
-    groupCancellationRefundCents > 0 ? groupCancellationRefundNote(groupCancellationRefundCents, format) : null;
+  const groupRefundNote = groupCancellationDebt ? groupCancellationRefundNote(groupCancellationDebt, format) : null;
+  const organiserRefund = groupCancellationDebt
+    ? ({ method: organiserChildRefundMade(groupCancellationDebt) ? "group_cancel_refunded" : "group_cancel_refunding", amountCents: groupCancellationDebt.amountCents } as const)
+    : undefined;
   logBookingCancellationAudit({
     booking: fresh,
     bookingId,
@@ -2490,7 +2496,7 @@ async function performBookingCancellation(
       refundPercentage,
       refundMethod: "card",
       ...(groupRefundNote
-        ? { refundTo: "organiser", groupCancellationRefundCents }
+        ? { refundTo: "organiser", groupCancellationRefundCents: groupCancellationDebt?.amountCents }
         : {}),
       creditRestoredCents,
       failedOutstandingAdditionalPayment: shouldFailAdditionalPayment,
@@ -2505,11 +2511,13 @@ async function performBookingCancellation(
       bookingOwner(fresh).member.firstName,
       fresh.checkIn,
       fresh.checkOut,
-      groupRefundNote ? groupCancellationRefundCents : 0, // #3973: the group's refund owed to the organiser's card
+      0,
       format,
-      groupRefundNote ? "organiser_card_owed" : "card",
+      organiserRefund?.method ?? "card",
       creditRestoredCents,
-      fresh.lodgeId
+      fresh.lodgeId,
+      "cancellation-policy",
+      organiserRefund?.amountCents ?? 0, // #3973: the group's refund names its own amount; `{{refundAmount}}` stays 0
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
   }
 
@@ -2524,7 +2532,7 @@ async function performBookingCancellation(
       refundAmountCents: 0,
       refundPercentage: 0,
       refundMethod: "card",
-      ...(groupRefundNote ? { refundTo: "organiser" as const, groupCancellationRefundCents } : {}),
+      organiserRefund,
       creditRestoredCents: creditRestoredCents || undefined,
       message: groupRefundNote
         ? `Booking cancelled. ${groupRefundNote}`

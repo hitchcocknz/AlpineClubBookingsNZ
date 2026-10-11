@@ -2,7 +2,11 @@
 
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
-import { groupCancellationRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  bookingCancelledRefundMade,
+  bookingCancelledRefundSentence,
+  type OrganiserRefundMethod,
+} from "@/lib/booking-modified-email-copy";
 
 /**
  * #3643: the two cancel-dialog lines internet banking needs, and (#3973) the
@@ -108,31 +112,21 @@ export function ForcedRefundNote({
 /**
  * #3973: the confirmation after cancelling a joiner's booking the group
  * organiser paid for by card. The refund is the ORGANISER's, so it never reads
- * "your original payment method": either this cancel's refund to the organiser's
- * card (`refundCents`) or the one the organiser's cancellation of the group
- * already owes (`owedCents`), in the "Booking Cancelled" email's own sentences.
+ * "your original payment method": the cancel's own answer of where it went, in
+ * the "Booking Cancelled" email's own sentence and tone. `emailNote` is the
+ * button's confirmation-email sentence, or nothing when no email goes.
  */
 export function OrganiserRefundConfirmation({
-  refundCents,
-  owedCents,
+  organiserRefund,
   format,
-  onBehalfOfMember,
-  emailSuppressed,
+  emailNote,
 }: {
-  refundCents: number;
-  owedCents: number;
+  organiserRefund: { method: OrganiserRefundMethod; amountCents: number };
   format: ClubFormat;
-  onBehalfOfMember: boolean;
-  emailSuppressed: boolean;
+  emailNote: string;
 }) {
-  const sentence =
-    refundCents > 0
-      ? organiserCardRefundSentence(formatCents(refundCents, format))
-      : groupCancellationRefundSentence(formatCents(owedCents, format));
-  const emailNote = emailSuppressed
-    ? ""
-    : onBehalfOfMember
-      ? " They will receive a confirmation email shortly."
-      : " You will receive a confirmation email shortly.";
-  return <p className="text-sm text-success-11">{sentence + emailNote}</p>;
+  const { method, amountCents } = organiserRefund;
+  const sentence = bookingCancelledRefundSentence(amountCents, formatCents(amountCents, format), method);
+  const tone = bookingCancelledRefundMade(amountCents, method) ? "text-success-11" : "text-info-11";
+  return <p className={`text-sm ${tone}`}>{sentence + emailNote}</p>;
 }

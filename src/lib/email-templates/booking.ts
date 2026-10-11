@@ -25,6 +25,7 @@ import {
 import type { PromoCodeAdjustment } from "@/lib/booking-promo-redemptions";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
 import {
+  bookingCancelledRefundMade,
   bookingCancelledRefundSentence,
   type BookingCancelledRefundMethod,
   bookingModifiedRefundSentence,
@@ -375,13 +376,14 @@ export function bookingCancelledTemplate(
   // #3792: a cancel the member did not choose (capacity, hold expiry) restores
   // the applied credit in full, so no cancellation policy applies to it.
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
+  // #3973: the amount the refund line names when the refund is not this
+  // booking's own (the group organiser's cancellation carries it).
+  refundSentenceCents: number = refundCents,
 ): string {
-  // #3973: the one wording `{{refundMessage}}` also reads. Only a refund already
-  // made is a success; a hand-back, a refund still owed or no refund is info.
-  const refundMade = refundMethod === "card" || refundMethod === "credit" || refundMethod === "organiser_card";
+  // #3973: the one wording `{{refundMessage}}` also reads, and its one tone.
   const refundInfo = alertBox(
-    bookingCancelledRefundSentence(refundCents, formatCents(refundCents, format), refundMethod),
-    refundCents > 0 && refundMade ? "success" : "info",
+    bookingCancelledRefundSentence(refundSentenceCents, formatCents(refundSentenceCents, format), refundMethod),
+    bookingCancelledRefundMade(refundSentenceCents, refundMethod) ? "success" : "info",
   );
 
   // #1164 / D7: the account credit originally applied to this booking is now

@@ -605,11 +605,11 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
         "organiser_card",
       ),
   },
-  // #3973 fix round: the organiser's cancellation of the group. A refund to the
-  // organiser's card still owed, and an Internet Banking settlement the club
-  // repays the organiser by hand; each its own pin, as above.
+  // #3973 fix rounds: a refund to the organiser's card not yet made, the
+  // organiser's earlier cancellation's refund, and an Internet Banking
+  // settlement the club repays the organiser by hand; each its own pin.
   {
-    id: "bookingCancelledTemplate:refund-organiser-card-owed",
+    id: "bookingCancelledTemplate:refund-organiser-card-pending",
     fn: "bookingCancelledTemplate",
     render: () =>
       bookingCancelledTemplate(
@@ -618,7 +618,41 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
         FIXED_DATE("2026-07-06T00:00:00.000Z"),
         12000,
         CLUB_FORMAT_TEST,
-        "organiser_card_owed",
+        "organiser_card_pending",
+      ),
+  },
+  // The organiser's earlier cancellation carries the refund: `refundCents` is
+  // this booking's own 0, the sentence names the group's amount.
+  {
+    id: "bookingCancelledTemplate:refund-group-cancel-refunding",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        0,
+        CLUB_FORMAT_TEST,
+        "group_cancel_refunding",
+        0,
+        "cancellation-policy",
+        12000,
+      ),
+  },
+  {
+    id: "bookingCancelledTemplate:refund-group-cancel-refunded",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        0,
+        CLUB_FORMAT_TEST,
+        "group_cancel_refunded",
+        0,
+        "cancellation-policy",
+        12000,
       ),
   },
   {

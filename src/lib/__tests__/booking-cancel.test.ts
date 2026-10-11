@@ -107,6 +107,8 @@ const mocks = vi.hoisted(() => {
   txRecoveryOperationFindMany: vi.fn(),
   txRecoveryOperationCreate: vi.fn(),
   runPaymentRecoveryOperationNow: vi.fn(),
+  // #3973: the debt's own status, re-read after the inline run.
+  recoveryOperationFindUnique: vi.fn(),
   };
 });
 
@@ -144,6 +146,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     clubTimeSettings: {
       findUnique: mocks.clubTimeSettingsFindUnique,
+    },
+    paymentRecoveryOperation: {
+      findUnique: mocks.recoveryOperationFindUnique,
     },
     $transaction: mocks.prismaTransaction,
   },
@@ -2053,6 +2058,7 @@ describe("cancelBooking credit refunds", () => {
         amountCents: data.amountCents,
       }));
       mocks.runPaymentRecoveryOperationNow.mockResolvedValue("succeeded");
+      mocks.recoveryOperationFindUnique.mockResolvedValue({ status: "SUCCEEDED" });
       mocks.calculateRefundAmount.mockReturnValue({ refundAmountCents: 2500, refundPercentage: 50 });
     });
 
@@ -2088,8 +2094,15 @@ describe("cancelBooking credit refunds", () => {
       expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
       expect(mocks.enqueueXeroAccountCreditNoteOperation).not.toHaveBeenCalled();
       expect(result).toMatchObject({
-        data: { refundAmountCents: 2500, refundMethod: "card", refundTo: "organiser", message: expect.stringContaining("organiser's card") },
+        data: {
+          refundAmountCents: 2500,
+          refundMethod: "card",
+          organiserRefund: { method: "organiser_card", amountCents: 2500 },
+          message: expect.stringContaining("organiser's card"),
+        },
       });
+      // #3973: made, by the debt's own status re-read after the run.
+      expect(mocks.recoveryOperationFindUnique).toHaveBeenCalledWith({ where: { id: "op_child_cancel" }, select: { status: true } });
       // #3973: the joiner's email names the organiser's card, from this branch's
       // own settlement answer; the audit row still records "card", as before.
       expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
@@ -2102,29 +2115,54 @@ describe("cancelBooking credit refunds", () => {
       );
     });
 
-    it("#3973: behind the group's cancellation, refunds nothing of its own and says the organiser's refund is owed", async () => {
+    it.each([
+      ["failed", "FAILED"],
+      ["not-claimed", "PENDING"],
+    ] as const)("#3973: a refund the inline run left %s is on its way, never \"processed\"", async (outcome, status) => {
+      mocks.runPaymentRecoveryOperationNow.mockResolvedValue(outcome);
+      mocks.recoveryOperationFindUnique.mockResolvedValue({ status });
+
+      const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST);
+
+      expect(result.status).toBe(200);
+      expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][5]).toBe(2500);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("organiser_card_pending");
+      expect(result).toMatchObject({
+        data: { refundAmountCents: 2500, refundMethod: "card", organiserRefund: { method: "organiser_card_pending", amountCents: 2500 } },
+      });
+    });
+
+    it.each([
+      [
+        "PENDING",
+        "group_cancel_refunding",
+        "Booking cancelled. The group organiser's cancellation is already refunding $30.00 for this booking to the organiser's card.",
+      ],
+      [
+        "SUCCEEDED",
+        "group_cancel_refunded",
+        "Booking cancelled. The group organiser's cancellation refunded $30.00 for this booking to the organiser's card.",
+      ],
+    ] as const)("#3973: behind the group's cancellation (its debt %s), refunds nothing of its own and names the group's refund", async (status, method, message) => {
       // The organiser's cancellation of the group already wrote this child's debt.
-      mocks.txRecoveryOperationFindUnique.mockResolvedValue({ id: "op_group_cancel", amountCents: 3000 });
+      mocks.txRecoveryOperationFindUnique.mockResolvedValue({ id: "op_group_cancel", amountCents: 3000, status });
 
       const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST);
 
       expect(result.status).toBe(200);
       expect(mocks.txRecoveryOperationCreate).not.toHaveBeenCalled();
       expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
-      // The email names the group's refund to the organiser's card, never "No refund was applicable".
+      // The email names the group's refund, never "No refund was applicable";
+      // `{{refundAmount}}` stays this booking's own 0, the sentence names 3000.
       expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
-      expect(mocks.sendBookingCancelledEmail.mock.calls[0][5]).toBe(3000);
-      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("organiser_card_owed");
+      const call = mocks.sendBookingCancelledEmail.mock.calls[0];
+      expect(call[5]).toBe(0);
+      expect(call[7]).toBe(method);
+      expect(call[11]).toBe(3000);
       // The confirmation screen reads the same answer.
       expect(result).toMatchObject({
-        data: {
-          refundAmountCents: 0,
-          refundMethod: "card",
-          refundTo: "organiser",
-          groupCancellationRefundCents: 3000,
-          message:
-            "Booking cancelled. The group organiser's cancellation is already refunding $30.00 for this booking to the organiser's card.",
-        },
+        data: { refundAmountCents: 0, refundMethod: "card", organiserRefund: { method, amountCents: 3000 }, message },
       });
     });
 

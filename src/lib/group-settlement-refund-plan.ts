@@ -105,17 +105,17 @@ export function organiserChildCommittedRefundFrom(refundedAmountCents: number, e
  * card plan frozen before #3653 whose combined refund failed this run leaves
  * the child's planned share owed (`refundForChild` cleared, the plan kept).
  * With none of these the policy refunded nothing, or nothing was paid.
+ * `refundCents` is `{{refundAmount}}`, what it was before #3973 (the refund
+ * made); `sentenceCents` the amount the refund line names.
  */
 export function organiserCancelJoinerEmailRefund(input: {
   refundForChild: number;
   owedForChild: number;
   plannedRefundCents: number;
   cardSettlement: boolean;
-}): { refundCents: number; refundMethod: BookingCancelledRefundMethod } {
-  if (input.refundForChild > 0) {
-    return { refundCents: input.refundForChild, refundMethod: input.cardSettlement ? "organiser_card" : "organiser_by_hand" };
-  }
+}): { refundCents: number; sentenceCents: number; refundMethod: BookingCancelledRefundMethod } {
+  const made = input.refundForChild;
+  if (made > 0) return { refundCents: made, sentenceCents: made, refundMethod: input.cardSettlement ? "organiser_card" : "organiser_by_hand" };
   const owed = input.owedForChild > 0 ? input.owedForChild : input.cardSettlement ? input.plannedRefundCents : 0;
-  if (owed > 0) return { refundCents: owed, refundMethod: "organiser_card_owed" };
-  return { refundCents: 0, refundMethod: "card" };
+  return { refundCents: 0, sentenceCents: owed, refundMethod: owed > 0 ? "organiser_card_pending" : "card" };
 }

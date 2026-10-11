@@ -726,8 +726,8 @@ describe("CancelBookingButton — internet banking refunds as credit only", () =
 });
 
 // #3973: the confirmation after a joiner's organiser-paid cancel names the
-// ORGANISER's card, in the "Booking Cancelled" email's own words, keyed off the
-// cancel's `refundTo` answer rather than `refundMethod: "card"`.
+// ORGANISER's card, in the "Booking Cancelled" email's own words and tone, keyed
+// off the cancel's `organiserRefund` answer rather than `refundMethod: "card"`.
 describe("CancelBookingButton — a refund the group organiser receives (#3973)", () => {
   function stubOrganiserFetch(result: Record<string, unknown>) {
     vi.stubGlobal(
@@ -750,38 +750,40 @@ describe("CancelBookingButton — a refund the group organiser receives (#3973)"
     });
   }
 
-  it("names the group organiser's card, never the member's original payment method", async () => {
-    stubOrganiserFetch({ refundAmountCents: 2500, refundMethod: "card", refundTo: "organiser" });
+  it.each([
+    [
+      "made",
+      { method: "organiser_card", amountCents: 2500 },
+      "A refund of $25.00 has been processed to the group organiser's card, because the group organiser paid for this booking. You will receive a confirmation email shortly.",
+      "text-success-11",
+    ],
+    [
+      "still on its way",
+      { method: "organiser_card_pending", amountCents: 2500 },
+      "A refund of $25.00 is on its way to the group organiser's card, because the group organiser paid for this booking. You will receive a confirmation email shortly.",
+      "text-info-11",
+    ],
+    [
+      "carried by the group's cancellation, still running",
+      { method: "group_cancel_refunding", amountCents: 3000 },
+      "The group organiser's cancellation is already refunding $30.00 for this booking to the organiser's card. You will receive a confirmation email shortly.",
+      "text-info-11",
+    ],
+    [
+      "carried by the group's cancellation, made",
+      { method: "group_cancel_refunded", amountCents: 3000 },
+      "The group organiser's cancellation refunded $30.00 for this booking to the organiser's card. You will receive a confirmation email shortly.",
+      "text-success-11",
+    ],
+  ] as const)("names the organiser's refund %s, in the email's words and tone", async (_label, organiserRefund, sentence, tone) => {
+    stubOrganiserFetch({ refundAmountCents: organiserRefund.method.startsWith("group") ? 0 : 2500, refundMethod: "card", organiserRefund });
     render(<CancelBookingButton bookingId="bk_child" />);
     await confirmCancel();
 
     await waitFor(() => {
-      expect(
-        screen.getByText(
-          "A refund of $25.00 has been processed to the group organiser's card, because the group organiser paid for this booking. You will receive a confirmation email shortly.",
-        ),
-      ).toBeTruthy();
+      expect(screen.getByText(sentence)).toBeTruthy();
     });
-    expect(screen.queryByText(/original payment method/i)).toBeNull();
-  });
-
-  it("names the refund the group organiser's cancellation already owes, rather than nothing", async () => {
-    stubOrganiserFetch({
-      refundAmountCents: 0,
-      refundMethod: "card",
-      refundTo: "organiser",
-      groupCancellationRefundCents: 3000,
-    });
-    render(<CancelBookingButton bookingId="bk_child" />);
-    await confirmCancel();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(
-          "The group organiser's cancellation is already refunding $30.00 for this booking to the organiser's card. You will receive a confirmation email shortly.",
-        ),
-      ).toBeTruthy();
-    });
+    expect(screen.getByText(sentence).className).toContain(tone);
     expect(screen.queryByText(/original payment method/i)).toBeNull();
   });
 

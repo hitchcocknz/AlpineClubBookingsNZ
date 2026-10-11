@@ -12,10 +12,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * (`organiserCardRefundSentence`), so neither the two paths nor the two emails
  * can drift apart. The other wordings are pinned here and by the render pins.
  *
- * The organiser's cancellation of the group (#3973 fix round) adds two more:
- * a refund still owed to the organiser's card ("organiser_card_owed", also the
- * joiner's own cancel behind the group's) and an Internet Banking settlement the
- * club repays the organiser by hand ("organiser_by_hand").
+ * The fix rounds add the rest: a refund to the organiser's card Stripe has not
+ * made yet ("organiser_card_pending", the joiner's own cancel or the organiser's
+ * cancel of the group), the organiser's earlier cancellation still refunding
+ * ("group_cancel_refunding") or having refunded ("group_cancel_refunded") a
+ * joiner's booking, and an Internet Banking settlement the club repays the
+ * organiser by hand ("organiser_by_hand"). Only a refund already made reads as
+ * a success, and `{{refundAmount}}` stays this booking's own figure when the
+ * sentence names the group's refund.
  *
  * MUTATION PROOF. Drop the "organiser_card" case (it falls through to no
  * sentence) or map it to the own-card sentence and "organiser's card" fails;
@@ -30,6 +34,7 @@ vi.mock("@/lib/email/core", () => ({ sendEmail }));
 
 import {
   type BookingCancelledRefundMethod,
+  bookingCancelledRefundMade,
   bookingModifiedRefundSentence,
   organiserCardRefundSentence,
 } from "@/lib/booking-modified-email-copy";
@@ -48,9 +53,13 @@ const CREDIT = "A credit of $45.00 has been added to your account for future boo
 const MANUAL =
   "You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of $45.00 directly and will be in touch.";
 const NO_REFUND = "No refund was applicable based on the cancellation policy.";
-// #3973: the organiser's cancellation of the group, or the joiner's own cancel behind it.
-const ORGANISER_CARD_OWED =
+// #3973 fix rounds: a refund to the organiser's card not yet made, and the group's cancellation's refund.
+const ORGANISER_CARD_PENDING =
+  "A refund of $45.00 is on its way to the group organiser's card, because the group organiser paid for this booking.";
+const GROUP_CANCEL_REFUNDING =
   "The group organiser's cancellation is already refunding $45.00 for this booking to the organiser's card.";
+const GROUP_CANCEL_REFUNDED =
+  "The group organiser's cancellation refunded $45.00 for this booking to the organiser's card.";
 const ORGANISER_BY_HAND =
   "The club will refund $45.00 to the group organiser directly, because the group organiser paid for this booking.";
 
@@ -59,7 +68,7 @@ function html(refundCents: number, method: BookingCancelledRefundMethod) {
 }
 
 /** What the sender handed to the mailer: its HTML and the flat body's `{{refundMessage}}`. */
-async function sent(refundCents: number, method: BookingCancelledRefundMethod) {
+async function sent(refundCents: number, method: BookingCancelledRefundMethod, sentenceCents = refundCents) {
   sendEmail.mockClear();
   await sendBookingCancelledEmail(
     { bookingId: "booking-1", recipientMemberId: "member-1" },
@@ -70,9 +79,13 @@ async function sent(refundCents: number, method: BookingCancelledRefundMethod) {
     refundCents,
     CLUB_FORMAT_TEST,
     method,
+    0,
+    null,
+    "cancellation-policy",
+    sentenceCents,
   );
-  const [call] = sendEmail.mock.calls as unknown as [[{ html: string; templateData: { refundMessage: string } }]];
-  return { html: call[0].html, refundMessage: call[0].templateData.refundMessage };
+  const [call] = sendEmail.mock.calls as unknown as [[{ html: string; templateData: { refundMessage: string; refundAmount: string } }]];
+  return { html: call[0].html, refundMessage: call[0].templateData.refundMessage, refundAmount: call[0].templateData.refundAmount };
 }
 
 beforeEach(() => {
@@ -92,7 +105,9 @@ describe("#3973: the Booking Cancelled refund line names where the refund went",
   });
 
   it.each([
-    ["organiser_card_owed", ORGANISER_CARD_OWED],
+    ["organiser_card_pending", ORGANISER_CARD_PENDING],
+    ["group_cancel_refunding", GROUP_CANCEL_REFUNDING],
+    ["group_cancel_refunded", GROUP_CANCEL_REFUNDED],
     ["organiser_by_hand", ORGANISER_BY_HAND],
   ] as const)("%s: names the group organiser, never the joiner's payment method nor \"no refund\"", async (method, sentence) => {
     const template = html(4500, method);
@@ -107,8 +122,28 @@ describe("#3973: the Booking Cancelled refund line names where the refund went",
     }
   });
 
-  it("the owed sentence is the cancel preview's, from the one home", () => {
-    expect(groupCancellationRefundNote(4500, CLUB_FORMAT_TEST)).toBe(ORGANISER_CARD_OWED);
+  it("the group's cancellation's sentences are the cancel preview's, switched on its debt's own status", () => {
+    expect(groupCancellationRefundNote({ amountCents: 4500, status: "PENDING" }, CLUB_FORMAT_TEST)).toBe(GROUP_CANCEL_REFUNDING);
+    expect(groupCancellationRefundNote({ amountCents: 4500, status: "FAILED" }, CLUB_FORMAT_TEST)).toBe(GROUP_CANCEL_REFUNDING);
+    expect(groupCancellationRefundNote({ amountCents: 4500, status: "SUCCEEDED" }, CLUB_FORMAT_TEST)).toBe(GROUP_CANCEL_REFUNDED);
+  });
+
+  it("reads only a refund already made as a success", () => {
+    for (const method of ["card", "credit", "organiser_card", "group_cancel_refunded"] as const) {
+      expect(bookingCancelledRefundMade(4500, method)).toBe(true);
+      expect(bookingCancelledRefundMade(0, method)).toBe(false);
+    }
+    for (const method of ["manual", "organiser_card_pending", "group_cancel_refunding", "organiser_by_hand"] as const) {
+      expect(bookingCancelledRefundMade(4500, method)).toBe(false);
+    }
+  });
+
+  it("keeps {{refundAmount}} this booking's own figure when the sentence names the group's refund", async () => {
+    const sender = await sent(0, "group_cancel_refunding", 4500);
+
+    expect(sender.refundAmount).toBe("$0.00");
+    expect(sender.refundMessage).toBe(GROUP_CANCEL_REFUNDING);
+    expect(sender.html).toContain(GROUP_CANCEL_REFUNDING);
   });
 
   it("is the Booking Modified sentence, from the one home", () => {

@@ -19,6 +19,7 @@ import {
   type HostingCoverageOverridePromptData,
 } from "@/lib/hosting-coverage-override-client";
 import { formatCents } from "@/lib/utils";
+import type { OrganiserRefundMethod } from "@/lib/booking-modified-email-copy";
 import { useClubFormat } from "@/components/club-format-provider";
 import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation } from "@/components/cancel-booking-payment-notes";
 
@@ -93,7 +94,7 @@ export function CancelBookingButton({
   const format = useClubFormat();
   const [step, setStep] = useState<"idle" | "loading" | "preview" | "cancelling" | "success" | "error">("idle");
   const [preview, setPreview] = useState<CancelPreview | null>(null);
-  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number; refundTo?: "organiser"; groupCancellationRefundCents?: number } | null>(null);
+  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number; organiserRefund?: { method: OrganiserRefundMethod; amountCents: number } } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [refundMethod, setRefundMethod] = useState<"card" | "credit">("card");
   // Issue #1705: the admin's explicit email choice dialog, and the choice that
@@ -271,7 +272,7 @@ export function CancelBookingButton({
           refundMethod: data.refundMethod || "card",
           creditAmountCents: data.creditAmountCents,
           creditRestoredCents: data.creditRestoredCents,
-          ...(data.refundTo === "organiser" ? { refundTo: "organiser", groupCancellationRefundCents: data.groupCancellationRefundCents } : {}),
+          organiserRefund: data.organiserRefund,
         });
         setStep("success");
         router.refresh();
@@ -335,6 +336,7 @@ export function CancelBookingButton({
     // this disjunct the panel would promise a confirmation email for the one
     // booking guaranteed not to get one.
     const emailSuppressed = notifiedMember === false || noEmailsSuppressesChoice;
+    const emailNote = emailSuppressed ? "" : onBehalfOfMember ? " They will receive a confirmation email shortly." : " You will receive a confirmation email shortly.";
     return renderWithHostingOverrideRegion(
       <div className="rounded-md border border-success-6 bg-success-3 p-4 space-y-1">
         <p className="text-sm font-medium text-success-11">
@@ -357,8 +359,8 @@ export function CancelBookingButton({
               ? `The club will arrange the member's refund of ${formatCents(refund, format)} directly — they'll hear from the club about how it will be paid back.`
               : `The club will arrange your refund of ${formatCents(refund, format)} directly — you'll hear from them about how it will be paid back.`}
           </p>
-        ) : result?.refundTo === "organiser" && (refund > 0 || (result.groupCancellationRefundCents ?? 0) > 0) ? (
-          <OrganiserRefundConfirmation refundCents={refund} owedCents={result.groupCancellationRefundCents ?? 0} format={format} onBehalfOfMember={onBehalfOfMember} emailSuppressed={emailSuppressed} />
+        ) : result?.organiserRefund ? (
+          <OrganiserRefundConfirmation organiserRefund={result.organiserRefund} format={format} emailNote={emailNote} />
         ) : refund > 0 && isCredit ? (
           <p className="text-sm text-success-11">
             A credit of {formatCents(refund, format)} has been added to {onBehalfOfMember ? "the member's" : "your"} account for future bookings.
@@ -366,8 +368,8 @@ export function CancelBookingButton({
         ) : refund > 0 ? (
           <p className="text-sm text-success-11">
             {onBehalfOfMember
-              ? `The refund of ${formatCents(refund, format)} has been processed to the member's original payment method.${emailSuppressed ? "" : " They will receive a confirmation email shortly."}`
-              : `Your refund of ${formatCents(refund, format)} has been processed to your original payment method.${emailSuppressed ? "" : " You will receive a confirmation email shortly."}`}
+              ? `The refund of ${formatCents(refund, format)} has been processed to the member's original payment method.${emailNote}`
+              : `Your refund of ${formatCents(refund, format)} has been processed to your original payment method.${emailNote}`}
           </p>
         ) : emailSuppressed ? null : (
           <p className="text-sm text-success-11">

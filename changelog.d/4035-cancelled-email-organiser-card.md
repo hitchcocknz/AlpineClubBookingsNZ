@@ -5,10 +5,12 @@
   confirmation shown after cancelling, used to say the refund had gone "to your
   original payment method"; they now say it was processed to the group
   organiser's card, in the same words the "Booking Modified" email uses
-  (#3916). The same fix covers the organiser cancelling the whole group: each
-  joiner's email names the organiser's card, says the refund to the organiser's
-  card is still on its way when it has not gone through yet, or, when the
-  organiser paid by Internet Banking, says the club will repay the organiser
-  directly. Where the organiser's cancellation already owes a joiner's refund,
-  the joiner's own cancellation now says so instead of "No refund was
-  applicable". Every other cancellation keeps its existing wording.
+  (#3916), or that it is on its way there when the card refund has not gone
+  through yet. The same fix covers the organiser cancelling the whole group:
+  each joiner's email names the organiser's card, says the refund is on its way
+  when it has not gone through yet, or, when the organiser paid by Internet
+  Banking, says the club will repay the organiser directly. Where the
+  organiser's cancellation already carries a joiner's refund, the joiner's own
+  cancellation now says that cancellation is refunding, or has refunded, it to
+  the organiser's card, instead of "No refund was applicable". Every other
+  cancellation keeps its existing wording.

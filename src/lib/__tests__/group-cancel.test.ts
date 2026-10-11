@@ -308,7 +308,9 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CLUB_FORMAT_TEST,
       "card",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      0
     );
     expect(mocks.groupBookingUpdate).toHaveBeenCalledWith({
       where: { id: GROUP_ID },
@@ -383,7 +385,9 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CLUB_FORMAT_TEST,
       "organiser_card",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      3000
     );
     // The executor recorded the REFUNDED event; the cancel records CANCELLED.
     expect(mocks.recordBookingEvent).toHaveBeenCalledWith(
@@ -409,10 +413,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     expect(mocks.runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op-1", CLUB_FORMAT_TEST);
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(1);
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
-    // #3973: the email says the organiser's refund is owed, never "No refund was applicable".
+    // #3973: the email says the organiser's refund is on its way, never "No refund
+    // was applicable"; `{{refundAmount}}` stays the 0 refunded, as before.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), expect.anything(), CHECK_IN, CHECK_OUT, 4500,
-      CLUB_FORMAT_TEST, "organiser_card_owed", 0, undefined
+      expect.anything(), expect.anything(), expect.anything(), CHECK_IN, CHECK_OUT, 0,
+      CLUB_FORMAT_TEST, "organiser_card_pending", 0, undefined, "cancellation-policy", 4500
     );
     // #3653 fix round: the refund is OWED, not "no payment taken". The
     // recovery that later makes it writes `booking.payment.refund_recovered`
@@ -530,7 +535,9 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CLUB_FORMAT_TEST,
       "card",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      0
     );
   });
 
@@ -906,7 +913,9 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
       CLUB_FORMAT_TEST,
       "organiser_by_hand",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      3000
     );
   });
 
@@ -1043,7 +1052,7 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     // #3973: a pre-#3653 plan's combined refund also went to the organiser's card.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
       expect.anything(), expect.anything(), expect.anything(), CHECK_IN, CHECK_OUT, 4500,
-      CLUB_FORMAT_TEST, "organiser_card", 0, undefined
+      CLUB_FORMAT_TEST, "organiser_card", 0, undefined, "cancellation-policy", 4500
     );
   });
 
@@ -1154,18 +1163,21 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
       txClient,
       expect.objectContaining({ refundForChild: 0, plannedRefundCents: 4500 }),
     );
-    // #3973: the frozen plan's share is owed to the organiser's card, not "no refund".
+    // #3973: the frozen plan's share is on its way to the organiser's card, not
+    // "no refund"; `{{refundAmount}}` stays the 0 refunded, as before.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
       { bookingId: "child-1", recipientMemberId: "joiner-member-1" },
       "joiner@example.com",
       "Jo",
       CHECK_IN,
       CHECK_OUT,
-      4500,
-      CLUB_FORMAT_TEST,
-      "organiser_card_owed",
       0,
-      undefined
+      CLUB_FORMAT_TEST,
+      "organiser_card_pending",
+      0,
+      undefined,
+      "cancellation-policy",
+      4500
     );
   });
 

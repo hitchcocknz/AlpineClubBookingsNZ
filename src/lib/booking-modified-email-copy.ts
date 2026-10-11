@@ -23,14 +23,25 @@ export function organiserCardRefundSentence(amount: string): string {
 }
 
 /**
- * #3653, #3973: the group organiser's cancellation carries this joiner's
- * booking's refund to the organiser's card as its own debt, which the recovery
- * runner retries until Stripe makes it. The joiner's own cancel behind the group's, its preview
- * (`groupCancellationRefundNote`) and the "Booking Cancelled" email of either
- * cancel say it in these words.
+ * #3973: that refund to the organiser's card, not yet made - Stripe has not
+ * answered it, and the recovery runner retries it until it does. A joiner's own
+ * cancel whose refund did not complete inline, or the organiser's cancel of the
+ * group whose refund for this child did not.
  */
-export function groupCancellationRefundSentence(amount: string): string {
-  return `The group organiser's cancellation is already refunding ${amount} for this booking to the organiser's card.`;
+export function organiserCardRefundPendingSentence(amount: string): string {
+  return `A refund of ${amount} is on its way to the group organiser's card, because the group organiser paid for this booking.`;
+}
+
+/**
+ * #3653, #3973: a joiner cancelling behind the group organiser's cancellation,
+ * which already carries this booking's refund to the organiser's card as its
+ * own debt. `refunded` is that debt's own status (`SUCCEEDED`). The cancel, its
+ * preview (`groupCancellationRefundNote`) and its email say it in these words.
+ */
+export function groupCancellationRefundSentence(amount: string, refunded: boolean): string {
+  return refunded
+    ? `The group organiser's cancellation refunded ${amount} for this booking to the organiser's card.`
+    : `The group organiser's cancellation is already refunding ${amount} for this booking to the organiser's card.`;
 }
 
 /**
@@ -43,29 +54,34 @@ export function organiserByHandRefundSentence(amount: string): string {
 }
 
 /**
+ * #3973: a refund on a joiner's booking the group organiser paid for by card,
+ * which goes to the ORGANISER's card (#3653): made (`organiser_card`), still on
+ * its way (`organiser_card_pending`), or carried by the organiser's earlier
+ * cancellation of the group, still running (`group_cancel_refunding`) or made
+ * (`group_cancel_refunded`). The cancel's result carries one, so the
+ * confirmation screen says what the email says.
+ */
+export type OrganiserRefundMethod =
+  | "organiser_card"
+  | "organiser_card_pending"
+  | "group_cancel_refunding"
+  | "group_cancel_refunded";
+
+/**
  * Where a "Booking Cancelled" email says the refund went. B5 (#2262): "manual"
  * is a cash / off-Xero settlement a person hands back, so it must never read as
  * "on its way to your card" (no card was charged) nor as account credit (none
- * was minted; a hand-back task was raised). #3973: "organiser_card" is a
- * joiner's booking the group organiser paid for by card, refunded to the
- * organiser's card (#3653) - by the joiner's own cancel or the organiser's
- * cancel of the group. "organiser_card_owed" is that refund still owed (the
- * Stripe refund has not completed; the recovery runner retries it), and
- * "organiser_by_hand" an organiser's Internet Banking settlement the club
- * repays by hand.
+ * was minted; a hand-back task was raised). #3973: the organiser's card
+ * refunds (`OrganiserRefundMethod`), and "organiser_by_hand", an organiser's
+ * Internet Banking settlement the club repays by hand.
  */
-export type BookingCancelledRefundMethod =
-  | "card"
-  | "credit"
-  | "manual"
-  | "organiser_card"
-  | "organiser_card_owed"
-  | "organiser_by_hand";
+export type BookingCancelledRefundMethod = "card" | "credit" | "manual" | "organiser_by_hand" | OrganiserRefundMethod;
 
 /**
  * #3973: the refund line of a "Booking Cancelled" email, ONE wording for the
- * HTML template and the admin-editable body's `{{refundMessage}}` (`INV-SSOT`).
- * `amount` is `refundCents` formatted in the club's format.
+ * HTML template, the admin-editable body's `{{refundMessage}}` and the cancel
+ * dialog's organiser-paid confirmation (`INV-SSOT`). `amount` is `refundCents`
+ * formatted in the club's format.
  */
 export function bookingCancelledRefundSentence(
   refundCents: number,
@@ -78,8 +94,12 @@ export function bookingCancelledRefundSentence(
       return `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${amount} directly and will be in touch.`;
     case "organiser_card":
       return organiserCardRefundSentence(amount);
-    case "organiser_card_owed":
-      return groupCancellationRefundSentence(amount);
+    case "organiser_card_pending":
+      return organiserCardRefundPendingSentence(amount);
+    case "group_cancel_refunding":
+      return groupCancellationRefundSentence(amount, false);
+    case "group_cancel_refunded":
+      return groupCancellationRefundSentence(amount, true);
     case "organiser_by_hand":
       return organiserByHandRefundSentence(amount);
     case "credit":
@@ -87,6 +107,16 @@ export function bookingCancelledRefundSentence(
     case "card":
       return ownCardRefundSentence(amount);
   }
+}
+
+/**
+ * #3973: a refund already made reads as a success; a hand-back, a refund still
+ * on its way, or no refund at all reads as information. The email's box and the
+ * confirmation screen both ask here.
+ */
+export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod): boolean {
+  if (refundCents <= 0) return false;
+  return refundMethod === "card" || refundMethod === "credit" || refundMethod === "organiser_card" || refundMethod === "group_cancel_refunded";
 }
 
 /** A card refund back to what the member paid with; Booking Modified and Booking Cancelled alike. */
