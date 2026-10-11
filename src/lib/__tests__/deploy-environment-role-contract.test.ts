@@ -556,6 +556,15 @@ describe("every .env assignment shape Compose accepts is counted and read", () =
     expect(result.code).not.toBe(0);
     expect(result.stdout).toBe("");
   });
+
+  it("aborts the count and the read for a refused key instead of matching every line", () => {
+    // `grep -E ""` matches every line, so a reader that swallowed the refusal
+    // would count every assignment in the file as this key.
+    const result = run({ KEY: "A.B" }, `${KEY}=production\nOTHER=1\n`);
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain("COUNT=");
+    expect(result.stderr).toContain("not a plain variable name");
+  });
 });
 
 describe("the deploy re-reads the declaration from the container itself", () => {
