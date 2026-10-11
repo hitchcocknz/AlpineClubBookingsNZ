@@ -2498,13 +2498,17 @@ describe_service_container_state() {
 # verify_internal_health runs at steps 14 and 15, before the cutover, and again
 # at step 17, after Caddy has been switched (#3965 review).
 #
-# One pre-cutover case is not "the old release is still behind Caddy": on the
-# first blue/green deploy Caddy points at the cron leader itself (`app`), and
-# step 15 has just recreated that very container on the new release.
+# The first blue/green deploy is different on both sides of the switch: Caddy
+# pointed at the cron leader itself (`app`), and step 15 recreated that very
+# container on the new release. So before the switch a step-15 failure leaves
+# the new release behind Caddy, and after it a rollback lands on that same
+# recreated `app` rather than on the previous release.
 describe_internal_read_stop() {
   local service="${1:-}"
 
-  if [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
+  if [ "${SWITCHED_TRAFFIC:-0}" = "1" ] && [ "${ACTIVE_SERVICE:-}" = "$CRON_SERVICE" ]; then
+    echo "This is the check after the traffic switch: Caddy already points at ${TARGET_SERVICE:-the new colour}. The deploy now fails, and its failure handling points Caddy back at ${CRON_SERVICE}. On this first blue/green deploy ${CRON_SERVICE} was recreated on the new release at step 15, so the rollback lands on the release that just failed, not on the previous one." >&2
+  elif [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
     echo "This is the check after the traffic switch: Caddy already points at ${TARGET_SERVICE:-the new colour}. The deploy now fails, and its failure handling tries to point Caddy back at ${ACTIVE_SERVICE:-the previous colour}, which serves only if it is still running." >&2
   elif [ -n "$service" ] && [ "$service" = "$CRON_SERVICE" ] && [ "${ACTIVE_SERVICE:-}" = "$CRON_SERVICE" ]; then
     echo "Traffic has not been switched, so the deploy stops before the cutover. But Caddy points at ${CRON_SERVICE}, and this step has just recreated ${CRON_SERVICE} on the new release, so the previous release is not serving: whatever answers now is the new release that failed this check." >&2
@@ -2666,7 +2670,7 @@ read_service_endpoint_once() {
 
   docker compose exec -T "$service" /bin/sh -c '
 if [ "$3" = "1" ] && [ -z "${CRON_SECRET:-}" ]; then
-  echo "CRON_SECRET is empty inside this container, so the deploy cannot ask the application which release and which environment role it is running." >&2
+  echo "CRON_SECRET is empty inside this container, so the deploy cannot ask the application which role and which environment role it is running." >&2
   exit "$2"
 fi
 node - "http://127.0.0.1:3000$1" "$3" "$4" <<"NODE"
