@@ -53,9 +53,12 @@
   When a later reduction cancels or shrinks that additional payment, the app now
   raises a credit note against the invoice for exactly the part it had billed,
   worded as an invoice correction, so Xero matches what the booking costs and
-  the treasurer has nothing to do. The note is raised after the change's own
-  credit note, and a booking-vs-Xero repair run checks it is there and raises it
-  if it is missing. The app raises that note only where the booking's own
+  the treasurer has nothing to do. Where the change also refunds or credits
+  part of the reduction, the note waits until the change's own credit note has
+  been sent, or has failed and been left for its retry; if that note never
+  appears within six hours, the repair run lists the note for a treasurer
+  rather than send it. A booking-vs-Xero repair run also checks the note is
+  there, and raises it if it is missing. The app raises that note only where the booking's own
   records show the invoice billed the additional payment; where they cannot,
   nothing is credited or invoiced and the repair run lists the booking for a
   treasurer to check instead.

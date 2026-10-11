@@ -2997,11 +2997,22 @@ transaction, after its locks, under the enqueue's own-key dedupe and no
 advisory key; it is raised after the edit's own note, waiting while that note
 is queued or running and - round 7 - while the edit expects one its Xero leg
 has not queued yet (recorded on the note's payload), for up to six hours, after
-which the repair pass hands it to a person. Round 7 also: the door's mint
+which the repair pass hands it to a person. Round 8: while it waits for a note
+not yet queued it is requeued under `BILLED_OFFSET_AWAITING_OWN_NOTE`, and the
+outbox scan leaves it out for five minutes at a time rather than give it an
+oldest-first slot on every kick; "the edit's own note" is one predicate
+(`isOwnModificationNoteOperation`) for the wait and the repair pass, either
+kind, a FAILED one counting as present. Round 7 also: the door's mint
 re-reads its new intent's row after its Stripe cancels and queues no invoice,
 and offers no client secret, when a reduction withdrew it meanwhile (a retire
 landing after that read leaves an invoice parked on a cancelled intent, which
-the stale-wait reaper retires); an increase's recovery that folded re-issues in
+the stale-wait reaper retires). Round 8: only a withdrawn or FAILED row is
+"retired" there - a paid one, one not found or a failed re-read is live - and
+the door still returns the intent's id, so the increase's Xero leg parks its
+invoice on it rather than raising it unpaid; the reduction names the
+increase from the edit its mint stamped on the row
+(`PaymentTransaction.bookingModificationId`), so the repair pass never bills
+it again. An increase's recovery that folded re-issues in
 is settled only by its own row, so a later ask cannot overtake that money; and
 both minters of a re-issue resolve its Stripe customer one way
 (`resolveAskCustomerId`). A deadlock mapped to the 409 is logged and kept as its
@@ -3011,7 +3022,20 @@ with its own request and no metadata stamp. If it writes its row, that intent is
 the ask and this release's mint of the key writes nothing. If it dies between
 mint and row, this release's replay meets an `idempotency_error` the metadata
 lookup cannot answer, retries, and fails for an officer, as any exhausted
-recovery does.
+recovery does. (Round 8: the lookup scans the resolved customer's intents,
+then the account's, so a different customer does not hide it; an intent with
+no metadata stamp still cannot be found.) The draining release's outbox can
+also take a billed-offset note this release queued: it raises it with no wait,
+possibly before the edit's own note - which is still raised beside it, the
+scoped link refusing it nothing (round 6) - and its inbound credit-note sync,
+which does not know the scope, can fold that note into
+`Payment.refundedAmountCents` as cash. The booking-vs-Xero repair pass does not
+touch that total: it finds the scoped note present and queues nothing. This
+release's next inbound sync of a credit note on the payment recomputes the
+total without it - lowering it for a bank payment; for a card payment the
+raise-only floor (#1353) keeps the higher figure and sends the
+refund-ledger-divergence alert, so a treasurer corrects it by hand. A stated
+limit of the window, not of the release.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`

@@ -286,8 +286,8 @@ what is left of the reduction is refunded or credited under the club's policy
 outright, and a smaller request gets its own Xero invoice. Where the booking's
 Xero invoice had already billed the cancelled money, Xero also gets an
 invoice-correction credit note for it. Where the booking's records cannot show
-which invoice billed it, nothing is credited, and the booking-vs-Xero repair
-report lists the booking for a treasurer to check. If the member pays the old
+which invoice billed it, nothing is credited or invoiced, and the
+booking-vs-Xero repair report lists the booking for a treasurer to check. If the member pays the old
 request at the same moment, that payment is refunded in full automatically, or
 the change is refused with "try again in a moment" and nothing is changed.
 
