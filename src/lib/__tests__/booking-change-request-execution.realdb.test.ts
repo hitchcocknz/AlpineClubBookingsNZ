@@ -197,6 +197,8 @@ async function seed(
     unpaid?: { invoiced: boolean };
     /** A booking-level promotion with no per-night rows (pre-#3276 shape). */
     promoAdjustmentCents?: number;
+    /** #4030: paid by card (Stripe) rather than internet banking, with no invoice. */
+    card?: boolean;
   } = {},
 ): Promise<void> {
   const guestIds = options.secondGuest ? [GUEST_ID, GUEST_2_ID] : [GUEST_ID];
@@ -225,12 +227,13 @@ async function seed(
       id: PAYMENT_ID,
       bookingId: BOOKING_ID,
       amountCents: priceCents,
-      source: "INTERNET_BANKING",
-      reference: "RACE3750",
+      ...(options.card
+        ? { source: "STRIPE" as const, stripePaymentIntentId: "pi_race_4030" }
+        : { source: "INTERNET_BANKING" as const, reference: "RACE3750" }),
       status: options.unpaid ? "PENDING" : "SUCCEEDED",
       // An issued primary invoice: the edit's extra is billed by a supplementary
       // invoice and asked for by internet banking.
-      ...(options.unpaid && !options.unpaid.invoiced
+      ...((options.unpaid && !options.unpaid.invoiced) || options.card
         ? {}
         : { xeroInvoiceId: "race-3750-xero-invoice", xeroInvoiceNumber: "INV-3750" }),
     },
@@ -255,8 +258,17 @@ async function seed(
   });
 }
 
-async function approve(officerId: string, options: { confirmOverCapacity?: boolean } = {}) {
+async function approve(
+  officerId: string,
+  options: {
+    confirmOverCapacity?: boolean;
+    officerEnteredGuests?: Parameters<
+      typeof executor.approveAndExecuteLockedPeriodChangeRequest
+    >[0]["officerEnteredGuests"];
+  } = {},
+) {
   return executor.approveAndExecuteLockedPeriodChangeRequest({
+    ...(options.officerEnteredGuests ? { officerEnteredGuests: options.officerEnteredGuests } : {}),
     requestId: REQUEST_ID,
     expectedVersion: 1,
     actorMemberId: officerId,
@@ -1156,4 +1168,150 @@ function deferred() {
     const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
     expect(request).toMatchObject({ status: "REQUESTED", version: 1, linkedModificationId: null });
   }, 60_000);
+  // ---------------------------------------------------------------------------
+  // #4030 Part B: the officer enters the guests a free-text request described.
+  // ---------------------------------------------------------------------------
+
+  /** What the old free-text card stored: an effective date and nothing else. */
+  const FREE_TEXT = {
+    addGuests: [],
+    summary: "effective 2026-06-10",
+    requestedEffectiveDate: "2026-06-10",
+  };
+  const GRANDCHILDREN = [
+    { firstName: "Ari", lastName: "Grandchild", ageTier: "ADULT" as const, isMember: false, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+    { firstName: "Bo", lastName: "Grandchild", ageTier: "ADULT" as const, isMember: false, stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+  ];
+
+  async function storedRequested() {
+    const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    return { request, requested: (request.requestedChanges as { requested: Record<string, unknown> }).requested };
+  }
+
+  it("#4030: an officer's entry on an internet-banking stay is recorded on the request, applied, and billed with no fee", async () => {
+    await seed({ requested: FREE_TEXT });
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      addedGuestCount: 2,
+      // Ari two nights, Bo one: three nights at the season rate, no fee.
+      priceDiffCents: 3 * NIGHT_CENTS,
+      changeFeeCents: 0,
+      additionalAmountCents: 3 * NIGHT_CENTS,
+      officerEnteredGuests: GRANDCHILDREN,
+    });
+
+    // The entry is on the request, named as the officer's on the member's behalf.
+    const { request, requested } = await storedRequested();
+    expect(request).toMatchObject({ status: "APPROVED", version: 2, reviewedByMemberId: OFFICER_ID });
+    expect(request.linkedModificationId).toBeTruthy();
+    expect(requested).toMatchObject({
+      addGuests: GRANDCHILDREN,
+      requestedEffectiveDate: "2026-06-10",
+      officerEntry: {
+        onMemberBehalf: true,
+        officerMemberId: OFFICER_ID,
+        memberSummary: "effective 2026-06-10",
+      },
+    });
+    expect(String(requested.summary)).toMatch(/^add Ari Grandchild, Bo Grandchild \(entered by a booking officer/);
+
+    // Applied: each guest holds exactly the nights entered; the original guest is untouched.
+    const guests = await prisma.bookingGuest.findMany({
+      where: { bookingId: BOOKING_ID },
+      include: { nights: { orderBy: { stayDate: "asc" } } },
+    });
+    const nightsOf = (firstName: string) =>
+      guests.find((guest) => guest.firstName === firstName)!.nights.map((night) => [night.stayDate.toISOString(), night.priceCents]);
+    expect(nightsOf("Ari")).toEqual([[CHECK_IN.toISOString(), NIGHT_CENTS], [NIGHT_2.toISOString(), NIGHT_CENTS]]);
+    expect(nightsOf("Bo")).toEqual([[NIGHT_2.toISOString(), NIGHT_CENTS]]);
+    expect(nightsOf("Original")).toEqual([[CHECK_IN.toISOString(), STORED_NIGHT_CENTS], [NIGHT_2.toISOString(), STORED_NIGHT_CENTS]]);
+
+    // Settled the ordinary way: one supplementary invoice for exactly the extra, no fee.
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification).toMatchObject({ changeFeeCents: 0, priceDiffCents: 3 * NIGHT_CENTS });
+    expect(await supplementaryInvoices(1)).toEqual([
+      {
+        localId: modification.id,
+        idempotencyKey: `booking-mod:${modification.id}:supplementary-invoice:${3 * NIGHT_CENTS}:0:v1`,
+      },
+    ]);
+  });
+
+  it("#4030: an officer's entry on a card-paid stay raises the card ask for the extra", async () => {
+    await seed({ requested: FREE_TEXT, card: true });
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: [GRANDCHILDREN[0]] });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      addedGuestCount: 1,
+      priceDiffCents: 2 * NIGHT_CENTS,
+      changeFeeCents: 0,
+      additionalAmountCents: 2 * NIGHT_CENTS,
+      settlementMethod: "card",
+    });
+    const { request, requested } = await storedRequested();
+    expect(request.status).toBe("APPROVED");
+    expect(requested.officerEntry).toMatchObject({ officerMemberId: OFFICER_ID });
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification).toMatchObject({ changeFeeCents: 0, priceDiffCents: 2 * NIGHT_CENTS });
+    // A card booking is asked by card, never billed on a supplementary invoice.
+    expect(await supplementaryInvoices(0)).toEqual([]);
+  });
+
+  it("#4030: a refused approval rolls the officer's entry back with it — the request is exactly as the member left it", async () => {
+    await seed({ requested: FREE_TEXT });
+    const before = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    // Three beds, and somebody else holds two on those nights: two more guests
+    // overbook the past nights, and nobody has confirmed it.
+    await prisma.lodgeSettings.update({ where: { id: LODGE_ID }, data: { capacity: 3 } });
+    await prisma.booking.create({
+      data: {
+        id: OTHER_BOOKING_ID,
+        memberId: OFFICER_2_ID,
+        lodgeId: LODGE_ID,
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        status: "COMPLETED",
+        totalPriceCents: 0,
+        finalPriceCents: 0,
+        guests: {
+          create: [1, 2].map((n) => ({
+            firstName: `Other${n}`,
+            lastName: "Stayer",
+            ageTier: "ADULT" as const,
+            isMember: false,
+            stayStart: CHECK_IN,
+            stayEnd: CHECK_OUT,
+            priceCents: 0,
+          })),
+        },
+      },
+    });
+    const { OverCapacityConfirmationRequiredError } = await import("@/lib/over-capacity-confirmation");
+    await expect(approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN })).rejects.toBeInstanceOf(
+      OverCapacityConfirmationRequiredError,
+    );
+    const after = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(after).toMatchObject({ status: "REQUESTED", version: 1, linkedModificationId: null, reviewedByMemberId: null });
+    expect(after.requestedChanges).toEqual(before.requestedChanges);
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+
+    // Confirmed, the same entry applies once.
+    const confirmed = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN, confirmOverCapacity: true });
+    expect(confirmed).toMatchObject({ outcome: "executed", capacityOverridden: true, addedGuestCount: 2 });
+  }, 60_000);
+
+  it("#4030: an entry on a request that already names a change is refused before anything is written", async () => {
+    await seed();
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN });
+    expect(result).toEqual({
+      outcome: "keptPending",
+      message: executor.OFFICER_ENTRY_ON_STRUCTURED_REQUEST_MESSAGE,
+    });
+    const { request, requested } = await storedRequested();
+    expect(request).toMatchObject({ status: "REQUESTED", version: 1 });
+    expect(requested).not.toHaveProperty("officerEntry");
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+  });
 });
