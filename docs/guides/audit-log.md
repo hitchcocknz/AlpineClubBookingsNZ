@@ -17,12 +17,14 @@ edit or delete an entry. Retention and optional archival are governed by the
 
 An entry kept as evidence of an incident skips its normal retention period
 and is deleted **10 years after it was recorded**, from the audit log and from
-its archive alike (#3939). The app marks these entries itself: today, the entry
-for an admin capacity hold or force-confirm that overbooked the lodge. Such an
-entry also keeps its IP address and browser details. A preserved entry of a
-kind that is normally archived still moves to the archive after 12 months, with
-those details; that relocates it, and the 10-year limit applies there too. The
-Audit Log screen does not mark which entries are preserved; the
+its archive alike (#3939). An entry whose normal retention is longer than that
+keeps it: preservation never shortens how long an entry is kept. The app marks
+these entries itself: today, the entry for an admin capacity hold or
+force-confirm that overbooked the lodge. Such an entry also keeps its IP address
+and browser details. A preserved entry of a kind that is normally archived still
+moves to the archive after 12 months, with those details; that relocates it, and
+the 10-year limit applies there too. The Audit Log screen does not mark which
+entries are preserved; the
 [runbook](../AUDIT_RETENTION_ARCHIVE_RUNBOOK.md#incident-preserved-rows-are-kept-for-ten-years-3939)
 explains the rule and has a read-only query to count them.
 

@@ -2949,15 +2949,15 @@ export const APPROVED_NON_PRODUCING_AUDIT_DML: Readonly<Record<string, string>> 
     "Retention archive: deletes from the main table the rows past their archive " +
       "threshold that were just copied to the archive database (a move).",
   "src/lib/audit-retention.ts::pruneExpiredAuditLogs#0":
-    // Corrected again in #3939 (owner decision, 11 Oct 2026): the normal branches
-    // now bind only rows with `incidentPreserved = false`, and a preserved row is
-    // deleted only once its `createdAt` is ten years old, whatever its class,
-    // severity or `expiresAt`. Before #3939 the flag guarded only
-    // `anonymizeExpiredAuditRequestData` and the archive's request-data copy, and
-    // a preserved row was deleted at its expiry (for `critical`, at seven years).
-    "Retention prune: deletes unpreserved rows past `expiresAt` (for `critical`, " +
-      "also past the seven-year `createdAt` cutoff), and an `incidentPreserved` " +
-      "row only ten years after its `createdAt` (#3939).",
+    // Corrected again in #3939 (owner decision, 11 Oct 2026): a row with
+    // `incidentPreserved` set must ALSO be ten years past its `createdAt`, so it
+    // goes at the later of its normal rule and that cap. Before #3939 the flag
+    // guarded only `anonymizeExpiredAuditRequestData` and the archive's
+    // request-data copy, and a preserved row was deleted at its expiry (for
+    // `critical`, at seven years).
+    "Retention prune: deletes rows past `expiresAt` (for `critical`, also past " +
+      "the seven-year `createdAt` cutoff); an `incidentPreserved` row must also " +
+      "be ten years past its `createdAt` (#3939).",
   "src/lib/audit-retention.ts::anonymizeExpiredAuditRequestData#0":
     "Retention anonymisation: clears `ipAddress`/`userAgent` on rows past the request-data window.",
 };

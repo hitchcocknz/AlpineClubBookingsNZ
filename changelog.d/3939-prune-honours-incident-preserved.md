@@ -4,7 +4,8 @@
   entry marked as preserved for an incident, but it still deleted the entry
   itself at its expiry date, which defeated the point of preserving it. A
   preserved entry now skips its normal expiry and is deleted 10 years after it
-  was recorded, from the audit log and from the audit archive alike. Today these
+  was recorded, from the audit log and from the audit archive alike, or later if
+  its normal retention is longer: preservation never shortens it. Today these
   are the entries for an admin capacity hold or force-confirm that overbooked
   the lodge.
 

@@ -11,16 +11,16 @@ This runbook covers the production audit-log retention job and the optional arch
 
 ## Retention Policy
 
-- A row with `incidentPreserved=true` skips every rule below and is pruned **10 years after its `createdAt`**, from the main database and the archive alike, whatever its class, severity or `expiresAt` (#3939). See "Incident-preserved rows are kept for ten years" below. The rest of this list describes unpreserved rows.
+- A row with `incidentPreserved=true` is kept for **at least 10 years from its `createdAt`**, from the main database and the archive alike: it is pruned at the later of the rule below that applies to it and that 10-year cap, so never sooner than an unpreserved row (#3939). See "Incident-preserved rows are kept for ten years" below.
 - Raw request data (`ipAddress`, `userAgent`) is anonymized after 90 days unless `incidentPreserved=true`.
 - `sensitive_access` and `standard` audit logs older than 12 months are copied to the archive database and then deleted from the main database when an archive database is configured.
 - `critical` audit logs remain in the main database for 7 years before pruning, subject to `expiresAt`.
 - `diagnostic_high_volume` audit logs are pruned from the main database when their `expiresAt` passes and are not moved to the archive database.
-- Archive rows older than 7 years are pruned from the archive database, except an incident-preserved copy, which is pruned at 10 years.
+- Archive rows older than 7 years are pruned from the archive database; an incident-preserved copy waits until it is 10 years old.
 
 ## Hard invariant: prune never outruns archival (#2506)
 
-**Prune may never delete an audit row that is destined for the archive but has not yet been archived.** The one exception is an incident-preserved row past its 10-year cap: had the archive received it, the archive prune would delete it on the same run, so there is nothing for archival to keep (see "Incident-preserved rows are kept for ten years"). The archive step copies at most a bounded 500 rows per night (oldest first), while pruning acts on `expiresAt`. Left ungated, a club sustaining more than 500 archive-eligible rows/day could accumulate a backlog large enough that an archivable row (`sensitive_access`, `standard`) reaches its `expiresAt` — 24 months for `sensitive_access`, 7 years for `standard` — while still sitting unarchived in the main table. Pruning it then would permanently delete a row the archive never received. The archive copy is the only surviving record once the source row is gone, so that loss is unrecoverable.
+**Prune may never delete an audit row that is destined for the archive but has not yet been archived.** The archive step copies at most a bounded 500 rows per night (oldest first), while pruning acts on `expiresAt`. Left ungated, a club sustaining more than 500 archive-eligible rows/day could accumulate a backlog large enough that an archivable row (`sensitive_access`, `standard`) reaches its `expiresAt` — 24 months for `sensitive_access`, 7 years for `standard` — while still sitting unarchived in the main table. Pruning it then would permanently delete a row the archive never received. The archive copy is the only surviving record once the source row is gone, so that loss is unrecoverable.
 
 Two guards enforce the invariant, in depth (`src/lib/audit-retention.ts`):
 
@@ -31,7 +31,7 @@ The accepted cost of this gate is that an expired archivable row can outlive its
 
 Because that over-retention is otherwise invisible, the archive step emits a nightly **backlog warning** so drift does not go unnoticed: whenever a run's archive batch comes back full (the bounded 500 rows), more archivable rows remain unarchived, so the job logs `reason: "archive-backlog"` at `warn` level. A one-off warning is normal after a busy day and clears the first night the batch is not full; a warning that **persists** night after night means archival is falling behind — expired rows are being retained past their window — and archive throughput (or the batch size) should be investigated.
 
-When **no** archive database is configured there is no archive to outrun and nowhere for the data to go, so archivable rows are pruned on `expiresAt` as normal; the gate applies only to the archive-active case. `diagnostic_high_volume` and the unclassified/`critical` classes are never archived, so an unpreserved row of theirs prunes on its own expiry regardless of archive state; an incident-preserved one waits for its 10-year cap.
+When **no** archive database is configured there is no archive to outrun and nowhere for the data to go, so archivable rows are pruned on `expiresAt` as normal; the gate applies only to the archive-active case. `diagnostic_high_volume` and the unclassified/`critical` classes are never archived, so they prune on their own expiry regardless of archive state (an incident-preserved one also waits for its 10-year cap).
 
 ## Archive Database Env Vars
 
@@ -51,12 +51,12 @@ The archive database can be a separate PostgreSQL database. The job creates and 
 
 `AuditLog.incidentPreserved` marks a row kept as evidence of an incident. The app sets it automatically, not an officer: today, on the audit entry for an admin capacity hold or force-confirm that overbooked the lodge, which is also recorded as `critical`. The Audit Log screen does not show the flag; use the count below to see these rows.
 
-**The rule (owner decision, 11 Oct 2026).** A preserved row skips its normal expiry, but it is still deleted **10 years after its `createdAt`**, from the main database and the archive alike. That keeps the evidence through any realistic dispute without keeping it forever. The 10-year figure is `INCIDENT_PRESERVED_RETENTION_YEARS` in `src/lib/audit-retention.ts`, the one source both prunes read.
+**The rule (owner decision, 11 Oct 2026).** A preserved row skips its normal expiry, but it is still deleted **10 years after its `createdAt`**, from the main database and the archive alike. That keeps the evidence through any realistic dispute without keeping it forever. Precisely, a preserved row goes at the **later** of its normal rule and the 10-year cap, so preservation never makes a row shorter-lived than an unpreserved one: for every row the app preserves today (`critical`, seven-year expiry) that is the 10-year cap. The 10-year figure is `INCIDENT_PRESERVED_RETENTION_YEARS` in `src/lib/audit-retention.ts`, the one source both prunes read.
 
 **How each retention step treats the flag:**
 
 - The 90-day request-data clean-up keeps the row's `ipAddress` and `userAgent`.
-- The main prune (`pruneExpiredAuditLogs`) applies its normal rules only to unpreserved rows. A preserved row matches a separate condition: `createdAt` more than 10 years ago. That condition does not look at `expiresAt` (a preserved row with no expiry still goes at 10 years) or at the archive gate (a preserved row past the cap is past it in the archive too).
+- The main prune (`pruneExpiredAuditLogs`) applies its normal rules to every row, and adds one condition for a preserved row: `createdAt` more than 10 years ago. So a preserved row with no `expiresAt` is kept, like an unpreserved one, and a preserved archivable row stays behind the archive gate above and leaves through the archive.
 - The archive prune (`pruneAuditArchive`) deletes an unpreserved copy at 7 years and a preserved copy at 10. The archive table has carried the column since it was first provisioned, so no archive database needs a migration for this.
 - Archival itself still moves an archivable-class preserved row (`sensitive_access`, `standard`) into the archive after 12 months, flag, IP and user agent included. That relocates the row; it does not lose it, and the 10-year limit follows it. Today's preserving writers record `critical`, which is never archived.
 
