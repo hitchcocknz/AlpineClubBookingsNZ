@@ -927,6 +927,7 @@ export async function upsertPaymentIntentTransaction({
   reason,
   stripeCustomerId,
   hadIssuedXeroInvoice,
+  bookingModificationId,
   store = prisma,
 }: {
   paymentId: string;
@@ -948,9 +949,18 @@ export async function upsertPaymentIntentTransaction({
   stripeCustomerId?: string | null;
   /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
+  /**
+   * #3954 round 8: the edit whose price ask this row is, stamped by the same
+   * mints, so a reduction that retires the row names that edit
+   * (`retiredAskModificationIds`); omitted, left alone.
+   */
+  bookingModificationId?: string;
   store?: PaymentStore;
 }) {
-  const answer = hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {};
+  const provenance = {
+    ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}),
+    ...(bookingModificationId !== undefined ? { bookingModificationId } : {}),
+  };
   await store.paymentTransaction.upsert({
     where: { stripePaymentIntentId: paymentIntentId },
     create: {
@@ -963,7 +973,7 @@ export async function upsertPaymentIntentTransaction({
       paymentMethodId: paymentMethodId ?? undefined,
       reason,
       ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
-      ...answer,
+      ...provenance,
     },
     update: {
       paymentId,
@@ -976,7 +986,7 @@ export async function upsertPaymentIntentTransaction({
         : {}),
       ...(reason !== undefined ? { reason } : {}),
       ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
-      ...answer,
+      ...provenance,
     },
   });
 

@@ -173,6 +173,8 @@ describe("createModificationAdditionalPaymentIntent ordering (#3340)", () => {
       stripeCustomerId: "cus_1",
       // #3954 round 7: the edit's own invoice answer, stamped on its row.
       hadIssuedXeroInvoice: false,
+      // Round 8: and the edit itself, which a reduction that retires it names.
+      bookingModificationId: CONTEXT.bookingModificationId,
     });
     // …and the supersede excludes the NEW intent, so the row written a moment
     // earlier cannot select itself, then retires the old ask it carried.

@@ -27,13 +27,15 @@
  *   re-issues an increase folded in: billed by their recorded invoices
  *   (`recordedReissuedAskInvoiceCents`), the rest by the primary invoice. The
  *   re-issue is found through the recovery that minted the row, or the
- *   increase through the fold its history records;
+ *   increase through the fold its history records - or, for a row minted
+ *   since round 8, through the edit its mint stamped on it;
  * - a waiting recovery's figures were recorded at its edit's save
  *   (`hadIssuedXeroInvoice`), and `retireUnpaidAskChain` has counted them.
  *
  * Where any of that cannot be established - an answer nobody recorded (a row
  * minted before round 7, or by the draining colour of that deploy), a row whose
- * carried figure does not add up, a carried part nothing names - the evidence
+ * carried figure does not add up, a carried part nothing names, or a carried
+ * re-issue whose own reduction was itself unsure of its invoice (round 8) - the evidence
  * is `established: false`, and the edit records the offset, and what the
  * re-issue's invoice may still owe, for a person
  * (`unpaidAskBilledOffsetUnsureCents`, `reissuedAskInvoiceUnsureCents`) rather
@@ -52,6 +54,7 @@ import {
   recordedFoldedReissuedAskCents,
   recordedFoldedReissuedAskModificationIds,
   recordedReissuedAskInvoiceCents,
+  recordedReissuedAskInvoiceUnsureCents,
 } from "@/lib/unpaid-ask-offset-marker";
 
 export type UnpaidAskBillingEvidence = {
@@ -119,6 +122,10 @@ export function classifyUnpaidAskBilling({
         return;
       }
       for (const reductionId of reductions) {
+        // Round 8: a re-issue whose own reduction could not establish what its
+        // invoice owes (`reissuedAskInvoiceUnsureCents`) is no more certain
+        // now: its recorded figure is only the part that reduction was sure of.
+        if (recordedReissuedAskInvoiceUnsureCents(modification(reductionId)?.newData) > 0) established = false;
         if (parkedAnchors.includes(reductionId)) continue;
         supplementaryInvoicedCents += recordedReissuedAskInvoiceCents(modification(reductionId)?.newData);
       }
@@ -132,7 +139,11 @@ export function classifyUnpaidAskBilling({
     previous: UnpaidPriceAskRow | null,
     carriedInCents: number,
   ): string[] | null {
-    const minter = row.stripePaymentIntentId ? intentMinters.get(row.stripePaymentIntentId)?.modificationId : undefined;
+    // Round 8: the recovery that minted the row, else the edit its mint stamped on it.
+    const minter =
+      (row.stripePaymentIntentId ? intentMinters.get(row.stripePaymentIntentId)?.modificationId : undefined) ??
+      row.bookingModificationId ??
+      undefined;
     if (row.reason === REISSUED_ASK_REASON) {
       return minter && isReduction(minter) ? [minter] : null;
     }

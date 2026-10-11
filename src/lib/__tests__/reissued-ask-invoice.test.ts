@@ -80,13 +80,33 @@ describe("queueReissuedAskSupplementaryInvoice", () => {
 
   it.each([
     ["withdrawn by a later reduction", { status: "FAILED", withdrawnAt: new Date("2026-07-01T00:00:00.000Z") }],
-    ["no longer PENDING", { status: "SUCCEEDED", withdrawnAt: null }],
-    ["gone", null],
+    ["failed", { status: "FAILED", withdrawnAt: null }],
   ])("MUTATION (round 7): a minted intent %s queues nothing and offers no secret", async (_label, txn) => {
     h.newData = { reissuedAskInvoiceCents: 3_000 };
     h.txn = txn;
     expect(await queueReissuedAskSupplementaryInvoice(CALL)).toBe(false);
     expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  // Round 8 (F4): only a RETIRED row is not live. The recovery path reaches
+  // here after the member may already have paid; that invoice is owed.
+  it.each([
+    ["already paid", { status: "SUCCEEDED", withdrawnAt: null }],
+    ["being paid", { status: "PROCESSING", withdrawnAt: null }],
+    ["not found", null],
+  ])("MUTATION (round 8): a minted intent %s is live, and its invoice is queued", async (_label, txn) => {
+    h.newData = { reissuedAskInvoiceCents: 3_000 };
+    h.txn = txn;
+    expect(await queueReissuedAskSupplementaryInvoice(CALL)).toBe(true);
+    expect(h.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("round 8: a re-read that fails is read as live, so the invoice is still queued", async () => {
+    h.newData = { reissuedAskInvoiceCents: 3_000 };
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.paymentTransaction.findUnique).mockRejectedValueOnce(new Error("database is down"));
+    expect(await queueReissuedAskSupplementaryInvoice(CALL)).toBe(true);
+    expect(h.enqueue).toHaveBeenCalledTimes(1);
   });
 });
 

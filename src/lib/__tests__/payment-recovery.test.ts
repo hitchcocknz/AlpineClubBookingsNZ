@@ -2379,6 +2379,10 @@ describe("payment recovery worker", () => {
           paymentIntentId: "pi_recovered",
           amountCents: 3000,
           status: PaymentStatus.PENDING,
+          // #3954 rounds 7 and 8: the edit's frozen invoice answer, and the
+          // edit itself, ride onto the row the replay writes.
+          hadIssuedXeroInvoice: true,
+          bookingModificationId: "mod-9",
         }),
       );
       // The real supersede looked for older live asks, excluding this one.

@@ -3005,6 +3005,8 @@ async function processCreateAdditionalPaymentIntentOperation(
       stripeCustomerId: mintedIntentCustomerId(pi, customerId),
       // #3954 round 7: the edit's frozen invoice answer rides onto its row.
       ...(operation.hadIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice } : {}),
+      // Round 8: and the edit whose ask it is, for a reduction that retires it.
+      ...(bookingModificationId ? { bookingModificationId } : {}),
       store,
     });
     // #3954: the row names this attempt's intent from the moment it exists, so

@@ -74,6 +74,7 @@ import {
   ASK_RETIRED_BY_REDUCTION_SUMMARY,
   isAskRetiredByReductionOperation,
   isFoldedReissueAccountedFor,
+  isReissueRetiredByLaterReduction,
   recordedReissuedAskInvoiceCents,
   recordedUnpaidAskOffsetCents,
   REISSUED_ASK_INVOICE_MISSING_SUMMARY,
@@ -923,7 +924,14 @@ export function classifyBookingContext(
     // Round 6/7: what the edit could not establish of the offset's billing, or
     // of the re-issue's invoice, it acted on not at all; a person decides.
     if (primaryInvoice) {
-      addUnpaidAskUnsureFindings({ bookingId: booking.id, modification, xeroInvoiceId: primaryInvoice.objectId, actionMap, findings });
+      addUnpaidAskUnsureFindings({
+        bookingId: booking.id,
+        modification,
+        reissueRetired: isReissueRetiredByLaterReduction(modification.id, booking.modifications),
+        xeroInvoiceId: primaryInvoice.objectId,
+        actionMap,
+        findings,
+      });
     }
 
     // #3954: what an unpaid ask took of a reduction returned no money, so no note.

@@ -87,7 +87,9 @@ import { reconcilePaymentAggregates } from "@/lib/payment-transactions";
 import {
   ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE,
   recordedFoldedReissuedAskInvoiceCents,
+  recordedFoldedReissuedAskModificationIds,
   recordedReissuedAskInvoiceCents,
+  recordedReissuedAskInvoiceUnsureCents,
 } from "@/lib/unpaid-ask-offset-marker";
 import { waitingSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
 
@@ -102,6 +104,8 @@ export type UnpaidPriceAskRow = {
   createdAt: Date;
   /** Round 7: the asking edit's own invoice answer, stamped by its door's mint (null: not recorded). */
   hadIssuedXeroInvoice: boolean | null;
+  /** Round 8: the edit whose ask the row is, stamped by its mint (null: not recorded). */
+  bookingModificationId: string | null;
 };
 
 /**
@@ -145,8 +149,12 @@ export type PendingAskRecovery = {
    * #3954 round 6: an increase's recovery that recorded no answer to whether
    * the primary invoice existed when it was saved (`hadIssuedXeroInvoice`
    * null, a pre-#3181 row): what Xero billed of it cannot be established.
+   * Round 8: or a re-issue whose reduction recorded its invoice as unsure
+   * (`reissuedAskInvoiceUnsureCents`).
    */
   invoiceUnknown: boolean;
+  /** Round 8: an increase folded in a re-issue whose reduction was unsure of its invoice. */
+  foldedInvoiceUnknown: boolean;
 };
 
 export type UnpaidPriceAsk = {
@@ -290,6 +298,7 @@ export async function readUnpaidPriceAsk(
       createdAt: true,
       withdrawnAt: true,
       hadIssuedXeroInvoice: true,
+      bookingModificationId: true,
     },
   });
   // Read only once something needs it: a chain whose rows match its mirror, or
@@ -326,6 +335,7 @@ type AskTransaction = {
   createdAt: Date;
   withdrawnAt: Date | null;
   hadIssuedXeroInvoice: boolean | null;
+  bookingModificationId: string | null;
 };
 
 /**
@@ -379,6 +389,7 @@ async function unpaidChain(
       reason: row.reason,
       createdAt: row.createdAt,
       hadIssuedXeroInvoice: row.hadIssuedXeroInvoice,
+      bookingModificationId: row.bookingModificationId,
     })),
   };
 }
@@ -498,7 +509,20 @@ function pendingAskRecoveries(
             : 0,
       foldedInvoiceCents:
         settled || replay.kind !== "increase" ? 0 : recordedFoldedReissuedAskInvoiceCents(modification?.newData),
-      invoiceUnknown: !settled && replay.kind === "increase" && operation.hadIssuedXeroInvoice === null,
+      // Round 8: a re-issue whose reduction was unsure of its invoice is no
+      // surer for being retired; nor is an increase's fold of one.
+      invoiceUnknown:
+        !settled &&
+        (replay.kind === "increase"
+          ? operation.hadIssuedXeroInvoice === null
+          : recordedReissuedAskInvoiceUnsureCents(modification?.newData) > 0),
+      foldedInvoiceUnknown:
+        !settled &&
+        replay.kind === "increase" &&
+        recordedFoldedReissuedAskModificationIds(modification?.newData).some(
+          (reductionId) =>
+            recordedReissuedAskInvoiceUnsureCents(modifications.find((row) => row.id === reductionId)?.newData) > 0,
+        ),
     });
   }
   return pending;
@@ -658,12 +682,22 @@ async function retireUnpaidAskChainUnderLocks(
   return {
     retired,
     invoicedCents: parkedInvoicedCents + unparkedInvoicedCents,
+    // Round 8: and every retired row's own edit, stamped by its mint - a door
+    // that minted the row but has not yet queued its edit's invoice leaves no
+    // parked anchor, and the repair pass must still read that edit's ask as
+    // retired here rather than bill it again.
     retiredAskModificationIds: [
-      ...new Set([...parkedAnchors, ...ask.recoveries.map((recovery) => recovery.bookingModificationId)]),
+      ...new Set([
+        ...parkedAnchors,
+        ...ask.recoveries.map((recovery) => recovery.bookingModificationId),
+        ...ask.rows.flatMap((row) => (row.bookingModificationId ? [row.bookingModificationId] : [])),
+      ]),
     ],
     parkedOps,
     invoiceEvidenceUnknown: ask.recoveries.some(
-      (recovery) => recovery.invoiceUnknown && !parkedAnchors.has(recovery.bookingModificationId),
+      (recovery) =>
+        (recovery.invoiceUnknown && !parkedAnchors.has(recovery.bookingModificationId)) ||
+        recovery.foldedInvoiceUnknown,
     ),
   };
 }
@@ -675,7 +709,8 @@ export type ParkedAskInvoice = { intentId: string | null; anchorId: string | nul
  * What `retireUnpaidAskChain` retired: the intents to cancel at Stripe, what
  * the retired asks' supplementary invoices would have billed (decision A sizes
  * the re-issue's invoice from it), and the edits whose asks they were - parked
- * invoices' anchors and waiting recoveries' edits - for the reduction's history.
+ * invoices' anchors, waiting recoveries' edits and (round 8) each retired row's
+ * own edit - for the reduction's history.
  */
 export type RetiredUnpaidAsk = {
   retired: RetiredAdditionalAsk[];
@@ -683,6 +718,6 @@ export type RetiredUnpaidAsk = {
   retiredAskModificationIds: string[];
   /** Round 6: the parked invoices it read, for what of the rows they cover (`unpaidAskBillingEvidence`). */
   parkedOps: ParkedAskInvoice[];
-  /** Round 6: a waiting increase whose invoice answer was never recorded. */
+  /** Round 6: a waiting increase whose invoice answer was never recorded; round 8: or a waiting re-issue, or fold, recorded as unsure. */
   invoiceEvidenceUnknown: boolean;
 };

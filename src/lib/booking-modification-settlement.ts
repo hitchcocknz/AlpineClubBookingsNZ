@@ -404,6 +404,9 @@ export async function createModificationAdditionalPaymentIntent({
           status: PaymentStatus.PENDING,
           reason: plan.reason,
           stripeCustomerId: mintedIntentCustomerId(pi, customerId),
+          // #3954 round 8: the reducing edit whose re-issue this is, so a later
+          // reduction that retires it names this edit.
+          bookingModificationId: result.bookingModificationId,
           store,
         });
         return queueSupersededAdditionalIntentCancellationRows({
@@ -425,21 +428,16 @@ export async function createModificationAdditionalPaymentIntent({
       }
       await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded });
       // Decision A (#3954): the smaller ask's own invoice, waiting on it - only
-      // while it is still the live ask (round 7): a reduction may have retired
-      // it during the cancels above, and then no secret is offered either.
+      // while it is still live (round 7): a reduction may have retired it during
+      // the cancels above, and named this edit for it. Round 8: only the secret
+      // is withheld then; the minted intent's id is still returned.
       const live = await queueReissuedAskSupplementaryInvoice({
         bookingId,
         bookingModificationId: result.bookingModificationId,
         paymentIntentId: pi.id,
       });
-      if (!live) {
-        return {
-          additionalPaymentClientSecret: undefined,
-          additionalPaymentIntentId: undefined,
-        };
-      }
       return {
-        additionalPaymentClientSecret: pi.client_secret ?? undefined,
+        additionalPaymentClientSecret: live ? (pi.client_secret ?? undefined) : undefined,
         additionalPaymentIntentId: pi.id,
       };
     }
@@ -498,8 +496,11 @@ export async function createModificationAdditionalPaymentIntent({
       reason,
       stripeCustomerId: customerId,
       // #3954 round 7: the edit's own invoice answer, on the row it asks with,
-      // so a later reduction knows which invoice billed this money.
+      // so a later reduction knows which invoice billed this money. Round 8:
+      // and the edit itself, so a reduction that retires the row names it.
+      // A member's price ask only: a review charge is never set against.
       ...(result.hasIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: result.hasIssuedXeroInvoice } : {}),
+      ...(recoveryIdempotencyKey ? {} : { bookingModificationId: result.bookingModificationId }),
     });
 
     await queueSupersededAdditionalIntentCancellations({
@@ -517,24 +518,21 @@ export async function createModificationAdditionalPaymentIntent({
     // #3954 round 6: the re-issues this increase folded in are asked for on
     // this intent now, so their own invoices wait on it. An ordinary edit's ask
     // only: a review charge folds nothing.
-    // Round 7: only while this intent is still the live ask - a reduction may
-    // have retired it during the cancels above, and then no secret is offered.
-    if (!recoveryIdempotencyKey) {
-      const live = await queueFoldedReissuedAskInvoices({
-        bookingId,
-        increaseModificationId: result.bookingModificationId,
-        paymentIntentId: pi.id,
-      });
-      if (!live) {
-        return {
-          additionalPaymentClientSecret: undefined,
-          additionalPaymentIntentId: undefined,
-        };
-      }
-    }
+    // Round 7: only while this intent is still live - a reduction may have
+    // retired it during the cancels above, and then no secret is offered.
+    // Round 8: but its id still goes back to the edit's Xero leg, which parks
+    // the increase's own invoice on it (retired with the intent) rather than
+    // raising it unpaid; the reduction named this edit when it retired the row.
+    const live = recoveryIdempotencyKey
+      ? true
+      : await queueFoldedReissuedAskInvoices({
+          bookingId,
+          increaseModificationId: result.bookingModificationId,
+          paymentIntentId: pi.id,
+        });
 
     return {
-      additionalPaymentClientSecret: pi.client_secret ?? undefined,
+      additionalPaymentClientSecret: live ? (pi.client_secret ?? undefined) : undefined,
       additionalPaymentIntentId: pi.id,
     };
   } catch (piErr) {

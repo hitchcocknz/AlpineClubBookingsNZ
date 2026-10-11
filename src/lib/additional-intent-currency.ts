@@ -7,6 +7,7 @@ import type { AdditionalAsk } from "@/lib/additional-payment-ask";
 import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
 import type { ClubFormat } from "@/lib/club-format";
 import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
+import { prisma } from "@/lib/prisma";
 import {
   reconcilePaymentAggregates,
   upsertPaymentIntentTransaction,
@@ -66,7 +67,9 @@ export function staleIntentAction(intent: Pick<Stripe.PaymentIntent, "status">):
  *    the new currency and the amount, so a retry converges on the same new
  *    intent and never collides with the key that minted the old one;
  * 2. write the new intent's ADDITIONAL row FIRST, carrying the same `reason` (a
- *    review-charge request is found by it) and the same carried balance;
+ *    review-charge request is found by it) and the same carried balance - and
+ *    the stale row's provenance (#3954 round 8): its edit's invoice answer and
+ *    the edit itself, which a later reduction reads off the live row;
  * 3. queue every other live ADDITIONAL intent on the payment for cancellation,
  *    which excludes the new one by id, then reconcile the payment so its
  *    additional pointer names the new intent.
@@ -105,6 +108,12 @@ export async function reissueAdditionalIntentInClubCurrency({
       ask.amountCents,
     ),
   });
+  // #3954 round 8: the same ask, so the same provenance. Read off the stale
+  // row - which the supersede below retires - before the new row is written.
+  const stale = await prisma.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: staleIntentId },
+    select: { hadIssuedXeroInvoice: true, bookingModificationId: true },
+  });
   await upsertPaymentIntentTransaction({
     paymentId,
     kind: PaymentTransactionKind.ADDITIONAL,
@@ -114,6 +123,8 @@ export async function reissueAdditionalIntentInClubCurrency({
     status: PaymentStatus.PENDING,
     reason: reason ?? undefined,
     stripeCustomerId: customerId,
+    ...(stale?.hadIssuedXeroInvoice != null ? { hadIssuedXeroInvoice: stale.hadIssuedXeroInvoice } : {}),
+    ...(stale?.bookingModificationId ? { bookingModificationId: stale.bookingModificationId } : {}),
   });
   await queueSupersededAdditionalIntentCancellations({
     format,

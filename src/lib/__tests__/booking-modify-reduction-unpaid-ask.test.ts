@@ -150,6 +150,7 @@ type Row = {
   stripePaymentIntentId: string | null;
   createdAt: Date;
   hadIssuedXeroInvoice?: boolean | null;
+  bookingModificationId?: string | null;
 };
 
 const state = vi.hoisted(() => ({
@@ -778,19 +779,24 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     );
   });
 
-  it("MUTATION (round 7, F7): a re-issue a later reduction withdrew during the door's cancels is offered to nobody - no secret, no intent handed back", async () => {
+  // Round 8 (F1): only the secret is withheld. The minted intent's id still
+  // goes back, so the edit's Xero leg parks the increase's own invoice on the
+  // retired intent instead of raising it unpaid.
+  it("MUTATION (round 7, F7; round 8): a re-issue a later reduction withdrew during the door's cancels offers no secret, but its intent is still handed back", async () => {
     const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
     queueReissueInvoice.mockResolvedValueOnce(false);
     const { minted } = await mintAfter(result);
     expect(queueReissueInvoice).toHaveBeenCalledTimes(1);
-    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined });
+    expect(minted.additionalPaymentClientSecret).toBeUndefined();
+    expect(minted.additionalPaymentIntentId).toMatch(/^pi_/);
   });
 
-  it("MUTATION (round 7, F7): an increase's ask a reduction withdrew during the door's cancels is offered to nobody", async () => {
+  it("MUTATION (round 7, F7; round 8): an increase's ask a reduction withdrew during the door's cancels offers no secret, but its intent is still handed back", async () => {
     const result = await adjust(grownBooking(), 1_000);
     queueFoldedInvoices.mockResolvedValueOnce(false);
     const { minted } = await mintAfter(result);
-    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined });
+    expect(minted.additionalPaymentClientSecret).toBeUndefined();
+    expect(minted.additionalPaymentIntentId).toBe("pi_reissued_6000");
   });
 
   it("MUTATION (round 6): an increase's own mint queues the invoices of the re-issues it folded in, waiting on its intent", async () => {
@@ -989,6 +995,59 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
     expect(result.additionalAsk.amountCents).toBe(6_000);
     // Its own $50 invoice and the folded re-issue's $10, less the $20 offset.
     expect(result.reissuedAskInvoiceCents).toBe(4_000);
+  });
+
+  describe("round 8 (F2): a re-issue its reduction was unsure of stays unsure when a later reduction retires it", () => {
+    function invoicedBooking() {
+      const booking = grownBooking({ xeroInvoiceId: "INV-3954" });
+      Object.assign(booking.payment!, { additionalAmountCents: 0, additionalPaymentStatus: null, additionalPaymentIntentId: null });
+      return booking;
+    }
+    const UNSURE_REDUCTION = {
+      id: "mod_reduction",
+      priceDiffCents: -2_000,
+      changeFeeCents: 0,
+      newData: { reissuedAskInvoiceCents: 1_000, reissuedAskInvoiceUnsureCents: 2_000 },
+    };
+
+    it("MUTATION: a waiting re-issue recorded unsure - nothing is credit-noted on its figure as if it were certain", async () => {
+      state.modifications = [UNSURE_REDUCTION];
+      state.recoveries = [
+        recoveryRow({
+          idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey("mod_reduction"),
+          amountCents: 3_000,
+          paymentIntentId: "mod_reissued_ask_mod_reduction",
+          hadIssuedXeroInvoice: true,
+        }),
+      ];
+      const result = await adjust(invoicedBooking(), -2_500);
+
+      expect(result.unpaidAskOffsetCents).toBe(2_500);
+      expect(result.unpaidAskBilledOffsetCents).toBe(0);
+      expect(result.unpaidAskBilledOffsetUnsureCents).toBeGreaterThan(0);
+    });
+
+    it("MUTATION: an increase's waiting mint that folded in a re-issue recorded unsure is unsure too", async () => {
+      state.modifications = [
+        {
+          id: "mod_increase",
+          priceDiffCents: 5_000,
+          changeFeeCents: 0,
+          newData: {
+            foldedReissuedAskCents: 3_000,
+            foldedReissuedAskModificationIds: ["mod_reduction"],
+            foldedReissuedAskInvoiceCents: 1_000,
+          },
+        },
+        UNSURE_REDUCTION,
+      ];
+      state.recoveries = [recoveryRow({ amountCents: 8_000, hadIssuedXeroInvoice: true })];
+      const result = await adjust(invoicedBooking(), -7_000);
+
+      expect(result.unpaidAskOffsetCents).toBe(7_000);
+      expect(result.unpaidAskBilledOffsetCents).toBe(0);
+      expect(result.unpaidAskBilledOffsetUnsureCents).toBeGreaterThan(0);
+    });
   });
 
   it("MUTATION (round 4): a waiting re-issue a later minter overtook without folding it in is still owed, all of it", async () => {
@@ -1342,6 +1401,15 @@ describe("#3954 decision A: the smaller re-issued ask's own invoice bills what t
     expect(result.unpaidAskBilledOffsetUnsureCents).toBe(0);
     // Its $50 would have billed the ask; the $30 left is the re-issue's own.
     expect(result.reissuedAskInvoiceCents).toBe(3_000);
+  });
+
+  it("MUTATION (round 8, F1): a door-minted row whose edit has queued no invoice yet is retired by name - the edit stamped on it", async () => {
+    state.parkedInvoices = [];
+    state.rows = [askRow({ hadIssuedXeroInvoice: true, bookingModificationId: "mod_increase" })];
+    const result = await adjust(grownBooking({ xeroInvoiceId: "INV-3954" }), -300);
+
+    expect(result.retiredAskModificationIds).toEqual(["mod_increase"]);
+    expect(unpaidAskOffsetHistory(result)).toMatchObject({ unpaidAskRetiredModificationIds: ["mod_increase"] });
   });
 
   it("MUTATION (round 6, F6; round 7, F3): with no answer recorded on the ask, what the invoice billed is not guessed - the offset and the re-issue's invoice are reported for a person, never credit-noted", async () => {

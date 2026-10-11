@@ -20,10 +20,16 @@
  * ONLY ON A LIVE ASK (review round 7). The door queues after its Stripe
  * cancels, which can take a while, and a later reduction may have retired the
  * intent it just minted in that time - accounting for this money in its own
- * history. So the intent's row is re-read first (`isMintedAskStillLive`): one
- * withdrawn, or no longer PENDING, queues nothing, and the caller offers the
- * member no client secret for it. A retire that lands after this read leaves
- * an invoice parked on a cancelled intent, which the stale-wait reaper retires.
+ * history, and naming this edit there (round 8). So the intent's row is
+ * re-read first (`isMintedAskStillLive`). Round 8: only a row RETIRED since -
+ * withdrawn, or FAILED - is not live. A row the member already paid is live
+ * (its invoice is queued and released as paid), and so is one the re-read
+ * could not see, or a re-read that failed: an invoice parked on an intent that
+ * did die is retired with it by the stale-wait reaper, while one not queued
+ * for a live ask is money Xero never bills. A retired ask queues nothing, and
+ * the door withholds its client secret - never the intent's id, which the
+ * edit's Xero leg still needs to park the increase's own invoice rather than
+ * raise it unpaid.
  */
 import { PaymentStatus } from "@prisma/client";
 
@@ -35,13 +41,16 @@ import {
 } from "@/lib/unpaid-ask-offset-marker";
 import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
 
-/** Whether a just-minted ask is still the live, unpaid ask: not withdrawn by a reduction since, nor moved on. */
+/**
+ * Whether a just-minted ask is still live: not retired since by a reduction
+ * (withdrawn) nor failed. Paid counts as live; so does a row not found.
+ */
 export async function isMintedAskStillLive(paymentIntentId: string): Promise<boolean> {
   const row = await prisma.paymentTransaction.findUnique({
     where: { stripePaymentIntentId: paymentIntentId },
     select: { status: true, withdrawnAt: true },
   });
-  return Boolean(row && !row.withdrawnAt && row.status === PaymentStatus.PENDING);
+  return !row || (!row.withdrawnAt && row.status !== PaymentStatus.FAILED);
 }
 
 /**
@@ -65,15 +74,17 @@ async function askStillLive(bookingId: string, paymentIntentId: string): Promise
     if (await isMintedAskStillLive(paymentIntentId)) return true;
     logger.warn(
       { bookingId, paymentIntentId },
-      "A just-minted additional payment request was retired or moved on before its invoice was queued (#3954); no invoice queued and no client secret offered",
+      "A just-minted additional payment request was retired before its invoice was queued (#3954); no invoice queued and no client secret offered",
     );
     return false;
   } catch (err) {
+    // Round 8: a failed re-read is read as live - a missing invoice for a live
+    // ask is the worse failure, and the reaper retires one parked on a dead ask.
     logger.error(
       { err, bookingId, paymentIntentId },
-      "Could not re-read a just-minted additional payment request (#3954); no invoice queued and no client secret offered - the booking-vs-Xero repair pass reports the invoice",
+      "Could not re-read a just-minted additional payment request (#3954); read as still live, so its invoice is queued",
     );
-    return false;
+    return true;
   }
 }
 

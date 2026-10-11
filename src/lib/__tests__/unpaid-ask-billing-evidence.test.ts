@@ -26,6 +26,7 @@ function row(overrides: Partial<UnpaidPriceAskRow> = {}): UnpaidPriceAskRow {
     reason: "guest_add_price_increase",
     createdAt: ASKED_AT,
     hadIssuedXeroInvoice: true,
+    bookingModificationId: null,
     ...overrides,
   };
 }
@@ -128,6 +129,53 @@ describe("classifyUnpaidAskBilling", () => {
         intentMinters: NO_MINTERS,
       }),
     ).toEqual({ supplementaryInvoicedCents: 1_000 + 1_000, established: true });
+  });
+
+  it("round 8: a re-issue row its door minted names its reduction by the edit stamped on it, with no recovery to find", () => {
+    const reissue = row({
+      reason: REISSUED_ASK_REASON,
+      amountCents: 3_000,
+      carriedAskCents: 3_000,
+      stripePaymentIntentId: "pi_reissue",
+      bookingModificationId: "mod_reduction",
+    });
+    expect(
+      classifyUnpaidAskBilling({ rows: [reissue], retired: NOTHING_RETIRED, modifications: [reduction(1_000)], intentMinters: NO_MINTERS }),
+    ).toEqual({ supplementaryInvoicedCents: 1_000, established: true });
+  });
+
+  it("MUTATION (round 8): a carried-in re-issue whose reduction was unsure of its invoice is not established - parked or not", () => {
+    const unsure = { ...reduction(1_000), newData: { reissuedAskInvoiceCents: 1_000, reissuedAskInvoiceUnsureCents: 500 } };
+    const reissue = row({ reason: REISSUED_ASK_REASON, amountCents: 3_000, carriedAskCents: 3_000, stripePaymentIntentId: "pi_reissue" });
+    const minters = new Map([["pi_reissue", { modificationId: "mod_reduction", hadIssuedXeroInvoice: true }]]);
+    expect(
+      classifyUnpaidAskBilling({ rows: [reissue], retired: NOTHING_RETIRED, modifications: [unsure], intentMinters: minters }),
+    ).toEqual({ supplementaryInvoicedCents: 1_000, established: false });
+    expect(
+      classifyUnpaidAskBilling({
+        rows: [reissue],
+        retired: { invoicedCents: 1_000, parkedOps: [{ intentId: "pi_reissue", anchorId: "mod_reduction" }], invoiceEvidenceUnknown: false },
+        modifications: [unsure],
+        intentMinters: minters,
+      }).established,
+    ).toBe(false);
+  });
+
+  it("MUTATION (round 8): an increase that folded in a re-issue its reduction was unsure of is not established", () => {
+    const folding = {
+      ...increase,
+      priceDiffCents: 1_000,
+      newData: { foldedReissuedAskCents: 3_000, foldedReissuedAskModificationIds: ["mod_reduction"] },
+    };
+    const unsure = { ...reduction(1_000), newData: { reissuedAskInvoiceCents: 1_000, reissuedAskInvoiceUnsureCents: 500 } };
+    expect(
+      classifyUnpaidAskBilling({
+        rows: [row({ amountCents: 4_000, carriedAskCents: 3_000, bookingModificationId: "mod_increase" })],
+        retired: NOTHING_RETIRED,
+        modifications: [folding, unsure],
+        intentMinters: NO_MINTERS,
+      }).established,
+    ).toBe(false);
   });
 
   it("a carried figure that does not add up (a row written before carried asks were recorded) is not established", () => {

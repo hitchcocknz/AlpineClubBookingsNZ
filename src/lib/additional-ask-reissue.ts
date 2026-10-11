@@ -84,8 +84,9 @@ export type UnpaidAskSettlement = {
   /** The asks it retired inside this transaction, cancelled at Stripe after commit by the minter. */
   retiredAdditionalAsks: RetiredAdditionalAsk[];
   /**
-   * The edits whose unpaid asks it retired - a parked invoice's anchor, or a
-   * waiting recovery's edit - for the history row the repair pass reads.
+   * The edits whose unpaid asks it retired - a parked invoice's anchor, a
+   * waiting recovery's edit, or (round 8) a retired row's own edit - for the
+   * history row the repair pass reads.
    */
   retiredAskModificationIds: string[];
   /** Decision A: what the re-issued ask's own supplementary invoice bills, 0 for none. */
@@ -292,6 +293,7 @@ export async function foldWaitingReissuedAsks(
       invoiceCents: 0,
       foldedInvoiceCents: 0,
       invoiceUnknown: false,
+      foldedInvoiceUnknown: false,
     });
   }
   await closeWaitingAskRecoveries(tx, waiting, now, WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE);

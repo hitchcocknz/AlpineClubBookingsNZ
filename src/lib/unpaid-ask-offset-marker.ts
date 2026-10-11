@@ -59,7 +59,8 @@ export const REISSUED_ASK_INVOICE_MISSING_SUMMARY =
 /**
  * #3954 "retry nets it off" and review round 4: the increases whose unpaid ask
  * this reduction retired - an ask's parked supplementary invoice it cancelled,
- * or an ask still waiting on its failed mint's recovery it closed. The repair
+ * an ask still waiting on its failed mint's recovery it closed, or (round 8)
+ * an ask's minted row it retired, named by the edit stamped on it. The repair
  * pass reads the reduction, not the increase, for what Xero is owed for them.
  */
 const RETIRED_PENDING_ASKS_KEY = "unpaidAskRetiredModificationIds" as const;
@@ -256,7 +257,9 @@ export function foldingIncreaseFor<M extends { id: string; newData: unknown }>(
 /**
  * The reduction whose history names this modification as one whose unpaid ask
  * it retired, or null - the repair pass's reading for an increase whose
- * invoice a reduction retired, or whose ask it netted off before it minted.
+ * invoice a reduction retired, whose ask it netted off before it minted, or
+ * whose minted row it retired before the increase queued its invoice (round 8);
+ * and for a reduction whose smaller re-issue a later reduction retired in turn.
  */
 export function retiringReductionFor<M extends { id: string; newData: unknown }>(
   modificationId: string,
@@ -268,6 +271,20 @@ export function retiringReductionFor<M extends { id: string; newData: unknown }>
       return Array.isArray(ids) && ids.includes(modificationId);
     }) ?? null
   );
+}
+
+/**
+ * #3954 round 8: a later reduction retired this reduction's re-issue - by name,
+ * or by retiring the increase that folded it in - and so carried it, and any
+ * uncertainty about its invoice, into its own history.
+ */
+export function isReissueRetiredByLaterReduction<M extends { id: string; newData: unknown }>(
+  reductionId: string,
+  modifications: readonly M[],
+): boolean {
+  if (retiringReductionFor(reductionId, modifications)) return true;
+  const increase = foldingIncreaseFor(reductionId, modifications);
+  return Boolean(increase && retiringReductionFor(increase.id, modifications));
 }
 
 /**

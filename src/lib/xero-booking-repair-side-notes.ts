@@ -224,12 +224,19 @@ export function addScopedSideNoteFindings({
 export function addUnpaidAskUnsureFindings({
   bookingId,
   modification,
+  reissueRetired,
   xeroInvoiceId,
   actionMap,
   findings,
 }: {
   bookingId: string;
   modification: { id: string; newData: unknown };
+  /**
+   * Round 8: a later reduction retired this one's re-issue - directly, or the
+   * increase that folded it in - and carried its uncertainty into its own
+   * history, so the re-issue's own unsure invoice is not reported twice.
+   */
+  reissueRetired: boolean;
   xeroInvoiceId: string;
   actionMap: Map<string, BookingXeroRepairAction>;
   findings: MutableFinding[];
@@ -244,7 +251,7 @@ export function addUnpaidAskUnsureFindings({
     {
       code: "MISSING_SUPPLEMENTARY_INVOICE" as const,
       summary: REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
-      cents: recordedReissuedAskInvoiceUnsureCents(modification.newData),
+      cents: reissueRetired ? 0 : recordedReissuedAskInvoiceUnsureCents(modification.newData),
       detailKey: "reissuedAskInvoiceUnsureCents",
     },
   ];
