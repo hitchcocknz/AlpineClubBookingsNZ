@@ -14,6 +14,9 @@
  *    owed, and its refund plan's lines (the #3653 per-child debts for a card
  *    settlement, the frozen mirror plan for Internet Banking) bring owed(b) to
  *    zero; a re-run posts nothing more.
+ *  - #4042: the Internet Banking cancel raises ONE hand-back on the organiser's
+ *    booking for the plan's total, the re-run raises none, and paying it back
+ *    moves nothing the cancel already booked.
  *
  * At every step each child's ledger agrees with its columns: the charge side
  * with `finalPriceCents`, the settlement side with `Payment.amountCents -
