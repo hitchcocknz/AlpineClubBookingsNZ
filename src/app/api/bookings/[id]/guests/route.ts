@@ -72,7 +72,7 @@ import {
 } from "@/lib/additional-payment-ask";
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
 import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
-import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
+import { additionalAmountToName, createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
 import { z } from "zod";
@@ -1378,18 +1378,18 @@ export async function POST(
     // to avoid holding the advisory lock). Shared settlement helper (#1096):
     // a transient Stripe failure enqueues a durable recovery operation keyed
     // to this modification instead of only logging.
-    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-      await createModificationAdditionalPaymentIntent({
-        format,
-        bookingId,
-        // Guest adds never decrease the price, so the shared settlement
-        // context's refund side is always zero here.
-        result: { ...result, pendingRefundAmountCents: 0, organiserChildRefund: null },
-        reason: "guest_add_price_increase",
-        idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
-        failureMessage:
-          "Failed to create additional PaymentIntent for guest addition",
-      });
+    const additionalMint = await createModificationAdditionalPaymentIntent({
+      format,
+      bookingId,
+      // Guest adds never decrease the price, so the shared settlement
+      // context's refund side is always zero here.
+      result: { ...result, pendingRefundAmountCents: 0, organiserChildRefund: null },
+      reason: "guest_add_price_increase",
+      idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
+      failureMessage:
+        "Failed to create additional PaymentIntent for guest addition",
+    });
+    const { additionalPaymentClientSecret, additionalPaymentIntentId } = additionalMint;
 
     // Audit log. #3530: what the figure is made of, line by line and in dollars.
     const linesAudit = await loadModificationLinesAuditFields(prisma, result.priceLines, logger, format);
@@ -1473,6 +1473,8 @@ export async function POST(
         result.booking.id,
       );
 
+      // #3954 round 9: an ask a reduction retired before it was offered is not named.
+      const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
       sendBookingModifiedEmail({
         bookingId: result.booking.id,
         recipientMemberId: result.memberId,
@@ -1492,14 +1494,14 @@ export async function POST(
         // Guest adds never decrease the price, so nothing is refunded.
         refundByBankTransfer: false,
         appliedCreditGivenBackCents: 0,
-        additionalAmountCents: result.additionalAmountCents,
+        additionalAmountCents: namedAdditionalCents,
         // A guest add only raises a price.
         unpaidAskCancelled: false,
         additionalPaymentMethod:
-          result.additionalAmountCents > 0 &&
+          namedAdditionalCents > 0 &&
           result.paymentSource === PaymentSource.INTERNET_BANKING
             ? "INTERNET_BANKING"
-            : result.additionalAmountCents > 0 && result.hasSucceededPayment
+            : namedAdditionalCents > 0 && result.hasSucceededPayment
               ? "STRIPE"
               : undefined,
         paymentReference: result.paymentReference,

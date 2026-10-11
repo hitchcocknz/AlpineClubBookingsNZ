@@ -1847,6 +1847,43 @@ describe("PUT /api/bookings/[id]/modify", () => {
     });
   });
 
+  // #3954 round 9: the same liveness that withholds the secret.
+  it("MUTATION (round 9): an increase whose ask a reduction retired is not named as due in the member's email", async () => {
+    const tx = makeTx(makeBooking());
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
+    mockCalculateBookingPrice
+      .mockReturnValueOnce({
+        totalPriceCents: 15000,
+        guests: [
+          { priceCents: 5000, perNightCents: [2500, 2500] },
+          { priceCents: 10000, perNightCents: [5000, 5000] },
+        ],
+      })
+      .mockReturnValueOnce({ totalPriceCents: 5000, guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }] })
+      .mockReturnValueOnce({ totalPriceCents: 10000, guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }] });
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.paymentTransaction.findUnique).mockResolvedValueOnce({ status: "FAILED", withdrawnAt: new Date("2026-07-01T00:00:00.000Z") } as never);
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+
+    const response = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify", {
+        method: "PUT",
+        body: JSON.stringify({ addGuests: [{ firstName: "Bob", lastName: "Guest", ageTier: "ADULT", isMember: false }] }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 10000 }));
+    expect(data.additionalPaymentClientSecret).toBeNull();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
+      expect.anything(),
+    );
+  });
+
   it("creates an additional PaymentIntent when a paid booking increases in price", async () => {
     const booking = makeBooking();
     const tx = makeTx(booking);

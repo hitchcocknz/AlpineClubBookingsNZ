@@ -59,11 +59,16 @@ vi.mock("@/lib/member-credit", async (importOriginal) => ({
   clampAppliedCreditToBookingPrice: h.clampAppliedCreditToBookingPrice,
   lockMemberCreditLedger: h.lockMemberCreditLedger,
 }));
-vi.mock("@/lib/booking-modification-settlement", async (importOriginal) => ({
-  ...((await importOriginal()) as typeof import("@/lib/booking-modification-settlement")),
-  executeBookingModificationRefund: h.executeBookingModificationRefund,
-  drainSupersededPrimaryIntents: vi.fn(),
-}));
+vi.mock("@/lib/booking-modification-settlement", async (importOriginal) => {
+  const real = (await importOriginal()) as typeof import("@/lib/booking-modification-settlement");
+  return {
+    ...real,
+    executeBookingModificationRefund: h.executeBookingModificationRefund,
+    drainSupersededPrimaryIntents: vi.fn(),
+    // Real by default; round 9 answers it once to retire the re-issued ask.
+    createModificationAdditionalPaymentIntent: vi.fn(real.createModificationAdditionalPaymentIntent),
+  };
+});
 vi.mock("@/lib/xero-booking-edit-settlement", () => ({
   queueXeroBookingEditSettlement: h.queueXeroBookingEditSettlement,
 }));
@@ -85,7 +90,9 @@ import {
   settleGuestAcceptanceRepriceAfterCommit,
 } from "@/lib/booking-guest-acceptance-reprice";
 import { applyPaymentAdjustments } from "@/lib/booking-modify-settlement";
+import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import { noReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
+import { reissueUnpaidAdditionalAsk } from "@/lib/additional-payment-ask";
 import { requireCalendarDate } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
@@ -372,6 +379,37 @@ describe("after commit: the card refund, the Xero correction, the email and the 
         subjectMemberId: "ann",
       }),
     );
+  });
+});
+
+// #3954 round 9: the re-issued ask is named as due only while it is live - the
+// same liveness that withholds its client secret.
+describe("the email names a re-issued ask only while it is live", () => {
+  async function emailedAdditionalCents(additionalAskRetired: boolean): Promise<number> {
+    const reprice = await accept(booking());
+    if (!reprice.repriced) throw new Error("expected a re-price");
+    h.executeBookingModificationRefund.mockResolvedValue(undefined);
+    h.sendBookingModifiedEmail.mockResolvedValue(undefined);
+    vi.mocked(createModificationAdditionalPaymentIntent).mockResolvedValueOnce({
+      additionalPaymentClientSecret: additionalAskRetired ? undefined : "secret",
+      additionalPaymentIntentId: "pi_reissued",
+      additionalAskRetired,
+    });
+    await settleGuestAcceptanceRepriceAfterCommit({
+      bookingId: "booking-1",
+      actorMemberId: "cara",
+      reprice: { ...reprice, additionalAsk: reissueUnpaidAdditionalAsk({ askLeftCents: 3000 }) },
+      format: CLUB_FORMAT_TEST,
+    });
+    return h.sendBookingModifiedEmail.mock.calls.at(-1)?.[0].additionalAmountCents;
+  }
+
+  it("a live re-issue is named", async () => {
+    expect(await emailedAdditionalCents(false)).toBe(3000);
+  });
+
+  it("MUTATION (round 9): a re-issue a later reduction retired is not", async () => {
+    expect(await emailedAdditionalCents(true)).toBe(0);
   });
 });
 

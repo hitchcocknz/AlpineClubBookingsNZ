@@ -226,6 +226,45 @@ export async function executeBookingModificationRefund({
   }
 }
 
+/** What a door's after-commit mint of its additional ask came to. */
+export type ModificationAdditionalAskMint = {
+  /** Offered only while the minted ask is still live (#3954 round 7). */
+  additionalPaymentClientSecret: string | undefined;
+  /** Returned even when retired, for the edit's Xero leg (round 8). */
+  additionalPaymentIntentId: string | undefined;
+  /**
+   * #3954 round 9: minted, but a reduction retired it before it was offered -
+   * the same liveness that withholds the secret. Nothing is owed on it.
+   */
+  additionalAskRetired: boolean;
+};
+
+const NOTHING_MINTED: ModificationAdditionalAskMint = {
+  additionalPaymentClientSecret: undefined,
+  additionalPaymentIntentId: undefined,
+  additionalAskRetired: false,
+};
+
+function mintedAsk(pi: { id: string; client_secret: string | null }, live: boolean): ModificationAdditionalAskMint {
+  return {
+    additionalPaymentClientSecret: live ? (pi.client_secret ?? undefined) : undefined,
+    additionalPaymentIntentId: pi.id,
+    additionalAskRetired: !live,
+  };
+}
+
+/**
+ * #3954 round 9: the additional figure a member-facing message may name as
+ * due. An ask a reduction retired before it was offered is owed by nobody -
+ * that reduction's own message told the member - so it is never named.
+ */
+export function additionalAmountToName(
+  amountCents: number,
+  mint: Pick<ModificationAdditionalAskMint, "additionalAskRetired">,
+): number {
+  return mint.additionalAskRetired ? 0 : amountCents;
+}
+
 /**
  * Mint the additional PaymentIntent that collects a booking edit's price
  * increase, and write the PENDING `ADDITIONAL` PaymentTransaction the club's
@@ -292,10 +331,7 @@ export async function createModificationAdditionalPaymentIntent({
   failureMessage: string;
   /** The club's format (#3565), resolved before any transaction by the caller. */
   format: ClubFormat;
-}): Promise<{
-  additionalPaymentClientSecret: string | undefined;
-  additionalPaymentIntentId: string | undefined;
-}> {
+}): Promise<ModificationAdditionalAskMint> {
   // #3954: the asks this edit's reduction retired are cancelled at Stripe
   // first, whether or not it owes a smaller one: their rows were retired, and
   // their cancellations queued, inside the edit's transaction.
@@ -312,10 +348,7 @@ export async function createModificationAdditionalPaymentIntent({
     !(result.hasSucceededPayment || result.additionalAsk.reissuesUnpaidAsk) ||
     !result.paymentId
   ) {
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
 
   // #3954 review round 4: a RE-ISSUED ask's recovery was written in the edit's
@@ -331,10 +364,7 @@ export async function createModificationAdditionalPaymentIntent({
       { bookingId, bookingModificationId: result.bookingModificationId, operationId: reissueRecovery.id, status: reissueRecovery.status },
       "A re-issued additional ask's recovery has moved on since the edit committed; the door's mint leaves it to the recovery (#3954)",
     );
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
   const stripeIdempotencyKey = reissueRecovery?.paymentIntentId ?? idempotencyKey;
 
@@ -364,10 +394,7 @@ export async function createModificationAdditionalPaymentIntent({
   if (chargeRefusal) {
     logger.error({ bookingId, currencyCode: chargeRefusal.currencyCode }, `${failureMessage}: ${chargeRefusal.message}`);
     await keepTheDebt();
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
 
   try {
@@ -421,10 +448,7 @@ export async function createModificationAdditionalPaymentIntent({
           { bookingId, bookingModificationId: result.bookingModificationId, paymentIntentId: pi.id },
           "A re-issued additional ask's recovery moved while the door minted it (#3954); nothing written - the recovery's owner asks the member",
         );
-        return {
-          additionalPaymentClientSecret: undefined,
-          additionalPaymentIntentId: undefined,
-        };
+        return NOTHING_MINTED;
       }
       await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded });
       // Decision A (#3954): the smaller ask's own invoice, waiting on it - only
@@ -436,10 +460,7 @@ export async function createModificationAdditionalPaymentIntent({
         bookingModificationId: result.bookingModificationId,
         paymentIntentId: pi.id,
       });
-      return {
-        additionalPaymentClientSecret: live ? (pi.client_secret ?? undefined) : undefined,
-        additionalPaymentIntentId: pi.id,
-      };
+      return mintedAsk(pi, live);
     }
 
     let customerId = result.paymentCustomerId ?? undefined;
@@ -531,18 +552,12 @@ export async function createModificationAdditionalPaymentIntent({
           paymentIntentId: pi.id,
         });
 
-    return {
-      additionalPaymentClientSecret: live ? (pi.client_secret ?? undefined) : undefined,
-      additionalPaymentIntentId: pi.id,
-    };
+    return mintedAsk(pi, live);
   } catch (piErr) {
     logger.error({ err: piErr, bookingId }, failureMessage);
     // The recovery cron re-creates the intent with this same modification-scoped
     // Stripe idempotency key, so route retry and cron retry never double-mint.
     await keepTheDebt();
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
 }

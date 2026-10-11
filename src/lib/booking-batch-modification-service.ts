@@ -61,7 +61,9 @@ import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { assertBookingEnvelopeInvariants } from "@/lib/booking-envelope-invariants";
 import {
+  additionalAmountToName,
   createModificationAdditionalPaymentIntent,
+  type ModificationAdditionalAskMint,
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
@@ -2553,15 +2555,14 @@ export async function modifyBookingBatch({
         "Failed to enqueue payment recovery for Stripe refund failure after batch modification",
     });
 
-    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-      await createModificationAdditionalPaymentIntent({
-        format,
-        bookingId,
-        result,
-        reason: "batch_modify_price_increase",
-        idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
-        failureMessage: "Failed to create additional PaymentIntent for batch modification",
-      });
+    const additionalMint = await createModificationAdditionalPaymentIntent({
+      format,
+      bookingId,
+      result,
+      reason: "batch_modify_price_increase",
+      idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
+      failureMessage: "Failed to create additional PaymentIntent for batch modification",
+    });
 
     // Issue #1668: under an admin override, link this modification to the
     // booking's most recent approved-unlinked change request. Best-effort.
@@ -2579,7 +2580,7 @@ export async function modifyBookingBatch({
       actorMemberId: actor.id,
       ipAddress,
       result,
-      additionalPaymentIntentId,
+      additionalMint,
       linkedChangeRequestId,
       format,
     });
@@ -2595,7 +2596,7 @@ export async function modifyBookingBatch({
       additionalAmountCents: result.additionalAmountCents,
       settlementMethod: result.settlementMethod,
       requiresSettlementMethod: result.requiresSettlementMethod,
-      additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+      additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
       stripeRefundId: stripeRefundId ?? null,
       promoRemoved: result.promoRemoved,
       promoChanged: result.promoChanged,
@@ -2664,7 +2665,7 @@ async function dispatchBatchPostTransactionSideEffects({
   actorMemberId,
   ipAddress,
   result,
-  additionalPaymentIntentId,
+  additionalMint,
   linkedChangeRequestId,
   format,
 }: {
@@ -2672,7 +2673,7 @@ async function dispatchBatchPostTransactionSideEffects({
   actorMemberId: string;
   ipAddress: string;
   result: BatchModificationTransactionResult;
-  additionalPaymentIntentId: string | undefined;
+  additionalMint: ModificationAdditionalAskMint;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -2790,7 +2791,7 @@ async function dispatchBatchPostTransactionSideEffects({
       result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     requiresAdditionalStripePayment:
       result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
-    additionalPaymentIntentId,
+    additionalPaymentIntentId: additionalMint.additionalPaymentIntentId,
   }).catch((err) =>
     logger.error(
       { err, bookingId },
@@ -2867,6 +2868,8 @@ async function dispatchBatchPostTransactionSideEffects({
     result.booking.id,
   );
 
+  // #3954 round 9: an ask a reduction retired before it was offered is not named.
+  const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
   sendBookingModifiedEmail({
     bookingId: result.booking.id,
     recipientMemberId: result.memberId,
@@ -2885,13 +2888,13 @@ async function dispatchBatchPostTransactionSideEffects({
     refundAmountCents: result.refundAmountCents,
     accountCreditAmountCents: result.accountCreditAmountCents,
     appliedCreditGivenBackCents: result.appliedCreditGivenBackCents,
-    additionalAmountCents: result.additionalAmountCents,
+    additionalAmountCents: namedAdditionalCents,
     unpaidAskCancelled: result.unpaidAskCancelled,
     additionalPaymentMethod:
-      result.additionalAmountCents > 0 &&
+      namedAdditionalCents > 0 &&
       result.paymentSource === PaymentSource.INTERNET_BANKING
         ? "INTERNET_BANKING"
-        : result.additionalAmountCents > 0 && result.hasSucceededPayment
+        : namedAdditionalCents > 0 && result.hasSucceededPayment
           ? "STRIPE"
           : undefined,
     paymentReference: result.paymentReference,

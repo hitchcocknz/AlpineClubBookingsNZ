@@ -17,6 +17,7 @@ import {
 } from "@/lib/booking-modification-lines";
 import { computeModificationPricing } from "@/lib/booking-modification-pricing";
 import {
+  additionalAmountToName,
   createModificationAdditionalPaymentIntent,
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
@@ -599,7 +600,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
   });
   // #3954: the retired asks die at Stripe and the smaller one is minted - the
   // only ask a re-price can mint, since it never raises a settled price.
-  await createModificationAdditionalPaymentIntent({
+  const additionalMint = await createModificationAdditionalPaymentIntent({
     format, bookingId, result: paymentContext, reason: "guest_accepted_promo_reprice_reissued_ask",
     idempotencyKey: `guest_accept_${bookingId}_${bookingModificationId}`,
     failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a guest-acceptance re-price",
@@ -688,7 +689,8 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       refundByBankTransfer: editRefundGoesBackByHand(reprice),
       refundReturnedToOrganiser: reprice.organiserChildRefund !== null,
       lodgeId: reprice.lodgeId,
-      additionalAmountCents: reprice.additionalAsk.amountCents,
+      // #3954 round 9: not named once a later reduction retired the re-issue.
+      additionalAmountCents: additionalAmountToName(reprice.additionalAsk.amountCents, additionalMint),
       unpaidAskCancelled: reprice.unpaidAskCancelled,
     },
     format,

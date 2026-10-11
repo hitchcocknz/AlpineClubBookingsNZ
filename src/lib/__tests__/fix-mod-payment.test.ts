@@ -714,6 +714,36 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     ]);
   });
 
+  // #3954 round 9: the door withholds the secret of an ask a reduction retired
+  // before it was offered; its email must not name that ask as due either.
+  it("MUTATION (round 9): an increase whose ask a reduction retired is not named as due, and offers no secret", async () => {
+    const tx = makeTx(makeBooking());
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacity.mockResolvedValue({ available: true, availableBeds: 20 } as any);
+    mockedCalcPrice.mockReturnValue({ totalPriceCents: 15000, guests: [{ priceCents: 15000, perNightCents: [7500, 7500] }] } as any);
+    mockedCalcChangeFee.mockReturnValue({ feeCents: 0, fromTierRefundPct: 0, toTierRefundPct: 0 });
+    mockedCreatePaymentIntent.mockResolvedValue({ id: "pi_additional", client_secret: "s", currency: "nzd" } as any);
+    mockPaymentUpdate.mockResolvedValue({});
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.paymentTransaction.findUnique).mockResolvedValueOnce({ status: "FAILED", withdrawnAt: new Date("2026-07-01T00:00:00.000Z") } as never);
+
+    const res = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify-dates", { method: "PUT", body: JSON.stringify({ checkIn: "2026-08-05", checkOut: "2026-08-08" }) }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 5000 }));
+    expect(data.additionalPaymentClientSecret).toBeNull();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
+      expect.anything(),
+    );
+  });
+
   it("creates additional PaymentIntent and returns clientSecret when price increases", async () => {
     const booking = makeBooking();
     const tx = makeTx(booking);
@@ -1408,6 +1438,40 @@ describe("POST /api/bookings/[id]/guests — price increase", () => {
         amountCents: 10000,
       }),
     ]);
+  });
+
+  it("MUTATION (round 9): a guest add whose ask a reduction retired is not named as due, and offers no secret", async () => {
+    const tx = makeTx(makeBooking());
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 20, nightDetails: [] } as any);
+    mockedCalcPrice.mockImplementation((_ci, _co, guests) => ({
+      totalPriceCents: guests.length === 1 ? 10000 : 20000,
+      guests: guests.map(() => ({ priceCents: 10000, perNightCents: [5000, 5000] })),
+    } as any));
+    mockedCreatePaymentIntent.mockResolvedValue({ id: "pi_guest_extra", client_secret: "guest_extra_secret", currency: "nzd" } as any);
+    mockPaymentUpdate.mockResolvedValue({});
+    mockMemberFindUnique.mockResolvedValue({ active: true, email: "alice@test.com", firstName: "Alice" });
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.paymentTransaction.findUnique).mockResolvedValueOnce({ status: "FAILED", withdrawnAt: new Date("2026-07-01T00:00:00.000Z") } as never);
+
+    const res = await POST(
+      new NextRequest("http://localhost/api/bookings/bk1/guests", {
+        method: "POST",
+        body: JSON.stringify({ guests: [{ firstName: "Bob", lastName: "Jones", ageTier: "ADULT", isMember: true }] }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 10000 }));
+    expect(data.additionalPaymentClientSecret).toBeNull();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
+      expect.anything(),
+    );
   });
 
   it("creates additional PaymentIntent when adding guest to CONFIRMED booking", async () => {

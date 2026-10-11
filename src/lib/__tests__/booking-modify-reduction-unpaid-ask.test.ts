@@ -668,6 +668,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
 
     expect(order).toEqual([`cancel:op_cancel_${ASK_ROW_ID}`, "mint:3000"]);
     expect(minted.additionalPaymentIntentId).toBe("pi_reissued_3000");
+    expect(minted.additionalAskRetired).toBe(false);
     expect(mocks.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 3_000, carriedAskCents: 3_000, status: PaymentStatus.PENDING }),
     );
@@ -717,7 +718,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     expect(mocks.createIntent).toHaveBeenCalledTimes(1);
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(queueReissueInvoice).not.toHaveBeenCalled();
-    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined });
+    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: false });
   });
 
   it("MUTATION (round 6): the door sends the one request the runner sends - the fixed reason and the key in its metadata, never the door's own wording", async () => {
@@ -789,6 +790,8 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     expect(queueReissueInvoice).toHaveBeenCalledTimes(1);
     expect(minted.additionalPaymentClientSecret).toBeUndefined();
     expect(minted.additionalPaymentIntentId).toMatch(/^pi_/);
+    // Round 9: and says so, so no member-facing message names it as due.
+    expect(minted.additionalAskRetired).toBe(true);
   });
 
   it("MUTATION (round 7, F7; round 8): an increase's ask a reduction withdrew during the door's cancels offers no secret, but its intent is still handed back", async () => {
@@ -797,6 +800,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     const { minted } = await mintAfter(result);
     expect(minted.additionalPaymentClientSecret).toBeUndefined();
     expect(minted.additionalPaymentIntentId).toBe("pi_reissued_6000");
+    expect(minted.additionalAskRetired).toBe(true);
   });
 
   it("MUTATION (round 6): an increase's own mint queues the invoices of the re-issues it folded in, waiting on its intent", async () => {

@@ -37,7 +37,9 @@ import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-cov
 import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import type { HostingCoverageLinkedMoveInput } from "@/lib/adult-member-hosting-linked-move";
 import {
+  additionalAmountToName,
   createModificationAdditionalPaymentIntent,
+  type ModificationAdditionalAskMint,
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
 } from "@/lib/booking-modification-settlement";
@@ -1519,15 +1521,14 @@ export async function modifyBookingDates({
       "Failed to enqueue payment recovery for Stripe refund failure after date change",
   });
 
-  const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-    await createModificationAdditionalPaymentIntent({
-      format,
-      bookingId,
-      result,
-      reason: "date_change_price_increase",
-      idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
-      failureMessage: "Failed to create additional PaymentIntent for modification",
-    });
+  const additionalMint = await createModificationAdditionalPaymentIntent({
+    format,
+    bookingId,
+    result,
+    reason: "date_change_price_increase",
+    idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
+    failureMessage: "Failed to create additional PaymentIntent for modification",
+  });
 
   // Issue #1668: under an admin override, close the approve → apply trail by
   // linking this modification to the booking's most recent approved-unlinked
@@ -1551,7 +1552,7 @@ export async function modifyBookingDates({
     actorMemberId: actor.id,
     ipAddress,
     result,
-    additionalPaymentIntentId,
+    additionalMint,
     linkedChangeRequestId,
     format,
   });
@@ -1566,7 +1567,7 @@ export async function modifyBookingDates({
     settlementMethod: result.settlementMethod,
     policyRetainedAmountCents: result.policyRetainedAmountCents,
     additionalAmountCents: result.additionalAmountCents,
-    additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+    additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
     stripeRefundId: stripeRefundId ?? null,
     promoRemoved: result.promoRemoved,
     promoCoverage: result.promoCoverage,
@@ -1580,7 +1581,7 @@ async function dispatchDatePostTransactionSideEffects({
   actorMemberId,
   ipAddress,
   result,
-  additionalPaymentIntentId,
+  additionalMint,
   linkedChangeRequestId,
   format,
 }: {
@@ -1588,7 +1589,7 @@ async function dispatchDatePostTransactionSideEffects({
   actorMemberId: string;
   ipAddress: string;
   result: DateModificationTransactionResult;
-  additionalPaymentIntentId: string | undefined;
+  additionalMint: ModificationAdditionalAskMint;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -1687,7 +1688,7 @@ async function dispatchDatePostTransactionSideEffects({
       result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     requiresAdditionalStripePayment:
       result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
-    additionalPaymentIntentId,
+    additionalPaymentIntentId: additionalMint.additionalPaymentIntentId,
   }).catch((err) =>
     logger.error({ err, bookingId }, "Failed to queue Xero settlement for date modification"),
   );
@@ -1736,6 +1737,8 @@ async function dispatchDatePostTransactionSideEffects({
       result.booking.id,
     );
 
+    // #3954 round 9: an ask a reduction retired before it was offered is not named.
+    const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
     sendBookingModifiedEmail({
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
@@ -1754,13 +1757,13 @@ async function dispatchDatePostTransactionSideEffects({
       refundAmountCents: result.refundAmountCents,
       accountCreditAmountCents: result.accountCreditAmountCents,
       appliedCreditGivenBackCents: result.appliedCreditGivenBackCents,
-      additionalAmountCents: result.additionalAmountCents,
+      additionalAmountCents: namedAdditionalCents,
       unpaidAskCancelled: result.unpaidAskCancelled,
       additionalPaymentMethod:
-        result.additionalAmountCents > 0 &&
+        namedAdditionalCents > 0 &&
         result.paymentSource === PaymentSource.INTERNET_BANKING
           ? "INTERNET_BANKING"
-          : result.additionalAmountCents > 0 && result.hasSucceededPayment
+          : namedAdditionalCents > 0 && result.hasSucceededPayment
             ? "STRIPE"
             : undefined,
       paymentReference: result.paymentReference,
