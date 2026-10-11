@@ -87,6 +87,8 @@ describe("readPaidAnotherWayReceiptState: recordByHandCents (rounds 11 and 12)",
       { amountCents: 4000, status: "failed", stripeCreatedAt: null, createdAt: new Date() },
       { amountCents: 2000, status: "succeeded", stripeCreatedAt: null, createdAt: new Date() },
     ]);
+    // 2000 succeeded - 1000 noted + 6000 closed; the failed 4000 never counts.
+    await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 7000 });
     mocks.notes.mockResolvedValue([cardNote(12000)]);
     await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 6000 });
     mocks.refunds.mockResolvedValue([]);
