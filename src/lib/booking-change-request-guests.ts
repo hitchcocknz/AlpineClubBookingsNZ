@@ -176,3 +176,50 @@ export type ChangeRequestEstimate =
       excludesMemberGuests: boolean;
     }
   | { outcome: "unpriced"; message: string };
+
+/**
+ * The request's stored `requestedChanges` with an officer's entry written in
+ * (#4030 Part B): the guests become the request's `addGuests`, the summary says
+ * whose list it is, and `officerEntry` names the officer and keeps the member's
+ * own summary. Everything else — `original`, the member's dates, the payment
+ * snapshot, the locked-period facts — is kept exactly.
+ *
+ * Only ever called on a request that names no structured change (the executor
+ * checks), so there is nothing of the member's own delta to merge with.
+ */
+export function withOfficerEnteredGuests(
+  requestedChanges: unknown,
+  guests: ReadonlyArray<OfficerEnteredGuest>,
+  stamp: { officerMemberId: string; enteredAt: Date },
+): Record<string, unknown> {
+  const stored = isRecord(requestedChanges) ? requestedChanges : {};
+  const requested = isRecord(stored.requested) ? stored.requested : {};
+  const memberSummary = typeof requested.summary === "string" ? requested.summary : null;
+  const officerEntry: OfficerEntryStamp = {
+    onMemberBehalf: true,
+    officerMemberId: stamp.officerMemberId,
+    enteredAt: stamp.enteredAt.toISOString(),
+    memberSummary,
+  };
+  return {
+    ...stored,
+    requested: {
+      ...requested,
+      addGuests: guests.map((guest) => ({
+        firstName: guest.firstName,
+        lastName: guest.lastName,
+        ageTier: guest.ageTier,
+        isMember: guest.isMember,
+        ...(guest.isMember && guest.memberId ? { memberId: guest.memberId } : {}),
+        stayStart: guest.stayStart,
+        stayEnd: guest.stayEnd,
+      })),
+      summary: `${buildChangeRequestSummary({ addGuests: guests, removedGuests: [] })} ${OFFICER_ENTERED_SUMMARY_SUFFIX}`,
+      officerEntry,
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

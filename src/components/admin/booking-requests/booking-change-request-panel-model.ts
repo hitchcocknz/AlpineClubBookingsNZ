@@ -5,6 +5,7 @@
  * decision flow and its rendering.
  */
 import type { FinishedStaySettlementMethod } from "@/components/admin/booking-requests/booking-change-request-finished-stay";
+import type { NewGuest } from "@/components/edit-booking/types";
 
 export interface BookingChangeRequestData {
   id: string;
@@ -19,6 +20,12 @@ export interface BookingChangeRequestData {
    * list route from the same rule the decision route uses.
    */
   executesOnApproval?: boolean;
+  /**
+   * #4030 Part B: a pending request on a finished stay that names no change of
+   * its own (a member's free-text note), so the officer may enter the guests
+   * it describes. Answered by the list route through the executor's mapping.
+   */
+  acceptsOfficerGuests?: boolean;
   requestedChanges: {
     requested?: {
       summary?: string | null;
@@ -123,6 +130,8 @@ export interface DecisionDraft {
    * and the club's policy offers a choice. "card" is back the way it was paid.
    */
   settlementMethod: FinishedStaySettlementMethod;
+  /** #4030 Part B: the guests the officer has entered for a free-text request. */
+  officerGuests: NewGuest[];
 }
 
 export const EMPTY_DECISION_DRAFT: DecisionDraft = {
@@ -130,4 +139,5 @@ export const EMPTY_DECISION_DRAFT: DecisionDraft = {
   internalNotes: "",
   linkedModificationId: "",
   settlementMethod: "",
+  officerGuests: [],
 };

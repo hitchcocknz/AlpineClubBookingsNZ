@@ -24,14 +24,19 @@ import { useClubTime } from "@/components/club-time-provider";
 import { formatStayDate } from "@/lib/club-time";
 import { formatCents } from "@/lib/utils";
 import { useClubFormat } from "@/components/club-format-provider";
+import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import {
   decisionToastMessage,
   FinishedStayApprovalNotice,
   FinishedStaySettlementField,
   FinishedStayQuoteSummary,
   FinishedStayUnlinkedNote,
+  OfficerGuestEntry,
+  officerGuestsKey,
+  officerGuestsPayload,
   OverCapacityConfirmation,
   quoteIsCurrent,
+  requestStay,
   RequestedGuestAdds,
   useFinishedStayQuotes,
 } from "@/components/admin/booking-requests/booking-change-request-finished-stay";
@@ -159,6 +164,15 @@ export function BookingChangeRequestsPanel({
   // #3750 (P2 on #3955): each finished-stay card's dry-run figures, and any
   // over-capacity night its officer has to confirm, keyed by request id.
   const quotes = useFinishedStayQuotes(setError);
+  // #4030 Part B: the officer's guest entry — its age tiers, and the member
+  // finder's reach as the list route answered it.
+  const ageTierOptions = useAgeTierOptions();
+  const [memberGuestFind, setMemberGuestFind] = useState<{ openSearchEnabled: boolean } | null>(null);
+  /** This row's officer-entered guests as sent, or null (#4030). */
+  const officerGuestsFor = (request: BookingChangeRequestData) =>
+    request.acceptsOfficerGuests
+      ? officerGuestsPayload(decisionDraftFor(request.id).officerGuests, requestStay(request.booking))
+      : null;
   const currentPath = buildBookingChangeRequestsPath(
     basePath,
     searchParams.toString(),
@@ -181,6 +195,7 @@ export function BookingChangeRequestsPanel({
         throw new Error(data.error || "Failed to load booking change requests");
       }
       setRequests(Array.isArray(data?.data) ? data.data : []);
+      setMemberGuestFind(data?.memberGuestFind ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load booking change requests");
     } finally {
@@ -188,7 +203,7 @@ export function BookingChangeRequestsPanel({
     }
     // setState functions are referentially stable; they are listed so the
     // manual dependencies match what the React Compiler infers.
-  }, [filter, setError, setLoading, setRequests]);
+  }, [filter, setError, setLoading, setRequests, setMemberGuestFind]);
 
   useEffect(() => {
     fetchRequests();
@@ -236,6 +251,7 @@ export function BookingChangeRequestsPanel({
                 ...(quotes.quoteFor(request.id)?.confirmOverCapacity
                   ? { confirmOverCapacity: true }
                   : {}),
+                ...(officerGuestsFor(request) ? { officerGuests: officerGuestsFor(request) } : {}),
               }
             : {}),
         }),
@@ -362,9 +378,11 @@ export function BookingChangeRequestsPanel({
             // #3750: the nights this card's approval is waiting to have confirmed.
             const quote = quotes.quoteFor(request.id);
             const overCapacityNights = quote?.overCapacityNights ?? null;
+            const officerGuests = officerGuestsFor(request);
             const quoteCurrent = quoteIsCurrent(
               quote,
               decisionDraftFor(request.id).settlementMethod,
+              officerGuestsKey(officerGuests),
             );
 
             return (
@@ -516,6 +534,20 @@ export function BookingChangeRequestsPanel({
                           placeholder="Context for the next officer. The member never reads this."
                         />
                       </div>
+                      {request.acceptsOfficerGuests ? (
+                        <OfficerGuestEntry
+                          requestId={request.id}
+                          bookingId={request.booking.id}
+                          stay={requestStay(request.booking)}
+                          guests={decisionDraftFor(request.id).officerGuests}
+                          onChange={(officerGuests) =>
+                            updateDecisionDraft(request.id, { officerGuests })
+                          }
+                          ageTierOptions={ageTierOptions}
+                          memberGuestFind={memberGuestFind}
+                          canEdit={canEdit}
+                        />
+                      ) : null}
                       {request.executesOnApproval ? (
                         <FinishedStaySettlementField
                           requestId={request.id}
@@ -536,6 +568,7 @@ export function BookingChangeRequestsPanel({
                             quotes.requestQuote(request.id, {
                               settlementMethod: decisionDraftFor(request.id).settlementMethod,
                               confirmOverCapacity: quote?.confirmOverCapacity === true,
+                              officerGuests,
                             })
                           }
                         />
@@ -571,6 +604,7 @@ export function BookingChangeRequestsPanel({
                                 quotes.requestQuote(request.id, {
                                   settlementMethod: decisionDraftFor(request.id).settlementMethod,
                                   confirmOverCapacity: true,
+                                  officerGuests,
                                 })
                               }
                               disabled={quote?.loading === true}

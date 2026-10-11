@@ -6,7 +6,18 @@ import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
-import { formatStayDate } from "@/lib/club-time";
+import { calendarDateOfDateOnlyInstant, formatStayDate } from "@/lib/club-time";
+import {
+  ChangeRequestGuestEntry,
+  changeRequestGuestsPayload,
+} from "@/components/booking/change-request-guest-entry";
+import { adminMemberGuestFindEndpoints } from "@/components/book/member-guest-find-panel";
+import type { NewGuest } from "@/components/edit-booking/types";
+import type { AgeTierOption } from "@/lib/use-age-tier-options";
+import type {
+  ChangeRequestStay,
+  OfficerEnteredGuest,
+} from "@/lib/booking-change-request-guests";
 import type { ClubFormat } from "@/lib/club-format";
 import type { OverCapacityNight } from "@/lib/over-capacity-confirmation";
 import { formatCents } from "@/lib/utils";
@@ -42,6 +53,8 @@ export type FinishedStayQuoteFigures = {
 export type FinishedStayQuote = {
   figures: FinishedStayQuoteFigures | null;
   forSettlementMethod: FinishedStaySettlementMethod;
+  /** #4030: the officer-entered guests (as sent) the figures were computed for. */
+  forOfficerGuests: string;
   confirmOverCapacity: boolean;
   overCapacityNights: OverCapacityNight[] | null;
   loading: boolean;
@@ -50,10 +63,20 @@ export type FinishedStayQuote = {
 const EMPTY_QUOTE: FinishedStayQuote = {
   figures: null,
   forSettlementMethod: "",
+  forOfficerGuests: "",
   confirmOverCapacity: false,
   overCapacityNights: null,
   loading: false,
 };
+
+/**
+ * #4030 Part B: the guests an officer has entered on one card, as the approval
+ * and its quote send them ("" when none). The same string keys the quote, so
+ * figures computed for one list never arm an approval of another.
+ */
+export function officerGuestsKey(guests: readonly OfficerEnteredGuest[] | null): string {
+  return guests && guests.length > 0 ? JSON.stringify(guests) : "";
+}
 
 /**
  * Per-card quotes, keyed by request id like the decision drafts, so one card's
@@ -68,9 +91,15 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
     }));
   async function requestQuote(
     id: string,
-    answers: { settlementMethod: FinishedStaySettlementMethod; confirmOverCapacity: boolean },
+    answers: {
+      settlementMethod: FinishedStaySettlementMethod;
+      confirmOverCapacity: boolean;
+      /** #4030: the officer's entry, when the card takes one. */
+      officerGuests?: OfficerEnteredGuest[] | null;
+    },
   ) {
     patch(id, { loading: true, figures: null });
+    const forOfficerGuests = officerGuestsKey(answers.officerGuests ?? null);
     try {
       const response = await fetch(`/api/admin/booking-change-requests/${id}/quote`, {
         method: "POST",
@@ -78,6 +107,7 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
         body: JSON.stringify({
           ...(answers.settlementMethod ? { settlementMethod: answers.settlementMethod } : {}),
           ...(answers.confirmOverCapacity ? { confirmOverCapacity: true } : {}),
+          ...(forOfficerGuests ? { officerGuests: answers.officerGuests } : {}),
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -96,6 +126,7 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
         loading: false,
         figures: data.quote as FinishedStayQuoteFigures,
         forSettlementMethod: answers.settlementMethod,
+        forOfficerGuests,
         confirmOverCapacity: answers.confirmOverCapacity,
         overCapacityNights: null,
       });
@@ -124,8 +155,84 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
 export function quoteIsCurrent(
   quote: FinishedStayQuote | undefined,
   settlementMethod: FinishedStaySettlementMethod,
+  /** #4030: `officerGuestsKey` of the guests on screen. */
+  officerGuests: string,
 ): quote is FinishedStayQuote & { figures: FinishedStayQuoteFigures } {
-  return Boolean(quote?.figures) && quote?.forSettlementMethod === settlementMethod;
+  return (
+    Boolean(quote?.figures) &&
+    quote?.forSettlementMethod === settlementMethod &&
+    quote?.forOfficerGuests === officerGuests
+  );
+}
+
+/**
+ * #4030 Part B: on a request that names no change of its own (a member's
+ * free-text note), the officer enters the guests the member described — the
+ * guest editor's fields, nights inside the stay — before checking the figures.
+ * Approving stores them on the request as entered on the member's behalf and
+ * applies them exactly as a member's own request is applied.
+ */
+export function OfficerGuestEntry({
+  requestId,
+  bookingId,
+  stay,
+  guests,
+  onChange,
+  ageTierOptions,
+  memberGuestFind,
+  canEdit,
+}: {
+  requestId: string;
+  bookingId: string;
+  stay: ChangeRequestStay;
+  guests: NewGuest[];
+  onChange: (guests: NewGuest[]) => void;
+  ageTierOptions: AgeTierOption[];
+  memberGuestFind: { openSearchEnabled: boolean } | null;
+  canEdit: boolean;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3 text-sm">
+      <p className="font-medium text-foreground">Guests the member asked to add</p>
+      <p className="text-xs text-muted-foreground">
+        This request names nobody, so nothing can be applied or charged from it
+        as it stands. Enter the guests the member described, with the nights each
+        stayed. Approving records them on the request as entered by you on the
+        member&rsquo;s behalf, adds and prices them, and emails the member the
+        change and the amount due.
+      </p>
+      <ChangeRequestGuestEntry
+        idPrefix={`officer-guest-${requestId}`}
+        guests={guests}
+        onChange={onChange}
+        ageTierOptions={ageTierOptions}
+        stay={stay}
+        existingMemberIds={[]}
+        memberFind={
+          memberGuestFind
+            ? { ...memberGuestFind, endpoints: adminMemberGuestFindEndpoints(bookingId) }
+            : null
+        }
+        disabled={!canEdit}
+      />
+    </div>
+  );
+}
+
+/** #4030: the officer's rows as the approval sends them, or null when none. */
+export function officerGuestsPayload(
+  guests: readonly NewGuest[],
+  stay: ChangeRequestStay,
+): OfficerEnteredGuest[] | null {
+  return guests.length > 0 ? changeRequestGuestsPayload(guests, stay) : null;
+}
+
+/** The calendar days a panel row's booking runs over (`yyyy-MM-dd`). */
+export function requestStay(booking: { checkIn: string; checkOut: string }): ChangeRequestStay {
+  return {
+    checkIn: calendarDateOfDateOnlyInstant(new Date(booking.checkIn)),
+    checkOut: calendarDateOfDateOnlyInstant(new Date(booking.checkOut)),
+  };
 }
 
 /** The figures, shown before the officer approves (P2 on #3955). */
@@ -324,11 +431,16 @@ export function FinishedStayUnlinkedNote() {
 /** The toast after a successful decision. */
 export function decisionToastMessage(args: {
   status: "APPROVED" | "REJECTED";
-  execution: { executed?: boolean; followUpFailed?: boolean } | undefined;
+  execution:
+    | { executed?: boolean; followUpFailed?: boolean; officerEnteredGuestCount?: number }
+    | undefined;
   linkedModificationId: string;
 }): string {
   if (args.status !== "APPROVED") return "Request rejected";
   if (args.execution?.executed) {
+    if (args.execution.officerEnteredGuestCount && !args.execution.followUpFailed) {
+      return "Guests recorded on the member's behalf, and the request approved and applied to the booking. The member is emailed the change and any amount due.";
+    }
     return args.execution.followUpFailed
       ? "Request approved and applied to the booking, but some follow-up work (the payment request, the member's email or Xero) did not complete. Check the booking."
       : "Request approved and applied to the booking. The member is emailed the change and any amount due.";

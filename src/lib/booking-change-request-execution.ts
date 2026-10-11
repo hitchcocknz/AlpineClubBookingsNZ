@@ -1,11 +1,9 @@
-import type { AgeTier } from "@prisma/client";
-import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { getDefaultLodgeId } from "@/lib/lodges";
-import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { calendarDateOfDateOnlyInstant, type CalendarDate } from "@/lib/club-time";
 import type { ClubFormat } from "@/lib/club-format";
 import { activeLifecycleEditRefusal } from "@/lib/booking-edit-policy";
@@ -14,11 +12,18 @@ import {
   modifyBookingBatch,
   type BatchModificationPreTransaction,
 } from "@/lib/booking-batch-modification-service";
-import type {
-  BatchModifyInput,
-  BookingModificationSettlementMethod,
-} from "@/lib/booking-modify";
+import type { BookingModificationSettlementMethod } from "@/lib/booking-modify";
 import { defaultCorrectionSettlementMethod } from "@/lib/booking-finished-stay-correction";
+import {
+  lockedPeriodRequestToBatchInput,
+  storedLockedPeriodRequestSchema,
+  type StoredLockedPeriodRequest,
+} from "@/lib/booking-change-request-stored";
+import {
+  addedGuestNightsRefusal,
+  withOfficerEnteredGuests,
+  type OfficerEnteredGuest,
+} from "@/lib/booking-change-request-guests";
 
 /**
  * Approve-and-execute for a LOCKED_PERIOD change request on a FINISHED stay
@@ -53,9 +58,13 @@ import { defaultCorrectionSettlementMethod } from "@/lib/booking-finished-stay-c
  *     finished-stay correction may edit. A request about a booking that has
  *     moved since is not executed; it stays REQUESTED.
  *  5. Map the request to the canonical input. Nothing structural to apply is
- *     refused, and the request stays REQUESTED.
+ *     refused, and the request stays REQUESTED — unless the officer entered
+ *     the guests a free-text request described (#4030 Part B), which are
+ *     written into the request here and mapped instead.
  *  6. Guarded claim: REQUESTED -> APPROVED with `version + 1`. A lost claim runs
- *     no side effect.
+ *     no side effect. An officer's entry is written by this same statement, so
+ *     a request never holds officer-entered guests without the approval that
+ *     applied them: any refusal after it rolls both back.
  *  7. Run `modifyBookingBatch` on THIS transaction. Any refusal it raises (a
  *     member-night clash, a missing season, an unconfirmed overbooking, a Xero
  *     lock date) rolls the claim back with it, so the request is still
@@ -66,118 +75,6 @@ import { defaultCorrectionSettlementMethod } from "@/lib/booking-finished-stay-c
  *     failure there is `followUpFailed`, never a failed approval: the change is
  *     already committed.
  */
-
-// ---------------------------------------------------------------------------
-// The stored request
-// ---------------------------------------------------------------------------
-
-const optionalDate = z.string().nullish();
-
-/**
- * What `POST /api/bookings/[id]/change-requests` writes into
- * `requestedChanges`, read back defensively: the column is JSON and older rows
- * predate some fields, so anything this cannot parse is refused as unreadable
- * rather than half-executed.
- */
-const storedLockedPeriodRequestSchema = z.object({
-  original: z.object({
-    checkIn: z.string(),
-    checkOut: z.string(),
-    guests: z.array(z.object({ id: z.string() })),
-  }),
-  requested: z.object({
-    checkIn: optionalDate,
-    checkOut: optionalDate,
-    addGuests: z
-      .array(
-        z.object({
-          firstName: z.string(),
-          lastName: z.string(),
-          ageTier: bookableAgeTierEnum,
-          isMember: z.boolean(),
-          memberId: z.string().nullish(),
-          stayStart: optionalDate,
-          stayEnd: optionalDate,
-        }),
-      )
-      .default([]),
-    removeGuests: z.array(z.object({ id: z.string() })).default([]),
-    guestStayRanges: z
-      .array(
-        z.object({
-          guestId: z.string(),
-          stayStart: optionalDate,
-          stayEnd: optionalDate,
-        }),
-      )
-      .default([]),
-  }),
-});
-
-type StoredLockedPeriodRequest = z.infer<typeof storedLockedPeriodRequestSchema>;
-
-/**
- * The canonical batch input a stored request asks for, or `null` when it asks
- * for nothing the booking can be changed by — a request that only named an
- * effective date, or whose dates equal the booking's own.
- *
- * Exported for the executor's unit tests; the executor is its only caller.
- */
-export function lockedPeriodRequestToBatchInput(
-  stored: StoredLockedPeriodRequest,
-  booking: { checkIn: Date; checkOut: Date },
-): Pick<
-  BatchModifyInput,
-  "checkIn" | "checkOut" | "addGuests" | "removeGuestIds" | "guestStayRanges"
-> | null {
-  const currentCheckIn = calendarDateOfDateOnlyInstant(booking.checkIn);
-  const currentCheckOut = calendarDateOfDateOnlyInstant(booking.checkOut);
-  const { requested } = stored;
-  const checkIn =
-    requested.checkIn && requested.checkIn !== currentCheckIn
-      ? requested.checkIn
-      : undefined;
-  const checkOut =
-    requested.checkOut && requested.checkOut !== currentCheckOut
-      ? requested.checkOut
-      : undefined;
-  const removeGuestIds = requested.removeGuests.map((guest) => guest.id);
-  const removed = new Set(removeGuestIds);
-  // A range for a guest the same request removes is moot, and the planner would
-  // refuse it as naming a guest no longer on the booking.
-  const guestStayRanges = requested.guestStayRanges
-    .filter((range) => !removed.has(range.guestId))
-    .map((range) => ({
-      guestId: range.guestId,
-      stayStart: range.stayStart ?? null,
-      stayEnd: range.stayEnd ?? null,
-    }));
-  const addGuests = requested.addGuests.map((guest) => ({
-    firstName: guest.firstName,
-    lastName: guest.lastName,
-    ageTier: guest.ageTier as AgeTier,
-    isMember: guest.isMember,
-    ...(guest.memberId ? { memberId: guest.memberId } : {}),
-    stayStart: guest.stayStart ?? null,
-    stayEnd: guest.stayEnd ?? null,
-  }));
-  if (
-    !checkIn &&
-    !checkOut &&
-    addGuests.length === 0 &&
-    removeGuestIds.length === 0 &&
-    guestStayRanges.length === 0
-  ) {
-    return null;
-  }
-  return {
-    ...(checkIn ? { checkIn } : {}),
-    ...(checkOut ? { checkOut } : {}),
-    ...(addGuests.length > 0 ? { addGuests } : {}),
-    ...(removeGuestIds.length > 0 ? { removeGuestIds } : {}),
-    ...(guestStayRanges.length > 0 ? { guestStayRanges } : {}),
-  };
-}
 
 /**
  * The booking must still be the one the request was written about: the same
@@ -209,7 +106,10 @@ export const LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE =
 export const LOCKED_PERIOD_REQUEST_UNREADABLE_MESSAGE =
   "This request's stored change could not be read, so nothing has been applied. The request is still pending: reject it with a note and ask the member to send a new one.";
 export const LOCKED_PERIOD_REQUEST_NOTHING_TO_APPLY_MESSAGE =
-  "This request names no guest or date change that can be applied, so nothing has been changed. The request is still pending: reject it with a note explaining what happens next.";
+  "This request names no guest or date change that can be applied, so nothing has been changed. Enter the guests the member described, or reject it with a note explaining what happens next. The request is still pending.";
+/** #4030: an officer's entry is only for a request that names no change itself. */
+export const OFFICER_ENTRY_ON_STRUCTURED_REQUEST_MESSAGE =
+  "This request already names the change it asks for, so guests cannot be entered for it. Reload the queue; nothing has been changed and the request is still pending.";
 
 // ---------------------------------------------------------------------------
 // Execute
@@ -238,6 +138,8 @@ export type LockedPeriodExecutionResult =
       capacityOverridden: boolean;
       /** The refund arm actually used — the officer's choice or the way it was paid. */
       settlementMethod: BookingModificationSettlementMethod;
+      /** #4030: the guests the officer entered on the member's behalf, if any. */
+      officerEnteredGuests: OfficerEnteredGuest[] | null;
       followUpFailed?: true;
     }
   | ({ outcome: "quoted" } & FinishedStayCorrectionFigures);
@@ -291,6 +193,14 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
    */
   preTransaction: BatchModificationPreTransaction;
   ipAddress: string;
+  /**
+   * #4030 Part B: the guests the officer entered for a request that names no
+   * change of its own (a member's free-text note). Written into the request as
+   * officer-entered on the member's behalf by the claim itself, then applied
+   * exactly as a member's own `addGuests` are. Refused on a request that
+   * already names a change.
+   */
+  officerEnteredGuests?: OfficerEnteredGuest[];
   /**
    * P2 on #3955: run everything — locks, claim, the canonical edit — and roll
    * it back before commit, answering `quoted` with the figures. No provider
@@ -385,7 +295,36 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
       }
 
       // (5) What the request asks for, in the canonical service's terms.
-      const requestedInput = lockedPeriodRequestToBatchInput(stored.data, booking);
+      const memberInput = lockedPeriodRequestToBatchInput(stored.data, booking);
+      // #4030 Part B: the officer's entry, for a request that names nothing.
+      const officerGuests = params.officerEnteredGuests ?? null;
+      let officerRequestedChanges: Record<string, unknown> | null = null;
+      let requestedInput = memberInput;
+      if (officerGuests) {
+        if (memberInput) {
+          return { outcome: "keptPending", message: OFFICER_ENTRY_ON_STRUCTURED_REQUEST_MESSAGE };
+        }
+        // Nights inside the stay as it stands under the locks.
+        const nightsRefusal = addedGuestNightsRefusal(officerGuests, {
+          checkIn: calendarDateOfDateOnlyInstant(booking.checkIn),
+          checkOut: calendarDateOfDateOnlyInstant(booking.checkOut),
+        });
+        if (nightsRefusal) {
+          return {
+            outcome: "keptPending",
+            message: `${nightsRefusal} Nothing has been changed; the request is still pending.`,
+          };
+        }
+        officerRequestedChanges = withOfficerEnteredGuests(
+          request.requestedChanges,
+          officerGuests,
+          { officerMemberId: actorMemberId, enteredAt: new Date() },
+        );
+        requestedInput = lockedPeriodRequestToBatchInput(
+          storedLockedPeriodRequestSchema.parse(officerRequestedChanges),
+          booking,
+        );
+      }
       if (!requestedInput) {
         return {
           outcome: "keptPending",
@@ -394,7 +333,8 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
       }
 
       // (6) The guarded claim. `version` is the optimistic token every mutating
-      // write bumps; a lost claim changes nothing.
+      // write bumps; a lost claim changes nothing. The officer's entry (#4030)
+      // rides the same statement, so it exists only alongside this approval.
       const claim = await tx.bookingChangeRequest.updateMany({
         where: {
           id: requestId,
@@ -403,6 +343,9 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
           version: expectedVersion,
         },
         data: {
+          ...(officerRequestedChanges
+            ? { requestedChanges: officerRequestedChanges as Prisma.InputJsonObject }
+            : {}),
           status: "APPROVED",
           version: { increment: 1 },
           adminNotes: params.adminNotes,
@@ -479,6 +422,7 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
         accountCreditAmountCents: modified.accountCreditAmountCents,
         capacityOverridden: modified.capacityOverridden,
         settlementMethod,
+        officerEnteredGuests: officerGuests,
       };
     },
   ).catch((error: unknown) => {

@@ -38,6 +38,10 @@ import {
   MembershipTypeBookingPolicyError,
 } from "@/lib/membership-type-policy";
 import type { ClubFormat } from "@/lib/club-format";
+import {
+  officerEnteredGuestsSchema,
+  type OfficerEnteredGuest,
+} from "@/lib/booking-change-request-guests";
 
 /**
  * The officer's decision on a LOCKED_PERIOD change request
@@ -112,13 +116,25 @@ export const finishedStayApprovalFields = {
    * be acknowledged, nor the other way round.
    */
   execute: z.boolean().optional(),
+  /**
+   * #4030 Part B: the guests the officer entered for a request that named no
+   * change (a member's free-text note), each with its nights. Accepted only on
+   * an approval that applies the request; stored on it as officer-entered on
+   * the member's behalf by the approval's own claim.
+   */
+  officerGuests: officerEnteredGuestsSchema.optional(),
 };
 
-/** The quote route's body (P2 on #3955). */
+/** The quote route's body (P2 on #3955), with the officer's entry (#4030). */
 export const finishedStayQuoteSchema = z.object({
   confirmOverCapacity: z.boolean().optional(),
   settlementMethod: z.enum(["card", "credit"]).optional(),
+  officerGuests: officerEnteredGuestsSchema.optional(),
 });
+
+/** #4030: an officer's entry outside an approval that applies the request. */
+export const OFFICER_GUESTS_NEED_EXECUTION_MESSAGE =
+  "Guests can be entered only when approving a request on a finished stay, which applies them. Nothing has been changed.";
 
 /**
  * #3750: what the officer is told when the stay's nights are priced by no ACTIVE
@@ -164,12 +180,17 @@ export async function finishedStayApprovalResponse(
       settlementMethod?: "card" | "credit";
       expectedVersion?: number;
       execute?: boolean;
+      officerGuests?: OfficerEnteredGuest[];
     };
     actorMemberId: string;
   },
 ): Promise<NextResponse | null> {
   const { request, body } = args;
-  if (body.status !== "APPROVED") return null;
+  if (body.status !== "APPROVED") {
+    return body.officerGuests
+      ? NextResponse.json({ error: OFFICER_GUESTS_NEED_EXECUTION_MESSAGE }, { status: 400 })
+      : null;
+  }
   const today = (await clubTime()).today();
   const finished = isFinishedStay(request.booking, dateOnlyInstantOf(today));
   if (body.execute === undefined) {
@@ -187,7 +208,14 @@ export async function finishedStayApprovalResponse(
       { status: 409 },
     );
   }
-  if (!finished) return null;
+  if (!finished) {
+    // Unreachable while the intent check above holds (`execute: true` on a
+    // stay that has not finished is a 409), and kept so an entry can never be
+    // dropped silently by an acknowledgement.
+    return body.officerGuests
+      ? NextResponse.json({ error: OFFICER_GUESTS_NEED_EXECUTION_MESSAGE }, { status: 400 })
+      : null;
+  }
   if (body.linkedModificationId) {
     return NextResponse.json(
       {
@@ -206,6 +234,7 @@ export async function finishedStayApprovalResponse(
     internalNotes: body.internalNotes?.trim() || null,
     confirmOverCapacity: body.confirmOverCapacity === true,
     settlementMethod: body.settlementMethod,
+    officerGuests: body.officerGuests,
     todayAtClub: today,
     dryRun: false,
   });
@@ -259,6 +288,7 @@ export async function finishedStayQuoteResponse(
     internalNotes: null,
     confirmOverCapacity: args.body.confirmOverCapacity === true,
     settlementMethod: args.body.settlementMethod,
+    officerGuests: args.body.officerGuests,
     todayAtClub: today,
     dryRun: true,
   });
@@ -361,6 +391,7 @@ async function runFinishedStayApproval(
     internalNotes: string | null;
     confirmOverCapacity: boolean;
     settlementMethod: "card" | "credit" | undefined;
+    officerGuests: OfficerEnteredGuest[] | undefined;
     todayAtClub: CalendarDate;
     dryRun: boolean;
   },
@@ -385,6 +416,7 @@ async function runFinishedStayApproval(
       internalNotes: args.internalNotes,
       confirmOverCapacity: args.confirmOverCapacity,
       settlementMethod: args.settlementMethod,
+      ...(args.officerGuests ? { officerEnteredGuests: args.officerGuests } : {}),
       todayAtClub: args.todayAtClub,
       format,
       preTransaction,
@@ -445,6 +477,9 @@ async function runFinishedStayApproval(
       break;
   }
 
+  // #4030 Part B: the officer's entry, named on the approval's own row — the
+  // officer is the row's actor, and the guests they entered are listed.
+  const officerEntered = result.officerEnteredGuests;
   logAudit({
     action: "booking-change-request.approve",
     memberId: args.actorMemberId,
@@ -454,7 +489,9 @@ async function runFinishedStayApproval(
     entityId: id,
     category: "booking",
     outcome: "success",
-    summary: "Booking change request approved and applied to the finished stay",
+    summary: officerEntered
+      ? "Guests entered by the booking officer on the member's behalf; booking change request approved and applied to the finished stay"
+      : "Booking change request approved and applied to the finished stay",
     details: args.adminNotes,
     // `INV-PRIV-018`: exactly what the acknowledgement path discloses — the
     // member-facing explanation, which the member reads on their booking page —
@@ -482,6 +519,21 @@ async function runFinishedStayApproval(
       capacityOverridden: result.capacityOverridden,
       followUpFailed: result.followUpFailed === true,
       internalNoteRecorded: Boolean(args.internalNotes),
+      officerEnteredGuests: officerEntered
+        ? {
+            onMemberBehalf: true,
+            enteredByMemberId: args.actorMemberId,
+            guests: officerEntered.map((guest) => ({
+              firstName: guest.firstName,
+              lastName: guest.lastName,
+              ageTier: guest.ageTier,
+              isMember: guest.isMember,
+              memberId: guest.isMember ? guest.memberId ?? null : null,
+              stayStart: guest.stayStart,
+              stayEnd: guest.stayEnd,
+            })),
+          }
+        : null,
     },
     ipAddress,
   });
@@ -501,6 +553,7 @@ async function runFinishedStayApproval(
       changeFeeCents: result.changeFeeCents,
       settlementMethod: result.settlementMethod,
       capacityOverridden: result.capacityOverridden,
+      officerEnteredGuestCount: officerEntered?.length ?? 0,
       followUpFailed: result.followUpFailed === true,
     },
   });

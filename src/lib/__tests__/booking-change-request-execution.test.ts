@@ -53,8 +53,8 @@ import {
   LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE,
   LOCKED_PERIOD_REQUEST_NOTHING_TO_APPLY_MESSAGE,
   LOCKED_PERIOD_REQUEST_UNREADABLE_MESSAGE,
-  lockedPeriodRequestToBatchInput,
 } from "@/lib/booking-change-request-execution";
+import { lockedPeriodRequestToBatchInput } from "@/lib/booking-change-request-stored";
 import type { BatchModificationPreTransaction } from "@/lib/booking-batch-modification-service";
 
 const TODAY = requireCalendarDate("2026-07-01");
