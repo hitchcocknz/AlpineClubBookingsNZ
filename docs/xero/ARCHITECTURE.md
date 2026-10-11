@@ -1021,8 +1021,10 @@ note.
 
 ## Flow 2 — Inbound reconciliation (webhooks + incremental cursors)
 
-Xero pushes CONTACT and INVOICE events; the webhook stores them and returns
-fast. Reconciliation happens in a bounded worker kicked after the response and
+Xero pushes CONTACT, INVOICE, and CREDITNOTE events (the credit-note
+category has no underscore); the webhook stores each signed event as sent and
+returns fast. A category this app does not reconcile is logged and left
+processed, so it is visible without being retried forever. Reconciliation happens in a bounded worker kicked after the response and
 swept by cron. Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
 payment records; operator-applied overpayments/prepayments count), the

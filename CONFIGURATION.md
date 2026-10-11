@@ -2494,7 +2494,12 @@ account/item **mapping** and the one-time contact **import** follow, ending on a
 summary. Webhooks are skippable — until verified, a persistent amber
 **"Webhooks not configured — payment updates rely on scheduled sync"** badge
 shows on the Xero pages, and a localhost/non-public-HTTPS deployment can't verify
-there (the scheduled sync still keeps payments current).
+there (the scheduled sync still keeps payments current). Event subscriptions
+are chosen in the Xero developer portal, not by this app: under **My Apps →
+your app → Webhooks**, tick **Invoices**, **Contacts**, and **Credit Notes**.
+Xero sends a credit note as `eventCategory` `CREDITNOTE` (no underscore),
+including a void. Without the Credit Notes tick, a void made in Xero never
+arrives.
 
 Only these operational-tuning env vars remain (they are not credentials):
 

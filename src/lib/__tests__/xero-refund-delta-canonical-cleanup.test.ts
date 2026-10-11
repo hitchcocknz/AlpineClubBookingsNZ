@@ -204,6 +204,20 @@ const fakePrisma = vi.hoisted(() => {
         Object.assign(row, args.data);
         return { ...row };
       },
+      updateMany: async (args: {
+        where: { id: string; xeroRefundCreditNoteId?: string };
+        data: { xeroRefundCreditNoteId?: string | null };
+      }) => {
+        const row = state.payments.find(
+          (payment) =>
+            payment.id === args.where.id &&
+            (args.where.xeroRefundCreditNoteId === undefined ||
+              payment.xeroRefundCreditNoteId === args.where.xeroRefundCreditNoteId),
+        );
+        if (!row) return { count: 0 };
+        Object.assign(row, args.data);
+        return { count: 1 };
+      },
     },
     xeroObjectLink: {
       findMany: async (args: { where: Record<string, unknown> }) =>
@@ -523,6 +537,9 @@ describe("Stripe per-delta refund notes vs canonical cleanup and reconciliation 
     });
 
     expect(activeRefundNoteIds()).toEqual(["cn_90"]);
+    // The scalar named the voided note. It must not stay there, or the nightly
+    // report calls the inactive mirror a missing refund credit note.
+    expect(state.payments[0].xeroRefundCreditNoteId).toBe("cn_90");
     expect(await sumCoveredRefundCreditNoteCents("pay_1")).toBe(90);
 
     // The detector now sees the honest 10c shortfall and the daily
