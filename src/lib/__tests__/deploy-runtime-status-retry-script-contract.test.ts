@@ -379,6 +379,28 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
   );
 
   it(
+    "on a first blue/green deploy, says a step-17 rollback lands on the release that just failed",
+    async () => {
+      const server = await startServer(() => ({ status: 503, body: STARTING_BODY }));
+      await withServer(server, async () => {
+        // Caddy pointed at `app`, which step 15 recreated on the new release.
+        const result = await runHarness({
+          STUB_PORT: String(server.port),
+          STUB_ACTIVE_SERVICE: "app",
+          STUB_SWITCHED_TRAFFIC: "1",
+        });
+        expect(result.code).not.toBe(0);
+        const stop =
+          "On this first blue/green deploy app was recreated on the new release at step 15, so the rollback lands on the release that just failed, not on the previous one.";
+        expect(result.stderr).toContain(stop);
+        expect(result.stderr).not.toContain("which serves only if it is still running");
+        expectOneTrapAfter(result.stderr, stop);
+      });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
     "on a first blue/green deploy, does not call the just-recreated cron leader the previous release",
     async () => {
       const server = await startServer(() => ({ status: 503, body: STARTING_BODY }));
