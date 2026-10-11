@@ -69,6 +69,7 @@ import {
 import {
   ADDITIONAL_ASK_BEING_RAISED_MESSAGE,
   AdditionalAskChangedDuringReductionError,
+  isWriteConflictOrDeadlock,
 } from "@/lib/additional-ask-reduction-error";
 import { isEditReviewChargeRequestRow } from "@/lib/edit-financial-review-charge-shape";
 import logger from "@/lib/logger";
@@ -526,6 +527,24 @@ export async function retireUnpaidAskChain(
     now?: Date;
   },
 ): Promise<RetiredUnpaidAsk> {
+  try {
+    return await retireUnpaidAskChainUnderLocks(tx, { bookingId, paymentId, ask, now });
+  } catch (err) {
+    // Round 6: a deadlock with the webhook or the runner is the same 409.
+    if (isWriteConflictOrDeadlock(err)) throw new AdditionalAskChangedDuringReductionError();
+    throw err;
+  }
+}
+
+async function retireUnpaidAskChainUnderLocks(
+  tx: Prisma.TransactionClient,
+  { bookingId, paymentId, ask, now }: { bookingId: string; paymentId: string; ask: UnpaidPriceAsk; now: Date },
+): Promise<RetiredUnpaidAsk> {
+  // Round 6: the waiting recoveries first, then the rows - the order the
+  // runner's claim hold writes them in (recovery, then its row), so the two
+  // never deadlock on each other.
+  await closeWaitingAskRecoveries(tx, ask.recoveries, now);
+
   const retired: RetiredAdditionalAsk[] = [];
   for (const row of ask.rows) {
     // THE FENCE: still unpaid and still unretired, or the whole edit rolls back.
@@ -558,8 +577,6 @@ export async function retireUnpaidAskChain(
       cancelOperationId: operation.id,
     });
   }
-
-  await closeWaitingAskRecoveries(tx, ask.recoveries, now);
 
   const intentIds = ask.rows.flatMap((row) =>
     row.stripePaymentIntentId ? [row.stripePaymentIntentId] : [],

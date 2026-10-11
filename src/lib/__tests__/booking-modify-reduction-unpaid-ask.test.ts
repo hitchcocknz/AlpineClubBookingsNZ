@@ -1078,7 +1078,8 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
     state.recoveries = [recoveryRow({ status: "PROCESSING", attempts: 2, processingStartedAt: CLAIMED_MOMENTS_AGO })];
     // Within the window: refused, not netted beside a retry still finishing.
     await expect(adjust(grownBooking(), -2_000)).rejects.toBeInstanceOf(AdditionalAskChangedDuringReductionError);
-    expect(transactionUpdateMany).toHaveBeenCalledTimes(1);
+    // Round 6: the waiting recovery is closed (or refuses) before any row is stamped.
+    expect(transactionUpdateMany).not.toHaveBeenCalled();
 
     // After it: netted against the row, counted once, and the retry closed.
     vi.clearAllMocks();
@@ -1091,6 +1092,23 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
     expect(result.unpaidAskOffsetCents).toBe(2_000);
     expect(result.additionalAsk.amountCents).toBe(3_000);
     expect(recoveryUpdateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("MUTATION (round 6, F8): closes the waiting recovery BEFORE stamping the rows - the runner's own order - so the two cannot deadlock", async () => {
+    state.rows = [askRow({ createdAt: new Date("2026-06-22T00:00:00.000Z") })];
+    state.recoveries = [recoveryRow({ status: "PROCESSING", attempts: 2, processingStartedAt: CLAIMED_LONG_AGO })];
+    await adjust(grownBooking(), -2_000);
+    expect(recoveryUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(transactionUpdateMany.mock.invocationCallOrder[0]!);
+  });
+
+  it.each([
+    ["Prisma's write-conflict code", Object.assign(new Error("Transaction failed due to a write conflict or a deadlock"), { code: "P2034" })],
+    ["the database's own deadlock", new Error('deadlock detected (SQLSTATE 40P01)')],
+  ])("MUTATION (round 6, F8): %s while retiring is the 409 try-again, never a 500", async (_label, conflict) => {
+    state.rows = [askRow()];
+    state.recoveries = [];
+    transactionUpdateMany.mockRejectedValueOnce(conflict);
+    await expect(adjust(grownBooking(), -2_000)).rejects.toBeInstanceOf(AdditionalAskChangedDuringReductionError);
   });
 
   it("after commit the minter re-issues the $30 on a credit-paid booking with nothing to cancel first", async () => {

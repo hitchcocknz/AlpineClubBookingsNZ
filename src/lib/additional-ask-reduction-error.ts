@@ -31,3 +31,19 @@ export class AdditionalAskChangedDuringReductionError extends ApiError {
     this.name = "AdditionalAskChangedDuringReductionError";
   }
 }
+
+/**
+ * #3954 review round 6: a deadlock, or Postgres aborting the edit's write for
+ * a conflict, while the reduction retires the ask is the same transient race
+ * as a fence that matched nothing - the webhook or the recovery runner wrote
+ * the same rows in another order. Answered as the 409 "try again", never a 500.
+ * Prisma reports it as `P2034`; through the driver adapter the database's own
+ * `40P01` can surface instead.
+ */
+export function isWriteConflictOrDeadlock(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === "P2034" || code === "40P01") return true;
+  const message = err instanceof Error ? err.message : "";
+  return message.includes("40P01") || message.includes("deadlock detected");
+}
