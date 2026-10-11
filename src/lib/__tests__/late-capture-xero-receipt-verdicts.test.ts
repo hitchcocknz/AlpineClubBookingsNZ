@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
   }>,
   changeLink: null as { xeroObjectId: string } | null,
   note: vi.fn(),
+  cardByHand: vi.fn(),
 }));
 
 const RESOLVED_AT = new Date("2026-06-20T00:00:00.000Z");
@@ -79,6 +80,7 @@ vi.mock("@/lib/cancelled-booking-late-capture", () => ({
 }));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   noteLateCaptureRefunds: (...a: unknown[]) => state.note(...a),
+  readUnnotedLateCaptureCardRefundCents: (...a: unknown[]) => state.cardByHand(...a),
 }));
 
 import {
@@ -89,6 +91,7 @@ import {
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { readRefundCreditNoteGap } from "@/lib/xero-admin-health";
 import { recordAndNoteRepairedLateCaptureRefunds } from "@/lib/late-capture-repair-refund-record";
+import { readLateCaptureCardRefundsByHand } from "@/lib/late-capture-card-refund-by-hand";
 
 const PAYMENT = { id: "payment_1", bookingId: "booking_1", refundedAmountCents: 34000 };
 
@@ -122,6 +125,8 @@ beforeEach(() => {
   state.changeLink = null;
   state.note.mockReset();
   state.note.mockResolvedValue("queued");
+  state.cardByHand.mockReset();
+  state.cardByHand.mockResolvedValue(24000);
 });
 
 describe.each(RESOLVED_ROWS)("round 11: %s", (_label, arrange, invoiceId) => {
@@ -160,6 +165,35 @@ describe.each(RESOLVED_ROWS)("round 11: %s", (_label, arrange, invoiceId) => {
     expect(outcome.byHand).toEqual(["pi_late"]);
     expect(outcome.noted).toEqual([]);
     expect(state.note).not.toHaveBeenCalled();
+  });
+
+  // #3924 round 12 (F1): the verdicts part, so the app's invoice is in Xero
+  // and no card note will ever answer the capture's card refunds.
+  it("MUTATION: round 12: names the capture's card refunds no note answers, for the repair tool to ask by hand", async () => {
+    await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late", "pi_ordinary"])).resolves.toEqual(
+      new Map([["pi_late", 24000]]),
+    );
+    expect(state.cardByHand).toHaveBeenCalledWith("payment_1", "pi_late");
+    expect(state.cardByHand).toHaveBeenCalledTimes(1);
+  });
+
+  it("round 12: names nothing once notes answer every card refund", async () => {
+    state.cardByHand.mockResolvedValue(0);
+    await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late"])).resolves.toEqual(new Map());
+  });
+});
+
+describe("round 12: card refunds the verdicts agree on are never named", () => {
+  it("MUTATION: a linked change whose row is still FAILED, unresolved: the card path still notes it", async () => {
+    state.change = [{ ...resolvedPartialChange, status: "FAILED", xeroObjectId: null, manuallyResolvedAt: null }];
+    state.changeLink = { xeroObjectId: "inv_linked" };
+    await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late"])).resolves.toEqual(new Map());
+  });
+
+  it("MUTATION: a row resolved before the app sent it, with no link: both verdicts say by hand, and the close's finding or none answers it", async () => {
+    state.change = [{ ...resolvedPartialChange, status: "FAILED", xeroObjectId: null }];
+    await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late"])).resolves.toEqual(new Map());
+    expect(state.cardByHand).not.toHaveBeenCalled();
   });
 });
 

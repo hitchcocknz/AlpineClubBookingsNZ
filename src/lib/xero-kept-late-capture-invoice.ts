@@ -216,9 +216,9 @@ export async function enqueueXeroKeptLateCaptureInvoiceOperation(params: {
           where: { id: live.id },
           select: { status: true, manuallyResolvedAt: true },
         });
-        // Resolved by hand (or withdrawn): the receipt is the officer's now, as
-        // `readLateCaptureXeroReceipt` reads it, so the caller's plan - made
-        // before - no longer holds. The close refuses and is asked again.
+        // Resolved by hand (or withdrawn): the close's plan, made before from
+        // `readPaidAnotherWayLateCaptureXeroReceipt`, no longer holds, since
+        // that verdict now reads the row otherwise. The close refuses and is asked again.
         if (!now || now.manuallyResolvedAt !== null || now.status === "CANCELLED") {
           return {
             queueOperationId: null,

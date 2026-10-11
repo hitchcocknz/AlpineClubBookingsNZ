@@ -58,11 +58,7 @@ export async function noteLateCaptureRefunds(params: {
   const { paymentId, paymentIntentId } = params;
   try {
     if (!(await hasXeroReceiptForLateCapture(paymentIntentId))) return "nothing-owed";
-    const refunds = await prisma.paymentRefund.findMany({
-      where: { paymentId, stripePaymentIntentId: paymentIntentId },
-      select: { amountCents: true, status: true, stripeCreatedAt: true, createdAt: true },
-    });
-    const counted = refunds.filter((refund) => isRecordedRefundStatus(refund.status));
+    const counted = await readLateCaptureCardRefunds(paymentId, paymentIntentId);
     const refundedCents = counted.reduce((sum, refund) => sum + Math.max(0, refund.amountCents), 0);
     const askCents = refundedCents - (await sumLateCaptureNotedCents(paymentId, paymentIntentId));
     if (askCents <= 0) return "nothing-owed";
@@ -93,6 +89,36 @@ export async function noteLateCaptureRefunds(params: {
     );
     return "failed";
   }
+}
+
+/** The capture's own succeeded refunds (`PaymentRefund.stripePaymentIntentId`), the one sizing above. */
+async function readLateCaptureCardRefunds(paymentId: string, paymentIntentId: string) {
+  const refunds = await prisma.paymentRefund.findMany({
+    where: { paymentId, stripePaymentIntentId: paymentIntentId },
+    select: { amountCents: true, status: true, stripeCreatedAt: true, createdAt: true },
+  });
+  return refunds.filter((refund) => isRecordedRefundStatus(refund.status));
+}
+
+/**
+ * #3924 round 12 (`INV-PAY-122`): THE CAPTURE'S CARD REFUNDS NO NOTE ANSWERS -
+ * its own refunds less the refund notes naming it, sized as
+ * `noteLateCaptureRefunds` sizes its ask, whatever the receipt verdict. Never
+ * `PaymentTransaction.refundedAmountCents`, which also carries a close's bank
+ * cash and any other hand-back allocated to the capture's row. A close's own
+ * note names no `paymentIntentId`, so it is never taken off here. What an
+ * officer records by hand in Xero once the app raises no card note for the
+ * capture: the linked change invoice's 409 and the repair tool's
+ * record-by-hand findings.
+ */
+export async function readUnnotedLateCaptureCardRefundCents(
+  paymentId: string,
+  paymentIntentId: string,
+): Promise<number> {
+  const refunds = await readLateCaptureCardRefunds(paymentId, paymentIntentId);
+  const refundedCents = refunds.reduce((sum, refund) => sum + Math.max(0, refund.amountCents), 0);
+  if (refundedCents === 0) return 0;
+  return Math.max(0, refundedCents - (await sumLateCaptureNotedCents(paymentId, paymentIntentId)));
 }
 
 /**

@@ -302,6 +302,8 @@ function createDependencies(state: {
   paidAnotherWayCloseRecord?: { id: string; amountCents: number } | null;
   /** #3924 round 11: the capture's refunds less the notes naming it. */
   paidAnotherWayRecordByHandCents?: number;
+  /** #3924 round 12: by intent, a late capture's card refunds no note will answer. */
+  lateCaptureCardRefundsByHand?: Record<string, number>;
   // #3643 F2: the organisation late-cash arm's CANCELLED_BOOKING_HAND_BACK tasks.
   handBackTasks?: { bookingId: string; paymentId: string }[];
   // #3643 (owner decision 28 Sep 2026): DECISION 2 part-payment review tasks.
@@ -695,6 +697,10 @@ function createDependencies(state: {
       recordByHandCents: state.paidAnotherWayRecordByHandCents ?? 6000,
     })),
     queueWaitingPaidAnotherWayNote: vi.fn().mockResolvedValue("op_note"),
+    // #3924 round 12: none, unless a test says so.
+    readLateCaptureCardRefundsByHand: vi
+      .fn()
+      .mockImplementation(async () => new Map(Object.entries(state.lateCaptureCardRefundsByHand ?? {}))),
   };
 }
 
@@ -4202,10 +4208,12 @@ describe("runBookingXeroRepair", () => {
       booking: ReturnType<typeof makeBooking>,
       status: string,
       operations: unknown[] = [],
+      lateCaptureCardRefundsByHand?: Record<string, number>,
     ) => {
       const deps = createDependencies({
         bookings: [booking],
         operations,
+        lateCaptureCardRefundsByHand,
         lateCaptureApprovalTasks: [
           {
             id: "task_kept",
@@ -4366,6 +4374,55 @@ describe("runBookingXeroRepair", () => {
       expect(byHand((await run(keptBooking(), "DISMISSED", [resolved])).bookingReport)).toBeUndefined();
     });
 
+    // #3924 round 12: every record-by-hand finding says it keeps appearing.
+    it("round 12: the kept invoice's record-by-hand finding says it keeps appearing, and no card finding repeats it", async () => {
+      const resolvedSent = {
+        ...keptOperation("PARTIAL"),
+        xeroObjectId: "inv_kept",
+        manuallyResolvedAt: new Date("2026-05-03T00:00:00Z"),
+      };
+      const refunded = keptBooking(
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+      );
+      const { bookingReport } = await run(refunded, "COMPLETED", [resolvedSent], { pi_kept: 10000 });
+      const kept = bookingReport.findings.find((finding) => finding.code === "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND");
+      expect(kept?.summary).toMatch(/keeps appearing after the refund is recorded by hand, which is expected/);
+      expect(bookingReport.findings.find((finding) => finding.code === "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND")).toBeUndefined();
+    });
+
+    // #3924 round 12 (F1): an approved capture refunded to the card, whose
+    // change invoice was linked in Xero and then marked resolved as its 409
+    // said - every card-refund path reads it resolved by hand, so no card note
+    // follows and the officer is told to record the card refund by hand.
+    it("MUTATION: round 12: a card-only capture whose receipt is the app's invoice but resolved by hand is reported to record by hand", async () => {
+      const refunded = keptBooking(
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+      );
+      const { bookingReport, deps } = await run(refunded, "COMPLETED", [], { pi_kept: 10000 });
+      const card = bookingReport.findings.find((finding) => finding.code === "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND");
+      expect(card).toMatchObject({
+        severity: "warning",
+        safeToAutoApply: false,
+        details: { paymentId: "payment_1", paymentIntentId: "pi_kept", recordByHandCents: 10000 },
+      });
+      expect(card?.summary).toMatch(/record the \$100\.00 refunded to the card by hand in Xero\. This finding is report-only and keeps appearing/);
+      expect(bookingReport.actions).toEqual([]);
+      expect(deps.readLateCaptureCardRefundsByHand).toHaveBeenCalledWith("payment_1", ["pi_kept"]);
+    });
+
+    it("round 12: the card finding is read only for a cancelled booking", async () => {
+      const { bookingReport, deps } = await run(
+        makeBooking({ payment: { ...keptBooking().payment } }),
+        "COMPLETED",
+        [],
+        { pi_kept: 10000 },
+      );
+      expect(bookingReport.findings.find((finding) => finding.code === "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND")).toBeUndefined();
+      expect(deps.readLateCaptureCardRefundsByHand).not.toHaveBeenCalled();
+    });
+
     // #3924 round 7 (money M2, `INV-PAY-122`): an APPROVED capture whose card
     // refund Stripe gave up on and the treasurer closed as paid another way,
     // with its note waiting for the receipt.
@@ -4383,6 +4440,7 @@ describe("runBookingXeroRepair", () => {
           | "paidAnotherWayReceiptLinks"
           | "paidAnotherWayCloseRecord"
           | "paidAnotherWayRecordByHandCents"
+          | "lateCaptureCardRefundsByHand"
         > = {},
         apply = false,
       ) => {
@@ -4519,7 +4577,7 @@ describe("runBookingXeroRepair", () => {
             safeToAutoApply: false,
             details: expect.objectContaining({ closeRecordId: "close_1", closeAmountCents: 6000, paymentIntentId: "pi_kept" }),
           });
-          expect(finding?.summary).toMatch(/record the \$60\.00 refunded on it by hand in Xero\.$/);
+          expect(finding?.summary).toMatch(/record the \$60\.00 refunded on it by hand in Xero\. This finding is report-only and keeps appearing/);
           expect(receiptFinding(bookingReport)).toBeUndefined();
           expect(noteFinding(bookingReport)).toBeUndefined();
           expect(bookingReport.actions.find((a) => a.type === "QUEUE_KEPT_LATE_CAPTURE_INVOICE")).toBeUndefined();
@@ -4559,7 +4617,7 @@ describe("runBookingXeroRepair", () => {
             (candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
           ) as { summary: string; details: Record<string, unknown> } | undefined;
           expect(finding?.summary).toMatch(/the change invoice or the late charge's own receipt/);
-          expect(finding?.summary).toMatch(/record the \$25\.00 refunded on it by hand in Xero\.$/);
+          expect(finding?.summary).toMatch(/record the \$25\.00 refunded on it by hand in Xero\. This finding is report-only and keeps appearing/);
           expect(finding?.details).toMatchObject({ closeAmountCents: 6000, recordByHandCents: 2500 });
         });
 
@@ -4620,11 +4678,48 @@ describe("runBookingXeroRepair", () => {
                 paidAnotherWayRecordByHandCents: 7000,
               });
               expect(keptByHand(bookingReport)).toBeUndefined();
-              expect(closeByHand(bookingReport)?.summary).toMatch(/record the \$70\.00 refunded on it by hand in Xero\.$/);
+              expect(closeByHand(bookingReport)?.summary).toMatch(/record the \$70\.00 refunded on it by hand in Xero\. This finding is report-only and keeps appearing/);
               expect(closeByHand(bookingReport)?.details).toMatchObject({ recordByHandCents: 7000, paymentIntentId: "pi_kept" });
               expect(bookingReport.actions).toEqual([]);
             },
           );
+
+          // #3924 round 12 (F1): the close's note follows the app's invoice,
+          // but the capture's card refunds read it resolved by hand.
+          const cardByHand = (report: { findings: { code: string }[] }) =>
+            report.findings.find((finding) => finding.code === "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND") as
+              | { summary: string; details: Record<string, unknown> }
+              | undefined;
+
+          it("MUTATION: round 12: split - the close's note follows, and the card share is reported to record by hand", async () => {
+            const bookingReport = await runClosed("after-receipt", [resolvedKept], refunded(), {
+              paidAnotherWayReceipt: { kind: "recorded", invoiceId: "inv_kept" },
+              lateCaptureCardRefundsByHand: { pi_kept: 4000 },
+            });
+            expect(noteFinding(bookingReport)).toBeDefined();
+            expect(closeByHand(bookingReport)).toBeUndefined();
+            expect(cardByHand(bookingReport)?.details).toMatchObject({ paymentIntentId: "pi_kept", recordByHandCents: 4000 });
+            expect(cardByHand(bookingReport)?.summary).toMatch(/record the \$40\.00 refunded to the card by hand in Xero/);
+          });
+
+          it("round 12: close only - the note follows and nothing is reported to record by hand", async () => {
+            const bookingReport = await runClosed("after-receipt", [resolvedKept], refunded(), {
+              paidAnotherWayReceipt: { kind: "recorded", invoiceId: "inv_kept" },
+            });
+            expect(noteFinding(bookingReport)).toBeDefined();
+            expect(closeByHand(bookingReport)).toBeUndefined();
+            expect(cardByHand(bookingReport)).toBeUndefined();
+          });
+
+          it("MUTATION: round 12: the close's record-by-hand finding already names the card refunds, so no card finding repeats it", async () => {
+            const bookingReport = await runClosed("after-receipt", [{ ...resolvedKept, xeroObjectId: null }], refunded(), {
+              paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+              paidAnotherWayRecordByHandCents: 10000,
+              lateCaptureCardRefundsByHand: { pi_kept: 4000 },
+            });
+            expect(closeByHand(bookingReport)?.summary).toMatch(/keeps appearing after the refund is recorded by hand, which is expected/);
+            expect(cardByHand(bookingReport)).toBeUndefined();
+          });
 
           it("record by hand - skipped once a note row exists", async () => {
             const bookingReport = await runClosed("after-receipt", [{ ...resolvedKept, xeroObjectId: null }], refunded(), {

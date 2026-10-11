@@ -38,6 +38,11 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   // the close's bank-transfer refund its own notes do not cover. Report-only;
   // not raised once any note row of the close exists (round 10).
   "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
+  // #3924 round 12: a late capture's card refunds that no note will answer -
+  // its receipt is the app's invoice in Xero, but its row was resolved by
+  // hand, so every card-refund path reads it so - and that no record-by-hand
+  // finding above names. Report-only.
+  "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND",
   "BLOCKED_BY_XERO_OPERATION",
   "XERO_LINK_MISMATCH",
   "XERO_AMOUNT_MISMATCH",
@@ -521,6 +526,12 @@ export interface BookingClassificationContext {
    * note it means cash arrived and no clearing note is owed.
    */
   cancelledBookingHandBackPaymentIds: Set<string>;
+  /**
+   * #3924 round 12: by intent, a late capture's card refunds no note will
+   * answer (`readLateCaptureCardRefundsByHand`), in cents and in the club's
+   * format. Set after the load (`withLateCaptureCardRefundsByHand`).
+   */
+  lateCaptureCardRefundsByHand?: Map<string, { cents: number; amountLabel: string }>;
   /**
    * #3635: the refund cents a note may still answer for a cancelled booking's
    * payment, any source (#3880 round 3), through `readRefundCreditNoteGap`, or

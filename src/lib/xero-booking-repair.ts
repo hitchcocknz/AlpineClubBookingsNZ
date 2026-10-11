@@ -38,6 +38,7 @@ import {
   buildPassReport,
 } from "./xero-booking-repair-passes";
 import { createCountMap } from "./xero-booking-repair-utils";
+import { getCapturedRepairTransactions } from "./xero-booking-repair-payments";
 import { readLateCaptureRefundsPaidAnotherWay } from "@/lib/late-capture-paid-another-way";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
@@ -86,13 +87,39 @@ async function withPaidAnotherWayCloses(
   return contexts;
 }
 
+/**
+ * #3924 round 12 (`LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`): on a cancelled
+ * booking, each late capture's card refunds no note will answer
+ * (`readLateCaptureCardRefundsByHand`), named in the club's format.
+ */
+async function withLateCaptureCardRefundsByHand(
+  contexts: Awaited<ReturnType<typeof loadAuditData>>,
+  deps: RepairDependencies,
+  format: ClubFormat,
+) {
+  for (const context of contexts) {
+    const payment = context.booking.payment;
+    if (context.booking.status !== "CANCELLED" || !payment) continue;
+    const intents = getCapturedRepairTransactions(payment).flatMap((transaction) =>
+      transaction.stripePaymentIntentId ? [transaction.stripePaymentIntentId] : [],
+    );
+    if (intents.length === 0) continue;
+    const byHand = await deps.readLateCaptureCardRefundsByHand(payment.id, intents);
+    context.lateCaptureCardRefundsByHand = new Map(
+      [...byHand].map(([intent, cents]) => [intent, { cents, amountLabel: formatCents(cents, format) }]),
+    );
+  }
+  return contexts;
+}
+
 async function runSinglePass(
   pass: number,
   scope: BookingXeroRepairScope,
   deps: RepairDependencies,
   format: ClubFormat,
 ) {
-  const contexts = await withPaidAnotherWayCloses(await loadAuditData(scope, deps), deps, format);
+  const loaded = await withPaidAnotherWayCloses(await loadAuditData(scope, deps), deps, format);
+  const contexts = await withLateCaptureCardRefundsByHand(loaded, deps, format);
   const bookings = contexts.map((context) => classifyBookingContext(context));
   return buildPassReport(pass, bookings);
 }

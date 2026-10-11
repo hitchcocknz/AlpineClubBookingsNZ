@@ -55,8 +55,11 @@ export function addPaidAnotherWayReceiptFinding({
   // Round 11: a receipt resolved by hand, whatever the close planned. Read by
   // the paid-another-way verdict (`readPaidAnotherWayLateCaptureXeroReceipt`),
   // so a row resolved after the app sent it, or a change linked in Xero, is
-  // the app's receipt and its note follows - never "record it by hand". The
-  // close's finding answers its capture in place of the kept invoice's
+  // the app's receipt and the CLOSE's note follows - the close's share is never
+  // recorded by hand. The capture's card refunds are another matter (round
+  // 12): every card-refund path reads such a row resolved by hand, so they are
+  // `LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`'s. The close's finding answers
+  // its capture in place of the kept invoice's
   // `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`, which the caller never reaches
   // for a close. Report-only, so the caller still looks at a PARTIAL row.
   if (close.receiptState?.receipt.kind === "resolved-by-hand") {
@@ -174,14 +177,22 @@ export function addPaidAnotherWayReceiptFinding({
 }
 
 /**
+ * #3924 round 12: the words every record-by-hand finding ends with. Recording
+ * a refund by hand in Xero writes no row the app reads, and the repair tool
+ * has no way to acknowledge a finding, so it is raised again on every run.
+ */
+export const RECORD_BY_HAND_REMINDER =
+  "This finding is report-only and keeps appearing after the refund is recorded by hand, which is expected: the app cannot see what is recorded by hand in Xero.";
+
+/**
  * Round 9 (`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND`): the capture's receipt
  * was resolved by hand, so the app raises no note for the close, and an
  * officer records its refunds by hand. Report-only. Round 10: not once the
  * close's note was asked for after all - any row of it, one an officer
- * resolved by hand included. Round 11: sized as the kept invoice's finding
- * was, from the capture's refunds less the notes naming it
- * (`recordByHandCents`), and it stays as a reminder until a note row exists:
- * recording the refund by hand in Xero writes no row the app can read.
+ * resolved by hand included. Round 12: sized from the capture's own card
+ * refunds less the notes naming it, plus what the close paid back
+ * (`recordByHandCents`), and otherwise raised on every run
+ * (`RECORD_BY_HAND_REMINDER`).
  */
 function addRecordByHandFinding(
   findings: MutableFinding[],
@@ -194,7 +205,7 @@ function addRecordByHandFinding(
   addFinding(findings, {
     code: "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
     severity: "warning",
-    summary: `A late card payment whose refund was paid another way has its Xero receipt - the change invoice or the late charge's own receipt - resolved by hand in Xero, so the app raises no refund note for it: record the ${amount}refunded on it by hand in Xero.`,
+    summary: `A late card payment whose refund was paid another way has its Xero receipt - the change invoice or the late charge's own receipt - resolved by hand in Xero, so the app raises no refund note for it: record the ${amount}refunded on it by hand in Xero. ${RECORD_BY_HAND_REMINDER}`,
     safeToAutoApply: false,
     details: {
       ...details,
@@ -204,4 +215,38 @@ function addRecordByHandFinding(
     },
     actionKeys: [],
   });
+}
+
+/**
+ * #3924 round 12 (`LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`, `INV-PAY-122`): a
+ * late capture's card refunds no note will answer - its receipt is the app's
+ * invoice in Xero, but its row was resolved by hand, so no card-refund path
+ * raises a note (`readLateCaptureCardRefundsByHand`). Most often a linked change
+ * invoice an officer marked resolved, as its retry's 409 said to. Report-only,
+ * and only where no other record-by-hand finding already names the capture:
+ * the kept invoice's names its refunds, and the close's its card refunds with
+ * the close.
+ */
+export function addLateCaptureCardRefundByHandFindings(
+  findings: MutableFinding[],
+  paymentId: string,
+  byHand: ReadonlyMap<string, { cents: number; amountLabel: string }> | undefined,
+): void {
+  for (const [paymentIntentId, { cents, amountLabel }] of byHand ?? []) {
+    const named = findings.some(
+      (finding) =>
+        (finding.code === "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND" ||
+          finding.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND") &&
+        finding.details.paymentIntentId === paymentIntentId,
+    );
+    if (named || cents <= 0) continue;
+    addFinding(findings, {
+      code: "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND",
+      severity: "warning",
+      summary: `A late card payment's Xero receipt is in Xero, but its operation was resolved by hand, so the app raises no refund note for the card refunds of it: record the ${amountLabel} refunded to the card by hand in Xero. ${RECORD_BY_HAND_REMINDER}`,
+      safeToAutoApply: false,
+      details: { paymentId, paymentIntentId, recordByHandCents: cents },
+      actionKeys: [],
+    });
+  }
 }

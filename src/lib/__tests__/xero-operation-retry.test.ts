@@ -36,6 +36,10 @@ const mocks = vi.hoisted(() => ({
   // #3924 round 10: a late charge's change invoice is told by its approval
   // task, and one already linked in Xero is refused.
   findUniqueManualRefundTask: vi.fn().mockResolvedValue(null),
+  // #3924 round 12: what the linked change invoice's 409 names - the close's
+  // share, and the card refunds no note answers.
+  findLateCaptureRefundPaidAnotherWay: vi.fn().mockResolvedValue(null),
+  readUnnotedLateCaptureCardRefundCents: vi.fn().mockResolvedValue(0),
   findFirstXeroObjectLink: vi.fn().mockResolvedValue(null),
   // #3548: the one read-back-then-settle the repair leg hands a note to.
   finishRefundCreditNoteSettlement: vi.fn().mockResolvedValue({ refundPaymentErr: null }),
@@ -125,6 +129,15 @@ vi.mock("@/lib/xero-applied-credit-allocation", () => ({
 }));
 vi.mock("@/lib/xero-applied-credit-deallocation", () => ({
   deallocateExcessAppliedCreditForBooking: mocks.deallocateExcessAppliedCreditForBooking,
+}));
+
+vi.mock("@/lib/late-capture-paid-another-way", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/late-capture-paid-another-way")),
+  findLateCaptureRefundPaidAnotherWay: mocks.findLateCaptureRefundPaidAnotherWay,
+}));
+vi.mock("@/lib/late-capture-refund-credit-note", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/late-capture-refund-credit-note")),
+  readUnnotedLateCaptureCardRefundCents: mocks.readUnnotedLateCaptureCardRefundCents,
 }));
 
 vi.mock("@/lib/xero-sync", async (importOriginal) => {
@@ -2606,10 +2619,14 @@ describe("retryXeroSyncOperation", () => {
       status: 409,
       message: expect.stringContaining("Mark this operation resolved as fixed in Xero instead"),
     });
-    // Round 11 (UX): linked, so the app raises the note - never recorded by hand too.
+    // Round 12: no close and no card refund yet - nothing is said not to be
+    // recorded by hand, and a later card refund is.
     await expect(refused).rejects.toMatchObject({
-      message: expect.stringContaining("do not record the refund by hand"),
+      message: expect.stringMatching(
+        /instead\. If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it\.$/,
+      ),
     });
+    await expect(refused).rejects.not.toMatchObject({ message: expect.stringMatching(/Do not record/) });
     // Round 11 (`INV-SSOT`): the receipt reader's own link query.
     expect(mocks.findFirstXeroObjectLink).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2624,6 +2641,65 @@ describe("retryXeroSyncOperation", () => {
     );
     expect(mocks.updateManyOperation).not.toHaveBeenCalled();
     expect(mocks.createXeroSupplementaryInvoice).not.toHaveBeenCalled();
+  });
+
+  // #3924 round 12 (F1): once the row is resolved, a refund closed as paid
+  // another way reads the linked invoice as its receipt and its note follows,
+  // but every card-refund path reads the row resolved by hand - so the 409
+  // says which share to record by hand and which never to.
+  describe("round 12: what the linked change invoice's 409 says to record by hand", () => {
+    const linkedLateChange = () =>
+      makeOperation({
+        status: "FAILED",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: "mod_123",
+        queueType: "SUPPLEMENTARY_INVOICE",
+        requestPayload: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          bookingId: "book_123",
+          priceDiffCents: 40000,
+          changeFeeCents: 0,
+          bookingModificationId: "mod_123",
+          recordPayment: true,
+          paymentIntentId: "pi_late",
+        },
+      });
+    const refusal = async ({ closeCents, cardCents }: { closeCents: number | null; cardCents: number }) => {
+      mocks.findUniqueOperation.mockResolvedValue(linkedLateChange());
+      mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ id: "task_late" });
+      mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ paymentId: "payment_1" });
+      mocks.findFirstXeroObjectLink.mockResolvedValueOnce({ xeroObjectId: "inv_linked" });
+      mocks.findLateCaptureRefundPaidAnotherWay.mockResolvedValueOnce(
+        closeCents === null ? null : { id: "close_1", paymentId: "payment_1", amountCents: closeCents },
+      );
+      mocks.readUnnotedLateCaptureCardRefundCents.mockResolvedValueOnce(cardCents);
+      const error = await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(XeroOperationRetryError);
+      expect(error).toMatchObject({ status: 409 });
+      expect(mocks.updateManyOperation).not.toHaveBeenCalled();
+      return (error as Error).message;
+    };
+
+    it("MUTATION: card only - the whole card refund is recorded by hand, and nothing is said not to be", async () => {
+      const message = await refusal({ closeCents: null, cardCents: 40000 });
+      expect(message).toMatch(/Record the \$400\.00 refunded to the card by hand in Xero: once this operation is resolved the app raises no refund note for a card refund of this charge\.$/);
+      expect(message).not.toMatch(/Do not record/);
+      expect(mocks.readUnnotedLateCaptureCardRefundCents).toHaveBeenCalledWith("payment_1", "pi_late");
+    });
+
+    it("MUTATION: split - the close's share is not recorded by hand, the card share is", async () => {
+      const message = await refusal({ closeCents: 25000, cardCents: 15000 });
+      expect(message).toMatch(/Do not record the \$250\.00 paid back another way by hand: the app raises that refund note against the invoice already there, through the nightly credit check or the Xero repair tool\./);
+      expect(message).toMatch(/Record the \$150\.00 refunded to the card by hand in Xero/);
+    });
+
+    it("MUTATION: close only - nothing to record by hand", async () => {
+      const message = await refusal({ closeCents: 40000, cardCents: 0 });
+      expect(message).toMatch(/Do not record the \$400\.00 paid back another way by hand/);
+      expect(message).not.toMatch(/Record the|record that refund by hand/);
+    });
   });
 
   // #3924 round 10 (finding 3): an ordinary card edit's invoice names its

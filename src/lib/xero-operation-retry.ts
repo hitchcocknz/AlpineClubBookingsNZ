@@ -1390,7 +1390,7 @@ export async function retryXeroSyncOperation(
   const releasedChangeInvoicePayload = releasedLateCaptureChangeInvoiceRequeuePayload(operation);
   if (releasedChangeInvoicePayload && (await isLateCaptureApprovalChangeInvoice(releasedChangeInvoicePayload))) {
     // Round 10: one already in Xero is marked resolved, never sent again.
-    const refusal = await linkedChangeInvoiceRetryRefusal(operation);
+    const refusal = await linkedChangeInvoiceRetryRefusal(operation, releasedChangeInvoicePayload, format);
     if (refusal) throw new XeroOperationRetryError(refusal, 409);
     await requeueOutboxRowForRetry(
       operation,

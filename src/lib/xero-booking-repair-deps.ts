@@ -28,6 +28,7 @@ import {
   readPaidAnotherWayReceiptState,
 } from "@/lib/paid-another-way-receipt-note";
 import { recordAndNoteRepairedLateCaptureRefunds } from "@/lib/late-capture-repair-refund-record";
+import { readLateCaptureCardRefundsByHand } from "@/lib/late-capture-card-refund-by-hand";
 import { readRefundCreditNoteGap } from "@/lib/xero-admin-health";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { finishRefundCreditNoteSettlement } from "@/lib/xero-refund-note-settlement";
@@ -76,6 +77,8 @@ export type RepairDependencies = {
   // the one note step that queues it once the receipt is in Xero.
   readPaidAnotherWayReceiptState: typeof readPaidAnotherWayReceiptState;
   queueWaitingPaidAnotherWayNote: typeof queueWaitingPaidAnotherWayNote;
+  // #3924 round 12: a late capture's card refunds no note will answer.
+  readLateCaptureCardRefundsByHand: typeof readLateCaptureCardRefundsByHand;
 };
 
 const defaultDependencies: RepairDependencies = {
@@ -104,6 +107,7 @@ const defaultDependencies: RepairDependencies = {
   finishRefundCreditNoteSettlement,
   readPaidAnotherWayReceiptState,
   queueWaitingPaidAnotherWayNote,
+  readLateCaptureCardRefundsByHand,
 };
 
 export function getDependencies(overrides?: Partial<RepairDependencies>): RepairDependencies {

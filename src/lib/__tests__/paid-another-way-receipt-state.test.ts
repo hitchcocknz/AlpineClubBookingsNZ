@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #3924 round 11 (F1, `INV-PAY-122`): what the repair tool's record-by-hand
- * finding for a refund closed as paid another way names - the capture's
- * refunds (its card refunds and the close's bank cash alike) less the refund
- * notes naming the capture, as the kept invoice's own finding sized it. Read
- * only when the paid-another-way verdict says the receipt was resolved by hand.
+ * #3924 rounds 11 and 12 (`INV-PAY-122`): what the repair tool's record-by-hand
+ * finding for a refund closed as paid another way names - the capture's own
+ * card refunds (`PaymentRefund` rows by intent) less the refund notes naming
+ * the capture, plus what the close paid back. Never the capture row's
+ * `refundedAmountCents`, which also carries any other hand-back allocated to
+ * it. Read only when the paid-another-way verdict says the receipt was
+ * resolved by hand. The card-refund reader is the real one, over a stubbed
+ * store.
  */
 const mocks = vi.hoisted(() => ({
   receipt: vi.fn(),
   close: vi.fn(),
-  noted: vi.fn(),
   capture: vi.fn(),
+  refunds: vi.fn(),
+  notes: vi.fn(),
   noteRows: vi.fn(),
 }));
 
@@ -19,55 +23,79 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     manualRefundTask: { findUnique: async () => ({ id: "task_late", paymentId: "payment_1" }) },
     xeroObjectLink: { findMany: async () => [] },
-    xeroSyncOperation: { count: (...a: unknown[]) => mocks.noteRows(...a) },
+    xeroSyncOperation: {
+      count: (...a: unknown[]) => mocks.noteRows(...a),
+      findMany: (...a: unknown[]) => mocks.notes(...a),
+    },
     paymentTransaction: { findFirst: (...a: unknown[]) => mocks.capture(...a) },
+    paymentRefund: { findMany: (...a: unknown[]) => mocks.refunds(...a) },
   },
 }));
-vi.mock("@/lib/late-capture-xero-receipt", () => ({
+vi.mock("@/lib/late-capture-xero-receipt", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/late-capture-xero-receipt")),
   readPaidAnotherWayLateCaptureXeroReceipt: (...a: unknown[]) => mocks.receipt(...a),
 }));
 vi.mock("@/lib/late-capture-paid-another-way", () => ({
   findLateCaptureRefundPaidAnotherWay: (...a: unknown[]) => mocks.close(...a),
 }));
-vi.mock("@/lib/late-capture-refund-credit-note", () => ({
-  sumLateCaptureNotedCents: (...a: unknown[]) => mocks.noted(...a),
-}));
 vi.mock("@/lib/club-time-zone-runtime", () => ({ readClubTimeZoneOutsideRequest: vi.fn() }));
 vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({ lockKeptLateCaptureTask: vi.fn() }));
 
 import { readPaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
+import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+
+const cardNote = (amountCents: number) => ({
+  status: "SUCCEEDED",
+  xeroObjectId: "cn_card",
+  manuallyResolvedAt: null,
+  requestPayload: { queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE, refundAmountCents: amountCents, paymentIntentId: "pi_late" },
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.receipt.mockResolvedValue({ kind: "resolved-by-hand" });
   mocks.close.mockResolvedValue({ id: "close_1", paymentId: "payment_1", amountCents: 6000 });
   mocks.noteRows.mockResolvedValue(0);
-  mocks.capture.mockResolvedValue({ refundedAmountCents: 10000 });
-  mocks.noted.mockResolvedValue(3000);
+  // The capture row: 4000 to the card, 6000 closed as paid another way, and a
+  // later 5000 hand-back that landed on the same row.
+  mocks.capture.mockResolvedValue({ refundedAmountCents: 15000 });
+  mocks.refunds.mockResolvedValue([
+    { amountCents: 4000, status: "succeeded", stripeCreatedAt: null, createdAt: new Date("2026-06-20T00:00:00Z") },
+  ]);
+  mocks.notes.mockResolvedValue([cardNote(1000)]);
 });
 
-describe("readPaidAnotherWayReceiptState: recordByHandCents (round 11)", () => {
-  it("MUTATION: is the capture's refunds less the notes naming it, read by the paid-another-way verdict", async () => {
+describe("readPaidAnotherWayReceiptState: recordByHandCents (rounds 11 and 12)", () => {
+  it("MUTATION: round 12: is the capture's own card refunds less the notes naming it, plus the close - never a later hand-back on the capture row", async () => {
     const state = await readPaidAnotherWayReceiptState("pi_late");
-    expect(state).toMatchObject({ close: { id: "close_1", amountCents: 6000 }, noteAsked: false, recordByHandCents: 7000 });
+    // 4000 card - 1000 noted + 6000 closed; the 5000 hand-back is not the capture's.
+    expect(state).toMatchObject({ close: { id: "close_1", amountCents: 6000 }, noteAsked: false, recordByHandCents: 9000 });
     expect(mocks.receipt).toHaveBeenCalledWith("pi_late");
-    expect(mocks.capture).toHaveBeenCalledWith({
-      where: { paymentId: "payment_1", source: "STRIPE", stripePaymentIntentId: "pi_late" },
-      select: { refundedAmountCents: true },
-    });
-    expect(mocks.noted).toHaveBeenCalledWith("payment_1", "pi_late");
+    expect(mocks.refunds).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { paymentId: "payment_1", stripePaymentIntentId: "pi_late" } }),
+    );
+    expect(mocks.notes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ localId: "payment_1", requestPayload: { path: ["paymentIntentId"], equals: "pi_late" } }),
+      }),
+    );
+    expect(mocks.capture).not.toHaveBeenCalled();
   });
 
-  it("is never below nothing, and nothing without a refund", async () => {
-    mocks.noted.mockResolvedValue(12000);
-    await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 0 });
-    mocks.capture.mockResolvedValue({ refundedAmountCents: 0 });
-    await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 0 });
+  it("counts only succeeded card refunds, and never takes a card note below nothing off the close", async () => {
+    mocks.refunds.mockResolvedValue([
+      { amountCents: 4000, status: "failed", stripeCreatedAt: null, createdAt: new Date() },
+      { amountCents: 2000, status: "succeeded", stripeCreatedAt: null, createdAt: new Date() },
+    ]);
+    mocks.notes.mockResolvedValue([cardNote(12000)]);
+    await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 6000 });
+    mocks.refunds.mockResolvedValue([]);
+    await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 6000 });
   });
 
   it("is nothing for a receipt the app recorded: its note follows", async () => {
     mocks.receipt.mockResolvedValue({ kind: "recorded", invoiceId: "inv_kept" });
     await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 0 });
-    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.refunds).not.toHaveBeenCalled();
   });
 });
