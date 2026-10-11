@@ -466,7 +466,8 @@ Each chain is one problem coming back: every line is an earlier fix → the late
    6,783 comments, PR bodies included), and every fix on `main`: 513 fix units,
    one per merged fix PR plus each `fix…` commit made straight on `main`.
 2. **Find candidate pairs.** Four signals each propose earlier fix → later
-   fix (or later issue) pairs, 622 in all:
+   fix (or later issue) pairs, 622 in all (a pair more than one signal
+   found counts under each, so the four counts add up to more):
    - **code-history overlap** (224): the later fix rewrote at least five lines
      that `git blame` says an earlier fix, for a different issue, had written;
    - **text citation** (398): an issue, PR body or comment cites an earlier,
@@ -511,7 +512,9 @@ Each chain is one problem coming back: every line is an earlier fix → the late
   | revert | 1 | 1 |
   | more than one signal on the same pair | 6 | 5 |
 
-  These match part 1's spot checks (about 6 in 10 and 2–3 in 10). A pair two
+  A pair with more than one signal counts under each of its signals and in
+  the last row, so the rows add up to more than the 305 judged and 142
+  confirmed. These match part 1's spot checks (about 6 in 10 and 2–3 in 10). A pair two
   signals agree on is nearly always real.
 - **Recall is lower than precision.** A repeat is missed when the later fix
   rewrote new lines rather than the earlier fix's, nobody cited the earlier
