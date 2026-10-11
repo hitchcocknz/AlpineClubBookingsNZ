@@ -921,7 +921,14 @@ export function classifyBookingContext(
     // takes a scoped invoice-correction note, queued by the edit; verified or queued.
     const billedOffsetNote = scopedBilledOffsetNote({ newData: modification.newData, operations: modificationOperations });
     if (billedOffsetNote && primaryInvoice) {
-      addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: billedOffsetNote, actionMap, findings });
+      addScopedSideNoteFindings({
+        bookingId: booking.id,
+        modificationId: modification.id,
+        note: billedOffsetNote,
+        edit: { operations: modificationOperations, links: modificationLinks },
+        actionMap,
+        findings,
+      });
     }
     // Round 6: where the edit could not establish what the primary invoice
     // billed of the offset, it credit-noted nothing; a person decides.
@@ -972,7 +979,14 @@ export function classifyBookingContext(
       // below without it, so neither hides the other or stands in for it.
       const giveBackNote = scopedGiveBackNote({ newData: modification.newData, operations: modificationOperations });
       if (giveBackNote) {
-        addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: giveBackNote, actionMap, findings });
+        addScopedSideNoteFindings({
+          bookingId: booking.id,
+          modificationId: modification.id,
+          note: giveBackNote,
+          edit: { operations: modificationOperations, links: modificationLinks },
+          actionMap,
+          findings,
+        });
       }
       const { links: noteLinks, operations: noteOperations } = withoutScopedSideNotes(modificationLinks, modificationOperations);
       const modificationCreditNote = resolveObjectFromCandidates({

@@ -8,7 +8,13 @@ import {
   queuedReviewTaskId,
   UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE,
 } from "@/lib/xero-review-task-key";
-import type { BookingXeroRepairAction, MutableFinding, XeroOperationRecord } from "./xero-booking-repair-types";
+import { awaitsMissingOwnNote } from "@/lib/unpaid-ask-billed-offset-order";
+import type {
+  BookingXeroRepairAction,
+  MutableFinding,
+  XeroObjectLinkRecord,
+  XeroOperationRecord,
+} from "./xero-booking-repair-types";
 import { addAction, addFinding, buildRetryAction } from "./xero-booking-repair-findings";
 import { getBlockingOperation } from "./xero-booking-repair-object-resolution";
 import { isSuccessfulXeroOperation } from "./xero-booking-repair-utils";
@@ -110,6 +116,10 @@ export function scopedBilledOffsetNote<O extends { entityType: string; operation
   };
 }
 
+/** Round 7: a billed-offset note that stopped waiting for the edit's own note. */
+export const BILLED_OFFSET_AWAITS_OWN_NOTE_SUMMARY =
+  "A booking modification's invoice-correction credit note is waiting for the modification's own credit note, which was never queued. Check that note first - raise or retry it - then retry this one.";
+
 const SIDE_NOTE_REPAIR = {
   "give-back": {
     keyPrefix: "queue:give-back-note",
@@ -142,18 +152,33 @@ export function addScopedSideNoteFindings({
   bookingId,
   modificationId,
   note,
+  edit,
   actionMap,
   findings,
 }: {
   bookingId: string;
   modificationId: string;
   note: ScopedSideNote<XeroOperationRecord>;
+  /** The edit's own operations and links, for whether its own note exists (round 7). */
+  edit: { operations: readonly XeroOperationRecord[]; links: readonly XeroObjectLinkRecord[] };
   actionMap: Map<string, BookingXeroRepairAction>;
   findings: MutableFinding[];
 }): void {
   const repair = SIDE_NOTE_REPAIR[note.kind];
   const blocking = getBlockingOperation(note.operations, "CREDIT_NOTE", "CREATE");
-  if (blocking?.kind === "retryable") {
+  if (blocking?.kind === "retryable" && note.kind === "billed-offset" && awaitsMissingOwnNote(blocking.operation, edit)) {
+    // #3954 round 7: it stopped waiting for the edit's own note, which never
+    // appeared. Retrying it now could raise it first, so a person decides.
+    const action = addAction(actionMap, { ...buildRetryAction(bookingId, blocking), safeToAutoApply: false });
+    addFinding(findings, {
+      code: "BLOCKED_BY_XERO_OPERATION",
+      severity: "manual_review",
+      summary: BILLED_OFFSET_AWAITS_OWN_NOTE_SUMMARY,
+      safeToAutoApply: false,
+      details: { modificationId, operationId: blocking.operation.id, operationStatus: blocking.operation.status },
+      actionKeys: [action.key],
+    });
+  } else if (blocking?.kind === "retryable") {
     const action = addAction(actionMap, buildRetryAction(bookingId, blocking));
     addFinding(findings, {
       code: "BLOCKED_BY_XERO_OPERATION",

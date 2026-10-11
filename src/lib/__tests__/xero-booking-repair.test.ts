@@ -7555,6 +7555,32 @@ describe("#3954: a reduction set against an unpaid ask", () => {
     expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
   });
 
+  it("MUTATION (round 7, F6): a billed-offset note that stopped waiting for the edit's own note, which never appeared, is a person's to retry - never auto-applied", async () => {
+    const waited = billedOffsetNote({
+      status: "FAILED",
+      xeroObjectId: null,
+      requestPayload: {
+        queueType: "MODIFICATION_CREDIT_NOTE",
+        bookingModificationId: "mod_reduction",
+        refundAmountCents: 2000,
+        noteWording: "invoice-correction",
+        ...billedOffsetScoped,
+        ownNoteExpected: true,
+      },
+    });
+    const deps = createDependencies({ bookings: [billedReduction()], operations: [makePrimaryInvoiceCreateOperation(), waited] });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => candidate.code === "BLOCKED_BY_XERO_OPERATION")).toMatchObject({
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_reduction", operationId: "op_billed_offset" },
+    });
+    expect(bookingReport.actions.find((action) => action.key === "retry:op_billed_offset")).toMatchObject({ safeToAutoApply: false });
+  });
+
   it("MUTATION (round 5): the billed-offset note never stands in for the edit's own note on what the ask left", async () => {
     // $80 off: $20 of the ask billed by the primary invoice (its note raised),
     // and the $60 left still owed its own note.

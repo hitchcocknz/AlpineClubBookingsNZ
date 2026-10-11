@@ -26,11 +26,15 @@
  *   the note or queues it under the same key (`scopedBilledOffsetNote`).
  * - NO CASH: the inbound credit-note sync leaves it out of the payment's
  *   refunded total (`noCashModificationNoteIds`).
+ * - AFTER THE EDIT'S OWN NOTE (round 7): where the edit's Xero leg will queue
+ *   one after commit, the payload says so and this note waits for it
+ *   (`unpaid-ask-billed-offset-order.ts`).
  */
 import type { Prisma } from "@prisma/client";
 
 import { queueReissuedAskRecovery } from "@/lib/additional-ask-reissue";
 import type { AdditionalAsk } from "@/lib/additional-payment-ask";
+import { ownNoteExpected } from "@/lib/unpaid-ask-billed-offset-order";
 import { enqueueXeroModificationCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import { UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE } from "@/lib/xero-review-task-key";
 
@@ -41,11 +45,14 @@ export async function queueUnpaidAskBilledOffsetNote(
     bookingId,
     bookingModificationId,
     unpaidAskBilledOffsetCents,
+    ownNoteExpected,
   }: {
     bookingId: string;
     /** The REDUCING edit, whose history records the figure and which anchors the note. */
     bookingModificationId: string;
     unpaidAskBilledOffsetCents: number;
+    /** Round 7: the edit's own note is still to be queued; this one waits for it. */
+    ownNoteExpected: boolean;
   },
 ): Promise<string | null> {
   if (unpaidAskBilledOffsetCents <= 0) return null;
@@ -56,6 +63,7 @@ export async function queueUnpaidAskBilledOffsetNote(
       bookingModificationId,
       noteWording: "invoice-correction",
       reviewTaskId: UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE,
+      ownNoteExpected,
     },
     { store: tx },
   );
@@ -80,7 +88,15 @@ export async function queueReductionAskFollowUps(
     bookingId: string;
     paymentId: string | null;
     bookingModificationId: string;
-    settled: { additionalAsk: AdditionalAsk; hasIssuedXeroInvoice: boolean; unpaidAskBilledOffsetCents: number };
+    settled: {
+      additionalAsk: AdditionalAsk;
+      hasIssuedXeroInvoice: boolean;
+      unpaidAskBilledOffsetCents: number;
+      /** What the edit's own note will return of the reduction left after the ask. */
+      xeroRefundAmountCents: number;
+      /** An organiser's card refund raises its note later, not the edit's Xero leg. */
+      organiserChildRefund: unknown;
+    };
   },
 ): Promise<void> {
   await queueReissuedAskRecovery(tx, { bookingId, paymentId, bookingModificationId, settled });
@@ -88,5 +104,6 @@ export async function queueReductionAskFollowUps(
     bookingId,
     bookingModificationId,
     unpaidAskBilledOffsetCents: settled.unpaidAskBilledOffsetCents,
+    ownNoteExpected: ownNoteExpected(settled),
   });
 }

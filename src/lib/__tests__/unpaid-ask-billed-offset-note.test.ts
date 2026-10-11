@@ -39,7 +39,7 @@ beforeEach(() => {
 describe("queueUnpaidAskBilledOffsetNote", () => {
   it("MUTATION: queues exactly the billed offset on the reducing edit, scoped, worded as an invoice correction, in the edit's transaction", async () => {
     await expect(
-      queueUnpaidAskBilledOffsetNote(tx, { bookingId: "booking_1", bookingModificationId: "mod_reduction", unpaidAskBilledOffsetCents: 2_000 }),
+      queueUnpaidAskBilledOffsetNote(tx, { bookingId: "booking_1", bookingModificationId: "mod_reduction", unpaidAskBilledOffsetCents: 2_000, ownNoteExpected: false }),
     ).resolves.toBe("op_billed_offset");
 
     expect(h.enqueue).toHaveBeenCalledTimes(1);
@@ -50,6 +50,7 @@ describe("queueUnpaidAskBilledOffsetNote", () => {
         bookingModificationId: "mod_reduction",
         noteWording: "invoice-correction",
         reviewTaskId: UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE,
+        ownNoteExpected: false,
       },
       { store: tx },
     );
@@ -57,7 +58,7 @@ describe("queueUnpaidAskBilledOffsetNote", () => {
 
   it("MUTATION: queues nothing where Xero billed none of the offset (the increase's own invoice was retired instead, or no primary invoice)", async () => {
     await expect(
-      queueUnpaidAskBilledOffsetNote(tx, { bookingId: "booking_1", bookingModificationId: "mod_reduction", unpaidAskBilledOffsetCents: 0 }),
+      queueUnpaidAskBilledOffsetNote(tx, { bookingId: "booking_1", bookingModificationId: "mod_reduction", unpaidAskBilledOffsetCents: 0, ownNoteExpected: false }),
     ).resolves.toBeNull();
     expect(h.enqueue).not.toHaveBeenCalled();
   });
@@ -71,16 +72,29 @@ describe("queueUnpaidAskBilledOffsetNote", () => {
 
 describe("queueReductionAskFollowUps", () => {
   it("MUTATION: makes the re-issued ask's recovery and the billed offset's note durable together", async () => {
-    const settled = { additionalAsk: NO_ASK, hasIssuedXeroInvoice: true, unpaidAskBilledOffsetCents: 2_000 };
+    const settled = { additionalAsk: NO_ASK, hasIssuedXeroInvoice: true, unpaidAskBilledOffsetCents: 2_000, xeroRefundAmountCents: 0, organiserChildRefund: null };
     await queueReductionAskFollowUps(tx, { bookingId: "booking_1", paymentId: "payment_1", bookingModificationId: "mod_reduction", settled });
 
     expect(h.reissue).toHaveBeenCalledWith(tx, { bookingId: "booking_1", paymentId: "payment_1", bookingModificationId: "mod_reduction", settled });
-    expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({ refundAmountCents: 2_000, bookingModificationId: "mod_reduction" }), { store: tx });
+    expect(h.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 2_000, bookingModificationId: "mod_reduction", ownNoteExpected: false }),
+      { store: tx },
+    );
     expect(h.calls).toEqual(["reissue", "note"]);
   });
 
+  it.each([
+    ["a refund left after the ask, against an issued invoice", { hasIssuedXeroInvoice: true, xeroRefundAmountCents: 1_000, organiserChildRefund: null }, true],
+    ["nothing left after the ask", { hasIssuedXeroInvoice: true, xeroRefundAmountCents: 0, organiserChildRefund: null }, false],
+    ["an organiser's card refund, whose note comes later", { hasIssuedXeroInvoice: true, xeroRefundAmountCents: 1_000, organiserChildRefund: { amountCents: 1_000 } }, false],
+  ])("MUTATION (round 7): records whether the edit's own note is expected - %s", async (_label, figures, expected) => {
+    const settled = { additionalAsk: NO_ASK, unpaidAskBilledOffsetCents: 2_000, ...figures };
+    await queueReductionAskFollowUps(tx, { bookingId: "booking_1", paymentId: "payment_1", bookingModificationId: "mod_reduction", settled });
+    expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({ ownNoteExpected: expected }), { store: tx });
+  });
+
   it("an edit with no billed offset makes only its re-issue durable", async () => {
-    const settled = { additionalAsk: NO_ASK, hasIssuedXeroInvoice: true, unpaidAskBilledOffsetCents: 0 };
+    const settled = { additionalAsk: NO_ASK, hasIssuedXeroInvoice: true, unpaidAskBilledOffsetCents: 0, xeroRefundAmountCents: 0, organiserChildRefund: null };
     await queueReductionAskFollowUps(tx, { bookingId: "booking_1", paymentId: "payment_1", bookingModificationId: "mod_reduction", settled });
 
     expect(h.calls).toEqual(["reissue"]);

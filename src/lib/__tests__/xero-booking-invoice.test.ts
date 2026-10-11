@@ -3468,6 +3468,58 @@ describe("createXeroCreditNoteForModification", () => {
     ]);
     await expect(call()).resolves.toBe("cn_1");
   });
+
+  it("MUTATION (#3954 round 7, F6): a billed-offset note whose edit expects its own note waits while none is queued yet, then fails for a person past the age limit", async () => {
+    const { BILLED_OFFSET_OWN_NOTE_MISSING_MESSAGE, BILLED_OFFSET_OWN_NOTE_WAIT_MS } = await import("@/lib/unpaid-ask-billed-offset-order");
+    const queuedAt = (ageMs: number) => ({
+      requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE", reviewTaskId: "unpaid-ask-billed-offset", ownNoteExpected: true },
+      createdAt: new Date(Date.now() - ageMs),
+    });
+    const call = () =>
+      createXeroCreditNoteForModification({
+        format: CLUB_FORMAT_TEST,
+        bookingId: "booking_1",
+        refundAmountCents: 2000,
+        bookingModificationId: "mod_1",
+        reviewTaskId: "unpaid-ask-billed-offset",
+        noteWording: "invoice-correction",
+        syncOperationId: "op_billed_offset",
+      });
+
+    // Nothing of the edit's own note exists yet: it waits.
+    mocks.prisma.xeroSyncOperation.findUnique.mockResolvedValueOnce(queuedAt(60_000));
+    mocks.prisma.xeroObjectLink.findMany.mockResolvedValueOnce([]);
+    await expect(call()).rejects.toMatchObject({ name: "XeroAppliedCreditOperationBusyError" });
+    expect(mocks.xeroClientInstance.accountingApi.createCreditNotes).not.toHaveBeenCalled();
+
+    // Past the age limit it stops waiting and fails, raising nothing.
+    mocks.prisma.xeroSyncOperation.findUnique.mockResolvedValueOnce(queuedAt(BILLED_OFFSET_OWN_NOTE_WAIT_MS + 1));
+    mocks.prisma.xeroObjectLink.findMany.mockResolvedValueOnce([]);
+    await expect(call()).rejects.toThrow(BILLED_OFFSET_OWN_NOTE_MISSING_MESSAGE);
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith("op_billed_offset", expect.any(Error));
+    expect(mocks.xeroClientInstance.accountingApi.createCreditNotes).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION (#3954 round 7, F6): once the edit's own note exists (its unscoped link), the expected-own-note billed-offset note goes ahead", async () => {
+    mocks.prisma.xeroSyncOperation.findUnique.mockResolvedValueOnce({
+      requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE", reviewTaskId: "unpaid-ask-billed-offset", ownNoteExpected: true },
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    mocks.prisma.xeroObjectLink.findMany.mockResolvedValueOnce([
+      { xeroObjectType: "CREDIT_NOTE", role: "MODIFICATION_CREDIT_NOTE", active: true, metadata: null },
+    ]);
+    await expect(
+      createXeroCreditNoteForModification({
+        format: CLUB_FORMAT_TEST,
+        bookingId: "booking_1",
+        refundAmountCents: 2000,
+        bookingModificationId: "mod_1",
+        reviewTaskId: "unpaid-ask-billed-offset",
+        noteWording: "invoice-correction",
+        syncOperationId: "op_billed_offset",
+      }),
+    ).resolves.toBe("cn_1");
+  });
 });
 
 describe("createXeroCreditNote", () => {

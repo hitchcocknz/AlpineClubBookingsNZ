@@ -941,7 +941,7 @@ let webhookClient: PrismaClient;
             bookingId: BOOKING_ID,
             paymentId: PAYMENT_ID,
             bookingModificationId: reductionId,
-            settled: { additionalAsk: result.additionalAsk, hasIssuedXeroInvoice: true, unpaidAskBilledOffsetCents: billedCents },
+            settled: { ...result, hasIssuedXeroInvoice: true, unpaidAskBilledOffsetCents: billedCents },
           }),
         );
         const { enqueueXeroModificationCreditNoteOperation } = await import("@/lib/xero-operation-outbox");

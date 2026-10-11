@@ -52,6 +52,7 @@ import { createXeroCreditNoteForModification } from "@/lib/xero-modification-cre
 import { allocateAppliedCreditForBooking } from "@/lib/xero-applied-credit-allocation";
 import { unallocatedAppliedCreditCentsByBooking } from "@/lib/xero-applied-credit-ledger-state";
 import { deallocateExcessAppliedCreditForBooking } from "@/lib/xero-applied-credit-deallocation";
+import { OWN_NOTE_EXPECTED_KEY } from "@/lib/unpaid-ask-billed-offset-order";
 import { isXeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 import {
   findResolvedBookingInvoiceCreate,
@@ -2115,6 +2116,12 @@ export async function enqueueXeroModificationCreditNoteOperation(
      * neither folded into it nor refused by its link.
      */
     reviewTaskId?: string;
+    /**
+     * #3954 round 7: a billed-offset note's edit expects its own note too, so
+     * this one waits for it (`unpaid-ask-billed-offset-order.ts`). Recorded on
+     * the payload only when true; never part of the key.
+     */
+    ownNoteExpected?: boolean;
   } & ModificationNoteWording,
   options?: {
     createdByMemberId?: string;
@@ -2239,6 +2246,7 @@ export async function enqueueXeroModificationCreditNoteOperation(
       refundAmountCents,
       bookingModificationId: bookingModificationId ?? null,
       ...(reviewTaskId ? { reviewTaskId } : {}),
+      ...(reviewTaskId && params.ownNoteExpected ? { [OWN_NOTE_EXPECTED_KEY]: true } : {}),
       ...readModificationNoteWording(params),
     },
     createdByMemberId: options?.createdByMemberId ?? null,
