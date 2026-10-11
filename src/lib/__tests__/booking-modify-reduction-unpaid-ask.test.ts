@@ -140,6 +140,7 @@ type Row = {
   status: PaymentStatus;
   reason: string | null;
   amountCents: number;
+  carriedAskCents: number;
   stripePaymentIntentId: string | null;
   createdAt: Date;
 };

@@ -7383,8 +7383,9 @@ describe("#3954: a reduction set against an unpaid ask", () => {
     // the re-issue's invoice is queued on that increase's intent once it mints.
     const foldedIntoLaterIncrease = () => {
       const booking = shrunk();
-      booking.modifications.push({
-        ...booking.modifications[0]!,
+      const modifications = booking.modifications as unknown as Array<Record<string, unknown>>;
+      modifications.push({
+        ...modifications[0]!,
         id: "mod_increase_later",
         priceDiffCents: 1000,
         newData: { foldedReissuedAskCents: 3000, foldedReissuedAskModificationIds: ["mod_reduction"] },
@@ -7400,8 +7401,9 @@ describe("#3954: a reduction set against an unpaid ask", () => {
       const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
       const booking = foldedIntoLaterIncrease();
       if (state === "retired") {
-        booking.modifications.push({
-          ...booking.modifications[1]!,
+        const modifications = booking.modifications as unknown as Array<Record<string, unknown>>;
+        modifications.push({
+          ...modifications[1]!,
           id: "mod_reduction_later",
           newData: { unpaidAskOffsetCents: 4000, unpaidAskRetiredModificationIds: ["mod_increase_later"] },
           createdAt: new Date("2026-05-05T00:00:00Z"),

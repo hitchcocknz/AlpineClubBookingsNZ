@@ -527,9 +527,10 @@ function deferred() {
       },
     });
     const result = await approve(OFFICER_ID);
-    // The removed guest's 2 x 4,321 at the same-day tier keeps half; the added
-    // guest's 2 x 5,000 is dearer, so the edit is an increase of both.
-    const swapFee = STORED_NIGHT_CENTS;
+    // The removed guest's 2 x 4,321 at the same-day tier - its credit share
+    // (80%) for a booking paid with credit, so the fee keeps 20% - and the
+    // added guest's 2 x 5,000 is dearer: the edit is an increase of both.
+    const swapFee = Math.round((2 * STORED_NIGHT_CENTS * 20) / 100);
     const priceDiff = 2 * NIGHT_CENTS - 2 * STORED_NIGHT_CENTS;
     expect(result, JSON.stringify(result)).toMatchObject({
       outcome: "executed",

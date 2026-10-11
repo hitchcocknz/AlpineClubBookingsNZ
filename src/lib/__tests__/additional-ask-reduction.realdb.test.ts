@@ -45,11 +45,18 @@
  *   pnpm exec vitest run src/lib/__tests__/additional-ask-reduction.realdb.test.ts
  */
 import type { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
+
+// Round 6: the harness's one shared Stripe double - pass-through unless a case
+// installs a hook (see `support/stripe-race-double.ts`).
+vi.mock("@/lib/stripe", async (importOriginal) =>
+  (await import("./support/stripe-race-double")).stripeRaceDouble(await importOriginal()),
+);
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -67,6 +74,8 @@ const INCREASE_MOD_ID = "race-3954-increase";
 const WAITING_OP_ID = "race-3954-waiting-supplementary";
 const RECOVERY_ID = "race-3954-ask-recovery";
 const PRIMARY_INVOICE_ID = "inv_race_3954_primary";
+/** When the increase's ask row was written (round 6 dates the primary invoice's link against it). */
+const ASK_WRITTEN_AT = new Date("2026-06-20T00:00:00.000Z");
 
 const TODAY = new Date("2026-07-01T00:00:00.000Z");
 const NIGHTS = [new Date("2026-08-01T00:00:00.000Z"), new Date("2026-08-02T00:00:00.000Z")];
@@ -94,6 +103,7 @@ let webhookClient: PrismaClient;
       await prisma.xeroSyncOperation.deleteMany({
         where: { OR: [{ id: WAITING_OP_ID }, { localId: { in: [PAYMENT_ID, BOOKING_ID, ...modifications.map((row) => row.id)] } }] },
       });
+      await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID, ...modifications.map((row) => row.id)] } } });
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.memberCredit.deleteMany({ where: { memberId: MEMBER_ID } });
       await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -125,7 +135,13 @@ let webhookClient: PrismaClient;
       leavingNightCents: number,
       refundPercentage = 100,
       ask: "minted" | "awaiting-retry" = "minted",
-      invoice: "parked" | "primary-after-increase" = "parked",
+      /**
+       * Round 6: `primary-after-increase` links the primary invoice after the
+       * ask was written (it billed the ask); `primary-before-increase` links it
+       * before, the increase's own supplementary invoice not queued yet;
+       * `primary-unlinked` records the invoice with no link to date it.
+       */
+      invoice: "parked" | "primary-after-increase" | "primary-before-increase" | "primary-unlinked" = "parked",
     ) {
       const stayingNightCents = 7_500 - leavingNightCents;
       await deleteFixtures();
@@ -167,7 +183,7 @@ let webhookClient: PrismaClient;
           ...(shape === "card" ? { stripePaymentIntentId: "pi_race_3954_primary" } : {}),
           // Round 5: the primary invoice was raised AFTER the increase, so it
           // bills the ask and no supplementary invoice was ever parked on it.
-          ...(invoice === "primary-after-increase" ? { xeroInvoiceId: PRIMARY_INVOICE_ID } : {}),
+          ...(invoice !== "parked" ? { xeroInvoiceId: PRIMARY_INVOICE_ID } : {}),
         },
       });
       if (shape === "card") {
@@ -209,8 +225,17 @@ let webhookClient: PrismaClient;
         data: {
           id: ASK_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", status: "PENDING",
           amountCents: 5_000, stripePaymentIntentId: ASK_INTENT, reason: "guest_add_price_increase",
+          createdAt: ASK_WRITTEN_AT,
         },
       });
+      if (invoice === "primary-after-increase" || invoice === "primary-before-increase") {
+        await prisma.xeroObjectLink.create({
+          data: {
+            localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "INVOICE", xeroObjectId: PRIMARY_INVOICE_ID, role: "PRIMARY_INVOICE",
+            createdAt: invoice === "primary-after-increase" ? new Date("2026-06-25T00:00:00.000Z") : new Date("2026-06-10T00:00:00.000Z"),
+          },
+        });
+      }
       if (invoice === "parked") await prisma.xeroSyncOperation.create({
         data: {
           id: WAITING_OP_ID, direction: "OUTBOUND", entityType: "INVOICE", operationType: "CREATE", status: "WAITING_PAYMENT",
@@ -297,6 +322,8 @@ let webhookClient: PrismaClient;
       webhookClient = new SeparatePrismaClient({ adapter: createPrismaPgAdapter(url.toString()) });
       await webhookClient.$connect();
     }, 60_000);
+
+    afterEach(() => resetStripeRaceHooks());
 
     afterAll(async () => {
       await webhookClient?.$disconnect().catch(() => {});
@@ -934,5 +961,204 @@ let webhookClient: PrismaClient;
       expect(await billedOffsetNotes(reductionId!)).toEqual([]);
       expect(await askAfter()).toEqual({ status: "PENDING", withdrawnAt: null });
     });
+  
+    // ROUND 6. A fake Stripe with Stripe's own idempotency rule: a key replayed
+    // with the same parameters returns the first intent; with different ones it
+    // is refused (`idempotency_error`).
+    function fakeStripe() {
+      const intents = new Map<string, { id: string; amount: number; client_secret: string; metadata: Record<string, string>; status: string }>();
+      const byKey = new Map<string, { params: string; id: string }>();
+      const create = async (args: { amountCents: number; customerId?: string; metadata?: Record<string, string>; idempotencyKey?: string }) => {
+        const params = JSON.stringify({ amount: args.amountCents, customer: args.customerId ?? null, metadata: args.metadata ?? {} });
+        const previous = args.idempotencyKey ? byKey.get(args.idempotencyKey) : undefined;
+        if (previous) {
+          if (previous.params !== params) {
+            throw Object.assign(new Error("Keys for idempotent requests can only be used with the same parameters"), { rawType: "idempotency_error" });
+          }
+          return intents.get(previous.id)!;
+        }
+        const intent = { id: `pi_fake_3954_${intents.size + 1}`, amount: args.amountCents, client_secret: `secret_${intents.size + 1}`, metadata: args.metadata ?? {}, status: "requires_payment_method" };
+        intents.set(intent.id, intent);
+        if (args.idempotencyKey) byKey.set(args.idempotencyKey, { params, id: intent.id });
+        return intent;
+      };
+      stripeRaceHooks.create = create as never;
+      stripeRaceHooks.findByMetadata = (async ({ metadataKey, metadataValue }: { metadataKey: string; metadataValue: string }) =>
+        [...intents.values()].find((intent) => intent.metadata[metadataKey] === metadataValue) ?? null) as never;
+      stripeRaceHooks.cancel = (async (id: string) => ({ paymentIntent: { id, status: "canceled" }, canceled: true })) as never;
+      return { intents, create };
+    }
+
+    async function reissueRecovery(bookingModificationId: string) {
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      return prisma.paymentRecoveryOperation.findUniqueOrThrow({
+        where: { idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(bookingModificationId) },
+      });
+    }
+
+    async function mintAtDoor(result: Awaited<ReturnType<typeof removeLeavingGuest>>) {
+      const { createModificationAdditionalPaymentIntent } = await import("@/lib/booking-modification-settlement");
+      return createModificationAdditionalPaymentIntent({
+        format: CLUB_FORMAT_TEST, bookingId: BOOKING_ID, result: result as never, reason: "guest_removal_price_increase",
+        idempotencyKey: `mod_guest_remove_${BOOKING_ID}_${result.bookingModificationId}`, failureMessage: "race 3954 door mint",
+      });
+    }
+
+    const liveAsks = () =>
+      prisma.paymentTransaction.findMany({
+        where: { paymentId: PAYMENT_ID, kind: "ADDITIONAL", withdrawnAt: null, status: "PENDING" },
+        select: { stripePaymentIntentId: true, amountCents: true, carriedAskCents: true, reason: true },
+      });
+
+    it("ROUND 6 (F1): the door minted at Stripe and lost the reply - the runner's replay under the same key gets that SAME intent, never an idempotency_error", async () => {
+      await grownBooking("card", 1_000);
+      const result = await removeLeavingGuest();
+      const stripe = fakeStripe();
+      let lose = true;
+      stripeRaceHooks.create = (async (args: Parameters<typeof stripe.create>[0]) => {
+        const intent = await stripe.create(args);
+        if (lose) {
+          lose = false;
+          throw new Error("socket hang up");
+        }
+        return intent;
+      }) as never;
+
+      expect((await mintAtDoor(result)).additionalPaymentIntentId).toBeUndefined();
+      const recovery = await reissueRecovery(result.bookingModificationId!);
+      expect(recovery.status).toBe("PENDING");
+      // The grace passes; the runner replays it.
+      await prisma.paymentRecoveryOperation.update({ where: { id: recovery.id }, data: { nextRetryAt: new Date("2026-06-30T00:00:00.000Z") } });
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+
+      expect(stripe.intents.size).toBe(1);
+      const [intent] = [...stripe.intents.values()];
+      const { REISSUED_ASK_REASON } = await import("@/lib/payment-recovery-keys");
+      expect(await liveAsks()).toEqual([{ stripePaymentIntentId: intent!.id, amountCents: 3_000, carriedAskCents: 3_000, reason: REISSUED_ASK_REASON }]);
+      expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id }, select: { status: true, paymentIntentId: true } }))
+        .toEqual({ status: "SUCCEEDED", paymentIntentId: intent!.id });
+    });
+
+    it("ROUND 6 (F1): the runner minted first while the door was minting - the door's request gets the same intent and writes nothing beside it", async () => {
+      await grownBooking("card", 1_000);
+      const result = await removeLeavingGuest();
+      const stripe = fakeStripe();
+      const recovery = await reissueRecovery(result.bookingModificationId!);
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      let doorFirst = true;
+      stripeRaceHooks.create = (async (args: Parameters<typeof stripe.create>[0]) => {
+        if (doorFirst) {
+          doorFirst = false;
+          // The door read its recovery PENDING and is minting; the grace passes
+          // and the runner claims, mints and writes first.
+          await prisma.paymentRecoveryOperation.update({ where: { id: recovery.id }, data: { nextRetryAt: new Date("2026-06-30T00:00:00.000Z") } });
+          expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+        }
+        return stripe.create(args);
+      }) as never;
+
+      expect((await mintAtDoor(result)).additionalPaymentIntentId).toBeUndefined();
+
+      expect(stripe.intents.size).toBe(1);
+      const [intent] = [...stripe.intents.values()];
+      expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).toEqual([intent!.id]);
+      expect((await payment()).additionalPaymentIntentId).toBe(intent!.id);
+    });
+
+    it("ROUND 6 (F2+F3): an increase that folded a waiting re-issue in and failed to mint - its replay asks for both, and queues the re-issue's own invoice on its intent", async () => {
+      // The primary invoice predates the first increase, whose own supplementary
+      // invoice bills the ask - so the $30 re-issue has a $30 invoice of its own.
+      await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+      const reduction = await removeLeavingGuest();
+      const reductionId = reduction.bookingModificationId!;
+      expect((await prisma.bookingModification.findUniqueOrThrow({ where: { id: reductionId }, select: { newData: true } })).newData)
+        .toMatchObject({ reissuedAskInvoiceCents: 3_000 });
+      const [{ applyPaymentAdjustments }, { noReductionAgainstUnpaidAsk }, { unpaidAskOffsetHistory }] = await Promise.all([
+        import("@/lib/booking-modify-settlement"),
+        import("@/lib/additional-ask-reduction"),
+        import("@/lib/unpaid-ask-offset-marker"),
+      ]);
+      // A later +$10 increase, while the $30 re-issue still waits on its mint.
+      const increase = await prisma.$transaction(async (tx) => {
+        const booking = await tx.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, include: { payment: true, guests: true } });
+        const adjusted = await applyPaymentAdjustments(tx, {
+          booking: booking as never, priceDiffCents: 1_000, changeFeeCents: 0, reduction: noReductionAgainstUnpaidAsk(1_000),
+          todayAtClub: "2026-07-01" as never, format: CLUB_FORMAT_TEST,
+        });
+        const row = await tx.bookingModification.create({
+          data: { bookingId: BOOKING_ID, memberId: MEMBER_ID, modificationType: "GUEST_ADD", previousData: {}, newData: unpaidAskOffsetHistory(adjusted), priceDiffCents: 1_000 },
+        });
+        return { adjusted, id: row.id };
+      }, { maxWait: 10_000, timeout: 20_000 });
+      expect(increase.adjusted.additionalAsk.amountCents).toBe(4_000);
+      expect((await reissueRecovery(reductionId)).status).toBe("SUCCEEDED");
+
+      // Its own mint fails, so its recovery is the only thing left to ask.
+      const [{ enqueueAdditionalPaymentIntentRecovery, runPaymentRecoveryOperationNow }, { buildAdditionalIntentRecoveryIdempotencyKey }] = await Promise.all([
+        import("@/lib/payment-recovery"),
+        import("@/lib/payment-recovery-keys"),
+      ]);
+      const operation = await enqueueAdditionalPaymentIntentRecovery({
+        bookingId: BOOKING_ID, paymentId: PAYMENT_ID, idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(increase.id),
+        amountCents: 4_000, stripeIdempotencyKey: `mod_guest_${BOOKING_ID}_${increase.id}`, hadIssuedXeroInvoice: false,
+        nextRetryAt: new Date("2026-06-30T00:00:00.000Z"),
+      });
+      const stripe = fakeStripe();
+      expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+
+      const [intent] = [...stripe.intents.values()];
+      expect(intent?.amount).toBe(4_000);
+      expect(await liveAsks()).toEqual([expect.objectContaining({ stripePaymentIntentId: intent!.id, amountCents: 4_000, carriedAskCents: 3_000 })]);
+      // Decision A, kept: the reduction's $30 invoice, waiting on the increase's intent.
+      const invoices = await prisma.xeroSyncOperation.findMany({
+        where: { localModel: "BookingModification", localId: reductionId, entityType: "INVOICE", operationType: "CREATE" },
+        select: { status: true, requestPayload: true },
+      });
+      expect(invoices).toEqual([
+        expect.objectContaining({ status: "WAITING_PAYMENT", requestPayload: expect.objectContaining({ paymentIntentId: intent!.id, priceDiffCents: 3_000 }) }),
+      ]);
+    });
+
+    it("ROUND 6 (F5): the billed-offset note's scoped link never refuses the edit's own note, nor the repair pass's re-queue of it", async () => {
+      await grownBooking("card", 1_000, 100, "minted", "primary-after-increase");
+      const result = await removeLeavingGuest();
+      const reductionId = result.bookingModificationId!;
+      const { UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE } = await import("@/lib/xero-review-task-key");
+      // The scoped note was raised first: its link is on the reduction.
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "BookingModification", localId: reductionId, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_race_3954_billed",
+          role: "MODIFICATION_CREDIT_NOTE", metadata: { reviewTaskId: UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE },
+        },
+      });
+      const { enqueueXeroModificationCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const own = await enqueueXeroModificationCreditNoteOperation({ bookingId: BOOKING_ID, bookingModificationId: reductionId, refundAmountCents: 1_000 });
+      expect(own.queueOperationId).not.toBeNull();
+
+      // The edit's own link still answers the edit's own note.
+      await prisma.xeroObjectLink.create({
+        data: { localModel: "BookingModification", localId: reductionId, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_race_3954_own", role: "MODIFICATION_CREDIT_NOTE" },
+      });
+      expect((await enqueueXeroModificationCreditNoteOperation({ bookingId: BOOKING_ID, bookingModificationId: reductionId, refundAmountCents: 1_500 })).queueOperationId).toBeNull();
+    });
+
+    it.each([
+      { invoice: "primary-before-increase" as const, billed: 0, unsure: 0, reissueInvoice: 3_000 },
+      { invoice: "primary-unlinked" as const, billed: 0, unsure: 2_000, reissueInvoice: 0 },
+    ])(
+      "ROUND 6 (F6): $invoice, the increase's invoice not parked - nothing is credit-noted on a guess",
+      async ({ invoice, billed, unsure, reissueInvoice }) => {
+        await grownBooking("card", 1_000, 100, "minted", invoice);
+        const result = await removeLeavingGuest();
+        const reductionId = result.bookingModificationId!;
+        const history = (await prisma.bookingModification.findUniqueOrThrow({ where: { id: reductionId }, select: { newData: true } }))
+          .newData as Record<string, unknown>;
+        expect(history.unpaidAskBilledOffsetCents ?? 0).toBe(billed);
+        expect(history.unpaidAskBilledOffsetUnsureCents ?? 0).toBe(unsure);
+        expect(history.reissuedAskInvoiceCents ?? 0).toBe(reissueInvoice);
+        expect(await billedOffsetNotes(reductionId)).toEqual([]);
+      },
+    );
   },
 );

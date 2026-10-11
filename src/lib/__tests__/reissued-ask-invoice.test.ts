@@ -41,6 +41,7 @@ describe("queueReissuedAskSupplementaryInvoice", () => {
       retiredAskModificationIds: ["mod_increase"],
       reissuedAskInvoiceCents: 3_000,
       unpaidAskBilledOffsetCents: 0,
+      unpaidAskBilledOffsetUnsureCents: 0,
       foldedReissuedAsks: NO_FOLDED_REISSUED_ASKS,
     });
     await queueReissuedAskSupplementaryInvoice(CALL);
@@ -57,6 +58,7 @@ describe("queueReissuedAskSupplementaryInvoice", () => {
       retiredAskModificationIds: ["mod_increase"],
       reissuedAskInvoiceCents: 0,
       unpaidAskBilledOffsetCents: 0,
+      unpaidAskBilledOffsetUnsureCents: 0,
       foldedReissuedAsks: NO_FOLDED_REISSUED_ASKS,
     });
     await queueReissuedAskSupplementaryInvoice(CALL);
