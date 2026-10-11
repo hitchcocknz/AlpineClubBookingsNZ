@@ -3359,25 +3359,31 @@ change invoice FAILED -> an officer's retry puts that row back to PENDING with
   step follows; never an inline replay on a new row that names no capture.
   Round 10: only for a capture an approval task owns; refused (409) when the
   change already carries an active SUPPLEMENTARY_INVOICE link - mark it
-  resolved, and the receipt is that linked invoice. Round 11: never recorded
-  by hand too; the nightly step or the repair tool raises the note
+  resolved, and the receipt is that linked invoice. Round 11: the close's
+  share is not recorded by hand; the nightly credit check or the repair tool
+  raises its note. Round 12: the capture's card refunds are recorded by hand,
+  and the 409 names them: every card-refund path reads the resolved row as
+  resolved by hand
 note step never ran (receipt in Xero, no note asked) -> the repair tool's
   PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED queues it through the same step
-  (round 8), and the nightly credit reconciliation runs the step for every
-  payment its closes' notes do not cover (round 9)
+  (round 8), and the nightly credit check runs the step for every payment
+  its closes' notes do not cover (round 9)
 note FAILED -> Retry in background in Xero Operations; the nightly step
   returns the existing row and never retries it
 receipt (change invoice or own receipt) resolved by hand before the app sent
   it, whatever the close planned, before any note row -> no note; the repair
   tool's report-only PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND names the
-  capture's refunds less the notes naming it, to record by hand (round 9,
-  sized so in round 11), in place of KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND;
-  not raised once a note row of the close exists (round 10), and otherwise a
-  standing reminder, since a refund recorded by hand writes no row. A row
-  resolved by hand after the app sent it, or a change linked in Xero, is the
-  app's invoice for the close (round 11: the paid-another-way verdict only;
-  every card-refund path still reads it resolved by hand): recorded against
-  its id, and the note follows
+  capture's own card refunds less the notes naming it, plus the close, to
+  record by hand (round 9, sized so in round 12), in place of
+  KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND; not raised once a note row of the
+  close exists (round 10), and otherwise raised on every run, since a refund
+  recorded by hand writes no row. A row resolved by hand after the app sent
+  it, or a change linked in Xero, is the app's invoice for the close (round
+  11: the paid-another-way verdict only): recorded against its id, and the
+  close's note follows. Every card-refund path still reads it resolved by
+  hand, so its card refunds get no note: the report-only
+  LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND names them to record by hand (round
+  12), with or without a close, raised on every run
 ```
 
 A close Stripe also paid is listed as paid twice. The treasurer marks it

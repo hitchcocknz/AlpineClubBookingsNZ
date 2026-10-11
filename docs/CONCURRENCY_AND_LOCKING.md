@@ -1646,14 +1646,15 @@ mispricing a booking.
   completes - also when an officer's retry of a FAILED one runs it again from
   its own row through the outbox (round 9). The repair tool's
   `QUEUE_PAID_ANOTHER_WAY_REFUND_NOTE` (round 8) and the nightly credit
-  reconciliation (round 9) run the same step, each in a transaction of its own.
+  check (round 9) run the same step, each in a transaction of its own.
   So a close either reads the receipt in Xero and queues its own note, or
   commits first and is found by the note step; neither can miss the other. It
   adds no cycle: inside the dismissal it is a lock that transaction already
   holds, the worker and the repair tool take no other lock while holding it,
   and the close takes it after `lock(1)` and the Payment row. The approval
   task's own resolution and reopen claims take `lock(1)` first or not at all,
-  never after the task row (`resolveManualRefundTask#1`); no holder takes
+  never after the task row (`resolveManualRefundTask#1`,
+  `reopenManualRefundTask#1`); no holder takes
   `lock(1)` or the Payment row after the task row. No provider call is made
   while it is held.
 
@@ -4663,7 +4664,7 @@ which queues a close's note at most once. A change's supplementary invoice sent
 for the capture runs the same note step after its row completes (round 8,
 `queueWaitingPaidAnotherWayNote`), in a transaction of its own under the same
 row, reading the receipt under it; a failure there is logged, never failing the
-sent invoice, and the nightly credit reconciliation re-runs the step for any
+sent invoice, and the nightly credit check re-runs the step for any
 payment whose closes' notes do not cover them (round 9), as the repair tool's
 `QUEUE_PAID_ANOTHER_WAY_REFUND_NOTE` does (round 8): each queues a note never
 queued, and neither retries a failed one. A row that may have reached Xero is

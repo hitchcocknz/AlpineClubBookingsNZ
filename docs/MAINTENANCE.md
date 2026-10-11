@@ -1433,7 +1433,10 @@ hand and resolved it in Xero, the app raises no refund note for it, so a refund
 of that capture raises the report-only
 `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`: record the refund by hand as well.
 A capture whose approved refund was closed as **Paid another way** never raises
-it (#3924 round 11): the close's findings below answer that capture.
+it (#3924 round 11): the close's findings below answer that capture. Like
+every record-by-hand finding, it keeps appearing after the refund is recorded
+by hand, and that is expected: the app cannot see what is recorded by hand in
+Xero, and the tool has no way to acknowledge a finding (#3924 round 12).
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had
@@ -1463,23 +1466,35 @@ not there. If it is there, it depends on whether the app linked it (#3924
 round 11). **Not linked** (its operation names no Xero invoice): mark it
 resolved as fixed in Xero and record the refund by hand. **Already linked**
 (its operation names its Xero invoice, or the retry refuses with the 409):
-mark it resolved as fixed in Xero and do **not** record the refund by hand -
-the receipt is read from that invoice, and the app raises the close's note
-through the nightly credit check or `PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED`
-below. The nightly
-credit reconciliation also re-runs the note step for any payment whose closes'
-notes do not cover what they paid back; it queues a note that was never
-queued, but a FAILED note needs **Retry in background** in Xero Operations. If
-an officer resolved the capture's receipt by hand before the app sent it - the
-change invoice or the late charge's own receipt, before or after the close -
-the report-only `PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's
-record and what is left to record: the capture's refunds less the refund notes
-naming it. Record that by hand in Xero. A receipt row resolved after the app
-sent it, or a change linked in Xero, is the app's receipt, so the close's note
-follows it and this finding is not raised. It is not raised once any note row
-of the close exists, one resolved by hand included. Otherwise it stays as a
-reminder until such a row exists: recording the refund by hand in Xero writes
-no row the app can read.
+mark it resolved as fixed in Xero. Do **not** record by hand what the close
+paid back: the receipt is read from that invoice, and the app raises the
+close's note through the nightly credit check or
+`PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED` below. Do record by hand what Stripe
+refunded to the card: every card-refund path reads the resolved row as
+resolved by hand and raises no card note (#3924 round 12). The 409 names both:
+the close's amount, and the capture's card refunds less the notes naming it
+(`readUnnotedLateCaptureCardRefundCents`); with no close, it says to record
+any card refund by hand. The nightly credit check also re-runs the note step
+for any payment whose closes' notes do not cover what they paid back; it
+queues a note that was never queued, but a FAILED note needs **Retry in
+background** in Xero Operations. If an officer resolved the capture's receipt
+by hand before the app sent it - the change invoice or the late charge's own
+receipt, before or after the close - the report-only
+`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's record and
+what is left to record: the capture's own card refunds less the refund notes
+naming it, plus what the close paid back (round 12; never the capture row's
+refunded total, which can carry another hand-back). Record that by hand in
+Xero. A receipt row resolved after the app sent it, or a change linked in
+Xero, is the app's receipt, so the close's note follows it and this finding is
+not raised. It is not raised once any note row of the close exists, one
+resolved by hand included. When the capture's receipt is the app's invoice in
+Xero but its row was resolved by hand, and no record-by-hand finding above
+names the capture, the report-only `LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`
+names its card refunds that no note answers, whether or not a close exists
+(round 12). Record those by hand in Xero. Each record-by-hand finding keeps
+appearing after the refund is recorded by hand, and that is expected:
+recording a refund by hand in Xero writes no row the app can read, and the
+tool has no way to acknowledge a finding.
 
 **Credit-paid card bookings invoiced before #3836.** A card booking paid
 entirely with account credit was invoiced at its full price, but the credit was
