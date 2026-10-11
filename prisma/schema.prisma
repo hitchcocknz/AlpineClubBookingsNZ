@@ -3226,6 +3226,25 @@ model PaymentTransaction {
   /// from the latest row WITHOUT one, and the repair pass raises nothing for
   /// it. Never deleted, never cleared - the audit row says who and why.
   withdrawnAt           DateTime?
+  /// #3954 round 7 (INV-PAY-120): on an ADDITIONAL request an edit asked for, that
+  /// edit's own answer to `hasIssuedPrimaryXeroInvoice` when it asked - the twin of
+  /// `PaymentRecoveryOperation.hadIssuedXeroInvoice` (#3181). True: the request's
+  /// own money is billed by its supplementary invoice; false: by the primary
+  /// invoice raised afterwards. A later price reduction that cancels or shrinks the
+  /// unpaid request reads it (`unpaidAskBillingEvidence`). Stamped by every mint of a
+  /// member's price ask - the edit's door, its recovery's replay (from the recovery's
+  /// frozen answer) and a currency re-issue (copied). NULL means not recorded: rows
+  /// written before it, a replay whose recovery recorded no answer, or rows that are
+  /// not a price ask.
+  hadIssuedXeroInvoice  Boolean?
+  /// #3954 round 8 (INV-PAY-120): on an ADDITIONAL request for a member's price ask,
+  /// the `BookingModification` whose ask it is - the increase that asked, or the
+  /// reduction whose smaller re-issue it is - stamped by the same mints as
+  /// `hadIssuedXeroInvoice`. A later reduction that retires the row names that edit
+  /// in its history, so the repair pass never bills a retired ask again. No foreign
+  /// key: a provenance stamp, read only beside the booking's own edits. NULL means
+  /// not recorded (older rows, review charges, and every other kind of row).
+  bookingModificationId String?
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
 

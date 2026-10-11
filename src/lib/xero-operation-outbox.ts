@@ -52,6 +52,7 @@ import { createXeroCreditNoteForModification } from "@/lib/xero-modification-cre
 import { allocateAppliedCreditForBooking } from "@/lib/xero-applied-credit-allocation";
 import { unallocatedAppliedCreditCentsByBooking } from "@/lib/xero-applied-credit-ledger-state";
 import { deallocateExcessAppliedCreditForBooking } from "@/lib/xero-applied-credit-deallocation";
+import { outboxScanLeavesAwaitingOwnNote, OWN_NOTE_EXPECTED_KEY } from "@/lib/unpaid-ask-billed-offset-order";
 import { isXeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 import {
   findResolvedBookingInvoiceCreate,
@@ -99,7 +100,11 @@ import {
   type QueuedOutboxExpectedOperation,
   type QueuedOutboxPayload,
 } from "@/lib/xero-operation-outbox-payload";
-import { queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
+import { linkReviewTaskId, queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
+import {
+  OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES,
+  waitingSupplementaryInvoiceOperationsWhere,
+} from "@/lib/xero-supplementary-invoice-statuses";
 import { formatDateOnly } from "@/lib/date-only";
 import { clubFormatValues } from "@/lib/club-format-server";
 
@@ -1140,17 +1145,8 @@ const RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES = [
   "WAITING_PAYMENT",
 ] as const;
 
-/**
- * The states in which a supplementary invoice for this anchor is still going to
- * be sent, so a second one must not be queued behind it. Wider than the
- * restatable set by `RUNNING`: an operation the outbox is executing right now
- * cannot have its amount changed, but it is very much still an invoice.
- */
-export const OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES = [
-  "PENDING",
-  "RUNNING",
-  "WAITING_PAYMENT",
-] as const;
+// #3502: moved to its own leaf; re-exported so no importer moved.
+export { OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES };
 
 /**
  * #3170 fix round (F2): the advisory key that makes "one supplementary invoice
@@ -1942,44 +1938,8 @@ export async function restatePendingSupplementaryInvoiceAmount({
   return { restated, alreadyCovering };
 }
 
-/**
- * THE ONE CHANGE-SCOPED READ THAT MATCHES ON THE PAYLOAD, not on the anchor -
- * and therefore the one that could see a second ask (#3193 fix round).
- *
- * A second ask is anchored on `ManualRefundTask/<taskId>`, which is what keeps
- * it invisible to every read that decides whether this booking change already
- * has an invoice going out. This read is the exception: it matches
- * `requestPayload.bookingModificationId`, and a second ask carries that id in
- * its payload because the invoice it bills still belongs to that change.
- *
- * Until now nothing but a constant stopped it. A second ask is enqueued with
- * `waitForConfirmedAdditionalPayment: false`, so it is never `WAITING_PAYMENT`
- * and never matched - but that is the wrapper's call-site value, not a property
- * of the anchor, and a future caller flipping it would park an already-settled
- * share's invoice on a PaymentIntent that is already paid, released by nothing
- * and reaped after fourteen days with no invoice raised. That is precisely the
- * shape #3202 exists to fix.
- *
- * `localModel: "BookingModification"` makes it structural instead. It changes
- * nothing for existing rows: an operation anchored on the BOOKING carries a null
- * `bookingModificationId` in its payload, so it never matched this filter
- * anyway. `INV-SSOT` - unrepresentable beats policed.
- */
-function waitingSupplementaryInvoiceOperationsWhere(
-  bookingModificationId: string,
-): Prisma.XeroSyncOperationWhereInput {
-  return {
-    status: "WAITING_PAYMENT",
-    direction: "OUTBOUND",
-    entityType: "INVOICE",
-    operationType: "CREATE",
-    localModel: "BookingModification",
-    requestPayload: {
-      path: ["bookingModificationId"],
-      equals: bookingModificationId,
-    },
-  };
-}
+// The waiting-anchor filter moved to `xero-supplementary-invoice-statuses.ts`
+// (#3954), so a price reduction can retire an unminted ask's parked invoice.
 
 /** The operation's payload as an object, or `null` if it is not one. */
 function supplementaryInvoicePayload(
@@ -2156,6 +2116,12 @@ export async function enqueueXeroModificationCreditNoteOperation(
      * neither folded into it nor refused by its link.
      */
     reviewTaskId?: string;
+    /**
+     * #3954 round 7: a billed-offset note's edit expects its own note too, so
+     * this one waits for it (`unpaid-ask-billed-offset-order.ts`). Recorded on
+     * the payload only when true; never part of the key.
+     */
+    ownNoteExpected?: boolean;
   } & ModificationNoteWording,
   options?: {
     createdByMemberId?: string;
@@ -2207,18 +2173,23 @@ export async function enqueueXeroModificationCreditNoteOperation(
   // An edit's own note: one per anchor, so a link already there answers it. A
   // review task's share is one of possibly several on that anchor, so its own
   // key - including a SUCCEEDED row - is what answers it instead (#3791).
+  // #3954 round 6: and only the edit's OWN note's link answers it - a scoped
+  // side note's (a give-back, a billed offset) beside it on the same anchor
+  // records its scope on the link and never stands in for the edit's own.
   const existingLink = reviewTaskId
     ? null
-    : await db.xeroObjectLink.findFirst({
-        where: {
-          localModel,
-          localId,
-          xeroObjectType: "CREDIT_NOTE",
-          role: "MODIFICATION_CREDIT_NOTE",
-          active: true,
-        },
-        select: { id: true },
-      });
+    : (
+        await db.xeroObjectLink.findMany({
+          where: {
+            localModel,
+            localId,
+            xeroObjectType: "CREDIT_NOTE",
+            role: "MODIFICATION_CREDIT_NOTE",
+            active: true,
+          },
+          select: { id: true, metadata: true },
+        })
+      ).find((link) => !linkReviewTaskId(link)) ?? null;
 
   if (existingLink) {
     return {
@@ -2275,6 +2246,7 @@ export async function enqueueXeroModificationCreditNoteOperation(
       refundAmountCents,
       bookingModificationId: bookingModificationId ?? null,
       ...(reviewTaskId ? { reviewTaskId } : {}),
+      ...(reviewTaskId && params.ownNoteExpected ? { [OWN_NOTE_EXPECTED_KEY]: true } : {}),
       ...readModificationNoteWording(params),
     },
     createdByMemberId: options?.createdByMemberId ?? null,
@@ -2835,6 +2807,9 @@ export async function processQueuedXeroOutboxOperations(options?: {
       queueType: {
         in: [...XERO_OUTBOX_QUEUE_TYPES],
       },
+      // #3954 round 8: a billed-offset note waiting for its edit's own note
+      // is looked at again only every few minutes, not on every kick.
+      AND: [outboxScanLeavesAwaitingOwnNote(new Date())],
     },
     orderBy: {
       createdAt: "asc",
@@ -3136,7 +3111,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
           data: {
             status: "PENDING",
             startedAt: null,
-            lastErrorCode: null,
+            // #3954 round 8: a wait the scan spaces out names itself here.
+            lastErrorCode: error.waitCode,
             lastErrorMessage: error.message,
           },
         });

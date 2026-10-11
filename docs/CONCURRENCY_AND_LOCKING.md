@@ -2958,6 +2958,85 @@ pending-refund sweep converge the child's refund lines after `lock(1)` and the
 (global, lodge, row), keyed so a replay inserts nothing; no key, order,
 participant or provider call changes.
 
+**#3954 adds the retirement of an unpaid ask to every reduction door, and no
+key** (`INV-PAY-120`). `applyPaymentAdjustments` already runs after the door's
+`lock(1)`, its lodge key and, on a credit give-back, the member's credit-ledger
+key; the retire (`retireUnpaidAskChain`) runs after the give-back, so the
+member key still precedes every `Payment` row write. It writes the ask's
+ADDITIONAL rows, queues their cancellations and retires a parked Xero operation
+in the same transaction, then reconciles the mirror; the Stripe cancel runs
+after commit. The counterpart writer is the lockless webhook capture
+(`markPaymentIntentTransactionSucceeded`, autocommitting statements), so the
+retire is a status-guarded `updateMany` re-asserting "still unpaid": a capture
+committed after the read matches nothing and the edit rolls back (409); one
+landing after the retire waits on the row, and the committed cancellation hands
+it to `REFUND_SUPERSEDED_PAYMENT`. No key, order or provider call changes.
+Its second counterpart (owner decision 9 Oct 2026) is the lockless recovery
+runner replaying a failed mint (`CREATE_ADDITIONAL_PAYMENT_INTENT`): a waiting
+recovery the reduction nets off is closed by a status-guarded `updateMany` on
+the exact status and attempts it read, and the runner's claim is itself a
+status-guarded `updateMany` that moves both. A claim first fails the close and
+the edit rolls back (409); a close first leaves the claim matching nothing,
+whether it was already waiting on the row or comes later. Review round 4: the
+door reads the ask ONCE and hands that read to the options and the save, so a
+capture between them meets only the fence. A recovery claimed within two
+minutes rolls the edit back (409, "try again in a moment"); an older claim is
+closed under its attempts and claim time, and the runner writes its row, its
+intent id and its supersede's durable rows only while it still holds that
+claim (`holdAdditionalIntentRecoveryClaim`, one transaction that re-stamps
+`processingStartedAt`), so whichever commits first wins. A re-issued ask's
+recovery is written in the edit's transaction; the door's own mint completes it
+fenced the same way (`writeReissuedAskUnderRecovery`). An increase folding a
+waiting re-issue in closes it with the same fence. All proven on real Postgres.
+Round 6: the retire closes waiting recoveries before it stamps the rows - the
+runner's own order (its claim hold writes the recovery, then its row) - and a
+deadlock or write conflict there is the same 409; the runner re-checks its
+claim after its Stripe cancels, before queueing any invoice on its intent. The
+billed-offset invoice-correction note is enqueued inside the edit's
+transaction, after its locks, under the enqueue's own-key dedupe and no
+advisory key; it is raised after the edit's own note, waiting while that note
+is queued or running and - round 7 - while the edit expects one its Xero leg
+has not queued yet (recorded on the note's payload), for up to six hours, after
+which the repair pass hands it to a person. Round 8: while it waits for a note
+not yet queued it is requeued under `BILLED_OFFSET_AWAITING_OWN_NOTE`, and the
+outbox scan leaves it out for five minutes at a time rather than give it an
+oldest-first slot on every kick; "the edit's own note" is one predicate
+(`isOwnModificationNoteOperation`) for the wait and the repair pass, either
+kind, a FAILED one counting as present. Round 7 also: the door's mint
+re-reads its new intent's row after its Stripe cancels and queues no invoice,
+and offers no client secret, when a reduction withdrew it meanwhile (a retire
+landing after that read leaves an invoice parked on a cancelled intent, which
+the stale-wait reaper retires). Round 8: only a withdrawn or FAILED row is
+"retired" there - a paid one, one not found or a failed re-read is live - and
+the door still returns the intent's id, so the increase's Xero leg parks its
+invoice on it rather than raising it unpaid; the reduction names the
+increase from the edit its mint stamped on the row
+(`PaymentTransaction.bookingModificationId`), so the repair pass never bills
+it again. An increase's recovery that folded re-issues in
+is settled only by its own row, so a later ask cannot overtake that money; and
+both minters of a re-issue resolve its Stripe customer one way
+(`resolveAskCustomerId`). A deadlock mapped to the 409 is logged and kept as its
+cause. Deploy window: the previous release's recovery runner, still draining,
+can replay a re-issue's recovery this release wrote; it mints under the same key
+with its own request and no metadata stamp. If it writes its row, that intent is
+the ask and this release's mint of the key writes nothing. If it dies between
+mint and row, this release's replay meets an `idempotency_error` the metadata
+lookup cannot answer, retries, and fails for an officer, as any exhausted
+recovery does. (Round 8: the lookup scans the resolved customer's intents,
+then the account's, so a different customer does not hide it; an intent with
+no metadata stamp still cannot be found.) The draining release's outbox can
+also take a billed-offset note this release queued: it raises it with no wait,
+possibly before the edit's own note - which is still raised beside it, the
+scoped link refusing it nothing (round 6) - and its inbound credit-note sync,
+which does not know the scope, can fold that note into
+`Payment.refundedAmountCents` as cash. The booking-vs-Xero repair pass does not
+touch that total: it finds the scoped note present and queues nothing. This
+release's next inbound sync of a credit note on the payment recomputes the
+total without it - lowering it for a bank payment; for a card payment the
+raise-only floor (#1353) keeps the higher figure and sends the
+refund-ledger-divergence alert, so a treasurer corrects it by hand. A stated
+limit of the window, not of the release.
+
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`
 (`src/lib/deleted-booking-modification-payment.ts`) creates the OPEN

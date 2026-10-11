@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 const mocks = vi.hoisted(() => ({
   createAuditLog: vi.fn(),
   findFirstLink: vi.fn(),
+  findManyLinks: vi.fn(async () => [] as unknown[]),
   findUniqueBooking: vi.fn(),
   findUniqueMember: vi.fn(),
   findUniqueMemberSubscription: vi.fn(),
@@ -114,6 +115,7 @@ vi.mock("@/lib/prisma", () => {
     },
     xeroObjectLink: {
       findFirst: mocks.findFirstLink,
+      findMany: mocks.findManyLinks,
     },
     xeroSyncOperation: {
       findFirst: mocks.findFirstOperation,
@@ -1703,6 +1705,31 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
     );
   });
 
+  it("MUTATION (#3954 round 6, F5): a scoped side note's link on the same edit never stands in for the edit's own note", async () => {
+    mocks.findManyLinks.mockResolvedValueOnce([
+      { id: "link_billed_offset", metadata: { reviewTaskId: "unpaid-ask-billed-offset" } },
+      { id: "link_give_back", metadata: { reviewTaskId: "applied-credit-give-back" } },
+    ]);
+    await expect(
+      enqueueXeroModificationCreditNoteOperation({ bookingId: "booking_1", refundAmountCents: 3200, bookingModificationId: "mod_1" }),
+    ).resolves.toEqual({
+      queueOperationId: "op_mod_credit_note_1",
+      message: "Xero modification credit note queued for background processing.",
+    });
+
+    // The edit's own note's link still answers it.
+    mocks.findManyLinks.mockResolvedValueOnce([
+      { id: "link_billed_offset", metadata: { reviewTaskId: "unpaid-ask-billed-offset" } },
+      { id: "link_own", metadata: null },
+    ]);
+    await expect(
+      enqueueXeroModificationCreditNoteOperation({ bookingId: "booking_1", refundAmountCents: 3200, bookingModificationId: "mod_1" }),
+    ).resolves.toEqual({
+      queueOperationId: null,
+      message: "Xero modification credit note already linked for this change.",
+    });
+  });
+
   // #3535 (`INV-PAY-017`): the internet-banking hold-expiry release enqueues
   // this note inside its own transaction, anchored on the booking, told it
   // clears an invoice nobody paid.
@@ -1711,11 +1738,11 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
       id: "booking_1",
       payment: { xeroInvoiceId: "inv_existing" },
     });
-    const storeLinkFindFirst = vi.fn().mockResolvedValue(null);
+    const storeLinkFindMany = vi.fn().mockResolvedValue([]);
     const storeOperationFindFirst = vi.fn().mockResolvedValue(null);
     const store = {
       booking: { findUnique: storeBookingFindUnique },
-      xeroObjectLink: { findFirst: storeLinkFindFirst },
+      xeroObjectLink: { findMany: storeLinkFindMany },
       xeroSyncOperation: { findFirst: storeOperationFindFirst },
     } as unknown as Prisma.TransactionClient;
 
@@ -1730,7 +1757,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
     });
 
     expect(storeBookingFindUnique).toHaveBeenCalledTimes(1);
-    expect(storeLinkFindFirst).toHaveBeenCalledWith(
+    expect(storeLinkFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           localModel: "Booking",
@@ -1742,7 +1769,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
     );
     expect(storeOperationFindFirst).toHaveBeenCalledTimes(1);
     expect(mocks.findUniqueBooking).not.toHaveBeenCalled();
-    expect(mocks.findFirstLink).not.toHaveBeenCalled();
+    expect(mocks.findManyLinks).not.toHaveBeenCalled();
     expect(mocks.findFirstOperation).not.toHaveBeenCalled();
     expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1776,7 +1803,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
           payment: { xeroInvoiceId: "inv_existing" },
         }),
       },
-      xeroObjectLink: { findFirst: vi.fn().mockResolvedValue({ id: "link_1" }) },
+      xeroObjectLink: { findMany: vi.fn().mockResolvedValue([{ id: "link_1", metadata: null }]) },
       xeroSyncOperation: { findFirst: vi.fn() },
     } as unknown as Prisma.TransactionClient;
 
@@ -1800,7 +1827,7 @@ describe("enqueueXeroModificationCreditNoteOperation", () => {
           payment: { xeroInvoiceId: "inv_existing" },
         }),
       },
-      xeroObjectLink: { findFirst: vi.fn().mockResolvedValue(null) },
+      xeroObjectLink: { findMany: vi.fn().mockResolvedValue([]) },
       xeroSyncOperation: {
         findFirst: vi.fn().mockResolvedValue({ id: "op_already_queued" }),
       },
@@ -2062,6 +2089,8 @@ describe("processQueuedXeroOutboxOperations", () => {
       status: "PENDING",
       direction: "OUTBOUND",
       queueType: { in: [...XERO_OUTBOX_QUEUE_TYPES] },
+      // #3954 round 8: a note waiting for its edit's own note is spaced out.
+      AND: [expect.objectContaining({ OR: expect.any(Array) })],
     });
     expect(args.where.queueType.in).toHaveLength(17);
     // The legacy `requestPayload->>'queueType'` OR predicate is gone.
@@ -2166,6 +2195,41 @@ describe("processQueuedXeroOutboxOperations", () => {
       });
     }
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION (#3954 round 8): a billed-offset note waiting for its edit's own note is requeued under its wait code, and the scan spaces it out", async () => {
+    const { BILLED_OFFSET_AWAITING_OWN_NOTE_CODE, BILLED_OFFSET_OWN_NOTE_RECHECK_MS } = await import("@/lib/unpaid-ask-billed-offset-order");
+    mocks.findManyOperations.mockResolvedValue([
+      {
+        id: "op_dealloc_waiting",
+        localId: "payment_1",
+        localModel: "Payment",
+        createdByMemberId: null,
+        requestPayload: { queueType: "APPLIED_CREDIT_DEALLOCATION", bookingId: "booking_1" },
+      },
+    ]);
+    mocks.deallocateExcessAppliedCreditForBooking.mockRejectedValue(
+      new XeroAppliedCreditOperationBusyError("waits for the own note", "PENDING", BILLED_OFFSET_AWAITING_OWN_NOTE_CODE),
+    );
+
+    await processQueuedXeroOutboxOperations({ limit: 5 });
+
+    expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+      where: { id: "op_dealloc_waiting", status: "RUNNING" },
+      data: expect.objectContaining({ status: "PENDING", lastErrorCode: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE }),
+    });
+    // The scan leaves such a row out until its recheck is due; every other
+    // row, a null code included, is scanned as before.
+    const scan = mocks.findManyOperations.mock.calls[0]![0] as { where: { AND: Array<{ OR: unknown[] }> } };
+    expect(scan.where.AND).toEqual([
+      {
+        OR: [
+          { lastErrorCode: null },
+          { lastErrorCode: { not: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE } },
+          { updatedAt: { lte: new Date(Date.now() - BILLED_OFFSET_OWN_NOTE_RECHECK_MS) } },
+        ],
+      },
+    ]);
   });
 
   it("busy-requeues a manual retry, then executes its checkpointed deallocation once", async () => {

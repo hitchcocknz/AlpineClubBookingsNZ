@@ -2981,7 +2981,14 @@ to supplement at all is the EDIT's answer, frozen on the recovery row as
 `hadIssuedXeroInvoice` when the mint fails and read back by the replay — a
 booking whose primary invoice is minted after the edit is billed for the edit by
 that invoice, so re-deriving the flag hours later would raise a second ask for
-money already invoiced.
+money already invoiced. Since #3954 round 7 the same answer is also stamped on
+the `ADDITIONAL` request row the edit's mint (or its replay) writes
+(`PaymentTransaction.hadIssuedXeroInvoice`, NULL for rows written before it), so
+a later price reduction that cancels or shrinks the unpaid request knows which
+invoice billed its money (`unpaidAskBillingEvidence`, `INV-PAY-120`). Round 8
+stamps the edit itself beside it (`PaymentTransaction.bookingModificationId`),
+so that reduction names the edit whose ask it retired even when the edit had not
+yet queued its invoice, and the repair pass never bills that ask again.
 
 Group-settlement PaymentIntents get the same safety net: switching a group
 settlement to Internet Banking or re-attempting a card settlement voids the

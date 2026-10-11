@@ -59,11 +59,16 @@ vi.mock("@/lib/member-credit", async (importOriginal) => ({
   clampAppliedCreditToBookingPrice: h.clampAppliedCreditToBookingPrice,
   lockMemberCreditLedger: h.lockMemberCreditLedger,
 }));
-vi.mock("@/lib/booking-modification-settlement", async (importOriginal) => ({
-  ...((await importOriginal()) as typeof import("@/lib/booking-modification-settlement")),
-  executeBookingModificationRefund: h.executeBookingModificationRefund,
-  drainSupersededPrimaryIntents: vi.fn(),
-}));
+vi.mock("@/lib/booking-modification-settlement", async (importOriginal) => {
+  const real = (await importOriginal()) as typeof import("@/lib/booking-modification-settlement");
+  return {
+    ...real,
+    executeBookingModificationRefund: h.executeBookingModificationRefund,
+    drainSupersededPrimaryIntents: vi.fn(),
+    // Real by default; round 9 answers it once to retire the re-issued ask.
+    createModificationAdditionalPaymentIntent: vi.fn(real.createModificationAdditionalPaymentIntent),
+  };
+});
 vi.mock("@/lib/xero-booking-edit-settlement", () => ({
   queueXeroBookingEditSettlement: h.queueXeroBookingEditSettlement,
 }));
@@ -85,6 +90,9 @@ import {
   settleGuestAcceptanceRepriceAfterCommit,
 } from "@/lib/booking-guest-acceptance-reprice";
 import { applyPaymentAdjustments } from "@/lib/booking-modify-settlement";
+import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
+import { noReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
+import { reissueUnpaidAdditionalAsk } from "@/lib/additional-payment-ask";
 import { requireCalendarDate } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
@@ -138,6 +146,8 @@ function tx(loaded: ReturnType<typeof booking>) {
     },
     bookingModification: { create: vi.fn(async () => ({ id: "mod-1" })) },
     payment: { update: vi.fn() },
+    // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
+    paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
     manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })), createMany: vi.fn(async () => ({ count: 1 })) },
   };
 }
@@ -296,6 +306,22 @@ describe("a settled booking's price is never raised by an acceptance (A3)", () =
     expect(result).toEqual({ repriced: false, reason: "INCREASE_NEEDS_COLLECTION" });
     expect(h.persistRepricedPromotions).not.toHaveBeenCalled();
   });
+
+  it("MUTATION (#3502): a credit-paid ($0) CONFIRMED booking - not paid-like, no invoice - is refused too", async () => {
+    // Neither `hasCapturedPayment` ($0) nor the paid-like status (CONFIRMED) nor
+    // an issued invoice catches this one; only `canAskCardForIncrease` does.
+    // Without it the increase would reach `applyPaymentAdjustments`, which now
+    // sizes a card ask for it, and this path never mints one.
+    decides(2000);
+    const result = await accept(
+      booking({
+        status: "CONFIRMED",
+        payment: { ...booking().payment, amountCents: 0, creditAppliedCents: 32000, xeroInvoiceId: null },
+      }),
+    );
+    expect(result).toEqual({ repriced: false, reason: "INCREASE_NEEDS_COLLECTION" });
+    expect(h.persistRepricedPromotions).not.toHaveBeenCalled();
+  });
 });
 
 describe("only the member edit door for a stay yet to start re-prices (A4)", () => {
@@ -353,6 +379,37 @@ describe("after commit: the card refund, the Xero correction, the email and the 
         subjectMemberId: "ann",
       }),
     );
+  });
+});
+
+// #3954 round 9: the re-issued ask is named as due only while it is live - the
+// same liveness that withholds its client secret.
+describe("the email names a re-issued ask only while it is live", () => {
+  async function emailedAdditionalCents(additionalAskRetired: boolean): Promise<number> {
+    const reprice = await accept(booking());
+    if (!reprice.repriced) throw new Error("expected a re-price");
+    h.executeBookingModificationRefund.mockResolvedValue(undefined);
+    h.sendBookingModifiedEmail.mockResolvedValue(undefined);
+    vi.mocked(createModificationAdditionalPaymentIntent).mockResolvedValueOnce({
+      additionalPaymentClientSecret: additionalAskRetired ? undefined : "secret",
+      additionalPaymentIntentId: "pi_reissued",
+      additionalAskRetired,
+    });
+    await settleGuestAcceptanceRepriceAfterCommit({
+      bookingId: "booking-1",
+      actorMemberId: "cara",
+      reprice: { ...reprice, additionalAsk: reissueUnpaidAdditionalAsk({ askLeftCents: 3000 }) },
+      format: CLUB_FORMAT_TEST,
+    });
+    return h.sendBookingModifiedEmail.mock.calls.at(-1)?.[0].additionalAmountCents;
+  }
+
+  it("a live re-issue is named", async () => {
+    expect(await emailedAdditionalCents(false)).toBe(3000);
+  });
+
+  it("MUTATION (round 9): a re-issue a later reduction retired is not", async () => {
+    expect(await emailedAdditionalCents(true)).toBe(0);
   });
 });
 
@@ -513,6 +570,9 @@ describe("a split payment gets the WHOLE reduction back: cash first, then credit
           ...booking().payment,
           amountCents: 2000,
           additionalAmountCents: 1500,
+          // Paid: the fee's additional charge was captured (#3954 reads an
+          // unpaid one as an ask a reduction is set against).
+          additionalPaymentStatus: "SUCCEEDED",
           changeFeeCents: 1500,
           creditAppliedCents: 30000,
         },
@@ -611,7 +671,7 @@ describe("the credit share comes back once, untiered, on the acceptance only (#3
 
   it("an ordinary edit's reduction still takes #3809's give-back; only the caller's flag skips it", async () => {
     const creditPaid = booking({ payment: { ...booking().payment, amountCents: 0, creditAppliedCents: 32000 } });
-    const args = { booking: creditPaid as never, priceDiffCents: -6000, changeFeeCents: 0, todayAtClub: TODAY, format: CLUB_FORMAT_TEST };
+    const args = { booking: creditPaid as never, priceDiffCents: -6000, changeFeeCents: 0, reduction: noReductionAgainstUnpaidAsk(-6000), todayAtClub: TODAY, format: CLUB_FORMAT_TEST };
     h.giveBackPaidReductionCredit.mockResolvedValueOnce({ basisCents: 6000, givenBackCents: 3000 });
     const ordinary = await applyPaymentAdjustments(tx(creditPaid) as never, args);
     expect(h.giveBackPaidReductionCredit).toHaveBeenCalledTimes(1);
