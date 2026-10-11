@@ -11,13 +11,16 @@ import {
   isFixPr,
   isRateLimited,
   issueNumbersFromBranch,
+  normaliseScope,
   parseFixScope,
   parseIntegrationsIssue,
   parseMergeSubject,
+  refFromArgs,
   repeatMentions,
   revertedCommit,
+  withRateLimitRetries,
 } from "./fragility-lib.mjs";
-import { areasForPair } from "./fragility-areas.mjs";
+import { AREAS, areasForPair } from "./fragility-areas.mjs";
 import { buildRepeats } from "./fragility-signals.mjs";
 
 /**
@@ -54,6 +57,16 @@ describe("fix units", () => {
     expect(issueNumbersFromBranch("compose/3635-late-capture-xero")).toEqual([3635]);
     // An HTTP status in the middle of a name is not an issue number.
     expect(issueNumbersFromBranch("claude/fix-xero-import-429-9uLYV")).toEqual([]);
+  });
+
+  it("reads a year-month date at the start of a branch as a date, not an issue number", () => {
+    expect(issueNumbersFromBranch("codex/2026-10-05-fragility-follow-up")).toEqual([]);
+    expect(issueNumbersFromBranch("release/2026-10")).toEqual([]);
+    expect(issueNumbersFromBranch("fix/2026-12-31-rollover")).toEqual([]);
+    // An issue numbered like a year is still an issue when no month follows, or when named outright.
+    expect(issueNumbersFromBranch("fix/2026-guest-form")).toEqual([2026]);
+    expect(issueNumbersFromBranch("fix/2026-13-guest-form")).toEqual([2026]);
+    expect(issueNumbersFromBranch("fix/issue-2026-10-guest-form")).toEqual([2026]);
   });
 
   it("splits fix scopes into area names and issue numbers, folding plurals", () => {
@@ -95,6 +108,29 @@ describe("code history", () => {
         [20, 20],
       ],
       "src/old.ts": [[5, 6]],
+    });
+  });
+
+  it("does not read a deleted SQL comment as a file header", () => {
+    // With -U0 a deleted `-- comment` line is `--- comment`; it must not
+    // re-point later hunks of the same file at a path called "comment".
+    const diff = [
+      "diff --git a/prisma/migrations/1/migration.sql b/prisma/migrations/1/migration.sql",
+      "--- a/prisma/migrations/1/migration.sql",
+      "+++ b/prisma/migrations/1/migration.sql",
+      "@@ -3,2 +3 @@",
+      "--- drop the old index first",
+      "-DROP INDEX x;",
+      "+++ added line that looks like a header",
+      "@@ -9 +8 @@",
+      "-SELECT 1;",
+      "+SELECT 2;",
+    ].join("\n");
+    expect(Object.fromEntries(changedOldRanges(diff))).toEqual({
+      "prisma/migrations/1/migration.sql": [
+        [3, 4],
+        [9, 9],
+      ],
     });
   });
 
@@ -145,6 +181,37 @@ describe("GitHub rate limits", () => {
     // Bad token or no access: retrying would loop forever.
     expect(isRateLimited(403, new Headers({ "x-ratelimit-remaining": "4999" }))).toBe(false);
     expect(isRateLimited(404, new Headers({ "x-ratelimit-remaining": "0" }))).toBe(false);
+  });
+
+  it("gives up after a bounded number of waits instead of retrying forever", async () => {
+    let calls = 0;
+    const waits = [];
+    const attempt = async () => {
+      calls += 1;
+      if (calls > 100) throw new Error("unbounded retry loop");
+      return "limited";
+    };
+    const result = await withRateLimitRetries(attempt, (value) => value === "limited", async (n) => waits.push(n), 3);
+    expect(result).toEqual({ value: "limited", gaveUp: true });
+    expect(calls).toBe(4);
+    expect(waits).toEqual([1, 2, 3]);
+  });
+
+  it("returns the first reply that is not rate limited", async () => {
+    const replies = ["limited", "limited", "ok"];
+    const result = await withRateLimitRetries(async () => replies.shift(), (value) => value === "limited", async () => {});
+    expect(result).toEqual({ value: "ok", gaveUp: false });
+  });
+});
+
+describe("analysed revision", () => {
+  it("defaults to origin/main, not a possibly stale local main", () => {
+    expect(refFromArgs([])).toBe("origin/main");
+    expect(refFromArgs(["--git-only"])).toBe("origin/main");
+    expect(refFromArgs(["--ref", "e45e41bb5"])).toBe("e45e41bb5");
+    expect(refFromArgs(["--git-only", "--ref=main"])).toBe("main");
+    expect(() => refFromArgs(["--ref"])).toThrow(/--ref needs/);
+    expect(() => refFromArgs(["--ref", "--git-only"])).toThrow(/--ref needs/);
   });
 });
 
@@ -244,6 +311,26 @@ describe("buildRepeats", () => {
     expect(repeats).toHaveLength(1);
     expect(repeats[0]).toMatchObject({ signals: ["revert"], earlier: { unit: "pr-61" }, sinceAudit: false });
   });
+
+  it("maps a revert by the reverted commit's own scope and files, not the whole PR's", () => {
+    const wide = unit("pr-2618", "2026-07-01T00:00:00.000Z", {
+      pr: 2618,
+      commits: [SHA_A],
+      scopes: ["admin", "booking", "hosting", "member", "payment", "privacy", "waitlist", "xero"],
+      files: ["src/lib/xero-sync.ts", "src/lib/roster-lock.ts", "src/lib/booking-requests.ts"],
+    });
+    const repeats = buildRepeats({
+      units: [wide],
+      codePairs: [],
+      github: github(),
+      reverts: [
+        { sha: SHA_B, date: "2026-07-02T00:00:00.000Z", subject: 'Revert "fix(bookings): preserve committed rejection facts"', reverts: SHA_A.slice(0, 12), files: ["src/lib/booking-requests.ts"] },
+      ],
+    });
+    expect(repeats).toHaveLength(1);
+    expect(repeats[0].earlier).toMatchObject({ scopes: ["booking"], files: ["src/lib/booking-requests.ts"] });
+    expect(areasForPair(repeats[0], new Map()).map((match) => match.area)).toEqual(["booking-create"]);
+  });
 });
 
 describe("Sekreton integrations fallback", () => {
@@ -312,7 +399,7 @@ describe("proposed business areas", () => {
     expect(areasForPair(entry(side("pr-1", { issues: [10] }), side("pr-2", { issues: [30] })), labels)).toEqual([]);
   });
 
-  it("uses shared files only as a fallback, and never test files", () => {
+  it("uses shared files only as a fallback, and test files only for the test-infrastructure area", () => {
     const shared = { files: ["src/lib/xero-sync.ts", "src/lib/email/booking.ts"] };
     const fallback = areasForPair(entry(side("pr-1", shared), side("pr-2", shared)), new Map());
     expect(fallback.map((match) => match.area).sort()).toEqual(["email", "xero"]);
@@ -320,5 +407,28 @@ describe("proposed business areas", () => {
     expect(scoped.map((match) => match.area)).toEqual(["admin"]);
     const testsOnly = { files: ["src/lib/__tests__/xero-sync.test.ts"] };
     expect(areasForPair(entry(side("pr-1", testsOnly), side("pr-2", testsOnly)), new Map())).toEqual([]);
+    const e2e = { files: ["e2e/booking-wizard.spec.ts", "src/lib/__tests__/helpers/clock.ts"] };
+    expect(areasForPair(entry(side("pr-1", e2e), side("pr-2", e2e)), new Map())).toEqual([{ area: "tests", via: "both sides' files" }]);
+    const e2eDocs = { files: ["e2e/README.md"] };
+    expect(areasForPair(entry(side("pr-1", e2eDocs), side("pr-2", e2eDocs)), new Map())).toEqual([]);
+  });
+
+  it("lists every area scope in the folded form parseFixScope produces", () => {
+    for (const area of AREAS) {
+      const listed = area.scopes.source.replace(/^\^\(?|\)?\$?$/g, "").replace(/\\\//g, "/").split("|");
+      for (const scope of listed) expect({ area: area.id, scope, matches: area.scopes.test(normaliseScope(scope)) }).toEqual({ area: area.id, scope, matches: true });
+    }
+    expect(areasForPair(entry(side("pr-1", { scopes: parseFixScope("fix(beds): x").scopes }), side("pr-2")), new Map())).toEqual([{ area: "capacity", via: "scope bed" }]);
+    expect(areasForPair(entry(side("pr-1", { scopes: parseFixScope("fix(public-pages): x").scopes }), side("pr-2")), new Map())).toEqual([{ area: "public-site", via: "scope public-page" }]);
+  });
+
+  it("maps lock files to concurrency without catching clocks, blockers or lockouts", () => {
+    const concurrency = AREAS.find((area) => area.id === "concurrency");
+    for (const file of ["src/lib/roster-lock.ts", "src/lib/lodge-capacity-lock.ts", "src/lib/advisory-lock-guard.ts", "src/lib/locks/booking.ts", "src/lib/locking.ts", "scripts/ci/check-pr-concurrency-declaration.mjs"]) {
+      expect({ file, matches: concurrency.files.test(file) }).toEqual({ file, matches: true });
+    }
+    for (const file of ["src/lib/club-time/clock.ts", "src/app/display/display-header-clock.tsx", "src/components/admin/membership-cancellation-blocker-notice.tsx", "src/components/lodge-pin-relock-panel.tsx", "src/app/(admin)/admin/subscription-lockout/page.tsx", "src/app/api/admin/lockers/route.ts"]) {
+      expect({ file, matches: concurrency.files.test(file) }).toEqual({ file, matches: false });
+    }
   });
 });

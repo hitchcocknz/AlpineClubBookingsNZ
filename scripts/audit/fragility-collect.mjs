@@ -5,6 +5,12 @@
  *
  *   GITHUB_TOKEN=… pnpm run audit:fragility:collect
  *   pnpm run audit:fragility:collect --git-only   # collectors 2 and 3 only
+ *   pnpm run audit:fragility:collect --ref <rev>  # analyse <rev> instead of origin/main
+ *
+ * The git collectors read `origin/main` by default, not the local `main`
+ * branch, which in a lane worktree is often stale; run `git fetch origin`
+ * first. `--ref` picks any other revision, and the ref used is recorded in
+ * `fix-units.json` for the signals step.
  *
  * Writes `tmp/fragility/*.json` (git-ignored) under the checkout root, wherever
  * it is run from. Every run rebuilds every file it owns from scratch, so a
@@ -20,7 +26,9 @@
  *    _TOKEN set), it reads every issue through Sekreton's integrations
  *    endpoint instead. That source has gaps, recorded in `github.json.gaps`:
  *    no PR bodies or PR comments, no `reopened` events, issue creation times
- *    estimated from PR numbering, and comments by untrusted authors left out.
+ *    estimated from PR numbering, and comments by untrusted authors left out;
+ *    numbers it could not read (deleted, transferred, or still rate limited
+ *    after MAX_RATE_LIMIT_WAITS waits) are listed there too.
  * 2. fix-units.json — one unit per merged fix PR (a `fix` title, or a `fix/…`
  *    branch when the title is not conventional), plus each `fix…` commit made
  *    straight on main, with its issue numbers, commits, `fix(<scope>)` scopes,
@@ -39,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  MAX_RATE_LIMIT_WAITS,
   MIN_PAIR_LINES,
   REPO,
   blameCommitCounts,
@@ -57,12 +66,14 @@ import {
   parseFixScope,
   parseIntegrationsIssue,
   parseMergeSubject,
+  refFromArgs,
+  withRateLimitRetries,
 } from "./fragility-lib.mjs";
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const OUT_DIR = path.join(ROOT, "tmp/fragility");
-const MAIN = "main";
+const REF = refFromArgs(process.argv.slice(2));
 const BLAME_CONCURRENCY = 3;
 const GIT_BUFFER = 512 * 1024 * 1024;
 
@@ -92,11 +103,12 @@ async function collectGithub(token) {
     let url = `https://api.github.com/repos/${REPO}${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=100`;
     let page = 0;
     while (url) {
-      const response = await fetch(url, { headers });
-      if (isRateLimited(response.status, response.headers)) {
-        await waitForReset(response);
-        continue;
-      }
+      const { value: response, gaveUp } = await withRateLimitRetries(
+        () => fetch(url, { headers }),
+        (reply) => isRateLimited(reply.status, reply.headers),
+        (_attempt, limited) => waitForReset(limited),
+      );
+      if (gaveUp) throw new Error(`GitHub still rate limited after ${MAX_RATE_LIMIT_WAITS} waits for ${url}; rerun later`);
       if (!response.ok) throw new Error(`GitHub ${response.status} for ${url}: ${await response.text()}`);
       page += 1;
       if (page % 20 === 0) console.error(`  ${endpoint}: page ${page}`);
@@ -186,22 +198,34 @@ async function collectViaIntegrations(commits) {
   let consecutiveMisses = 0;
   let next = 1;
   let fetched = 0;
+  const rateLimited = new Set(); // numbers given up on this run; never cached, so a rerun retries them
   async function read(number) {
-    for (;;) {
-      const { isError, text } = await callIntegrations("issues_get", { ref: `github:${REPO}#${number}` });
-      if (!isError) return { kind: "issue", issue: parseIntegrationsIssue(text) };
-      if (/is a pull request/.test(text)) return { kind: "pr" };
-      if (!/rate limit/i.test(text)) return { kind: "missing", reason: text.slice(0, 200) };
-      console.error(`  #${number}: GitHub rate limit behind the integrations endpoint; waiting 60s`);
-      await new Promise((resolve) => setTimeout(resolve, 60_000));
+    const { value, gaveUp } = await withRateLimitRetries(
+      () => callIntegrations("issues_get", { ref: `github:${REPO}#${number}` }),
+      ({ isError, text }) => isError && /rate limit/i.test(text),
+      () => {
+        console.error(`  #${number}: GitHub rate limit behind the integrations endpoint; waiting 60s`);
+        return new Promise((resolve) => setTimeout(resolve, 60_000));
+      },
+    );
+    if (gaveUp) {
+      console.error(`  #${number}: still rate limited after ${MAX_RATE_LIMIT_WAITS} waits; recorded as a gap`);
+      rateLimited.add(number);
+      return null;
     }
+    const { isError, text } = value;
+    if (!isError) return { kind: "issue", issue: parseIntegrationsIssue(text) };
+    if (/is a pull request/.test(text)) return { kind: "pr" };
+    return { kind: "missing", reason: text.slice(0, 200) };
   }
   async function worker() {
     // Past the highest merged PR, keep probing until 30 numbers in a row are absent.
     while (next <= knownHighest || consecutiveMisses < 30) {
       const number = next++;
       if (!cache.has(number)) {
-        cache.set(number, await read(number));
+        const entry = await read(number);
+        if (!entry) continue; // rate limited: a gap, neither a hit nor a miss
+        cache.set(number, entry);
         fetched += 1;
         if (fetched % 100 === 0) saveCache();
         if (fetched % 250 === 0) console.error(`  fetched ${fetched} (at #${number})`);
@@ -217,10 +241,10 @@ async function collectViaIntegrations(commits) {
 
   const issues = [];
   const comments = [];
-  let missing = 0;
+  const missing = [];
   for (const [number, entry] of [...cache].sort((a, b) => a[0] - b[0])) {
     if (entry.kind === "missing") {
-      missing += 1;
+      missing.push(number);
       continue;
     }
     if (entry.kind === "pr") {
@@ -234,7 +258,10 @@ async function collectViaIntegrations(commits) {
     issue.comments.forEach((comment, index) => comments.push({ issue: number, id: `${number}-${index}`, createdAt: comment.createdAt, body: comment.body, url: issueUrl(number) }));
   }
   const highest = Math.max(...issues.map((issue) => issue.number));
-  console.error(`integrations: ${issues.length} issues/PRs (highest #${highest}), ${comments.length} comments, ${missing} numbers unreadable`);
+  // Misses past the highest number are the end-of-range probe, not gaps.
+  const unreadable = missing.filter((number) => number < highest);
+  const limited = [...rateLimited].sort((a, b) => a - b);
+  console.error(`integrations: ${issues.length} issues/PRs (highest #${highest}), ${comments.length} comments, ${unreadable.length} numbers unreadable, ${limited.length} rate limited`);
   return {
     collectedAt: new Date().toISOString(),
     source: "sekreton-integrations",
@@ -243,6 +270,8 @@ async function collectViaIntegrations(commits) {
       "reopened events are not available: the reopened signal is empty",
       "issue createdAt is estimated (earliest of the next-numbered PR merge and the first comment)",
       "comments by authors outside the project's trusted roles are left out",
+      ...(unreadable.length > 0 ? [`numbers not readable (deleted, transferred or never issued): ${unreadable.map((number) => `#${number}`).join(", ")}`] : []),
+      ...(limited.length > 0 ? [`numbers skipped after ${MAX_RATE_LIMIT_WAITS} rate-limit waits (rerun to fill): ${limited.map((number) => `#${number}`).join(", ")}`] : []),
     ],
     highestNumber: highest,
     issues,
@@ -263,9 +292,9 @@ async function waitForReset(response) {
 // 2. Git fix units
 // ---------------------------------------------------------------------------
 
-/** Every commit reachable from main: parents, date (UTC), subject, body, files (non-merges). */
+/** Every commit reachable from the analysed ref: parents, date (UTC), subject, body, files (non-merges). */
 function readCommits() {
-  const raw = git(["log", MAIN, "--format=%x1e%H%x1f%P%x1f%aI%x1f%s%x1f%b%x1f", "--name-only", "--no-renames"]);
+  const raw = git(["log", REF, "--format=%x1e%H%x1f%P%x1f%aI%x1f%s%x1f%b%x1f", "--name-only", "--no-renames"]);
   const commits = new Map();
   for (const record of raw.split("\x1e").slice(1)) {
     const [sha, parents, date, subject, body, files] = record.split("\x1f");
@@ -282,7 +311,7 @@ function readCommits() {
 }
 
 function firstParentShas() {
-  return new Set(git(["rev-list", "--first-parent", MAIN]).split("\n").filter(Boolean));
+  return new Set(git(["rev-list", "--first-parent", REF]).split("\n").filter(Boolean));
 }
 
 function netFiles(base, tip) {
@@ -445,7 +474,7 @@ async function main() {
 
   console.error("git: fix units");
   const units = buildFixUnits(commits);
-  write("fix-units.json", { collectedAt: new Date().toISOString(), head: git(["rev-parse", MAIN]).trim(), units });
+  write("fix-units.json", { collectedAt: new Date().toISOString(), ref: REF, head: git(["rev-parse", REF]).trim(), units });
   console.error(`git: ${units.length} fix units`);
 
   console.error("git: code-history repeats (blame)");

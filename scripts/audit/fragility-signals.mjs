@@ -31,8 +31,10 @@ import {
   AUDIT_CUTOFF,
   closingReferences,
   commitUrl,
+  DEFAULT_REF,
   issueUrl,
   pairKey,
+  parseFixScope,
   pullUrl,
   repeatMentions,
   revertedCommit,
@@ -48,7 +50,7 @@ const OUT_DIR = path.join(ROOT, "tmp/fragility");
  * @param {Array} input.units        fix units (fix-units.json), sorted by date
  * @param {Array} input.codePairs    code-history pairs (code-repeats.json)
  * @param {object} input.github      github.json: { issues, comments, reopened }
- * @param {Array} input.reverts      [{ sha, date, subject, reverts }] revert commits on main
+ * @param {Array} input.reverts      [{ sha, date, subject, reverts, files }] revert commits on the analysed ref
  */
 export function buildRepeats({ units, codePairs, github, reverts }) {
   const byNumber = new Map(github.issues.map((issue) => [issue.number, issue]));
@@ -124,7 +126,11 @@ export function buildRepeats({ units, codePairs, github, reverts }) {
   for (const revert of reverts) {
     const earlier = linked.find((unit) => unit.commits.some((sha) => sha.startsWith(revert.reverts)));
     if (!earlier) continue;
-    add(unitRef(earlier), { key: `commit-${revert.sha.slice(0, 12)}`, commit: revert.sha, date: revert.date, title: revert.subject, url: commitUrl(revert.sha) }, {
+    // A revert undoes one commit, not the whole fix unit: both sides carry that
+    // commit's own scope and files, so a wide PR's union of scopes does not
+    // spread one revert across every area the PR touched.
+    const reverted = { scopes: parseFixScope(/^Revert "(.*)"$/.exec(revert.subject)?.[1] ?? "").scopes, files: revert.files ?? [] };
+    add({ ...unitRef(earlier), ...reverted }, { key: `commit-${revert.sha.slice(0, 12)}`, commit: revert.sha, date: revert.date, title: revert.subject, ...reverted, url: commitUrl(revert.sha) }, {
       kind: "revert",
       url: commitUrl(revert.sha),
       note: `reverts ${revert.reverts.slice(0, 12)} from ${earlier.id}`,
@@ -167,8 +173,8 @@ function issueRef(issue, date, number) {
   return { key: `issue-${number}`, issue: number, title: issue?.title ?? null, labels: issue?.labels ?? [], date, url: issueUrl(number) };
 }
 
-function readRevertCommits() {
-  const raw = execFileSync("git", ["log", "main", "--grep=This reverts commit", "--format=%x1e%H%x1f%aI%x1f%s%x1f%b"], {
+function readRevertCommits(ref) {
+  const raw = execFileSync("git", ["log", ref, "--grep=This reverts commit", "--format=%x1e%H%x1f%aI%x1f%s%x1f%b%x1f", "--name-only", "--no-renames"], {
     cwd: ROOT,
     encoding: "utf8",
   });
@@ -176,8 +182,8 @@ function readRevertCommits() {
     .split("\x1e")
     .slice(1)
     .map((record) => {
-      const [sha, date, subject, body] = record.split("\x1f");
-      return { sha, date: new Date(date).toISOString(), subject, reverts: revertedCommit(body) };
+      const [sha, date, subject, body, files] = record.split("\x1f");
+      return { sha, date: new Date(date).toISOString(), subject, reverts: revertedCommit(body), files: files.split("\n").filter(Boolean) };
     })
     .filter((revert) => revert.reverts);
 }
@@ -185,7 +191,7 @@ function readRevertCommits() {
 function readJson(name) {
   const file = path.join(OUT_DIR, name);
   if (!existsSync(file)) {
-    console.error(`tmp/fragility/${name} is missing. Run pnpm run audit:fragility:collect first (it needs GITHUB_TOKEN).`);
+    console.error(`tmp/fragility/${name} is missing. Run pnpm run audit:fragility:collect first (with GITHUB_TOKEN, or inside a Sekreton task through its integrations endpoint).`);
     process.exit(2);
   }
   return JSON.parse(readFileSync(file, "utf8"));
@@ -193,9 +199,9 @@ function readJson(name) {
 
 function main() {
   const github = readJson("github.json");
-  const { units } = readJson("fix-units.json");
+  const { units, ref = DEFAULT_REF } = readJson("fix-units.json");
   const { pairs } = readJson("code-repeats.json");
-  const repeats = buildRepeats({ units, codePairs: pairs, github, reverts: readRevertCommits() });
+  const repeats = buildRepeats({ units, codePairs: pairs, github, reverts: readRevertCommits(ref) });
   writeFileSync(path.join(OUT_DIR, "repeats.json"), `${JSON.stringify({ builtAt: new Date().toISOString(), repeats }, null, 1)}\n`);
   const bySignal = {};
   for (const entry of repeats) for (const signal of entry.signals) bySignal[signal] = (bySignal[signal] ?? 0) + 1;

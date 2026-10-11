@@ -69,11 +69,16 @@ export function isFixSubject(subject) {
  * (`claude/fix-xero-import-429-…`, an HTTP status) is not an issue.
  */
 export function issueNumbersFromBranch(branch) {
-  const match =
-    /(?:^|[/-])issue-(\d{2,5})(?=$|[-_/])/i.exec(branch) ??
-    /(?:^|\/)(?:(?:hot)?fix(?:es)?[/-])?(?:gh-|#)?(\d{2,5})(?=$|[-_/])/i.exec(branch);
-  return match ? [Number(match[1])] : [];
+  const explicit = /(?:^|[/-])issue-(\d{2,5})(?=$|[-_/])/i.exec(branch);
+  if (explicit) return [Number(explicit[1])];
+  const match = /(?:^|\/)(?:(?:hot)?fix(?:es)?[/-])?(?:gh-|#)?(\d{2,5})(?=$|[-_/])/i.exec(branch);
+  if (!match) return [];
+  // A year followed by a month (`codex/2026-10-05-…`, `release/2026-10`) is a date, not issue #2026.
+  if (YEAR_MONTH.test(branch.slice(match.index + match[0].length - match[1].length))) return [];
+  return [Number(match[1])];
 }
+
+const YEAR_MONTH = /^20\d\d-(0[1-9]|1[0-2])(?=$|[-_/])/;
 
 /**
  * The scope of a conventional `fix(<scope>):` subject, split into the named
@@ -172,6 +177,36 @@ export function isRateLimited(status, headers) {
   return headers.get("x-ratelimit-remaining") === "0" || headers.get("retry-after") !== null;
 }
 
+/** How many rate-limit waits one request gets before the collector records it as a gap and moves on. */
+export const MAX_RATE_LIMIT_WAITS = 10;
+
+/**
+ * Call `attempt` until `isLimited(result)` is false, calling `wait(n, result)` before
+ * the n-th retry. Gives up after `maxWaits` waits so a limit that never
+ * lifts cannot hang the run; the caller records what was given up on.
+ *
+ * @returns {Promise<{ value: unknown, gaveUp: boolean }>}
+ */
+export async function withRateLimitRetries(attempt, isLimited, wait, maxWaits = MAX_RATE_LIMIT_WAITS) {
+  for (let waits = 0; ; waits += 1) {
+    const value = await attempt();
+    if (!isLimited(value)) return { value, gaveUp: false };
+    if (waits >= maxWaits) return { value, gaveUp: true };
+    await wait(waits + 1, value);
+  }
+}
+
+/** The git revision the collector analyses: `--ref <rev>` or `--ref=<rev>`, else `origin/main`. */
+export const DEFAULT_REF = "origin/main";
+
+export function refFromArgs(argv) {
+  const index = argv.findIndex((arg) => arg === "--ref" || arg.startsWith("--ref="));
+  if (index === -1) return DEFAULT_REF;
+  const value = argv[index].startsWith("--ref=") ? argv[index].slice("--ref=".length) : argv[index + 1];
+  if (!value || value.startsWith("--")) throw new Error("--ref needs a git revision, for example --ref origin/main");
+  return value;
+}
+
 /**
  * Old-side line ranges per file from `git diff -U0 -M` output: the lines a
  * change modified or deleted in the pre-image. Pure additions have no old
@@ -183,16 +218,22 @@ export function isRateLimited(status, headers) {
 export function changedOldRanges(diff) {
   const ranges = new Map();
   let path = null;
+  // `---`/`+++` are file headers only between `diff --git` and the file's
+  // first hunk; after that, a deleted line such as an SQL `-- comment` also
+  // starts with `--- `.
+  let inHeader = false;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
       path = null;
+      inHeader = true;
       continue;
     }
-    if (line.startsWith("--- ")) {
+    if (inHeader && line.startsWith("--- ")) {
       path = line === "--- /dev/null" ? null : line.slice(4).replace(/^a\//, "");
       continue;
     }
     const hunk = /^@@ -(\d+)(?:,(\d+))? \+/.exec(line);
+    if (hunk) inHeader = false;
     if (!hunk || !path) continue;
     const start = Number(hunk[1]);
     const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
