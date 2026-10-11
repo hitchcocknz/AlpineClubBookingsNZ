@@ -7759,3 +7759,460 @@ describe("a refund request's own note never answers for the payment's refund not
     );
   });
 });
+
+/**
+ * #3954: a price reduction first cancels or shrinks an earlier increase's
+ * unpaid card ask. The ask never reached Xero (its supplementary invoice waits
+ * on the card payment), so the reduction's own note covers only what it
+ * returned of money paid, and the increase's retired invoice must not be
+ * offered back as a one-click bill for money nobody owes.
+ */
+describe("#3954: a reduction set against an unpaid ask", () => {
+  function reducedAfterUnpaidAsk(
+    priceDiffCents: number,
+    unpaidAskOffsetCents: number,
+    reductionHistory: Record<string, unknown> = {},
+  ) {
+    return makeBooking({
+      modifications: [
+        {
+          id: "mod_increase",
+          bookingId: "booking_1",
+          modificationType: "GUEST_ADD",
+          priceDiffCents: 5000,
+          changeFeeCents: 0,
+          newData: {},
+          createdAt: new Date("2026-05-02T00:00:00Z"),
+        },
+        {
+          id: "mod_reduction",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents,
+          changeFeeCents: 0,
+          newData: { unpaidAskOffsetCents, ...reductionHistory },
+          createdAt: new Date("2026-05-03T00:00:00Z"),
+        },
+      ],
+    });
+  }
+  const retiredSupplementary = () =>
+    makeOperation({
+      id: "operation_retired_supplementary",
+      localModel: "BookingModification",
+      localId: "mod_increase",
+      status: "CANCELLED",
+      queueType: "SUPPLEMENTARY_INVOICE",
+      lastErrorCode: "ADDITIONAL_ASK_RETIRED_BY_REDUCTION",
+      xeroObjectType: null,
+      xeroObjectId: null,
+      requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: "pi_ask" },
+    });
+
+  it("MUTATION: expects no note for a reduction the unpaid ask absorbed whole", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-5000, 5000)],
+      operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.map((finding) => finding.code)).not.toContain("MISSING_MODIFICATION_CREDIT_NOTE");
+    expect(bookingReport.actions.map((action) => action.type)).not.toContain("QUEUE_MODIFICATION_CREDIT_NOTE");
+  });
+
+  it("sizes a partly absorbed reduction's note on what the ask left", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-8000, 5000)],
+      operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const finding = report.passes[0].bookings[0].findings.find(
+      (candidate) => candidate.code === "MISSING_MODIFICATION_CREDIT_NOTE",
+    );
+    expect(finding?.details).toMatchObject({ modificationId: "mod_reduction", refundDueCents: 3000 });
+  });
+
+  it("MUTATION: reports a retired invoice NO reduction names for a person, never as a one-click bill", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-5000, 5000)],
+      operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    const finding = bookingReport.findings.find((candidate) => candidate.code === "MISSING_SUPPLEMENTARY_INVOICE");
+    expect(finding).toMatchObject({
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_increase", retiredBy: "ADDITIONAL_ASK_RETIRED_BY_REDUCTION" },
+    });
+    expect(finding?.summary).toMatch(/supplementary Xero invoice was retired/);
+    expect(bookingReport.actions.map((action) => action.type)).not.toContain("QUEUE_SUPPLEMENTARY_INVOICE");
+  });
+
+  it.each([
+    ["its parked invoice retired", true],
+    ["netted off before its failed mint's retry, with no invoice ever parked", false],
+  ])(
+    "MUTATION (round 4): an increase a reduction names (%s) and cancelled whole raises nothing - it does not sit in manual review for ever",
+    async (_label, parked) => {
+      const deps = createDependencies({
+        bookings: [reducedAfterUnpaidAsk(-5000, 5000, { unpaidAskRetiredModificationIds: ["mod_increase"] })],
+        operations: [makePrimaryInvoiceCreateOperation(), ...(parked ? [retiredSupplementary()] : [])],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      const bookingReport = report.passes[0].bookings[0];
+      expect(bookingReport.findings.map((finding) => finding.code)).not.toContain("MISSING_SUPPLEMENTARY_INVOICE");
+      expect(bookingReport.actions.map((action) => action.type)).not.toContain("QUEUE_SUPPLEMENTARY_INVOICE");
+    },
+  );
+
+  describe("decision A: the smaller re-issued ask's own invoice", () => {
+    const shrunk = () =>
+      reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], reissuedAskInvoiceCents: 3000 });
+    const reissueInvoice = (status: string) =>
+      makeOperation({
+        id: "operation_reissue_supplementary",
+        localModel: "BookingModification",
+        localId: "mod_reduction",
+        status,
+        queueType: "SUPPLEMENTARY_INVOICE",
+        xeroObjectType: null,
+        xeroObjectId: null,
+        requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: "pi_reissued", priceDiffCents: 3000, changeFeeCents: 0 },
+      });
+
+    it("MUTATION: reports the reduction - not the increase - when the smaller ask has no invoice, with the figure it records", async () => {
+      const deps = createDependencies({
+        bookings: [shrunk()],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      const findings = report.passes[0].bookings[0].findings.filter((candidate) => candidate.code === "MISSING_SUPPLEMENTARY_INVOICE");
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        severity: "manual_review",
+        safeToAutoApply: false,
+        details: { modificationId: "mod_reduction", reissuedAskInvoiceCents: 3000 },
+      });
+    });
+
+    it("is satisfied by the invoice queued waiting on the re-issued ask", async () => {
+      const deps = createDependencies({
+        bookings: [shrunk()],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary(), reissueInvoice("WAITING_PAYMENT")],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      expect(report.passes[0].bookings[0].findings.map((finding) => finding.code)).not.toContain("MISSING_SUPPLEMENTARY_INVOICE");
+    });
+
+    it("MUTATION: is deferred while the re-issue's mint is still owed by its recovery", async () => {
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      const deps = createDependencies({
+        bookings: [shrunk()],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+        editReviewChargeIntentRecoveries: [
+          { bookingId: "booking_1", idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey("mod_reduction"), status: "PENDING" },
+        ],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      expect(report.passes[0].bookings[0].findings.map((finding) => finding.code)).not.toContain("MISSING_SUPPLEMENTARY_INVOICE");
+    });
+
+    // Round 6: a later increase folded the waiting re-issue into its own ask;
+    // the re-issue's invoice is queued on that increase's intent once it mints.
+    const foldedIntoLaterIncrease = () => {
+      const booking = shrunk();
+      const modifications = booking.modifications as unknown as Array<Record<string, unknown>>;
+      modifications.push({
+        ...modifications[0]!,
+        id: "mod_increase_later",
+        priceDiffCents: 1000,
+        newData: { foldedReissuedAskCents: 3000, foldedReissuedAskModificationIds: ["mod_reduction"] },
+        createdAt: new Date("2026-05-04T00:00:00Z"),
+      });
+      return booking;
+    };
+
+    it.each([
+      ["MUTATION (round 6): is accounted for while the increase that folded it in still waits on its mint", "open"],
+      ["MUTATION (round 6): is accounted for once a later reduction retired that increase's ask in turn", "retired"],
+    ] as const)("%s", async (_label, state) => {
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      const booking = foldedIntoLaterIncrease();
+      if (state === "retired") {
+        const modifications = booking.modifications as unknown as Array<Record<string, unknown>>;
+        modifications.push({
+          ...modifications[1]!,
+          id: "mod_reduction_later",
+          newData: { unpaidAskOffsetCents: 4000, unpaidAskRetiredModificationIds: ["mod_increase_later"] },
+          createdAt: new Date("2026-05-05T00:00:00Z"),
+        });
+      }
+      const deps = createDependencies({
+        bookings: [booking],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+        editReviewChargeIntentRecoveries:
+          state === "open"
+            ? [{ bookingId: "booking_1", idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey("mod_increase_later"), status: "PENDING" }]
+            : [],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      const missing = report.passes[0].bookings[0].findings.filter(
+        (finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE" && (finding.details as { modificationId?: string }).modificationId === "mod_reduction",
+      );
+      expect(missing).toEqual([]);
+    });
+
+    it("round 6: is reported once the increase that folded it in has minted and still no invoice waits on it", async () => {
+      const deps = createDependencies({
+        bookings: [foldedIntoLaterIncrease()],
+        operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+      const missing = report.passes[0].bookings[0].findings.filter(
+        (finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE" && (finding.details as { modificationId?: string }).modificationId === "mod_reduction",
+      );
+      expect(missing).toHaveLength(1);
+    });
+  });
+
+  // #3954 round 5 (owner decision 10 Oct 2026, "Auto credit note"): the
+  // offset a primary invoice raised after the increase had billed takes a
+  // scoped invoice-correction note the edit queued; the pass verifies or queues it.
+  const billedOffsetScoped = { reviewTaskId: "unpaid-ask-billed-offset" };
+  const billedOffsetNote = (overrides: Record<string, unknown>) =>
+    makeOperation({
+      id: "op_billed_offset",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localId: "mod_reduction",
+      queueType: "MODIFICATION_CREDIT_NOTE",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_billed_offset",
+      requestPayload: {
+        queueType: "MODIFICATION_CREDIT_NOTE",
+        bookingModificationId: "mod_reduction",
+        refundAmountCents: 2000,
+        noteWording: "invoice-correction",
+        ...billedOffsetScoped,
+      },
+      ...overrides,
+    });
+  const billedReduction = (priceDiffCents = -2000) =>
+    reducedAfterUnpaidAsk(priceDiffCents, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], unpaidAskBilledOffsetCents: 2000 });
+
+  it("MUTATION (round 6, F6): an offset whose billing the edit could not establish is reported for a person, never queued as a note", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], unpaidAskBilledOffsetUnsureCents: 2000 })],
+      operations: [makePrimaryInvoiceCreateOperation()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => (candidate.details as { billedOffsetUnsureCents?: number }).billedOffsetUnsureCents)).toMatchObject({
+      code: "MISSING_MODIFICATION_CREDIT_NOTE",
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_reduction", billedOffsetUnsureCents: 2000 },
+    });
+    expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
+  });
+
+  it("MUTATION (round 7, F3): a re-issue invoice the edit could not size is reported for a person beside it, never raised", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], reissuedAskInvoiceUnsureCents: 3000 })],
+      operations: [makePrimaryInvoiceCreateOperation()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => (candidate.details as { reissuedAskInvoiceUnsureCents?: number }).reissuedAskInvoiceUnsureCents)).toMatchObject({
+      code: "MISSING_SUPPLEMENTARY_INVOICE",
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_reduction", reissuedAskInvoiceUnsureCents: 3000 },
+    });
+  });
+
+  it("MUTATION (round 8, F2): a re-issue a later reduction retired in turn is not reported unsure twice - the later reduction carried it", async () => {
+    const booking = makeBooking({
+      modifications: [
+        ...reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], reissuedAskInvoiceUnsureCents: 3000 }).modifications,
+        {
+          id: "mod_reduction_later",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents: -1000,
+          changeFeeCents: 0,
+          newData: { unpaidAskOffsetCents: 1000, unpaidAskRetiredModificationIds: ["mod_reduction"] },
+          createdAt: new Date("2026-05-04T00:00:00Z"),
+        },
+      ],
+    });
+    const deps = createDependencies({ bookings: [booking], operations: [makePrimaryInvoiceCreateOperation()] });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(
+      bookingReport.findings.some((candidate) => (candidate.details as { reissuedAskInvoiceUnsureCents?: number }).reissuedAskInvoiceUnsureCents),
+    ).toBe(false);
+  });
+
+  it("MUTATION (round 5): queues a lost billed-offset note, scoped and worded as an invoice correction, safe to auto-apply", async () => {
+    const deps = createDependencies({ bookings: [billedReduction()], operations: [makePrimaryInvoiceCreateOperation()] });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => candidate.code === "MISSING_MODIFICATION_CREDIT_NOTE")).toMatchObject({
+      severity: "critical",
+      safeToAutoApply: true,
+      details: { modificationId: "mod_reduction", refundAmountCents: 2000, refundAmountSource: "recorded-billed-offset" },
+    });
+    expect(bookingReport.actions.find((candidate) => candidate.key === "queue:billed-offset-note:mod_reduction")).toMatchObject({
+      type: "QUEUE_MODIFICATION_CREDIT_NOTE",
+      safeToAutoApply: true,
+      payload: { bookingModificationId: "mod_reduction", refundAmountCents: 2000, noteWording: "invoice-correction", ...billedOffsetScoped },
+    });
+    expect(deps.enqueueXeroModificationCreditNoteOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingModificationId: "mod_reduction", refundAmountCents: 2000, noteWording: "invoice-correction", ...billedOffsetScoped }),
+    );
+  });
+
+  it("MUTATION (round 8, F6): a lost billed-offset note of an edit that owes its own note too is queued to wait for that note", async () => {
+    // $30 reduction, $20 of it set against the ask: $10 is the edit's own note.
+    const deps = createDependencies({ bookings: [billedReduction(-3000)], operations: [makePrimaryInvoiceCreateOperation()] });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.actions.find((candidate) => candidate.key === "queue:billed-offset-note:mod_reduction")).toMatchObject({
+      payload: { refundAmountCents: 2000, ...billedOffsetScoped, ownNoteExpected: true },
+    });
+    expect(deps.enqueueXeroModificationCreditNoteOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 2000, ...billedOffsetScoped, ownNoteExpected: true }),
+    );
+  });
+
+  it("MUTATION (round 8, F6): the edit's own answer, recorded on an earlier billed-offset operation, is carried over the repair's reading", async () => {
+    const deps = createDependencies({
+      bookings: [billedReduction(-3000)],
+      operations: [makePrimaryInvoiceCreateOperation(), billedOffsetNote({ status: "CANCELLED", xeroObjectType: null, xeroObjectId: null })],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const action = report.passes[0].bookings[0].actions.find((candidate) => candidate.key === "queue:billed-offset-note:mod_reduction");
+    expect(action?.payload).toMatchObject({ refundAmountCents: 2000, ...billedOffsetScoped });
+    expect(action?.payload).not.toHaveProperty("ownNoteExpected");
+  });
+
+  it.each([
+    { state: "queued by the edit (PENDING)", status: "PENDING" },
+    { state: "being raised (RUNNING)", status: "RUNNING" },
+    { state: "raised (SUCCEEDED) - the finding clears once it lands", status: "SUCCEEDED" },
+  ])("MUTATION (round 5): a billed-offset note $state answers for itself - nothing reported or queued", async ({ status }) => {
+    const deps = createDependencies({
+      bookings: [billedReduction()],
+      operations: [makePrimaryInvoiceCreateOperation(), billedOffsetNote({ status })],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.map((finding) => finding.code)).not.toContain("MISSING_MODIFICATION_CREDIT_NOTE");
+    expect(bookingReport.findings.map((finding) => finding.code)).not.toContain("BLOCKED_BY_XERO_OPERATION");
+    expect(deps.enqueueXeroModificationCreditNoteOperation).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION (round 5): retries a FAILED billed-offset note rather than queueing a second", async () => {
+    const deps = createDependencies({
+      bookings: [billedReduction()],
+      operations: [makePrimaryInvoiceCreateOperation(), billedOffsetNote({ status: "FAILED", xeroObjectId: null })],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => candidate.code === "BLOCKED_BY_XERO_OPERATION")).toMatchObject({
+      details: { modificationId: "mod_reduction", operationId: "op_billed_offset" },
+    });
+    expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
+  });
+
+  it("MUTATION (round 7, F6): a billed-offset note that stopped waiting for the edit's own note, which never appeared, is a person's to retry - never auto-applied", async () => {
+    const waited = billedOffsetNote({
+      status: "FAILED",
+      xeroObjectId: null,
+      requestPayload: {
+        queueType: "MODIFICATION_CREDIT_NOTE",
+        bookingModificationId: "mod_reduction",
+        refundAmountCents: 2000,
+        noteWording: "invoice-correction",
+        ...billedOffsetScoped,
+        ownNoteExpected: true,
+      },
+    });
+    const deps = createDependencies({ bookings: [billedReduction()], operations: [makePrimaryInvoiceCreateOperation(), waited] });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => candidate.code === "BLOCKED_BY_XERO_OPERATION")).toMatchObject({
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_reduction", operationId: "op_billed_offset" },
+    });
+    expect(bookingReport.actions.find((action) => action.key === "retry:op_billed_offset")).toMatchObject({ safeToAutoApply: false });
+  });
+
+  it("MUTATION (round 5): the billed-offset note never stands in for the edit's own note on what the ask left", async () => {
+    // $80 off: $20 of the ask billed by the primary invoice (its note raised),
+    // and the $60 left still owed its own note.
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-8000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], unpaidAskBilledOffsetCents: 2000 })],
+      operations: [makePrimaryInvoiceCreateOperation(), billedOffsetNote({ status: "SUCCEEDED" })],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const finding = report.passes[0].bookings[0].findings.find(
+      (candidate) => candidate.code === "MISSING_MODIFICATION_CREDIT_NOTE",
+    );
+    expect(finding?.details).toMatchObject({ modificationId: "mod_reduction", refundDueCents: 6000 });
+  });
+
+  it("expects no billed-offset note where the increase's own invoice was retired instead (none recorded)", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-5000, 5000, { unpaidAskRetiredModificationIds: ["mod_increase"] })],
+      operations: [makePrimaryInvoiceCreateOperation(), retiredSupplementary()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
+    expect(bookingReport.findings.map((finding) => finding.code)).not.toContain("MISSING_MODIFICATION_CREDIT_NOTE");
+  });
+});

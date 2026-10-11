@@ -540,6 +540,8 @@ async function applyQueuedAction(
         ...readModificationNoteWording(action.payload),
         // #3809: a give-back note beside another keeps its own scope and keys.
         ...(typeof action.payload.reviewTaskId === "string" ? { reviewTaskId: action.payload.reviewTaskId } : {}),
+        // #3954 round 8: a billed-offset note waits for the edit's own note.
+        ...(action.payload.ownNoteExpected === true ? { ownNoteExpected: true } : {}),
       });
       action.status = result.queueOperationId ? "queued" : "skipped";
       action.resultMessage = result.message;
