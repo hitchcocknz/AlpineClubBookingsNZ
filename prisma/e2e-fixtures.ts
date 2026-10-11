@@ -362,6 +362,20 @@ export const UNRECONCILED_BOOKING_ID = "e2e-unreconciled-booking";
 export const UNRECONCILED_BOOKING_WINDOW = relWindow(340, 1);
 export const ADDITIONAL_OWED_AMOUNT_CENTS = 21_000;
 
+// --- Finished-stay free-text change request (#4030) -----------------------
+// A COMPLETED two-night stay of Heidi's, paid in full by internet banking
+// against an issued invoice, carrying one REQUESTED locked-period change
+// request in the old FREE-TEXT shape: a note and an effective date, no guests.
+// e2e/change-request-officer-entry.spec.ts enters the guests the note describes
+// and approves it, which applies them to the finished stay.
+//
+// Sixty days back: below every other past fixture (heidiCompleted, the deepest,
+// starts at -45) and far below the -7..-15 band the retroactive spec sweeps,
+// and inside the winter season band (-90 onward) so the added guests price.
+export const CHANGE_REQUEST_FINISHED_BOOKING_ID = "e2e-change-request-finished";
+export const CHANGE_REQUEST_FREE_TEXT_ID = "e2e-change-request-free-text";
+export const CHANGE_REQUEST_FINISHED_WINDOW = relWindow(-60, 2);
+
 // --- Membership application fixture (e2e/membership-application.spec.ts) --
 // A PENDING_NOMINATORS application whose two nomination tokens have KNOWN raw
 // values (their SHA-256 is stored, matching src/lib/action-tokens.ts), so the
@@ -487,6 +501,7 @@ export const SEEDED_BOOKING_WINDOWS: ReadonlyArray<{
   PAID_CANCEL_WINDOW,
   ADDITIONAL_OWED_WINDOW,
   UNRECONCILED_BOOKING_WINDOW,
+  CHANGE_REQUEST_FINISHED_WINDOW,
   ROSTER_ISOLATION_WINDOW,
   CAPACITY_ISOLATION_WINDOW,
   CROSS_LODGE_OFFER_WINDOW,

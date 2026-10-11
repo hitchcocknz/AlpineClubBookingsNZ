@@ -56,6 +56,9 @@ import {
   ADDITIONAL_OWED_AMOUNT_CENTS,
   ADDITIONAL_OWED_BOOKING_ID,
   ADDITIONAL_OWED_WINDOW,
+  CHANGE_REQUEST_FINISHED_BOOKING_ID,
+  CHANGE_REQUEST_FINISHED_WINDOW,
+  CHANGE_REQUEST_FREE_TEXT_ID,
   PAID_PROMO_BOOKING_ID,
   UNRECONCILED_BOOKING_ID,
   UNRECONCILED_BOOKING_WINDOW,
@@ -188,6 +191,31 @@ async function cleanup() {
 }
 
 type MemberRec = Awaited<ReturnType<typeof prisma.member.create>>;
+
+/**
+ * A LOCKED_PERIOD request's `requestedChanges` in the shape
+ * `POST /api/bookings/[id]/change-requests` writes (#4030): the booking as it
+ * was, then what is asked of it. `original.guests` must be the booking's real
+ * guest ids, or the finished-stay executor reads the booking as changed since.
+ */
+function lockedPeriodRequestedChanges(
+  window: { checkIn: string; checkOut: string },
+  guestIds: string[],
+  requested: Record<string, unknown> & { summary: string },
+) {
+  return {
+    original: { checkIn: window.checkIn, checkOut: window.checkOut, guests: guestIds.map((id) => ({ id })) },
+    requested: {
+      checkIn: null,
+      checkOut: null,
+      addGuests: [],
+      removeGuests: [],
+      guestStayRanges: [],
+      requestedEffectiveDate: null,
+      ...requested,
+    },
+  };
+}
 
 async function makeMember(
   local: string,
@@ -766,9 +794,22 @@ async function main() {
   // -------------------------------------------------------------------------
   // Change requests + refund requests (every status).
   // -------------------------------------------------------------------------
-  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "REQUESTED", requestedChanges: { addGuest: { firstName: "Extra", lastName: "Guest", ageTier: "ADULT" } }, reason: "Friend wants to join" } });
-  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "APPROVED", requestedChanges: { checkOut: relDateOnly(-36) }, reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-38)), linkedModificationId: daveMod.id } });
-  await prisma.bookingChangeRequest.create({ data: { bookingId: bCompleted.id, requestedByMemberId: heidi.id, status: "REJECTED", requestedChanges: { checkIn: relDateOnly(-46) }, adminNotes: "Past booking; cannot change.", reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-44)) } });
+  // #4030: every LOCKED_PERIOD request in the shape the request route writes and
+  // the finished-stay executor reads (`booking-change-request-stored.ts`). The
+  // first used to be `{ addGuest: {...} }`, which the executor could only report
+  // as unreadable.
+  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "REQUESTED", requestedChanges: lockedPeriodRequestedChanges(W.daveConfirmed, [daveGuest.id], { addGuests: [{ firstName: "Extra", lastName: "Guest", ageTier: "ADULT", isMember: false }], summary: "add Extra Guest" }), reason: "Friend wants to join" } });
+  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "APPROVED", requestedChanges: lockedPeriodRequestedChanges(W.daveConfirmed, [daveGuest.id], { checkOut: relDateOnly(-36), summary: `check-out to ${relDateOnly(-36)}` }), reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-38)), linkedModificationId: daveMod.id } });
+  await prisma.bookingChangeRequest.create({ data: { bookingId: bCompleted.id, requestedByMemberId: heidi.id, status: "REJECTED", requestedChanges: lockedPeriodRequestedChanges(W.heidiCompleted, [heidiGuest.id], { checkIn: relDateOnly(-46), summary: `check-in to ${relDateOnly(-46)}` }), adminNotes: "Past booking; cannot change.", reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-44)) } });
+
+  // #4030 (e2e/change-request-officer-entry.spec.ts): a finished, internet-
+  // banking-paid stay with one REQUESTED free-text request — a note and an
+  // effective date, no guests — which the officer enters the guests for.
+  const crBooking = await makeBooking(heidi, "COMPLETED", CHANGE_REQUEST_FINISHED_WINDOW.checkIn, CHANGE_REQUEST_FINISHED_WINDOW.checkOut, { id: CHANGE_REQUEST_FINISHED_BOOKING_ID });
+  const crGuest = await addGuest(crBooking.id, { firstName: "Heidi", lastName: "Hill", ageTier: "ADULT", isMember: true, memberId: heidi.id }, CHANGE_REQUEST_FINISHED_WINDOW.checkIn, CHANGE_REQUEST_FINISHED_WINDOW.checkOut, NIGHTLY);
+  const crPayment = await prisma.payment.create({ data: { bookingId: crBooking.id, amountCents: crBooking.finalPriceCents, source: "INTERNET_BANKING", reference: "BANK-REF-4030", status: "SUCCEEDED", xeroInvoiceId: "e2e-change-request-invoice", xeroInvoiceNumber: "INV-4030" } });
+  await prisma.paymentTransaction.create({ data: { paymentId: crPayment.id, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: crBooking.finalPriceCents, status: "SUCCEEDED", reference: "BANK-REF-4030" } });
+  await prisma.bookingChangeRequest.create({ data: { id: CHANGE_REQUEST_FREE_TEXT_ID, bookingId: crBooking.id, requestedByMemberId: heidi.id, status: "REQUESTED", requestedChanges: lockedPeriodRequestedChanges(CHANGE_REQUEST_FINISHED_WINDOW, [crGuest.id], { requestedEffectiveDate: CHANGE_REQUEST_FINISHED_WINDOW.checkIn, summary: `effective ${CHANGE_REQUEST_FINISHED_WINDOW.checkIn}` }), reason: "Can we add our two grandchildren to the booking? They came up with us." } });
 
   await prisma.refundRequest.create({ data: { bookingId: bCancelled.id, memberId: grace.id, reason: "Hospitalised — requesting full refund", requestedAmountCents: bCancelled.finalPriceCents, status: "PENDING" } });
   await prisma.refundRequest.create({ data: { bookingId: bBumped.id, memberId: frank.id, reason: "Bumped, want cash not credit", requestedAmountCents: bBumped.finalPriceCents, status: "APPROVED", approvedAmountCents: bBumped.finalPriceCents, reviewedBy: admin.id, reviewedAt: d("2026-07-01") } });

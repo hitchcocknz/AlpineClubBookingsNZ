@@ -388,6 +388,7 @@ export function BookingChangeRequestsPanel({
             return (
               <Card
                 key={request.id}
+                data-testid={`change-request-${request.id}`}
                 className={request.id === requestId ? "border-warning-6" : undefined}
               >
                 <CardHeader>
