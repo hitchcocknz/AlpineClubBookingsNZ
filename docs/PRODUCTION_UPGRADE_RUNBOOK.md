@@ -556,9 +556,10 @@ lists every one; these are in that class:
   drop is a breaking statement, so the window also needs
   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and an override reason naming it.
   `OtherLodge` is a small admin registry, so its `ACCESS EXCLUSIVE` lock is
-  brief. **Rollback:** its `rollback.sql` restores `bookingPath` as an empty
-  `VARCHAR(300)` on every row (the old text cannot come back; a 2.0 central
-  server refills it on the next download) and removes the six new columns and
+  brief. **Rollback:** its `rollback.sql` restores `bookingPath` as a nullable
+  `VARCHAR(300)` with no default, `NULL` on every row (PostgreSQL cannot
+  un-drop a column, so the old text cannot come back; a 2.0 central server
+  refills it on the next download) and removes the six new columns and
   the `OtherLodgeRoomType` type, losing what a 2.1 server sent. It is not
   idempotent, and rolling forward afterwards means re-applying `migration.sql`
   by hand, because `_prisma_migrations` still records it as applied.
@@ -575,10 +576,22 @@ pending, and name every pending windowed migration in the override reason.
 colours cannot count its reservation rows. Keep `PENDING_SCHOOL_ADULTS_ENABLED`
 absent or any value other than exactly `1` until the window has stopped admission,
 stopped every old web and worker, and proved no old database connection remains.
-Only then set `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` for the migration
-validator, deploy the new runtime, check canonical capacity readers, and set
-`PENDING_SCHOOL_ADULTS_ENABLED=1`. The application requires both values exactly;
-the migration override is not a write permission.
+Then, in order:
+
+1. Export `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` in the shell that runs the
+   deploy, for the migration validator, and deploy the new runtime as the
+   window describes. That shell value tells the validator, for this deploy
+   only, that the old app is stopped. It never reaches the application (#4027),
+   so it does not open the gate.
+2. Check the canonical capacity readers on the new runtime.
+3. Switch the gate on: add **both** `PENDING_SCHOOL_ADULTS_ENABLED=1` and
+   `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` to the source repository's `.env`,
+   then re-run `scripts/run-production-blue-green-deploy.sh` for the commit
+   already deployed. Both lines are needed. The application reads them only
+   from `.env`, and requires both to be exactly `1`.
+
+The migration override is not a write permission, and neither is the shell value
+from step 1.
 
 The application reads both from its container environment. `docker-compose.yml`
 passes both through its `x-app-environment` block, empty by default (#3964). To
@@ -615,12 +628,23 @@ SELECT count(*) FROM "BookingRequestPendingAdultReservationNight";
 Do not restart old code before that proof. It would accept new capacity using an
 occupancy calculation that cannot see held unnamed adults.
 
-**Reverse every pending windowed migration in application order.** Stop all new
-app/worker processes first. If `20261112010000` (other lodges, API 2.1) is
-present, its `rollback.sql` runs first: it is the newest, and it touches only
-`OtherLodge`. If #3271 is present, run its `rollback.sql` before any
+**Reverse every pending windowed migration in application order, newest
+first.** Stop all new app/worker processes first. The full order is:
+
+1. `20261112010000_other_lodge_beds_and_facilities` (other lodges, API 2.1),
+   when present. It is the newest, and it touches only `OtherLodge`.
+2. `20261101020000_add_pending_school_adult_capacity` (#3413), when present,
+   and only after its two zero-count queries above both return zero.
+3. `20260929010000_add_member_parent_partner_exclusion` (#3271), when present.
+4. #3369's pair, then #2739, #2596, `20260803030000` and `20260803010000`, as
+   below.
+
+If #3271 is present, run its `rollback.sql` before any
 older reverse and verify the pair table, functions, and triggers are gone while
-both source relationship tables are unchanged. A window containing #2739 next
+both source relationship tables are unchanged. A window containing #3369 next
+reverses its two migrations in the opposite order, as
+[§2.4.2](#242-3369-a-school-booking-has-an-organisation-not-an-invented-person)
+says. A window containing #2739 next
 uses `20260810010000`'s `rollback.sql`, which changes no data: keep its night
 rows, and once a release with #3214 is back, repair the nights its query lists
 and only then refresh those invoices, as the #2739 entry above says. A window

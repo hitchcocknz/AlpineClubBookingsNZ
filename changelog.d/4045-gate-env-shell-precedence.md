@@ -10,7 +10,7 @@
 
   The production deploy now keeps the shell's
   `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED` for its migration check only and
-  never passes it to the app. It also refuses, at step 3, a
+  never passes it to the app. It also refuses, at step 3 of 20, a
   `PENDING_SCHOOL_ADULTS_ENABLED` set in the shell that differs from `.env`,
   and names both values. Editing `.env` and re-running the deploy is now truly
   the only way to change either setting for the app. If you relied on a shell
