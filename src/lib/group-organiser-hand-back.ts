@@ -1,4 +1,4 @@
-import { BookingStatus, ManualRefundTaskKind, ManualRefundTaskStatus, type Prisma } from "@prisma/client";
+import { BookingStatus, ManualRefundTaskKind, ManualRefundTaskStatus, Prisma } from "@prisma/client";
 
 import { groupSettlementRefundKey } from "@/lib/booking-ledger-posting-keys";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -86,10 +86,10 @@ export function readGroupHandBackReasonShares(reason: string): { shares: string[
   return { shares: list ? list.split(", ") : [], more: more ? Number(more[1]) : 0 };
 }
 
-const OWNER_NAME_SELECT = {
+const OWNER_NAME_SELECT = Prisma.validator<Prisma.BookingSelect>()({
   member: { select: { firstName: true, lastName: true } },
   organisation: { select: { name: true, email: true } },
-} as const;
+});
 
 function shareLabel(
   child: { member: { firstName: string; lastName: string } | null; organisation: { name: string; email: string | null } | null },
