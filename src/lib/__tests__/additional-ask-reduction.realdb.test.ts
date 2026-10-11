@@ -74,7 +74,7 @@ const INCREASE_MOD_ID = "race-3954-increase";
 const WAITING_OP_ID = "race-3954-waiting-supplementary";
 const RECOVERY_ID = "race-3954-ask-recovery";
 const PRIMARY_INVOICE_ID = "inv_race_3954_primary";
-/** When the increase's ask row was written (round 6 dates the primary invoice's link against it). */
+/** When the increase's ask row was written. */
 const ASK_WRITTEN_AT = new Date("2026-06-20T00:00:00.000Z");
 
 const TODAY = new Date("2026-07-01T00:00:00.000Z");
@@ -136,12 +136,25 @@ let webhookClient: PrismaClient;
       refundPercentage = 100,
       ask: "minted" | "awaiting-retry" = "minted",
       /**
-       * Round 6: `primary-after-increase` links the primary invoice after the
-       * ask was written (it billed the ask); `primary-before-increase` links it
-       * before, the increase's own supplementary invoice not queued yet;
-       * `primary-unlinked` records the invoice with no link to date it.
+       * Round 7: which invoice billed the ask is the asking edit's own answer,
+       * stamped on its row (or its recovery's, for a row a recovery minted).
+       * `primary-after-increase`: the edit saw no primary invoice, so the one
+       * raised afterwards billed the ask; `primary-before-increase`: it saw one,
+       * so the increase's own supplementary invoice (not queued yet) bills it;
+       * `primary-unrecorded`: a row minted before the answer was stamped.
+       * `late-link` (over-credit shape): as `primary-before-increase`, with the
+       * primary invoice's link backfilled AFTER the row was written.
+       * `recovery-minted` (under-credit shape): the edit saw no invoice, its
+       * mint failed, the primary invoice was linked, and only then did its
+       * recovery mint the row - the recovery's frozen answer decides.
        */
-      invoice: "parked" | "primary-after-increase" | "primary-before-increase" | "primary-unlinked" = "parked",
+      invoice:
+        | "parked"
+        | "primary-after-increase"
+        | "primary-before-increase"
+        | "primary-unrecorded"
+        | "late-link"
+        | "recovery-minted" = "parked",
     ) {
       const stayingNightCents = 7_500 - leavingNightCents;
       await deleteFixtures();
@@ -221,18 +234,40 @@ let webhookClient: PrismaClient;
         expect(await residual()).toBe(5_000);
         return;
       }
+      const stampedAnswer =
+        invoice === "primary-before-increase" || invoice === "late-link"
+          ? true
+          : invoice === "primary-after-increase"
+            ? false
+            : null;
       await prisma.paymentTransaction.create({
         data: {
           id: ASK_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", status: "PENDING",
-          amountCents: 5_000, stripePaymentIntentId: ASK_INTENT, reason: "guest_add_price_increase",
+          amountCents: 5_000, stripePaymentIntentId: ASK_INTENT,
+          reason: invoice === "recovery-minted" ? "modification_additional_recovery" : "guest_add_price_increase",
           createdAt: ASK_WRITTEN_AT,
+          ...(invoice === "parked" ? {} : { hadIssuedXeroInvoice: stampedAnswer }),
         },
       });
-      if (invoice === "primary-after-increase" || invoice === "primary-before-increase") {
+      if (invoice === "late-link" || invoice === "recovery-minted") {
+        // Round 6 dated the row against this link: a backfilled link after the
+        // row read "billed by the primary" (over-credit); a link before a
+        // recovery's late mint read "supplementary" (under-credit).
         await prisma.xeroObjectLink.create({
           data: {
             localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "INVOICE", xeroObjectId: PRIMARY_INVOICE_ID, role: "PRIMARY_INVOICE",
-            createdAt: invoice === "primary-after-increase" ? new Date("2026-06-25T00:00:00.000Z") : new Date("2026-06-10T00:00:00.000Z"),
+            createdAt: invoice === "late-link" ? new Date("2026-06-25T00:00:00.000Z") : new Date("2026-06-10T00:00:00.000Z"),
+          },
+        });
+      }
+      if (invoice === "recovery-minted") {
+        const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+        await prisma.paymentRecoveryOperation.create({
+          data: {
+            id: RECOVERY_ID, type: "CREATE_ADDITIONAL_PAYMENT_INTENT", status: "SUCCEEDED", bookingId: BOOKING_ID, paymentId: PAYMENT_ID,
+            paymentIntentId: ASK_INTENT, amountCents: 5_000, hadIssuedXeroInvoice: false,
+            idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(INCREASE_MOD_ID), attempts: 2, nextRetryAt: null,
+            createdAt: new Date("2026-06-05T00:00:00.000Z"), succeededAt: ASK_WRITTEN_AT,
           },
         });
       }
@@ -1144,11 +1179,14 @@ let webhookClient: PrismaClient;
     });
 
     it.each([
-      { invoice: "primary-before-increase" as const, billed: 0, unsure: 0, reissueInvoice: 3_000 },
-      { invoice: "primary-unlinked" as const, billed: 0, unsure: 2_000, reissueInvoice: 0 },
+      { invoice: "primary-before-increase" as const, billed: 0, unsure: 0, reissueInvoice: 3_000, reissueUnsure: 0 },
+      { invoice: "primary-unrecorded" as const, billed: 0, unsure: 2_000, reissueInvoice: 0, reissueUnsure: 3_000 },
+      // ROUND 7 (F1), over-credit: the door stamped "invoice issued"; a link
+      // backfilled after the row no longer reads as "the primary billed it".
+      { invoice: "late-link" as const, billed: 0, unsure: 0, reissueInvoice: 3_000, reissueUnsure: 0 },
     ])(
-      "ROUND 6 (F6): $invoice, the increase's invoice not parked - nothing is credit-noted on a guess",
-      async ({ invoice, billed, unsure, reissueInvoice }) => {
+      "ROUND 6 (F6) / ROUND 7 (F1, F3): $invoice, the increase's invoice not parked - nothing is credit-noted on a guess",
+      async ({ invoice, billed, unsure, reissueInvoice, reissueUnsure }) => {
         await grownBooking("card", 1_000, 100, "minted", invoice);
         const result = await removeLeavingGuest();
         const reductionId = result.bookingModificationId!;
@@ -1157,8 +1195,21 @@ let webhookClient: PrismaClient;
         expect(history.unpaidAskBilledOffsetCents ?? 0).toBe(billed);
         expect(history.unpaidAskBilledOffsetUnsureCents ?? 0).toBe(unsure);
         expect(history.reissuedAskInvoiceCents ?? 0).toBe(reissueInvoice);
+        expect(history.reissuedAskInvoiceUnsureCents ?? 0).toBe(reissueUnsure);
         expect(await billedOffsetNotes(reductionId)).toEqual([]);
       },
     );
+
+    it("ROUND 7 (F1), under-credit: a row a recovery minted after the primary invoice was linked reads the recovery's 'no invoice yet' - the primary billed the 5000, and the note is queued for it", async () => {
+      await grownBooking("card", 2_500, 100, "minted", "recovery-minted");
+      const result = await removeLeavingGuest();
+      const reductionId = result.bookingModificationId!;
+      const history = (await prisma.bookingModification.findUniqueOrThrow({ where: { id: reductionId }, select: { newData: true } }))
+        .newData as Record<string, unknown>;
+      expect(history).toMatchObject({ unpaidAskOffsetCents: 5_000, unpaidAskBilledOffsetCents: 5_000 });
+      expect(history).not.toHaveProperty("unpaidAskBilledOffsetUnsureCents");
+      expect((await billedOffsetNotes(reductionId)).map((note) => (note.requestPayload as { refundAmountCents: number }).refundAmountCents))
+        .toEqual([5_000]);
+    });
   },
 );

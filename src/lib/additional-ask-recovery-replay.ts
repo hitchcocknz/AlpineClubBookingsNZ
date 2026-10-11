@@ -151,13 +151,19 @@ export function isRecoveryOvertakenByLaterAsk(
  * (`foldWaitingReissuedAsks`) asked only for its own money, so treating it as
  * an overtake would drop the re-issue's whole figure; the replay instead
  * carries that later ask and supersedes it (`sizeRecoveryReplayAsk`).
+ *
+ * So is an INCREASE THAT FOLDED RE-ISSUES IN (review round 7): the fold closed
+ * their recoveries, and a later ask is sized off the `Payment`, which shows
+ * neither the increase nor what it folded - so nothing else will ever ask for
+ * that money. Its replay is settled only by its own row, and carries the later
+ * ask's unpaid balance as any increase's does (`sizeAdditionalAsk`).
  */
 export function isRecoveryReplaySettled(
   replay: RecoveryReplayAsk,
   operation: { createdAt: Date; paymentIntentId: string },
   transactions: readonly { kind: string; createdAt: Date; stripePaymentIntentId: string | null }[],
 ): boolean {
-  if (replay.kind === "reissue") {
+  if (replay.kind === "reissue" || (replay.kind === "increase" && replay.foldedCents > 0)) {
     return transactions.some(
       (transaction) =>
         transaction.kind === "ADDITIONAL" &&

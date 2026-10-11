@@ -55,7 +55,14 @@ vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("@/lib/prisma", () => ({
-  prisma: { paymentTransaction: { findMany: mocks.supersedeRead } },
+  prisma: {
+    paymentTransaction: {
+      findMany: mocks.supersedeRead,
+      // #3954 round 7: the door re-reads its new intent's row before queueing
+      // on it (`isMintedAskStillLive`); here it is still the live ask.
+      findUnique: async () => ({ status: "PENDING", withdrawnAt: null }),
+    },
+  },
 }));
 vi.mock("@/lib/payment-recovery", () => ({
   enqueuePaymentIntentCancellationRecovery: mocks.enqueueCancel,
@@ -164,6 +171,8 @@ describe("createModificationAdditionalPaymentIntent ordering (#3340)", () => {
       status: PaymentStatus.PENDING,
       reason: "guest_add_price_increase",
       stripeCustomerId: "cus_1",
+      // #3954 round 7: the edit's own invoice answer, stamped on its row.
+      hadIssuedXeroInvoice: false,
     });
     // …and the supersede excludes the NEW intent, so the row written a moment
     // earlier cannot select itself, then retires the old ask it carried.

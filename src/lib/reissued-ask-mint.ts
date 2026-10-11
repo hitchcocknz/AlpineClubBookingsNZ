@@ -22,9 +22,14 @@
  *   amount is a different request and never an `idempotency_error`;
  * - the METADATA and the row's REASON - fixed, never the door's own wording.
  *
- * And a refusal that still comes back (a customer resolved differently, say)
- * is answered by fetching the intent the key already minted
- * (`mintReissuedAskIntent`), found by the key it carries in its metadata.
+ * - the CUSTOMER - resolved one way for both (`resolveAskCustomerId`, round 7):
+ *   the `Payment`'s stored customer, else the booking owner's, organisation
+ *   included, exactly as the recovery runner always resolved it.
+ *
+ * And a refusal that still comes back is answered by fetching the intent the
+ * key already minted (`mintReissuedAskIntent`), found by the key it carries in
+ * its metadata, among that customer's intents; the row records the customer
+ * that intent was actually minted for (`mintedIntentCustomerId`).
  *
  * The rule is `INV-PAY-120`.
  */
@@ -34,8 +39,9 @@ import { sizeReissuedAskReplay } from "@/lib/additional-ask-recovery-replay";
 import type { AdditionalAsk, AdditionalAskPayment } from "@/lib/additional-payment-ask";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
+import { bookingOwner } from "@/lib/booking-owner";
 import { REISSUED_ASK_REASON, stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
-import { createPaymentIntent, findRecentPaymentIntentByMetadata } from "@/lib/stripe";
+import { createPaymentIntent, findOrCreateCustomer, findRecentPaymentIntentByMetadata } from "@/lib/stripe";
 import { stripeErrorApiType } from "@/lib/stripe-errors";
 
 /** The metadata key a re-issued ask's intent carries its Stripe key under. */
@@ -113,6 +119,7 @@ export async function mintReissuedAskIntent({
       metadataKey: REISSUED_ASK_KEY_METADATA,
       metadataValue: plan.idempotencyKey,
       createdSince: new Date(recoveryCreatedAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
+      customerId,
     });
     if (!minted || minted.amount !== plan.ask.amountCents) throw err;
     logger.warn(
@@ -121,4 +128,46 @@ export async function mintReissuedAskIntent({
     );
     return minted;
   }
+}
+
+/**
+ * Round 7: the customer an intent was minted for - its own, which an intent
+ * the metadata lookup recovered may not share with the caller - else the
+ * caller's. What the ask's row records as the payment's customer.
+ */
+export function mintedIntentCustomerId(
+  intent: Pick<Stripe.PaymentIntent, "customer">,
+  fallback: string | undefined,
+): string | undefined {
+  const customer = intent.customer;
+  return (typeof customer === "string" ? customer : customer?.id) ?? fallback;
+}
+
+/** The loaded payment `resolveAskCustomerId` reads: its customer and its booking's owner. */
+export type AskCustomerPayment = {
+  stripeCustomerId: string | null;
+  booking: {
+    organisationId: string | null;
+    member: { id: string; email: string; firstName: string; lastName: string } | null;
+    organisation: { name: string; email: string | null } | null;
+  };
+};
+
+/**
+ * Round 7: THE ONE WAY an additional ask's mint names its Stripe customer,
+ * for the recovery runner and the door's re-issue mint alike, so the two send
+ * one request under their shared key: the `Payment`'s stored customer, else
+ * the booking owner's (`findOrCreateCustomer`), an organisation by its own id.
+ */
+export async function resolveAskCustomerId(payment: AskCustomerPayment): Promise<string> {
+  if (payment.stripeCustomerId) return payment.stripeCustomerId;
+  const member = bookingOwner(payment.booking).member as { id?: string; email: string; firstName: string; lastName: string };
+  const customer = await findOrCreateCustomer({
+    email: member.email,
+    name: `${member.firstName} ${member.lastName}`,
+    // #3369: the OWNER - a member id, or the organisation beside it.
+    memberId: member.id ?? null,
+    organisationId: payment.booking.organisationId,
+  });
+  return customer.id;
 }

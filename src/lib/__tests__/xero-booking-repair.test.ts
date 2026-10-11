@@ -7484,6 +7484,23 @@ describe("#3954: a reduction set against an unpaid ask", () => {
     expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
   });
 
+  it("MUTATION (round 7, F3): a re-issue invoice the edit could not size is reported for a person beside it, never raised", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], reissuedAskInvoiceUnsureCents: 3000 })],
+      operations: [makePrimaryInvoiceCreateOperation()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => (candidate.details as { reissuedAskInvoiceUnsureCents?: number }).reissuedAskInvoiceUnsureCents)).toMatchObject({
+      code: "MISSING_SUPPLEMENTARY_INVOICE",
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_reduction", reissuedAskInvoiceUnsureCents: 3000 },
+    });
+  });
+
   it("MUTATION (round 5): queues a lost billed-offset note, scoped and worded as an invoice correction, safe to auto-apply", async () => {
     const deps = createDependencies({ bookings: [billedReduction()], operations: [makePrimaryInvoiceCreateOperation()] });
 

@@ -15,9 +15,14 @@
  * Now each row of the ask says how its money was billed:
  *
  * - a row's OWN money (its amount less what it carried) was asked by an
- *   increase. Its parked invoice covers it; without one, it was billed by a
- *   supplementary invoice if the primary invoice was linked before the row was
- *   written (that invoice is still to be queued), else by the primary invoice;
+ *   increase. Its parked invoice covers it; without one, the asking edit's own
+ *   answer to whether the primary invoice existed says which invoice bills it
+ *   (round 7) - true, its supplementary invoice (still to be queued); false, the
+ *   primary invoice raised afterwards. A row a failed mint's recovery minted
+ *   reads that recovery's frozen answer (`hadIssuedXeroInvoice`, #3181); a row
+ *   the edit's door minted reads the answer the door stamped on it. (Round 6
+ *   dated the row's write against the primary invoice's link instead, which a
+ *   recovery minting hours later, or a link backfilled later, gets wrong.)
  * - money a row carried from outside the chain is a re-issue's, or the
  *   re-issues an increase folded in: billed by their recorded invoices
  *   (`recordedReissuedAskInvoiceCents`), the rest by the primary invoice. The
@@ -26,10 +31,13 @@
  * - a waiting recovery's figures were recorded at its edit's save
  *   (`hadIssuedXeroInvoice`), and `retireUnpaidAskChain` has counted them.
  *
- * Where any of that cannot be established - no primary invoice link to date,
- * a row whose carried figure does not add up, a carried part nothing names - the
- * evidence is `established: false`, and the edit records the offset for a
- * person (`unpaidAskBilledOffsetUnsureCents`) rather than credit-note a guess.
+ * Where any of that cannot be established - an answer nobody recorded (a row
+ * minted before round 7, or by the draining colour of that deploy), a row whose
+ * carried figure does not add up, a carried part nothing names - the evidence
+ * is `established: false`, and the edit records the offset, and what the
+ * re-issue's invoice may still owe, for a person
+ * (`unpaidAskBilledOffsetUnsureCents`, `reissuedAskInvoiceUnsureCents`) rather
+ * than act on a guess.
  */
 import type { Prisma } from "@prisma/client";
 import { PaymentRecoveryOperationType } from "@prisma/client";
@@ -53,6 +61,9 @@ export type UnpaidAskBillingEvidence = {
   established: boolean;
 };
 
+/** The recovery that minted an intent: its edit, and that edit's frozen invoice answer. */
+export type IntentMinter = { modificationId: string; hadIssuedXeroInvoice: boolean | null };
+
 type EvidenceModification = {
   id: string;
   priceDiffCents: number;
@@ -65,17 +76,14 @@ type EvidenceModification = {
 export function classifyUnpaidAskBilling({
   rows,
   retired,
-  primaryInvoiceLinkedAt,
   modifications,
-  intentModificationIds,
+  intentMinters,
 }: {
   rows: readonly UnpaidPriceAskRow[];
   retired: Pick<RetiredUnpaidAsk, "invoicedCents" | "parkedOps" | "invoiceEvidenceUnknown">;
-  /** When the booking's primary invoice was linked, or null where no link records it. */
-  primaryInvoiceLinkedAt: Date | null;
   modifications: readonly EvidenceModification[];
-  /** The edit whose recovery minted each intent, by intent id. */
-  intentModificationIds: ReadonlyMap<string, string>;
+  /** The recovery that minted each intent, by intent id; a door-minted row has none. */
+  intentMinters: ReadonlyMap<string, IntentMinter>;
 }): UnpaidAskBillingEvidence {
   let supplementaryInvoicedCents = retired.invoicedCents;
   let established = !retired.invoiceEvidenceUnknown;
@@ -97,8 +105,12 @@ export function classifyUnpaidAskBilling({
       op.intentId !== null && op.intentId === row.stripePaymentIntentId && op.anchorId ? [op.anchorId] : [],
     );
     if (ownCents > 0 && !parkedAnchors.some((anchorId) => !isReduction(anchorId))) {
-      if (!primaryInvoiceLinkedAt) established = false;
-      else if (row.createdAt > primaryInvoiceLinkedAt) supplementaryInvoicedCents += ownCents;
+      // Round 7: the asking edit's own answer - its recovery's, for a row a
+      // recovery minted, else the one its door stamped on the row.
+      const minter = row.stripePaymentIntentId ? intentMinters.get(row.stripePaymentIntentId) : undefined;
+      const hadIssuedXeroInvoice = minter ? minter.hadIssuedXeroInvoice : row.hadIssuedXeroInvoice;
+      if (hadIssuedXeroInvoice === null) established = false;
+      else if (hadIssuedXeroInvoice) supplementaryInvoicedCents += ownCents;
     }
     if (carriedInCents > 0) {
       const reductions = carriedReissues(row, previous, carriedInCents);
@@ -120,7 +132,7 @@ export function classifyUnpaidAskBilling({
     previous: UnpaidPriceAskRow | null,
     carriedInCents: number,
   ): string[] | null {
-    const minter = row.stripePaymentIntentId ? intentModificationIds.get(row.stripePaymentIntentId) : undefined;
+    const minter = row.stripePaymentIntentId ? intentMinters.get(row.stripePaymentIntentId)?.modificationId : undefined;
     if (row.reason === REISSUED_ASK_REASON) {
       return minter && isReduction(minter) ? [minter] : null;
     }
@@ -142,11 +154,11 @@ export function classifyUnpaidAskBilling({
 
 /**
  * Read the evidence inside the reduction's transaction, after
- * `retireUnpaidAskChain`: the primary invoice's link, the booking's edits and
- * the recoveries that minted the ask's rows.
+ * `retireUnpaidAskChain`: the booking's edits and the recoveries that minted
+ * the ask's rows, with their frozen invoice answers.
  */
 export async function unpaidAskBillingEvidence(
-  db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "bookingModification" | "paymentRecoveryOperation">,
+  db: Pick<Prisma.TransactionClient, "bookingModification" | "paymentRecoveryOperation">,
   {
     bookingId,
     paymentId,
@@ -163,11 +175,6 @@ export async function unpaidAskBillingEvidence(
     return { supplementaryInvoicedCents: retired.invoicedCents, established: !retired.invoiceEvidenceUnknown };
   }
   const intentIds = rows.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : []));
-  const link = await db.xeroObjectLink.findFirst({
-    where: { localModel: "Payment", localId: paymentId, xeroObjectType: "INVOICE", role: "PRIMARY_INVOICE", active: true },
-    orderBy: { createdAt: "asc" },
-    select: { createdAt: true },
-  });
   const modifications = await db.bookingModification.findMany({
     where: { bookingId },
     select: { id: true, priceDiffCents: true, changeFeeCents: true, newData: true, createdAt: true },
@@ -180,20 +187,19 @@ export async function unpaidAskBillingEvidence(
             type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
             paymentIntentId: { in: intentIds },
           },
-          select: { paymentIntentId: true, idempotencyKey: true },
+          select: { paymentIntentId: true, idempotencyKey: true, hadIssuedXeroInvoice: true },
         })
       : [];
-  const intentModificationIds = new Map<string, string>();
+  const intentMinters = new Map<string, IntentMinter>();
   for (const recovery of recoveries) {
     if (isEditFinancialReviewAdditionalIntentRecoveryKey(recovery.idempotencyKey)) continue;
     const modificationId = bookingModificationIdForAdditionalIntentRecoveryKey(recovery.idempotencyKey);
-    if (modificationId) intentModificationIds.set(recovery.paymentIntentId, modificationId);
+    if (modificationId) {
+      intentMinters.set(recovery.paymentIntentId, {
+        modificationId,
+        hadIssuedXeroInvoice: recovery.hadIssuedXeroInvoice,
+      });
+    }
   }
-  return classifyUnpaidAskBilling({
-    rows,
-    retired,
-    primaryInvoiceLinkedAt: link?.createdAt ?? null,
-    modifications,
-    intentModificationIds,
-  });
+  return classifyUnpaidAskBilling({ rows, retired, modifications, intentMinters });
 }

@@ -235,8 +235,9 @@ export function sizeAdditionalAsk({
    * #3954 review round 4: a reduction's smaller re-issued ask still waiting on
    * its mint, which this increase folds in and closes
    * (`foldWaitingReissuedAsks`) - carried like the `Payment`'s live ask, since
-   * this mint is what asks for it now. Only the edit doors pass it; the
-   * replay's own sizing never does.
+   * this mint is what asks for it now. The edit doors pass what they folded;
+   * an increase's recovery replay passes what its edit's history recorded it
+   * folded (`sizeRecoveryReplayAsk`, round 6), since its fold closed them.
    */
   waitingReissuedAskCents?: number;
 }): AdditionalAsk {
@@ -369,8 +370,8 @@ export function setReductionAgainstUnpaidAsk({
 /**
  * #3954: WHAT XERO IS OWED FOR A REDUCTION'S OFFSET - the one home for that
  * arithmetic (`INV-PAY-120`; round 6, `INV-SSOT-001`), for the edit that
- * records it (`settleReductionAgainstUnpaidAsk`) and the repair pass that
- * checks it.
+ * records it (`settleReductionAgainstUnpaidAsk`); the repair pass reads the
+ * figures it recorded.
  *
  * The retired asks' money was billed to Xero by supplementary invoices
  * (`supplementaryInvoicedCents` - parked or still to be queued, never yet in
@@ -384,7 +385,12 @@ export function setReductionAgainstUnpaidAsk({
  *   primary invoice had billed takes an invoice-correction note - only where a
  *   primary invoice exists and what it billed was established
  *   (`billedByPrimaryEstablished`); otherwise it is `billedOffsetUnsureCents`,
- *   reported for a person and never credit-noted on a guess.
+ *   reported for a person and never credit-noted on a guess;
+ * - `reissuedAskInvoiceUnsureCents` - round 7: where it was not established,
+ *   money the evidence could not place may be supplementary money too, so the
+ *   re-issue's invoice may owe more than the part that is certain. The certain
+ *   part is still invoiced; the rest of the ask, up to the whole of it, is
+ *   reported for a person rather than read as 0.
  */
 export function splitUnpaidAskOffsetForXero({
   offsetCents,
@@ -398,10 +404,18 @@ export function splitUnpaidAskOffsetForXero({
   supplementaryInvoicedCents: number;
   primaryInvoiceIssued: boolean;
   billedByPrimaryEstablished: boolean;
-}): { reissuedAskInvoiceCents: number; billedOffsetCents: number; billedOffsetUnsureCents: number } {
+}): {
+  reissuedAskInvoiceCents: number;
+  reissuedAskInvoiceUnsureCents: number;
+  billedOffsetCents: number;
+  billedOffsetUnsureCents: number;
+} {
   const billedCents = primaryInvoiceIssued ? Math.max(0, offsetCents - supplementaryInvoicedCents) : 0;
+  const reissuedAskInvoiceCents = Math.min(askLeftCents, Math.max(0, supplementaryInvoicedCents - offsetCents));
+  const established = billedByPrimaryEstablished || !primaryInvoiceIssued;
   return {
-    reissuedAskInvoiceCents: Math.min(askLeftCents, Math.max(0, supplementaryInvoicedCents - offsetCents)),
+    reissuedAskInvoiceCents,
+    reissuedAskInvoiceUnsureCents: established ? 0 : Math.max(0, askLeftCents - reissuedAskInvoiceCents),
     billedOffsetCents: billedByPrimaryEstablished ? billedCents : 0,
     billedOffsetUnsureCents: billedByPrimaryEstablished ? 0 : billedCents,
   };

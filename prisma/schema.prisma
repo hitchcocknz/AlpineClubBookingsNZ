@@ -3226,6 +3226,14 @@ model PaymentTransaction {
   /// from the latest row WITHOUT one, and the repair pass raises nothing for
   /// it. Never deleted, never cleared - the audit row says who and why.
   withdrawnAt           DateTime?
+  /// #3954 round 7 (INV-PAY-120): on an ADDITIONAL request an edit asked for, that
+  /// edit's own answer to `hasIssuedPrimaryXeroInvoice` when it asked - the twin of
+  /// `PaymentRecoveryOperation.hadIssuedXeroInvoice` (#3181). True: the request's
+  /// own money is billed by its supplementary invoice; false: by the primary
+  /// invoice raised afterwards. A later price reduction that cancels or shrinks the
+  /// unpaid request reads it (`unpaidAskBillingEvidence`). NULL means not recorded
+  /// (rows written before it, or by a replay whose recovery carries the answer).
+  hadIssuedXeroInvoice  Boolean?
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
 

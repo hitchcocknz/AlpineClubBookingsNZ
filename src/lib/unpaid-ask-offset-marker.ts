@@ -91,6 +91,14 @@ const BILLED_OFFSET_KEY = "unpaidAskBilledOffsetCents" as const;
 const BILLED_OFFSET_UNSURE_KEY = "unpaidAskBilledOffsetUnsureCents" as const;
 
 /**
+ * #3954 round 7: what the re-issued ask's own invoice may owe beyond
+ * `REISSUED_ASK_INVOICE_KEY`, where the evidence was not established - the
+ * money it could not place may have been supplementary money too. Never
+ * invoiced automatically: the repair pass reports it for a person.
+ */
+const REISSUED_ASK_INVOICE_UNSURE_KEY = "reissuedAskInvoiceUnsureCents" as const;
+
+/**
  * #3954 review round 6: the waiting re-issues a later INCREASE folded into its
  * own ask (`foldWaitingReissuedAsks`), recorded on that increase's history row
  * so nothing that reads the increase later loses them:
@@ -121,6 +129,7 @@ export const NO_UNPAID_ASK_SETTLEMENT = {
   unpaidAskOffsetCents: 0,
   retiredAskModificationIds: [] as readonly string[],
   reissuedAskInvoiceCents: 0,
+  reissuedAskInvoiceUnsureCents: 0,
   unpaidAskBilledOffsetCents: 0,
   unpaidAskBilledOffsetUnsureCents: 0,
 } as const;
@@ -130,6 +139,7 @@ export function unpaidAskOffsetHistory(settled: {
   unpaidAskOffsetCents: number;
   retiredAskModificationIds: readonly string[];
   reissuedAskInvoiceCents: number;
+  reissuedAskInvoiceUnsureCents: number;
   unpaidAskBilledOffsetCents: number;
   unpaidAskBilledOffsetUnsureCents: number;
   foldedReissuedAsks: FoldedReissuedAsks;
@@ -137,6 +147,7 @@ export function unpaidAskOffsetHistory(settled: {
   [HISTORY_KEY]?: number;
   [RETIRED_PENDING_ASKS_KEY]?: string[];
   [REISSUED_ASK_INVOICE_KEY]?: number;
+  [REISSUED_ASK_INVOICE_UNSURE_KEY]?: number;
   [BILLED_OFFSET_KEY]?: number;
   [BILLED_OFFSET_UNSURE_KEY]?: number;
   [FOLDED_REISSUE_KEY]?: number;
@@ -160,6 +171,9 @@ export function unpaidAskOffsetHistory(settled: {
       ? { [RETIRED_PENDING_ASKS_KEY]: [...settled.retiredAskModificationIds] }
       : {}),
     ...(settled.reissuedAskInvoiceCents > 0 ? { [REISSUED_ASK_INVOICE_KEY]: settled.reissuedAskInvoiceCents } : {}),
+    ...(settled.reissuedAskInvoiceUnsureCents > 0
+      ? { [REISSUED_ASK_INVOICE_UNSURE_KEY]: settled.reissuedAskInvoiceUnsureCents }
+      : {}),
     ...(settled.unpaidAskBilledOffsetCents > 0 ? { [BILLED_OFFSET_KEY]: settled.unpaidAskBilledOffsetCents } : {}),
     ...(settled.unpaidAskBilledOffsetUnsureCents > 0
       ? { [BILLED_OFFSET_UNSURE_KEY]: settled.unpaidAskBilledOffsetUnsureCents }
@@ -197,6 +211,15 @@ export function recordedUnpaidAskBilledOffsetCents(newData: unknown): number {
 export function recordedUnpaidAskBilledOffsetUnsureCents(newData: unknown): number {
   return recordedPositiveCents(newData, BILLED_OFFSET_UNSURE_KEY);
 }
+
+/** What a re-issued ask's invoice may owe beyond what was queued, where unestablished, or 0 (round 7). */
+export function recordedReissuedAskInvoiceUnsureCents(newData: unknown): number {
+  return recordedPositiveCents(newData, REISSUED_ASK_INVOICE_UNSURE_KEY);
+}
+
+/** The repair pass's summary for a re-issued ask's invoice that could not be sized (amount in the details). */
+export const REISSUED_ASK_INVOICE_UNSURE_SUMMARY =
+  "This change made the member's unpaid additional payment smaller, and it could not be established how much of the smaller request a supplementary Xero invoice should bill beyond any already queued. Check what the booking's invoices bill: if they do not cover the amount shown, raise a supplementary invoice for it, waiting on that card request.";
 
 /** The repair pass's summary for an offset whose billing could not be established (amount in the details). */
 export const UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY =

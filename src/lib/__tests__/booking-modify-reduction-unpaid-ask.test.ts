@@ -27,11 +27,16 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 // honestly, nothing is left pending for it to find - and (#3954 round 4) the
 // re-issue's own recovery, written in the edit's transaction, which the mint
 // completes in one transaction with its row.
+const PAYMENT_CUSTOMER = vi.hoisted(() => ({
+  stripeCustomerId: "cus_1",
+  booking: { organisationId: null, member: { id: "member_1", email: "m@example.test", firstName: "M", lastName: "Ember" }, organisation: null },
+}));
 const minterDb = vi.hoisted(() => {
   const db = {
     reissueRecovery: null as null | Record<string, unknown>,
     // #3954 round 6: the `Payment` the door re-reads before minting a re-issue.
-    currentPayment: { additionalAmountCents: 0, additionalPaymentStatus: null as string | null },
+    // Round 7: with the stored customer the door now resolves exactly as the runner does.
+    currentPayment: { additionalAmountCents: 0, additionalPaymentStatus: null as string | null, ...PAYMENT_CUSTOMER },
     completeCount: 1,
     recoveryFindUnique: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
     recoveryUpdateMany: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
@@ -67,8 +72,9 @@ const mocks = vi.hoisted(() => ({
 
 // #3954 decision A: the re-issue's own invoice, queued after its mint
 // (`reissued-ask-invoice.test.ts` owns what it queues).
-const queueReissueInvoice = vi.hoisted(() => vi.fn(async (params: Record<string, unknown>) => { void params; }));
-const queueFoldedInvoices = vi.hoisted(() => vi.fn(async (params: Record<string, unknown>) => { void params; }));
+// Round 7: each answers whether the minted intent is still the live ask.
+const queueReissueInvoice = vi.hoisted(() => vi.fn(async (params: Record<string, unknown>) => { void params; return true; }));
+const queueFoldedInvoices = vi.hoisted(() => vi.fn(async (params: Record<string, unknown>) => { void params; return true; }));
 vi.mock("@/lib/reissued-ask-invoice", () => ({
   queueReissuedAskSupplementaryInvoice: queueReissueInvoice,
   queueFoldedReissuedAskInvoices: queueFoldedInvoices,
@@ -143,6 +149,7 @@ type Row = {
   carriedAskCents: number;
   stripePaymentIntentId: string | null;
   createdAt: Date;
+  hadIssuedXeroInvoice?: boolean | null;
 };
 
 const state = vi.hoisted(() => ({
@@ -152,8 +159,6 @@ const state = vi.hoisted(() => ({
   recoveries: [] as unknown[],
   recoveryCloseCount: 1,
   parkedInvoices: [] as unknown[],
-  // #3954 round 6: when the primary invoice was linked, for what it billed.
-  primaryLinkedAt: null as Date | null,
 }));
 
 const paymentUpdate = vi.fn();
@@ -180,9 +185,6 @@ const tx = {
   // #3954 decision A: the parked invoices the retire cancels are read first,
   // for what they would have billed.
   xeroSyncOperation: { updateMany: xeroUpdateMany, findMany: vi.fn(async () => state.parkedInvoices) },
-  xeroObjectLink: {
-    findFirst: vi.fn(async () => (state.primaryLinkedAt ? { createdAt: state.primaryLinkedAt } : null)),
-  },
 } as unknown as Parameters<typeof applyPaymentAdjustments>[0];
 
 function askRow(overrides: Partial<Row> = {}): Row {
@@ -196,6 +198,8 @@ function askRow(overrides: Partial<Row> = {}): Row {
     carriedAskCents: 0,
     stripePaymentIntentId: ASK_INTENT,
     createdAt: new Date("2026-06-20T00:00:00.000Z"),
+    // #3954 round 7: the asking edit's own invoice answer, stamped on its row.
+    hadIssuedXeroInvoice: false,
     ...overrides,
   };
 }
@@ -291,7 +295,6 @@ beforeEach(() => {
   state.recoveries = [];
   state.recoveryCloseCount = 1;
   state.parkedInvoices = [];
-  state.primaryLinkedAt = null;
   transactionUpdateMany.mockImplementation(async () => ({ count: state.stampCount }));
   recoveryUpdateMany.mockImplementation(async () => ({ count: state.recoveryCloseCount }));
   xeroUpdateMany.mockImplementation(async () => ({ count: 1 }));
@@ -620,7 +623,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
   };
   beforeEach(() => {
     minterDb.reissueRecovery = { ...REISSUE_RECOVERY };
-    minterDb.currentPayment = { additionalAmountCents: 0, additionalPaymentStatus: null };
+    minterDb.currentPayment = { additionalAmountCents: 0, additionalPaymentStatus: null, ...PAYMENT_CUSTOMER };
     minterDb.completeCount = 1;
     mocks.findMinted.mockReset();
   });
@@ -736,7 +739,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
   });
 
   it("MUTATION (round 6): an ask minted since the reduction (an officer's review charge) is carried by the door's re-issue, under a key naming the amount, not superseded away", async () => {
-    minterDb.currentPayment = { additionalAmountCents: 4_000, additionalPaymentStatus: "PENDING" };
+    minterDb.currentPayment = { additionalAmountCents: 4_000, additionalPaymentStatus: "PENDING", ...PAYMENT_CUSTOMER };
     const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
     await mintAfter(result);
 
@@ -760,6 +763,18 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     expect(minted.additionalPaymentIntentId).toBe("pi_minted_by_runner");
     expect(minterDb.recoveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ paymentIntentId: "pi_minted_by_runner" }) }),
+    );
+  });
+
+  it("MUTATION (round 7): the lookup is scoped to the customer resolved as the runner resolves it, and the row records the intent's OWN customer", async () => {
+    mocks.createIntent.mockRejectedValueOnce(Object.assign(new Error("Keys for idempotent requests can only be used with the same parameters"), { rawType: "idempotency_error" }));
+    mocks.findMinted.mockResolvedValueOnce({ id: "pi_minted_by_runner", amount: 3_000, client_secret: "secret_runner", customer: "cus_minted" });
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    await mintAfter(result);
+
+    expect(mocks.findMinted).toHaveBeenCalledWith(expect.objectContaining({ customerId: "cus_1" }));
+    expect(mocks.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_minted_by_runner", stripeCustomerId: "cus_minted" }),
     );
   });
 
@@ -1109,7 +1124,10 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
     state.rows = [askRow()];
     state.recoveries = [];
     transactionUpdateMany.mockRejectedValueOnce(conflict);
-    await expect(adjust(grownBooking(), -2_000)).rejects.toBeInstanceOf(AdditionalAskChangedDuringReductionError);
+    const refused = await adjust(grownBooking(), -2_000).catch((err: unknown) => err);
+    expect(refused).toBeInstanceOf(AdditionalAskChangedDuringReductionError);
+    // Round 7 (F9): the database's own error is kept as the 409's cause.
+    expect((refused as Error).cause).toBe(conflict);
   });
 
   it("after commit the minter re-issues the $30 on a credit-paid booking with nothing to cancel first", async () => {
@@ -1168,6 +1186,18 @@ describe("#3954: one sizing for a failed mint's replay and the reduction that ma
     expect(isRecoveryReplaySettled(reissue, operation, foreign)).toBe(false);
     expect(isRecoveryReplaySettled(reissue, operation, own)).toBe(true);
     expect(isRecoveryReplaySettled(increase, operation, foreign)).toBe(true);
+  });
+
+  it("MUTATION (round 7): an increase that folded re-issues in is settled only by its own row - a later ask never overtakes the money it folded", () => {
+    const operation = { createdAt: new Date("2026-06-21T00:00:00.000Z"), paymentIntentId: "pi_own" };
+    const later = { kind: "ADDITIONAL", createdAt: new Date("2026-06-22T00:00:00.000Z") };
+    const folding = sizeRecoveryReplayAsk({
+      frozenAmountCents: 4_000,
+      modification: { priceDiffCents: 1_000, changeFeeCents: 0, newData: { foldedReissuedAskCents: 3_000 } },
+      payment: null,
+    });
+    expect(isRecoveryReplaySettled(folding, operation, [{ ...later, stripePaymentIntentId: "pi_later_edit" }])).toBe(false);
+    expect(isRecoveryReplaySettled(folding, operation, [{ ...later, stripePaymentIntentId: "pi_own" }])).toBe(true);
   });
 
   it("MUTATION (round 6): an increase that folded waiting re-issues in asks for them again on its replay, and counts them beyond the Payment's ask", () => {
@@ -1242,8 +1272,7 @@ describe("#3954 round 4: a re-issued ask is durable from the edit's commit", () 
 describe("#3954 decision A: the smaller re-issued ask's own invoice bills what the retired invoices left", () => {
   beforeEach(() => {
     state.recoveries = [];
-    // The ask was written 20 Jun; the primary invoice linked after it billed it.
-    state.primaryLinkedAt = new Date("2026-06-25T00:00:00.000Z");
+    // The increase saw no primary invoice (`askRow`), so the one raised after it billed it.
   });
   function parkedSupplementary(priceDiffCents: number, changeFeeCents = 0) {
     return { localModel: "BookingModification", localId: "mod_increase", requestPayload: { priceDiffCents, changeFeeCents, paymentIntentId: ASK_INTENT } };
@@ -1282,9 +1311,9 @@ describe("#3954 decision A: the smaller re-issued ask's own invoice bills what t
     expect(result.unpaidAskBilledOffsetCents).toBe(2_000);
   });
 
-  it("MUTATION (round 6, F6): an increase whose invoice is not parked YET - the primary invoice was linked before the ask - is billed by that invoice still to come, never credit-noted", async () => {
+  it("MUTATION (round 6, F6; round 7): an increase whose invoice is not parked YET - its edit saw the primary invoice - is billed by that invoice still to come, never credit-noted", async () => {
     state.parkedInvoices = [];
-    state.primaryLinkedAt = new Date("2026-06-10T00:00:00.000Z");
+    state.rows = [askRow({ hadIssuedXeroInvoice: true })];
     const result = await adjust(grownBooking({ xeroInvoiceId: "INV-3954" }), -2_000);
 
     expect(result.unpaidAskBilledOffsetCents).toBe(0);
@@ -1293,14 +1322,16 @@ describe("#3954 decision A: the smaller re-issued ask's own invoice bills what t
     expect(result.reissuedAskInvoiceCents).toBe(3_000);
   });
 
-  it("MUTATION (round 6, F6): with no primary invoice link to date it, what the invoice billed is not guessed - reported for a person, never credit-noted", async () => {
+  it("MUTATION (round 6, F6; round 7, F3): with no answer recorded on the ask, what the invoice billed is not guessed - the offset and the re-issue's invoice are reported for a person, never credit-noted", async () => {
     state.parkedInvoices = [];
-    state.primaryLinkedAt = null;
+    state.rows = [askRow({ hadIssuedXeroInvoice: null })];
     const result = await adjust(grownBooking({ xeroInvoiceId: "INV-3954" }), -2_000);
 
     expect(result.unpaidAskBilledOffsetCents).toBe(0);
     expect(result.unpaidAskBilledOffsetUnsureCents).toBe(2_000);
-    expect(unpaidAskOffsetHistory(result)).toMatchObject({ unpaidAskBilledOffsetUnsureCents: 2_000 });
+    expect(result.reissuedAskInvoiceCents).toBe(0);
+    expect(result.reissuedAskInvoiceUnsureCents).toBe(3_000);
+    expect(unpaidAskOffsetHistory(result)).toMatchObject({ unpaidAskBilledOffsetUnsureCents: 2_000, reissuedAskInvoiceUnsureCents: 3_000 });
   });
 
   it("a cancelled ask has no re-issue to invoice; with no issued primary invoice nothing was billed either", async () => {

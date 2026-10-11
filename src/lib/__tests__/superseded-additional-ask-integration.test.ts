@@ -167,6 +167,13 @@ vi.mock("@/lib/prisma", () => {
           hit.forEach((row) => apply(row, data));
           return { count: hit.length };
         },
+        // #3954 round 7: the door re-reads its new intent's row before it
+        // queues anything on it (`isMintedAskStillLive`).
+        findUnique: async (args: { where: Row; select?: Row }) => {
+          onlyArgs(args, ["where", "select"]);
+          const row = ledger.transactions.find((candidate) => matches(candidate, args.where));
+          return row ? project(row, args.select) : null;
+        },
       },
       paymentRecoveryOperation: {
         upsert: async ({ where, create, update }: { where: Row; create: Row; update: Row }) => {

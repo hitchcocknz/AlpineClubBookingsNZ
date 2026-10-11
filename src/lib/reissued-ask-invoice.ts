@@ -16,7 +16,17 @@
  * booking-vs-Xero repair pass reports the reduction's missing invoice. The
  * enqueue's one-invoice-per-anchor lock makes a second call (door and replay
  * both reaching here) queue nothing.
+ *
+ * ONLY ON A LIVE ASK (review round 7). The door queues after its Stripe
+ * cancels, which can take a while, and a later reduction may have retired the
+ * intent it just minted in that time - accounting for this money in its own
+ * history. So the intent's row is re-read first (`isMintedAskStillLive`): one
+ * withdrawn, or no longer PENDING, queues nothing, and the caller offers the
+ * member no client secret for it. A retire that lands after this read leaves
+ * an invoice parked on a cancelled intent, which the stale-wait reaper retires.
  */
+import { PaymentStatus } from "@prisma/client";
+
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import {
@@ -25,15 +35,55 @@ import {
 } from "@/lib/unpaid-ask-offset-marker";
 import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
 
-export async function queueReissuedAskSupplementaryInvoice({
+/** Whether a just-minted ask is still the live, unpaid ask: not withdrawn by a reduction since, nor moved on. */
+export async function isMintedAskStillLive(paymentIntentId: string): Promise<boolean> {
+  const row = await prisma.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: paymentIntentId },
+    select: { status: true, withdrawnAt: true },
+  });
+  return Boolean(row && !row.withdrawnAt && row.status === PaymentStatus.PENDING);
+}
+
+/**
+ * Queue the reduction's re-issue invoice on its minted intent. Returns whether
+ * that intent is still the live ask (false: nothing queued, offer no secret).
+ */
+export async function queueReissuedAskSupplementaryInvoice(call: {
+  bookingId: string;
+  /** The REDUCING edit, whose history records the figure and which anchors the invoice. */
+  bookingModificationId: string;
+  /** The re-issued ask's minted intent, which releases the invoice when captured. */
+  paymentIntentId: string;
+}): Promise<boolean> {
+  if (!(await askStillLive(call.bookingId, call.paymentIntentId))) return false;
+  await queueReissuedAskInvoice(call);
+  return true;
+}
+
+async function askStillLive(bookingId: string, paymentIntentId: string): Promise<boolean> {
+  try {
+    if (await isMintedAskStillLive(paymentIntentId)) return true;
+    logger.warn(
+      { bookingId, paymentIntentId },
+      "A just-minted additional payment request was retired or moved on before its invoice was queued (#3954); no invoice queued and no client secret offered",
+    );
+    return false;
+  } catch (err) {
+    logger.error(
+      { err, bookingId, paymentIntentId },
+      "Could not re-read a just-minted additional payment request (#3954); no invoice queued and no client secret offered - the booking-vs-Xero repair pass reports the invoice",
+    );
+    return false;
+  }
+}
+
+async function queueReissuedAskInvoice({
   bookingId,
   bookingModificationId,
   paymentIntentId,
 }: {
   bookingId: string;
-  /** The REDUCING edit, whose history records the figure and which anchors the invoice. */
   bookingModificationId: string;
-  /** The re-issued ask's minted intent, which releases the invoice when captured. */
   paymentIntentId: string;
 }): Promise<void> {
   try {
@@ -64,6 +114,7 @@ export async function queueReissuedAskSupplementaryInvoice({
  * folded reduction's invoice is queued here instead, anchored on that
  * reduction as before and waiting on the INCREASE's intent, which now asks for
  * that money. The per-anchor lock keeps a second call (door and replay) to one.
+ * Returns whether the increase's intent is still the live ask (round 7).
  */
 export async function queueFoldedReissuedAskInvoices({
   bookingId,
@@ -75,7 +126,8 @@ export async function queueFoldedReissuedAskInvoices({
   increaseModificationId: string;
   /** Its minted intent, which collects the folded re-issues' money. */
   paymentIntentId: string;
-}): Promise<void> {
+}): Promise<boolean> {
+  if (!(await askStillLive(bookingId, paymentIntentId))) return false;
   let folded: string[];
   try {
     const increase = await prisma.bookingModification.findUnique({
@@ -88,9 +140,10 @@ export async function queueFoldedReissuedAskInvoices({
       { err, bookingId, increaseModificationId, paymentIntentId },
       "Failed to read the re-issues an increase folded in (#3954); the booking-vs-Xero repair pass reports their invoices",
     );
-    return;
+    return true;
   }
   for (const bookingModificationId of folded) {
-    await queueReissuedAskSupplementaryInvoice({ bookingId, bookingModificationId, paymentIntentId });
+    await queueReissuedAskInvoice({ bookingId, bookingModificationId, paymentIntentId });
   }
+  return true;
 }

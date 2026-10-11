@@ -100,6 +100,8 @@ export type UnpaidPriceAskRow = {
   carriedAskCents: number;
   reason: string | null;
   createdAt: Date;
+  /** Round 7: the asking edit's own invoice answer, stamped by its door's mint (null: not recorded). */
+  hadIssuedXeroInvoice: boolean | null;
 };
 
 /**
@@ -271,6 +273,7 @@ export async function readUnpaidPriceAsk(
       stripePaymentIntentId: true,
       createdAt: true,
       withdrawnAt: true,
+      hadIssuedXeroInvoice: true,
     },
   });
   // Read only once something needs it: a chain whose rows match its mirror, or
@@ -306,6 +309,7 @@ type AskTransaction = {
   stripePaymentIntentId: string | null;
   createdAt: Date;
   withdrawnAt: Date | null;
+  hadIssuedXeroInvoice: boolean | null;
 };
 
 /**
@@ -358,6 +362,7 @@ async function unpaidChain(
       carriedAskCents: row.carriedAskCents,
       reason: row.reason,
       createdAt: row.createdAt,
+      hadIssuedXeroInvoice: row.hadIssuedXeroInvoice,
     })),
   };
 }
@@ -515,7 +520,15 @@ export async function retireUnpaidAskChain(
     return await retireUnpaidAskChainUnderLocks(tx, { bookingId, paymentId, ask, now });
   } catch (err) {
     // Round 6: a deadlock with the webhook or the runner is the same 409.
-    if (isWriteConflictOrDeadlock(err)) throw new AdditionalAskChangedDuringReductionError();
+    // Round 7: logged, and kept as the 409's cause, so the database's own
+    // error is not lost behind the member's "try again".
+    if (isWriteConflictOrDeadlock(err)) {
+      logger.warn(
+        { err, bookingId, paymentId },
+        "A price reduction's retire of the unpaid ask deadlocked or met a write conflict; the edit rolls back with a 409 (#3954)",
+      );
+      throw new AdditionalAskChangedDuringReductionError(undefined, { cause: err });
+    }
     throw err;
   }
 }

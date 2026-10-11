@@ -677,22 +677,30 @@ describe("#3954 round 6: the offset's Xero split and what a reduction leaves, sa
     const base = { offsetCents: 4_000, askLeftCents: 1_000, supplementaryInvoicedCents: 2_000, primaryInvoiceIssued: true };
     expect(splitUnpaidAskOffsetForXero({ ...base, billedByPrimaryEstablished: true })).toEqual({
       reissuedAskInvoiceCents: 0,
+      reissuedAskInvoiceUnsureCents: 0,
       billedOffsetCents: 2_000,
       billedOffsetUnsureCents: 0,
     });
+    // Round 7 (F3): not established, the re-issue's invoice is unsure too -
+    // the whole ask left, not a derived 0.
     expect(splitUnpaidAskOffsetForXero({ ...base, billedByPrimaryEstablished: false })).toEqual({
       reissuedAskInvoiceCents: 0,
+      reissuedAskInvoiceUnsureCents: 1_000,
       billedOffsetCents: 0,
       billedOffsetUnsureCents: 2_000,
     });
+    // The certain part is still invoiced; only the rest of the ask is unsure.
+    expect(
+      splitUnpaidAskOffsetForXero({ offsetCents: 1_000, askLeftCents: 3_000, supplementaryInvoicedCents: 2_000, primaryInvoiceIssued: true, billedByPrimaryEstablished: false }),
+    ).toEqual({ reissuedAskInvoiceCents: 1_000, reissuedAskInvoiceUnsureCents: 2_000, billedOffsetCents: 0, billedOffsetUnsureCents: 0 });
     // A re-issue's own invoice never bills more than the ask left.
     expect(
       splitUnpaidAskOffsetForXero({ offsetCents: 2_000, askLeftCents: 3_000, supplementaryInvoicedCents: 8_000, primaryInvoiceIssued: true, billedByPrimaryEstablished: true }),
-    ).toEqual({ reissuedAskInvoiceCents: 3_000, billedOffsetCents: 0, billedOffsetUnsureCents: 0 });
+    ).toEqual({ reissuedAskInvoiceCents: 3_000, reissuedAskInvoiceUnsureCents: 0, billedOffsetCents: 0, billedOffsetUnsureCents: 0 });
     // No primary invoice: nothing billed it.
     expect(
-      splitUnpaidAskOffsetForXero({ ...base, primaryInvoiceIssued: false, billedByPrimaryEstablished: false }).billedOffsetUnsureCents,
-    ).toBe(0);
+      splitUnpaidAskOffsetForXero({ ...base, primaryInvoiceIssued: false, billedByPrimaryEstablished: false }),
+    ).toMatchObject({ billedOffsetUnsureCents: 0, reissuedAskInvoiceUnsureCents: 0 });
   });
 
   it("what a reduction leaves after the offset, never below zero, and nothing for an increase", () => {

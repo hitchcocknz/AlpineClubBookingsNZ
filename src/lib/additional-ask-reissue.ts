@@ -89,6 +89,11 @@ export type UnpaidAskSettlement = {
   retiredAskModificationIds: string[];
   /** Decision A: what the re-issued ask's own supplementary invoice bills, 0 for none. */
   reissuedAskInvoiceCents: number;
+  /**
+   * Round 7: what that invoice may owe beyond it, where the evidence was not
+   * established (`splitUnpaidAskOffsetForXero`) - reported for a person.
+   */
+  reissuedAskInvoiceUnsureCents: number;
   /** The part of the offset Xero had already billed, for the repair pass. */
   unpaidAskBilledOffsetCents: number;
   /**
@@ -133,6 +138,7 @@ export async function settleReductionAgainstUnpaidAsk(
       retiredAdditionalAsks: [],
       retiredAskModificationIds: [],
       reissuedAskInvoiceCents: 0,
+      reissuedAskInvoiceUnsureCents: 0,
       unpaidAskBilledOffsetCents: 0,
       unpaidAskBilledOffsetUnsureCents: 0,
       reissuedAsk: NO_ADDITIONAL_ASK,
@@ -180,6 +186,7 @@ export async function settleReductionAgainstUnpaidAsk(
     retiredAdditionalAsks: retiredAsk.retired,
     retiredAskModificationIds: retiredAsk.retiredAskModificationIds,
     reissuedAskInvoiceCents: split.reissuedAskInvoiceCents,
+    reissuedAskInvoiceUnsureCents: split.reissuedAskInvoiceUnsureCents,
     unpaidAskBilledOffsetCents: split.billedOffsetCents,
     unpaidAskBilledOffsetUnsureCents: split.billedOffsetUnsureCents,
     reissuedAsk: reissueUnpaidAdditionalAsk({ askLeftCents: reduction.askLeftCents }),
@@ -239,7 +246,9 @@ export const WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE =
  * one fresh ask asks for both. Returns what it folded, for `sizeAdditionalAsk`.
  *
  * Re-issues only. An increase's own failed mint keeps #3340's rule, under
- * which a later ask overtakes it; that is not this change's to move.
+ * which a later ask overtakes it - unless it folded re-issues in (review round
+ * 7): then nothing else asks for that money, so its replay is settled only by
+ * its own row and carries the later ask (`isRecoveryReplaySettled`).
  */
 export async function foldWaitingReissuedAsks(
   tx: UnpaidAskDb,

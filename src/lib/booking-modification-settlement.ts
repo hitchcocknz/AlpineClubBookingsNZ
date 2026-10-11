@@ -9,7 +9,12 @@ import {
   writeReissuedAskUnderRecovery,
 } from "@/lib/additional-ask-reissue";
 import { queueFoldedReissuedAskInvoices, queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
-import { mintReissuedAskIntent, planReissuedAskMint } from "@/lib/reissued-ask-mint";
+import {
+  mintedIntentCustomerId,
+  mintReissuedAskIntent,
+  planReissuedAskMint,
+  resolveAskCustomerId,
+} from "@/lib/reissued-ask-mint";
 import {
   cancelSupersededAdditionalIntentsNow,
   queueSupersededAdditionalIntentCancellationRows,
@@ -365,16 +370,6 @@ export async function createModificationAdditionalPaymentIntent({
   }
 
   try {
-    let customerId = result.paymentCustomerId ?? undefined;
-    if (!customerId) {
-      const customer = await findOrCreateCustomer({
-        email: result.memberEmail,
-        name: result.memberName,
-        memberId: result.memberId,
-      });
-      customerId = customer.id;
-    }
-
     if (reissueRecovery) {
       // #3954 round 6: the ONE request both of a re-issue's minters send
       // (`planReissuedAskMint`) - sized on the outstanding ask as it stands
@@ -385,8 +380,24 @@ export async function createModificationAdditionalPaymentIntent({
       // supersede's durable rows commit together, or not at all (see above).
       const current = await prisma.payment.findUnique({
         where: { id: paymentId },
-        select: { additionalAmountCents: true, additionalPaymentStatus: true },
+        select: {
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
+          stripeCustomerId: true,
+          // #3369: the owner may be an Organisation; `resolveAskCustomerId` reads both.
+          booking: {
+            select: {
+              organisationId: true,
+              member: { select: { id: true, email: true, firstName: true, lastName: true } },
+              organisation: { select: { name: true, email: true } },
+            },
+          },
+        },
       });
+      if (!current) throw new Error(`Payment ${paymentId} not found for a re-issued additional ask`);
+      // Round 7: the customer resolved exactly as the recovery runner resolves
+      // it, so the two minters of this key send one request.
+      const customerId = await resolveAskCustomerId(current);
       const plan = planReissuedAskMint({
         bookingId,
         recovery: { amountCents: reissueRecovery.amountCents, stripeKey: reissueRecovery.paymentIntentId },
@@ -407,7 +418,7 @@ export async function createModificationAdditionalPaymentIntent({
           carriedAskCents: plan.ask.carriedCents,
           status: PaymentStatus.PENDING,
           reason: plan.reason,
-          stripeCustomerId: customerId,
+          stripeCustomerId: mintedIntentCustomerId(pi, customerId),
           store,
         });
         return queueSupersededAdditionalIntentCancellationRows({
@@ -428,16 +439,34 @@ export async function createModificationAdditionalPaymentIntent({
         };
       }
       await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded });
-      // Decision A (#3954): the smaller ask's own invoice, waiting on it.
-      await queueReissuedAskSupplementaryInvoice({
+      // Decision A (#3954): the smaller ask's own invoice, waiting on it - only
+      // while it is still the live ask (round 7): a reduction may have retired
+      // it during the cancels above, and then no secret is offered either.
+      const live = await queueReissuedAskSupplementaryInvoice({
         bookingId,
         bookingModificationId: result.bookingModificationId,
         paymentIntentId: pi.id,
       });
+      if (!live) {
+        return {
+          additionalPaymentClientSecret: undefined,
+          additionalPaymentIntentId: undefined,
+        };
+      }
       return {
         additionalPaymentClientSecret: pi.client_secret ?? undefined,
         additionalPaymentIntentId: pi.id,
       };
+    }
+
+    let customerId = result.paymentCustomerId ?? undefined;
+    if (!customerId) {
+      const customer = await findOrCreateCustomer({
+        email: result.memberEmail,
+        name: result.memberName,
+        memberId: result.memberId,
+      });
+      customerId = customer.id;
     }
 
     const pi = await createPaymentIntent({
@@ -483,6 +512,9 @@ export async function createModificationAdditionalPaymentIntent({
       status: PaymentStatus.PENDING,
       reason,
       stripeCustomerId: customerId,
+      // #3954 round 7: the edit's own invoice answer, on the row it asks with,
+      // so a later reduction knows which invoice billed this money.
+      ...(result.hasIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: result.hasIssuedXeroInvoice } : {}),
     });
 
     await queueSupersededAdditionalIntentCancellations({
@@ -500,12 +532,20 @@ export async function createModificationAdditionalPaymentIntent({
     // #3954 round 6: the re-issues this increase folded in are asked for on
     // this intent now, so their own invoices wait on it. An ordinary edit's ask
     // only: a review charge folds nothing.
+    // Round 7: only while this intent is still the live ask - a reduction may
+    // have retired it during the cancels above, and then no secret is offered.
     if (!recoveryIdempotencyKey) {
-      await queueFoldedReissuedAskInvoices({
+      const live = await queueFoldedReissuedAskInvoices({
         bookingId,
         increaseModificationId: result.bookingModificationId,
         paymentIntentId: pi.id,
       });
+      if (!live) {
+        return {
+          additionalPaymentClientSecret: undefined,
+          additionalPaymentIntentId: undefined,
+        };
+      }
     }
 
     return {

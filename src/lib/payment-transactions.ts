@@ -926,6 +926,7 @@ export async function upsertPaymentIntentTransaction({
   paymentMethodId,
   reason,
   stripeCustomerId,
+  hadIssuedXeroInvoice,
   store = prisma,
 }: {
   paymentId: string;
@@ -945,8 +946,15 @@ export async function upsertPaymentIntentTransaction({
   paymentMethodId?: string | null;
   reason?: string;
   stripeCustomerId?: string | null;
+  /**
+   * #3954 round 7: the asking edit's own `hasIssuedPrimaryXeroInvoice` answer,
+   * stamped on an ADDITIONAL request it mints (`unpaidAskBillingEvidence` reads
+   * it). Only a mint passes it; omitted, the stored answer is left alone.
+   */
+  hadIssuedXeroInvoice?: boolean;
   store?: PaymentStore;
 }) {
+  const answer = hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {};
   await store.paymentTransaction.upsert({
     where: { stripePaymentIntentId: paymentIntentId },
     create: {
@@ -959,6 +967,7 @@ export async function upsertPaymentIntentTransaction({
       paymentMethodId: paymentMethodId ?? undefined,
       reason,
       ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+      ...answer,
     },
     update: {
       paymentId,
@@ -971,6 +980,7 @@ export async function upsertPaymentIntentTransaction({
         : {}),
       ...(reason !== undefined ? { reason } : {}),
       ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+      ...answer,
     },
   });
 

@@ -23,7 +23,6 @@ import { prisma } from "@/lib/prisma";
 import {
   cancelPaymentIntentIfCancellableWithResult,
   createPaymentIntent,
-  findOrCreateCustomer,
   processRefund,
 } from "@/lib/stripe";
 import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
@@ -41,7 +40,12 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { attachRecoveredIntentToWaitingSupplementaryInvoice } from "@/lib/xero-supplementary-invoice-late-capture";
 import { queueFoldedReissuedAskInvoices, queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
-import { mintReissuedAskIntent, planReissuedAskMint } from "@/lib/reissued-ask-mint";
+import {
+  mintedIntentCustomerId,
+  mintReissuedAskIntent,
+  planReissuedAskMint,
+  resolveAskCustomerId,
+} from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
@@ -2864,18 +2868,9 @@ async function processCreateAdditionalPaymentIntentOperation(
   }
 
 
-  const member = bookingOwner(payment.booking).member;
-  let customerId = payment.stripeCustomerId ?? undefined;
-  if (!customerId) {
-    const customer = await findOrCreateCustomer({
-      email: member.email,
-      name: `${member.firstName} ${member.lastName}`,
-      // #3369: the OWNER — a member id, or the organisation beside it.
-      memberId: member.id ?? null,
-      organisationId: payment.booking.organisationId,
-    });
-    customerId = customer.id;
-  }
+  // #3954 round 7: one resolution, shared with the door's re-issue mint, so
+  // the two minters of one key send one request (`resolveAskCustomerId`).
+  const customerId = await resolveAskCustomerId(payment);
 
   /**
    * #3340 fix round: THE ASK IS RE-DERIVED HERE, NOT REPLAYED FROM THE ROW.
@@ -3005,7 +3000,11 @@ async function processCreateAdditionalPaymentIntentOperation(
       carriedAskCents: ask.carriedCents,
       status: PaymentStatus.PENDING,
       reason: rowReason,
-      stripeCustomerId: customerId,
+      // #3954 round 7: the customer the intent was minted for, which an intent
+      // the re-issue's metadata lookup recovered need not share with this run.
+      stripeCustomerId: mintedIntentCustomerId(pi, customerId),
+      // #3954 round 7: the edit's frozen invoice answer rides onto its row.
+      ...(operation.hadIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice } : {}),
       store,
     });
     // #3954: the row names this attempt's intent from the moment it exists, so

@@ -80,6 +80,8 @@ import {
   REISSUED_ASK_INVOICE_MISSING_SUMMARY,
   retiringReductionFor,
   UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY,
+  recordedReissuedAskInvoiceUnsureCents,
+  REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
 } from "@/lib/unpaid-ask-offset-marker";
 import {
   addScopedSideNoteFindings,
@@ -932,6 +934,21 @@ export function classifyBookingContext(
         summary: UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY,
         safeToAutoApply: false,
         details: { modificationId: modification.id, billedOffsetUnsureCents, xeroInvoiceId: primaryInvoice.objectId },
+        actionKeys: [manualAction.key],
+      });
+    }
+
+    // Round 7: likewise what the smaller request's own invoice may owe beyond
+    // the part the edit could size; a person decides.
+    const reissuedAskInvoiceUnsureCents = recordedReissuedAskInvoiceUnsureCents(modification.newData);
+    if (reissuedAskInvoiceUnsureCents > 0 && primaryInvoice) {
+      const manualAction = addAction(actionMap, buildManualReviewAction(booking.id, REISSUED_ASK_INVOICE_UNSURE_SUMMARY));
+      addFinding(findings, {
+        code: "MISSING_SUPPLEMENTARY_INVOICE",
+        severity: "manual_review",
+        summary: REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
+        safeToAutoApply: false,
+        details: { modificationId: modification.id, reissuedAskInvoiceUnsureCents, xeroInvoiceId: primaryInvoice.objectId },
         actionKeys: [manualAction.key],
       });
     }

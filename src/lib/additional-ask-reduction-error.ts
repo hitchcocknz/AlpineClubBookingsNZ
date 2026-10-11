@@ -34,9 +34,14 @@ export const CONSENT_ANSWER_RACED_MESSAGE =
   "Something changed on this booking while we recorded your answer. Please try again in a moment.";
 
 export class AdditionalAskChangedDuringReductionError extends ApiError {
-  constructor(message: string = ADDITIONAL_ASK_CHANGED_DURING_REDUCTION_MESSAGE) {
+  constructor(
+    message: string = ADDITIONAL_ASK_CHANGED_DURING_REDUCTION_MESSAGE,
+    /** Round 7: the database error a deadlock or write conflict surfaced as, kept for the logs. */
+    options?: { cause?: unknown },
+  ) {
     super(message, 409);
     this.name = "AdditionalAskChangedDuringReductionError";
+    if (options && "cause" in options) this.cause = options.cause;
   }
 }
 

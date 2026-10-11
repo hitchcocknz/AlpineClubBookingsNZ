@@ -311,16 +311,24 @@ export async function findRecentPaymentIntentByMetadata({
   metadataKey,
   metadataValue,
   createdSince,
+  customerId,
   maxScanned = 1000,
 }: {
   metadataKey: string;
   metadataValue: string;
   createdSince: Date;
+  /**
+   * Round 7: the customer the intent was minted for. The list is newest first
+   * across the whole account, so without it a busy club's other intents could
+   * fill `maxScanned` before the one sought is reached.
+   */
+  customerId?: string;
   maxScanned?: number;
 }): Promise<Stripe.PaymentIntent | null> {
   const stripe = await getStripe();
   let scanned = 0;
   for await (const intent of stripe.paymentIntents.list({
+    ...(customerId ? { customer: customerId } : {}),
     created: { gte: Math.floor(createdSince.getTime() / 1000) },
     limit: 100,
   })) {
