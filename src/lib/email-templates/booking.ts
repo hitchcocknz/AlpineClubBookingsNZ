@@ -458,7 +458,7 @@ export function bookingModifiedTemplate(params: {
   /** #3809: applied credit this change gave back (0 if none). Required, as `financialReviewPending` is. */
   appliedCreditGivenBackCents: number;
   additionalAmountCents: number;
-  unpaidAskCancelled: boolean; // #3954: the drop cancelled the unpaid extra payment; required, like financialReviewPending
+  unpaidAskCancelled: boolean; // #3954: the drop cancelled the unpaid additional payment; required, like financialReviewPending
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;

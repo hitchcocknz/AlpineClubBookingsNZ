@@ -65,6 +65,7 @@ import {
   toIsoDate,
 } from "./xero-booking-repair-utils";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import { reductionLeftAfterUnpaidAskCents } from "@/lib/additional-payment-ask";
 import { readModificationNoteWording } from "@/lib/xero-refund-method";
 import { isCancellationRefundDecisionRecorded } from "@/lib/cancellation-settled-money";
 import { recordedCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
@@ -85,7 +86,7 @@ import {
   scopedBilledOffsetNote,
   scopedGiveBackNote,
   withoutScopedSideNotes,
-} from "@/lib/xero-booking-repair-give-back";
+} from "@/lib/xero-booking-repair-side-notes";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
@@ -936,9 +937,11 @@ export function classifyBookingContext(
     }
 
     // #3954: what an unpaid ask took of a reduction returned no money, so no note.
-    const reductionNoteDueCents =
-      Math.abs(modificationNetAmountCents) - recordedUnpaidAskOffsetCents(modification.newData);
-    if (modificationNetAmountCents < 0 && reductionNoteDueCents > 0 && primaryInvoice) {
+    const reductionNoteDueCents = reductionLeftAfterUnpaidAskCents({
+      netAmountCents: modificationNetAmountCents,
+      unpaidAskOffsetCents: recordedUnpaidAskOffsetCents(modification.newData),
+    });
+    if (reductionNoteDueCents > 0 && primaryInvoice) {
       const refundDueCents = reductionNoteDueCents;
       // Captured money via the payment status OR the transaction ledger —
       // ledger-first states (a SUCCEEDED capture row under a still-PENDING

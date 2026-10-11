@@ -1,6 +1,7 @@
 // Booking-level analysis helpers (cancellation credit, modification amounts,
 // refund candidates, member name) for the booking-vs-Xero repair tool.
 // Extracted verbatim from xero-booking-repair.ts (#1208 item 2).
+import { reductionLeftAfterUnpaidAskCents } from "@/lib/additional-payment-ask";
 import { recordedUnpaidAskOffsetCents } from "@/lib/unpaid-ask-offset-marker";
 import type {
   BookingModificationRecord,
@@ -177,9 +178,13 @@ export function getKnownModificationRefundTotalCents(booking: BookingRepairRecor
     // #3954 (`INV-PAY-120`): what an unpaid ask took of a reduction cancelled
     // money nobody paid, so none of it was refunded - the same figure the
     // reduction-note arm takes off (`recordedUnpaidAskOffsetCents`).
-    return netAmount < 0
-      ? sum + Math.max(0, Math.abs(netAmount) - recordedUnpaidAskOffsetCents(modification.newData))
-      : sum;
+    return (
+      sum +
+      reductionLeftAfterUnpaidAskCents({
+        netAmountCents: netAmount,
+        unpaidAskOffsetCents: recordedUnpaidAskOffsetCents(modification.newData),
+      })
+    );
   }, 0);
 }
 

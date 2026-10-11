@@ -730,8 +730,8 @@ reduction edit, under the door's locks
   -> offset = min(reduction, unpaid ask)
   -> every unpaid ADDITIONAL row since the last paid one -> FAILED + withdrawnAt
        a row captured since the read -> 409, the whole edit rolls back
-  -> each waiting recovery -> SUCCEEDED (closed unminted), fenced on the exact
-       status, attempts and processingStartedAt read
+  -> each waiting recovery FIRST -> SUCCEEDED (closed unminted), fenced on the
+       exact status, attempts and processingStartedAt read; a deadlock -> 409
        claimed under two minutes ago -> 409 "try again in a moment"
        claimed since the read -> 409, the edit rolls back
        its retry later -> nothing to claim; a stalled runner writes nothing
@@ -743,9 +743,11 @@ reduction edit, under the door's locks
   -> what is left of the reduction -> policy-tiered refund / credit / give-back
   -> ask left over -> PENDING CREATE_ADDITIONAL_PAYMENT_INTENT for it, under an
        edit-scoped Stripe key, claimable after a one-minute grace
-  -> offset beyond the retired invoices, billed by a primary invoice raised after
-       the increase -> PENDING scoped invoice-correction CREDIT_NOTE against it,
-       keyed on this edit (10 Oct 2026); the repair pass verifies or queues it
+  -> offset beyond the retired asks' invoices, which evidence shows the primary
+       invoice billed -> PENDING scoped invoice-correction CREDIT_NOTE against it,
+       keyed on this edit (10 Oct 2026), raised after the edit's own note; the
+       repair pass verifies or queues it. Not established -> recorded, reported
+       for a person, no note
 after commit, the minter
   -> runs each retired intent's cancellation now
        Stripe already captured it -> REFUND_SUPERSEDED_PAYMENT, in full
@@ -754,7 +756,9 @@ after commit, the minter
        the runner, or a later reduction, owns it) -> queue its own supplementary
        invoice, WAITING_PAYMENT on the intent (decision A)
 later increase while a re-issue still waits -> folds it in: one ask for both,
-  the re-issue's recovery closed under the same fence
+  the re-issue's recovery closed under the same fence, the fold recorded on the
+  increase's history (its replay asks again; the re-issue's invoice waits on
+  the increase's intent once minted)
 chase -> reads the mirror: a cancelled ask stops, a re-issued one is chased at its new amount
 ```
 

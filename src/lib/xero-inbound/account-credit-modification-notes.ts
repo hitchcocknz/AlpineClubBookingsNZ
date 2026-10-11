@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { readModificationNoteWording } from "@/lib/xero-refund-method";
-import { queuedReviewTaskId, UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE } from "@/lib/xero-review-task-key";
+import { isUnpaidAskBilledOffsetNoteScope, queuedReviewTaskId } from "@/lib/xero-review-task-key";
 import { getJsonRecord } from "./amounts";
 
 /**
@@ -26,7 +26,7 @@ export async function noCashModificationNoteIds(creditNoteIds: string[]): Promis
       .filter(
         (operation) =>
           readModificationNoteWording(getJsonRecord(operation.requestPayload)).refundMethod === "account-credit" ||
-          queuedReviewTaskId(operation) === UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE,
+          isUnpaidAskBilledOffsetNoteScope(queuedReviewTaskId(operation)),
       )
       .map((operation) => operation.xeroObjectId)
       .filter((id): id is string => id !== null),

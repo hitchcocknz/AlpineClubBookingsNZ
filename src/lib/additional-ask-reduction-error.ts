@@ -25,6 +25,14 @@ export const ADDITIONAL_ASK_CHANGED_DURING_REDUCTION_MESSAGE =
 export const ADDITIONAL_ASK_BEING_RAISED_MESSAGE =
   "A payment request on this booking is being set up right now, so nothing was changed. Please try again in a moment.";
 
+/**
+ * Round 6: the consent route's answer to the same race. The member there is
+ * answering a guest invitation, not saving a change, so the reduction doors'
+ * wording ("nothing was changed") is not theirs.
+ */
+export const CONSENT_ANSWER_RACED_MESSAGE =
+  "Something changed on this booking while we recorded your answer. Please try again in a moment.";
+
 export class AdditionalAskChangedDuringReductionError extends ApiError {
   constructor(message: string = ADDITIONAL_ASK_CHANGED_DURING_REDUCTION_MESSAGE) {
     super(message, 409);

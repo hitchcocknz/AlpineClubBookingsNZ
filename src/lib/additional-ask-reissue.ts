@@ -66,7 +66,7 @@ export function assertOptionsSizedAfterUnpaidAsk(
   const leftCents = Math.max(0, -reduction.netChargeLeftCents);
   if (settlementOptions && settlementOptions.basisAmountCents > leftCents) {
     throw new Error(
-      `INV-PAY-047 (#3954): booking ${bookingId}'s settlement options return ${formatCents(settlementOptions.basisAmountCents, format)} of a reduction whose unpaid-ask offset leaves ${formatCents(leftCents, format)}; they were sized before the reduction was set against the unpaid ask.`,
+      `INV-PAY-120 / INV-PAY-047 (#3954): booking ${bookingId}'s settlement options return ${formatCents(settlementOptions.basisAmountCents, format)} of a reduction whose unpaid-ask offset leaves ${formatCents(leftCents, format)}; they were sized before the reduction was set against the unpaid ask.`,
     );
   }
 }

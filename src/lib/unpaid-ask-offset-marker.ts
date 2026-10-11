@@ -50,11 +50,11 @@ export function isAskRetiredByReductionOperation(operation: {
  * is accounted for there - so the sentence is true where it is said (Xero lens F4).
  */
 export const ASK_RETIRED_BY_REDUCTION_SUMMARY =
-  "A later change lowered this booking's price before the member paid the extra this edit asked for, so that card request was cancelled or made smaller and its supplementary Xero invoice was retired. Check the booking's later changes and payments before raising any invoice for this edit.";
+  "A later change lowered this booking's price before the member paid the additional payment this edit asked for, so that card request was cancelled or made smaller and its supplementary Xero invoice was retired. Check the booking's later changes and payments before raising any invoice for this edit.";
 
 /** The repair pass's summary for a re-issued ask with no supplementary invoice (amount in the details). */
 export const REISSUED_ASK_INVOICE_MISSING_SUMMARY =
-  "This change made the member's unpaid extra payment smaller, and the smaller request has no supplementary Xero invoice. Raise one for the amount shown, waiting on that card request, or check whether the member has already paid it.";
+  "This change made the member's unpaid additional payment smaller, and the smaller request has no supplementary Xero invoice. Raise one for the amount shown, waiting on that card request, or check whether the member has already paid it.";
 
 /**
  * #3954 "retry nets it off" and review round 4: the increases whose unpaid ask
@@ -200,7 +200,7 @@ export function recordedUnpaidAskBilledOffsetUnsureCents(newData: unknown): numb
 
 /** The repair pass's summary for an offset whose billing could not be established (amount in the details). */
 export const UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY =
-  "This change cancelled or reduced an unpaid extra payment, and it could not be established whether the booking's Xero invoice had already billed that money. Check the invoice: if it bills the extra, raise a credit note for the amount shown against it.";
+  "This change cancelled or reduced an unpaid additional payment, and it could not be established whether the booking's Xero invoice had already billed that money. Check the invoice: if it bills that additional payment, raise a credit note for the amount shown against it.";
 
 /** What an increase folded in of waiting re-issues, or 0 (round 6). */
 export function recordedFoldedReissuedAskCents(newData: unknown): number {

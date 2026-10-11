@@ -2,7 +2,7 @@
 
 /**
  * #3954 (review round 4): the edit panel tells the member, before they save,
- * what a reduction takes off the extra payment they have not paid yet - and
+ * what a reduction takes off the additional payment they have not paid yet - and
  * what is left of it afterwards, so "comes off" never reads as a refund.
  */
 import { render, screen } from "@/lib/__tests__/support/club-time-render";
@@ -61,6 +61,14 @@ describe("#3954: the price summary says what is left of the unpaid additional pa
 
     expect(screen.getByTestId("unpaid-ask-offset").textContent).toBe(
       "Comes off your unpaid additional payment: $50.00 (nothing left to pay)",
+    );
+  });
+
+  it("MUTATION (round 6): a quote that does not say what is left claims nothing about it - never \"nothing left to pay\"", () => {
+    renderQuote(reducedQuote(2_000, undefined));
+
+    expect(screen.getByTestId("unpaid-ask-offset").textContent).toBe(
+      "Comes off your unpaid additional payment: $20.00",
     );
   });
 

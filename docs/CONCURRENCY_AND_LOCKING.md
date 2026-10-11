@@ -2988,6 +2988,14 @@ claim (`holdAdditionalIntentRecoveryClaim`, one transaction that re-stamps
 recovery is written in the edit's transaction; the door's own mint completes it
 fenced the same way (`writeReissuedAskUnderRecovery`). An increase folding a
 waiting re-issue in closes it with the same fence. All proven on real Postgres.
+Round 6: the retire closes waiting recoveries before it stamps the rows - the
+runner's own order (its claim hold writes the recovery, then its row) - and a
+deadlock or write conflict there is the same 409; the runner re-checks its
+claim after its Stripe cancels, before queueing any invoice on its intent. The
+billed-offset invoice-correction note is enqueued inside the edit's
+transaction, after its locks, under the enqueue's own-key dedupe and no
+advisory key; it is raised after the edit's own note, waiting while that note
+is queued or running.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`

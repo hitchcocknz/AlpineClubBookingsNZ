@@ -279,14 +279,19 @@ is asked for by card, whether or not the club uses Xero. It is
 easy for that to be quietly forgotten by everybody.
 
 If a later change brings the price back down before the member has paid that
-extra, the reduction comes off the unpaid extra first: the card request is
-cancelled, or replaced by a smaller one, and only what is left of the reduction
-is refunded or credited under the club's policy (#3954). The member's email says
-when the extra payment was cancelled outright, and a smaller request gets its
-own Xero invoice. If the member pays the old request at the same moment, that
-payment is refunded in full automatically, or the change is refused with "try
-again in a moment" and nothing is changed. An officer's review charge is never
-reduced this way.
+additional payment, the reduction comes off the unpaid additional payment
+first: the card request is cancelled, or replaced by a smaller one, and only
+what is left of the reduction is refunded or credited under the club's policy
+(#3954). The member's email says when the additional payment was cancelled
+outright, and a smaller request gets its own Xero invoice. Where the booking's
+Xero invoice had already billed the cancelled money, Xero also gets an
+invoice-correction credit note for it; where that cannot be told, the
+booking-vs-Xero repair report lists the booking for a treasurer instead. If the
+member pays the old request at the same moment, that payment is refunded in
+full automatically, or the change is refused with "try again in a moment" and
+nothing is changed. An officer's review charge is never reduced this way, and
+nor is a refund an officer's financial review already decided - that refund is
+paid as decided.
 
 Only confirmed, paid and completed bookings are counted and chased. A cancelled
 booking keeps the record of what it once owed, but the club never asks for it and

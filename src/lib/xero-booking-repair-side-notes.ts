@@ -1,9 +1,10 @@
 import { recordedCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
 import { recordedUnpaidAskBilledOffsetCents } from "@/lib/unpaid-ask-offset-marker";
-import { asRecord, readString } from "@/lib/xero-json";
 import {
   APPLIED_CREDIT_GIVE_BACK_NOTE_SCOPE,
   isGiveBackNoteScope,
+  isUnpaidAskBilledOffsetNoteScope,
+  linkReviewTaskId,
   queuedReviewTaskId,
   UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE,
 } from "@/lib/xero-review-task-key";
@@ -27,7 +28,7 @@ import { isSuccessfulXeroOperation } from "./xero-booking-repair-utils";
 function noteScopes(item: { requestPayload?: unknown; metadata?: unknown }): (string | undefined)[] {
   return [
     "requestPayload" in item ? queuedReviewTaskId({ requestPayload: item.requestPayload }) : undefined,
-    readString(asRecord(item.metadata)?.reviewTaskId) ?? undefined,
+    linkReviewTaskId({ metadata: item.metadata }),
   ];
 }
 
@@ -36,7 +37,7 @@ function isGiveBackScoped(item: { requestPayload?: unknown; metadata?: unknown }
 }
 
 function isBilledOffsetScoped(item: { requestPayload?: unknown; metadata?: unknown }): boolean {
-  return noteScopes(item).includes(UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE);
+  return noteScopes(item).some(isUnpaidAskBilledOffsetNoteScope);
 }
 
 function isScopedSideNote(item: { requestPayload?: unknown; metadata?: unknown }): boolean {
@@ -122,9 +123,9 @@ const SIDE_NOTE_REPAIR = {
     keyPrefix: "queue:billed-offset-note",
     label: "invoice-correction",
     description:
-      "Queue the missing Xero invoice-correction credit note for the part of a cancelled or reduced unpaid extra payment the booking's invoice had already billed.",
+      "Queue the missing Xero invoice-correction credit note for the part of a cancelled or reduced unpaid additional payment the booking's invoice had already billed.",
     summary:
-      "A booking modification cancelled part of an unpaid extra payment the booking's Xero invoice had already billed, but no invoice-correction credit note for it exists.",
+      "A booking modification cancelled part of an unpaid additional payment the booking's Xero invoice had already billed, but no invoice-correction credit note for it exists.",
     payload: { noteWording: "invoice-correction", reviewTaskId: UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE },
     refundAmountSource: "recorded-billed-offset",
   },

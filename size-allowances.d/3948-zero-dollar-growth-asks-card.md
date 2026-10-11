@@ -35,13 +35,16 @@ reason: the removal door writes its own BookingModification history row and
   result type; the offset and the retired asks join them there.
 
 file: src/lib/payment-recovery.ts
-lines: 3419
-reason: the intent-mint replay must recognise a reduction's re-issued ask where
-  it sizes every replayed ask, or it would replay it as an increase and raise a
-  supplementary invoice for a reduction. The "retry nets it off" round moved
-  that sizing into `additional-ask-recovery-replay.ts`, shared with the
-  reduction; what grew is the replay's docblock saying a netted row never
-  reaches it.
+lines: 3464
+reason: the intent-mint replay is where a reduction's re-issued ask is minted
+  and its supplementary invoice raised, so the plumbing that cannot move lives
+  here: the replay sizes through the shared `sizeRecoveryReplayAsk`, mints a
+  re-issue through the request both of its minters send
+  (`planReissuedAskMint`, `reissued-ask-mint.ts`), writes its row only while
+  it holds its claim and re-checks that claim before queueing any invoice
+  (`holdAdditionalIntentRecoveryClaim`), and queues the invoices of the
+  re-issues an increase folded in (`queueFoldedReissuedAskInvoices`). The
+  rules themselves live in those modules.
 
 file: src/lib/xero-booking-repair-classify.ts
 lines: 2357

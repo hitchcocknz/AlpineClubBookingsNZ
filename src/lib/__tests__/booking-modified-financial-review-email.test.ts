@@ -419,14 +419,14 @@ describe("#3916: the Booking Modified refund sentence names where the refund wen
 
 /*
   #3954 (review round 4): an edit whose price drop cancelled the member's
-  unpaid extra payment outright says so - in the HTML email and the flat body
+  unpaid additional payment outright says so - in the HTML email and the flat body
   alike, beside any refund for the rest of the drop. A shrunk ask keeps the
   ordinary "an additional payment of $X is required" note at its new figure.
 */
-describe("#3954: a cancelled unpaid extra payment is named in the Booking Modified email", () => {
-  const SENTENCE = "The extra payment we asked for has been cancelled.";
+describe("#3954: a cancelled unpaid additional payment is named in the Booking Modified email", () => {
+  const SENTENCE = "The additional payment we asked for has been cancelled, so you no longer need to pay it.";
 
-  it("MUTATION: the HTML email and the flat body both say the extra payment is cancelled", async () => {
+  it("MUTATION: the HTML email and the flat body both say the additional payment is cancelled", async () => {
     expect(bookingModifiedTemplate(params({ unpaidAskCancelled: true }), CLUB_FORMAT_TEST)).toContain(SENTENCE);
     expect(await paymentNoteFromSender({ unpaidAskCancelled: true })).toBe(SENTENCE);
   });

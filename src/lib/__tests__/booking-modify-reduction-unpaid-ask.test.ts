@@ -602,7 +602,7 @@ describe("#3954: the save refuses options sized before the offset", () => {
         todayAtClub: TODAY,
         format: CLUB_FORMAT_TEST,
       }),
-    ).rejects.toThrow(/INV-PAY-047 \(#3954\)/);
+    ).rejects.toThrow(/INV-PAY-120 \/ INV-PAY-047 \(#3954\)/);
   });
 });
 

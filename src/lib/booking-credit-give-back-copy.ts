@@ -16,11 +16,11 @@ export function appliedCreditGiveBackNote(givenBackCents: number, format: ClubFo
 
 /**
  * #3954 (review round 4): the sentence for an edit whose price drop cancelled
- * the member's unpaid extra payment outright - the one outcome no other note
+ * the member's unpaid additional payment outright - the one outcome no other note
  * names, so the member is told the request they may still be holding is gone.
  * One home for the HTML template and the admin-editable body. A SHRUNK ask is
  * the ordinary "an additional payment of $X is required" note, at its new figure.
  */
 export function unpaidAskCancelledNote(cancelled: boolean): string {
-  return cancelled ? "The extra payment we asked for has been cancelled." : "";
+  return cancelled ? "The additional payment we asked for has been cancelled, so you no longer need to pay it." : "";
 }

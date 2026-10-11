@@ -1948,32 +1948,31 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 - **A price reduction is first set against the member's unpaid card ask**
   (#3954, owner decisions of 8-10 Oct 2026), card-paid and credit-paid alike, at
   every reduction door: cancelled when covered, else re-issued smaller; only
-  the rest is refunded, credited or given back by `INV-MOD-011`'s tier. The
-  offset is untiered. Each door reads the ask ONCE
-  (`readReductionAgainstUnpaidAsk`) for the options, the save and the quote.
-- **Retired in the edit's transaction** (`retireUnpaidAskChain`): unpaid rows
-  FAILED and stamped `withdrawnAt` behind a still-unpaid fence; cancellations
-  queued; parked invoices CANCELLED; mirror reconciled. A capture after the read
-  rolls the edit back (409, `AdditionalAskChangedDuringReductionError`); one
-  after commit is refunded in full. The re-issue's recovery and the billed
-  offset's note are written in the same transaction (`queueReductionAskFollowUps`).
-- **Asks awaiting a failed mint's retry** count, sized as the replay would; the
-  retire closes each under its attempts and claim time. A retry claimed within
-  two minutes refuses the edit for a moment; an older claim is closed, and the
-  runner writes only while it holds its claim. A re-issue is settled only by
-  its own row; a later increase folds a waiting one in
-  (`foldWaitingReissuedAsks`).
-- **Only the member's price asks.** An officer's review charge, minted or
-  waiting, is never set against. A financial review's settled refund share
-  (`edit-financial-review-settlement.ts`) does not net either: an officer
-  priced it from the booking's evidence (D2, #3032); the ledger census reports
-  the booking if both are then paid.
-- **Xero** (decision A). The smaller ask gets its own supplementary invoice
-  for what the retired invoices left after the offset, waiting on its intent
-  (`queueReissuedAskSupplementaryInvoice`). The offset beyond them, billed by
-  a primary invoice raised after the increase, takes a scoped
-  invoice-correction note against it; the repair pass verifies or queues it,
-  and reads the reduction for every retired increase its history names.
+  the rest is refunded, credited or given back by `INV-MOD-011`'s tier, and the
+  offset is untiered. Each door reads the ask once
+  (`readReductionAgainstUnpaidAsk`).
+- **Retired in the edit's transaction** (`retireUnpaidAskChain`): waiting
+  recoveries closed first, then unpaid rows FAILED and `withdrawnAt` behind an
+  unpaid fence; cancellations queued; parked invoices CANCELLED. A capture or
+  deadlock in between rolls the edit back (409); a capture after commit is
+  refunded in full. The re-issue's recovery and the billed-offset note are
+  written in the same transaction.
+- **Asks awaiting a failed mint's retry** count, sized as the replay would. A
+  retry claimed within two minutes refuses the edit; an older claim is closed.
+  A later increase folds a waiting re-issue in and records it, so its own
+  replay asks for it again. Both minters send one Stripe request
+  (`planReissuedAskMint`).
+- **Only the member's price asks.** An officer's review charge is never set
+  against. Nor is a financial review's settled refund share: the officer
+  decided that refund from the booking's evidence, so it is paid as decided,
+  and the ledger census reports the booking if the member then pays the ask
+  too.
+- **Xero** (`splitUnpaidAskOffsetForXero`). The smaller ask gets its own
+  supplementary invoice for what the retired asks' invoices left after the
+  offset. The rest of the offset, where evidence shows the primary invoice
+  billed it (`unpaidAskBillingEvidence`), takes a scoped invoice-correction
+  note, raised after the edit's own note; where that cannot be established, the
+  repair pass reports it for a person.
 
 ## INV-PAY-070
 

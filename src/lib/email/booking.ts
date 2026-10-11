@@ -1382,7 +1382,7 @@ export async function sendBookingModifiedEmail(params: {
   appliedCreditGivenBackCents: number;
   additionalAmountCents: number;
   /**
-   * #3954: this edit's price drop cancelled the member's unpaid extra payment
+   * #3954: this edit's price drop cancelled the member's unpaid additional payment
    * outright (`unpaidAskOffsetCents > 0` and nothing re-issued). REQUIRED, as
    * `financialReviewPending` is: every sender answers it.
    */

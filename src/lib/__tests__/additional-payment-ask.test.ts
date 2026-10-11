@@ -669,3 +669,35 @@ describe("the ledger identity, and its SQL twin", () => {
     expect(sql).toContain("'SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED'");
   });
 });
+
+describe("#3954 round 6: the offset's Xero split and what a reduction leaves, said once", async () => {
+  const { reductionLeftAfterUnpaidAskCents, splitUnpaidAskOffsetForXero } = await import("@/lib/additional-payment-ask");
+
+  it("MUTATION: the offset comes off the supplementary money first; the rest is the primary invoice's, credit-noted only where established", () => {
+    const base = { offsetCents: 4_000, askLeftCents: 1_000, supplementaryInvoicedCents: 2_000, primaryInvoiceIssued: true };
+    expect(splitUnpaidAskOffsetForXero({ ...base, billedByPrimaryEstablished: true })).toEqual({
+      reissuedAskInvoiceCents: 0,
+      billedOffsetCents: 2_000,
+      billedOffsetUnsureCents: 0,
+    });
+    expect(splitUnpaidAskOffsetForXero({ ...base, billedByPrimaryEstablished: false })).toEqual({
+      reissuedAskInvoiceCents: 0,
+      billedOffsetCents: 0,
+      billedOffsetUnsureCents: 2_000,
+    });
+    // A re-issue's own invoice never bills more than the ask left.
+    expect(
+      splitUnpaidAskOffsetForXero({ offsetCents: 2_000, askLeftCents: 3_000, supplementaryInvoicedCents: 8_000, primaryInvoiceIssued: true, billedByPrimaryEstablished: true }),
+    ).toEqual({ reissuedAskInvoiceCents: 3_000, billedOffsetCents: 0, billedOffsetUnsureCents: 0 });
+    // No primary invoice: nothing billed it.
+    expect(
+      splitUnpaidAskOffsetForXero({ ...base, primaryInvoiceIssued: false, billedByPrimaryEstablished: false }).billedOffsetUnsureCents,
+    ).toBe(0);
+  });
+
+  it("what a reduction leaves after the offset, never below zero, and nothing for an increase", () => {
+    expect(reductionLeftAfterUnpaidAskCents({ netAmountCents: -8_000, unpaidAskOffsetCents: 5_000 })).toBe(3_000);
+    expect(reductionLeftAfterUnpaidAskCents({ netAmountCents: -5_000, unpaidAskOffsetCents: 5_000 })).toBe(0);
+    expect(reductionLeftAfterUnpaidAskCents({ netAmountCents: 2_000, unpaidAskOffsetCents: 0 })).toBe(0);
+  });
+});
