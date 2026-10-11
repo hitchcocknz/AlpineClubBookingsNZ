@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { AgeTier } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { auth } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
@@ -14,8 +13,6 @@ import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
-import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
-import { nameField } from "@/lib/zod-helpers";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import logger from "@/lib/logger";
@@ -27,24 +24,18 @@ import {
 } from "@/lib/booking-change-request-member-view";
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
+import {
+  addedGuestNightsRefusal,
+  buildChangeRequestSummary,
+  CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
+  changeRequestAddGuestsSchema,
+} from "@/lib/booking-change-request-guests";
 
 const createChangeRequestSchema = z.object({
   checkIn: z.string().optional(),
   checkOut: z.string().optional(),
-  addGuests: z
-    .array(
-      z.object({
-        firstName: nameField(),
-        lastName: nameField(),
-        ageTier: bookableAgeTierEnum,
-        isMember: z.boolean(),
-        memberId: z.string().trim().min(1).optional(),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-      })
-    )
-    .max(200)
-    .optional(),
+  // #4030: the one add-guest shape, shared with the officer's entry.
+  addGuests: changeRequestAddGuestsSchema.optional(),
   removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
   guestStayRanges: z
     .array(
@@ -88,12 +79,15 @@ function requestTouchesLockedPeriod({
   requestedCheckIn,
   requestedCheckOut,
   requestedEffectiveDate,
+  addedGuestStarts,
 }: {
   booking: { checkIn: Date; checkOut: Date };
   editPolicy: ReturnType<typeof getBookingEditPolicy>;
   requestedCheckIn: Date | null;
   requestedCheckOut: Date | null;
   requestedEffectiveDate: Date | null;
+  /** #4030: the first night of each guest the request adds. */
+  addedGuestStarts: Date[];
 }) {
   const today = editPolicy.today;
   const editableFrom = editPolicy.editableFrom;
@@ -118,6 +112,18 @@ function requestTouchesLockedPeriod({
     return true;
   }
 
+  // #4030: a guest added from a night the member can no longer book themselves
+  // (on an in-progress stay, today or earlier) is a locked-period change. A
+  // guest added only from `editableFrom` on is an ordinary edit, which the
+  // member makes in the guest editor.
+  if (
+    addedGuestStarts.some((start) =>
+      editableFrom ? start < editableFrom : start <= today,
+    )
+  ) {
+    return true;
+  }
+
   if (requestedCheckIn && requestedCheckIn.getTime() !== currentCheckIn.getTime()) {
     return requestedCheckIn <= today || editPolicy.mode === "in-progress";
   }
@@ -130,43 +136,6 @@ function requestTouchesLockedPeriod({
   }
 
   return false;
-}
-
-function buildRequestedSummary({
-  checkIn,
-  checkOut,
-  addGuests,
-  removedGuests,
-  guestStayRanges,
-  requestedEffectiveDate,
-}: {
-  checkIn?: string;
-  checkOut?: string;
-  addGuests?: Array<{ firstName: string; lastName: string; ageTier: AgeTier; isMember: boolean }>;
-  removedGuests: Array<{ firstName: string; lastName: string }>;
-  guestStayRanges?: Array<{ guestId: string; stayStart?: string; stayEnd?: string }>;
-  requestedEffectiveDate?: string;
-}) {
-  const parts: string[] = [];
-  if (checkIn) parts.push(`check-in to ${checkIn}`);
-  if (checkOut) parts.push(`check-out to ${checkOut}`);
-  if (addGuests?.length) {
-    parts.push(
-      `add ${addGuests.map((guest) => `${guest.firstName} ${guest.lastName}`).join(", ")}`
-    );
-  }
-  if (removedGuests.length) {
-    parts.push(
-      `remove ${removedGuests.map((guest) => `${guest.firstName} ${guest.lastName}`).join(", ")}`
-    );
-  }
-  if (guestStayRanges?.length) {
-    parts.push(`update ${guestStayRanges.length} guest stay range${guestStayRanges.length === 1 ? "" : "s"}`);
-  }
-  if (requestedEffectiveDate) {
-    parts.push(`effective ${requestedEffectiveDate}`);
-  }
-  return parts.length ? parts.join("; ") : "Locked-period booking change";
 }
 
 export async function POST(
@@ -251,17 +220,21 @@ export async function POST(
     requestedEffectiveDate,
     reason,
   } = parsed.data;
+  // #4030 (owner decision: "a structured delta is required"). A request must
+  // name the change it asks for: new dates, guests added or removed, or a
+  // guest's nights. `requestedEffectiveDate` and the note are context for the
+  // officer, never a change on their own — a note-only request was the free
+  // text the finished-stay approval (#3750) cannot apply or charge.
   const hasRequestedChange =
     changedDate(checkIn, booking.checkIn) ||
     changedDate(checkOut, booking.checkOut) ||
     Boolean(addGuests?.length) ||
     Boolean(removeGuestIds?.length) ||
-    Boolean(guestStayRanges?.length) ||
-    Boolean(requestedEffectiveDate);
+    Boolean(guestStayRanges?.length);
 
   if (!hasRequestedChange) {
     return NextResponse.json(
-      { error: "At least one booking change is required" },
+      { error: CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE, code: "STRUCTURED_CHANGE_REQUIRED" },
       { status: 400 }
     );
   }
@@ -284,6 +257,15 @@ export async function POST(
       { error: "Check-out must be after check-in" },
       { status: 400 }
     );
+  }
+
+  // #4030: every added guest's nights inside the stay the request proposes.
+  const addedNightsRefusal = addedGuestNightsRefusal(addGuests ?? [], {
+    checkIn: formatDateOnly(nextCheckIn),
+    checkOut: formatDateOnly(nextCheckOut),
+  });
+  if (addedNightsRefusal) {
+    return NextResponse.json({ error: addedNightsRefusal }, { status: 400 });
   }
 
   // #2266 (LOW-7): DRAFT joined the member-editable statuses, which would
@@ -323,6 +305,9 @@ export async function POST(
     requestedCheckIn,
     requestedCheckOut,
     requestedEffectiveDate: effectiveDate,
+    addedGuestStarts: (addGuests ?? []).map((guest) =>
+      guest.stayStart ? parseDateOnly(guest.stayStart) : nextCheckIn,
+    ),
   });
 
   if (!touchesLockedPeriod) {
@@ -396,7 +381,7 @@ export async function POST(
       stayStart: formatBookingDate(guest.stayStart),
       stayEnd: formatBookingDate(guest.stayEnd),
     }));
-  const requestedSummary = buildRequestedSummary({
+  const requestedSummary = buildChangeRequestSummary({
     checkIn,
     checkOut,
     addGuests,
