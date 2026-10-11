@@ -727,7 +727,9 @@ LOCKED_PERIOD request, stay finished -> officer approves
   -> pg_advisory_xact_lock(1) -> lodge capacity lock -> fresh-role reauthorisation
   -> re-read: REQUESTED, LOCKED_PERIOD, expected version   (else claim lost, no effect)
   -> drift: booking dates + guest set still the request's original   (else stays REQUESTED)
-  -> CAS claim REQUESTED -> APPROVED, version + 1
+  -> request names no change: the officer's entered guests (#4030), else stays REQUESTED
+       entry on a request that names a change, or nights outside the stay -> stays REQUESTED
+  -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry)
   -> modifyBookingBatch(finishedStayCorrection) on the same transaction
        over-capacity past night -> refused until the officer confirms (whole-lodge hold: always refused)
        no active season / member-night clash / a guest who cannot be booked -> refused
@@ -737,6 +739,12 @@ LOCKED_PERIOD request, stay finished -> officer approves
   -> COMMIT, then the ordinary post-commit settlement (ask, refund, Xero, email, audit)
   (a dry run of the same sequence, rolled back before COMMIT, is the officer's quote)
 ```
+
+A member's request must name a structured change — dates, guests added or
+removed, or a guest's nights (#4030); a note alone is refused at submit. For an
+older free-text request the officer enters the guests the member described, and
+the claim stores them on the request as officer-entered on the member's behalf
+(`INV-REQ-011`), so a refusal after it rolls the entry back with the approval.
 
 The booking keeps its status (a `COMPLETED` stay stays `COMPLETED`); the money
 moves on the ordinary edit paths above.

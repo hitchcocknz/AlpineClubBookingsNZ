@@ -267,3 +267,29 @@ invalidates it.
   correction is never refused for it.
 
 Pinned by `src/lib/__tests__/booking-request-corrections.test.ts`.
+
+## Structured locked-period change requests (#4030)
+
+### INV-REQ-011
+
+A `LOCKED_PERIOD` change request names the change it asks for. `POST
+/api/bookings/[id]/change-requests` refuses one that carries no new dates, no
+guest added or removed and no guest's nights (400, `STRUCTURED_CHANGE_REQUIRED`);
+the note and `requestedEffectiveDate` are context, never a change. The member's
+in-progress request card adds guests with the guest editor's fields, each guest's
+nights inside the stay, and shows an estimate that prices only non-member guests
+(a member-reachable route never resolves another member's rate).
+
+A free-text request from before this rule is decided on a finished stay by the
+officer entering the guests the member described. The entry is accepted only
+when approving applies the request, and only for a request that names no change;
+it is written into `requestedChanges.requested` (`addGuests`, a summary saying it
+was entered on the member's behalf, and `officerEntry` naming the officer and
+keeping the member's own summary) by the approval's guarded claim, in the
+executor's transaction. A refusal after the claim rolls the entry back with it,
+so no request holds officer-entered guests without the approval that applied
+them. It then runs through #3750's path unchanged (`INV-MOD-019`), and the
+approval's audit row lists the guests entered. Guarded by
+`booking-change-request-structured.test.ts`,
+`booking-change-request-officer-entry.test.ts` and the realdb cases in
+`booking-change-request-execution.realdb.test.ts`.

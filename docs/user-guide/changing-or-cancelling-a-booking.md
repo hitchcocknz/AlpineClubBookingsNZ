@@ -50,6 +50,16 @@ at the end.
    settle the extra (see [Paying for your stay](paying-for-your-stay.md)); if it
    costs less, you may be due a refund or credit.
 
+**Once your stay has started**, anything about tonight or earlier — somebody
+who arrived with you but is not on the booking, for example — goes to the
+booking officer through the **Admin Request** card on the edit screen. Add each
+person there (a name and age, one of your family, or a member you find), with
+the nights they are staying; the card shows an estimate of what they will cost
+(adding guests carries no change fee). Use the note for anything else the
+officer should know. A note on its own can't be sent: the request has to say
+who or what changes, so the officer can apply it and you are emailed the change
+and anything to pay.
+
 If your club has **member guests** turned on, the Guests heading carries two
 buttons — **+ Add Member Guest** and **+ Add Non-Member Guest** — exactly as it
 does when you first make a booking: find
