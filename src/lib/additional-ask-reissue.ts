@@ -17,8 +17,8 @@
  */
 import { PaymentRecoveryOperationStatus, PaymentTransactionKind, type Prisma } from "@prisma/client";
 
+import { closeWaitingAskRecoveries } from "@/lib/additional-ask-recovery-close";
 import {
-  closeWaitingAskRecoveries,
   inFlightAskRecoveries,
   retireUnpaidAskChain,
   type PendingAskRecovery,

@@ -541,7 +541,7 @@ let webhookClient: PrismaClient;
         expect(result.additionalAsk.amountCents).toBe(3_000);
         expect(result.additionalAsk.carriedCents).toBe(3_000);
         expect(result.additionalAsk.reissuesUnpaidAsk).toBe(true);
-        const { PENDING_ASK_NETTED_BY_REDUCTION_NOTE } = await import("@/lib/additional-ask-reduction");
+        const { PENDING_ASK_NETTED_BY_REDUCTION_NOTE } = await import("@/lib/additional-ask-recovery-close");
         expect(await recovery()).toEqual({
           status: "SUCCEEDED", attempts: 1, nextRetryAt: null, succeededAt: expect.any(Date), lastError: PENDING_ASK_NETTED_BY_REDUCTION_NOTE,
         });

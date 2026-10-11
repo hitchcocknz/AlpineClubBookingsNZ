@@ -71,12 +71,7 @@ import {
   type AdditionalAsk,
 } from "@/lib/additional-payment-ask";
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
-import {
-  NO_FOLDED_REISSUED_ASKS,
-  NO_UNPAID_ASK_SETTLEMENT,
-  unpaidAskOffsetHistory,
-  type FoldedReissuedAsks,
-} from "@/lib/unpaid-ask-offset-marker";
+import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
 import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
@@ -1073,9 +1068,8 @@ export async function POST(
         // exactly as `applyPaymentAdjustments` refuses the other doors' asks.
         throw new ApiError(ORGANISER_CHILD_CHARGE_REFUSAL, 409);
       } else if (hasSucceededPayment && priceDiffCents > 0) {
-        // #3954 round 4: a reduction's re-issue still waiting on its mint is
-        // asked for on this one fresh ask, and its recovery closed - and
-        // (round 6) recorded on this edit's history, so its replay asks again.
+        // #3954: a waiting re-issue joins this ask, its recovery closed and the
+        // fold recorded on this edit's history so its replay asks again.
         foldedReissuedAsks = await foldWaitingReissuedAsks(tx, booking);
         additionalAsk = sizeAdditionalAsk({
           priceDiffCents,
