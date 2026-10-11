@@ -109,6 +109,7 @@ import {
 } from "@/lib/payment-recovery";
 import { deserializeRefundPlan, isMirrorRefundPlan, mirrorPlanRefundedCents, organiserCancelJoinerEmailRefund } from "@/lib/group-settlement-refund-plan";
 import { refundOrganiserCancelChildren } from "@/lib/organiser-child-refund-executor";
+import { alertGroupOrganiserHandBack, raiseGroupOrganiserHandBackTask, type GroupOrganiserHandBack } from "@/lib/group-organiser-hand-back";
 import { enqueueXeroGroupSettlementInvoiceVoidOperation } from "@/lib/xero-group-settlement-void-outbox";
 import logger from "@/lib/logger";
 import { clubToday } from "@/lib/club-time";
@@ -380,6 +381,8 @@ export async function settleGroupBookingOnOrganiserCancel(
   }
   // #3854: the plan as frozen, which a failed card refund below does not clear.
   const plannedMirrorRefunds = new Map(refundByChildId);
+  // #4042 (`INV-PAY-120`): the organiser's hand-back, when this run raised it.
+  let organiserHandBack: GroupOrganiserHandBack | null = null;
 
   // Refund + settlement flip, guarded on SUCCEEDED so it fires exactly once
   // across re-drives: the plan survives this flip, so a re-drive after the flip
@@ -517,6 +520,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     // kick can run POST-commit (the enqueue itself is now durable — below).
     let queuedCreditNoteOperationId: string | null = null;
     let childClaimed = false;
+    const raised: { handBack: GroupOrganiserHandBack | null } = { handBack: null };
     try {
       queuedCreditNoteOperationId = await prisma.$transaction(async (tx) => {
         let queuedOperationId: string | null = null;
@@ -591,6 +595,8 @@ export async function settleGroupBookingOnOrganiserCancel(
             { createdByMemberId: sessionUserId, store: tx }
           );
           queuedOperationId = queued.queueOperationId;
+          // #4042: an Internet Banking settlement's refund is the club's to repay by hand.
+          if (settlement && !settlement.stripePaymentIntentId) raised.handBack = await raiseGroupOrganiserHandBackTask(tx, { settlementId: settlement.id, organiserBookingId, plan: plannedMirrorRefunds, claimedChildId: child.id, format });
         }
 
         // #3209 (`INV-HOST-041`). The beds are reconciled above; ADULT SUPERVISION
@@ -629,6 +635,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
 
     if (!childClaimed) continue;
+    organiserHandBack ??= raised.handBack;
 
     // Best-effort outbox worker kick, kept POST-commit (the outbox cron drains
     // the row regardless). Never inside the tx: that would put a Xero provider
@@ -667,6 +674,7 @@ export async function settleGroupBookingOnOrganiserCancel(
         refundForChild,
         owedRefundForChild: owedForChild,
         paymentId: child.payment?.id ?? null,
+        organiserHandBackTaskId: raised.handBack?.id ?? null,
       },
       ipAddress,
     });
@@ -732,6 +740,7 @@ export async function settleGroupBookingOnOrganiserCancel(
   }
 
   // The group was fenced CANCELLED before provider calls and child cleanup.
+  if (organiserHandBack) await alertGroupOrganiserHandBack({ organiserBookingId, task: organiserHandBack, format });
 
   logger.info(
     {

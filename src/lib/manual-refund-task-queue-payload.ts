@@ -9,6 +9,7 @@ import {
   isEditRefundHandBackTask,
   isPartPaymentReviewTask,
   isRefundRequestHandBackTask,
+  isGroupOrganiserHandBackTask,
 } from "@/lib/manual-refund-task-settlement-rules";
 import type { QueueRepairableStrand } from "@/lib/stored-night-price-repair-queue";
 
@@ -167,6 +168,12 @@ export type OpenManualRefundTaskPayload = {
    */
   refundRequestHandBack: boolean;
   /**
+   * #4042 (`INV-PAY-120`): an organiser cancelled a group paid by Internet
+   * Banking, and the club repays the joiners' refunds to the organiser. The
+   * cancel already booked those refunds, so the cash sentence does not fit it.
+   */
+  groupOrganiserHandBack: boolean;
+  /**
    * #3643 (`INV-PAY-108`, ORCHESTRATOR DECISION 3): on a review, when the inbound
    * Xero sync learned the invoice was reported PAID and the invoice's cash then.
    * Nothing was credited or handed back for it; the treasurer decides. The
@@ -250,6 +257,7 @@ export function toOpenManualRefundTaskPayload(
     partPaymentReview: isPartPaymentReviewTask(task),
     editRefundHandBack: isEditRefundHandBackTask(task),
     refundRequestHandBack: isRefundRequestHandBackTask(task),
+    groupOrganiserHandBack: isGroupOrganiserHandBackTask(task),
     partPaymentReviewXeroPaid:
       isPartPaymentReviewTask(task) &&
       task.partPaymentReviewXeroPaidAt &&

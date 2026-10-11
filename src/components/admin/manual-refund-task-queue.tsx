@@ -105,6 +105,8 @@ interface ManualRefundTask {
   editRefundHandBack?: boolean;
   /** #3827 (D-3813-7): an approved appeal's refund, by bank transfer. Optional, as above. */
   refundRequestHandBack?: boolean;
+  /** #4042: an organiser's Internet Banking group cancel, repaid to the organiser. Optional, as above. */
+  groupOrganiserHandBack?: boolean;
   /**
    * #3643 (`INV-PAY-108`): Xero reported the review's invoice paid after the
    * cancel, and the invoice's cash then. Optional, as above.
@@ -1485,6 +1487,7 @@ export function ManualRefundTaskQueue() {
   const hasPartPaymentReviewRows = openTasks.some(isPartPaymentReview);
   const hasEditRefundRows = openTasks.some(isEditRefundHandBack);
   const hasRefundRequestRows = openTasks.some(isRefundRequestHandBack);
+  const hasGroupOrganiserRows = openTasks.some((task) => task.groupOrganiserHandBack === true);
   const hasHandBackRows = openTasks.some(
     (task) =>
       !isFinancialReview(task) &&
@@ -1492,7 +1495,8 @@ export function ManualRefundTaskQueue() {
       !isLateCaptureApproval(task) &&
       !isPartPaymentReview(task) &&
       !isEditRefundHandBack(task) &&
-      !isRefundRequestHandBack(task),
+      !isRefundRequestHandBack(task) &&
+      task.groupOrganiserHandBack !== true,
   );
   if (
     !showQueue &&
@@ -1571,6 +1575,19 @@ export function ManualRefundTaskQueue() {
                 club sends the approved amount by bank transfer; the member has
                 been told it is coming. Mark a refund as paid back once the
                 money has actually gone.
+              </p>
+            ) : null}
+            {hasGroupOrganiserRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-group-organiser-intro"
+              >
+                Some of these are group bookings paid by internet banking that
+                the organiser cancelled. Each joiner&apos;s refund is already
+                recorded on their booking and in Xero, but the money has not
+                gone: the club repays the organiser by bank transfer. The row
+                lists each joiner&apos;s share. Mark it paid back once the money
+                has actually gone; that adds nothing further to the ledger.
               </p>
             ) : null}
             {hasReviewRows ? (

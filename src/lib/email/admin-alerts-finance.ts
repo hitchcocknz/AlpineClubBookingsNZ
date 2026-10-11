@@ -24,6 +24,9 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCaptureHandBackConflictSubjectLabel,
+  manualRefundTaskAlertLabel,
+  manualRefundTaskAlertNote,
+  type ManualRefundTaskAlertSituation,
 } from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
@@ -407,17 +410,22 @@ export async function sendAdminManualRefundTaskAlert(data: {
   refundAmountCents: number;
   bookingId: string;
   reason: string;
+  /** #4042: absent for the cash cancel (#2262), which every caller before it was. */
+  situation?: ManualRefundTaskAlertSituation;
 },
   format: ClubFormat,
 ) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const reviewUrl = `${baseUrl}/admin/payments`;
+  const situation = data.situation ?? "cash-cancellation";
 
   await sendToAdmins({
-    subject: `Manual refund needed — cash booking cancelled: ${data.memberName}`,
+    subject: `Manual refund needed — ${manualRefundTaskAlertLabel(situation)}: ${data.memberName}`,
     html: await renderEmailHtml(() => adminManualRefundTaskTemplate({ ...data, reviewUrl }, format)),
     templateName: "admin-manual-refund-task",
     templateData: {
+      handBackLabel: manualRefundTaskAlertLabel(situation),
+      handBackNote: manualRefundTaskAlertNote(situation),
       memberName: data.memberName,
       checkIn: emailCalendarDay(data.checkIn),
       checkOut: emailCalendarDay(data.checkOut),

@@ -27,7 +27,9 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCapturePaymentLabel,
+  manualRefundTaskAlertNote,
   secondInstrumentConflictOutcomeParagraph,
+  type ManualRefundTaskAlertSituation,
 } from "@/lib/email-message-notes";
 import { emailPalette } from "@/lib/email-theme";
 import {
@@ -532,7 +534,8 @@ export function adminSecondInstrumentSettlementConflictTemplate(data: {
 //
 // A cash-settled booking was cancelled. There is no card to refund and no Xero
 // credit note to raise, so the money has to be handed back by a person. The
-// task is durable; this alert is the nudge, not the record.
+// task is durable; this alert is the nudge, not the record. #4042: also an
+// organiser's Internet Banking group cancel, whose wording differs.
 export function adminManualRefundTaskTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -541,12 +544,17 @@ export function adminManualRefundTaskTemplate(data: {
   bookingId: string;
   reason: string;
   reviewUrl: string;
+  situation?: ManualRefundTaskAlertSituation;
 },
   format: ClubFormat,
 ): string {
+  const lead = data.situation === "group-organiser-internet-banking"
+    ? `${heading("Manual Refund Needed — Internet Banking Group Cancelled")}
+    ${paragraph(manualRefundTaskAlertNote(data.situation))}`
+    : null;
   return layout(`
-    ${heading("Manual Refund Needed — Cash Booking Cancelled")}
-    ${alertBox(
+    ${lead ?? heading("Manual Refund Needed — Cash Booking Cancelled")}
+    ${lead ? "" : `${alertBox(
       "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand — nothing was refunded automatically.",
       "warning"
     )}
@@ -555,9 +563,9 @@ export function adminManualRefundTaskTemplate(data: {
     )}
     ${paragraph(
       "Pay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note."
-    )}
+    )}`}
     ${infoTable([
-      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: lead ? "Organiser" : "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: emailCalendarDay(data.checkIn) },
       { label: "Check-out", value: emailCalendarDay(data.checkOut) },
       { label: "Booking", value: escapeHtml(data.bookingId) },

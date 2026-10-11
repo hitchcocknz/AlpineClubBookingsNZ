@@ -76,6 +76,33 @@ export function refundRequestHandBackOccurrenceKey(refundRequestId: string): str
 }
 
 /**
+ * #4042 (`INV-PAY-120`): THE OCCURRENCE-KEY PREFIX of a group organiser's
+ * hand-back - the one task an organiser's cancel of a group settled by Internet
+ * Banking raises, on the organiser's booking, so the treasurer repays the
+ * joiners' refunds to the organiser. One per settlement: the key is the
+ * duplicate fence and the marker. It IS a cancellation's hand-back, so it is
+ * not in the list below; it carries no `paymentId`, because the cancel already
+ * recorded each joiner's refund on the joiner's own payment.
+ */
+export const GROUP_ORGANISER_HAND_BACK_KEY_PREFIX = "group-organiser-hand-back:";
+
+/** The one occurrence key of one group settlement's organiser hand-back (`INV-PAY-120`). */
+export function groupOrganiserHandBackOccurrenceKey(settlementId: string): string {
+  return `${GROUP_ORGANISER_HAND_BACK_KEY_PREFIX}${settlementId}`;
+}
+
+/** #4042: is this task a group organiser's hand-back (`INV-PAY-120`)? */
+export function isGroupOrganiserHandBackTask(task: {
+  kind: ManualRefundTaskKind | string | null;
+  occurrenceKey: string | null;
+}): boolean {
+  return (
+    task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+    hasKeyPrefix(task.occurrenceKey, GROUP_ORGANISER_HAND_BACK_KEY_PREFIX)
+  );
+}
+
+/**
  * #3827 (`INV-PAY-117`): the key prefixes of every hand-back that is NOT a
  * cancellation's - money promised back by bank transfer on a decision other
  * than a cancel (an edit's reduction, an approved refund request). The one
@@ -95,7 +122,8 @@ function hasKeyPrefix(occurrenceKey: string | null, prefix: string): boolean {
  * `CANCELLED_BOOKING_HAND_BACK` — reused rather than a new label for the reason
  * #3639 and #3643 give: the previous app version cannot read a label it does
  * not know, and lists this kind as money to pay back by hand, which is what it
- * is — marked by its occurrence key, which no cancellation writer sets. So the
+ * is — marked by its occurrence key, whose prefix no cancellation writer sets
+ * (the group organiser's hand-back, #4042, has a prefix of its own). So the
  * kind cannot say it; this can. Every server reader that treats a hand-back as
  * a CANCELLATION's (its Xero note, the repair tool's late-cash evidence, the
  * organisation hand-back's duplicate check) asks it here.

@@ -495,6 +495,28 @@ let census: typeof import("@/lib/booking-ledger-projection-census-store");
       expect(await lineCount(BANK.children)).toBe(before);
     });
 
+    it("#4042 INTERNET BANKING: the organiser's cancel raised ONE hand-back for the plan's total on the organiser's booking; the re-run raised none, and paying it back moves nothing the cancel already booked", async () => {
+      const tasks = await prisma.manualRefundTask.findMany({ where: { bookingId: { in: [BANK.organiser, ...BANK.children] } } });
+      expect(tasks).toEqual([
+        expect.objectContaining({
+          bookingId: BANK.organiser,
+          paymentId: null,
+          kind: "CANCELLED_BOOKING_HAND_BACK",
+          status: "OPEN",
+          amountCents: CHILD_CENTS,
+          raisedAmountCents: CHILD_CENTS,
+          occurrenceKey: `group-organiser-hand-back:${BANK.settlement}`,
+        }),
+      ]);
+      const payments = await prisma.payment.findMany({ where: { bookingId: { in: BANK.children } }, orderBy: { id: "asc" } });
+      const lineTotal = await lineCount([BANK.organiser, ...BANK.children]);
+      const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
+      await resolveManualRefundTask({ taskId: tasks[0]!.id, resolution: "completed", note: "Paid the organiser", actingMemberId: MEMBER_ID, confirmedAmountCents: CHILD_CENTS, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST);
+      expect(await prisma.payment.findMany({ where: { bookingId: { in: BANK.children } }, orderBy: { id: "asc" } })).toEqual(payments);
+      expect(await lineCount([BANK.organiser, ...BANK.children])).toBe(lineTotal);
+      expect(await prisma.bookingEvent.count({ where: { bookingId: BANK.organiser, type: "REFUNDED" } })).toBe(0);
+    });
+
     it("FIX ROUND F: the pre-#3653 plan's replay posts a mirrored child's refund line by the plan, once", async () => {
       const [child] = LEGACY.children;
       expect(await settle.applyGroupSettlementSucceeded({ id: LEGACY.pi, amount: CHILD_CENTS }, CLUB_FORMAT_TEST)).toMatchObject({ outcome: "settled" });

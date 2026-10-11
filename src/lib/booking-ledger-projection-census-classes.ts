@@ -29,6 +29,7 @@ import { deriveCardAppliedCreditDoublePayFinding } from "@/lib/card-applied-cred
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
 import { internetBankingSettlementEvidence, type InternetBankingSettlementEvidence } from "@/lib/internet-banking-settlement-evidence";
 import { isCreditAppliedToBooking, isCreditIssuedFromBooking } from "@/lib/member-credit-booking-rows";
+import { isGroupOrganiserHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
 import {
@@ -564,7 +565,8 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
   const handBacks = (status: ManualRefundTaskStatus) =>
     nonCardPayment
       ? row.tasks
-          .filter((task) => task.kind === "CANCELLED_BOOKING_HAND_BACK" && task.status === status)
+          // #4042: a group organiser's hand-back repays the joiners' refunds, not this booking's.
+          .filter((task) => task.kind === "CANCELLED_BOOKING_HAND_BACK" && task.status === status && !isGroupOrganiserHandBackTask(task))
           .reduce((sum, task) => sum + (task.amountCents ?? 0), 0)
       : 0;
   const inFlightRefund = row.recoveryOperations

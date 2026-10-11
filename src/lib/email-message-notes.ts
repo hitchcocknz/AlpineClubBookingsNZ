@@ -269,6 +269,28 @@ export function internetBankingHoldKeptParagraph(
 }
 
 /**
+ * #4042 (`INV-PAY-120`) — which hand-back the "Manual refund needed" alert is
+ * about. The cash cancel's (#2262) asks an officer to pay a member back and
+ * says the ledger records it when the task is marked paid back. An organiser's
+ * cancel of a group paid by Internet Banking has already recorded the joiners'
+ * refunds in the books and Xero, so the cash wording would be false of it.
+ */
+export type ManualRefundTaskAlertSituation = "cash-cancellation" | "group-organiser-internet-banking";
+
+/** The alert's subject and heading phrase, shared by the HTML and `{{handBackLabel}}`. */
+export function manualRefundTaskAlertLabel(situation: ManualRefundTaskAlertSituation): string {
+  return situation === "group-organiser-internet-banking" ? "Internet Banking group cancelled" : "cash booking cancelled";
+}
+
+/** The alert's explaining paragraph, shared by the HTML and `{{handBackNote}}`. */
+export function manualRefundTaskAlertNote(situation: ManualRefundTaskAlertSituation): string {
+  if (situation === "group-organiser-internet-banking") {
+    return "A group booking its organiser paid for by Internet Banking has been cancelled by the organiser. Each joiner's refund has been recorded on their booking and a Xero refund credit note queued, but no money has moved: the club has to repay the organiser by bank transfer. Pay the organiser back, then mark the task paid back on the payments board - that records only that the money went, because the refunds are already in the books. The reason below lists each joiner's share.";
+  }
+  return "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand - nothing was refunded automatically. There is no card charge to reverse and no Xero invoice to credit, so the system has raised a hand-back task instead of pretending money moved; the member has been told the club will arrange the refund. Pay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note.";
+}
+
+/**
  * #3638 — the paragraph that says what happened when Xero reported an Internet
  * Banking invoice paid on a booking that also carries a captured card payment.
  *

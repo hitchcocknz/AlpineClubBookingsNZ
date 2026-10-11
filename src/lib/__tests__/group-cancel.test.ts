@@ -68,6 +68,16 @@ const groupLedger = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/booking-ledger-group-settlement-sync", () => groupLedger);
 
+// #4042: the hand-back's own rules (once per settlement, the amount, the row's
+// shape, the alert's wording) are proved in group-organiser-hand-back.test.ts and
+// against PostgreSQL (booking-ledger-group-settlement.realdb.test.ts); here only
+// WHERE the organiser cancel raises it and that it alerts once.
+const handBack = vi.hoisted(() => ({
+  raiseGroupOrganiserHandBackTask: vi.fn<(tx: unknown, input: unknown) => Promise<{ id: string; amountCents: number; reason: string } | null>>(async () => null),
+  alertGroupOrganiserHandBack: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
+}));
+vi.mock("@/lib/group-organiser-hand-back", () => handBack);
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     groupBooking: {
@@ -1588,5 +1598,110 @@ describe("adult-member hosting on an organiser cancel (#3209)", () => {
     expect(mocks.settleHostingCoverageAfterCommit.mock.calls).toEqual([
       [{ bookingId: "child-2" }],
     ]);
+  });
+});
+
+describe("#4042: an organiser's Internet Banking group cancel raises the organiser's hand-back", () => {
+  const RAISED = { id: "task-1", amountCents: 7500, reason: "Group cancelled by its organiser" };
+
+  function ibGroup(overrides: Record<string, unknown> = {}) {
+    mocks.groupBookingFindUnique.mockResolvedValue({
+      id: GROUP_ID,
+      paymentMode: GroupBookingPaymentMode.ORGANISER_PAYS,
+      settlement: {
+        id: "settle-ib",
+        status: PaymentStatus.SUCCEEDED,
+        amountCents: 9000,
+        stripePaymentIntentId: null,
+        source: PaymentSource.INTERNET_BANKING,
+        refundPlan: null,
+        ...overrides,
+      },
+    });
+  }
+  function paid(id: string, paymentId: string) {
+    return child({
+      id,
+      status: BookingStatus.PAID,
+      finalPriceCents: 4500,
+      payment: { id: paymentId, amountCents: 4500, refundedAmountCents: 0, changeFeeCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
+  }
+
+  it("raises it inside each refunded child's claim, after its mirror, with the frozen plan; alerts ONCE after the loop with the task the claim created", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1"), paid("child-2", "pay-2")]);
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 4500, refundPercentage: 100 }).mockReturnValueOnce({ refundAmountCents: 3000, refundPercentage: 66 });
+    handBack.raiseGroupOrganiserHandBackTask.mockResolvedValueOnce(RAISED).mockResolvedValueOnce(null);
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    const plan = new Map([["child-1", 4500], ["child-2", 3000]]);
+    expect(handBack.raiseGroupOrganiserHandBackTask.mock.calls).toEqual([
+      [txClient, { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, plan, claimedChildId: "child-1", format: CLUB_FORMAT_TEST }],
+      [txClient, { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, plan, claimedChildId: "child-2", format: CLUB_FORMAT_TEST }],
+    ]);
+    // In the claim, after the mirror and its note: one commit or none.
+    const [firstRaise] = handBack.raiseGroupOrganiserHandBackTask.mock.invocationCallOrder;
+    expect(mocks.paymentUpdate.mock.invocationCallOrder[0]).toBeLessThan(firstRaise!);
+    expect(mocks.enqueueXeroRefund.mock.invocationCallOrder[0]).toBeLessThan(firstRaise!);
+    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledTimes(1);
+    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledWith({ organiserBookingId: ORG_BOOKING, task: RAISED, format: CLUB_FORMAT_TEST });
+    // The child whose claim raised it names it in its audit.
+    const childAudits = mocks.logAudit.mock.calls.map(([entry]) => entry as { targetId: string; metadata: { organiserHandBackTaskId: string | null } });
+    expect(childAudits.map((entry) => [entry.targetId, entry.metadata.organiserHandBackTaskId])).toEqual([
+      ["child-1", "task-1"],
+      ["child-2", null],
+    ]);
+  });
+
+  it("a re-drive whose claims find the hand-back already raised sends no second alert", async () => {
+    ibGroup({ refundPlan: { "child-2": 3000 } });
+    mocks.bookingFindMany.mockResolvedValue([paid("child-2", "pay-2")]);
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.raiseGroupOrganiserHandBackTask).toHaveBeenCalledTimes(1);
+    expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
+  });
+
+  it("a claim that rolls back after raising it keeps no hand-back and sends no alert", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    handBack.raiseGroupOrganiserHandBackTask.mockResolvedValueOnce(RAISED);
+    mocks.reconcileHostingReviewForSystemCancellation.mockRejectedValueOnce(new Error("hosting failed"));
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.raiseGroupOrganiserHandBackTask).toHaveBeenCalledTimes(1);
+    expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
+  });
+
+  it("raises nothing for a card settlement, an unsettled group, or a child the policy refunds nothing", async () => {
+    // A card settlement (#3653): per-child Stripe refunds, no mirror in this loop.
+    ibGroup({ stripePaymentIntentId: "pi_settle", source: PaymentSource.STRIPE });
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    mocks.planOrganiserCancelChildRefunds.mockResolvedValue(new Map([["child-1", 4500]]));
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    // A pre-#3653 card plan finished the old way: a Stripe refund, not a hand-back.
+    ibGroup({ stripePaymentIntentId: "pi_legacy", source: PaymentSource.STRIPE, refundPlan: { "child-1": 4500 } });
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+    expect(mocks.processRefund).toHaveBeenCalledTimes(1);
+
+    // An Internet Banking settlement nobody has paid yet.
+    ibGroup({ status: PaymentStatus.PENDING });
+    mocks.bookingFindMany.mockResolvedValue([child({ id: "child-1", status: BookingStatus.CONFIRMED })]);
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    // Paid, but inside the no-refund tier.
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 0, refundPercentage: 0 });
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.raiseGroupOrganiserHandBackTask).not.toHaveBeenCalled();
+    expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
   });
 });
