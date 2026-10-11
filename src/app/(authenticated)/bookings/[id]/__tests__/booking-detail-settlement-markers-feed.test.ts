@@ -20,6 +20,8 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     auditLog: { findMany: mocks.auditLogFindMany },
     bookingEvent: { findMany: mocks.bookingEventFindMany },
+    // #3991: the narrative's amount owed reads the applied-credit ledger.
+    memberCredit: { aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: null } }) },
   },
 }));
 vi.mock("@/lib/booking-history", () => ({

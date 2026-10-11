@@ -104,8 +104,8 @@ export interface NarrativeEvent {
 export interface NarrativeBooking {
   status: string;
   finalPriceCents: number;
-  /** #3955 (`INV-PAY-119`): what its pay step charges (`bookingAmountOwedCents`) and the credit applied, where read. */
-  amountOwed?: { dueCents: number; appliedCreditCents: number };
+  /** `INV-PAY-119` (#3955, #3991): what its pay step charges (`bookingAmountOwedCents`) and the ledger credit applied. Required: a payable narrative has no bare-price fallback. */
+  amountOwed: { dueCents: number; appliedCreditCents: number };
   checkIn: Date;
   checkOut: Date;
   firstName: string;
@@ -390,8 +390,8 @@ function buildPayableNarrative(
   now: Date, format: ClubFormat
 ): BookingNarrative {
   const range = dateRange(booking, format);
-  const due = booking.amountOwed?.dueCents ?? booking.finalPriceCents;
-  if (booking.amountOwed && due <= 0) return nothingToPayNarrative(range, booking.amountOwed.appliedCreditCents > 0);
+  const due = booking.amountOwed.dueCents;
+  if (due <= 0) return nothingToPayNarrative(range, booking.amountOwed.appliedCreditCents > 0);
   const amountDue = formatCents(due, format);
 
   const linkUnusable =
@@ -590,7 +590,7 @@ function buildPayableWithFinancialReviewNarrative(
     // a screen asking for payment would bury it.
     headline: payable.headline,
     // #3194 fix round: the STALE-amount sentence, not "not part of that figure".
-    // `payable.message` has just said "$120.00 is due", and that is
+    // `payable.message` has just said "$120.00 is due", the amount owed built on
     // `booking.finalPriceCents` — which a parked edit writes back UNCHANGED while
     // saving the new dates. So the amount above this clause is the price from
     // before the member's change, and saying only that the change's amount sits

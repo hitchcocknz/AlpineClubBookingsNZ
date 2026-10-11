@@ -15,6 +15,8 @@ import {
 } from "@/lib/duplicate-capture-refund-event";
 import { settlementMarkerTimelineEntries } from "@/lib/manual-settlement-reversal-event";
 import { bookingHasOpenFinancialReview } from "@/lib/booking-financial-review-visibility";
+import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
+import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import type { BookingDetailRecord } from "./load-booking-detail";
 import type { BookingDetailViewer } from "./booking-detail-viewer";
 
@@ -111,6 +113,18 @@ export async function loadBookingDetailHistory({
   */
   const financialReviewPending = await bookingHasOpenFinancialReview(booking.id);
 
+  // #3991 (`INV-PAY-119`): the narrative quotes what the pay steps charge — the
+  // price plus a change fee recorded on the payment, less the credit applied
+  // from the ledger — read from the one home, exactly as the payment-link page
+  // it shares wording with (`payment-link-context.ts`) reads it. At or below
+  // zero it says there is nothing to pay.
+  const appliedCreditCents = await deriveBookingAppliedCreditCents(booking.id);
+  const owedCents = bookingAmountOwedCents({
+    finalPriceCents: booking.finalPriceCents,
+    changeFeeCents: booking.payment?.changeFeeCents ?? null,
+    appliedCreditCents,
+  });
+
   const bookingNarrative = resolveBookingNarrative({
     // The event stamps in the narrative are real instants and read in the
     // club's zone; its stay dates are @db.Date lodge nights and do not (#3123).
@@ -119,6 +133,7 @@ export async function loadBookingDetailHistory({
     booking: {
       status: booking.status,
       finalPriceCents: booking.finalPriceCents,
+      amountOwed: { dueCents: owedCents, appliedCreditCents },
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
       firstName: bookingOwner(booking).member.firstName,

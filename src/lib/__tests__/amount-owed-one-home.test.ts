@@ -26,6 +26,10 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
  *    cover the booking?" asked without the fee (#3955 round 5, finding 1:
  *    `appliedCreditCents + reviewGiveBacksCents < previousFinalPriceCents`).
  *
+ * Every file that resolves a booking narrative must read the one home too, and
+ * none may hand it a bare price as `dueCents` (#3991); the history feed's
+ * figure itself is pinned by `booking-detail-history-amount-owed.test.ts`.
+ *
  * WHAT THIS CANNOT SEE: an amount spelled another way (a sum in a different
  * order, a helper of its own, a variable that holds the bare price).
  */
@@ -49,6 +53,8 @@ const PAY_STEPS = [
   "src/lib/group-settlement-invoice-binding.ts",
   // #3955 round 3: the public pay page's amount, which its intent charges.
   "src/lib/payment-link-context.ts",
+  // #3991: the booking page's history narrative, which quotes the amount due.
+  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
 ];
 // A final price, then a minus, then — within the same expression — anything
 // named for credit or for what is already applied (#3955 round 3:
@@ -62,6 +68,8 @@ const CREDIT_VS_BARE_PRICE =
   /(?:[Cc]redit|[Aa]pplied)\w*[^;,{}()]{0,80}?(?<![=-])[<>]=?(?!=)\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*\+)|[\w.?!]*[Ff]inalPriceCents\s*[<>]=?(?!=)[^;,{}]{0,80}?(?:[Cc]redit|[Aa]pplied)\w*/g;
 // An intent, charge or payment amount that is a bare final price, in a pay step.
 const BARE_PRICE_AMOUNT = /\bamountCents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
+// #3991: the narrative's figure due (`amountOwed.dueCents`) set to a bare price.
+const BARE_PRICE_DUE = /\bdueCents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
 
 /**
  * The exact expressions allowed to stay, each pinned by its text (whitespace
@@ -132,6 +140,21 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
       (file) => `${file}: ${read(file).match(BARE_PRICE_AMOUNT)?.[0]}`,
     );
     expect(offenders, "INV-PAY-119: size it through bookingAmountOwedCents / bookingWorthCents").toEqual([]);
+  });
+
+  // #3991: the narrative quotes "$X is due" from what it is handed, so every
+  // file that resolves one reads the one home, and none hands it the bare price.
+  it("every source file that resolves a booking narrative reads the amount owed there", () => {
+    const callers = sourceFiles(path.join(REPO, "src")).filter((file) =>
+      /\bresolveBookingNarrative\(/.test(read(file)) && file !== "src/lib/booking-narrative.ts",
+    );
+    expect(callers.length, "the census found no narrative caller").toBeGreaterThan(0);
+    for (const file of callers) {
+      expect(read(file), `INV-PAY-119: ${file}`).toMatch(/\bbookingAmountOwedCents\(/);
+      expect(PAY_STEPS, `INV-PAY-119: add ${file} to PAY_STEPS`).toContain(file);
+    }
+    const bareDue = sourceFiles(path.join(REPO, "src")).filter((file) => BARE_PRICE_DUE.test(read(file)));
+    expect(bareDue, "INV-PAY-119: the narrative's dueCents comes from bookingAmountOwedCents").toEqual([]);
   });
 
   it("no source file subtracts credit from the bare price any more", () => {
