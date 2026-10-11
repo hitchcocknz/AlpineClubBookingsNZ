@@ -466,9 +466,17 @@ describe("every .env assignment shape Compose accepts is counted and read", () =
       '  env_assignment_pattern $KEYS',
       "  exit $?",
       "fi",
+      'if [ "$ENTRY" = "value" ]; then',
+      '  value="$(environment_role_env_value "$KEY")"',
+      "  printf 'VALUE=%s\\n' \"$value\"",
+      "  exit 0",
+      "fi",
+      // Each printed as soon as it is read, so a run that aborts in the second
+      // reader still shows what the first one returned.
       'count="$(count_environment_role_env_assignments "$KEY")"',
+      "printf 'COUNT=%s\\n' \"$count\"",
       'value="$(environment_role_env_value "$KEY")"',
-      "printf 'COUNT=%s\\nVALUE=%s\\n' \"$count\" \"$value\"",
+      "printf 'VALUE=%s\\n' \"$value\"",
       "",
     ].join("\n"),
     "utf8",
@@ -560,10 +568,15 @@ describe("every .env assignment shape Compose accepts is counted and read", () =
   it("aborts the count and the read for a refused key instead of matching every line", () => {
     // `grep -E ""` matches every line, so a reader that swallowed the refusal
     // would count every assignment in the file as this key.
-    const result = run({ KEY: "A.B" }, `${KEY}=production\nOTHER=1\n`);
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).not.toContain("COUNT=");
-    expect(result.stderr).toContain("not a plain variable name");
+    const counted = run({ KEY: "A.B" }, `${KEY}=production\nOTHER=1\n`);
+    expect(counted.code).not.toBe(0);
+    expect(counted.stdout).not.toContain("COUNT=");
+    expect(counted.stderr).toContain("not a plain variable name");
+
+    const readOnly = run({ ENTRY: "value", KEY: "A.B" }, `${KEY}=production\n`);
+    expect(readOnly.code).not.toBe(0);
+    expect(readOnly.stdout).not.toContain("VALUE=");
+    expect(readOnly.stderr).toContain("not a plain variable name");
   });
 });
 
