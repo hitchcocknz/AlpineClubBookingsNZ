@@ -3393,9 +3393,12 @@ receipt (change invoice or own receipt) resolved by hand before the app sent
   card-refund verdict alone - so also a change invoice resolved before the
   app sent it (#4038), and a close whose note row exists - and sized by the
   card notes in Xero only. Round 14: a note never sent (queued payload, still
-  queued or FAILED before it called Xero) never gets there, so it is recorded
-  by hand; one sent with no reply (executed payload, no id) may be in Xero, so
-  every record-by-hand finding names it apart, to check in Xero first. Each
+  queued or FAILED before it called Xero; round 15: or refused, a 4xx) is
+  recorded by hand; one that may be in Xero (executed payload, no id, no
+  refusal) is named apart by every record-by-hand finding, to check in Xero
+  first. Round 15: a note is in Xero by its id, or by its active refund-note
+  link naming the capture, so an officer's retry on a new row with no queue
+  type counts, once. Each
   capture is named once: the kept invoice's finding (only where the card
   verdict is resolved by hand, #4039), the close's, or this one; none where
   the app raises the card note

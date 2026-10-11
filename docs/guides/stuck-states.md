@@ -148,13 +148,16 @@ follows. If it is there, what you do depends on whether the app linked it:
   for a card refund of the charge, so record that by hand. The retry's
   message names both amounts, and when nothing, or $0, was closed as paid
   another way, it says to record any card refund by hand. A card note that
-  was never sent - still waiting, or failed before it reached Xero - is never
-  sent once the operation is resolved, so its amount is in the amount to
-  record by hand. A card note the app sent to Xero but never heard back about
-  may already be there: the message names it separately, so check Xero for
-  that credit note and record it by hand only if it is not there. If the
-  charge still has another invoice in Xero, the app notes its card refunds
-  against that one, and the message names only what no note covers.
+  is not in Xero - still waiting, failed before it reached Xero, or refused
+  by Xero - is in the amount to record by hand. A note an officer retried
+  from Xero Operations counts once it is in Xero, even though the original
+  waiting note still shows as failed. A card note that may be in Xero - the
+  app tried to send it and cannot tell whether Xero took it - is named
+  separately, so check Xero for that credit note and record it by hand only
+  if it is not there. If the charge still has another invoice in Xero, or one
+  on its way there, the app notes its card refunds against that one: record
+  none of them by hand, because the app notes any not yet noted the next time
+  it notes the charge.
 
 The Xero repair tool a developer runs retries the other failed records, and
 queues a note that never followed its record. If the note itself fails, the
@@ -163,9 +166,9 @@ Operations. The nightly credit check queues a note that was never queued, but
 does not retry one that failed. If an officer recorded the charge in Xero by
 hand before the app sent it, no note is raised: record the refund by hand too.
 The repair tool names the amount: what was refunded to the card, less any note
-already in Xero for it, plus what you paid back another way. A card note the
-app sent but never heard back about is named separately: check Xero for it
-before you record that part. Whenever the charge's record was resolved by hand
+already in Xero for it, plus what you paid back another way. A card note that
+may be in Xero is named separately: check Xero for it before you record that
+part. Whenever the charge's record was resolved by hand
 and that finding does not apply - the app's own invoice in Xero whose operation
 was resolved by hand, a change's invoice resolved before the app sent it, or
 once a note for the close exists - the repair tool names the card refunds to

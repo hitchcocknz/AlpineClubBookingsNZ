@@ -1479,15 +1479,18 @@ reads the resolved row as resolved by hand and raises no card note (round
 12). The 409 names both: the close's amount, and the capture's card refunds
 less the notes naming it (`readUnnotedLateCaptureCardRefunds`). Since round
 13 only a note in Xero counts. Since round 14 each card note is one of three:
-in Xero (its credit note's id recorded, or resolved by hand), taken off; never
-sent (still queued, or failed before it called Xero), which never reaches Xero
-once the row is resolved, so its amount is recorded by hand; or sent with no
-reply (it called Xero but the app never heard back), which may already be in
-Xero, so the 409 names it apart: check Xero for that credit note and record
-it by hand only if it is not there. While the capture still has another
-invoice in Xero, its card notes land there, and the 409 names only what no
-note asks for. With no close, or a $0 one, it says to record any card refund
-by hand. The nightly credit check also re-runs the note step for any payment
+in Xero (its credit note's id recorded, its active refund-note link naming
+the capture, or resolved by hand), taken off; never sent (still queued, failed
+before it called Xero, or refused by Xero with a 4xx), so its amount is
+recorded by hand; or may be in Xero (it called Xero and the outcome is
+unknown), so the 409 names it apart: check Xero for that credit note and
+record it by hand only if it is not there. A queued note is not proof that
+nothing reached Xero: an officer's retry of a failed note sends it again on a
+new row, and round 15 counts that row and its link, once. While the capture
+still has another invoice in Xero, or another receipt on its way there, its
+card notes land there: nothing of them is recorded by hand, and the 409 says
+the app notes what no note covers yet the next time it notes the charge. With
+no close, or a $0 one, it says to record any card refund by hand. The nightly credit check also re-runs the note step for any payment
 whose closes' notes do not cover what they paid back; it queues a note that
 was never queued, but a FAILED note needs **Retry in background** in Xero
 Operations. If an officer resolved the capture's receipt
