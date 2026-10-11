@@ -33,7 +33,7 @@
   same moment is refunded it automatically, or the change is refused with "try
   again in a moment" and nothing is changed; reminders stop for a cancelled
   request and quote the new amount for a smaller one, and the member's email
-  says when the extra payment was cancelled. A smaller request gets its own Xero
+  says when the additional payment was cancelled. A smaller request gets its own Xero
   supplementary invoice, marked paid when the member pays it, so Xero matches
   what the member is asked to pay. An officer's review charge is never reduced
   this way.
@@ -52,4 +52,11 @@
   against the invoice for exactly the part it had billed, worded as an invoice
   correction, so Xero matches what the booking costs and the treasurer has
   nothing to do. A booking-vs-Xero repair run checks the note is there and
-  raises it if it is missing.
+  raises it if it is missing. The app raises that note only where it can tell
+  from the booking's own records that the invoice billed the extra; where it
+  cannot, nothing is credited and the repair run lists the booking for a
+  treasurer to check instead.
+
+  A smaller request that a later price increase took into its own request keeps
+  its own Xero invoice, and is asked for again if that increase's card request
+  has to be retried.
