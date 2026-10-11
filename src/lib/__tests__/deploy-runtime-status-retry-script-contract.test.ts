@@ -62,6 +62,15 @@ function assignment(name: string): string {
   return match![0];
 }
 
+/** The accepted range, read from the script's one definition rather than restated here. */
+function integerAssignment(name: string): number {
+  const value = assignment(name).slice(name.length + 1);
+  expect(value, `${name} must be a plain integer`).toMatch(/^\d+$/);
+  return Number(value);
+}
+const TIMEOUT_MIN = integerAssignment("DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS");
+const TIMEOUT_MAX = integerAssignment("DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS");
+
 const LIFTED_ASSIGNMENTS = [
   "CRON_SERVICE",
   "BLUE_SERVICE",
@@ -72,6 +81,8 @@ const LIFTED_ASSIGNMENTS = [
   "DEPLOY_POLL_INTERVAL_SECONDS",
   "RUNTIME_STATUS_NO_SECRET_EXIT",
   "INTERNAL_READ_REQUEST_TIMEOUT_MS",
+  "DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS",
+  "DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS",
 ];
 
 const LIFTED_FUNCTIONS = [
@@ -96,9 +107,9 @@ function writeHarness(runDir: string): string {
     "set -Eeuo pipefail",
     `trap 'echo "ERR-TRAP-FIRED" >&2' ERR`,
     ...LIFTED_ASSIGNMENTS.map(assignment),
-    `RUNTIME_STATUS_TIMEOUT_SECONDS="$STUB_TIMEOUT"`,
+    `DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS="$STUB_TIMEOUT"`,
     `SWITCHED_TRAFFIC="$STUB_SWITCHED_TRAFFIC"`,
-    `ACTIVE_SERVICE="app_blue"`,
+    `ACTIVE_SERVICE="$STUB_ACTIVE_SERVICE"`,
     `TARGET_SERVICE="app_green"`,
     ...LIFTED_FUNCTIONS.map(functionSource),
     // The deadline clock: a file only `sleep` and a slow attempt advance.
@@ -213,6 +224,7 @@ function runHarness(env: Record<string, string>) {
         STUB_CRON_SECRET: SECRET,
         STUB_TIMEOUT: "6",
         STUB_SWITCHED_TRAFFIC: "0",
+        STUB_ACTIVE_SERVICE: "app_blue",
         STUB_ATTEMPT_SECONDS: "0",
         STUB_READY_EXEC_FAILS: "0",
         STUB_RUNTIME_EXEC_FAILS: "0",
@@ -292,7 +304,7 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
         expect(result.stderr).toContain("Last result: HTTP 503");
         expect(result.stderr).toContain(`Last response body: ${STARTING_BODY}`);
         expect(result.stderr).toContain(
-          "set RUNTIME_STATUS_TIMEOUT_SECONDS (0-600) in the shell that runs the deploy; it is not read from .env.",
+          `set DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS (${TIMEOUT_MIN}-${TIMEOUT_MAX}) in the shell that runs the deploy; it is not read from .env.`,
         );
         expectOneTrapAfter(result.stderr, giveUp);
       });
@@ -307,7 +319,7 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
       await withServer(server, async () => {
         const result = await runHarness({ STUB_PORT: String(server.port) });
         expect(result.stderr).toContain(
-          "Traffic has not been switched, so the deploy stops before the cutover.",
+          "Traffic has not been switched, so the deploy stops before the cutover. Caddy still points at app_blue,",
         );
         // Never the promise that the previous release keeps serving: after a
         // stopped-runtime deploy nothing is.
@@ -321,7 +333,7 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
   );
 
   it(
-    "never says 'before the cutover' at step 17, after traffic has been switched",
+    "makes a single attempt at step 17, after traffic has been switched, so the rollback starts at once",
     async () => {
       const server = await startServer(() => ({ status: 503, body: STARTING_BODY }));
       await withServer(server, async () => {
@@ -330,10 +342,60 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
           STUB_SWITCHED_TRAFFIC: "1",
         });
         expect(result.code).not.toBe(0);
+        // The configured bound (6s here) is ignored once members are on this colour.
+        expect(server.runtimeHits()).toBe(1);
+        const giveUp = `Internal app: ${RUNTIME_STATUS} did not answer HTTP 200 within 0s (1 attempt).`;
+        expect(result.stderr).toContain(giveUp);
+        expect(result.stderr).not.toContain("asking again");
         expect(result.stderr).toContain(
           "This is the check after the traffic switch: Caddy already points at app_green.",
         );
+        expect(result.stderr).toContain("so the rollback starts at once.");
         expect(result.stderr).not.toContain("before the cutover");
+        expect(result.stderr).not.toContain("To wait longer");
+        expectOneTrapAfter(result.stderr, giveUp);
+      });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "makes a single readiness attempt at step 17 too",
+    async () => {
+      const server = await startServer(
+        () => ({ status: 200, body: READY_BODY }),
+        () => ({ status: 503, body: STARTING_BODY }),
+      );
+      await withServer(server, async () => {
+        const result = await runHarness({
+          STUB_PORT: String(server.port),
+          STUB_SWITCHED_TRAFFIC: "1",
+        });
+        expect(result.code).not.toBe(0);
+        expect(server.readinessHits()).toBe(1);
+        expect(result.stderr).toContain(
+          `Internal app: ${READINESS} did not answer HTTP 200 within 0s (1 attempt).`,
+        );
+      });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "on a first blue/green deploy, does not call the just-recreated cron leader the previous release",
+    async () => {
+      const server = await startServer(() => ({ status: 503, body: STARTING_BODY }));
+      await withServer(server, async () => {
+        // Caddy points at `app` itself, which step 15 has just recreated.
+        const result = await runHarness({
+          STUB_PORT: String(server.port),
+          STUB_ACTIVE_SERVICE: "app",
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.stderr).toContain(
+          "But Caddy points at app, and this step has just recreated app on the new release, so the previous release is not serving",
+        );
+        expect(result.stderr).not.toContain("Caddy still points at app");
       });
     },
     RUN_TIMEOUT_MS,
@@ -366,7 +428,7 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
         const result = await runHarness({ STUB_PORT: String(server.port), STUB_TIMEOUT: "0" });
         expect(result.code).not.toBe(0);
         expect(server.runtimeHits()).toBe(1);
-        expect(result.stderr).toContain("within 0s (1 attempts).");
+        expect(result.stderr).toContain("within 0s (1 attempt).");
         expect(result.stderr).not.toContain("asking again");
       });
     },
@@ -436,6 +498,27 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
   );
 
   it(
+    "stops at once, after the traffic switch too, when the container has no CRON_SECRET",
+    async () => {
+      const server = await startServer(() => ({ status: 200, body: READY_BODY }));
+      await withServer(server, async () => {
+        const result = await runHarness({
+          STUB_PORT: String(server.port),
+          STUB_CRON_SECRET: "",
+          STUB_SWITCHED_TRAFFIC: "1",
+        });
+        expect(result.code).not.toBe(0);
+        expect(server.runtimeHits()).toBe(0);
+        expect(result.stderr).toContain("CRON_SECRET is empty inside this container");
+        expect(result.stderr).toContain("This is the check after the traffic switch");
+        expect(result.stderr).not.toContain("before the cutover");
+        expectOneTrapAfter(result.stderr, "This is the check after the traffic switch");
+      });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
     "stops at once on HTTP 401: a wrong secret is configuration, not start-up",
     async () => {
       const server = await startServer(() => ({ status: 200, body: READY_BODY }));
@@ -449,6 +532,45 @@ describe("deploy steps 14, 15 and 17: the runtime-status read retries, then expl
         const stop = `Internal app: ${RUNTIME_STATUS} answered HTTP 401.`;
         expect(result.stderr).toContain(stop);
         expect(result.stderr).toContain('Response body: {"error":"Unauthorized"}');
+        expect(result.stderr).not.toContain("asking again");
+        expectOneTrapAfter(result.stderr, stop);
+      });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "stops at once on HTTP 401 after the traffic switch too, describing the rollback",
+    async () => {
+      const server = await startServer(() => ({ status: 200, body: READY_BODY }));
+      await withServer(server, async () => {
+        const result = await runHarness({
+          STUB_PORT: String(server.port),
+          STUB_CRON_SECRET: "a-different-secret",
+          STUB_SWITCHED_TRAFFIC: "1",
+        });
+        expect(result.code).not.toBe(0);
+        expect(server.runtimeHits()).toBe(1);
+        expect(result.stderr).toContain(`Internal app: ${RUNTIME_STATUS} answered HTTP 401.`);
+        expect(result.stderr).toContain("This is the check after the traffic switch");
+        expect(result.stderr).not.toContain("before the cutover");
+        expectOneTrapAfter(result.stderr, "This is the check after the traffic switch");
+      });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "stops at once on HTTP 403",
+    async () => {
+      const server = await startServer(() => ({ status: 403, body: "forbidden" }));
+      await withServer(server, async () => {
+        const result = await runHarness({ STUB_PORT: String(server.port) });
+        expect(result.code).not.toBe(0);
+        expect(server.runtimeHits()).toBe(1);
+        const stop = `Internal app: ${RUNTIME_STATUS} answered HTTP 403.`;
+        expect(result.stderr).toContain(stop);
+        expect(result.stderr).toContain("Response body: forbidden");
         expect(result.stderr).not.toContain("asking again");
         expectOneTrapAfter(result.stderr, stop);
       });
@@ -570,7 +692,8 @@ describe("the retry's wiring in the deploy script (#3965)", () => {
     const step3 = SCRIPT.indexOf('step "3/20"');
     const step4 = SCRIPT.indexOf('step "4/20"');
     const check = SCRIPT.indexOf(
-      'require_integer_setting_in_range RUNTIME_STATUS_TIMEOUT_SECONDS "$RUNTIME_STATUS_TIMEOUT_SECONDS"',
+      'require_integer_setting_in_range DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS "$DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS" \\\n' +
+        '  "$DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS" "$DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS"',
     );
     expect(step3).toBeGreaterThan(0);
     expect(check).toBeGreaterThan(step3);

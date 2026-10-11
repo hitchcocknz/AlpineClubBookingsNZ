@@ -663,9 +663,13 @@ PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 # How long each in-container read verify_internal_health makes -- readiness, then
 # /api/deploy/runtime-status -- keeps retrying a container that is not yet
-# answering 200, at steps 14, 15 and 17 (#3965). See poll_service_endpoint.
-# Checked at step 3 like the other bounds. Read from the deploy shell only.
-RUNTIME_STATUS_TIMEOUT_SECONDS="${RUNTIME_STATUS_TIMEOUT_SECONDS:-60}"
+# answering 200, at steps 14 and 15, before the cutover (#3965). Step 17, after
+# the switch, always makes a single attempt. See poll_service_endpoint. Checked
+# at step 3 against the range below, which the give-up message also quotes, so
+# the two cannot disagree (INV-SSOT). Read from the deploy shell only.
+DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS="${DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS:-60}"
+DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS=0
+DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS=600
 # The pause between attempts in every poll loop here: wait_for_health,
 # wait_for_url, verify_cron_registration and poll_service_endpoint. One value,
 # so the loops cannot drift apart (#3965, INV-SSOT).
@@ -2443,9 +2447,17 @@ describe_service_container_state() {
 # What stopping here means for traffic, which depends on WHERE the read failed.
 # verify_internal_health runs at steps 14 and 15, before the cutover, and again
 # at step 17, after Caddy has been switched (#3965 review).
+#
+# One pre-cutover case is not "the old release is still behind Caddy": on the
+# first blue/green deploy Caddy points at the cron leader itself (`app`), and
+# step 15 has just recreated that very container on the new release.
 describe_internal_read_stop() {
+  local service="${1:-}"
+
   if [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
     echo "This is the check after the traffic switch: Caddy already points at ${TARGET_SERVICE:-the new colour}. The deploy now fails, and its failure handling tries to point Caddy back at ${ACTIVE_SERVICE:-the previous colour}, which serves only if it is still running." >&2
+  elif [ -n "$service" ] && [ "$service" = "$CRON_SERVICE" ] && [ "${ACTIVE_SERVICE:-}" = "$CRON_SERVICE" ]; then
+    echo "Traffic has not been switched, so the deploy stops before the cutover. But Caddy points at ${CRON_SERVICE}, and this step has just recreated ${CRON_SERVICE} on the new release, so the previous release is not serving: whatever answers now is the new release that failed this check." >&2
   else
     echo "Traffic has not been switched, so the deploy stops before the cutover. Caddy still points at ${ACTIVE_SERVICE:-the previous colour}, which serves only if it is still running: in a windowed deploy, where the old app and workers were stopped first, nothing is serving until the deploy is re-run." >&2
   fi
@@ -2455,11 +2467,12 @@ describe_internal_read_stop() {
 # the body (#3965). Used for both in-container reads verify_internal_health makes.
 #
 # BOUNDED BY A DEADLINE, NOT BY COUNTING PAUSES. The bound is
-# RUNTIME_STATUS_TIMEOUT_SECONDS from the first attempt, measured on a clock, so
+# DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS from the first attempt, measured on a clock, so
 # the time an attempt itself takes counts against it. Each attempt waits at most
 # INTERNAL_READ_REQUEST_TIMEOUT_MS for a reply, and the last attempt can start up
 # to one pause before the deadline, so a read gives up at most about ten seconds
-# after its bound. A bound of 0 means one attempt and no retry.
+# after its bound. A bound of 0 means one attempt and no retry, and after the
+# traffic switch (step 17) the bound is always 0.
 #
 # LOUD ON EVERY FAILED ATTEMPT. Each one prints a line to stderr naming the HTTP
 # status, or the `docker compose exec` exit code and the container's state, so a
@@ -2480,7 +2493,8 @@ poll_service_endpoint() {
   local service="$1"
   local path="$2"
   local send_cron_secret="$3"
-  local timeout="$RUNTIME_STATUS_TIMEOUT_SECONDS"
+  local timeout="$DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS"
+  local attempt_word
   local deadline
   local now
   local attempts=0
@@ -2491,6 +2505,12 @@ poll_service_endpoint() {
   local last_result=""
   local last_body=""
 
+  # After the traffic switch (step 17) members are already being sent to this
+  # container, so a failing read must hand over to the rollback at once rather
+  # than retry while they get errors: one attempt, as before #3965.
+  if [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
+    timeout=0
+  fi
   deadline=$(( $(deploy_clock_seconds) + timeout ))
 
   while true; do
@@ -2501,7 +2521,7 @@ poll_service_endpoint() {
     if [ "$rc" -eq "$RUNTIME_STATUS_NO_SECRET_EXIT" ]; then
       # The container has said why on stderr. Waiting cannot fix configuration.
       echo "CRON_SECRET reaches the container from .env through docker-compose.yml; set it there and re-run the deploy." >&2
-      describe_internal_read_stop
+      describe_internal_read_stop "$service"
       return 1
     fi
 
@@ -2522,7 +2542,7 @@ poll_service_endpoint() {
         401|403|404)
           echo "Internal ${service}: ${path} answered HTTP ${status}. That is configuration -- the wrong secret, or a route this image does not have -- not a container still starting, so the deploy does not wait for it." >&2
           echo "Response body: ${body:0:2000}" >&2
-          describe_internal_read_stop
+          describe_internal_read_stop "$service"
           return 1
           ;;
         000)
@@ -2541,13 +2561,21 @@ poll_service_endpoint() {
 
     now="$(deploy_clock_seconds)"
     if [ "$now" -ge "$deadline" ]; then
-      echo "Internal ${service}: ${path} did not answer HTTP 200 within ${timeout}s (${attempts} attempts)." >&2
+      attempt_word="attempts"
+      if [ "$attempts" -eq 1 ]; then
+        attempt_word="attempt"
+      fi
+      echo "Internal ${service}: ${path} did not answer HTTP 200 within ${timeout}s (${attempts} ${attempt_word})." >&2
       echo "Last result: ${last_result}" >&2
       if [ -n "$last_body" ]; then
         echo "Last response body: ${last_body:0:2000}" >&2
       fi
-      describe_internal_read_stop
-      echo "To wait longer, set RUNTIME_STATUS_TIMEOUT_SECONDS (0-600) in the shell that runs the deploy; it is not read from .env." >&2
+      describe_internal_read_stop "$service"
+      if [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
+        echo "After the traffic switch this read is tried once, whatever DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS says, so the rollback starts at once." >&2
+      else
+        echo "To wait longer, set DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS (${DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS}-${DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS}) in the shell that runs the deploy; it is not read from .env." >&2
+      fi
       return 1
     fi
 
@@ -3340,8 +3368,9 @@ validate_image_reference_contract
 validate_migration_lock_timeout_contract
 # Same reasoning (#3965): an unreadable bound must stop the deploy here, not
 # make the in-container read retry at step 14 compare against a non-number.
-require_integer_setting_in_range RUNTIME_STATUS_TIMEOUT_SECONDS "$RUNTIME_STATUS_TIMEOUT_SECONDS" 0 600 \
-  "how long steps 14, 15 and 17 keep retrying each in-container readiness and /api/deploy/runtime-status read, in seconds"
+require_integer_setting_in_range DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS "$DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS" \
+  "$DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS" "$DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS" \
+  "how long steps 14 and 15 keep retrying each in-container readiness and /api/deploy/runtime-status read, in seconds"
 info ".env contains the required production settings."
 info "Migrations will wait at most ${MIGRATION_LOCK_TIMEOUT_MS_EFFECTIVE}ms for any lock."
 
