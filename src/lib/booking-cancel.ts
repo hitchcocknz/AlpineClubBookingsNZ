@@ -135,6 +135,14 @@ interface CancelBookingResult {
   creditRestoredCents?: number;
   stripeRefundId?: string;
   manualRefundTaskId?: string;
+  /**
+   * #3973: the refund is the group organiser's, not the member's: a joiner's
+   * booking the organiser paid for by card. `refundMethod` stays "card", as the
+   * audit records it; the confirmation screen names the organiser's card.
+   */
+  refundTo?: "organiser";
+  /** #3973: with `refundTo`, a refund the group organiser's cancellation already owes this booking (`refundAmountCents` is 0). */
+  groupCancellationRefundCents?: number;
   message: string;
 }
 
@@ -2295,6 +2303,7 @@ async function performBookingCancellation(
         refundAmountCents,
         refundPercentage,
         refundMethod: "card",
+        refundTo: "organiser",
         creditRestoredCents: creditRestoredCents || undefined,
         message: `Booking cancelled. The group organiser paid for this booking, so ${formatCents(refundAmountCents, format)} (${refundPercentage}%) is being refunded to the organiser's card.`,
       },
@@ -2501,9 +2510,10 @@ async function performBookingCancellation(
       bookingOwner(fresh).member.firstName,
       fresh.checkIn,
       fresh.checkOut,
-      0,
+      // #3973: the group's refund owed to the organiser's card, not "no refund".
+      groupRefundNote ? groupCancellationRefundCents : 0,
       format,
-      "card",
+      groupRefundNote ? "organiser_card_owed" : "card",
       creditRestoredCents,
       fresh.lodgeId
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
@@ -2520,6 +2530,7 @@ async function performBookingCancellation(
       refundAmountCents: 0,
       refundPercentage: 0,
       refundMethod: "card",
+      ...(groupRefundNote ? { refundTo: "organiser" as const, groupCancellationRefundCents } : {}),
       creditRestoredCents: creditRestoredCents || undefined,
       message: groupRefundNote
         ? `Booking cancelled. ${groupRefundNote}`

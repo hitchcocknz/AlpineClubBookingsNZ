@@ -725,6 +725,80 @@ describe("CancelBookingButton — internet banking refunds as credit only", () =
   });
 });
 
+// #3973: the confirmation after a joiner's organiser-paid cancel names the
+// ORGANISER's card, in the "Booking Cancelled" email's own words, keyed off the
+// cancel's `refundTo` answer rather than `refundMethod: "card"`.
+describe("CancelBookingButton — a refund the group organiser receives (#3973)", () => {
+  function stubOrganiserFetch(result: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () =>
+          String(url).endsWith("/cancel-preview") ? { ...previewBody, refundMethodForced: "organiser_card" } : result,
+      })),
+    );
+  }
+
+  async function confirmCancel() {
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Booking" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Confirm Cancellation" })).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
+    });
+  }
+
+  it("names the group organiser's card, never the member's original payment method", async () => {
+    stubOrganiserFetch({ refundAmountCents: 2500, refundMethod: "card", refundTo: "organiser" });
+    render(<CancelBookingButton bookingId="bk_child" />);
+    await confirmCancel();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "A refund of $25.00 has been processed to the group organiser's card, because the group organiser paid for this booking. You will receive a confirmation email shortly.",
+        ),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/original payment method/i)).toBeNull();
+  });
+
+  it("names the refund the group organiser's cancellation already owes, rather than nothing", async () => {
+    stubOrganiserFetch({
+      refundAmountCents: 0,
+      refundMethod: "card",
+      refundTo: "organiser",
+      groupCancellationRefundCents: 3000,
+    });
+    render(<CancelBookingButton bookingId="bk_child" />);
+    await confirmCancel();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "The group organiser's cancellation is already refunding $30.00 for this booking to the organiser's card. You will receive a confirmation email shortly.",
+        ),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/original payment method/i)).toBeNull();
+  });
+
+  it("keeps the member's own card refund wording when the refund is theirs", async () => {
+    stubOrganiserFetch({ refundAmountCents: 2500, refundMethod: "card" });
+    render(<CancelBookingButton bookingId="bk_own" />);
+    await confirmCancel();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Your refund of $25.00 has been processed to your original payment method. You will receive a confirmation email shortly."),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/organiser/i)).toBeNull();
+  });
+});
+
 // #3643 DECISION 2: a payment the app cannot credit is settled by hand.
 describe("CancelBookingButton — a recorded payment settled by hand", () => {
   it("says the cancel treats the booking as unpaid and the treasurer settles the payment", async () => {

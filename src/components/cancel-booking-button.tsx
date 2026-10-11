@@ -19,6 +19,7 @@ import {
   type HostingCoverageOverridePromptData,
 } from "@/lib/hosting-coverage-override-client";
 import { formatCents } from "@/lib/utils";
+import { groupCancellationRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
 import { useClubFormat } from "@/components/club-format-provider";
 import {
   ForcedRefundNote,
@@ -96,7 +97,15 @@ export function CancelBookingButton({
   const format = useClubFormat();
   const [step, setStep] = useState<"idle" | "loading" | "preview" | "cancelling" | "success" | "error">("idle");
   const [preview, setPreview] = useState<CancelPreview | null>(null);
-  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number } | null>(null);
+  const [result, setResult] = useState<{
+    refundAmountCents: number;
+    refundMethod: string;
+    creditAmountCents?: number;
+    creditRestoredCents?: number;
+    // #3973: the refund is the group organiser's (a joiner's booking the organiser paid for by card).
+    refundTo?: "organiser";
+    groupCancellationRefundCents?: number;
+  } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [refundMethod, setRefundMethod] = useState<"card" | "credit">("card");
   // Issue #1705: the admin's explicit email choice dialog, and the choice that
@@ -274,6 +283,8 @@ export function CancelBookingButton({
           refundMethod: data.refundMethod || "card",
           creditAmountCents: data.creditAmountCents,
           creditRestoredCents: data.creditRestoredCents,
+          refundTo: data.refundTo === "organiser" ? "organiser" : undefined,
+          groupCancellationRefundCents: data.groupCancellationRefundCents,
         });
         setStep("success");
         router.refresh();
@@ -359,6 +370,13 @@ export function CancelBookingButton({
               ? `The club will arrange the member's refund of ${formatCents(refund, format)} directly — they'll hear from the club about how it will be paid back.`
               : `The club will arrange your refund of ${formatCents(refund, format)} directly — you'll hear from them about how it will be paid back.`}
           </p>
+        ) : refund > 0 && result?.refundTo === "organiser" ? (
+          // #3973: a joiner's booking the organiser paid for by card refunds to
+          // the ORGANISER's card; the email's own sentence, never "your original payment method".
+          <p className="text-sm text-success-11">
+            {organiserCardRefundSentence(formatCents(refund, format))}
+            {emailSuppressed ? "" : onBehalfOfMember ? " They will receive a confirmation email shortly." : " You will receive a confirmation email shortly."}
+          </p>
         ) : refund > 0 && isCredit ? (
           <p className="text-sm text-success-11">
             A credit of {formatCents(refund, format)} has been added to {onBehalfOfMember ? "the member's" : "your"} account for future bookings.
@@ -368,6 +386,12 @@ export function CancelBookingButton({
             {onBehalfOfMember
               ? `The refund of ${formatCents(refund, format)} has been processed to the member's original payment method.${emailSuppressed ? "" : " They will receive a confirmation email shortly."}`
               : `Your refund of ${formatCents(refund, format)} has been processed to your original payment method.${emailSuppressed ? "" : " You will receive a confirmation email shortly."}`}
+          </p>
+        ) : result?.refundTo === "organiser" && (result.groupCancellationRefundCents ?? 0) > 0 ? (
+          // #3973: the group organiser's cancellation already owes this booking's refund.
+          <p className="text-sm text-success-11">
+            {groupCancellationRefundSentence(formatCents(result.groupCancellationRefundCents ?? 0, format))}
+            {emailSuppressed ? "" : onBehalfOfMember ? " They will receive a confirmation email shortly." : " You will receive a confirmation email shortly."}
           </p>
         ) : emailSuppressed ? null : (
           <p className="text-sm text-success-11">

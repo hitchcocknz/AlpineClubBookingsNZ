@@ -12,6 +12,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * (`organiserCardRefundSentence`), so neither the two paths nor the two emails
  * can drift apart. The other wordings are pinned here and by the render pins.
  *
+ * The organiser's cancellation of the group (#3973 fix round) adds two more:
+ * a refund still owed to the organiser's card ("organiser_card_owed", also the
+ * joiner's own cancel behind the group's) and an Internet Banking settlement the
+ * club repays the organiser by hand ("organiser_by_hand").
+ *
  * MUTATION PROOF. Drop the "organiser_card" case (it falls through to no
  * sentence) or map it to the own-card sentence and "organiser's card" fails;
  * reword the shared sentence and "from the one home" fails too. In
@@ -30,6 +35,7 @@ import {
 } from "@/lib/booking-modified-email-copy";
 import { bookingCancelledTemplate } from "@/lib/email-templates/booking";
 import { sendBookingCancelledEmail } from "@/lib/email/booking";
+import { groupCancellationRefundNote } from "@/lib/organiser-child-refund";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const CHECK_IN = new Date("2026-08-01T00:00:00.000Z");
@@ -42,6 +48,11 @@ const CREDIT = "A credit of $45.00 has been added to your account for future boo
 const MANUAL =
   "You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of $45.00 directly and will be in touch.";
 const NO_REFUND = "No refund was applicable based on the cancellation policy.";
+// #3973: the organiser's cancellation of the group, or the joiner's own cancel behind it.
+const ORGANISER_CARD_OWED =
+  "The group organiser's cancellation is already refunding $45.00 for this booking to the organiser's card.";
+const ORGANISER_BY_HAND =
+  "The club will refund $45.00 to the group organiser directly, because the group organiser paid for this booking.";
 
 function html(refundCents: number, method: BookingCancelledRefundMethod) {
   return bookingCancelledTemplate("Sam", CHECK_IN, CHECK_OUT, refundCents, CLUB_FORMAT_TEST, method);
@@ -78,6 +89,26 @@ describe("#3973: the Booking Cancelled refund line names where the refund went",
     expect(sender.refundMessage).toBe(ORGANISER_CARD);
     expect(sender.html).toContain(ORGANISER_CARD);
     expect(sender.html).not.toContain("your original payment method");
+  });
+
+  it.each([
+    ["organiser_card_owed", ORGANISER_CARD_OWED],
+    ["organiser_by_hand", ORGANISER_BY_HAND],
+  ] as const)("%s: names the group organiser, never the joiner's payment method nor \"no refund\"", async (method, sentence) => {
+    const template = html(4500, method);
+    const sender = await sent(4500, method);
+
+    expect(template).toContain(sentence);
+    expect(sender.refundMessage).toBe(sentence);
+    expect(sender.html).toContain(sentence);
+    for (const body of [template, sender.html]) {
+      expect(body).not.toContain("your original payment method");
+      expect(body).not.toContain(NO_REFUND);
+    }
+  });
+
+  it("the owed sentence is the cancel preview's, from the one home", () => {
+    expect(groupCancellationRefundNote(4500, CLUB_FORMAT_TEST)).toBe(ORGANISER_CARD_OWED);
   });
 
   it("is the Booking Modified sentence, from the one home", () => {

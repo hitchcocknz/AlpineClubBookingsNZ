@@ -2088,7 +2088,7 @@ describe("cancelBooking credit refunds", () => {
       expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
       expect(mocks.enqueueXeroAccountCreditNoteOperation).not.toHaveBeenCalled();
       expect(result).toMatchObject({
-        data: { refundAmountCents: 2500, refundMethod: "card", message: expect.stringContaining("organiser's card") },
+        data: { refundAmountCents: 2500, refundMethod: "card", refundTo: "organiser", message: expect.stringContaining("organiser's card") },
       });
       // #3973: the joiner's email names the organiser's card, from this branch's
       // own settlement answer; the audit row still records "card", as before.
@@ -2100,6 +2100,32 @@ describe("cancelBooking credit refunds", () => {
           metadata: expect.objectContaining({ refundMethod: "card", refundTo: "organiser" }),
         }),
       );
+    });
+
+    it("#3973: behind the group's cancellation, refunds nothing of its own and says the organiser's refund is owed", async () => {
+      // The organiser's cancellation of the group already wrote this child's debt.
+      mocks.txRecoveryOperationFindUnique.mockResolvedValue({ id: "op_group_cancel", amountCents: 3000 });
+
+      const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST);
+
+      expect(result.status).toBe(200);
+      expect(mocks.txRecoveryOperationCreate).not.toHaveBeenCalled();
+      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+      // The email names the group's refund to the organiser's card, never "No refund was applicable".
+      expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][5]).toBe(3000);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("organiser_card_owed");
+      // The confirmation screen reads the same answer.
+      expect(result).toMatchObject({
+        data: {
+          refundAmountCents: 0,
+          refundMethod: "card",
+          refundTo: "organiser",
+          groupCancellationRefundCents: 3000,
+          message:
+            "Booking cancelled. The group organiser's cancellation is already refunding $30.00 for this booking to the organiser's card.",
+        },
+      });
     });
 
     it("clamps to what the combined payment still holds", async () => {

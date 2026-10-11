@@ -369,17 +369,19 @@ export function bookingCancelledTemplate(
   checkOut: Date,
   refundCents: number,
   format: ClubFormat,
-  // B5 (#2262) "manual", #3973 "organiser_card": see `BookingCancelledRefundMethod`.
+  // B5 (#2262) "manual", #3973 the organiser's refunds: see `BookingCancelledRefundMethod`.
   refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // #3792: a cancel the member did not choose (capacity, hold expiry) restores
   // the applied credit in full, so no cancellation policy applies to it.
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
 ): string {
-  // #3973: the one wording `{{refundMessage}}` also reads; a hand-back or no refund is info, not success.
+  // #3973: the one wording `{{refundMessage}}` also reads. Only a refund already
+  // made is a success; a hand-back, a refund still owed or no refund is info.
+  const refundMade = refundMethod === "card" || refundMethod === "credit" || refundMethod === "organiser_card";
   const refundInfo = alertBox(
     bookingCancelledRefundSentence(refundCents, formatCents(refundCents, format), refundMethod),
-    refundCents > 0 && refundMethod !== "manual" ? "success" : "info",
+    refundCents > 0 && refundMade ? "success" : "info",
   );
 
   // #1164 / D7: the account credit originally applied to this booking is now

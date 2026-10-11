@@ -605,6 +605,35 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
         "organiser_card",
       ),
   },
+  // #3973 fix round: the organiser's cancellation of the group. A refund to the
+  // organiser's card still owed, and an Internet Banking settlement the club
+  // repays the organiser by hand; each its own pin, as above.
+  {
+    id: "bookingCancelledTemplate:refund-organiser-card-owed",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        12000,
+        CLUB_FORMAT_TEST,
+        "organiser_card_owed",
+      ),
+  },
+  {
+    id: "bookingCancelledTemplate:refund-organiser-by-hand",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        12000,
+        CLUB_FORMAT_TEST,
+        "organiser_by_hand",
+      ),
+  },
 ];
 
 /** Generated from the exported signatures; see the module docblock. */

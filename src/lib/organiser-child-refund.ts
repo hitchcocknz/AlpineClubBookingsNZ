@@ -64,6 +64,7 @@ import { prisma } from "@/lib/prisma";
 import { organiserChildCommittedRefundFrom, readPerChildRefundPlan } from "@/lib/group-settlement-refund-plan";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
+import { groupCancellationRefundSentence } from "@/lib/booking-modified-email-copy";
 
 type Db = Prisma.TransactionClient;
 
@@ -281,9 +282,13 @@ export async function findGroupCancellationChildDebt(
   });
 }
 
-/** What a joiner's cancel behind the group's says about the group's refund, for the cancel and its preview alike. */
+/**
+ * What a joiner's cancel behind the group's says about the group's refund, for
+ * the cancel, its preview and its email alike; the wording's one home is
+ * `groupCancellationRefundSentence` (#3973).
+ */
 export function groupCancellationRefundNote(amountCents: number, format: ClubFormat): string {
-  return `The group organiser's cancellation is already refunding ${formatCents(amountCents, format)} for this booking to the organiser's card.`;
+  return groupCancellationRefundSentence(formatCents(amountCents, format));
 }
 
 /**

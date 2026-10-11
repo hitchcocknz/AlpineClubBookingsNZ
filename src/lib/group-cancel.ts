@@ -97,6 +97,7 @@ import { revokePaymentLinksForBooking } from "./payment-link";
 import { recordBookingEvent } from "./booking-events";
 import { logAudit } from "./audit";
 import { sendBookingCancelledEmail } from "./email";
+import type { BookingCancelledRefundMethod } from "@/lib/booking-modified-email-copy";
 import { processWaitlistForDates } from "./waitlist";
 import {
   enqueueXeroRefundCreditNoteOperation,
@@ -148,6 +149,31 @@ async function markGroupCancelled(groupBookingId: string): Promise<void> {
     where: { id: groupBookingId },
     data: { status: GroupBookingStatus.CANCELLED },
   });
+}
+
+/**
+ * #3973: what a joiner's "Booking Cancelled" email says about the refund when
+ * the organiser cancels the group. The joiner paid nothing, so no sentence may
+ * name "your original payment method". Reads this run's own answers and never
+ * re-derives money: `refundForChild` is a refund made (a card settlement's
+ * Stripe refund, or an Internet Banking plan the club repays by hand);
+ * `owedForChild` a #3653 per-child refund Stripe has not made yet; and a card
+ * plan frozen before #3653 whose combined refund failed this run leaves its
+ * child's planned share owed (`refundForChild` cleared, the plan kept). With
+ * none of these the policy refunded nothing, or nothing was paid.
+ */
+function organiserCancelJoinerEmailRefund(input: {
+  refundForChild: number;
+  owedForChild: number;
+  plannedRefundCents: number;
+  cardSettlement: boolean;
+}): { refundCents: number; refundMethod: BookingCancelledRefundMethod } {
+  if (input.refundForChild > 0) {
+    return { refundCents: input.refundForChild, refundMethod: input.cardSettlement ? "organiser_card" : "organiser_by_hand" };
+  }
+  const owed = input.owedForChild > 0 ? input.owedForChild : input.cardSettlement ? input.plannedRefundCents : 0;
+  if (owed > 0) return { refundCents: owed, refundMethod: "organiser_card_owed" };
+  return { refundCents: 0, refundMethod: "card" };
 }
 
 /**
@@ -691,15 +717,22 @@ export async function settleGroupBookingOnOrganiserCancel(
       )
     );
 
+    // #3973: the joiner never paid; the email says whose the refund is.
+    const joinerEmailRefund = organiserCancelJoinerEmailRefund({
+      refundForChild,
+      owedForChild,
+      plannedRefundCents: plannedMirrorRefunds.get(child.id) ?? 0,
+      cardSettlement: Boolean(settlement?.stripePaymentIntentId),
+    });
     sendBookingCancelledEmail(
       { bookingId: child.id, recipientMemberId: bookingOwner(child).memberId },
       bookingOwner(child).member.email,
       bookingOwner(child).member.firstName,
       child.checkIn,
       child.checkOut,
-      refundForChild,
+      joinerEmailRefund.refundCents,
       format,
-      "card",
+      joinerEmailRefund.refundMethod,
       0,
       child.lodgeId
     ).catch((err) =>

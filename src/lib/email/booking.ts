@@ -833,7 +833,7 @@ export async function sendBookingCancelledEmail(
   refundCents: number,
   /** The club's format (#3565); see sendBookingConfirmedEmail. */
   format: ClubFormat,
-  // B5 (#2262) "manual", #3973 "organiser_card": see `BookingCancelledRefundMethod`.
+  // B5 (#2262) "manual", #3973 the organiser's refunds: see `BookingCancelledRefundMethod`.
   refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
