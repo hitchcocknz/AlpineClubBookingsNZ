@@ -696,6 +696,29 @@ describe("the second review's gate escapes are closed (fix round 2 of #3583)", (
   });
 });
 
+describe("#4042: a group organiser's hand-back on the organiser's booking is the joiners' refunds, not the booking's own", () => {
+  const groupHandBack = (status: "OPEN" | "DISMISSED") => ({
+    id: "task-group",
+    kind: "CANCELLED_BOOKING_HAND_BACK" as const,
+    status,
+    amountCents: 7_500,
+    settlementDirection: null,
+    paymentId: null,
+    lateCaptureApprovalIntentId: null,
+    occurrenceKey: "group-organiser-hand-back:settle-1",
+  });
+
+  it("leaves the booking's own in-flight or dismissed hand-back explaining its residual alone", () => {
+    for (const status of ["OPEN", "DISMISSED"] as const) {
+      const own = cashCancelled(status);
+      const before = identity(own, "PRICE");
+      expect(before.status).toBe("CLASSIFIED");
+      const withGroup = { ...own, tasks: [...own.tasks, groupHandBack(status)] };
+      expect(identity(withGroup, "PRICE")).toEqual(before);
+    }
+  });
+});
+
 describe("#3791's review closures: a line is judged by what the member was credited (#3583)", () => {
   const TASK = "task-3791";
   const task = { id: TASK, kind: "EDIT_FINANCIAL_REVIEW" as const, status: "COMPLETED" as const, amountCents: 5_000, settlementDirection: "REFUND_TO_MEMBER" as const, paymentId: null, lateCaptureApprovalIntentId: null, occurrenceKey: null };

@@ -172,3 +172,39 @@ describe("alertGroupOrganiserHandBack", () => {
     expect(mocks.loggerError).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("the finance queue payload marks it for the card's own sentence", () => {
+  it("true for the group key only", async () => {
+    const { toOpenManualRefundTaskPayload } = await import("@/lib/manual-refund-task-queue-payload");
+    const row = {
+      id: "task-1",
+      bookingId: "org-booking",
+      amountCents: 7500,
+      raisedAmountCents: 7500,
+      kind: "CANCELLED_BOOKING_HAND_BACK",
+      paymentId: null,
+      payment: null,
+      lateCaptureApprovalIntentId: null,
+      partPaymentReviewPaymentId: null,
+      partPaymentReviewXeroPaidAt: null,
+      partPaymentReviewXeroPaidCents: null,
+      occurrenceKey: groupOrganiserHandBackOccurrenceKey("settle-1"),
+      reviewContext: null,
+      reason: "r",
+      createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      booking: {
+        checkIn: new Date("2026-08-01T00:00:00.000Z"),
+        checkOut: new Date("2026-08-03T00:00:00.000Z"),
+        member: { firstName: "Olive", lastName: "Organiser" },
+        organisation: null,
+        memberId: "olive",
+        deletedAt: null,
+        status: "CANCELLED",
+        payment: null,
+      },
+    };
+    const payload = toOpenManualRefundTaskPayload(row, null, []);
+    expect(payload).toMatchObject({ groupOrganiserHandBack: true, editRefundHandBack: false, refundRequestHandBack: false, memberName: "Olive Organiser" });
+    expect(toOpenManualRefundTaskPayload({ ...row, occurrenceKey: null }, null, []).groupOrganiserHandBack).toBe(false);
+  });
+});
