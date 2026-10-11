@@ -1129,6 +1129,39 @@ describe("member lodge roster — whole-lodge held nights (#3474)", () => {
     ).toEqual(HELD);
   });
 
+  it("keeps a named custodian separate from an anonymous whole-lodge hold", async () => {
+    mockGetLodgeHeldNights.mockResolvedValue(HELD);
+    mockFindCustodianBedHolds.mockResolvedValue([
+      custodianHold("Hemi", "Walker", HELD[0]!, HELD[2]!),
+    ]);
+    mockPrisma.booking.findMany.mockResolvedValue([
+      bookingRow({
+        lodgeId: "lodge-a",
+        organiser: { firstName: "Private", lastName: "Booker", ageTier: "ADULT" },
+        guests: Array.from({ length: 5 }, (_, i) =>
+          guest(`Private${i}`, "Booker", "ADULT", HELD)
+        ),
+        checkIn: HELD[0],
+        checkOut: "2026-07-15",
+        wholeLodgeHold: true,
+      }),
+    ]);
+
+    const roster = await buildMemberLodgeRoster("viewer-1");
+    expect(
+      roster.lodges[0],
+      "INV-PRIV-017 (#4008): show the custodian and reserved nights separately, without any row or identity linking the hold to its party."
+    ).toEqual({
+      lodgeId: "lodge-a",
+      lodgeName: "Alpha",
+      granularity: "FULL_NAME",
+      people: [],
+      groups: [],
+      custodians: [{ name: "Hemi Walker", nights: HELD }],
+      heldNights: HELD,
+    });
+  });
+
   it("asks the capacity engine for exactly this lodge and this window", async () => {
     await buildMemberLodgeRoster("viewer-1");
     expect(mockGetLodgeHeldNights).toHaveBeenCalledTimes(1);
