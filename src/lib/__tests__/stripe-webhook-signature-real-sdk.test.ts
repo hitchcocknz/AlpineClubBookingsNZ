@@ -56,7 +56,7 @@ describe("constructWebhookEvent with the real Stripe SDK (#4029)", () => {
   it("refuses a signature made with a different secret", async () => {
     await expect(
       constructWebhookEvent(payload, header(nowSeconds(), "whsec_other"), secret)
-    ).rejects.toThrow();
+    ).rejects.toThrow(/No signatures found/);
   });
 
   it("keeps the tolerance positive, because 0 would skip the timestamp check", () => {
