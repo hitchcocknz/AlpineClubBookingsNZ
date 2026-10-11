@@ -3445,8 +3445,14 @@ describe("createXeroCreditNoteForModification", () => {
   });
 
   it("MUTATION (#3954 round 6, F5): a billed-offset note waits while the edit's own note is still queued, and is raised once it is not", async () => {
+    const noteOp = (fields: { id: string; queueType: string; requestPayload: Record<string, unknown> }) => ({
+      status: "PENDING",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      ...fields,
+    });
     mocks.prisma.xeroSyncOperation.findMany.mockResolvedValueOnce([
-      { id: "op_own_note", status: "PENDING", requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE" } },
+      noteOp({ id: "op_own_note", queueType: "MODIFICATION_CREDIT_NOTE", requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE" } }),
     ]);
     const call = () =>
       createXeroCreditNoteForModification({
@@ -3462,9 +3468,25 @@ describe("createXeroCreditNoteForModification", () => {
     await expect(call()).rejects.toMatchObject({ name: "XeroAppliedCreditOperationBusyError" });
     expect(mocks.xeroClientInstance.accountingApi.createCreditNotes).not.toHaveBeenCalled();
 
+    // Round 8 (`INV-SSOT-001`): the one definition of the edit's own note - an
+    // account-credit own note holds it too.
+    mocks.prisma.xeroSyncOperation.findMany.mockResolvedValueOnce([
+      noteOp({
+        id: "op_own_account_note",
+        queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE",
+        requestPayload: { queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE" },
+      }),
+    ]);
+    await expect(call()).rejects.toMatchObject({ name: "XeroAppliedCreditOperationBusyError" });
+    expect(mocks.xeroClientInstance.accountingApi.createCreditNotes).not.toHaveBeenCalled();
+
     // Only scoped notes beside it are left: the edit's own has been raised.
     mocks.prisma.xeroSyncOperation.findMany.mockResolvedValueOnce([
-      { id: "op_give_back", status: "PENDING", requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE", reviewTaskId: "applied-credit-give-back" } },
+      noteOp({
+        id: "op_give_back",
+        queueType: "MODIFICATION_CREDIT_NOTE",
+        requestPayload: { queueType: "MODIFICATION_CREDIT_NOTE", reviewTaskId: "applied-credit-give-back" },
+      }),
     ]);
     await expect(call()).resolves.toBe("cn_1");
   });
@@ -3486,10 +3508,14 @@ describe("createXeroCreditNoteForModification", () => {
         syncOperationId: "op_billed_offset",
       });
 
-    // Nothing of the edit's own note exists yet: it waits.
+    // Nothing of the edit's own note exists yet: it waits - coded (round 8),
+    // so the outbox spaces out its next look rather than retry every kick.
     mocks.prisma.xeroSyncOperation.findUnique.mockResolvedValueOnce(queuedAt(60_000));
     mocks.prisma.xeroObjectLink.findMany.mockResolvedValueOnce([]);
-    await expect(call()).rejects.toMatchObject({ name: "XeroAppliedCreditOperationBusyError" });
+    await expect(call()).rejects.toMatchObject({
+      name: "XeroAppliedCreditOperationBusyError",
+      waitCode: "BILLED_OFFSET_AWAITING_OWN_NOTE",
+    });
     expect(mocks.xeroClientInstance.accountingApi.createCreditNotes).not.toHaveBeenCalled();
 
     // Past the age limit it stops waiting and fails, raising nothing.

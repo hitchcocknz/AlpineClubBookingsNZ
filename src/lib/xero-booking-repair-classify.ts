@@ -917,9 +917,23 @@ export function classifyBookingContext(
     // #3954 (owner decision 10 Oct 2026, "Auto credit note"): the part of the
     // offset a primary invoice raised after the increase had already billed
     // takes a scoped invoice-correction note, queued by the edit; verified or queued.
+    // #3954: what an unpaid ask took of a reduction returned no money, so no note.
+    const reductionNoteDueCents = reductionLeftAfterUnpaidAskCents({
+      netAmountCents: modificationNetAmountCents,
+      unpaidAskOffsetCents: recordedUnpaidAskOffsetCents(modification.newData),
+    });
     const billedOffsetNote = scopedBilledOffsetNote({ newData: modification.newData, operations: modificationOperations });
     if (billedOffsetNote && primaryInvoice) {
-      addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: billedOffsetNote, edit: { operations: modificationOperations, links: modificationLinks }, actionMap, findings });
+      addScopedSideNoteFindings({
+        bookingId: booking.id,
+        modificationId: modification.id,
+        note: billedOffsetNote,
+        edit: { operations: modificationOperations, links: modificationLinks },
+        // Round 8: a note queued here waits for the edit's own, when one is due.
+        ownNoteDue: reductionNoteDueCents > 0,
+        actionMap,
+        findings,
+      });
     }
     // Round 6/7: what the edit could not establish of the offset's billing, or
     // of the re-issue's invoice, it acted on not at all; a person decides.
@@ -934,11 +948,6 @@ export function classifyBookingContext(
       });
     }
 
-    // #3954: what an unpaid ask took of a reduction returned no money, so no note.
-    const reductionNoteDueCents = reductionLeftAfterUnpaidAskCents({
-      netAmountCents: modificationNetAmountCents,
-      unpaidAskOffsetCents: recordedUnpaidAskOffsetCents(modification.newData),
-    });
     if (reductionNoteDueCents > 0 && primaryInvoice) {
       const refundDueCents = reductionNoteDueCents;
       // Captured money via the payment status OR the transaction ledger —

@@ -52,7 +52,7 @@ import { createXeroCreditNoteForModification } from "@/lib/xero-modification-cre
 import { allocateAppliedCreditForBooking } from "@/lib/xero-applied-credit-allocation";
 import { unallocatedAppliedCreditCentsByBooking } from "@/lib/xero-applied-credit-ledger-state";
 import { deallocateExcessAppliedCreditForBooking } from "@/lib/xero-applied-credit-deallocation";
-import { OWN_NOTE_EXPECTED_KEY } from "@/lib/unpaid-ask-billed-offset-order";
+import { outboxScanLeavesAwaitingOwnNote, OWN_NOTE_EXPECTED_KEY } from "@/lib/unpaid-ask-billed-offset-order";
 import { isXeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 import {
   findResolvedBookingInvoiceCreate,
@@ -2807,6 +2807,9 @@ export async function processQueuedXeroOutboxOperations(options?: {
       queueType: {
         in: [...XERO_OUTBOX_QUEUE_TYPES],
       },
+      // #3954 round 8: a billed-offset note waiting for its edit's own note
+      // is looked at again only every few minutes, not on every kick.
+      AND: [outboxScanLeavesAwaitingOwnNote(new Date())],
     },
     orderBy: {
       createdAt: "asc",
@@ -3108,7 +3111,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
           data: {
             status: "PENDING",
             startedAt: null,
-            lastErrorCode: null,
+            // #3954 round 8: a wait the scan spaces out names itself here.
+            lastErrorCode: error.waitCode,
             lastErrorMessage: error.message,
           },
         });

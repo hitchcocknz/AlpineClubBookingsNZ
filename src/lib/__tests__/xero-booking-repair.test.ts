@@ -7547,6 +7547,34 @@ describe("#3954: a reduction set against an unpaid ask", () => {
     );
   });
 
+  it("MUTATION (round 8, F6): a lost billed-offset note of an edit that owes its own note too is queued to wait for that note", async () => {
+    // $30 reduction, $20 of it set against the ask: $10 is the edit's own note.
+    const deps = createDependencies({ bookings: [billedReduction(-3000)], operations: [makePrimaryInvoiceCreateOperation()] });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.actions.find((candidate) => candidate.key === "queue:billed-offset-note:mod_reduction")).toMatchObject({
+      payload: { refundAmountCents: 2000, ...billedOffsetScoped, ownNoteExpected: true },
+    });
+    expect(deps.enqueueXeroModificationCreditNoteOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 2000, ...billedOffsetScoped, ownNoteExpected: true }),
+    );
+  });
+
+  it("MUTATION (round 8, F6): the edit's own answer, recorded on an earlier billed-offset operation, is carried over the repair's reading", async () => {
+    const deps = createDependencies({
+      bookings: [billedReduction(-3000)],
+      operations: [makePrimaryInvoiceCreateOperation(), billedOffsetNote({ status: "CANCELLED", xeroObjectType: null, xeroObjectId: null })],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const action = report.passes[0].bookings[0].actions.find((candidate) => candidate.key === "queue:billed-offset-note:mod_reduction");
+    expect(action?.payload).toMatchObject({ refundAmountCents: 2000, ...billedOffsetScoped });
+    expect(action?.payload).not.toHaveProperty("ownNoteExpected");
+  });
+
   it.each([
     { state: "queued by the edit (PENDING)", status: "PENDING" },
     { state: "being raised (RUNNING)", status: "RUNNING" },

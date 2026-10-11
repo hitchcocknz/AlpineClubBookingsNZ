@@ -40,11 +40,13 @@ import {
 } from "@/lib/xero-refund-method";
 import { resolveModificationDocumentLineItems } from "@/lib/xero-modification-line-items";
 import { XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
-import { isUnpaidAskBilledOffsetNoteScope, queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
+import { isUnpaidAskBilledOffsetNoteScope, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import {
   awaitsMissingOwnNote,
+  BILLED_OFFSET_AWAITING_OWN_NOTE_CODE,
   BILLED_OFFSET_OWN_NOTE_MISSING_MESSAGE,
   BILLED_OFFSET_OWN_NOTE_WAIT_MS,
+  isOwnModificationNoteOperation,
   queuedOwnNoteExpected,
 } from "@/lib/unpaid-ask-billed-offset-order";
 import {
@@ -468,7 +470,11 @@ export async function createXeroCreditNoteForModification(params: {
   }
 }
 
-/** The edit's OWN (unscoped) modification credit note, while it is still queued or running (#3954 round 6). */
+/**
+ * The edit's OWN (unscoped) modification credit note, while it is still queued
+ * or running (#3954 round 6) - either kind, by the one definition
+ * (`isOwnModificationNoteOperation`, round 8).
+ */
 async function findQueuedOwnModificationNote(
   bookingModificationId: string,
 ): Promise<{ id: string; status: string } | null> {
@@ -479,12 +485,11 @@ async function findQueuedOwnModificationNote(
       operationType: "CREATE",
       localModel: "BookingModification",
       localId: bookingModificationId,
-      queueType: XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
       status: { in: ["PENDING", "RUNNING"] },
     },
-    select: { id: true, status: true, requestPayload: true },
+    select: { id: true, status: true, entityType: true, operationType: true, queueType: true, requestPayload: true },
   });
-  return operations.find((operation) => !queuedReviewTaskId(operation)) ?? null;
+  return operations.find(isOwnModificationNoteOperation) ?? null;
 }
 
 /**
@@ -512,9 +517,11 @@ async function waitForExpectedOwnNote(bookingModificationId: string, syncOperati
   ]);
   if (!awaitsMissingOwnNote(queued, { operations, links })) return;
   if (Date.now() - queued.createdAt.getTime() < BILLED_OFFSET_OWN_NOTE_WAIT_MS) {
+    // Round 8: coded, so the outbox looks at it again only every few minutes.
     throw new XeroAppliedCreditOperationBusyError(
       `Billed-offset credit note waits for modification ${bookingModificationId}'s own credit note, which is not queued yet`,
       "PENDING",
+      BILLED_OFFSET_AWAITING_OWN_NOTE_CODE,
     );
   }
   const failed = new Error(BILLED_OFFSET_OWN_NOTE_MISSING_MESSAGE);

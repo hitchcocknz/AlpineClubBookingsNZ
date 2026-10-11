@@ -14,7 +14,8 @@
  * (`xeroRefundAmountCents`), not one an organiser's card refund raises later.
  * While one is expected and neither an own-note operation nor an unscoped
  * own-note link exists, the note waits (`createXeroCreditNoteForModification`
- * returns it to PENDING). After `BILLED_OFFSET_OWN_NOTE_WAIT_MS` it stops
+ * returns it to PENDING, looked at again every `BILLED_OFFSET_OWN_NOTE_RECHECK_MS`
+ * rather than on every kick). After `BILLED_OFFSET_OWN_NOTE_WAIT_MS` it stops
  * waiting and fails, and the booking-vs-Xero repair pass hands it to a person
  * (`awaitsMissingOwnNote`) rather than retrying it automatically. An
  * operator's retry raises it without the wait.
@@ -33,6 +34,31 @@ export const OWN_NOTE_EXPECTED_KEY = "ownNoteExpected" as const;
 
 /** How long a billed-offset note waits for an expected own note before a person decides. */
 export const BILLED_OFFSET_OWN_NOTE_WAIT_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Round 8: the code a billed-offset note carries while it waits for an own
+ * note that is not queued yet, and how long the outbox leaves it before
+ * looking again. It returns to PENDING with its `createdAt` unchanged, so the
+ * oldest-first scan would otherwise hand it a slot on every kick, for up to
+ * `BILLED_OFFSET_OWN_NOTE_WAIT_MS`, ahead of work that can run.
+ */
+export const BILLED_OFFSET_AWAITING_OWN_NOTE_CODE = "BILLED_OFFSET_AWAITING_OWN_NOTE" as const;
+export const BILLED_OFFSET_OWN_NOTE_RECHECK_MS = 5 * 60 * 1000;
+
+/**
+ * The outbox scan's filter (round 8): leave out a note returned to wait for an
+ * own note until its recheck is due. Every other row - a null code included,
+ * which `not` alone would drop - is scanned as before.
+ */
+export function outboxScanLeavesAwaitingOwnNote(now: Date) {
+  return {
+    OR: [
+      { lastErrorCode: null },
+      { lastErrorCode: { not: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE } },
+      { updatedAt: { lte: new Date(now.getTime() - BILLED_OFFSET_OWN_NOTE_RECHECK_MS) } },
+    ],
+  };
+}
 
 /** The message a billed-offset note fails with once it has waited too long. */
 export const BILLED_OFFSET_OWN_NOTE_MISSING_MESSAGE =
@@ -58,7 +84,15 @@ const OWN_NOTE_QUEUE_TYPES: readonly string[] = [
 ];
 const OWN_NOTE_LINK_ROLES: readonly string[] = ["MODIFICATION_CREDIT_NOTE", "MODIFICATION_ACCOUNT_CREDIT_NOTE"];
 
-/** An edit's own (unscoped) note operation - either kind, any status but CANCELLED. */
+/**
+ * An edit's own (unscoped) note operation - either kind, any status but
+ * CANCELLED. THE ONE DEFINITION (round 8, `INV-SSOT-001`): the outbox's wait
+ * (`createXeroCreditNoteForModification`) and the repair pass both read it.
+ * An account-credit note counts like an invoice-applied one: the edit's Xero
+ * leg raises whichever its settlement chose, and `ownNoteExpected` cannot tell
+ * them apart. A FAILED own note counts as present, so the billed-offset note
+ * is then raised beside it rather than held behind a retry nobody has made.
+ */
 export function isOwnModificationNoteOperation(operation: {
   entityType: string;
   operationType: string;

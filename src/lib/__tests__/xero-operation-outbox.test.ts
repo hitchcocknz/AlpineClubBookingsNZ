@@ -2089,6 +2089,8 @@ describe("processQueuedXeroOutboxOperations", () => {
       status: "PENDING",
       direction: "OUTBOUND",
       queueType: { in: [...XERO_OUTBOX_QUEUE_TYPES] },
+      // #3954 round 8: a note waiting for its edit's own note is spaced out.
+      AND: [expect.objectContaining({ OR: expect.any(Array) })],
     });
     expect(args.where.queueType.in).toHaveLength(17);
     // The legacy `requestPayload->>'queueType'` OR predicate is gone.
@@ -2193,6 +2195,41 @@ describe("processQueuedXeroOutboxOperations", () => {
       });
     }
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION (#3954 round 8): a billed-offset note waiting for its edit's own note is requeued under its wait code, and the scan spaces it out", async () => {
+    const { BILLED_OFFSET_AWAITING_OWN_NOTE_CODE, BILLED_OFFSET_OWN_NOTE_RECHECK_MS } = await import("@/lib/unpaid-ask-billed-offset-order");
+    mocks.findManyOperations.mockResolvedValue([
+      {
+        id: "op_dealloc_waiting",
+        localId: "payment_1",
+        localModel: "Payment",
+        createdByMemberId: null,
+        requestPayload: { queueType: "APPLIED_CREDIT_DEALLOCATION", bookingId: "booking_1" },
+      },
+    ]);
+    mocks.deallocateExcessAppliedCreditForBooking.mockRejectedValue(
+      new XeroAppliedCreditOperationBusyError("waits for the own note", "PENDING", BILLED_OFFSET_AWAITING_OWN_NOTE_CODE),
+    );
+
+    await processQueuedXeroOutboxOperations({ limit: 5 });
+
+    expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+      where: { id: "op_dealloc_waiting", status: "RUNNING" },
+      data: expect.objectContaining({ status: "PENDING", lastErrorCode: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE }),
+    });
+    // The scan leaves such a row out until its recheck is due; every other
+    // row, a null code included, is scanned as before.
+    const scan = mocks.findManyOperations.mock.calls[0]![0] as { where: { AND: Array<{ OR: unknown[] }> } };
+    expect(scan.where.AND).toEqual([
+      {
+        OR: [
+          { lastErrorCode: null },
+          { lastErrorCode: { not: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE } },
+          { updatedAt: { lte: new Date(Date.now() - BILLED_OFFSET_OWN_NOTE_RECHECK_MS) } },
+        ],
+      },
+    ]);
   });
 
   it("busy-requeues a manual retry, then executes its checkpointed deallocation once", async () => {

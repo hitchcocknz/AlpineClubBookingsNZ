@@ -14,7 +14,7 @@ import {
   queuedReviewTaskId,
   UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE,
 } from "@/lib/xero-review-task-key";
-import { awaitsMissingOwnNote } from "@/lib/unpaid-ask-billed-offset-order";
+import { awaitsMissingOwnNote, OWN_NOTE_EXPECTED_KEY, queuedOwnNoteExpected } from "@/lib/unpaid-ask-billed-offset-order";
 import type {
   BookingXeroRepairAction,
   MutableFinding,
@@ -159,6 +159,7 @@ export function addScopedSideNoteFindings({
   modificationId,
   note,
   edit,
+  ownNoteDue = false,
   actionMap,
   findings,
 }: {
@@ -167,6 +168,12 @@ export function addScopedSideNoteFindings({
   note: ScopedSideNote<XeroOperationRecord>;
   /** The edit's own operations and links, for whether its own note exists (round 7). */
   edit: { operations: readonly XeroOperationRecord[]; links: readonly XeroObjectLinkRecord[] };
+  /**
+   * Round 8: the repair pass's own reading that the edit owes an own note (the
+   * reduction left something after the ask). A billed-offset note it queues
+   * waits for that note as the edit's would (`repairOwnNoteExpected`).
+   */
+  ownNoteDue?: boolean;
   actionMap: Map<string, BookingXeroRepairAction>;
   findings: MutableFinding[];
 }): void {
@@ -201,7 +208,15 @@ export function addScopedSideNoteFindings({
       type: "QUEUE_MODIFICATION_CREDIT_NOTE",
       description: repair.description,
       safeToAutoApply: true,
-      payload: { bookingId, bookingModificationId: modificationId, refundAmountCents: note.cents, ...repair.payload },
+      payload: {
+        bookingId,
+        bookingModificationId: modificationId,
+        refundAmountCents: note.cents,
+        ...repair.payload,
+        ...(note.kind === "billed-offset" && repairOwnNoteExpected(note.operations, ownNoteDue)
+          ? { [OWN_NOTE_EXPECTED_KEY]: true }
+          : {}),
+      },
     });
     addFinding(findings, {
       code: "MISSING_MODIFICATION_CREDIT_NOTE",
@@ -212,6 +227,21 @@ export function addScopedSideNoteFindings({
       actionKeys: [action.key],
     });
   }
+}
+
+/**
+ * #3954 round 8: whether a billed-offset note the repair pass queues waits for
+ * the edit's own note. CARRIED from any earlier operation of it, which
+ * recorded the edit's own answer (`ownNoteExpected`); else RECOMPUTED as the
+ * edit's own note being due. A recomputed expectation that never comes true
+ * (an organiser's card refund raises that note elsewhere) only holds the note
+ * for a person (`awaitsMissingOwnNote`) - never raises it first.
+ */
+export function repairOwnNoteExpected(
+  billedOffsetOperations: readonly { requestPayload: unknown }[],
+  ownNoteDue: boolean,
+): boolean {
+  return billedOffsetOperations.length > 0 ? billedOffsetOperations.some(queuedOwnNoteExpected) : ownNoteDue;
 }
 
 /**
