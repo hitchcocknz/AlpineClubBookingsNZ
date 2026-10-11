@@ -20,7 +20,7 @@ This runbook covers the production audit-log retention job and the optional arch
 
 ## Hard invariant: prune never outruns archival (#2506)
 
-**Prune may never delete an audit row that is destined for the archive but has not yet been archived.** The one exception is an incident-preserved row past its 10-year cap: the archive would delete its copy on the same run, so there is nothing for archival to keep (see "Incident-preserved rows are kept for ten years"). The archive step copies at most a bounded 500 rows per night (oldest first), while pruning acts on `expiresAt`. Left ungated, a club sustaining more than 500 archive-eligible rows/day could accumulate a backlog large enough that an archivable row (`sensitive_access`, `standard`) reaches its `expiresAt` — 24 months for `sensitive_access`, 7 years for `standard` — while still sitting unarchived in the main table. Pruning it then would permanently delete a row the archive never received. The archive copy is the only surviving record once the source row is gone, so that loss is unrecoverable.
+**Prune may never delete an audit row that is destined for the archive but has not yet been archived.** The one exception is an incident-preserved row past its 10-year cap: had the archive received it, the archive prune would delete it on the same run, so there is nothing for archival to keep (see "Incident-preserved rows are kept for ten years"). The archive step copies at most a bounded 500 rows per night (oldest first), while pruning acts on `expiresAt`. Left ungated, a club sustaining more than 500 archive-eligible rows/day could accumulate a backlog large enough that an archivable row (`sensitive_access`, `standard`) reaches its `expiresAt` — 24 months for `sensitive_access`, 7 years for `standard` — while still sitting unarchived in the main table. Pruning it then would permanently delete a row the archive never received. The archive copy is the only surviving record once the source row is gone, so that loss is unrecoverable.
 
 Two guards enforce the invariant, in depth (`src/lib/audit-retention.ts`):
 
@@ -49,7 +49,7 @@ The archive database can be a separate PostgreSQL database. The job creates and 
 
 ## Incident-preserved rows are kept for ten years (#3939)
 
-`AuditLog.incidentPreserved` marks a row kept as evidence of an incident. The app sets it itself, with no officer choice involved: today, on the audit entry for an admin capacity hold or force-confirm that overbooked the lodge, which is also recorded as `critical`. The Audit Log screen does not show the flag; use the count below to see these rows.
+`AuditLog.incidentPreserved` marks a row kept as evidence of an incident. The app sets it automatically, not an officer: today, on the audit entry for an admin capacity hold or force-confirm that overbooked the lodge, which is also recorded as `critical`. The Audit Log screen does not show the flag; use the count below to see these rows.
 
 **The rule (owner decision, 11 Oct 2026).** A preserved row skips its normal expiry, but it is still deleted **10 years after its `createdAt`**, from the main database and the archive alike. That keeps the evidence through any realistic dispute without keeping it forever. The 10-year figure is `INCIDENT_PRESERVED_RETENTION_YEARS` in `src/lib/audit-retention.ts`, the one source both prunes read.
 

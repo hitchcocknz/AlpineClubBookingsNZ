@@ -637,7 +637,7 @@ export async function archiveEligibleAuditLogs(
 // from `createdAt`. That cap does not consult `expiresAt` (a preserved row with
 // no expiry still goes at ten years) or the archive gate: an archivable row
 // past the cap is past it in the archive too, where `pruneAuditArchive` would
-// delete its copy the same night, so there is nothing left for archival to keep.
+// delete any copy the same night, so there is nothing left for archival to keep.
 export async function pruneExpiredAuditLogs(
   db: AuditRetentionDbClient = prisma,
   now = new Date(),
