@@ -14,7 +14,7 @@ recording what its reduction set against the ask on the history row it already
 writes, and carrying the retired asks to its after-commit step.
 
 file: src/app/api/bookings/[id]/modify-quote/route.ts
-lines: 2553
+lines: 2552
 reason: the quote must preview the same offset the save applies, beside the
   give-back preview it already computes in this handler; the read itself is the
   shared `readReductionAgainstUnpaidAsk`, read once.
@@ -35,7 +35,7 @@ reason: the removal door writes its own BookingModification history row and
   result type; the offset and the retired asks join them there.
 
 file: src/lib/payment-recovery.ts
-lines: 3464
+lines: 3463
 reason: the intent-mint replay is where a reduction's re-issued ask is minted
   and its supplementary invoice raised, so the plumbing that cannot move lives
   here: the replay sizes through the shared `sizeRecoveryReplayAsk`, mints a
@@ -47,7 +47,7 @@ reason: the intent-mint replay is where a reduction's re-issued ask is minted
   rules themselves live in those modules.
 
 file: src/lib/xero-booking-repair-classify.ts
-lines: 2379
+lines: 2369
 reason: the repair pass sizes a reduction's note and decides an increase's
   missing invoice inside its per-modification arms; the predicate and wording
   live in `unpaid-ask-offset-marker.ts`, and what is left is the arm itself,
@@ -56,7 +56,10 @@ reason: the repair pass sizes a reduction's note and decides an increase's
   and the billed offset's) to `xero-booking-repair-side-notes.ts`. Round 6 adds
   two arms that read the reduction's own history row - a folded re-issue's
   invoice accounted for, and an offset whose billing could not be established
-  reported for a person - each a few lines over the shared markers.
+  reported for a person - each a few lines over the shared markers. Round 7
+  moved both "could not be established" reports (the offset's and the
+  re-issue invoice's) to `addUnpaidAskUnsureFindings` in the side-notes
+  module, so the file shrinks.
 
 file: src/lib/member-guest-consent-service.ts
 lines: 1389
@@ -89,3 +92,11 @@ lines: 1798
 reason: the Booking Modified sender's flat body composes its payment note
   where the HTML template does; it takes the required cancelled-ask flag and
   appends the shared sentence (`unpaidAskCancelledNote`).
+
+file: src/lib/payment-transactions.ts
+lines: 1547
+reason: #3954 round 7 - the one ADDITIONAL-row upsert every mint shares
+  stamps the asking edit's own invoice answer (`hadIssuedXeroInvoice`) in the
+  same write as the row, so a later reduction knows which invoice billed the
+  request; a separate write would leave a window where the row exists
+  unstamped. Six lines: the optional parameter and its one spread.

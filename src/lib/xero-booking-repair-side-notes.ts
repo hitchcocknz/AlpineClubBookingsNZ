@@ -1,5 +1,11 @@
 import { recordedCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
-import { recordedUnpaidAskBilledOffsetCents } from "@/lib/unpaid-ask-offset-marker";
+import {
+  recordedReissuedAskInvoiceUnsureCents,
+  recordedUnpaidAskBilledOffsetCents,
+  recordedUnpaidAskBilledOffsetUnsureCents,
+  REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
+  UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY,
+} from "@/lib/unpaid-ask-offset-marker";
 import {
   APPLIED_CREDIT_GIVE_BACK_NOTE_SCOPE,
   isGiveBackNoteScope,
@@ -15,7 +21,7 @@ import type {
   XeroObjectLinkRecord,
   XeroOperationRecord,
 } from "./xero-booking-repair-types";
-import { addAction, addFinding, buildRetryAction } from "./xero-booking-repair-findings";
+import { addAction, addFinding, buildManualReviewAction, buildRetryAction } from "./xero-booking-repair-findings";
 import { getBlockingOperation } from "./xero-booking-repair-object-resolution";
 import { isSuccessfulXeroOperation } from "./xero-booking-repair-utils";
 
@@ -204,6 +210,54 @@ export function addScopedSideNoteFindings({
       safeToAutoApply: true,
       details: { modificationId, refundAmountCents: note.cents, refundAmountSource: repair.refundAmountSource },
       actionKeys: [action.key],
+    });
+  }
+}
+
+/**
+ * #3954 rounds 6 and 7: where a reduction could not establish what the
+ * primary invoice billed of its offset (`unpaidAskBilledOffsetUnsureCents`),
+ * or what the smaller re-issue's own invoice owes beyond what it queued
+ * (`reissuedAskInvoiceUnsureCents`), it credit-noted and invoiced nothing on a
+ * guess. Each is reported for a person, never queued.
+ */
+export function addUnpaidAskUnsureFindings({
+  bookingId,
+  modification,
+  xeroInvoiceId,
+  actionMap,
+  findings,
+}: {
+  bookingId: string;
+  modification: { id: string; newData: unknown };
+  xeroInvoiceId: string;
+  actionMap: Map<string, BookingXeroRepairAction>;
+  findings: MutableFinding[];
+}): void {
+  const unsure = [
+    {
+      code: "MISSING_MODIFICATION_CREDIT_NOTE" as const,
+      summary: UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY,
+      cents: recordedUnpaidAskBilledOffsetUnsureCents(modification.newData),
+      detailKey: "billedOffsetUnsureCents",
+    },
+    {
+      code: "MISSING_SUPPLEMENTARY_INVOICE" as const,
+      summary: REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
+      cents: recordedReissuedAskInvoiceUnsureCents(modification.newData),
+      detailKey: "reissuedAskInvoiceUnsureCents",
+    },
+  ];
+  for (const { code, summary, cents, detailKey } of unsure) {
+    if (cents <= 0) continue;
+    const manualAction = addAction(actionMap, buildManualReviewAction(bookingId, summary));
+    addFinding(findings, {
+      code,
+      severity: "manual_review",
+      summary,
+      safeToAutoApply: false,
+      details: { modificationId: modification.id, [detailKey]: cents, xeroInvoiceId },
+      actionKeys: [manualAction.key],
     });
   }
 }

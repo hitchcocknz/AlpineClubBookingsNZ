@@ -946,11 +946,7 @@ export async function upsertPaymentIntentTransaction({
   paymentMethodId?: string | null;
   reason?: string;
   stripeCustomerId?: string | null;
-  /**
-   * #3954 round 7: the asking edit's own `hasIssuedPrimaryXeroInvoice` answer,
-   * stamped on an ADDITIONAL request it mints (`unpaidAskBillingEvidence` reads
-   * it). Only a mint passes it; omitted, the stored answer is left alone.
-   */
+  /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
   store?: PaymentStore;
 }) {

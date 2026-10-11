@@ -40,6 +40,7 @@ import type { AdditionalAsk, AdditionalAskPayment } from "@/lib/additional-payme
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { bookingOwner } from "@/lib/booking-owner";
+import { prisma } from "@/lib/prisma";
 import { REISSUED_ASK_REASON, stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
 import { createPaymentIntent, findOrCreateCustomer, findRecentPaymentIntentByMetadata } from "@/lib/stripe";
 import { stripeErrorApiType } from "@/lib/stripe-errors";
@@ -170,4 +171,32 @@ export async function resolveAskCustomerId(payment: AskCustomerPayment): Promise
     organisationId: payment.booking.organisationId,
   });
   return customer.id;
+}
+
+/**
+ * Round 7: the `Payment` the door's re-issue mint reads after commit - its
+ * live ask, for any ask minted since the reduction (`planReissuedAskMint`), and
+ * its customer and owner, for `resolveAskCustomerId`.
+ */
+export async function readReissueMintPayment(
+  paymentId: string,
+): Promise<AdditionalAskPayment & AskCustomerPayment> {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: {
+      additionalAmountCents: true,
+      additionalPaymentStatus: true,
+      stripeCustomerId: true,
+      // #3369: the owner may be an Organisation; `resolveAskCustomerId` reads both.
+      booking: {
+        select: {
+          organisationId: true,
+          member: { select: { id: true, email: true, firstName: true, lastName: true } },
+          organisation: { select: { name: true, email: true } },
+        },
+      },
+    },
+  });
+  if (!payment) throw new Error(`Payment ${paymentId} not found for a re-issued additional ask`);
+  return payment;
 }

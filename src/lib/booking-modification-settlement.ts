@@ -13,6 +13,7 @@ import {
   mintedIntentCustomerId,
   mintReissuedAskIntent,
   planReissuedAskMint,
+  readReissueMintPayment,
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
 import {
@@ -378,23 +379,7 @@ export async function createModificationAdditionalPaymentIntent({
       // superseded away, and the two never answer each other with an
       // `idempotency_error`. The row, the recovery's completion and the
       // supersede's durable rows commit together, or not at all (see above).
-      const current = await prisma.payment.findUnique({
-        where: { id: paymentId },
-        select: {
-          additionalAmountCents: true,
-          additionalPaymentStatus: true,
-          stripeCustomerId: true,
-          // #3369: the owner may be an Organisation; `resolveAskCustomerId` reads both.
-          booking: {
-            select: {
-              organisationId: true,
-              member: { select: { id: true, email: true, firstName: true, lastName: true } },
-              organisation: { select: { name: true, email: true } },
-            },
-          },
-        },
-      });
-      if (!current) throw new Error(`Payment ${paymentId} not found for a re-issued additional ask`);
+      const current = await readReissueMintPayment(paymentId);
       // Round 7: the customer resolved exactly as the recovery runner resolves
       // it, so the two minters of this key send one request.
       const customerId = await resolveAskCustomerId(current);

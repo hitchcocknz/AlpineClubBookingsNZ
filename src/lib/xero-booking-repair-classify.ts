@@ -75,16 +75,13 @@ import {
   isAskRetiredByReductionOperation,
   isFoldedReissueAccountedFor,
   recordedReissuedAskInvoiceCents,
-  recordedUnpaidAskBilledOffsetUnsureCents,
   recordedUnpaidAskOffsetCents,
   REISSUED_ASK_INVOICE_MISSING_SUMMARY,
   retiringReductionFor,
-  UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY,
-  recordedReissuedAskInvoiceUnsureCents,
-  REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
 } from "@/lib/unpaid-ask-offset-marker";
 import {
   addScopedSideNoteFindings,
+  addUnpaidAskUnsureFindings,
   scopedBilledOffsetNote,
   scopedGiveBackNote,
   withoutScopedSideNotes,
@@ -921,43 +918,12 @@ export function classifyBookingContext(
     // takes a scoped invoice-correction note, queued by the edit; verified or queued.
     const billedOffsetNote = scopedBilledOffsetNote({ newData: modification.newData, operations: modificationOperations });
     if (billedOffsetNote && primaryInvoice) {
-      addScopedSideNoteFindings({
-        bookingId: booking.id,
-        modificationId: modification.id,
-        note: billedOffsetNote,
-        edit: { operations: modificationOperations, links: modificationLinks },
-        actionMap,
-        findings,
-      });
+      addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: billedOffsetNote, edit: { operations: modificationOperations, links: modificationLinks }, actionMap, findings });
     }
-    // Round 6: where the edit could not establish what the primary invoice
-    // billed of the offset, it credit-noted nothing; a person decides.
-    const billedOffsetUnsureCents = recordedUnpaidAskBilledOffsetUnsureCents(modification.newData);
-    if (billedOffsetUnsureCents > 0 && primaryInvoice) {
-      const manualAction = addAction(actionMap, buildManualReviewAction(booking.id, UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY));
-      addFinding(findings, {
-        code: "MISSING_MODIFICATION_CREDIT_NOTE",
-        severity: "manual_review",
-        summary: UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY,
-        safeToAutoApply: false,
-        details: { modificationId: modification.id, billedOffsetUnsureCents, xeroInvoiceId: primaryInvoice.objectId },
-        actionKeys: [manualAction.key],
-      });
-    }
-
-    // Round 7: likewise what the smaller request's own invoice may owe beyond
-    // the part the edit could size; a person decides.
-    const reissuedAskInvoiceUnsureCents = recordedReissuedAskInvoiceUnsureCents(modification.newData);
-    if (reissuedAskInvoiceUnsureCents > 0 && primaryInvoice) {
-      const manualAction = addAction(actionMap, buildManualReviewAction(booking.id, REISSUED_ASK_INVOICE_UNSURE_SUMMARY));
-      addFinding(findings, {
-        code: "MISSING_SUPPLEMENTARY_INVOICE",
-        severity: "manual_review",
-        summary: REISSUED_ASK_INVOICE_UNSURE_SUMMARY,
-        safeToAutoApply: false,
-        details: { modificationId: modification.id, reissuedAskInvoiceUnsureCents, xeroInvoiceId: primaryInvoice.objectId },
-        actionKeys: [manualAction.key],
-      });
+    // Round 6/7: what the edit could not establish of the offset's billing, or
+    // of the re-issue's invoice, it acted on not at all; a person decides.
+    if (primaryInvoice) {
+      addUnpaidAskUnsureFindings({ bookingId: booking.id, modification, xeroInvoiceId: primaryInvoice.objectId, actionMap, findings });
     }
 
     // #3954: what an unpaid ask took of a reduction returned no money, so no note.
@@ -979,14 +945,7 @@ export function classifyBookingContext(
       // below without it, so neither hides the other or stands in for it.
       const giveBackNote = scopedGiveBackNote({ newData: modification.newData, operations: modificationOperations });
       if (giveBackNote) {
-        addScopedSideNoteFindings({
-          bookingId: booking.id,
-          modificationId: modification.id,
-          note: giveBackNote,
-          edit: { operations: modificationOperations, links: modificationLinks },
-          actionMap,
-          findings,
-        });
+        addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: giveBackNote, edit: { operations: modificationOperations, links: modificationLinks }, actionMap, findings });
       }
       const { links: noteLinks, operations: noteOperations } = withoutScopedSideNotes(modificationLinks, modificationOperations);
       const modificationCreditNote = resolveObjectFromCandidates({
