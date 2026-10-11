@@ -70,7 +70,7 @@ import { isCancellationRefundDecisionRecorded } from "@/lib/cancellation-settled
 import { recordedCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
 import { scopedGiveBackNote, withoutGiveBackNote } from "@/lib/xero-booking-repair-give-back";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
-import { addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding, RECORD_BY_HAND_REMINDER } from "./xero-booking-repair-paid-another-way";
+import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
 import { APPLIED_CREDIT_GIVE_BACK_NOTE_SCOPE } from "@/lib/xero-review-task-key";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
@@ -1998,7 +1998,8 @@ export function classifyBookingContext(
   //    (PARTIAL) is retried even after a reopen and approval: the cash was
   //    really taken, and the retry records only the payment.
   //  - A kept invoice resolved by hand in Xero gets no refund note from the app,
-  //    so its refunds are recorded by hand (round 12: any card refund too).
+  //    so its card refunds are recorded by hand - only where the card verdict
+  //    says so, sized by what no note in Xero answers (#3924 round 13).
   if (booking.status === "CANCELLED" && payment) {
     for (const transaction of capturedPaymentTransactions) {
       if (!transaction.stripePaymentIntentId) continue;
@@ -2012,23 +2013,13 @@ export function classifyBookingContext(
         const args = { findings, actionMap, booking, paymentId: payment.id, transaction, lateTask, keptInvoice };
         if (addPaidAnotherWayReceiptFinding(args) || keptInvoice?.kind === "resolved") continue;
       } else if (keptInvoice?.kind === "resolved") {
-        if (transaction.refundedAmountCents > 0) {
-          addFinding(findings, {
-            code: "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND",
-            severity: "warning",
-            summary:
-              `A late card payment an officer recorded by hand in Xero was refunded. The app raises no refund credit note for it: record the refund by hand in Xero too. ${RECORD_BY_HAND_REMINDER}`,
-            safeToAutoApply: false,
-            details: {
-              paymentId: payment.id,
-              manualRefundTaskId: lateTask.taskId,
-              paymentIntentId: transaction.stripePaymentIntentId,
-              refundedCents: transaction.refundedAmountCents,
-              operationId: keptInvoice.resolvedOperation.id,
-            },
-            actionKeys: [],
-          });
-        }
+        const details = {
+          paymentId: payment.id,
+          manualRefundTaskId: lateTask.taskId,
+          paymentIntentId: transaction.stripePaymentIntentId,
+          operationId: keptInvoice.resolvedOperation.id,
+        };
+        addKeptLateCaptureRefundByHandFinding(findings, details, context.lateCaptureCardRefundsByHand);
         continue;
       }
       if (

@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * `refundedAmountCents`, which also carries any other hand-back allocated to
  * it. Read only when the paid-another-way verdict says the receipt was
  * resolved by hand. The card-refund reader is the real one, over a stubbed
- * store.
+ * store. Round 13: only a card note that reached Xero is taken off.
  */
 const mocks = vi.hoisted(() => ({
   receipt: vi.fn(),
@@ -42,6 +42,10 @@ vi.mock("@/lib/club-time-zone-runtime", () => ({ readClubTimeZoneOutsideRequest:
 vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({ lockKeptLateCaptureTask: vi.fn() }));
 
 import { readPaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
+import {
+  readUnnotedLateCaptureCardRefundCents,
+  sumLateCaptureNotedCents,
+} from "@/lib/late-capture-refund-credit-note";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 
 const cardNote = (amountCents: number) => ({
@@ -99,5 +103,43 @@ describe("readPaidAnotherWayReceiptState: recordByHandCents (rounds 11 and 12)",
     mocks.receipt.mockResolvedValue({ kind: "recorded", invoiceId: "inv_kept" });
     await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 0 });
     expect(mocks.refunds).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #3924 round 13 (F1, `INV-PAY-122`): once the receipt is resolved by hand, a
+ * card note that never reached Xero - queued, or FAILED while it waited for
+ * the receipt - completes as skipped when it next runs, so it answers nothing
+ * and its cents are recorded by hand. Only a note with its Xero credit note,
+ * or one resolved by hand in Xero, is taken off. The note writer's own ask is
+ * sized the other way: a queued or failed note is not asked for again.
+ */
+describe("round 13: only a card note in Xero is taken off what is recorded by hand", () => {
+  /** A card note that FAILED while it waited for the receipt: never in Xero. */
+  const waitingNote = (amountCents: number) => ({ ...cardNote(amountCents), status: "FAILED", xeroObjectId: null });
+
+  it("MUTATION: card only - a FAILED waiting card note is still recorded by hand", async () => {
+    mocks.notes.mockResolvedValue([waitingNote(1000)]);
+    await expect(readUnnotedLateCaptureCardRefundCents("payment_1", "pi_late")).resolves.toBe(4000);
+    // Beside one in Xero, only that one comes off.
+    mocks.notes.mockResolvedValue([cardNote(1000), waitingNote(500), { ...waitingNote(700), status: "PENDING" }]);
+    await expect(readUnnotedLateCaptureCardRefundCents("payment_1", "pi_late")).resolves.toBe(3000);
+  });
+
+  it("MUTATION: card only - a card note resolved by hand in Xero is taken off", async () => {
+    mocks.notes.mockResolvedValue([{ ...waitingNote(1500), manuallyResolvedAt: new Date("2026-06-21T00:00:00Z") }]);
+    await expect(readUnnotedLateCaptureCardRefundCents("payment_1", "pi_late")).resolves.toBe(2500);
+  });
+
+  it("MUTATION: split - the close's finding names the FAILED waiting card note's cents with the close", async () => {
+    mocks.notes.mockResolvedValue([waitingNote(1000)]);
+    // 4000 card, none in Xero, + 6000 closed.
+    await expect(readPaidAnotherWayReceiptState("pi_late")).resolves.toMatchObject({ recordByHandCents: 10000 });
+  });
+
+  it("MUTATION: the note writer's own ask still counts a queued or failed note, so it is never asked for twice", async () => {
+    mocks.notes.mockResolvedValue([cardNote(1000), waitingNote(500), { ...waitingNote(700), status: "PENDING" }]);
+    await expect(sumLateCaptureNotedCents("payment_1", "pi_late")).resolves.toBe(2200);
+    await expect(sumLateCaptureNotedCents("payment_1", "pi_late", { inXeroOnly: true })).resolves.toBe(1000);
   });
 });

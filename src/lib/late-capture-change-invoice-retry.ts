@@ -71,7 +71,11 @@ export async function linkedChangeInvoiceRetryRefusal(
   );
 }
 
-/** The 409's words: the close's share is never recorded by hand, the card refunds always are. */
+/**
+ * The 409's words: the close's share is never recorded by hand, the card
+ * refunds always are. `cardByHandCents` counts only notes in Xero (round 13,
+ * `readUnnotedLateCaptureCardRefundCents`).
+ */
 function linkedChangeInvoiceRetryRefusalMessage(
   { closeCents, cardByHandCents }: { closeCents: number | null; cardByHandCents: number },
   format: ClubFormat,
@@ -88,7 +92,8 @@ function linkedChangeInvoiceRetryRefusalMessage(
     parts.push(
       `Record the ${formatCents(cardByHandCents, format)} refunded to the card by hand in Xero: once this operation is resolved the app raises no refund note for a card refund of this charge.`,
     );
-  } else if (closeCents === null) {
+  } else if (!closeCents) {
+    // No close, or a $0 one (round 13): a later card refund is still the officer's to record.
     parts.push(
       "If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it.",
     );

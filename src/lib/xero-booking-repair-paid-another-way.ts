@@ -181,7 +181,7 @@ export function addPaidAnotherWayReceiptFinding({
  * a refund by hand in Xero writes no row the app reads, and the repair tool
  * has no way to acknowledge a finding, so it is raised again on every run.
  */
-export const RECORD_BY_HAND_REMINDER =
+const RECORD_BY_HAND_REMINDER =
   "This finding is report-only and keeps appearing after the refund is recorded by hand, which is expected: the app cannot see what is recorded by hand in Xero.";
 
 /**
@@ -218,14 +218,43 @@ function addRecordByHandFinding(
 }
 
 /**
+ * #3635 round-3 R5, #3924 round 13 (`KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`,
+ * #4039): a kept invoice an officer resolved by hand, whose capture's card
+ * refunds no note will answer. Only where every card-refund path reads the
+ * receipt as resolved by hand - the capture is in `byHand`
+ * (`readLateCaptureCardRefundsByHand`) - so a resolved PARTIAL row whose
+ * invoice link stays active, and whose refunds therefore get the app's card
+ * note, is never also told to record them by hand. Sized as that reader sizes
+ * it, never by `PaymentTransaction.refundedAmountCents`. Report-only; names
+ * the capture in place of `LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`.
+ */
+export function addKeptLateCaptureRefundByHandFinding(
+  findings: MutableFinding[],
+  details: { paymentId: string; manualRefundTaskId: string; paymentIntentId: string; operationId: string },
+  byHand: ReadonlyMap<string, { cents: number; amountLabel: string }> | undefined,
+): void {
+  const left = byHand?.get(details.paymentIntentId);
+  if (!left || left.cents <= 0) return;
+  addFinding(findings, {
+    code: "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND",
+    severity: "warning",
+    summary: `A late card payment an officer recorded by hand in Xero was refunded. The app raises no refund credit note for it: record the ${left.amountLabel} refunded by hand in Xero too. ${RECORD_BY_HAND_REMINDER}`,
+    safeToAutoApply: false,
+    details: { ...details, recordByHandCents: left.cents },
+    actionKeys: [],
+  });
+}
+
+/**
  * #3924 round 12 (`LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`, `INV-PAY-122`): a
- * late capture's card refunds no note will answer - its receipt is the app's
- * invoice in Xero, but its row was resolved by hand, so no card-refund path
- * raises a note (`readLateCaptureCardRefundsByHand`). Most often a linked change
- * invoice an officer marked resolved, as its retry's 409 said to. Report-only,
- * and only where no other record-by-hand finding already names the capture:
- * the kept invoice's names its refunds, and the close's its card refunds with
- * the close.
+ * late capture's card refunds no note will answer - its receipt row was
+ * resolved by hand, so no card-refund path raises a note
+ * (`readLateCaptureCardRefundsByHand`). Most often a linked change invoice an
+ * officer marked resolved, as its retry's 409 said to; round 13, also one
+ * resolved before the app sent it (#4038), and a close whose own note row
+ * exists. Report-only, and only where no other record-by-hand finding already
+ * names the capture: the kept invoice's names its card refunds, and the
+ * close's them with the close. So each capture is named once.
  */
 export function addLateCaptureCardRefundByHandFindings(
   findings: MutableFinding[],
@@ -243,7 +272,7 @@ export function addLateCaptureCardRefundByHandFindings(
     addFinding(findings, {
       code: "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND",
       severity: "warning",
-      summary: `A late card payment's Xero receipt is in Xero, but its operation was resolved by hand, so the app raises no refund note for the card refunds of it: record the ${amountLabel} refunded to the card by hand in Xero. ${RECORD_BY_HAND_REMINDER}`,
+      summary: `A late card payment's Xero receipt was resolved by hand, so the app raises no refund note for the card refunds of it: record the ${amountLabel} refunded to the card by hand in Xero. ${RECORD_BY_HAND_REMINDER}`,
       safeToAutoApply: false,
       details: { paymentId, paymentIntentId, recordByHandCents: cents },
       actionKeys: [],

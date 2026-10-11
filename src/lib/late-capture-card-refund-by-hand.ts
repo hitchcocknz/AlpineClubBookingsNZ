@@ -1,29 +1,29 @@
 import { readUnnotedLateCaptureCardRefundCents } from "@/lib/late-capture-refund-credit-note";
-import {
-  findLateCapturePaymentIntents,
-  readLateCaptureXeroReceipt,
-  readPaidAnotherWayLateCaptureXeroReceipt,
-} from "@/lib/late-capture-xero-receipt";
+import { findLateCapturePaymentIntents, readLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
 
 /**
- * #3924 round 12 (`INV-PAY-110`, `INV-PAY-122`): A LATE CAPTURE'S CARD REFUNDS
- * NO NOTE WILL EVER ANSWER, for the repair tool's report-only
- * `LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`.
+ * #3924 rounds 12 and 13 (`INV-PAY-110`, `INV-PAY-122`): A LATE CAPTURE'S CARD
+ * REFUNDS NO NOTE WILL EVER ANSWER, for the repair tool's report-only
+ * record-by-hand findings.
  *
- * Where the two receipt verdicts part: every card-refund path reads the
- * capture's receipt as resolved by hand (`readLateCaptureXeroReceipt`), so it
- * raises no card note, while the app's own invoice is known to be in Xero
- * (`readPaidAnotherWayLateCaptureXeroReceipt` names it - a change linked in
- * Xero, or a row resolved after the app sent it). An officer marking a linked
- * change invoice resolved, as its retry's 409 says to, lands here. Xero then
- * shows the charge received and its card refunds never credited, so what of
- * them no note answers (`readUnnotedLateCaptureCardRefundCents`) is recorded
- * by hand. Main's verdict is deliberately not widened to raise the note
- * instead: rows resolved before #3924 may already have been recorded by hand,
- * and a note would credit them twice.
+ * Every card-refund path reads the capture's receipt as resolved by hand
+ * (`readLateCaptureXeroReceipt`), so none raises a card note for it, and what
+ * of its card refunds no note in Xero answers
+ * (`readUnnotedLateCaptureCardRefundCents`) is recorded by hand. Round 13: on
+ * that verdict alone, whatever the paid-another-way verdict says - an
+ * officer marking a linked change invoice resolved, as its retry's 409 says
+ * to; a change invoice resolved by hand before the app sent it (#4038); a
+ * kept invoice resolved by hand; or a close whose own note row exists. Main's
+ * verdict is deliberately not widened to raise the note instead: rows
+ * resolved before #3924 may already have been recorded by hand, and a note
+ * would credit them twice.
  *
  * By capture, for the late captures among `paymentIntentIds`
- * (`findLateCapturePaymentIntents`), only where something is left.
+ * (`findLateCapturePaymentIntents`), only where something is left. The repair
+ * tool names each capture here in exactly one finding: the kept invoice's
+ * (`KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`), the close's
+ * (`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND`), or else
+ * `LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`.
  */
 export async function readLateCaptureCardRefundsByHand(
   paymentId: string,
@@ -32,8 +32,6 @@ export async function readLateCaptureCardRefundsByHand(
   const found = new Map<string, number>();
   for (const paymentIntentId of await findLateCapturePaymentIntents(paymentIntentIds)) {
     if ((await readLateCaptureXeroReceipt(paymentIntentId)).kind !== "resolved-by-hand") continue;
-    const known = await readPaidAnotherWayLateCaptureXeroReceipt(paymentIntentId);
-    if (known.kind !== "recorded" || known.invoiceId === null) continue;
     const cents = await readUnnotedLateCaptureCardRefundCents(paymentId, paymentIntentId);
     if (cents > 0) found.set(paymentIntentId, cents);
   }

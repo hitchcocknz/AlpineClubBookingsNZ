@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
     requestPayload: Record<string, unknown>;
   }>,
   changeLink: null as { xeroObjectId: string } | null,
+  keptLink: null as { xeroObjectId: string } | null,
   note: vi.fn(),
   cardByHand: vi.fn(),
 }));
@@ -37,7 +38,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     xeroObjectLink: {
       findFirst: async ({ where }: { where: { role?: string } }) =>
-        where.role === "SUPPLEMENTARY_INVOICE" ? state.changeLink : null,
+        where.role === "SUPPLEMENTARY_INVOICE" ? state.changeLink : state.keptLink,
     },
     xeroSyncOperation: {
       findMany: async ({ where }: { where: { queueType?: string } }) =>
@@ -123,6 +124,7 @@ beforeEach(() => {
   state.keptResolved = [];
   state.change = [];
   state.changeLink = null;
+  state.keptLink = null;
   state.note.mockReset();
   state.note.mockResolvedValue("queued");
   state.cardByHand.mockReset();
@@ -183,15 +185,30 @@ describe.each(RESOLVED_ROWS)("round 11: %s", (_label, arrange, invoiceId) => {
   });
 });
 
-describe("round 12: card refunds the verdicts agree on are never named", () => {
+describe("round 12: card refunds a card note answers are never named; round 13: the card verdict alone decides", () => {
   it("MUTATION: a linked change whose row is still FAILED, unresolved: the card path still notes it", async () => {
     state.change = [{ ...resolvedPartialChange, status: "FAILED", xeroObjectId: null, manuallyResolvedAt: null }];
     state.changeLink = { xeroObjectId: "inv_linked" };
     await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late"])).resolves.toEqual(new Map());
   });
 
-  it("MUTATION: a row resolved before the app sent it, with no link: both verdicts say by hand, and the close's finding or none answers it", async () => {
+  // #3924 round 13 (#4038, F2b): the card verdict alone decides - both
+  // verdicts say by hand here, the close's finding (when there is one, with
+  // no note row) names it first, and otherwise this one does.
+  it("MUTATION: round 13: a change resolved before the app sent it, with no link, is named on the card verdict alone (#4038)", async () => {
     state.change = [{ ...resolvedPartialChange, status: "FAILED", xeroObjectId: null }];
+    await expect(readPaidAnotherWayLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "resolved-by-hand" });
+    await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late"])).resolves.toEqual(new Map([["pi_late", 24000]]));
+    expect(state.cardByHand).toHaveBeenCalledWith("payment_1", "pi_late");
+  });
+
+  // #3924 round 13 (#4039): a kept PARTIAL row resolved by hand whose
+  // invoice link stays active is the app's receipt for every card-refund
+  // path, so the app raises the card note and nothing is named by hand.
+  it("MUTATION: round 13: a resolved PARTIAL kept row whose link stays active names nothing (#4039)", async () => {
+    state.keptResolved = [{ xeroObjectId: "inv_kept" }];
+    state.keptLink = { xeroObjectId: "inv_kept" };
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_kept" });
     await expect(readLateCaptureCardRefundsByHand("payment_1", ["pi_late"])).resolves.toEqual(new Map());
     expect(state.cardByHand).not.toHaveBeenCalled();
   });

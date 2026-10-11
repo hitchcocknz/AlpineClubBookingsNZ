@@ -2700,6 +2700,14 @@ describe("retryXeroSyncOperation", () => {
       expect(message).toMatch(/Do not record the \$400\.00 paid back another way by hand/);
       expect(message).not.toMatch(/Record the|record that refund by hand/);
     });
+
+    // Round 13: a $0 close leaves nothing paid back another way, so the
+    // officer is still told a later card refund is theirs to record.
+    it("MUTATION: round 13: a $0 close with no card refund still says to record any later card refund by hand", async () => {
+      const message = await refusal({ closeCents: 0, cardCents: 0 });
+      expect(message).not.toMatch(/Do not record/);
+      expect(message).toMatch(/If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it\.$/);
+    });
   });
 
   // #3924 round 10 (finding 3): an ordinary card edit's invoice names its

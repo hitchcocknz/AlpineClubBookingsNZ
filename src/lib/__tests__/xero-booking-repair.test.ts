@@ -4234,6 +4234,8 @@ describe("runBookingXeroRepair", () => {
       bookingReport.findings.find(
         (finding) => finding.code === "KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE",
       );
+    const byHandOf = (bookingReport: { findings: { code: string }[] }, code: string) =>
+      bookingReport.findings.find((finding) => finding.code === code);
 
     it("queues the kept invoice automatically, for the gross capture, anchored on the task, dated from its raise", async () => {
       const { bookingReport } = await run(keptBooking(), "DISMISSED");
@@ -4363,15 +4365,38 @@ describe("runBookingXeroRepair", () => {
         { refundedAmountCents: 10000, status: "REFUNDED" },
         { refundedAmountCents: 10000, status: "REFUNDED" },
       );
-      const { bookingReport } = await run(refunded, "COMPLETED", [resolved]);
+      // Round 13 (#4039): sized by what no note in Xero answers, as the card-refund reader reads it.
+      const { bookingReport } = await run(refunded, "COMPLETED", [resolved], { pi_kept: 7500 });
       expect(byHand(bookingReport)).toMatchObject({
         severity: "warning",
         safeToAutoApply: false,
-        details: expect.objectContaining({ paymentIntentId: "pi_kept", refundedCents: 10000 }),
+        details: expect.objectContaining({ paymentIntentId: "pi_kept", recordByHandCents: 7500, operationId: resolved.id }),
       });
+      expect((byHand(bookingReport) as { summary: string }).summary).toMatch(/record the \$75\.00 refunded by hand in Xero too/);
       expect(bookingReport.actions).toEqual([]);
 
       expect(byHand((await run(keptBooking(), "DISMISSED", [resolved])).bookingReport)).toBeUndefined();
+    });
+
+    // #3924 round 13 (#4039): a PARTIAL kept row resolved by hand whose
+    // invoice link stays active is still the app's receipt for every
+    // card-refund path, so its refunds get the app's card note - the
+    // card-refund reader names nothing, and nothing says to record them by
+    // hand, however much the capture row says was refunded.
+    it("MUTATION: round 13: a resolved PARTIAL kept row whose link stays active is never told to record its refunds by hand", async () => {
+      const resolvedPartial = {
+        ...keptOperation("PARTIAL"),
+        xeroObjectId: "inv_kept",
+        manuallyResolvedAt: new Date("2026-05-03T00:00:00Z"),
+      };
+      const refunded = keptBooking(
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+      );
+      const { bookingReport } = await run(refunded, "COMPLETED", [resolvedPartial], {});
+      expect(byHandOf(bookingReport, "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND")).toBeUndefined();
+      expect(byHandOf(bookingReport, "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND")).toBeUndefined();
+      expect(bookingReport.actions).toEqual([]);
     });
 
     // #3924 round 12: every record-by-hand finding says it keeps appearing.
@@ -4728,6 +4753,24 @@ describe("runBookingXeroRepair", () => {
             });
             expect(keptByHand(bookingReport)).toBeUndefined();
             expect(closeByHand(bookingReport)).toBeUndefined();
+          });
+
+          // #3924 round 13 (F2a): the close's finding stands down once a note
+          // row of the close exists, but the capture's card refunds still get
+          // no card note - the card finding names them, once.
+          it("MUTATION: round 13: a close whose note row exists, with card refunds - the card finding names them, once", async () => {
+            const bookingReport = await runClosed("after-receipt", [{ ...resolvedKept, xeroObjectId: null }], refunded(), {
+              paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+              paidAnotherWayNoteAsked: true,
+              lateCaptureCardRefundsByHand: { pi_kept: 4000 },
+            });
+            expect(keptByHand(bookingReport)).toBeUndefined();
+            expect(closeByHand(bookingReport)).toBeUndefined();
+            expect(
+              bookingReport.findings.filter((finding) => finding.code === "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND"),
+            ).toEqual([
+              expect.objectContaining({ details: { paymentId: "payment_1", paymentIntentId: "pi_kept", recordByHandCents: 4000 } }),
+            ]);
           });
         });
 

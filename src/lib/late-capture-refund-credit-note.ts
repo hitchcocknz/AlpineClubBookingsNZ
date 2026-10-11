@@ -102,14 +102,21 @@ async function readLateCaptureCardRefunds(paymentId: string, paymentIntentId: st
 
 /**
  * #3924 round 12 (`INV-PAY-122`): THE CAPTURE'S CARD REFUNDS NO NOTE ANSWERS -
- * its own refunds less the refund notes naming it, sized as
- * `noteLateCaptureRefunds` sizes its ask, whatever the receipt verdict. Never
- * `PaymentTransaction.refundedAmountCents`, which also carries a close's bank
- * cash and any other hand-back allocated to the capture's row. A close's own
- * note names no `paymentIntentId`, so it is never taken off here. What an
- * officer records by hand in Xero once the app raises no card note for the
- * capture: the linked change invoice's 409 and the repair tool's
+ * its own refunds less the refund notes naming it, whatever the receipt
+ * verdict. Never `PaymentTransaction.refundedAmountCents`, which also carries
+ * a close's bank cash and any other hand-back allocated to the capture's row.
+ * A close's own note names no `paymentIntentId`, so it is never taken off here.
+ * What an officer records by hand in Xero once the app raises no card note for
+ * the capture: the linked change invoice's 409 and the repair tool's
  * record-by-hand findings.
+ *
+ * Round 13: only a note that REACHED XERO is taken off - one with its Xero
+ * credit note (`xeroObjectId`), or one an officer resolved by hand in Xero.
+ * Once every card-refund path reads the receipt as resolved by hand, a note
+ * still queued, or FAILED while it waited for the receipt, never reaches Xero
+ * - run again, it completes as skipped - so its cents are recorded by hand
+ * too. `noteLateCaptureRefunds` sizes its own ask the other way: a
+ * queued or failed note is not asked for again.
  */
 export async function readUnnotedLateCaptureCardRefundCents(
   paymentId: string,
@@ -118,7 +125,8 @@ export async function readUnnotedLateCaptureCardRefundCents(
   const refunds = await readLateCaptureCardRefunds(paymentId, paymentIntentId);
   const refundedCents = refunds.reduce((sum, refund) => sum + Math.max(0, refund.amountCents), 0);
   if (refundedCents === 0) return 0;
-  return Math.max(0, refundedCents - (await sumLateCaptureNotedCents(paymentId, paymentIntentId)));
+  const inXeroCents = await sumLateCaptureNotedCents(paymentId, paymentIntentId, { inXeroOnly: true });
+  return Math.max(0, refundedCents - inXeroCents);
 }
 
 /**
@@ -128,11 +136,13 @@ export async function readUnnotedLateCaptureCardRefundCents(
  * shapes), in any state but withdrawn: a queued or failed one is not asked for
  * again, and one resolved by hand in Xero covers its amount. A row that
  * completed without raising a note (nothing uncovered, or skipped) covers
- * nothing.
+ * nothing. `inXeroOnly` (round 13, the record-by-hand figure above) counts
+ * only a note in Xero: its credit note's id recorded, or resolved by hand.
  */
 export async function sumLateCaptureNotedCents(
   paymentId: string,
   paymentIntentId: string,
+  { inXeroOnly = false }: { inXeroOnly?: boolean } = {},
 ): Promise<number> {
   const notes = await prisma.xeroSyncOperation.findMany({
     where: {
@@ -149,7 +159,8 @@ export async function sumLateCaptureNotedCents(
   });
   let notedCents = 0;
   for (const note of notes ?? []) {
-    if (note.status === "SUCCEEDED" && !note.xeroObjectId && !note.manuallyResolvedAt) continue;
+    const inXero = Boolean(note.xeroObjectId) || Boolean(note.manuallyResolvedAt);
+    if (!inXero && (inXeroOnly || note.status === "SUCCEEDED")) continue;
     notedCents += parsePaymentCreditNoteRetryInput(note)?.amountCents ?? 0;
   }
   return notedCents;
