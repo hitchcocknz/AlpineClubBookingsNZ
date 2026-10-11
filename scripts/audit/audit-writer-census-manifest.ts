@@ -2931,27 +2931,33 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
  * `auditLog` statements that do not produce a row, and are therefore approved
  * NOT to carry a category.
  *
- * Today these are the three retention statements only: the archive `updateMany`,
- * the prune `deleteMany`, and the request-data anonymisation `updateMany`. They
- * mutate or remove rows that already have whatever category they were written
- * with, so "why does this not set a category" has an answer, and the answer is
- * recorded here rather than assumed by a scan that skips non-`create` methods.
+ * Today these are the three retention statements only: the archive move's
+ * `deleteMany`, the prune `deleteMany`, and the request-data anonymisation
+ * `updateMany`. They mutate or remove rows that already have whatever category
+ * they were written with, so "why does this not set a category" has an answer,
+ * and the answer is recorded here rather than assumed by a scan that skips
+ * non-`create` methods.
  *
  * A new entry here is a hand-written mutation of the platform's audit trail and
  * needs the same scrutiny as a new writer.
  */
 export const APPROVED_NON_PRODUCING_AUDIT_DML: Readonly<Record<string, string>> = {
   "src/lib/audit-retention.ts::archiveEligibleAuditLogs#0":
-    "Retention archive: stamps `archivedAt` on rows past their archive threshold.",
+    // Corrected in #3939: this statement never stamped `archivedAt`. It
+    // `deleteMany`s, by id, the rows the archive step has just copied into
+    // `AuditLogArchive`, so it completes a move, not a loss.
+    "Retention archive: deletes from the main table the rows past their archive " +
+      "threshold that were just copied to the archive database (a move).",
   "src/lib/audit-retention.ts::pruneExpiredAuditLogs#0":
-    // Corrected again in #3939: `incidentPreserved = false` is now a top-level
-    // conjunct of the prune predicate, so a preserved row is exempt from every
-    // branch. Before #3939 the flag guarded only `anonymizeExpiredAuditRequestData`
-    // and the archive's request-data copy, and a preserved row was deleted at its
-    // expiry (for `critical`, unconditionally at seven years).
-    "Retention prune: deletes rows past `expiresAt` (for `critical`, also past " +
-      "the seven-year `createdAt` cutoff), never a row with `incidentPreserved` " +
-      "set (#3939).",
+    // Corrected again in #3939 (owner decision, 11 Oct 2026): the normal branches
+    // now bind only rows with `incidentPreserved = false`, and a preserved row is
+    // deleted only once its `createdAt` is ten years old, whatever its class,
+    // severity or `expiresAt`. Before #3939 the flag guarded only
+    // `anonymizeExpiredAuditRequestData` and the archive's request-data copy, and
+    // a preserved row was deleted at its expiry (for `critical`, at seven years).
+    "Retention prune: deletes unpreserved rows past `expiresAt` (for `critical`, " +
+      "also past the seven-year `createdAt` cutoff), and an `incidentPreserved` " +
+      "row only ten years after its `createdAt` (#3939).",
   "src/lib/audit-retention.ts::anonymizeExpiredAuditRequestData#0":
     "Retention anonymisation: clears `ipAddress`/`userAgent` on rows past the request-data window.",
 };
