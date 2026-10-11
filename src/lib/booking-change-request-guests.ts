@@ -160,3 +160,19 @@ export interface OfficerEntryStamp {
   enteredAt: string;
   memberSummary: string | null;
 }
+
+/**
+ * The member's estimate for the guests a request adds (#4030 Part A), as
+ * `estimateChangeRequestAddedGuests` answers and the request card reads it.
+ */
+export type ChangeRequestEstimate =
+  | {
+      outcome: "priced";
+      /** One per added guest, in order; `null` for a member guest (not priced). */
+      guests: Array<{ priceCents: number | null; nights: number }>;
+      /** The non-member guests' total. */
+      totalCents: number;
+      /** True when a member guest is in the list and so not in the total. */
+      excludesMemberGuests: boolean;
+    }
+  | { outcome: "unpriced"; message: string };

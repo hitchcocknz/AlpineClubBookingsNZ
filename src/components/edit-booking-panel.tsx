@@ -45,6 +45,7 @@ import {
 import { AccountCreditCard } from "@/components/edit-booking/account-credit-card";
 import { AdminOverrideCard } from "@/components/edit-booking/admin-override-card";
 import { ChangeRequestCard } from "@/components/edit-booking/change-request-card";
+import type { ChangeRequestAddGuest } from "@/lib/booking-change-request-guests";
 import { EditDatesCard } from "@/components/edit-booking/edit-dates-card";
 import { EditGuestsCard } from "@/components/edit-booking/edit-guests-card";
 import { EditDependantIdentityQuestion } from "@/components/edit-booking/edit-dependant-identity-question";
@@ -65,7 +66,6 @@ import {
 } from "@/components/edit-booking/exception-request-payload";
 import {
   eachNightKey,
-  previousDateOnly,
   shiftDateKey,
 } from "@/components/edit-booking/stay-nights";
 import type {
@@ -1570,16 +1570,21 @@ export function EditBookingPanel({
     }
   }
 
-  async function handleSubmitChangeRequest() {
+  async function handleSubmitChangeRequest(cardAddGuests: ChangeRequestAddGuest[]) {
     setRequestError("");
     setRequestSuccess("");
     setRequestSubmitting(true);
 
     try {
       const body = buildModificationPayload();
-      if (!hasChanges) {
-        body.requestedEffectiveDate =
-          previousDateOnly(booking.editPolicy.editableFrom) ?? today;
+      // #4030: the guests named on the request card, beside any the editor adds.
+      // A request with no structured change is refused by the server, so the
+      // old effective-date-only body is no longer sent.
+      if (cardAddGuests.length > 0) {
+        body.addGuests = [
+          ...((body.addGuests as unknown[] | undefined) ?? []),
+          ...cardAddGuests,
+        ];
       }
 
       const res = await fetch(`/api/bookings/${booking.id}/change-requests`, {
@@ -1593,13 +1598,15 @@ export function EditBookingPanel({
       const data = await res.json();
       if (!res.ok) {
         setRequestError(data.error || "Failed to submit request");
-        return;
+        return false;
       }
 
       setRequestReason("");
       setRequestSuccess("Request sent to admins");
+      return true;
     } catch {
       setRequestError("Failed to submit request");
+      return false;
     } finally {
       setRequestSubmitting(false);
     }
@@ -1879,7 +1886,19 @@ export function EditBookingPanel({
           submitting={requestSubmitting}
           error={requestError}
           success={requestSuccess}
-          submitDisabled={requestSubmitting || (!hasChanges && !requestReason.trim())}
+          hasEditorChanges={hasChanges}
+          guestContext={{
+            bookingId: booking.id,
+            stay: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+            ageTierOptions,
+            existingMemberIds: booking.guests.flatMap((guest) =>
+              guest.memberId ? [guest.memberId] : [],
+            ),
+            familyMembers,
+            memberFind: booking.memberGuest?.enabled
+              ? { openSearchEnabled: booking.memberGuest.openSearchEnabled }
+              : null,
+          }}
           onReasonChange={setRequestReason}
           onSubmit={handleSubmitChangeRequest}
         />

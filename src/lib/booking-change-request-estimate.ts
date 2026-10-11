@@ -12,7 +12,10 @@ import {
   resolveGuestRateMembershipTypes,
 } from "@/lib/membership-type-policy";
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
-import type { ChangeRequestAddGuest } from "@/lib/booking-change-request-guests";
+import type {
+  ChangeRequestAddGuest,
+  ChangeRequestEstimate,
+} from "@/lib/booking-change-request-guests";
 
 /**
  * The price shown on a member's in-progress change request before they send it
@@ -39,18 +42,6 @@ import type { ChangeRequestAddGuest } from "@/lib/booking-change-request-guests"
  *    count-only locked entries, so no rate is looked up for them and nothing about
  *    their price is read or returned.
  */
-
-export type ChangeRequestEstimate =
-  | {
-      outcome: "priced";
-      /** One per added guest, in order; `null` for a member guest (not priced). */
-      guests: Array<{ priceCents: number | null; nights: number }>;
-      /** The non-member guests' total. */
-      totalCents: number;
-      /** True when a member guest is in the list and so not in the total. */
-      excludesMemberGuests: boolean;
-    }
-  | { outcome: "unpriced"; message: string };
 
 export const CHANGE_REQUEST_ESTIMATE_NO_RATE_MESSAGE =
   "These nights can't be priced at the moment (no active season covers them). You can still send the request; the booking officer confirms the price when they approve it.";
