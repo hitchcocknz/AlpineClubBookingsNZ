@@ -129,6 +129,7 @@ const {
 const { ApiError } = await import("@/lib/api-error");
 const { noReductionAgainstUnpaidAsk, readReductionAgainstUnpaidAsk, reductionLeftAfterAskCents } = await import("@/lib/additional-ask-reduction");
 const { WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE } = await import("@/lib/additional-ask-reissue");
+const { PENDING_ASK_NETTED_BY_REDUCTION_NOTE } = await import("@/lib/additional-ask-recovery-close");
 const { ADDITIONAL_ASK_BEING_RAISED_MESSAGE, AdditionalAskChangedDuringReductionError } = await import(
   "@/lib/additional-ask-reduction-error"
 );
@@ -698,26 +699,68 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     });
   });
 
-  it.each(["PROCESSING", "SUCCEEDED"])(
-    "MUTATION (round 4): a re-issue whose recovery is already %s (claimed after its grace, or netted off by a later reduction) is not minted by the door",
-    async (status) => {
-      minterDb.reissueRecovery = { ...REISSUE_RECOVERY, status };
+  // Final review: whoever moved the recovery decides whether the re-issue is
+  // still owed. Only a later reduction's net-off retires it; a runner's claim
+  // or an increase's fold still asks the member for that money.
+  const MOVED_RECOVERIES = [
+    ["claimed by the runner after its grace", { status: "PROCESSING", attempts: 1, lastError: null }, false],
+    ["folded in by a later increase", { status: "SUCCEEDED", lastError: WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE }, false],
+    ["netted off by a later reduction", { status: "SUCCEEDED", lastError: PENDING_ASK_NETTED_BY_REDUCTION_NOTE }, true],
+  ] as const;
+
+  it.each(MOVED_RECOVERIES)(
+    "MUTATION (round 4; final review): a re-issue whose recovery was already %s is not minted by the door, and is named as due only while still owed",
+    async (_label, moved, retired) => {
+      minterDb.reissueRecovery = { ...REISSUE_RECOVERY, ...moved };
       const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
       const { minted } = await mintAfter(result);
 
       expect(mocks.createIntent).not.toHaveBeenCalled();
-      expect(minted.additionalPaymentIntentId).toBeUndefined();
+      expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: retired });
     },
   );
 
   it("MUTATION (round 4): a recovery that moved while the door minted gets no row and hands out no secret", async () => {
     minterDb.completeCount = 0;
     const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    // Final review (R1/R2): a later reduction netted the waiting re-issue off
+    // between the door's read and its write - the re-read says so.
+    minterDb.recoveryFindUnique
+      .mockResolvedValueOnce({ ...REISSUE_RECOVERY, lastError: null })
+      .mockResolvedValueOnce({ ...REISSUE_RECOVERY, status: "SUCCEEDED", lastError: PENDING_ASK_NETTED_BY_REDUCTION_NOTE });
     const { minted } = await mintAfter(result);
 
     expect(mocks.createIntent).toHaveBeenCalledTimes(1);
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(queueReissueInvoice).not.toHaveBeenCalled();
+    expect(minterDb.recoveryFindUnique).toHaveBeenCalledTimes(2);
+    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: true });
+  });
+
+  it.each(MOVED_RECOVERIES)(
+    "MUTATION (final review): a recovery %s while the door minted is named as due only while still owed",
+    async (_label, moved, retired) => {
+      minterDb.completeCount = 0;
+      const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+      minterDb.recoveryFindUnique
+        .mockResolvedValueOnce({ ...REISSUE_RECOVERY, lastError: null })
+        .mockResolvedValueOnce({ ...REISSUE_RECOVERY, ...moved });
+      const { minted } = await mintAfter(result);
+
+      expect(mocks.createIntent).toHaveBeenCalledTimes(1);
+      expect(mocks.upsert).not.toHaveBeenCalled();
+      expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: retired });
+    },
+  );
+
+  it("final review: a re-read that fails after the recovery moved names the re-issue, as before", async () => {
+    minterDb.completeCount = 0;
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    minterDb.recoveryFindUnique
+      .mockResolvedValueOnce({ ...REISSUE_RECOVERY, lastError: null })
+      .mockRejectedValueOnce(new Error("connection reset"));
+    const { minted } = await mintAfter(result);
+
     expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: false });
   });
 

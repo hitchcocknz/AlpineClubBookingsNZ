@@ -377,6 +377,8 @@ export type ReissuedAskRecovery = {
   /** The re-issued figure frozen in the edit's transaction. */
   amountCents: number;
   createdAt: Date;
+  /** Who closed it without a mint, when someone did (#3954 final review). */
+  lastError: string | null;
 };
 
 /** The recovery `queueReissuedAskRecovery` wrote for this edit, if any. */
@@ -393,6 +395,7 @@ export async function readReissuedAskRecovery(
       paymentIntentId: true,
       amountCents: true,
       createdAt: true,
+      lastError: true,
     },
   });
 }
