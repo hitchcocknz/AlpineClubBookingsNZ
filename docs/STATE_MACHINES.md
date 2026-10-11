@@ -3247,6 +3247,12 @@ unconfirmed environment, and a provider failure — stay distinguishable
 ```text
 local business event -> Xero outbox operation queued
 worker claims operation -> provider call -> success or retryable failure
+worker finds the operation must wait (busy) -> RUNNING -> PENDING, no Xero
+  call, status-guarded; lastErrorCode is the wait's code or null
+  billed-offset note waiting for its edit's own note (#3954): code
+  BILLED_OFFSET_AWAITING_OWN_NOTE, rechecked every
+  BILLED_OFFSET_OWN_NOTE_RECHECK_MS; at BILLED_OFFSET_OWN_NOTE_WAIT_MS from
+  createdAt -> FAILED for a person (an operator's retry raises it unwaited)
 inbound webhook/event recorded -> reconciliation worker processes event
 failure -> retry/backoff/admin visibility
 FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
