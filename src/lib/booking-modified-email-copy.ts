@@ -23,9 +23,9 @@ export function organiserCardRefundSentence(amount: string): string {
 }
 
 /**
- * #3653, #3973: the group organiser's cancellation owes this joiner's booking a
- * refund to the organiser's card that has not completed yet (the recovery
- * runner retries it). The joiner's own cancel behind the group's, its preview
+ * #3653, #3973: the group organiser's cancellation carries this joiner's
+ * booking's refund to the organiser's card as its own debt, which the recovery
+ * runner retries until Stripe makes it. The joiner's own cancel behind the group's, its preview
  * (`groupCancellationRefundNote`) and the "Booking Cancelled" email of either
  * cancel say it in these words.
  */
