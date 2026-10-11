@@ -1278,6 +1278,88 @@ let webhookClient: PrismaClient;
       },
     );
 
+    it("ROUND 8 (F1): an ask a reduction retired before its increase queued its invoice is named by the edit stamped on its row - the repair pass never bills it again", async () => {
+      // 10000 paid; the increase's door minted the 5000 ask and stamped its
+      // edit on the row, but had not yet queued the increase's invoice.
+      await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+      await prisma.paymentTransaction.update({ where: { id: ASK_TXN_ID }, data: { bookingModificationId: INCREASE_MOD_ID } });
+      const increase = await prisma.bookingModification.findUniqueOrThrow({ where: { id: INCREASE_MOD_ID }, select: { createdAt: true } });
+      // The primary invoice was raised before the increase.
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "INVOICE", operationType: "CREATE", status: "SUCCEEDED", localModel: "Payment", localId: PAYMENT_ID,
+          xeroObjectType: "INVOICE", xeroObjectId: PRIMARY_INVOICE_ID, completedAt: new Date(increase.createdAt.getTime() - 60_000),
+        },
+      });
+      await prisma.xeroObjectLink.create({
+        data: { localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "INVOICE", xeroObjectId: PRIMARY_INVOICE_ID, role: "PRIMARY_INVOICE" },
+      });
+
+      // A 2000 reduction retires the ask and re-issues 3000, its invoice 3000.
+      const result = await removeLeavingGuest();
+      const history = (await prisma.bookingModification.findUniqueOrThrow({ where: { id: result.bookingModificationId! }, select: { newData: true } }))
+        .newData as Record<string, unknown>;
+      expect(history).toMatchObject({ unpaidAskRetiredModificationIds: [INCREASE_MOD_ID], reissuedAskInvoiceCents: 3_000 });
+
+      // The increase's door re-reads its row: retired, so it offers no secret -
+      // and its Xero leg, still handed the intent, parks the increase's own
+      // invoice on it, which the reaper later retires as unpayable.
+      const { isMintedAskStillLive } = await import("@/lib/reissued-ask-invoice");
+      expect(await isMintedAskStillLive(ASK_INTENT)).toBe(false);
+      const { enqueueXeroSupplementaryInvoiceOperation } = await import("@/lib/xero-operation-outbox");
+      const parked = await enqueueXeroSupplementaryInvoiceOperation(
+        { bookingId: BOOKING_ID, priceDiffCents: 5_000, changeFeeCents: 0, bookingModificationId: INCREASE_MOD_ID },
+        { paymentIntentId: ASK_INTENT, waitForConfirmedAdditionalPayment: true, recordPayment: true },
+      );
+      await prisma.xeroSyncOperation.update({
+        where: { id: parked.queueOperationId! },
+        data: { status: "CANCELLED", completedAt: new Date(), lastErrorCode: "STALE_WAITING_PAYMENT" },
+      });
+
+      const { runBookingXeroRepair } = await import("@/lib/xero-booking-repair");
+      const report = (await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID } })).passes[0]!.bookings[0]!;
+      expect(
+        report.actions.filter(
+          (action) => action.type === "QUEUE_SUPPLEMENTARY_INVOICE" && action.payload.bookingModificationId === INCREASE_MOD_ID,
+        ),
+      ).toEqual([]);
+      expect(
+        report.findings.filter(
+          (finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE" && (finding.details as { modificationId?: string }).modificationId === INCREASE_MOD_ID,
+        ),
+      ).toEqual([]);
+    });
+
+    it("ROUND 8 (concurrency F1): the outbox scan leaves out a note waiting for its edit's own note until its recheck is due - and only that", async () => {
+      await deleteFixtures();
+      const { BILLED_OFFSET_AWAITING_OWN_NOTE_CODE, BILLED_OFFSET_OWN_NOTE_RECHECK_MS, outboxScanLeavesAwaitingOwnNote } = await import(
+        "@/lib/unpaid-ask-billed-offset-order"
+      );
+      const row = (id: string, lastErrorCode: string | null) => ({
+        id, direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", status: "PENDING",
+        localModel: "Payment", localId: PAYMENT_ID, queueType: "MODIFICATION_CREDIT_NOTE", lastErrorCode,
+      });
+      await prisma.xeroSyncOperation.createMany({
+        data: [
+          row("race-3954-scan-null", null),
+          row("race-3954-scan-other", "SOME_OTHER_CODE"),
+          row("race-3954-scan-waiting", BILLED_OFFSET_AWAITING_OWN_NOTE_CODE),
+          row("race-3954-scan-due", BILLED_OFFSET_AWAITING_OWN_NOTE_CODE),
+        ],
+      });
+      // Clock-relative, never the database's own NOW(): the test clock is frozen.
+      const now = new Date();
+      await prisma.$executeRaw`UPDATE "XeroSyncOperation" SET "updatedAt" = ${new Date(now.getTime() - 60 * 60 * 1000)} WHERE id = 'race-3954-scan-due'`;
+      await prisma.$executeRaw`UPDATE "XeroSyncOperation" SET "updatedAt" = ${now} WHERE id <> 'race-3954-scan-due' AND "localId" = ${PAYMENT_ID}`;
+      const scanned = await prisma.xeroSyncOperation.findMany({
+        where: { localId: PAYMENT_ID, status: "PENDING", AND: [outboxScanLeavesAwaitingOwnNote(now)] },
+        select: { id: true },
+        orderBy: { id: "asc" },
+      });
+      expect(scanned.map((op) => op.id)).toEqual(["race-3954-scan-due", "race-3954-scan-null", "race-3954-scan-other"]);
+      expect(BILLED_OFFSET_OWN_NOTE_RECHECK_MS).toBeLessThan(60 * 60 * 1000);
+    });
+
     it("ROUND 7 (F1), under-credit: a row a recovery minted after the primary invoice was linked reads the recovery's 'no invoice yet' - the primary billed the 5000, and the note is queued for it", async () => {
       await grownBooking("card", 2_500, 100, "minted", "recovery-minted");
       const result = await removeLeavingGuest();
