@@ -342,10 +342,13 @@ Two consequences worth knowing before you edit one:
   for by card, the group organiser's card.
   Keep it on a line of its own, with no `$` or label in front.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
-  says where the refund went (the member's original payment method, account
-  credit, a refund the club will arrange directly, or, on a group booking the
-  organiser paid for by card, the group organiser's card), or that no refund
-  applied. Keep it on a line of its own.
+  says where the refund went: the member's original payment method, account
+  credit, or a refund the club will arrange directly. On a group booking the
+  organiser paid for, it names the organiser instead, whether the joiner
+  cancelled or the organiser cancelled the group: the refund went to the group
+  organiser's card, is still on its way there, or (when the organiser paid by
+  Internet Banking) the club will repay the organiser directly. Otherwise it
+  says no refund applied. Keep it on a line of its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check
