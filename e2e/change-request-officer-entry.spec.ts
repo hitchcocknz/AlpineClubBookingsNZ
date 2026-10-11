@@ -95,7 +95,10 @@ test("an officer enters the guests a free-text request described, checks the fig
       await expect(card.getByText(`${guest.firstName} ${guest.lastName}`)).toBeVisible();
     }
     // Bo stayed the second night only: the row's own Date In, inside the stay.
-    const secondNight = CHANGE_REQUEST_FINISHED_WINDOW.nights[1];
+    const secondNight = must(
+      CHANGE_REQUEST_FINISHED_WINDOW.nights[1],
+      "the seeded finished stay has a second night",
+    );
     const dateIns = card.getByLabel("Date In");
     await expect(dateIns).toHaveCount(GUESTS.length);
     await expect(dateIns.nth(1)).toHaveAttribute("min", CHANGE_REQUEST_FINISHED_WINDOW.checkIn);
@@ -132,7 +135,9 @@ test("an officer enters the guests a free-text request described, checks the fig
   expect(requested?.addGuests?.map((guest) => guest.firstName)).toEqual(
     GUESTS.map((guest) => guest.firstName),
   );
-  expect(requested?.addGuests?.[1]?.stayStart).toBe(CHANGE_REQUEST_FINISHED_WINDOW.nights[1]);
+  expect(requested?.addGuests?.[1]?.stayStart).toBe(
+    must(CHANGE_REQUEST_FINISHED_WINDOW.nights[1], "the seeded finished stay has a second night"),
+  );
 
   // The booking now carries both guests, and its history the change that
   // raised the amount due.
