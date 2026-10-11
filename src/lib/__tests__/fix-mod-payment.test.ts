@@ -44,6 +44,7 @@ const mockQueueSupersededPaymentIntentRefundRecovery = vi.fn();
 // #3341: the ADDITIONAL supersede runs for REAL (`INV-OPS-015`). These are its
 // I/O: the ledger read of the asks it retires, and the durable cancel it queues.
 const mockPaymentTransactionFindMany = vi.fn();
+const mockRecoveryOperationFindUnique = vi.fn(async (..._args: unknown[]) => null as unknown);
 const mockEnqueuePaymentIntentCancellationRecovery = vi.fn();
 const mockQueueSupersededPrimaryIntentCancellations = vi.fn();
 const mockEnqueueXeroBookingInvoiceOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_booking", message: "queued" });
@@ -88,7 +89,12 @@ vi.mock("@/lib/prisma", () => ({
     // Empty by default - no financial review is open - so every pre-#3032 test
     // asserts exactly what it asserted before.
     // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
-    paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
+    // Final review: a re-issuing door reads its recovery back after commit
+    // (`readReissuedAskRecovery`); none by default.
+    paymentRecoveryOperation: {
+      findMany: vi.fn(async () => []),
+      findUnique: (...args: unknown[]) => mockRecoveryOperationFindUnique(...args),
+    },
     manualRefundTask: {
       // #3827 (`INV-PAY-117`): no open edit refund hand-back on file.
       aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })),
@@ -742,6 +748,83 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
       expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
       expect.anything(),
     );
+  });
+
+  // #3954 final review (R1/R2): this date change (R1) shrinks a $50 unpaid ask
+  // to $30 and re-issues it; a later reduction (R2) nets that waiting re-issue
+  // off before R1's door mints it. R2's own email told the member, so R1's must
+  // not name the $30 as due.
+  it("MUTATION (final review): a re-issue a later reduction netted off before the door minted it is named as $0", async () => {
+    const booking = makeBooking({
+      totalPriceCents: 15000,
+      finalPriceCents: 15000,
+      payment: {
+        ...makeBooking().payment,
+        additionalPaymentIntentId: "pi_ask",
+        additionalAmountCents: 5000,
+        additionalPaymentStatus: "PENDING",
+      },
+    });
+    const askRow = {
+      id: "txn_ask",
+      kind: "ADDITIONAL",
+      source: "STRIPE",
+      status: "PENDING",
+      reason: "guest_add_price_increase",
+      amountCents: 5000,
+      carriedAskCents: 0,
+      stripePaymentIntentId: "pi_ask",
+      createdAt: new Date("2026-06-20T00:00:00.000Z"),
+      hadIssuedXeroInvoice: true,
+    };
+    const tx = Object.assign(makeTx(booking), {
+      paymentTransaction: {
+        findMany: vi.fn(async (args: { where?: { kind?: unknown } }) => (args?.where?.kind === "PRIMARY" ? [] : [askRow])),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+      },
+      xeroSyncOperation: { findMany: vi.fn(async () => []), updateMany: vi.fn(async () => ({ count: 0 })) },
+    });
+    Object.assign(tx.bookingModification, { findMany: vi.fn(async () => [{ id: "mod_increase" }]) });
+    Object.assign(tx.payment, { findUnique: vi.fn(async () => null) });
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacity.mockResolvedValue({ available: true, availableBeds: 20 } as any);
+    mockedCalcPrice.mockReturnValue({ totalPriceCents: 13000, guests: [{ priceCents: 13000, perNightCents: [6500, 6500] }] } as any);
+    mockedCalcChangeFee.mockReturnValue({ feeCents: 0, fromTierRefundPct: 0, toTierRefundPct: 0 });
+    mockPaymentUpdate.mockResolvedValue({});
+    const { PENDING_ASK_NETTED_BY_REDUCTION_NOTE } = await import("@/lib/additional-ask-recovery-close");
+    mockRecoveryOperationFindUnique.mockImplementation(async () => ({
+      id: "op_reissue",
+      status: "SUCCEEDED",
+      attempts: 0,
+      processingStartedAt: null,
+      paymentIntentId: "mod_reissued_ask_mod1",
+      amountCents: 3000,
+      createdAt: new Date("2026-07-15T00:00:00.000Z"),
+      lastError: PENDING_ASK_NETTED_BY_REDUCTION_NOTE,
+    }));
+
+    try {
+      const res = await PUT(
+        new NextRequest("http://localhost/api/bookings/bk1/modify-dates", { method: "PUT", body: JSON.stringify({ checkIn: "2026-08-05", checkOut: "2026-08-07" }) }),
+        { params: Promise.resolve({ id: "bk1" }) },
+      );
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      // The edit re-issued $30 of the $50 ask, which R2 netted off before this door minted it.
+      expect(data.additionalAmountCents).toBe(3000);
+      expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
+      expect(data.additionalPaymentClientSecret).toBeNull();
+      const { sendBookingModifiedEmail } = await import("@/lib/email");
+      expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
+        expect.anything(),
+      );
+    } finally {
+      mockRecoveryOperationFindUnique.mockReset();
+      mockRecoveryOperationFindUnique.mockResolvedValue(null);
+    }
   });
 
   it("creates additional PaymentIntent and returns clientSecret when price increases", async () => {
