@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
-  readLateCaptureXeroReceipt: (...args: unknown[]) => mocks.readLateCaptureXeroReceipt(...args),
+  // Round 11: a paid-another-way path never reads the card-refund verdict.
+  readLateCaptureXeroReceipt: () => {
+    throw new Error("a paid-another-way path read readLateCaptureXeroReceipt");
+  },
   readPaidAnotherWayLateCaptureXeroReceipt: (...args: unknown[]) => mocks.readLateCaptureXeroReceipt(...args),
   hasXeroReceiptForLateCapture: async (...args: unknown[]) =>
     ((await mocks.readLateCaptureXeroReceipt(...args)) as { kind: string }).kind === "recorded",

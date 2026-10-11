@@ -60,7 +60,10 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
   kickQueuedXeroOutboxOperationsIfConnected: mocks.kick,
 }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
-  readLateCaptureXeroReceipt: mocks.readLateCaptureXeroReceipt,
+  // Round 11: a paid-another-way path never reads the card-refund verdict.
+  readLateCaptureXeroReceipt: () => {
+    throw new Error("a paid-another-way path read readLateCaptureXeroReceipt");
+  },
   readPaidAnotherWayLateCaptureXeroReceipt: mocks.readLateCaptureXeroReceipt,
   findKeptLateCaptureInvoiceIdForPayment: mocks.findKeptLateCaptureInvoiceIdForPayment,
 }));

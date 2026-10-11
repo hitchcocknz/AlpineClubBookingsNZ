@@ -70,7 +70,10 @@ vi.mock("@/lib/late-capture-paid-another-way", () => ({
   findLateCaptureRefundPaidAnotherWay: (...a: unknown[]) => mocks.findClose(...a),
 }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
-  readLateCaptureXeroReceipt: (...a: unknown[]) => mocks.readReceipt(...a),
+  // Round 11: the note step never reads the card-refund verdict.
+  readLateCaptureXeroReceipt: () => {
+    throw new Error("a paid-another-way path read readLateCaptureXeroReceipt");
+  },
   readPaidAnotherWayLateCaptureXeroReceipt: (...a: unknown[]) => mocks.readReceipt(...a),
 }));
 vi.mock("@/lib/club-time-zone-runtime", () => ({
