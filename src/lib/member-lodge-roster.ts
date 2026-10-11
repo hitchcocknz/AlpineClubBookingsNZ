@@ -297,9 +297,8 @@ export async function buildMemberLodgeRoster(
   // grounds that under-disclosing is the safe direction for a privacy surface;
   // the member guide says the same thing in its own words.
   //
-  // Holds are not read here. The party on a paid whole-lodge booking is
-  // listed like any other (as a group, never by name — see `soleOccupancy`),
-  // and the lodge's held NIGHTS are read separately below, from the capacity
+  // The party on a whole-lodge booking gets no row, even when paid
+  // (INV-PRIV-017). Held nights are read separately below, from the capacity
   // engine, so they match the calendar whatever the holding booking's status.
   const bookings = await prisma.booking.findMany({
     where: {
