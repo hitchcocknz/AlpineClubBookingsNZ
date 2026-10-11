@@ -716,6 +716,31 @@ confirmable until the five-minute cron reached it (measured at 4m05s), and the
 refund that followed a capture inside that window wrote nothing at all — Stripe's
 own receipt was the entire notice.
 
+**Locked-period requests on a finished stay (#3750).** Approving a
+`LOCKED_PERIOD` request whose booking's stay has finished (fully past, or
+`COMPLETED`) EXECUTES it, in one transaction; on any other stay approval still
+only acknowledges the review. A refusal at any step rolls the claim back, so the
+request stays `REQUESTED` at its old `version`.
+
+```text
+LOCKED_PERIOD request, stay finished -> officer approves
+  -> pg_advisory_xact_lock(1) -> lodge capacity lock -> fresh-role reauthorisation
+  -> re-read: REQUESTED, LOCKED_PERIOD, expected version   (else claim lost, no effect)
+  -> drift: booking dates + guest set still the request's original   (else stays REQUESTED)
+  -> CAS claim REQUESTED -> APPROVED, version + 1
+  -> modifyBookingBatch(finishedStayCorrection) on the same transaction
+       over-capacity past night -> refused until the officer confirms (whole-lodge hold: always refused)
+       no active season / member-night clash / a guest who cannot be booked -> refused
+       dates moved on an unpaid booking whose invoice is in a Xero-locked period -> refused
+       fee on a stay with nothing captured -> recorded on the payment, collected by the pay step
+  -> linkedModificationId written
+  -> COMMIT, then the ordinary post-commit settlement (ask, refund, Xero, email, audit)
+  (a dry run of the same sequence, rolled back before COMMIT, is the officer's quote)
+```
+
+The booking keeps its status (a `COMPLETED` stay stays `COMPLETED`); the money
+moves on the ordinary edit paths above.
+
 **Booking-policy exception requests (#2365).** A `BookingChangeRequest` now
 carries a `kind`: the original today/past-night edit is `LOCKED_PERIOD`, and a
 member request to override an eligible *soft* booking-policy failure (a
@@ -2202,6 +2227,10 @@ new-member approval -> incomplete plan -> OPEN billing exception (approval stays
 QUEUED -> outbox claim -> invoice create OR exact existing-invoice adoption
 invoice identity persisted locally -> INVOICE_CREATED -> Xero email -> EMAILED
 INVOICE_CREATED -> email fails -> EMAIL_FAILED -> retry -> same invoice -> EMAILED
+outbox claim -> charge already invoiced AND emailed -> operation SUCCEEDED (skipped ALREADY_EMAILED; no provider call) (#3971)
+FAILED operation -> Xero Operations Retry -> same row PENDING, same correlation key (charge from localId, INV-INT-026)
+  refused (409, no write) when the charge already has a Xero invoice, needs none (VOIDED/NOT_REQUIRED/NO_INVOICE),
+  another attempt for it is live, or a sibling was resolved in Xero after the row was queued
 provider reference exists but snapshot differs -> CONFLICT (no provider rewrite)
 provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
@@ -3184,6 +3213,13 @@ retry claims original FAILED/PARTIAL -> RUNNING -> handler completes it
   queued retry (REQUEUE) -> FAILED, naming the original and its status
 stale RUNNING (> 15 min) -> FAILED by an officer's Mark failed (one row) or
   Reset stale running (all), code ORPHANED_STALE_RUNNING; then retryable
+retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
+  membership subscription invoice) -> the SAME row back to PENDING, same
+  correlation key, status-guarded; the outbox claim runs it. Refused (409, no
+  write) when a sibling for the same document was resolved in Xero after the
+  row was queued, which the outbox would cancel unsent (#3994). A subscription
+  invoice is also refused when its charge already has a Xero invoice or needs
+  none (#3971)
 ```
 
 To verify: status strings, stale processing reset, tenant selection, link
@@ -3204,6 +3240,27 @@ failure -> run/failure visible and retryable where business-critical
 
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
+
+### Alpine Central Server version pause (#49)
+
+```text
+alpine-server-other-lodges-sync (03:00) -> module on -> base URL set
+  -> checkServerVersion (one GET /api/v1/version; records the answer)
+     -> no key          -> SKIPPED central-server-not-configured
+     -> mismatch        -> SKIPPED server-version-mismatch   (before the claim)
+     -> could not check -> last answer stands; continues
+     -> match/unchecked -> item enabled? -> claim -> upload -> download -> SUCCESS
+club-post-mirror-sync / push webhook -> key set -> checkServerVersion
+     -> mismatch -> skipped server-version-mismatch          (before commsSyncStartedAt)
+club-post-share-retry -> isServerSyncPaused (stored answer, no call)
+     -> paused -> shares and withdrawals left pending, no attempt counted
+```
+
+The pause is computed, never stored (`INV-INT-027`): the row holds only the
+server's last answer, so the first run after either side is upgraded records a
+matching answer and resumes with no manual step. A SKIPPED run with reason
+`server-version-mismatch` is therefore the expected state while the two sides
+differ, not a failure to recover from; the setup page shows both numbers.
 
 ### Edit review-charge recovery row (#3402)
 
