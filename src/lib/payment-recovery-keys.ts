@@ -170,6 +170,14 @@ export function buildReissuedAskStripeIdempotencyKey(bookingModificationId: stri
   return `mod_reissued_ask_${bookingModificationId}`;
 }
 
+/**
+ * #3954 review round 6: the reason every re-issued ask's intent and
+ * `PaymentTransaction` row carry, whichever minter wrote it
+ * (`planReissuedAskMint`) - and how a reduction knows a ledger row as a
+ * re-issue when it reads what Xero billed of it (`unpaidAskBillingEvidence`).
+ */
+export const REISSUED_ASK_REASON = "modification_reissued_ask";
+
 // #3170: the recovery-operation dedup key for the additional PaymentIntent a
 // completed EDIT_FINANCIAL_REVIEW task contributes to when the officer decides
 // the MEMBER owes the club.

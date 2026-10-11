@@ -28,7 +28,12 @@ import {
   type UnpaidAskDb,
 } from "@/lib/additional-ask-reduction";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
-import { NO_ADDITIONAL_ASK, reissueUnpaidAdditionalAsk, type AdditionalAsk } from "@/lib/additional-payment-ask";
+import {
+  NO_ADDITIONAL_ASK,
+  reissueUnpaidAdditionalAsk,
+  splitUnpaidAskOffsetForXero,
+  type AdditionalAsk,
+} from "@/lib/additional-payment-ask";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { enqueueAdditionalPaymentIntentRecovery, runPaymentRecoveryOperationNow } from "@/lib/payment-recovery";
@@ -39,6 +44,7 @@ import {
   isEditFinancialReviewAdditionalIntentRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
+import { unpaidAskBillingEvidence } from "@/lib/unpaid-ask-billing-evidence";
 import {
   NO_FOLDED_REISSUED_ASKS,
   recordedReissuedAskInvoiceCents,
@@ -85,6 +91,12 @@ export type UnpaidAskSettlement = {
   reissuedAskInvoiceCents: number;
   /** The part of the offset Xero had already billed, for the repair pass. */
   unpaidAskBilledOffsetCents: number;
+  /**
+   * Round 6: the part of the offset the primary invoice may have billed, where
+   * what it billed could not be established (`unpaidAskBillingEvidence`) -
+   * reported for a person, never credit-noted.
+   */
+  unpaidAskBilledOffsetUnsureCents: number;
 };
 
 /**
@@ -122,6 +134,7 @@ export async function settleReductionAgainstUnpaidAsk(
       retiredAskModificationIds: [],
       reissuedAskInvoiceCents: 0,
       unpaidAskBilledOffsetCents: 0,
+      unpaidAskBilledOffsetUnsureCents: 0,
       reissuedAsk: NO_ADDITIONAL_ASK,
     };
   }
@@ -140,17 +153,35 @@ export async function settleReductionAgainstUnpaidAsk(
       data: { changeFeeCents: { increment: changeFeeCents } },
     });
   }
+  // Decision A (owner 9 Oct 2026, "Raise a $30 invoice") and the 10 Oct
+  // "Auto credit note", split in one place (`splitUnpaidAskOffsetForXero`):
+  // the smaller ask's own invoice bills what the retired asks' supplementary
+  // invoices would have, less the offset; what the offset took beyond them the
+  // primary invoice had billed. Round 6: which money a supplementary invoice
+  // bills is read from evidence, not from the invoices that happen to be
+  // parked yet (`unpaidAskBillingEvidence`).
+  const evidence = hasIssuedXeroInvoice
+    ? await unpaidAskBillingEvidence(tx, {
+        bookingId: booking.id,
+        paymentId: booking.payment.id,
+        rows: reduction.ask.rows,
+        retired: retiredAsk,
+      })
+    : { supplementaryInvoicedCents: retiredAsk.invoicedCents, established: true };
+  const split = splitUnpaidAskOffsetForXero({
+    offsetCents: reduction.offsetCents,
+    askLeftCents: reduction.askLeftCents,
+    supplementaryInvoicedCents: evidence.supplementaryInvoicedCents,
+    primaryInvoiceIssued: hasIssuedXeroInvoice,
+    billedByPrimaryEstablished: evidence.established,
+  });
   return {
     ...settled,
     retiredAdditionalAsks: retiredAsk.retired,
     retiredAskModificationIds: retiredAsk.retiredAskModificationIds,
-    // Decision A (owner 9 Oct 2026, "Raise a $30 invoice"): the smaller ask's
-    // own invoice bills what the retired asks' invoices would have, less the
-    // offset - never more than the ask. What the offset took beyond those
-    // invoices Xero had ALREADY billed (a primary invoice raised after the
-    // increase): recorded for the repair pass, not billed again.
-    reissuedAskInvoiceCents: Math.min(reduction.askLeftCents, Math.max(0, retiredAsk.invoicedCents - reduction.offsetCents)),
-    unpaidAskBilledOffsetCents: hasIssuedXeroInvoice ? Math.max(0, reduction.offsetCents - retiredAsk.invoicedCents) : 0,
+    reissuedAskInvoiceCents: split.reissuedAskInvoiceCents,
+    unpaidAskBilledOffsetCents: split.billedOffsetCents,
+    unpaidAskBilledOffsetUnsureCents: split.billedOffsetUnsureCents,
     reissuedAsk: reissueUnpaidAdditionalAsk({ askLeftCents: reduction.askLeftCents }),
   };
 }
@@ -250,6 +281,7 @@ export async function foldWaitingReissuedAsks(
       askCents: replay.frozenCents,
       invoiceCents: 0,
       foldedInvoiceCents: 0,
+      invoiceUnknown: false,
     });
   }
   await closeWaitingAskRecoveries(tx, waiting, now, WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE);

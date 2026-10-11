@@ -2675,6 +2675,33 @@ describe("payment recovery worker", () => {
       expect(mockPaymentRecoveryUpdate).not.toHaveBeenCalled();
     });
 
+    it("MUTATION (#3954 round 6, F6): re-checks its claim after the supersede and queues no invoice once a reduction has retired the row it wrote", async () => {
+      primeQueue(additionalIntentOperation({ status: "PROCESSING", attempts: 1, processingStartedAt: new Date("2026-06-30T23:00:00.000Z") }));
+      // The claim and the hold that writes the row succeed; the re-check after
+      // the Stripe cancels finds the recovery closed by a price reduction.
+      let holds = 0;
+      mockPaymentRecoveryUpdateMany.mockImplementation(async (args: { where?: { status?: string }; data?: { status?: string; processingStartedAt?: Date } }) => {
+        if (args.data?.status === "PROCESSING") return { count: 1 };
+        if (args.where?.status === "PROCESSING" && args.data?.processingStartedAt) {
+          holds += 1;
+          return { count: holds === 1 ? 1 : 0 };
+        }
+        return { count: 1 };
+      });
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledTimes(1);
+      expect(holds).toBe(2);
+      const recheck = mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => args.where.status === "PROCESSING" && "processingStartedAt" in args.data)[1];
+      // Fenced on the claim time the first hold stamped, not the original.
+      expect(recheck?.where.processingStartedAt).not.toEqual(new Date("2026-06-30T23:00:00.000Z"));
+      expect(mockAttachRecoveredIntent).not.toHaveBeenCalled();
+      expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
+    });
+
     it("completes without creating when a later edit already minted a newer additional intent", async () => {
       primeQueue(additionalIntentOperation());
       mockPaymentFindUnique.mockResolvedValue({

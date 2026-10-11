@@ -7464,6 +7464,24 @@ describe("#3954: a reduction set against an unpaid ask", () => {
   const billedReduction = (priceDiffCents = -2000) =>
     reducedAfterUnpaidAsk(priceDiffCents, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], unpaidAskBilledOffsetCents: 2000 });
 
+  it("MUTATION (round 6, F6): an offset whose billing the edit could not establish is reported for a person, never queued as a note", async () => {
+    const deps = createDependencies({
+      bookings: [reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], unpaidAskBilledOffsetUnsureCents: 2000 })],
+      operations: [makePrimaryInvoiceCreateOperation()],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((candidate) => (candidate.details as { billedOffsetUnsureCents?: number }).billedOffsetUnsureCents)).toMatchObject({
+      code: "MISSING_MODIFICATION_CREDIT_NOTE",
+      severity: "manual_review",
+      safeToAutoApply: false,
+      details: { modificationId: "mod_reduction", billedOffsetUnsureCents: 2000 },
+    });
+    expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
+  });
+
   it("MUTATION (round 5): queues a lost billed-offset note, scoped and worded as an invoice correction, safe to auto-apply", async () => {
     const deps = createDependencies({ bookings: [billedReduction()], operations: [makePrimaryInvoiceCreateOperation()] });
 

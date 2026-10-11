@@ -2,7 +2,8 @@ import { PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/cl
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LoadedBookingForModify } from "@/lib/booking-modify-validation";
-import { REISSUED_ASK_KEY_METADATA, REISSUED_ASK_REASON } from "@/lib/reissued-ask-mint";
+import { REISSUED_ASK_REASON } from "@/lib/payment-recovery-keys";
+import { REISSUED_ASK_KEY_METADATA } from "@/lib/reissued-ask-mint";
 import type { CancellationRule } from "@/lib/cancellation";
 import type { CalendarDate } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
@@ -150,6 +151,8 @@ const state = vi.hoisted(() => ({
   recoveries: [] as unknown[],
   recoveryCloseCount: 1,
   parkedInvoices: [] as unknown[],
+  // #3954 round 6: when the primary invoice was linked, for what it billed.
+  primaryLinkedAt: null as Date | null,
 }));
 
 const paymentUpdate = vi.fn();
@@ -176,6 +179,9 @@ const tx = {
   // #3954 decision A: the parked invoices the retire cancels are read first,
   // for what they would have billed.
   xeroSyncOperation: { updateMany: xeroUpdateMany, findMany: vi.fn(async () => state.parkedInvoices) },
+  xeroObjectLink: {
+    findFirst: vi.fn(async () => (state.primaryLinkedAt ? { createdAt: state.primaryLinkedAt } : null)),
+  },
 } as unknown as Parameters<typeof applyPaymentAdjustments>[0];
 
 function askRow(overrides: Partial<Row> = {}): Row {
@@ -186,6 +192,7 @@ function askRow(overrides: Partial<Row> = {}): Row {
     status: PaymentStatus.PENDING,
     reason: "guest_add_price_increase",
     amountCents: 5_000,
+    carriedAskCents: 0,
     stripePaymentIntentId: ASK_INTENT,
     createdAt: new Date("2026-06-20T00:00:00.000Z"),
     ...overrides,
@@ -283,6 +290,7 @@ beforeEach(() => {
   state.recoveries = [];
   state.recoveryCloseCount = 1;
   state.parkedInvoices = [];
+  state.primaryLinkedAt = null;
   transactionUpdateMany.mockImplementation(async () => ({ count: state.stampCount }));
   recoveryUpdateMany.mockImplementation(async () => ({ count: state.recoveryCloseCount }));
   xeroUpdateMany.mockImplementation(async () => ({ count: 1 }));
@@ -1213,6 +1221,11 @@ describe("#3954 round 4: a re-issued ask is durable from the edit's commit", () 
 });
 
 describe("#3954 decision A: the smaller re-issued ask's own invoice bills what the retired invoices left", () => {
+  beforeEach(() => {
+    state.recoveries = [];
+    // The ask was written 20 Jun; the primary invoice linked after it billed it.
+    state.primaryLinkedAt = new Date("2026-06-25T00:00:00.000Z");
+  });
   function parkedSupplementary(priceDiffCents: number, changeFeeCents = 0) {
     return { localModel: "BookingModification", localId: "mod_increase", requestPayload: { priceDiffCents, changeFeeCents, paymentIntentId: ASK_INTENT } };
   }
@@ -1248,6 +1261,27 @@ describe("#3954 decision A: the smaller re-issued ask's own invoice bills what t
     expect(result.additionalAsk.amountCents).toBe(3_000);
     expect(result.reissuedAskInvoiceCents).toBe(0);
     expect(result.unpaidAskBilledOffsetCents).toBe(2_000);
+  });
+
+  it("MUTATION (round 6, F6): an increase whose invoice is not parked YET - the primary invoice was linked before the ask - is billed by that invoice still to come, never credit-noted", async () => {
+    state.parkedInvoices = [];
+    state.primaryLinkedAt = new Date("2026-06-10T00:00:00.000Z");
+    const result = await adjust(grownBooking({ xeroInvoiceId: "INV-3954" }), -2_000);
+
+    expect(result.unpaidAskBilledOffsetCents).toBe(0);
+    expect(result.unpaidAskBilledOffsetUnsureCents).toBe(0);
+    // Its $50 would have billed the ask; the $30 left is the re-issue's own.
+    expect(result.reissuedAskInvoiceCents).toBe(3_000);
+  });
+
+  it("MUTATION (round 6, F6): with no primary invoice link to date it, what the invoice billed is not guessed - reported for a person, never credit-noted", async () => {
+    state.parkedInvoices = [];
+    state.primaryLinkedAt = null;
+    const result = await adjust(grownBooking({ xeroInvoiceId: "INV-3954" }), -2_000);
+
+    expect(result.unpaidAskBilledOffsetCents).toBe(0);
+    expect(result.unpaidAskBilledOffsetUnsureCents).toBe(2_000);
+    expect(unpaidAskOffsetHistory(result)).toMatchObject({ unpaidAskBilledOffsetUnsureCents: 2_000 });
   });
 
   it("a cancelled ask has no re-issue to invoice; with no issued primary invoice nothing was billed either", async () => {

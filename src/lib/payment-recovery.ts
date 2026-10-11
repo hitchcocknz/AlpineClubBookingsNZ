@@ -2466,10 +2466,11 @@ async function raiseDeferredSupplementaryInvoiceForRecoveredIntent(params: {
  * a reduction outright while the supersede and invoice below finish.
  */
 async function holdAdditionalIntentRecoveryClaim<T>(
-  operation: PaymentRecoveryOperation,
+  operation: Pick<PaymentRecoveryOperation, "id" | "attempts" | "processingStartedAt">,
   write: (store: Prisma.TransactionClient) => Promise<T>,
-): Promise<T | null> {
+): Promise<{ value: T; heldAt: Date } | null> {
   return prisma.$transaction(async (tx) => {
+    const heldAt = new Date();
     const held = await tx.paymentRecoveryOperation.updateMany({
       where: {
         id: operation.id,
@@ -2477,10 +2478,10 @@ async function holdAdditionalIntentRecoveryClaim<T>(
         attempts: operation.attempts,
         processingStartedAt: operation.processingStartedAt,
       },
-      data: { processingStartedAt: new Date() },
+      data: { processingStartedAt: heldAt },
     });
     if (held.count !== 1) return null;
-    return write(tx);
+    return { value: await write(tx), heldAt };
   });
 }
 
@@ -2993,7 +2994,7 @@ async function processCreateAdditionalPaymentIntentOperation(
   // Dynamic import: booking-payment-cleanup imports this module.
   const { queueSupersededAdditionalIntentCancellationRows, cancelSupersededAdditionalIntentsNow } =
     await import("@/lib/booking-payment-cleanup");
-  const superseded = await holdAdditionalIntentRecoveryClaim(operation, async (store) => {
+  const held = await holdAdditionalIntentRecoveryClaim(operation, async (store) => {
     await upsertPaymentIntentTransaction({
       paymentId: operation.paymentId,
       kind: PaymentTransactionKind.ADDITIONAL,
@@ -3020,7 +3021,7 @@ async function processCreateAdditionalPaymentIntentOperation(
       store,
     });
   });
-  if (superseded === null) {
+  if (held === null) {
     logger.warn(
       { operationId: operation.id, bookingId: operation.bookingId, paymentIntentId: pi.id },
       "Additional intent recovery lost its claim before writing its row (a price reduction netted it off, #3954); nothing written - the minted intent was never offered to anyone and is left uncollectable",
@@ -3031,8 +3032,26 @@ async function processCreateAdditionalPaymentIntentOperation(
     format,
     bookingId: operation.bookingId,
     paymentId: operation.paymentId,
-    queued: superseded,
+    queued: held.value,
   });
+
+  // #3954 round 6: the Stripe cancels above can take a while. A price
+  // reduction may have netted this ask off since (a claim older than
+  // `RECENT_RECOVERY_CLAIM_MS` reads as a stalled worker), retiring the row
+  // just written - so the claim is re-checked, and re-stamped, before any
+  // invoice is queued to wait on this intent. A lost claim queues none: the
+  // reduction accounted for this ask's money in its own invoice and history.
+  const stillHeld = await holdAdditionalIntentRecoveryClaim(
+    { id: operation.id, attempts: operation.attempts, processingStartedAt: held.heldAt },
+    async () => true,
+  );
+  if (stillHeld === null) {
+    logger.warn(
+      { operationId: operation.id, bookingId: operation.bookingId, paymentIntentId: pi.id },
+      "Additional intent recovery lost its claim after writing its row (a price reduction retired the ask, #3954); no supplementary invoice queued for it",
+    );
+    return;
+  }
 
   // A supplementary Xero invoice op enqueued at modification time waited on
   // an intent that never existed; point it at the recovered one so the

@@ -34,12 +34,9 @@ import { sizeReissuedAskReplay } from "@/lib/additional-ask-recovery-replay";
 import type { AdditionalAsk, AdditionalAskPayment } from "@/lib/additional-payment-ask";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
-import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
+import { REISSUED_ASK_REASON, stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
 import { createPaymentIntent, findRecentPaymentIntentByMetadata } from "@/lib/stripe";
 import { stripeErrorApiType } from "@/lib/stripe-errors";
-
-/** The reason every re-issued ask's intent and `PaymentTransaction` row carry. */
-export const REISSUED_ASK_REASON = "modification_reissued_ask";
 
 /** The metadata key a re-issued ask's intent carries its Stripe key under. */
 export const REISSUED_ASK_KEY_METADATA = "reissuedAskKey";

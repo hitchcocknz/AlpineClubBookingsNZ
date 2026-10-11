@@ -84,6 +84,13 @@ const REISSUED_ASK_INVOICE_KEY = "reissuedAskInvoiceCents" as const;
 const BILLED_OFFSET_KEY = "unpaidAskBilledOffsetCents" as const;
 
 /**
+ * #3954 round 6: the part of the offset the primary invoice may have billed,
+ * where what it billed could not be established (`unpaidAskBillingEvidence`).
+ * Never credit-noted: the repair pass reports it for a person.
+ */
+const BILLED_OFFSET_UNSURE_KEY = "unpaidAskBilledOffsetUnsureCents" as const;
+
+/**
  * #3954 review round 6: the waiting re-issues a later INCREASE folded into its
  * own ask (`foldWaitingReissuedAsks`), recorded on that increase's history row
  * so nothing that reads the increase later loses them:
@@ -115,6 +122,7 @@ export const NO_UNPAID_ASK_SETTLEMENT = {
   retiredAskModificationIds: [] as readonly string[],
   reissuedAskInvoiceCents: 0,
   unpaidAskBilledOffsetCents: 0,
+  unpaidAskBilledOffsetUnsureCents: 0,
 } as const;
 
 /** The `newData` fields an edit writes for what of its reduction an unpaid ask took, or what its increase folded in, or none. */
@@ -123,12 +131,14 @@ export function unpaidAskOffsetHistory(settled: {
   retiredAskModificationIds: readonly string[];
   reissuedAskInvoiceCents: number;
   unpaidAskBilledOffsetCents: number;
+  unpaidAskBilledOffsetUnsureCents: number;
   foldedReissuedAsks: FoldedReissuedAsks;
 }): {
   [HISTORY_KEY]?: number;
   [RETIRED_PENDING_ASKS_KEY]?: string[];
   [REISSUED_ASK_INVOICE_KEY]?: number;
   [BILLED_OFFSET_KEY]?: number;
+  [BILLED_OFFSET_UNSURE_KEY]?: number;
   [FOLDED_REISSUE_KEY]?: number;
   [FOLDED_REISSUE_IDS_KEY]?: string[];
   [FOLDED_REISSUE_INVOICE_KEY]?: number;
@@ -151,6 +161,9 @@ export function unpaidAskOffsetHistory(settled: {
       : {}),
     ...(settled.reissuedAskInvoiceCents > 0 ? { [REISSUED_ASK_INVOICE_KEY]: settled.reissuedAskInvoiceCents } : {}),
     ...(settled.unpaidAskBilledOffsetCents > 0 ? { [BILLED_OFFSET_KEY]: settled.unpaidAskBilledOffsetCents } : {}),
+    ...(settled.unpaidAskBilledOffsetUnsureCents > 0
+      ? { [BILLED_OFFSET_UNSURE_KEY]: settled.unpaidAskBilledOffsetUnsureCents }
+      : {}),
   };
 }
 
@@ -179,6 +192,15 @@ export function recordedReissuedAskInvoiceCents(newData: unknown): number {
 export function recordedUnpaidAskBilledOffsetCents(newData: unknown): number {
   return recordedPositiveCents(newData, BILLED_OFFSET_KEY);
 }
+
+/** The part of a reduction's offset whose billing could not be established, or 0 (round 6). */
+export function recordedUnpaidAskBilledOffsetUnsureCents(newData: unknown): number {
+  return recordedPositiveCents(newData, BILLED_OFFSET_UNSURE_KEY);
+}
+
+/** The repair pass's summary for an offset whose billing could not be established (amount in the details). */
+export const UNPAID_ASK_BILLED_OFFSET_UNSURE_SUMMARY =
+  "This change cancelled or reduced an unpaid extra payment, and it could not be established whether the booking's Xero invoice had already billed that money. Check the invoice: if it bills the extra, raise a credit note for the amount shown against it.";
 
 /** What an increase folded in of waiting re-issues, or 0 (round 6). */
 export function recordedFoldedReissuedAskCents(newData: unknown): number {

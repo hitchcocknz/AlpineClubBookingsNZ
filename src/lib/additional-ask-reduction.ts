@@ -111,6 +111,10 @@ export type UnpaidPriceAskRow = {
   id: string;
   amountCents: number;
   stripePaymentIntentId: string | null;
+  /** #3954 round 6: what Xero billed of it is read from these (`unpaidAskBillingEvidence`). */
+  carriedAskCents: number;
+  reason: string | null;
+  createdAt: Date;
 };
 
 /**
@@ -150,6 +154,12 @@ export type PendingAskRecovery = {
    * increase mints, so never parked anywhere yet; 0 for a re-issue.
    */
   foldedInvoiceCents: number;
+  /**
+   * #3954 round 6: an increase's recovery that recorded no answer to whether
+   * the primary invoice existed when it was saved (`hadIssuedXeroInvoice`
+   * null, a pre-#3181 row): what Xero billed of it cannot be established.
+   */
+  invoiceUnknown: boolean;
 };
 
 export type UnpaidPriceAsk = {
@@ -272,6 +282,7 @@ export async function readUnpaidPriceAsk(
       status: true,
       reason: true,
       amountCents: true,
+      carriedAskCents: true,
       stripePaymentIntentId: true,
       createdAt: true,
       withdrawnAt: true,
@@ -306,6 +317,7 @@ type AskTransaction = {
   status: PaymentStatus;
   reason: string | null;
   amountCents: number;
+  carriedAskCents: number;
   stripePaymentIntentId: string | null;
   createdAt: Date;
   withdrawnAt: Date | null;
@@ -358,6 +370,9 @@ async function unpaidChain(
       id: row.id,
       amountCents: row.amountCents,
       stripePaymentIntentId: row.stripePaymentIntentId,
+      carriedAskCents: row.carriedAskCents,
+      reason: row.reason,
+      createdAt: row.createdAt,
     })),
   };
 }
@@ -477,6 +492,7 @@ function pendingAskRecoveries(
             : 0,
       foldedInvoiceCents:
         settled || replay.kind !== "increase" ? 0 : recordedFoldedReissuedAskInvoiceCents(modification?.newData),
+      invoiceUnknown: !settled && replay.kind === "increase" && operation.hadIssuedXeroInvoice === null,
     });
   }
   return pending;
@@ -550,6 +566,7 @@ export async function retireUnpaidAskChain(
   );
   let parkedInvoicedCents = 0;
   const parkedAnchors = new Set<string>();
+  const parkedOps: ParkedAskInvoice[] = [];
   if (intentIds.length > 0 || ask.recoveries.length > 0) {
     // The increase's supplementary invoice waits on its card payment and is
     // never raised before it, so nothing reached Xero for the ask; the parked
@@ -580,7 +597,12 @@ export async function retireUnpaidAskChain(
       const priceDiffCents = Number.isInteger(payload.priceDiffCents) ? (payload.priceDiffCents as number) : 0;
       const changeFeeCents = Number.isInteger(payload.changeFeeCents) ? (payload.changeFeeCents as number) : 0;
       parkedInvoicedCents += Math.max(0, priceDiffCents + changeFeeCents);
-      if (parked.localModel === "BookingModification" && parked.localId) parkedAnchors.add(parked.localId);
+      const anchorId = parked.localModel === "BookingModification" ? parked.localId : null;
+      if (anchorId) parkedAnchors.add(anchorId);
+      parkedOps.push({
+        intentId: typeof payload.paymentIntentId === "string" ? payload.paymentIntentId : null,
+        anchorId,
+      });
     }
     await tx.xeroSyncOperation.updateMany({
       where: parkedWhere,
@@ -609,8 +631,15 @@ export async function retireUnpaidAskChain(
     retiredAskModificationIds: [
       ...new Set([...parkedAnchors, ...ask.recoveries.map((recovery) => recovery.bookingModificationId)]),
     ],
+    parkedOps,
+    invoiceEvidenceUnknown: ask.recoveries.some(
+      (recovery) => recovery.invoiceUnknown && !parkedAnchors.has(recovery.bookingModificationId),
+    ),
   };
 }
+
+/** A parked supplementary invoice the retire read: the intent it waited on, and the edit it bills for. */
+export type ParkedAskInvoice = { intentId: string | null; anchorId: string | null };
 
 /**
  * What `retireUnpaidAskChain` retired: the intents to cancel at Stripe, what
@@ -622,6 +651,10 @@ export type RetiredUnpaidAsk = {
   retired: RetiredAdditionalAsk[];
   invoicedCents: number;
   retiredAskModificationIds: string[];
+  /** Round 6: the parked invoices it read, for what of the rows they cover (`unpaidAskBillingEvidence`). */
+  parkedOps: ParkedAskInvoice[];
+  /** Round 6: a waiting increase whose invoice answer was never recorded. */
+  invoiceEvidenceUnknown: boolean;
 };
 
 /**

@@ -367,6 +367,62 @@ export function setReductionAgainstUnpaidAsk({
 }
 
 /**
+ * #3954: WHAT XERO IS OWED FOR A REDUCTION'S OFFSET - the one home for that
+ * arithmetic (`INV-PAY-120`; round 6, `INV-SSOT-001`), for the edit that
+ * records it (`settleReductionAgainstUnpaidAsk`) and the repair pass that
+ * checks it.
+ *
+ * The retired asks' money was billed to Xero by supplementary invoices
+ * (`supplementaryInvoicedCents` - parked or still to be queued, never yet in
+ * Xero) or by the booking's primary invoice. The offset is taken from the
+ * supplementary money first:
+ *
+ * - `reissuedAskInvoiceCents` - decision A (owner 9 Oct 2026): the smaller
+ *   re-issued ask's own invoice bills what is left of that money, never more
+ *   than the ask;
+ * - `billedOffsetCents` - decision 10 Oct 2026: the rest of the offset the
+ *   primary invoice had billed takes an invoice-correction note - only where a
+ *   primary invoice exists and what it billed was established
+ *   (`billedByPrimaryEstablished`); otherwise it is `billedOffsetUnsureCents`,
+ *   reported for a person and never credit-noted on a guess.
+ */
+export function splitUnpaidAskOffsetForXero({
+  offsetCents,
+  askLeftCents,
+  supplementaryInvoicedCents,
+  primaryInvoiceIssued,
+  billedByPrimaryEstablished,
+}: {
+  offsetCents: number;
+  askLeftCents: number;
+  supplementaryInvoicedCents: number;
+  primaryInvoiceIssued: boolean;
+  billedByPrimaryEstablished: boolean;
+}): { reissuedAskInvoiceCents: number; billedOffsetCents: number; billedOffsetUnsureCents: number } {
+  const billedCents = primaryInvoiceIssued ? Math.max(0, offsetCents - supplementaryInvoicedCents) : 0;
+  return {
+    reissuedAskInvoiceCents: Math.min(askLeftCents, Math.max(0, supplementaryInvoicedCents - offsetCents)),
+    billedOffsetCents: billedByPrimaryEstablished ? billedCents : 0,
+    billedOffsetUnsureCents: billedByPrimaryEstablished ? 0 : billedCents,
+  };
+}
+
+/**
+ * What of a reduction is left to settle - refund, credit or note - once the
+ * unpaid ask took its offset (#3954): never the offset itself, which returned
+ * no money. 0 for an increase.
+ */
+export function reductionLeftAfterUnpaidAskCents({
+  netAmountCents,
+  unpaidAskOffsetCents,
+}: {
+  netAmountCents: number;
+  unpaidAskOffsetCents: number;
+}): number {
+  return netAmountCents < 0 ? Math.max(0, -netAmountCents - unpaidAskOffsetCents) : 0;
+}
+
+/**
  * The ask a reduction leaves behind when it only SHRINKS an unpaid one (#3954).
  * All of it is carried from the ask the reduction retired - nothing in it is
  * this edit's own - so it records that as its carried part (`INV-PAY-098`),
