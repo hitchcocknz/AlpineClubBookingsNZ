@@ -279,4 +279,3 @@ describe("booking page data: the card, the {amountDue} token and the narrative a
     expect(history.bookingNarrative.message).toContain("$175.00 is due");
   });
 });
-
