@@ -2962,7 +2962,7 @@ participant or provider call changes.
 Internet Banking settlement's per-child claim, after its `lock(1)` and the
 joiner's mirror, find-or-creates the one `ManualRefundTask` keyed
 `group-organiser-hand-back:<settlement id>` (`raiseGroupOrganiserHandBackTask`,
-`INV-PAY-120`). It is a find-then-create, made single by the `lock(1)` every
+`INV-PAY-123`). It is a find-then-create, made single by the `lock(1)` every
 group-cancel claim, the reaper's resume and the plan's replay already take,
 with the unique key as the backstop; it reads the planned children's statuses
 under that lock and makes no provider call. The alert is sent after the

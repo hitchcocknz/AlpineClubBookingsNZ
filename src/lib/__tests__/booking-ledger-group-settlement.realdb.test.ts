@@ -513,10 +513,17 @@ let census: typeof import("@/lib/booking-ledger-projection-census-store");
       ]);
       const payments = await prisma.payment.findMany({ where: { bookingId: { in: BANK.children } }, orderBy: { id: "asc" } });
       const lineTotal = await lineCount([BANK.organiser, ...BANK.children]);
+      // The clock is frozen, so new rows are told apart by id, not by time.
+      const xeroOpsBefore = (await prisma.xeroSyncOperation.findMany({ select: { id: true } })).map((op) => op.id);
+      // Each joiner's share was booked by its own claim: one task, grown, listing both.
+      expect(tasks[0]!.reason).toMatch(/Repay the organiser \$45\.00 by bank transfer\. Joiners' shares: .+ \$22\.50, .+ \$22\.50\.$/);
       const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
       await resolveManualRefundTask({ taskId: tasks[0]!.id, resolution: "completed", note: "Paid the organiser", actingMemberId: MEMBER_ID, confirmedAmountCents: CHILD_CENTS, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST);
       expect(await prisma.payment.findMany({ where: { bookingId: { in: BANK.children } }, orderBy: { id: "asc" } })).toEqual(payments);
       expect(await lineCount([BANK.organiser, ...BANK.children])).toBe(lineTotal);
+      // No Xero document is queued for it, nor for any booking or payment it concerns.
+      const touched = [tasks[0]!.id, BANK.organiser, ...BANK.children, ...payments.map((payment) => payment.id)];
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: { in: touched }, id: { notIn: xeroOpsBefore } } })).toBe(0);
       expect(await prisma.bookingEvent.count({ where: { bookingId: BANK.organiser, type: "REFUNDED" } })).toBe(0);
     });
 

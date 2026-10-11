@@ -76,7 +76,7 @@ export function refundRequestHandBackOccurrenceKey(refundRequestId: string): str
 }
 
 /**
- * #4042 (`INV-PAY-120`): THE OCCURRENCE-KEY PREFIX of a group organiser's
+ * #4042 (`INV-PAY-123`): THE OCCURRENCE-KEY PREFIX of a group organiser's
  * hand-back - the one task an organiser's cancel of a group settled by Internet
  * Banking raises, on the organiser's booking, so the treasurer repays the
  * joiners' refunds to the organiser. One per settlement: the key is the
@@ -86,12 +86,30 @@ export function refundRequestHandBackOccurrenceKey(refundRequestId: string): str
  */
 export const GROUP_ORGANISER_HAND_BACK_KEY_PREFIX = "group-organiser-hand-back:";
 
-/** The one occurrence key of one group settlement's organiser hand-back (`INV-PAY-120`). */
-export function groupOrganiserHandBackOccurrenceKey(settlementId: string): string {
-  return `${GROUP_ORGANISER_HAND_BACK_KEY_PREFIX}${settlementId}`;
+/**
+ * The occurrence key of one group settlement's organiser hand-back
+ * (`INV-PAY-123`), or, with a joiner, of the SUPPLEMENTARY task raised for a
+ * share booked after the settlement's task was closed.
+ */
+export function groupOrganiserHandBackOccurrenceKey(settlementId: string, childBookingId?: string): string {
+  return `${GROUP_ORGANISER_HAND_BACK_KEY_PREFIX}${settlementId}${childBookingId ? `:${childBookingId}` : ""}`;
 }
 
-/** #4042: is this task a group organiser's hand-back (`INV-PAY-120`)? */
+/** Every organiser hand-back of one settlement, its supplementary tasks included, as a where fragment. */
+export function groupOrganiserHandBackTasksWhere(settlementId: string) {
+  const key = groupOrganiserHandBackOccurrenceKey(settlementId);
+  return { OR: [{ occurrenceKey: key }, { occurrenceKey: { startsWith: `${key}:` } }] };
+}
+
+/**
+ * #4042 (`INV-PAY-123`): a group organiser's hand-back is paid, never
+ * dismissed. The cancel booked the joiners' refunds as made when it raised it,
+ * so dismissing it would leave the ledger saying the organiser was repaid.
+ */
+export const GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE =
+  "This repays a group organiser for joiners' refunds the group's cancellation has already recorded as made, so it cannot be dismissed here. Repay the organiser and mark it paid back. If the club has decided not to repay them, that changes the cancelled bookings' own figures: take it to the treasurer to correct them.";
+
+/** #4042: is this task a group organiser's hand-back (`INV-PAY-123`)? */
 export function isGroupOrganiserHandBackTask(task: {
   kind: ManualRefundTaskKind | string | null;
   occurrenceKey: string | null;
@@ -447,9 +465,6 @@ const HAND_BACK_KIND = "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskK
  * - Every OPEN task of the hand-back kind counts, whatever raised it. A booking
  *   edit's or an appeal's hand-back on a CANCELLED booking is counted on
  *   purpose: it is money the club owes back, so it is not money kept.
- * - #4042: NOT a group organiser's hand-back on the organiser's booking. It
- *   repays the joiners' refunds, which their own payments already show as
- *   refunded, so taking it off the organiser's payment would count it twice.
  */
 export function openCancellationHandBackOwedCents(
   tasks: ReadonlyArray<CancellationHandBackTaskRow>,
@@ -459,8 +474,7 @@ export function openCancellationHandBackOwedCents(
       (task) =>
         task.status === OPEN_TASK_STATUS &&
         (task.kind === HAND_BACK_KIND || task.kind === null) &&
-        !isPartPaymentReviewTask(task) &&
-        !isGroupOrganiserHandBackTask(task),
+        !isPartPaymentReviewTask(task),
     )
     .reduce((sum, task) => sum + Math.max(0, task.amountCents ?? 0), 0);
 }

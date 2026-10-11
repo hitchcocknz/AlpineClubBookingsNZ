@@ -446,7 +446,9 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(cash.subject).toBe("Manual refund needed — cash booking cancelled: Alice Example");
     expect(cash.defaultSubject).toBe("Manual refund needed - cash booking cancelled: Alice Example");
     expect(cash.body).toContain("A booking settled in cash");
+    expect(cash.body).toContain("The member's cancellation refund has been worked out under the club's normal policy");
     expect(cash.body).toContain("so the ledger records the refund");
+    expect(cash.body).toContain("Member: Alice Example");
     expect(cash.body).toContain("Amount to refund: $75.00");
 
     // An organiser's Internet Banking group cancel: the refunds are already booked.
@@ -454,9 +456,11 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(group.subject).toBe("Manual refund needed — Internet Banking group cancelled: Alice Example");
     expect(group.defaultSubject).toBe("Manual refund needed - Internet Banking group cancelled: Alice Example");
     expect(group.body).toContain("repay the organiser by bank transfer");
-    expect(group.body).toContain("the refunds are already in the books");
+    expect(group.body).toContain("recorded in the app's ledger as made");
+    expect(group.body).toContain("Organiser: Alice Example");
     expect(group.body).not.toContain("settled in cash");
     expect(group.body).not.toContain("no Xero invoice to credit");
+    expect(group.body).not.toMatch(/in Xero/);
   });
 
   it("admin-second-instrument-settlement-conflict: {{secondInstrumentConflictNote}} says what the card money already did (#3638)", async () => {

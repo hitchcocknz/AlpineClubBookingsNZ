@@ -35,6 +35,7 @@ import {
 import { alertGroupSettlementInvoice } from "@/lib/group-settlement-invoice-alerts";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { formatCents } from "@/lib/utils";
+import { groupOrganiserHandBackTasksWhere } from "@/lib/manual-refund-task-settlement-rules";
 
 /** What a combined invoice's state in Xero lets the app do with it. */
 export type GroupSettlementInvoiceState =
@@ -228,6 +229,10 @@ async function voidStillNeeded(params: {
   }
   const format = await clubFormatValues();
   const money = describeGroupSettlementInvoiceMoney(state, format);
+  // #4042 (`INV-PAY-123`): an Internet Banking group's repayment is tracked by
+  // its hand-back task, at the policy amount, so the alert points there.
+  const handBack = params.reason === "cancel" ? await prisma.manualRefundTask.aggregate({ where: groupOrganiserHandBackTasksWhere(params.settlementId), _sum: { amountCents: true } }) : null;
+  const handBackCents = handBack?._sum.amountCents ?? null;
   logger.error(
     { settlementId: params.settlementId, invoiceId: params.invoiceId, state },
     "Group settlement invoice carries money, so it was not voided - operator review required"
@@ -239,7 +244,9 @@ async function voidStillNeeded(params: {
       invoiceId: params.invoiceId,
       errorMessage:
         params.reason === "cancel"
-          ? `The group was cancelled, but its combined invoice ${params.invoiceId} has ${money}, so it was not voided. Refund or credit the organiser in Xero.`
+          ? handBackCents !== null
+            ? `The group was cancelled, but its combined invoice ${params.invoiceId} has ${money}, so it was not voided. The organiser's repayment is tracked by the hand-back task on the payments board's Money to settle queue: repay them ${formatCents(handBackCents, format)}, the cancellation policy amount, not the invoice's paid amount, and record that refund against this invoice in Xero.`
+            : `The group was cancelled, but its combined invoice ${params.invoiceId} has ${money}, so it was not voided. Refund or credit the organiser in Xero.`
           : `The group's settlement stopped using its combined invoice ${params.invoiceId} (it lapsed or was replaced), but the invoice has ${money}, so it was not voided. No bookings were settled from it; refund the organiser, or apply the money to the group's current bill by hand.`,
     },
     format

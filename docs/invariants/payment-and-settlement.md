@@ -2958,7 +2958,7 @@ _Split from `INV-PAY-057` (#3220)._
   `booking-change-request-execution.realdb.test.ts` and
   `xero-primary-invoice-fee-gap.test.ts`.
 
-## INV-PAY-120
+## INV-PAY-123
 
 - **An organiser's cancel of a group paid by Internet Banking raises ONE
   officer task to repay the organiser** (#4042). The cancel books each

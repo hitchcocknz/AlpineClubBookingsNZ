@@ -102,6 +102,7 @@ vi.mock("xero-node", () => ({
   RequestEmpty: class {},
 }));
 
+const handBackAggregate = vi.hoisted(() => vi.fn(async (_args: unknown) => ({ _sum: { amountCents: null as number | null } })));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     environmentSafetySettings: {
@@ -117,6 +118,8 @@ vi.mock("@/lib/prisma", () => ({
     emailLog: { create: mocks.emailLogCreate },
     season: { findFirst: vi.fn().mockResolvedValue(null) },
     xeroSyncOperation: { update: vi.fn() },
+    // #4042: the organiser's hand-back the blocked VOID alert points at; none by default.
+    manualRefundTask: { aggregate: handBackAggregate },
   },
 }));
 
@@ -1219,6 +1222,30 @@ describe("the bound-invoice rule in the create worker (#3642)", () => {
 
     expect(mocks.accountingApi.updateInvoice).not.toHaveBeenCalled();
     expect(mocks.alert.mock.calls[0][0].errorMessage).toMatch(/cancelled/);
+    expect(mocks.alert.mock.calls[0][0].errorMessage).toMatch(/Refund or credit the organiser in Xero/);
+  });
+
+  it("#4042: a cancelled Internet Banking group's paid invoice points the treasurer at the organiser's hand-back, at the policy amount", async () => {
+    mocks.settlementFindUnique.mockResolvedValue({
+      id: "settle-1",
+      xeroInvoiceId: "inv-old",
+      xeroInvoiceNumber: "INV-OLD",
+      groupBooking: { status: GroupBookingStatus.CANCELLED },
+    });
+    mocks.accountingApi.getInvoice.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv-old", status: "PAID", amountPaid: 90 }] },
+    });
+    handBackAggregate.mockResolvedValueOnce({ _sum: { amountCents: 4500 } });
+
+    await voidXeroInvoiceForCancelledGroupSettlement("settle-1", { syncOperationId: "void-op-1" });
+
+    expect(handBackAggregate).toHaveBeenCalledWith({
+      where: { OR: [{ occurrenceKey: "group-organiser-hand-back:settle-1" }, { occurrenceKey: { startsWith: "group-organiser-hand-back:settle-1:" } }] },
+      _sum: { amountCents: true },
+    });
+    const message = mocks.alert.mock.calls[0][0].errorMessage as string;
+    expect(message).toMatch(/tracked by the hand-back task on the payments board's Money to settle queue: repay them \$45\.00, the cancellation policy amount, not the invoice's paid amount/);
+    expect(message).not.toMatch(/Refund or credit the organiser in Xero/);
   });
 
 

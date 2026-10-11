@@ -26,6 +26,7 @@ import {
   lateCaptureHandBackConflictSubjectLabel,
   manualRefundTaskAlertLabel,
   manualRefundTaskAlertNote,
+  manualRefundTaskAlertRecipientLabel,
   type ManualRefundTaskAlertSituation,
 } from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
@@ -400,8 +401,11 @@ export async function sendAdminManualSettlementConflictAlert(data: {
 
 /**
  * B5 (#2262): a cash-settled booking was cancelled, so the refund has to be
- * paid back by hand. Admin audience (exempt from the #2258 switch); the durable
- * ManualRefundTask row is the record, this is the nudge.
+ * paid back by hand - or (#4042, `situation`) an organiser cancelled a group
+ * paid by Internet Banking, and the club repays the organiser. Admin audience
+ * (exempt from the #2258 switch); the durable ManualRefundTask row is the
+ * record, this is the nudge. A customised text body without {{handBackNote}}
+ * sends its own wording for both situations (stated in docs/guides/payments.md).
  */
 export async function sendAdminManualRefundTaskAlert(data: {
   memberName: string;
@@ -426,6 +430,7 @@ export async function sendAdminManualRefundTaskAlert(data: {
     templateData: {
       handBackLabel: manualRefundTaskAlertLabel(situation),
       handBackNote: manualRefundTaskAlertNote(situation),
+      handBackRecipientLabel: manualRefundTaskAlertRecipientLabel(situation),
       memberName: data.memberName,
       checkIn: emailCalendarDay(data.checkIn),
       checkOut: emailCalendarDay(data.checkOut),

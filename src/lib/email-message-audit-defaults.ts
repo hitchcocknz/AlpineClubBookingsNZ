@@ -305,7 +305,7 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   },
   "admin-manual-refund-task": {
     "defaultSubject": "Manual refund needed - {{handBackLabel}}: {{memberName}}",
-    "defaultBody": "Manual Refund Needed - {{handBackLabel}}\n\n{{handBackNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount to refund: {{refundAmount}}\nReason: {{reason}}\n\nView Payments: {{reviewUrl}}"
+    "defaultBody": "Manual Refund Needed - {{handBackLabel}}\n\n{{handBackNote}}\n\n{{handBackRecipientLabel}}: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount to refund: {{refundAmount}}\nReason: {{reason}}\n\nView Payments: {{reviewUrl}}"
   },
   // #2761: the alert for an automatically refunded late capture. Its OWN entry
   // rather than a variant of admin-payment-failure, so an admin's override of the

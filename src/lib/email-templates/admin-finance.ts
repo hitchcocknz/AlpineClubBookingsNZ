@@ -27,7 +27,8 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCapturePaymentLabel,
-  manualRefundTaskAlertNote,
+  GROUP_HAND_BACK_ALERT_BODY,
+  GROUP_HAND_BACK_ALERT_LEAD,
   secondInstrumentConflictOutcomeParagraph,
   type ManualRefundTaskAlertSituation,
 } from "@/lib/email-message-notes";
@@ -532,9 +533,9 @@ export function adminSecondInstrumentSettlementConflictTemplate(data: {
 
 // ---- B5 (#2262): Admin Alert — manual refund task raised ----
 //
-// A cash-settled booking was cancelled. There is no card to refund and no Xero
-// credit note to raise, so the money has to be handed back by a person. The
-// task is durable; this alert is the nudge, not the record.
+// A cash-settled booking was cancelled (or, #4042, an organiser cancelled a
+// group paid by Internet Banking): no card refund backs it, so a person hands
+// the money back. The task is durable; this alert is the nudge, not the record.
 export function adminManualRefundTaskTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -550,7 +551,7 @@ export function adminManualRefundTaskTemplate(data: {
   const group = data.situation === "group-organiser-internet-banking"; // #4042
   return layout(`
     ${heading(group ? "Manual Refund Needed — Internet Banking Group Cancelled" : "Manual Refund Needed — Cash Booking Cancelled")}
-    ${group ? paragraph(manualRefundTaskAlertNote("group-organiser-internet-banking")) : `${alertBox(
+    ${group ? `${alertBox(GROUP_HAND_BACK_ALERT_LEAD, "warning")}${paragraph(GROUP_HAND_BACK_ALERT_BODY)}` : `${alertBox(
       "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand — nothing was refunded automatically.",
       "warning"
     )}
@@ -565,7 +566,7 @@ export function adminManualRefundTaskTemplate(data: {
       { label: "Check-in", value: emailCalendarDay(data.checkIn) },
       { label: "Check-out", value: emailCalendarDay(data.checkOut) },
       { label: "Booking", value: escapeHtml(data.bookingId) },
-      { label: "Amount to refund", value: formatCents(data.refundAmountCents, format) },
+      { label: group ? "Owed so far" : "Amount to refund", value: formatCents(data.refundAmountCents, format) },
       { label: "Reason", value: escapeHtml(data.reason) },
     ])}
     ${button("View Payments", data.reviewUrl, { sameOrigin: true })}

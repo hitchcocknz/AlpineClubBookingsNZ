@@ -32,6 +32,8 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import {
   EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE,
+  GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE,
+  isGroupOrganiserHandBackTask,
   isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
@@ -165,9 +167,11 @@ export async function resolveManualRefundTask(
       where: { id: taskId },
       select: { kind: true, occurrenceKey: true },
     });
+    // #4042 (`INV-PAY-123`): so does a group organiser's hand-back, which each
+    // later joiner's share grows under that key while it is OPEN.
     if (
       head?.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW ||
-      (head !== null && isNonCancellationHandBackTask(head))
+      (head !== null && (isNonCancellationHandBackTask(head) || isGroupOrganiserHandBackTask(head)))
     ) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     }
@@ -204,6 +208,10 @@ export async function resolveManualRefundTask(
       task.booking.status === BookingStatus.CANCELLED
     ) {
       throw new ManualBookingPaymentError(EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, 409);
+    }
+    // #4042 (`INV-PAY-123`): a group organiser's hand-back is paid, never dismissed.
+    if (resolution === "dismissed" && isGroupOrganiserHandBackTask(task)) {
+      throw new ManualBookingPaymentError(GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE, 409);
     }
 
     const isEditReview = task.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW;

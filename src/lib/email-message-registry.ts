@@ -12,6 +12,7 @@ import {
   internetBankingHoldKeptParagraph,
   manualRefundTaskAlertLabel,
   manualRefundTaskAlertNote,
+  manualRefundTaskAlertRecipientLabel,
   lateCaptureAutoRefundLeadParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCaptureHandBackConflictSubjectLabel,
@@ -740,6 +741,8 @@ const REQUIRED_SUBJECT_TEMPLATE_TOKENS: Partial<
   Record<EmailAuditTemplateName, string[]>
 > = {
   "admin-late-capture-hand-back-conflict": ["handBackConflictLabel"],
+  // #4042: a stored subject naming one situation would title the other's alert.
+  "admin-manual-refund-task": ["handBackLabel"],
 };
 
 /**
@@ -1485,6 +1488,7 @@ export function sampleValue(token: string): string {
   // #4042: previewed as the cash arm, what the shipped default always said.
   if (token === "handBackNote") return manualRefundTaskAlertNote("cash-cancellation");
   if (token === "handBackLabel") return manualRefundTaskAlertLabel("cash-cancellation");
+  if (token === "handBackRecipientLabel") return manualRefundTaskAlertRecipientLabel("cash-cancellation");
   if (token === "handBackConflictNote") {
     return lateCaptureHandBackConflictOutcomeParagraph(false);
   }
@@ -2023,10 +2027,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "handBackConflictNote",
   // #3643: why an expired internet banking hold was kept, not released.
   "holdKeptNote",
-  // #4042: which hand-back a manual refund task alert is about, as a body
-  // paragraph and as a subject/heading phrase.
+  // #4042: which hand-back a manual refund task alert is about - its body
+  // paragraphs, its subject/heading phrase, and whom the money goes back to.
   "handBackNote",
   "handBackLabel",
+  "handBackRecipientLabel",
   // #3638: the second-instrument alert's live-versus-cancelled sentence.
   "secondInstrumentConflictNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and

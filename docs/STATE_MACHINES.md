@@ -2004,7 +2004,7 @@ keyed one per settlement, for the frozen plan's shares. It carries no
 payments, so COMPLETED records only that the officer repaid the organiser and
 writes no allocation, ledger line, Xero note or `REFUNDED` event; DISMISSED
 moves nothing either. See
-[`INV-PAY-120`](invariants/payment-and-settlement.md#inv-pay-120).
+[`INV-PAY-123`](invariants/payment-and-settlement.md#inv-pay-123).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

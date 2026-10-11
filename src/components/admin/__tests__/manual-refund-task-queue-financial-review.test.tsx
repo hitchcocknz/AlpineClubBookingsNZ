@@ -156,14 +156,29 @@ describe("an approved appeal's refund hand-back has its own sentence (#3827, D-3
 });
 
 describe("a group organiser's Internet Banking hand-back has its own sentence (#4042)", () => {
-  it("prints the group sentence, never the cash one, and is still marked paid back", async () => {
+  it("prints the group sentence, never the cash one or a Xero claim, is marked paid back and offers no Dismiss", async () => {
     await renderQueue({
       tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }],
       viewerCanViewBookings: true,
     });
-    expect(screen.getByTestId("manual-refund-task-group-organiser-intro")).toBeInTheDocument();
+    const intro = screen.getByTestId("manual-refund-task-group-organiser-intro");
+    expect(intro).toBeInTheDocument();
+    expect(intro.textContent).not.toMatch(/Xero/);
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^dismiss$/i })).not.toBeInTheDocument();
+  });
+
+  it("its paid-back dialog says what the action records, never that it writes the refund into the ledger", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/as repaid to the group organiser/);
+    expect(dialog.textContent).toMatch(/joiners' refunds are already in the ledger/);
+    expect(dialog.textContent).not.toMatch(/writes the refund into the payment ledger/);
   });
 
   it("a cancellation's hand-back does not print it", async () => {

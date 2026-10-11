@@ -109,7 +109,7 @@ import {
 } from "@/lib/payment-recovery";
 import { deserializeRefundPlan, isMirrorRefundPlan, mirrorPlanRefundedCents, organiserCancelJoinerEmailRefund } from "@/lib/group-settlement-refund-plan";
 import { refundOrganiserCancelChildren } from "@/lib/organiser-child-refund-executor";
-import { alertGroupOrganiserHandBack, raiseGroupOrganiserHandBackTask, type GroupOrganiserHandBack } from "@/lib/group-organiser-hand-back";
+import { alertGroupOrganiserHandBack, recordGroupOrganiserHandBackShare, type GroupOrganiserHandBack } from "@/lib/group-organiser-hand-back";
 import { enqueueXeroGroupSettlementInvoiceVoidOperation } from "@/lib/xero-group-settlement-void-outbox";
 import logger from "@/lib/logger";
 import { clubToday } from "@/lib/club-time";
@@ -224,16 +224,6 @@ export async function settleGroupBookingOnOrganiserCancel(
     };
   });
 
-  // The compensating row committed atomically with CANCELLED.  This kick is
-  // opportunistic only; the normal outbox cron owns durable retry.
-  if (cancellationFence.queuedVoidOperationId) {
-    void kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
-      logger.error(
-        { err, groupBookingId: group.id },
-        "Failed to kick queued Xero group-invoice VOID after cancellation"
-      )
-    );
-  }
 
   const children = await prisma.booking.findMany({
     where: {
@@ -381,8 +371,6 @@ export async function settleGroupBookingOnOrganiserCancel(
   }
   // #3854: the plan as frozen, which a failed card refund below does not clear.
   const plannedMirrorRefunds = new Map(refundByChildId);
-  // #4042 (`INV-PAY-120`): the organiser's hand-back, when this run raised it.
-  let organiserHandBack: GroupOrganiserHandBack | null = null;
 
   // Refund + settlement flip, guarded on SUCCEEDED so it fires exactly once
   // across re-drives: the plan survives this flip, so a re-drive after the flip
@@ -596,7 +584,7 @@ export async function settleGroupBookingOnOrganiserCancel(
           );
           queuedOperationId = queued.queueOperationId;
           // #4042: an Internet Banking settlement's refund is the club's to repay by hand.
-          if (settlement && !settlement.stripePaymentIntentId) raised.handBack = await raiseGroupOrganiserHandBackTask(tx, { settlementId: settlement.id, organiserBookingId, plan: plannedMirrorRefunds, claimedChildId: child.id, format });
+          if (settlement && !settlement.stripePaymentIntentId) raised.handBack = await recordGroupOrganiserHandBackShare(tx, { settlementId: settlement.id, organiserBookingId, plan: plannedMirrorRefunds, claimedChildId: child.id, format });
         }
 
         // #3209 (`INV-HOST-041`). The beds are reconciled above; ADULT SUPERVISION
@@ -635,7 +623,8 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
 
     if (!childClaimed) continue;
-    organiserHandBack ??= raised.handBack;
+    // #4042 (`INV-PAY-123`): the claim that created the organiser's hand-back alerts, once it has committed.
+    if (raised.handBack?.created) await alertGroupOrganiserHandBack({ organiserBookingId, task: raised.handBack, format });
 
     // Best-effort outbox worker kick, kept POST-commit (the outbox cron drains
     // the row regardless). Never inside the tx: that would put a Xero provider
@@ -740,7 +729,18 @@ export async function settleGroupBookingOnOrganiserCancel(
   }
 
   // The group was fenced CANCELLED before provider calls and child cleanup.
-  if (organiserHandBack) await alertGroupOrganiserHandBack({ organiserBookingId, task: organiserHandBack, format });
+  // The compensating VOID row committed atomically with CANCELLED. This kick is
+  // opportunistic only; the normal outbox cron owns durable retry. #4042: kicked
+  // after the children, so a paid Internet Banking invoice's refusal alert can
+  // name the organiser's hand-back task their claims raised.
+  if (cancellationFence.queuedVoidOperationId) {
+    void kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
+      logger.error(
+        { err, groupBookingId: group.id },
+        "Failed to kick queued Xero group-invoice VOID after cancellation"
+      )
+    );
+  }
 
   logger.info(
     {

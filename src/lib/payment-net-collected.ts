@@ -7,6 +7,7 @@ import {
   paymentShowsCaptureEvidence,
 } from "@/lib/booking-payment-state";
 import {
+  isGroupOrganiserHandBackTask,
   openCancellationHandBackOwedCents,
   type CancellationHandBackTaskRow,
 } from "@/lib/manual-refund-task-settlement-rules";
@@ -219,7 +220,11 @@ export function getNetCollectedPaymentParts(
     };
   }
   const handBackOwedCents = Math.min(
-    openCancellationHandBackOwedCents(booking.manualRefundTasks),
+    // #4042 (`INV-PAY-123`): not a group organiser's hand-back. It repays the
+    // joiners' refunds, which their own payments already show as refunded, so
+    // taking it off the organiser's payment too would count it twice. Excluded
+    // HERE, not in the helper, so a club-wide refunds-owed total can count it.
+    openCancellationHandBackOwedCents(booking.manualRefundTasks.filter((task) => !isGroupOrganiserHandBackTask(task))),
     remainingCents,
   );
   return {
