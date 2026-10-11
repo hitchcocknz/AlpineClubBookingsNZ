@@ -19,6 +19,7 @@ import { BookingEventType } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
   memberCreditAggregate: vi.fn(),
+  openFinancialReview: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -32,13 +33,20 @@ vi.mock("@/lib/booking-history", () => ({
   buildBookingHistoryItems: vi.fn().mockReturnValue([]),
 }));
 vi.mock("@/lib/booking-financial-review-visibility", () => ({
-  bookingHasOpenFinancialReview: vi.fn().mockResolvedValue(false),
+  bookingHasOpenFinancialReview: mocks.openFinancialReview,
 }));
 vi.mock("@/lib/rate-membership-label", () => ({
   loadRateMembershipLabelResolver: vi.fn(),
 }));
 
 import { loadBookingDetailHistory } from "../_lib/booking-detail-history";
+import { resolveBookingDetailPayment } from "../_lib/booking-detail-payment";
+import { renderBookingDetailMessages } from "../_lib/booking-detail-messages";
+import { bindClubFormat } from "@/lib/club-format-bound";
+import {
+  FINANCIAL_REVIEW_AMOUNT_PREDATES_THE_CHANGE,
+  FINANCIAL_REVIEW_NOTHING_TO_PAY_PREDATES_THE_CHANGE,
+} from "@/lib/booking-financial-review-copy";
 import { bindClubTime, requireClubTimeZone } from "@/lib/club-time";
 import { bookingAppliedCreditWhere } from "@/lib/member-credit-booking-rows";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
@@ -77,6 +85,10 @@ function bookingWith(payment: { changeFeeCents: number | null; creditAppliedCent
     modifications: [],
     refundRequests: [],
     moneyReconciliation: null,
+    guests: [],
+    organiserSettled: false,
+    creditsFromCancellation: [],
+    parentBooking: null,
   } as never;
 }
 
@@ -87,19 +99,21 @@ function ledgerCredit(appliedCents: number) {
   });
 }
 
-async function narrativeFor(booking: never) {
-  const { bookingNarrative } = await loadBookingDetailHistory({
-    booking,
-    club: CLUB,
-    viewer: { canSeeAdminTools: false } as never,
-    format: CLUB_FORMAT_TEST,
-  });
-  return bookingNarrative;
+const OWNER = { canSeeAdminTools: false, isLinkedGuestViewer: false };
+const LINKED_GUEST = { canSeeAdminTools: false, isLinkedGuestViewer: true };
+
+async function historyFor(booking: never, viewer = OWNER) {
+  return loadBookingDetailHistory({ booking, club: CLUB, viewer: viewer as never, format: CLUB_FORMAT_TEST });
+}
+
+async function narrativeFor(booking: never, viewer = OWNER) {
+  return (await historyFor(booking, viewer)).bookingNarrative;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   ledgerCredit(0);
+  mocks.openFinancialReview.mockResolvedValue(false);
 });
 
 describe("booking page history narrative quotes the amount owed (#3991, INV-PAY-119)", () => {
@@ -167,3 +181,102 @@ describe("booking page history narrative quotes the amount owed (#3991, INV-PAY-
     expect(narrative.message).toContain("$225.00");
   });
 });
+
+/*
+  #3991 review: the one combination the booking page actually RENDERS with an
+  amount. Its banner shows the narrative only for settled outcomes and an open
+  financial review (`booking-status-banners.tsx`), so a payable booking's figure
+  reaches the member there only beside a review.
+*/
+describe("booking page history narrative with an open financial review (#3991)", () => {
+  beforeEach(() => mocks.openFinancialReview.mockResolvedValue(true));
+
+  it("quotes the amount owed and says it predates the change", async () => {
+    ledgerCredit(5000);
+    const narrative = await narrativeFor(bookingWith({ changeFeeCents: 2500 }));
+    expect(narrative.state).toBe("financial_review_pending");
+    expect(narrative.message).toContain("$175.00 is due");
+    expect(narrative.message).toContain(FINANCIAL_REVIEW_AMOUNT_PREDATES_THE_CHANGE);
+  });
+
+  it("at nothing owed, uses the sentence that needs no figure, and no bookings-page next step", async () => {
+    ledgerCredit(22500);
+    const narrative = await narrativeFor(bookingWith({ changeFeeCents: 2500 }));
+    expect(narrative.state).toBe("financial_review_pending");
+    expect(narrative.headline).toBe("Nothing to pay");
+    expect(narrative.message).toContain("has nothing left to pay");
+    expect(narrative.message).toContain(FINANCIAL_REVIEW_NOTHING_TO_PAY_PREDATES_THE_CHANGE);
+    expect(narrative.message).not.toContain(FINANCIAL_REVIEW_AMOUNT_PREDATES_THE_CHANGE);
+    expect(narrative.message).not.toMatch(/\$\d/);
+    expect(narrative.nextStep).not.toMatch(/bookings page/i);
+    expect(narrative.nextStep).toContain("There is nothing you need to do about that change.");
+  });
+});
+
+/*
+  #3991 review: a linked guest is not told about the owner's credit — the
+  credit-election notice and every other money surface on the page withhold it
+  from them. The amount they could already see stays.
+*/
+describe("booking page history narrative for a linked guest (#3991)", () => {
+  it("says there is nothing to pay without naming the owner's credit", async () => {
+    ledgerCredit(22500);
+    const narrative = await narrativeFor(bookingWith({ changeFeeCents: 2500 }), LINKED_GUEST);
+    expect(narrative.state).toBe("nothing_to_pay");
+    expect(narrative.message).toMatch(/has nothing left to pay\.$/);
+    expect(narrative.message).not.toMatch(/credit/i);
+  });
+
+  it("CONTROL: the owner, on the same booking, is told the credit covers it", async () => {
+    ledgerCredit(22500);
+    const narrative = await narrativeFor(bookingWith({ changeFeeCents: 2500 }));
+    expect(narrative.message).toMatch(/credit/);
+  });
+
+  it("keeps the amount due, and the page's own figure keeps the real credit", async () => {
+    ledgerCredit(5000);
+    const history = await historyFor(bookingWith({ changeFeeCents: 2500 }), LINKED_GUEST);
+    expect(history.bookingNarrative.message).toContain("$175.00 is due");
+    expect(history.amountOwed).toEqual({ dueCents: 17500, appliedCreditCents: 5000 });
+  });
+});
+
+/*
+  #3991 review: ONE credit source per page load. The pay card's total and the
+  `{amountDue}` token used to come from the payment row's mirror column while the
+  narrative read the ledger. Here the two disagree (column 90.00, ledger 50.00)
+  and every figure the page shows must be the ledger's.
+*/
+describe("booking page data: the card, the {amountDue} token and the narrative agree (#3991)", () => {
+  it("sizes all three from the ledger read the history loader returns", async () => {
+    ledgerCredit(5000);
+    mocks.openFinancialReview.mockResolvedValue(true);
+    const booking = bookingWith({ changeFeeCents: 2500, creditAppliedCents: 9000 });
+    const viewer = { ...OWNER, canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false };
+    const history = await historyFor(booking, viewer);
+    const payment = resolveBookingDetailPayment({
+      booking,
+      modules: {} as never,
+      viewer: viewer as never,
+      access: { isDeleted: false } as never,
+      party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
+      amountOwed: history.amountOwed,
+    });
+    const messages = renderBookingDetailMessages({
+      booking,
+      club: CLUB,
+      money: bindClubFormat(CLUB_FORMAT_TEST),
+      modules: { xeroIntegration: false } as never,
+      bookingMessages: new Proxy({}, { get: () => "{{amountDue}}" }) as never,
+      bookingLodgeEmailSettings: { lodgeName: "", clubName: "", publicUrl: "", supportEmail: "" } as never,
+      payment,
+    });
+
+    // 200.00 + 25.00 - 50.00 (ledger), never - 90.00 (column)
+    expect(payment.creditAppliedCents).toBe(5000);
+    expect(payment.cardAmountDueCents).toBe(17500);
+    expect(messages.paymentRequiredDescription).toBe("$175.00");
+    expect(history.bookingNarrative.message).toContain("$175.00 is due");
+  });
+});
+

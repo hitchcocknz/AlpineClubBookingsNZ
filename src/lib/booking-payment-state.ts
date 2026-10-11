@@ -520,6 +520,16 @@ export function recordedChangeFeeCents(
 }
 
 /**
+ * What a booking owes at its pay step (`bookingAmountOwedCents`, unclamped) and
+ * the ledger credit that figure is net of — read by `readBookingAmountOwed`
+ * (`booking-amount-owed.ts`, #3991) and handed to the narrative as data.
+ */
+export interface BookingAmountOwed {
+  dueCents: number;
+  appliedCreditCents: number;
+}
+
+/**
  * What a booking still owes at its pay step: its worth less the account credit
  * applied to it (#1641). ONE HOME — every surface that asks a member, or an
  * officer recording cash, for an unpaid booking's amount reads this, so a fee

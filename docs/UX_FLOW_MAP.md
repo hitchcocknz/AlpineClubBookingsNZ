@@ -864,6 +864,14 @@ gains the review's sentences plus the fact that joins them: the unpriced
 adjustment is not part of the figure being asked for. Gating the review branch to
 PAID would have resolved the contradiction by deleting the disclosure.
 
+The figure is the **amount owed** (#3991, `INV-PAY-119`): the price plus any change
+fee recorded on the payment, less the credit applied in the ledger — the figure the
+pay card, the `{amountDue}` token and the payment link all charge, read once per
+page load. When that is nothing, the banner says *"Nothing to pay"*, replaces
+*"This amount does not yet reflect…"* with a sentence that needs no figure before
+it, and drops the nothing-to-pay next step's pointer to the bookings page. A linked
+guest viewer is never told about the owner's credit.
+
 **And it does not displace a paid one (#3194).** #3033 replaced that narrative
 outright, which removed *"nothing more to do"* — the false reassurance the epic is
 aimed at — but removed *"we've received your payment of $360.00 on 12 Aug"* along

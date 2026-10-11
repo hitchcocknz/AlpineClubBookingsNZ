@@ -26,12 +26,17 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
  *    cover the booking?" asked without the fee (#3955 round 5, finding 1:
  *    `appliedCreditCents + reviewGiveBacksCents < previousFinalPriceCents`).
  *
- * Every file that resolves a booking narrative must read the one home too, and
- * none may hand it a bare price as `dueCents` (#3991); the history feed's
- * figure itself is pinned by `booking-detail-history-amount-owed.test.ts`.
+ * Every file that resolves a booking narrative reads what is owed through
+ * `readBookingAmountOwed` (`booking-amount-owed.ts`, the one read of the figure
+ * with its ledger credit, #3991), and none may hand it a bare price as
+ * `dueCents`; the booking page's figures themselves are pinned by
+ * `booking-detail-history-amount-owed.test.ts`.
  *
  * WHAT THIS CANNOT SEE: an amount spelled another way (a sum in a different
- * order, a helper of its own, a variable that holds the bare price).
+ * order, a helper of its own, a variable that holds the bare price); and a
+ * narrative caller that imports the resolver under another name
+ * (`import { resolveBookingNarrative as resolve }`), which the by-name walk
+ * below never finds.
  */
 
 const REPO = path.resolve(__dirname, "..", "..", "..");
@@ -53,9 +58,14 @@ const PAY_STEPS = [
   "src/lib/group-settlement-invoice-binding.ts",
   // #3955 round 3: the public pay page's amount, which its intent charges.
   "src/lib/payment-link-context.ts",
-  // #3991: the booking page's history narrative, which quotes the amount due.
+  // #3991: the booking page's history narrative, which quotes the amount due,
+  // and the one read it, the link's page and the link's intent share.
   "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
+  "src/lib/booking-amount-owed.ts",
 ];
+const ONE_HOME_READ = "src/lib/booking-amount-owed.ts";
+// Reading the one home: the two helpers, or the one read built on them (#3991).
+const READS_ONE_HOME = /\b(?:booking(?:AmountOwed|Worth)Cents|readBookingAmountOwed)\(/;
 // A final price, then a minus, then — within the same expression — anything
 // named for credit or for what is already applied (#3955 round 3:
 // `verifiedFinalPriceCents - alreadyAppliedCents`). `[^;,{}]` keeps it inside
@@ -131,8 +141,11 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
 
   it("every pay step reads it there", () => {
     for (const file of PAY_STEPS) {
-      expect(read(file), file).toMatch(/\bbooking(?:AmountOwed|Worth)Cents\(/);
+      expect(read(file), file).toMatch(READS_ONE_HOME);
     }
+    // The one read is itself built on the one home, with the ledger credit.
+    expect(read(ONE_HOME_READ)).toMatch(/\bbookingAmountOwedCents\(/);
+    expect(read(ONE_HOME_READ)).toMatch(/\bderiveBookingAppliedCreditCents\(/);
   });
 
   it("no pay step sizes an amount at the bare price", () => {
@@ -150,7 +163,9 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     );
     expect(callers.length, "the census found no narrative caller").toBeGreaterThan(0);
     for (const file of callers) {
-      expect(read(file), `INV-PAY-119: ${file}`).toMatch(/\bbookingAmountOwedCents\(/);
+      expect(read(file), `INV-PAY-119: ${file} reads it through readBookingAmountOwed`).toMatch(
+        /\breadBookingAmountOwed\(/,
+      );
       expect(PAY_STEPS, `INV-PAY-119: add ${file} to PAY_STEPS`).toContain(file);
     }
     const bareDue = sourceFiles(path.join(REPO, "src")).filter((file) => BARE_PRICE_DUE.test(read(file)));

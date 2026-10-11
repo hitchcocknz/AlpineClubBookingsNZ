@@ -4,7 +4,7 @@ import {
   getPaymentDisplayStatus,
 } from "@/lib/payment-status-display";
 import {
-  bookingAmountOwedCents,
+  type BookingAmountOwed,
   bookingWorthCents,
   hasCapturedPayment,
   recordedChangeFeeCents,
@@ -34,12 +34,15 @@ export function resolveBookingDetailPayment({
   viewer,
   access,
   party,
+  amountOwed,
 }: {
   booking: BookingDetailRecord;
   modules: FeatureFlags;
   viewer: BookingDetailViewer;
   access: BookingDetailEditAccess;
   party: BookingDetailLinkedParty;
+  /** #3991: the page's one read of what is owed (`readBookingAmountOwed`, via the history loader). */
+  amountOwed: BookingAmountOwed;
 }) {
   const { canManageBooking, isBookingOwner, nonOwnerAdminViewer } = viewer;
   const { isDeleted } = access;
@@ -152,9 +155,11 @@ export function resolveBookingDetailPayment({
     isPaymentOwedBookingStatus(booking.status) &&
     (!booking.payment || booking.payment.status !== "SUCCEEDED");
 
-  // Issue #778: surface auto-applied member credit (display only). Credit nets
-  // off the booking price, so amount due = finalPriceCents - creditAppliedCents.
-  const creditAppliedCents = booking.payment?.creditAppliedCents ?? 0;
+  // Issue #778: surface auto-applied member credit (display only). #3991: the
+  // LEDGER credit the intent is minted against, from the page's one read — not
+  // the payment row's mirror column — so the card, the `{amountDue}` token and
+  // the narrative quote one figure.
+  const creditAppliedCents = amountOwed.appliedCreditCents;
   const showCreditApplied =
     canManageBooking &&
     creditAppliedCents > 0 &&
@@ -162,14 +167,7 @@ export function resolveBookingDetailPayment({
     booking.payment?.status !== "SUCCEEDED";
   // #3750: through the one home, so a change fee recorded on the payment is
   // part of what the page says is due.
-  const amountDueAfterCreditCents = Math.max(
-    bookingAmountOwedCents({
-      finalPriceCents: booking.finalPriceCents,
-      changeFeeCents: booking.payment?.changeFeeCents ?? null,
-      appliedCreditCents: creditAppliedCents,
-    }),
-    0
-  );
+  const amountDueAfterCreditCents = Math.max(amountOwed.dueCents, 0);
   // #3955 review F8: a change fee recorded on an unpaid booking's payment is
   // owed with the price, so the card shows it as its own row and the
   // breakdown adds up to the amount due.

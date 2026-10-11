@@ -15,8 +15,7 @@ import {
 } from "@/lib/duplicate-capture-refund-event";
 import { settlementMarkerTimelineEntries } from "@/lib/manual-settlement-reversal-event";
 import { bookingHasOpenFinancialReview } from "@/lib/booking-financial-review-visibility";
-import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
-import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import type { BookingDetailRecord } from "./load-booking-detail";
 import type { BookingDetailViewer } from "./booking-detail-viewer";
 
@@ -43,7 +42,7 @@ export async function loadBookingDetailHistory({
   /** The club's format (#3565), resolved once by the page and threaded here. */
   format: ClubFormat;
 }) {
-  const { canSeeAdminTools } = viewer;
+  const { canSeeAdminTools, isLinkedGuestViewer } = viewer;
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
       targetId: booking.id,
@@ -113,17 +112,25 @@ export async function loadBookingDetailHistory({
   */
   const financialReviewPending = await bookingHasOpenFinancialReview(booking.id);
 
-  // #3991 (`INV-PAY-119`): the narrative quotes what the pay steps charge — the
-  // price plus a change fee recorded on the payment, less the credit applied
-  // from the ledger — read from the one home, exactly as the payment-link page
-  // it shares wording with (`payment-link-context.ts`) reads it. At or below
-  // zero it says there is nothing to pay.
-  const appliedCreditCents = await deriveBookingAppliedCreditCents(booking.id);
-  const owedCents = bookingAmountOwedCents({
-    finalPriceCents: booking.finalPriceCents,
-    changeFeeCents: booking.payment?.changeFeeCents ?? null,
-    appliedCreditCents,
-  });
+  /*
+    #3991 (`INV-PAY-119`): what this booking owes — the price plus a change fee
+    recorded on the payment, less the credit applied in the ledger — read ONCE
+    for the whole page, through the same read as the payment-link page and its
+    intent. The narrative quotes it, and it is returned so the pay card and the
+    `{amountDue}` token are sized from this same figure rather than from the
+    payment row's mirror column. At or below zero the narrative says there is
+    nothing to pay.
+
+    A linked guest is not told about the owner's credit: the credit-election
+    notice and every other money surface on this page withhold it from them, so
+    the narrative drops its credit wording for them too. The amount itself is
+    unchanged — only `appliedCreditCents`, which the narrative reads for that
+    wording alone, is withheld.
+  */
+  const amountOwed = await readBookingAmountOwed(booking);
+  const narrativeAmountOwed = isLinkedGuestViewer
+    ? { dueCents: amountOwed.dueCents, appliedCreditCents: 0 }
+    : amountOwed;
 
   const bookingNarrative = resolveBookingNarrative({
     // The event stamps in the narrative are real instants and read in the
@@ -133,7 +140,7 @@ export async function loadBookingDetailHistory({
     booking: {
       status: booking.status,
       finalPriceCents: booking.finalPriceCents,
-      amountOwed: { dueCents: owedCents, appliedCreditCents },
+      amountOwed: narrativeAmountOwed,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
       firstName: bookingOwner(booking).member.firstName,
@@ -222,6 +229,7 @@ export async function loadBookingDetailHistory({
 
   return {
     financialReviewPending,
+    amountOwed,
     bookingNarrative,
     bookingHistory,
     // This is the booking's current derived state, not a durable past event.

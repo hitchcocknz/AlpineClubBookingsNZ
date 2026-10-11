@@ -237,6 +237,8 @@ export default async function BookingDetailPage({
     viewer,
     access,
     party,
+    // #3991: the same read the narrative quoted, so the two cannot disagree.
+    amountOwed: history.amountOwed,
   });
   const { originalPaymentCaptured } = payment;
   const messages = renderBookingDetailMessages({

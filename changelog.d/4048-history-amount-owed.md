@@ -1,9 +1,14 @@
-- **A booking's own page now says the same amount is due as the payment step
-  asks for (#3991).** The plain-language summary at the top of the booking page
-  used to quote the booking's price on its own, leaving out a change fee an
-  officer had recorded and any account credit already applied. It now quotes
-  what is actually owed — the price plus any recorded change fee, less applied
-  credit — the same figure the card payment and the emailed payment link charge.
-  Where credit covers everything, it says there is nothing left to pay instead
-  of naming an amount. Nothing about what is charged changes; only what the
-  page says.
+- **The booking page and the payment step now agree on what is owed
+  (#3991).** While the club is checking the money for a change a member made,
+  the summary at the top of the booking page shows the amount still to pay.
+  It used to show the booking's price on its own, leaving out any change fee an
+  officer had recorded and any account credit already applied. It now shows
+  what is actually owed: the price plus any recorded change fee, less applied
+  credit. That is the same figure the card payment and the emailed payment link
+  charge. When credit covers everything, it says there is nothing left to pay
+  and names no amount. A guest on someone else's booking is not told about the
+  owner's credit.
+
+  The page's pay card, and the `{amountDue}` wording in the club's booking
+  messages, now take the applied credit from the same record as the payment
+  step, so all three agree. Nothing about what is charged changes.

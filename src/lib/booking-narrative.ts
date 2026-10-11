@@ -59,7 +59,8 @@ import {
   FINANCIAL_REVIEW_WORKING_IT_OUT,
 } from "@/lib/booking-financial-review-copy";
 import type { ClubFormat } from "@/lib/club-format";
-import { nothingToPayNarrative } from "@/lib/booking-narrative-nothing-to-pay";
+import { nothingToPayNarrative, nothingToPayWithFinancialReviewNarrative } from "@/lib/booking-narrative-nothing-to-pay";
+import type { BookingAmountOwed } from "@/lib/booking-payment-state";
 
 export type BookingNarrativeState =
   | "payable"
@@ -105,7 +106,7 @@ export interface NarrativeBooking {
   status: string;
   finalPriceCents: number;
   /** `INV-PAY-119` (#3955, #3991): what its pay step charges (`bookingAmountOwedCents`) and the ledger credit applied. Required: a payable narrative has no bare-price fallback. */
-  amountOwed: { dueCents: number; appliedCreditCents: number };
+  amountOwed: BookingAmountOwed;
   checkIn: Date;
   checkOut: Date;
   firstName: string;
@@ -582,6 +583,7 @@ function buildPayableWithFinancialReviewNarrative(
   now: Date, format: ClubFormat,
 ): BookingNarrative {
   const payable = buildPayableNarrative(booking, link, now, format);
+  if (payable.state === "nothing_to_pay") return nothingToPayWithFinancialReviewNarrative(payable); // #3991: no figure to qualify
 
   return {
     state: "financial_review_pending",
