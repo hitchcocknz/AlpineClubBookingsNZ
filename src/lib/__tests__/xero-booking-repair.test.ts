@@ -4400,7 +4400,7 @@ describe("runBookingXeroRepair", () => {
       const sent = await run(refunded, "COMPLETED", [resolved], { pi_kept: { byHandCents: 2500, mayBeInXeroCents: 5000 } });
       expect(byHand(sent.bookingReport)).toMatchObject({
         summary: expect.stringMatching(
-          /record the \$25\.00 refunded by hand in Xero too\. A refund credit note for \$50\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first, and record that \$50\.00 by hand only if Xero does not hold it\. This finding is report-only/,
+          /record the \$25\.00 refunded by hand in Xero too\. A refund credit note for \$50\.00 refunded to the card may be in Xero: the app tried to send it and cannot tell whether Xero took it\. Check Xero for that credit note first, and record that \$50\.00 by hand only if Xero does not hold it\. This finding is report-only/,
         ),
         details: expect.objectContaining({ recordByHandCents: 2500, cardNoteMayBeInXeroCents: 5000 }),
       });
@@ -4478,7 +4478,7 @@ describe("runBookingXeroRepair", () => {
         details: { paymentId: "payment_1", paymentIntentId: "pi_kept", recordByHandCents: 0, cardNoteMayBeInXeroCents: 10000 },
       });
       expect(card?.summary).toMatch(
-        /raises no refund note for the card refunds of it\. A refund credit note for \$100\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first/,
+        /raises no refund note for the card refunds of it\. A refund credit note for \$100\.00 refunded to the card may be in Xero: the app tried to send it and cannot tell whether Xero took it\. Check Xero for that credit note first/,
       );
       expect(card?.summary).not.toMatch(/record the \$/);
     });
@@ -4705,7 +4705,7 @@ describe("runBookingXeroRepair", () => {
             (candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
           ) as { summary: string; details: Record<string, unknown> } | undefined;
           expect(finding?.summary).toMatch(
-            /record the \$60\.00 refunded on it by hand in Xero\. A refund credit note for \$15\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first/,
+            /record the \$60\.00 refunded on it by hand in Xero\. A refund credit note for \$15\.00 refunded to the card may be in Xero: the app tried to send it and cannot tell whether Xero took it\. Check Xero for that credit note first/,
           );
           expect(finding?.details).toMatchObject({ recordByHandCents: 6000, cardNoteMayBeInXeroCents: 1500 });
 
@@ -4720,7 +4720,7 @@ describe("runBookingXeroRepair", () => {
             (candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
           ) as { summary: string } | undefined;
           expect(sentOnly?.summary).toMatch(
-            /so the app raises no refund note for it\. A refund credit note for \$15\.00 refunded to the card was sent to Xero/,
+            /so the app raises no refund note for it\. A refund credit note for \$15\.00 refunded to the card may be in Xero/,
           );
           expect(sentOnly?.summary).not.toMatch(/record the \$/);
         });

@@ -49,10 +49,12 @@ export async function isLateCaptureApprovalChangeInvoice(payload: Record<string,
  *
  * Round 14: the row is resolved FIRST, before anything is recorded by hand -
  * until then a card note waiting for the receipt may still be sent. A card
- * note sent to Xero without a reply is named apart, to check in Xero before
- * recording it. And while the card verdict still names an invoice in Xero
- * (`notesCanStillLand`), the app notes the capture's card refunds against it,
- * so only what no note asks for is named, and nothing is said of later ones.
+ * note that may be in Xero is named apart, to check in Xero before recording
+ * it. And while the card verdict still names an invoice in Xero, or another
+ * receipt row is on its way (`notesCanStillLand`), the app notes the
+ * capture's card refunds against it: round 15, nothing of them is recorded by
+ * hand, and what no note asks for yet is noted the next time the app notes
+ * this charge (`notedLaterCents`).
  */
 export async function linkedChangeInvoiceRetryRefusal(
   operation: { localModel: string | null; localId: string | null },
@@ -72,7 +74,7 @@ export async function linkedChangeInvoiceRetryRefusal(
   const { readUnnotedLateCaptureCardRefunds } = await import("@/lib/late-capture-refund-credit-note");
   const card = paymentId
     ? await readUnnotedLateCaptureCardRefunds(paymentId, paymentIntentId)
-    : { byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand: false };
+    : { byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand: false, notedLaterCents: 0 };
   return linkedChangeInvoiceRetryRefusalMessage(
     { closeCents: close ? Math.max(0, close.amountCents ?? 0) : null, ...card },
     format,
@@ -81,8 +83,9 @@ export async function linkedChangeInvoiceRetryRefusal(
 
 /**
  * The 409's words: resolve the row first; the close's share is never recorded
- * by hand; the card refunds no note answers are, and those a note sent
- * without a reply may answer only once Xero is checked.
+ * by hand; the card refunds no note answers are, and those a note that may be
+ * in Xero may answer only once Xero is checked - unless the app's card notes
+ * can still land, when none of them is.
  */
 function linkedChangeInvoiceRetryRefusalMessage(
   figures: {
@@ -90,10 +93,11 @@ function linkedChangeInvoiceRetryRefusalMessage(
     byHandCents: number;
     mayBeInXeroCents: number;
     notesCanStillLand: boolean;
+    notedLaterCents: number;
   },
   format: ClubFormat,
 ): string {
-  const { closeCents, byHandCents, mayBeInXeroCents, notesCanStillLand } = figures;
+  const { closeCents, byHandCents, mayBeInXeroCents, notesCanStillLand, notedLaterCents } = figures;
   const parts = [
     "This late card charge's change invoice is already in Xero, so retrying it could raise a second invoice. Mark this operation resolved as fixed in Xero instead, and do that first, before recording anything by hand in Xero.",
   ];
@@ -103,10 +107,10 @@ function linkedChangeInvoiceRetryRefusalMessage(
     );
   }
   if (notesCanStillLand) {
-    // The app's card notes still land against an invoice in Xero.
-    if (byHandCents > 0) {
+    // The app's card notes still land against this charge's receipt (round 15).
+    if (notedLaterCents > 0) {
       parts.push(
-        `Record the ${formatCents(byHandCents, format)} refunded to the card that no refund note answers by hand in Xero; the app notes this charge's other card refunds against the invoice it has in Xero.`,
+        `Do not record the ${formatCents(notedLaterCents, format)} refunded to the card that no refund note answers yet by hand: the app notes it against this charge's receipt in Xero the next time it notes this charge, as it notes this charge's other card refunds.`,
       );
     }
     return parts.join(" ");

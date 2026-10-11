@@ -41,7 +41,7 @@ const mocks = vi.hoisted(() => ({
   findLateCaptureRefundPaidAnotherWay: vi.fn().mockResolvedValue(null),
   readUnnotedLateCaptureCardRefunds: vi
     .fn()
-    .mockResolvedValue({ byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand: false }),
+    .mockResolvedValue({ byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand: false, notedLaterCents: 0 }),
   findFirstXeroObjectLink: vi.fn().mockResolvedValue(null),
   // #3548: the one read-back-then-settle the repair leg hands a note to.
   finishRefundCreditNoteSettlement: vi.fn().mockResolvedValue({ refundPaymentErr: null }),
@@ -2673,11 +2673,13 @@ describe("retryXeroSyncOperation", () => {
       cardCents,
       mayBeInXeroCents = 0,
       notesCanStillLand = false,
+      notedLaterCents = 0,
     }: {
       closeCents: number | null;
       cardCents: number;
       mayBeInXeroCents?: number;
       notesCanStillLand?: boolean;
+      notedLaterCents?: number;
     }) => {
       mocks.findUniqueOperation.mockResolvedValue(linkedLateChange());
       mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ id: "task_late" });
@@ -2690,6 +2692,7 @@ describe("retryXeroSyncOperation", () => {
         byHandCents: cardCents,
         mayBeInXeroCents,
         notesCanStillLand,
+        notedLaterCents,
       });
       const error = await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(XeroOperationRetryError);
@@ -2740,25 +2743,26 @@ describe("retryXeroSyncOperation", () => {
       const message = await refusal({ closeCents: null, cardCents: 25000, mayBeInXeroCents: 15000 });
       expect(message).toMatch(/Record the \$250\.00 refunded to the card by hand in Xero/);
       expect(message).toMatch(
-        /A refund credit note for \$150\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first, and record that \$150\.00 by hand only if Xero does not hold it\.$/,
+        /A refund credit note for \$150\.00 refunded to the card may be in Xero: the app tried to send it and cannot tell whether Xero took it\. Check Xero for that credit note first, and record that \$150\.00 by hand only if Xero does not hold it\.$/,
       );
       expect(message).not.toMatch(/If this charge is refunded to the card/);
       const onlySent = await refusal({ closeCents: null, cardCents: 0, mayBeInXeroCents: 15000 });
       expect(onlySent).not.toMatch(/Record the|If this charge is refunded to the card/);
-      expect(onlySent).toMatch(/check Xero for that credit note first/);
+      expect(onlySent).toMatch(/Check Xero for that credit note first/);
     });
 
     // Round 14: while the card verdict still names an invoice in Xero, the
-    // app's card notes land against it: only what no note asks for is named,
-    // and nothing says the app raises no note.
-    it("MUTATION: round 14: while card notes can still land, names only what no note asks for and claims no note is withheld", async () => {
-      const message = await refusal({ closeCents: null, cardCents: 5000, notesCanStillLand: true });
+    // app's card notes land against it, and nothing says the app raises no
+    // note. Round 15: what no note asks for yet is noted the next time the app
+    // notes this charge, so the officer is told NOT to record it by hand.
+    it("MUTATION: round 15: while card notes can still land, says the app notes the gap later and never to record it by hand", async () => {
+      const message = await refusal({ closeCents: null, cardCents: 0, notesCanStillLand: true, notedLaterCents: 5000 });
       expect(message).toMatch(
-        /Record the \$50\.00 refunded to the card that no refund note answers by hand in Xero; the app notes this charge's other card refunds against the invoice it has in Xero\.$/,
+        /Do not record the \$50\.00 refunded to the card that no refund note answers yet by hand: the app notes it against this charge's receipt in Xero the next time it notes this charge, as it notes this charge's other card refunds\.$/,
       );
-      expect(message).not.toMatch(/raises no refund note/);
+      expect(message).not.toMatch(/Record the|raises no refund note/);
       const nothing = await refusal({ closeCents: null, cardCents: 0, notesCanStillLand: true });
-      expect(nothing).not.toMatch(/Record the|If this charge is refunded to the card|raises no refund note/);
+      expect(nothing).not.toMatch(/Record the|Do not record|If this charge is refunded to the card|raises no refund note/);
     });
   });
 

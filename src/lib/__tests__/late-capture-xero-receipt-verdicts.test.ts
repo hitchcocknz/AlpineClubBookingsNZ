@@ -88,6 +88,7 @@ vi.mock("@/lib/late-capture-refund-credit-note", () => ({
     byHandCents: await state.cardByHand(...a),
     mayBeInXeroCents: state.cardMayBeInXero,
     notesCanStillLand: false,
+    notedLaterCents: 0,
   }),
 }));
 

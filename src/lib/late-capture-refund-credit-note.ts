@@ -17,6 +17,7 @@ import {
   refundCreditNoteCreateAttempted,
 } from "@/lib/xero-payment-credit-note-payload";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { xeroRefusedOperation } from "@/lib/xero-error-shape";
 import { xeroDocumentDateFromInstant } from "@/lib/xero-provider-dates";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import type { Prisma } from "@prisma/client";
@@ -116,22 +117,35 @@ async function readLateCaptureCardRefunds(paymentId: string, paymentIntentId: st
  * Round 14: each note row stands one of three ways
  * (`classifyLateCaptureCardNote`). IN XERO - its credit note's id recorded, or
  * resolved by hand in Xero - is taken off. NEVER SENT - its payload still the
- * queued shape - never reaches Xero once every card-refund path reads the
- * receipt as resolved by hand (run again, it completes as skipped), so its
- * cents are recorded by hand. SENT, OUTCOME UNKNOWN - the executed payload
- * (`refundCreditNoteCreateAttempted`) and no id, a lost reply - may be in
- * Xero: never in `byHandCents`, but named apart (`mayBeInXeroCents`) for the
- * officer to check Xero for that credit note before recording it.
+ * queued shape, or refused by Xero (round 15, `xeroRefusedOperation`) - is
+ * not in Xero, so its cents are recorded by hand. SENT, OUTCOME UNKNOWN - the
+ * executed payload (`refundCreditNoteCreateAttempted`), no id, and no refusal
+ * - may be in Xero: never in `byHandCents`, but named apart
+ * (`mayBeInXeroCents`) for the officer to check Xero for that credit note
+ * before recording it.
+ *
+ * Round 15: an officer's retry of a FAILED note runs the note again on a NEW
+ * row with no queue type (the retry's `createXeroCreditNote`), which still
+ * carries the capture's `paymentIntentId`. So a note is in Xero by its active
+ * `REFUND_CREDIT_NOTE` link naming that `paymentIntentId` (the link the note
+ * writer records the moment Xero returns it), and the rows sorted are the
+ * queued ones and those retries (never a close's, `paidAnotherWayTaskId`):
+ * a retry that landed counts once, by its credit note's id, and the row it
+ * retried, never sent, adds nothing.
  *
  * While the card verdict (`readLateCaptureXeroReceipt`) still names an
- * invoice in Xero, a queued or failed note can still land against it
- * (`notesCanStillLand`): sized then as the note writer sizes its own ask
- * (`sumLateCaptureNotedCents`), and nothing is named as maybe in Xero.
+ * invoice in Xero, or (round 15) another receipt row is on its way to Xero, a
+ * queued or failed note can still land against it (`notesCanStillLand`):
+ * nothing is recorded by hand or named as maybe in Xero, and what the note
+ * writer has not asked for yet (`notedLaterCents`, sized as it sizes its own
+ * ask, `sumLateCaptureNotedCents`) is asked for the next time it notes this
+ * capture.
  */
 export interface UnnotedLateCaptureCardRefunds {
   byHandCents: number;
   mayBeInXeroCents: number;
   notesCanStillLand: boolean;
+  notedLaterCents: number;
 }
 
 export async function readUnnotedLateCaptureCardRefunds(
@@ -141,33 +155,44 @@ export async function readUnnotedLateCaptureCardRefunds(
   const refunds = await readLateCaptureCardRefunds(paymentId, paymentIntentId);
   const refundedCents = refunds.reduce((sum, refund) => sum + Math.max(0, refund.amountCents), 0);
   const receipt = await readLateCaptureXeroReceipt(paymentIntentId);
-  const notesCanStillLand = receipt.kind === "recorded" && receipt.invoiceId !== null;
-  if (refundedCents === 0) return { byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand };
+  const notesCanStillLand = receipt.kind === "recorded" && (receipt.invoiceId !== null || !receipt.invoiceFailed);
+  const none = { byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand, notedLaterCents: 0 };
+  if (refundedCents === 0) return none;
   if (notesCanStillLand) {
     const askedCents = await sumLateCaptureNotedCents(paymentId, paymentIntentId);
-    return { byHandCents: Math.max(0, refundedCents - askedCents), mayBeInXeroCents: 0, notesCanStillLand };
+    return { ...none, notedLaterCents: Math.max(0, refundedCents - askedCents) };
   }
-  let inXeroCents = 0;
+  // In Xero: once per credit note id, its link's amount first; plus any row
+  // resolved by hand in Xero that names no credit note.
+  const inXeroByNote = await readLateCaptureCardNoteLinkCents(paymentId, paymentIntentId);
+  let resolvedByHandCents = 0;
   let sentCents = 0;
-  for (const note of await readLateCaptureCardNotes(paymentId, paymentIntentId)) {
+  for (const note of await readLateCaptureCardNotes(paymentId, paymentIntentId, { withRetries: true })) {
     const standing = classifyLateCaptureCardNote(note);
     const cents = parsePaymentCreditNoteRetryInput(note)?.amountCents ?? 0;
-    if (standing === "in-xero") inXeroCents += cents;
-    else if (standing === "sent-outcome-unknown") sentCents += cents;
+    if (standing === "sent-outcome-unknown") sentCents += cents;
+    else if (standing !== "in-xero") continue;
+    else if (!note.xeroObjectId) resolvedByHandCents += cents;
+    else if (!inXeroByNote.has(note.xeroObjectId)) inXeroByNote.set(note.xeroObjectId, cents);
   }
+  const inXeroCents = [...inXeroByNote.values()].reduce((sum, cents) => sum + cents, resolvedByHandCents);
   const unnotedCents = Math.max(0, refundedCents - inXeroCents);
   const mayBeInXeroCents = Math.min(unnotedCents, sentCents);
-  return { byHandCents: unnotedCents - mayBeInXeroCents, mayBeInXeroCents, notesCanStillLand };
+  return { ...none, byHandCents: unnotedCents - mayBeInXeroCents, mayBeInXeroCents };
 }
 
 /** Round 14: where one card note of a late capture stands in Xero (see above). */
 export function classifyLateCaptureCardNote(note: {
+  status: string;
+  lastErrorCode: string | null;
   xeroObjectId: string | null;
   manuallyResolvedAt: Date | null;
   requestPayload: unknown;
 }): "in-xero" | "sent-outcome-unknown" | "never-sent" {
   if (note.xeroObjectId || note.manuallyResolvedAt) return "in-xero";
-  return refundCreditNoteCreateAttempted(note.requestPayload) ? "sent-outcome-unknown" : "never-sent";
+  if (!refundCreditNoteCreateAttempted(note.requestPayload)) return "never-sent";
+  // Round 15: a call Xero refused (a 4xx) created no credit note.
+  return xeroRefusedOperation(note) ? "never-sent" : "sent-outcome-unknown";
 }
 
 /**
@@ -188,8 +213,17 @@ export async function sumLateCaptureNotedCents(paymentId: string, paymentIntentI
   return notedCents;
 }
 
-/** The refund-note rows naming ONE late capture, in any state but withdrawn. */
-async function readLateCaptureCardNotes(paymentId: string, paymentIntentId: string) {
+/**
+ * The refund-note rows naming ONE late capture, in any state but withdrawn:
+ * the queued ones, and (round 15, `withRetries`) the rows an officer's retry
+ * wrote with no queue type - never a paid-another-way close's
+ * (`paidAnotherWayTaskId`).
+ */
+async function readLateCaptureCardNotes(
+  paymentId: string,
+  paymentIntentId: string,
+  { withRetries = false }: { withRetries?: boolean } = {},
+) {
   const notes = await prisma.xeroSyncOperation.findMany({
     where: {
       direction: "OUTBOUND",
@@ -197,13 +231,40 @@ async function readLateCaptureCardNotes(paymentId: string, paymentIntentId: stri
       operationType: "CREATE",
       localModel: "Payment",
       localId: paymentId,
-      queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
+      ...(withRetries
+        ? { OR: [{ queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE }, { queueType: null }] }
+        : { queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE }),
       status: { not: "CANCELLED" },
       requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
     },
-    select: { status: true, xeroObjectId: true, requestPayload: true, manuallyResolvedAt: true },
+    select: { status: true, lastErrorCode: true, xeroObjectId: true, requestPayload: true, manuallyResolvedAt: true },
   });
-  return notes ?? [];
+  return (notes ?? []).filter((note) => !parsePaymentCreditNoteRetryInput(note)?.paidAnotherWayTaskId);
+}
+
+/**
+ * Round 15: the capture's card notes in Xero by their active
+ * `REFUND_CREDIT_NOTE` links naming its `paymentIntentId`, each credit note's
+ * amount as its link records it (`amountCents`).
+ */
+async function readLateCaptureCardNoteLinkCents(paymentId: string, paymentIntentId: string) {
+  const links = await prisma.xeroObjectLink.findMany({
+    where: {
+      localModel: "Payment",
+      localId: paymentId,
+      xeroObjectType: "CREDIT_NOTE",
+      role: "REFUND_CREDIT_NOTE",
+      active: true,
+      metadata: { path: ["paymentIntentId"], equals: paymentIntentId },
+    },
+    select: { xeroObjectId: true, metadata: true },
+  });
+  const cents = new Map<string, number>();
+  for (const link of links ?? []) {
+    const amount = (link.metadata as { amountCents?: unknown } | null)?.amountCents;
+    if (typeof amount === "number" && Number.isFinite(amount)) cents.set(link.xeroObjectId, Math.max(0, amount));
+  }
+  return cents;
 }
 
 /** The approval's and the webhook's name for the one sizing above. */

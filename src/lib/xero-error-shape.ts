@@ -110,6 +110,18 @@ export function getXeroErrorStatusCode(error: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * #3836 (M2), #3924 round 15: did Xero REFUSE this operation - a FAILED or
+ * PARTIAL row whose `lastErrorCode` (the status `failXeroSyncOperation` reads
+ * with `getXeroErrorStatusCode`) is a 4xx other than 408 (timeout) or 429
+ * (rate limit), which are transient? A refused write created nothing, and
+ * re-running it changes nothing until someone fixes the cause in Xero.
+ */
+export function xeroRefusedOperation(operation: { status: string; lastErrorCode: string | null }): boolean {
+  const code = operation.lastErrorCode ?? "";
+  return ["FAILED", "PARTIAL"].includes(operation.status) && /^4\d\d$/.test(code) && code !== "408" && code !== "429";
+}
+
 export function getXeroErrorBodyMessage(error: unknown): string | undefined {
   for (const candidate of getErrorCandidates(error)) {
     const responseBody = candidate.response?.body;

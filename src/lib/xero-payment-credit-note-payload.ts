@@ -28,8 +28,9 @@ export function readCashRefundMethod(payload: Record<string, unknown> | null): C
  * #3924 round 14 (`INV-PAY-122`): DID THIS REFUND NOTE ROW ATTEMPT
  * `createCreditNotes`? `createXeroCreditNote` overwrites the queued payload
  * with the executed one (`creditNotes`, beside the allocation) before it calls
- * Xero, so a row carrying it but no credit note id may be in Xero though the
- * app never heard back - a lost reply. The one spelling of that test.
+ * Xero, so a row carrying it but no credit note id may be in Xero - a lost
+ * reply, or an error that was not Xero refusing it (round 15,
+ * `xeroRefusedOperation`). The one spelling of that test.
  */
 export function refundCreditNoteCreateAttempted(requestPayload: unknown): boolean {
   const payload = asRecord(requestPayload);
