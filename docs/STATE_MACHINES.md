@@ -3363,13 +3363,14 @@ change invoice FAILED -> an officer's retry puts that row back to PENDING with
   share is not recorded by hand; the nightly credit check or the repair tool
   raises its note. Round 12: the capture's card refunds are recorded by hand,
   and the 409 names them: every card-refund path reads the resolved row as
-  resolved by hand
+  resolved by hand, so no note is raised. Round 13: it names what no card
+  note in Xero answers; with no close, or a $0 one, any later card refund
 note step never ran (receipt in Xero, no note asked) -> the repair tool's
   PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED queues it through the same step
   (round 8), and the nightly credit check runs the step for every payment
   its closes' notes do not cover (round 9)
-note FAILED -> Retry in background in Xero Operations; the nightly step
-  returns the existing row and never retries it
+note FAILED -> Retry in background in Xero Operations; the nightly credit
+  check returns the existing row and never retries it
 receipt (change invoice or own receipt) resolved by hand before the app sent
   it, whatever the close planned, before any note row -> no note; the repair
   tool's report-only PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND names the
@@ -3383,7 +3384,13 @@ receipt (change invoice or own receipt) resolved by hand before the app sent
   close's note follows. Every card-refund path still reads it resolved by
   hand, so its card refunds get no note: the report-only
   LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND names them to record by hand (round
-  12), with or without a close, raised on every run
+  12), with or without a close, raised on every run. Round 13: on that
+  card-refund verdict alone - so also a change invoice resolved before the
+  app sent it (#4038), and a close whose note row exists - and sized by the
+  card notes in Xero only (one queued, or FAILED while it waited, never gets
+  there). Each capture is named once: the kept invoice's finding (only where
+  the card verdict is resolved by hand, #4039), the close's, or this one;
+  none where the app raises the card note
 ```
 
 A close Stripe also paid is listed as paid twice. The treasurer marks it

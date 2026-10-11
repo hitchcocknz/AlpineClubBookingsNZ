@@ -1,12 +1,15 @@
-# File-size allowance for #3924 (rounds 3 to 9)
+# File-size allowance for #3924 (rounds 3 to 13)
 
 PR #3924 (issue #3372) adds the "Paid another way" close of a dead card refund
 (owner, 7 Oct 2026: "Count + add close action"), and in round 7 the Resolved
 mark on a refund paid back twice (owner, 9 Oct 2026). The close lives in its own
 modules (`src/lib/card-refund-paid-another-way.ts`, `-xero.ts`, `-cash.ts`), the
 Resolved mark in `src/lib/card-refund-paid-twice.ts`, and the repair tool's
-receipt finding in `src/lib/xero-booking-repair-paid-another-way.ts`. What
-remains below is one option or one call in each shared file the close reaches.
+receipt finding in `src/lib/xero-booking-repair-paid-another-way.ts`, beside
+its record-by-hand findings and the reminder they share (rounds 12 and 13), so
+the repair classifier needs no allowance: since round 13 it is shorter than on
+`main`. What remains below is one option or one call in each shared file the
+close reaches.
 
 file: src/lib/payment-transactions.ts
 lines: 1579
@@ -64,13 +67,6 @@ reason: round 7: an operator's retry of a refund note passes the close and the
   and is the change already linked in Xero (a 409) - answered in their own
   module (`late-capture-change-invoice-retry.ts`); only the call and its throw
   sit in the dispatch.
-
-file: src/lib/xero-booking-repair-classify.ts
-lines: 2319
-reason: round 7 (M2): one call, at the late-capture approval tasks it already
-  walks, to the receipt finding, which lives in its own module
-  (`xero-booking-repair-paid-another-way.ts`); the walk and its `continue`
-  belong to the classifier.
 
 file: src/lib/xero-sync.ts
 lines: 1034

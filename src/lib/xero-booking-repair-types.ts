@@ -527,9 +527,9 @@ export interface BookingClassificationContext {
    */
   cancelledBookingHandBackPaymentIds: Set<string>;
   /**
-   * #3924 round 12: by intent, a late capture's card refunds no note will
-   * answer (`readLateCaptureCardRefundsByHand`), in cents and in the club's
-   * format. Set after the load (`withLateCaptureCardRefundsByHand`).
+   * #3924 rounds 12-13: by intent, a late capture's card refunds no note will
+   * answer (`readLateCaptureCardRefundsByHand`), in cents and the club's format,
+   * for the kept invoice's and the card's record-by-hand findings. Set after the load.
    */
   lateCaptureCardRefundsByHand?: Map<string, { cents: number; amountLabel: string }>;
   /**

@@ -535,8 +535,8 @@ export async function createXeroSupplementaryInvoice(params: {
   // whose approved refund was closed as paid another way while it was still
   // on its way to Xero. That close's bank-transfer note waits for it, and is
   // queued now that it is here. After the row completes, never failing it: the
-  // invoice is in Xero. A failure is logged; the nightly credit reconciliation
-  // runs the step again (`queueWaitingPaidAnotherWayNotesForPayment`, round 9),
+  // invoice is in Xero. A failure is logged; the nightly credit check runs the
+  // step again (`queueWaitingPaidAnotherWayNotesForPayment`, round 9),
   // and the repair tool raises the note (`PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED`).
   // Read off this row's queued payload, so only the outbox path runs it - an
   // officer's retry of a FAILED one goes back through the outbox (round 9).

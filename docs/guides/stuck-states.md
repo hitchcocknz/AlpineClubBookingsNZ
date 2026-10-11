@@ -145,8 +145,10 @@ follows. If it is there, what you do depends on whether the app linked it:
   nightly credit check or the Xero repair tool. Any part of the charge that
   Stripe refunded to the card is different. Once the operation is resolved
   the app raises no note for a card refund of the charge, so record that by
-  hand. The retry's message names both amounts, and when nothing was closed as
-  paid another way, it says to record any card refund by hand.
+  hand. The retry's message names both amounts, and when nothing, or $0, was
+  closed as paid another way, it says to record any card refund by hand. A
+  card note still waiting to be sent, or failed while it waited, is never
+  sent once the operation is resolved, so its amount is recorded by hand too.
 
 The Xero repair tool a developer runs retries the other failed records, and
 queues a note that never followed its record. If the note itself fails, the
@@ -155,9 +157,12 @@ Operations. The nightly credit check queues a note that was never queued, but
 does not retry one that failed. If an officer recorded the charge in Xero by
 hand before the app sent it, no note is raised: record the refund by hand too.
 The repair tool names the amount: what was refunded to the card, less any note
-already raised for it, plus what you paid back another way. When the charge's
-record is the app's own invoice in Xero but its operation was resolved by
-hand, the repair tool names the card refunds to record by hand on their own.
+already in Xero for it, plus what you paid back another way. Whenever the
+charge's record was resolved by hand and that finding does not apply - the
+app's own invoice in Xero whose operation was resolved by hand, a change's
+invoice resolved before the app sent it, or once a note for the close exists -
+the repair tool names the card refunds to record by hand on their own. It
+names each charge once at most, and not at all when the app raises the note.
 Either finding is a reminder only. It keeps appearing after you record the
 refund by hand, and that is expected: the app cannot see what you record by
 hand in Xero. The close's finding stops only once a note for the close exists.

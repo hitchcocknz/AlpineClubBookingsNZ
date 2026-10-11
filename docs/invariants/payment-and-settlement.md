@@ -831,8 +831,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - **The repair tool** queues a missing one (`KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE`).
   Its late-capture refund writes the webhook's record first, then notes per
   capture the same way (#3635).
-- **Resolved in Xero** (`INV-INT-025`): the app neither re-sends it nor notes
-  its refunds; `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND` asks an officer to.
+- **Resolved in Xero** (`INV-INT-025`): never re-sent; unless its invoice
+  link stays active, the app notes no refund of it and
+  `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND` asks an officer to (#4039).
 - Pinned by `xero-kept-late-capture-ledger.test.ts` (the books, case by case,
   and the self-heal a day on), `xero-kept-late-capture-invoice.test.ts` and
   `refund-note-eligible-cash.test.ts`.
