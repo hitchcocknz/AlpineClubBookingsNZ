@@ -13,8 +13,9 @@ import { readRepoFile } from "@/lib/__tests__/helpers/compose";
  * would otherwise have pre-acknowledged every future maintenance window.
  *
  * So both scripts may name the variable only in a closed set of shapes — the
- * shell default, a pass-through to the validator, a test of the shell value, and
- * an operator message — and neither may load `.env` into its shell. A read from
+ * shell default, a pass-through to the validator, a test of the shell value, an
+ * operator message, and the `export -n` that keeps the shell value out of the
+ * containers (#4027) — and neither may load `.env` into its shell. A read from
  * `.env`, `get_env_file_value` or `docker compose config` is none of those
  * shapes and fails here. `test:related` cannot select this file (it reads shell
  * from disk); run it with `pnpm run test:named`.
@@ -35,6 +36,11 @@ const ALLOWED_SHAPES: RegExp[] = [
   new RegExp(`^\\[ "\\$${NAME}" != "1" \\]; then$`),
   // An operator message.
   /^echo "[^$`]*"( >&2)?$/,
+  // Taking the shell value out of every child's environment while keeping it in
+  // the deploy shell, so `docker compose` reads the containers' copy from `.env`
+  // alone (#4027). It reads nothing and loads nothing; the validator is still
+  // handed the shell value by the pass-through above.
+  new RegExp(`^export -n ${NAME}$`),
 ];
 
 /**

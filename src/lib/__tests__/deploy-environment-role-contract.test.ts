@@ -358,7 +358,13 @@ describe("the deploy refuses an undeclared production release", () => {
       three to `production`. "Missing" for a visible key is what gets an operator
       editing the wrong line under deploy pressure.
     */
-    const reader = functionBody("environment_role_env_value");
+    // The role check's reader is the shared Compose-semantics reader (#4027),
+    // which the PENDING_SCHOOL_ADULTS_ENABLED agreement check also uses.
+    expect(functionBody("environment_role_env_value")).toContain(
+      'compose_env_file_value "$1"',
+    );
+    const reader = functionBody("compose_env_file_value");
+    expect(reader).toContain('env_assignment_pattern "$key"');
     // Last-wins, matching Compose rather than the first-match reader every other
     // key uses.
     expect(reader).toContain("tail -n 1");
@@ -450,6 +456,7 @@ describe("every .env assignment shape Compose accepts is counted and read", () =
     "env_assignment_pattern",
     "environment_role_env_pattern",
     "count_environment_role_env_assignments",
+    "compose_env_file_value",
     "environment_role_env_value",
   ];
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "env-assignment-pattern-"));
