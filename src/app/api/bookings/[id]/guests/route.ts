@@ -1389,7 +1389,6 @@ export async function POST(
       failureMessage:
         "Failed to create additional PaymentIntent for guest addition",
     });
-    const { additionalPaymentClientSecret, additionalPaymentIntentId } = additionalMint;
 
     // Audit log. #3530: what the figure is made of, line by line and in dollars.
     const linesAudit = await loadModificationLinesAuditFields(prisma, result.priceLines, logger, format);
@@ -1434,7 +1433,7 @@ export async function POST(
       datesChanged: false,
       requiresAdditionalStripePayment:
         result.hasIssuedXeroInvoice && result.priceDiffCents > 0 && result.hasSucceededPayment,
-      additionalPaymentIntentId,
+      additionalPaymentIntentId: additionalMint.additionalPaymentIntentId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to queue Xero settlement for guest addition")
     );
@@ -1473,8 +1472,7 @@ export async function POST(
         result.booking.id,
       );
 
-      // #3954 round 9: an ask a reduction retired before it was offered is not named.
-      const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
+      const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint); // #3954 round 9: never a retired ask
       sendBookingModifiedEmail({
         bookingId: result.booking.id,
         recipientMemberId: result.memberId,
@@ -1521,7 +1519,7 @@ export async function POST(
       addedGuests: result.addedGuests,
       priceDiffCents: result.priceDiffCents,
       additionalAmountCents: result.additionalAmountCents,
-      additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+      additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
       promoRemoved: result.promoRemoved,
       // #2390: who the promotion still covers, and who it does not. Null unless
       // a usage cap left somebody out.

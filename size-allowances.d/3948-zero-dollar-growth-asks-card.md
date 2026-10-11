@@ -20,14 +20,20 @@ reason: the quote must preview the same offset the save applies, beside the
   shared `readReductionAgainstUnpaidAsk`, read once.
 
 file: src/lib/booking-batch-modification-service.ts
-lines: 2916
+lines: 2919
 reason: the batch door writes its own BookingModification history row and its
   own transaction result; the offset and the retired asks join them there.
+  Round 9: three lines - its member email names the additional figure through
+  the shared `additionalAmountToName`, so an ask a reduction retired before it
+  was offered is never named as due.
 
 file: src/lib/booking-date-modification-service.ts
-lines: 2380
+lines: 2383
 reason: the date door writes its own BookingModification history row and its
   own transaction result; the offset and the retired asks join them there.
+  Round 9: three lines - its member email names the additional figure through
+  the shared `additionalAmountToName`, so an ask a reduction retired before it
+  was offered is never named as due.
 
 file: src/lib/booking-guest-removal-service.ts
 lines: 1510
@@ -87,10 +93,12 @@ were split out so `additional-ask-reduction.ts`, `booking-modify-settlement.ts`,
 HTML email template stay inside their budgets.
 
 file: src/app/api/bookings/[id]/guests/[guestId]/route.ts
-lines: 550
+lines: 553
 reason: the guest-removal route builds the member's Booking Modified email
   from its removal's result; it passes the one required flag saying whether
-  the drop cancelled the unpaid additional payment.
+  the drop cancelled the unpaid additional payment. Round 9: three lines - the
+  email names the increase through the shared `additionalAmountToName`, so an
+  ask a reduction retired before it was offered is never named as due.
 
 file: src/lib/email/booking.ts
 lines: 1798
