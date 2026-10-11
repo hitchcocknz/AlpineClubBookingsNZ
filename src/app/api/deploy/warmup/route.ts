@@ -50,11 +50,12 @@ import { runWarmup } from "@/lib/deploy/warmup-run";
  * ## GET, deliberately
  *
  * Warming is idempotent — it populates a cache and reads pages — but a POST would
- * be the more honest verb. It is a GET because the runtime image's HTTP client is
- * busybox `wget` (`node:24-alpine`), which has no POST support, and the deploy
- * script reaches this endpoint exactly the way it reaches the readiness endpoint:
- * `docker compose exec -T <service> wget -qO- …`. Adding an HTTP client to the
- * production image to buy a verb would be the worse trade. The same reason is why
+ * be the more honest verb. It is a GET because the deploy script asks it with the
+ * runtime image's busybox `wget` (`node:24-alpine`), which has no POST support:
+ * `docker compose exec -T <service> wget -O- …`. (The in-container readiness and
+ * runtime-status reads use `node`'s `fetch` since #3965, for the response body on
+ * a non-2xx status; this endpoint answers its text form with 200 instead.) Adding
+ * an HTTP client to the production image to buy a verb would be the worse trade. The same reason is why
  * the cron secret arrives in a header the container reads from its OWN environment,
  * so it never appears in a host process list.
  *
@@ -202,7 +203,7 @@ function resolvePublicHost(): { host: string } | { problem: string } {
  * One report, two representations — and, for the text form, always HTTP 200.
  *
  * The status code is deliberately format-dependent, which needs its reason stated.
- * The container's only HTTP client is busybox `wget` (`node:24.17-alpine`,
+ * The deploy script asks this endpoint with busybox `wget` (`node:24.17-alpine`,
  * `Dockerfile`); on a non-2xx status it aborts and writes NO body at all. So a 400 or
  * a 409 reaches the deploy script as an empty report, and the operator gets "the
  * warm-up gate could not be read" — pointing them at the container, the network and

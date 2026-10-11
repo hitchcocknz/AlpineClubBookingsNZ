@@ -463,15 +463,17 @@ describe("the deploy re-reads the declaration from the container itself", () => 
       whose `environmentRole` comes from `readEnvironmentRoleDeclaration` itself.
       There is nothing left to drift, which is why this case asserts an ABSENCE.
     */
-    // The request itself lives in the single-attempt reader that
-    // `get_service_runtime_payload` retries (#3965).
+    // It asks the application for the runtime status, with the cron secret
+    // (the trailing `1`), through the bounded retry (#3965) ...
     expect(functionBody("get_service_runtime_payload")).toContain(
-      "read_service_runtime_status_once",
+      'poll_service_endpoint "$service" "$DEPLOY_RUNTIME_STATUS_PATH" 1',
     );
-    const payload = functionBody("read_service_runtime_status_once");
-
-    // It asks the application, on the container`s own loopback address.
-    expect(payload).toContain("$DEPLOY_RUNTIME_STATUS_PATH");
+    expect(functionBody("poll_service_endpoint")).toContain(
+      "read_service_endpoint_once",
+    );
+    // ... whose single-attempt reader makes the request on the container`s own
+    // loopback address.
+    const payload = functionBody("read_service_endpoint_once");
     expect(payload).toContain("http://127.0.0.1:3000");
     expect(payload).toContain("x-cron-secret");
 
@@ -502,7 +504,8 @@ describe("the deploy re-reads the declaration from the container itself", () => 
     // half of a parser.
     for (const reader of [
       "get_service_runtime_payload",
-      "read_service_runtime_status_once",
+      "poll_service_endpoint",
+      "read_service_endpoint_once",
     ]) {
       expect(functionBody(reader)).not.toContain(`tr "[:upper:]" "[:lower:]"`);
     }
