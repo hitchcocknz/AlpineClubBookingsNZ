@@ -326,7 +326,7 @@ describe("the deploy refuses an undeclared production release", () => {
       and handed every container `non-production`. #4026 then found Compose's
       parser also takes a COLON (`KEY: value`), which still slipped past.
 
-      The grammar is ONE file-scope function every .env reader shares (#4026);
+      The grammar is ONE top-level function every .env reader shares (#4026);
       the role check's pattern is that function for its one key. Behaviour is
       RUN, shape by shape, in the describe block below; what this case pins is
       the wiring, so a second spelling cannot quietly reappear.
@@ -337,7 +337,8 @@ describe("the deploy refuses an undeclared production release", () => {
     expect(pattern).toContain("[[:space:]]*[=:]");
     // Built from the keys it is given, so there is one spelling of each name.
     expect(pattern).toContain("(%s)");
-    // At file scope: defined at column 0, not nested inside another function.
+    // Defined at column 0, where `shellFunctionSource` (and a fork copying it the
+    // same way) can lift it; it is not nested in another reader.
     expect(script).toMatch(/^env_assignment_pattern\(\) \{$/m);
     // The role check's pattern delegates rather than restating the grammar.
     const rolePattern = functionBody("environment_role_env_pattern");
