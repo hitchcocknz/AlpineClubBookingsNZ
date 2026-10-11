@@ -415,6 +415,7 @@ export type CancellationHandBackTaskRow = {
   kind: ManualRefundTaskKind | string | null;
   amountCents: number | null;
   partPaymentReviewPaymentId: string | null;
+  occurrenceKey: string | null;
 };
 
 const OPEN_TASK_STATUS = "OPEN" satisfies ManualRefundTaskStatus;
@@ -446,6 +447,9 @@ const HAND_BACK_KIND = "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskK
  * - Every OPEN task of the hand-back kind counts, whatever raised it. A booking
  *   edit's or an appeal's hand-back on a CANCELLED booking is counted on
  *   purpose: it is money the club owes back, so it is not money kept.
+ * - #4042: NOT a group organiser's hand-back on the organiser's booking. It
+ *   repays the joiners' refunds, which their own payments already show as
+ *   refunded, so taking it off the organiser's payment would count it twice.
  */
 export function openCancellationHandBackOwedCents(
   tasks: ReadonlyArray<CancellationHandBackTaskRow>,
@@ -455,7 +459,8 @@ export function openCancellationHandBackOwedCents(
       (task) =>
         task.status === OPEN_TASK_STATUS &&
         (task.kind === HAND_BACK_KIND || task.kind === null) &&
-        !isPartPaymentReviewTask(task),
+        !isPartPaymentReviewTask(task) &&
+        !isGroupOrganiserHandBackTask(task),
     )
     .reduce((sum, task) => sum + Math.max(0, task.amountCents ?? 0), 0);
 }

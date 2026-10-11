@@ -686,7 +686,7 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "settleGroupBookingOnOrganiserCancel#3",
     tier: "GLOBAL",
     reason:
-      "Each child's cancel and its refund credit-note enqueue commit inside one transaction on the settlement cohort's key, and reconcile that child's allocations through the lock-held seam.",
+      "Each child's cancel and its refund credit-note enqueue commit inside one transaction on the settlement cohort's key, and reconcile that child's allocations through the lock-held seam. #4042: on an Internet Banking settlement the same claim find-or-creates the organiser's one hand-back task, keyed per settlement, which this key makes single.",
     invariant: "INV-LOCK-002",
   },
   {

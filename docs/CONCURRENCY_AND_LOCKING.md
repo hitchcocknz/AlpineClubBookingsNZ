@@ -2958,6 +2958,18 @@ pending-refund sweep converge the child's refund lines after `lock(1)` and the
 (global, lodge, row), keyed so a replay inserts nothing; no key, order,
 participant or provider call changes.
 
+**#4042 adds the organiser's hand-back to the same claim, and no lock.** An
+Internet Banking settlement's per-child claim, after its `lock(1)` and the
+joiner's mirror, find-or-creates the one `ManualRefundTask` keyed
+`group-organiser-hand-back:<settlement id>` (`raiseGroupOrganiserHandBackTask`,
+`INV-PAY-120`). It is a find-then-create, made single by the `lock(1)` every
+group-cancel claim, the reaper's resume and the plan's replay already take,
+with the unique key as the backstop; it reads the planned children's statuses
+under that lock and makes no provider call. The alert is sent after the
+commit. No key, order or participant changes, so `advisory-lock-guard.test.ts`
+needs no new entry. Its completion takes no key either, like every
+cancellation hand-back: with no `paymentId` it moves no money.
+
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`
 (`src/lib/deleted-booking-modification-payment.ts`) creates the OPEN
