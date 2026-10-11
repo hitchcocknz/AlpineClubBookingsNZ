@@ -48,6 +48,11 @@ import {
   writeEditReviewAccountCredit,
 } from "@/lib/edit-financial-review-account-credit";
 import { REVIEW_CANCELLATION_RESTORE_UNREPRODUCIBLE_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
+import {
+  RESTORED_CREDIT_PREFIX,
+  cancellationCreditRestoreWhere,
+  isCancellationCreditRestoreRow,
+} from "@/lib/member-credit-booking-rows";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const CHECK_IN = new Date("2026-08-01T00:00:00.000Z");
@@ -70,14 +75,47 @@ const rows = {
   /** Shares other reviews settled since the restore. */
   earlierSharesCents: 0,
   priceRebaseRows: [] as Array<{ newData: unknown }>,
+  /** The `MemberCredit` rows the restore query is asked over. */
+  credits: [] as CreditRow[],
   /** Other completed reviews, where a case lists them. */
   siblings: null as Array<{ id: string; amountCents: number; completedAt: Date }> | null,
 };
 
+type CreditRow = {
+  type: string;
+  amountCents: number;
+  description: string | null;
+  sourceBookingId: string | null;
+  restoredFromBookingId: string | null;
+  createdAt: Date;
+};
+
+/**
+ * The Prisma semantics the restore query uses - `OR`, equality and
+ * `startsWith` (SQL: a NULL description matches no `startsWith`) - so the
+ * where-fragment itself is exercised, not a stand-in for it.
+ */
+function matchesWhere(row: CreditRow, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, condition]) => {
+    if (key === "OR") return (condition as Array<Record<string, unknown>>).some((branch) => matchesWhere(row, branch));
+    const value = row[key as keyof CreditRow];
+    if (condition !== null && typeof condition === "object" && "startsWith" in condition) {
+      return typeof value === "string" && value.startsWith((condition as { startsWith: string }).startsWith);
+    }
+    return value === condition;
+  });
+}
+
 const store = {
   booking: { findUniqueOrThrow: vi.fn() },
   memberCredit: {
-    findUnique: vi.fn(),
+    findMany: vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) =>
+      rows.credits
+        .filter((row) => matchesWhere(row, where))
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .slice(0, take)
+        .map(({ amountCents, createdAt }) => ({ amountCents, createdAt })),
+    ),
     aggregate: vi.fn(async ({ where }: { where: { sourceBookingId?: string } }) => ({
       _sum: {
         amountCents: where.sourceBookingId
@@ -126,9 +164,21 @@ function bookingIs(status: string, finalPriceCents = 20_000) {
   store.booking.findUniqueOrThrow.mockResolvedValue({ status, finalPriceCents, checkIn: CHECK_IN, lodgeId: "lodge-1" });
 }
 
-/** The cancellation's restore row, as `restoreCreditFromBooking` left it. */
-function restored(amountCents: number | null) {
-  store.memberCredit.findUnique.mockResolvedValue(amountCents === null ? null : { amountCents, createdAt: RESTORED_AT });
+/**
+ * The cancellation's restore row, as `restoreCreditFromBooking` left it: since
+ * 8 Jul 2026 (#1636) with the `restoredFromBookingId` marker, before then
+ * (`marked: false`) with only its type and description.
+ */
+function restored(amountCents: number | null, { marked = true, bookingId = "booking-1" } = {}) {
+  if (amountCents === null) return;
+  rows.credits.push({
+    type: "CANCELLATION_REFUND",
+    amountCents,
+    description: `${RESTORED_CREDIT_PREFIX} ${bookingId.slice(0, 8)}`,
+    sourceBookingId: bookingId,
+    restoredFromBookingId: marked ? bookingId : null,
+    createdAt: RESTORED_AT,
+  });
 }
 
 /** The cancel path's own restore, on whatever is applied when it runs (31 days out). */
@@ -160,6 +210,7 @@ beforeEach(() => {
     reviewGiveBacksCents: 0,
     earlierSharesCents: 0,
     priceRebaseRows: [],
+    credits: [],
     siblings: null,
   });
   h.giveBackAppliedCredit.mockImplementation(
@@ -336,6 +387,61 @@ describe("owner decision 2: the booking was cancelled before the review complete
   });
 });
 
+describe("a restore written before the marker existed (8 Jul 2026, #1636) is still a restore", () => {
+  it("MUTATION: an unmarked restore is netted exactly as a marked one, so the slice is not handed back a second time", async () => {
+    const rule = TIERS[1]!.rule;
+    bookingIs("CANCELLED");
+    rows.frozenAppliedCents = 20_000;
+    h.loadCancellationPolicy.mockResolvedValue([rule]);
+    restored(cancelRestore(20_000, rule), { marked: false });
+
+    // $25, as the marked case at this tier - not the whole $50 slice on top of
+    // the $80 the cancellation already restored.
+    expect((await write()).givenBackCents).toBe(TIERS[1]!.totalBackCents - cancelRestore(20_000, rule));
+  });
+
+  it("MUTATION: two restore rows (a double restore before the unique marker) refuse, with nothing written", async () => {
+    bookingIs("CANCELLED");
+    rows.frozenAppliedCents = 20_000;
+    h.loadCancellationPolicy.mockResolvedValue([TIERS[1]!.rule]);
+    restored(8_000, { marked: false });
+    restored(8_000, { marked: false });
+
+    await expect(write()).rejects.toMatchObject({ message: REVIEW_CANCELLATION_RESTORE_UNREPRODUCIBLE_MESSAGE, status: 409 });
+    expect(store.payment.update).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: another booking's restore, and this booking's other cancellation credit, are not this restore", async () => {
+    bookingIs("CANCELLED");
+    restored(8_000, { marked: false, bookingId: "booking-2" });
+    rows.credits.push({
+      type: "CANCELLATION_REFUND",
+      amountCents: 3_000,
+      description: "Cancellation credit for booking booking-1",
+      sourceBookingId: "booking-1",
+      restoredFromBookingId: null,
+      createdAt: RESTORED_AT,
+    });
+
+    // Nothing restored: the whole slice is owed, with no tier consulted.
+    expect((await write()).givenBackCents).toBe(5_000);
+    expect(h.loadCancellationPolicy).not.toHaveBeenCalled();
+  });
+
+  it("the query and the one test agree, row for row", () => {
+    const candidates: CreditRow[] = [
+      { type: "CANCELLATION_REFUND", amountCents: 1, description: `${RESTORED_CREDIT_PREFIX} booking-`, sourceBookingId: "booking-1", restoredFromBookingId: "booking-1", createdAt: RESTORED_AT },
+      { type: "CANCELLATION_REFUND", amountCents: 1, description: `${RESTORED_CREDIT_PREFIX} booking-`, sourceBookingId: "booking-1", restoredFromBookingId: null, createdAt: RESTORED_AT },
+      { type: "CANCELLATION_REFUND", amountCents: 1, description: "Cancellation credit", sourceBookingId: "booking-1", restoredFromBookingId: null, createdAt: RESTORED_AT },
+      { type: "CANCELLATION_REFUND", amountCents: 1, description: null, sourceBookingId: "booking-1", restoredFromBookingId: null, createdAt: RESTORED_AT },
+      { type: "BOOKING_MODIFICATION_REFUND", amountCents: 1, description: `${RESTORED_CREDIT_PREFIX} booking-`, sourceBookingId: "booking-1", restoredFromBookingId: null, createdAt: RESTORED_AT },
+    ];
+    for (const row of candidates) {
+      expect(matchesWhere(row, cancellationCreditRestoreWhere("booking-1"))).toBe(isCancellationCreditRestoreRow(row));
+    }
+  });
+});
+
 describe("what of the share is applied credit coming back", () => {
   it("MUTATION: never more than is applied; the rest is minted, as before", async () => {
     h.applied.cents = 3_000;
@@ -368,6 +474,49 @@ describe("what of the share is applied credit coming back", () => {
     h.applied.cents = 5_000;
     h.applied.mirrorCents = 5_000;
     expect((await write(5_000, { previousFinalPriceCents: 20_000, newFinalPriceCents: 17_000 })).agreedGiveBackCents).toBeNull();
+  });
+
+  it("MUTATION: #3955 round 4 - an unpaid booking's invoice reduction counts the fee its payment records", async () => {
+    // $100 re-priced to $80, $98 applied, a $5 fee: $10 back (the share), a $17 note.
+    store.booking.findUniqueOrThrow.mockResolvedValue({
+      status: "PAYMENT_PENDING",
+      finalPriceCents: 8_000,
+      checkIn: CHECK_IN,
+      lodgeId: "lodge-1",
+      payment: { changeFeeCents: 500 },
+    });
+    h.applied.cents = 9_800;
+    h.applied.mirrorCents = 9_800;
+    const outcome = await write(1_000, { previousFinalPriceCents: 10_000, newFinalPriceCents: 8_000 });
+    expect(outcome).toMatchObject({ givenBackCents: 1_000, invoiceReductionCents: 1_700 });
+    expect(store.booking.findUniqueOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ select: expect.objectContaining({ payment: { select: { changeFeeCents: true } } }) }),
+    );
+  });
+
+  it("MUTATION: #3955 round 5 - credit that covers the price but not the recorded fee leaves the booking unpaid: nothing given back, the debt stays $50", async () => {
+    // $300 price, a $50 fee on its payment, $300 applied, a $100 share, no
+    // re-price. Against the bare price it read as covered: $100 given back and
+    // the member owing $150 where Xero says $50.
+    store.booking.findUniqueOrThrow.mockResolvedValue({
+      status: "PAYMENT_PENDING",
+      finalPriceCents: 30_000,
+      checkIn: CHECK_IN,
+      lodgeId: "lodge-1",
+      payment: { changeFeeCents: 5_000 },
+    });
+    h.applied.cents = 30_000;
+    h.applied.mirrorCents = 30_000;
+
+    expect(await write(10_000, null)).toEqual({
+      givenBackCents: 0,
+      mintedCents: 10_000,
+      cancelled: false,
+      invoiceReductionCents: 0,
+      agreedGiveBackCents: null,
+    });
+    expect(store.payment.update).not.toHaveBeenCalled();
+    expect(h.createBookingModificationCredit).toHaveBeenCalledWith("member-1", 10_000, "booking-1", "mod-1", undefined, store, undefined);
   });
 
   it("MUTATION: a fully credit-paid booking is not held to the re-price", async () => {
@@ -460,15 +609,17 @@ describe("what of the share is applied credit coming back", () => {
 describe("what the issued invoice must come down by, so Xero owes what the app does", () => {
   /** Xero's due and the app's, once the give-back's deallocation and the note have landed. */
   /** `earlierGiveBacksCents`: an earlier review's agreed share, whose note the invoice already carries. */
-  const dues = (shape: { previousFinalPriceCents: number; finalPriceCents: number; appliedBeforeCents: number; givenBackCents: number; earlierGiveBacksCents?: number }) => {
-    const invoiceNetBeforeCents = shape.previousFinalPriceCents - (shape.earlierGiveBacksCents ?? 0);
+  /** `feeCents`: a change fee recorded on the payment, which the invoice bills (`INV-PAY-119`). */
+  const dues = (shape: { previousFinalPriceCents: number; finalPriceCents: number; appliedBeforeCents: number; givenBackCents: number; earlierGiveBacksCents?: number; feeCents?: number }) => {
+    const feeCents = shape.feeCents ?? 0;
+    const invoiceNetBeforeCents = shape.previousFinalPriceCents + feeCents - (shape.earlierGiveBacksCents ?? 0);
     const unpaid = shape.appliedBeforeCents + (shape.earlierGiveBacksCents ?? 0) < shape.previousFinalPriceCents;
-    const note = reviewInvoiceReductionCents({ ...shape, unpaid });
+    const note = reviewInvoiceReductionCents({ ...shape, recordedChangeFeeCents: feeCents, unpaid });
     const appliedAfter = shape.appliedBeforeCents - shape.givenBackCents;
     return {
       note,
       xeroDueCents: Math.max(0, invoiceNetBeforeCents - appliedAfter - note),
-      appDueCents: unpaid ? Math.max(0, shape.finalPriceCents - appliedAfter) : 0,
+      appDueCents: unpaid ? Math.max(0, shape.finalPriceCents + feeCents - appliedAfter) : 0,
     };
   };
 
@@ -480,7 +631,16 @@ describe("what the issued invoice must come down by, so Xero owes what the app d
     });
   });
 
+  it("MUTATION: #3955 round 4 - the recorded fee is in both owed figures, so a clamp at zero cannot drop it: a $17 note, and both owe nothing", () => {
+    // Unpaid: $100 re-priced to $80, $98 applied, $10 given back, a $5 fee.
+    // Without the fee the note is $12, and Xero would still say $5 is due.
+    expect(
+      dues({ previousFinalPriceCents: 10_000, finalPriceCents: 8_000, appliedBeforeCents: 9_800, givenBackCents: 1_000, feeCents: 500 }),
+    ).toEqual({ note: 1_700, xeroDueCents: 0, appDueCents: 0 });
+  });
+
   it.each([
+    ["unpaid with a $5 fee, re-priced $50 down, $30 share", { previousFinalPriceCents: 20_000, finalPriceCents: 15_000, appliedBeforeCents: 8_000, givenBackCents: 3_000, feeCents: 500 }, 5_000],
     ["covered, no re-price, $50 given back", { previousFinalPriceCents: 20_000, finalPriceCents: 20_000, appliedBeforeCents: 20_000, givenBackCents: 5_000 }, 5_000],
     ["covered, a $20 re-price and a larger $50 agreed share", { previousFinalPriceCents: 20_000, finalPriceCents: 18_000, appliedBeforeCents: 20_000, givenBackCents: 5_000 }, 5_000],
     ["unpaid, a second review of the edit after the first re-priced", { previousFinalPriceCents: 14_000, finalPriceCents: 14_000, appliedBeforeCents: 7_000, givenBackCents: 3_000 }, 0],

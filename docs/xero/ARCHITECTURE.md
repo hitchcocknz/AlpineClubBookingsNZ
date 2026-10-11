@@ -32,6 +32,17 @@ the charge is `EMAIL_FAILED`. Retrying enqueues the same charge key; the stored
 `xeroInvoiceId` makes dispatch skip lookup/create and retry only email with its
 stable email idempotency key. Crash recovery follows that same path.
 
+The charge is the operation's `localId` (`subscriptionInvoiceChargeId`), and the
+queued payload is the queue type alone (`INV-INT-026`, #3971). It used to carry
+`chargeId`, which the persisting redactor blanks as a Stripe charge key, so every
+subscription invoice failed with "Membership subscription charge not found:
+[REDACTED]". A FAILED row is retried from Xero Operations: Retry sends the same
+row back to the outbox under the same correlation key, and the active-key index
+refuses it while another attempt for the charge is live. It refuses a charge
+that already has a Xero invoice (resend its email from Subscription billing) or
+no longer needs one, and the worker completes a charge already invoiced and
+emailed without calling Xero.
+
 The frozen recipient name/email are audit evidence. Dispatch deliberately uses
 that recipient member's current Xero contact identity and Xero contact email.
 Inbound invoice changes are joined back through charge coverage so a shared
@@ -637,7 +648,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-booking-invoices` | Primary booking invoice create/update (`buildInvoiceLineItems`). |
 | `xero-invoice-payments` | Recording Stripe payments against invoices and Stripe refunds as credit-note payments. |
 | `xero-credit-notes` | Refund credit notes, unapplied (account-credit) credit notes, allocation to invoices. Stripe refunds settle **per delta** (#1162): a payment refunded in several steps gets one credit note per uncovered delta, keyed on a cumulative refunded-cents watermark; non-Stripe refunds keep one note per payment, except that each refund request (appeal) paid back by bank transfer gets its own note when its task is marked paid back, for the amount paid back, keyed by the request (`payment:<id>:refund-request-credit-note:<request>:v1`) and linked under its own role `REFUND_REQUEST_CREDIT_NOTE` (#3827, owner decision D-3813-8, `INV-PAY-118`). That role is selected by none of the one-note machinery (the link normaliser in `xero-sync.ts`, `cleanupStaleCanonicalXeroObjectLinks`, the drift report), never takes `Payment.xeroRefundCreditNoteId`, and is left out of `findCanonicalPaymentRefundCreditNote`'s fallbacks, so a cancellation's note and a request's never absorb each other. The booking repair tool and the failed-operations panel leave a request's note out of everything that answers for the payment's one refund note (`isRefundRequestNoteOperation`), and the request's note is queued in the same transaction as the completion that records its refund. A cash refund note's settling payment is recorded only where the money verifiably moved (`resolveRefundSettlement`, `INV-PAY-101`): Stripe for a card refund, the configured bank-transfer refund account for a recorded bank transfer, and otherwise the note is left unsettled with `refundPaymentSkipped` on the operation. The note is recorded (payment field, covering link, the row's `xeroObjectId`) in one transaction the moment Xero returns it, so an attempt that dies before its payment leaves a FAILED row naming its note; the retry and repair legs and the repair tool finish it through one read-back-then-settle (`xero-refund-note-settlement.ts`, `INV-PAY-111`): the payment or the skip, PARTIAL if the payment fails, one note-keyed payment key, dated the note's own day, and never a second payment on a note Xero already shows paid, part-paid or allocated. Rows written before #3548 with neither are listed by the reconciliation report and the repair tool (`xero-refund-note-unsettled.ts`) and settled only by an operator. |
-| `xero-refund-method` | Leaf, pure: how the money went back — `card`, `internet-banking`, `account-credit` — as the ONE home for the wording every refund or credit document carries (#3529, `INV-PAY-101`), the default a method-less legacy row falls to (Stripe → card, anything else → bank transfer), and which mapping key settles a cash refund. The method is threaded from the settlement decision through the outbox payload; the builders never infer it from `Payment.source` when the caller said. Two booking-edit wordings (#3536) — *Invoice correction — nothing refunded* (an unpaid pay-on-account invoice lowered) and *Refunded in cash* (an edit-review refund paid back by hand, when the resolving officer says it went in cash; never inferred, `INV-PAY-116`) — ride beside the method as `noteWording`, which retries and the repair tool carry forward; words only, no settlement changes. |
+| `xero-refund-method` | Leaf, pure: how the money went back — `card`, `internet-banking`, `account-credit` — as the ONE home for the wording every refund or credit document carries (#3529, `INV-PAY-101`), the default a method-less legacy row falls to (Stripe → card, anything else → bank transfer), and which mapping key settles a cash refund. The method is threaded from the settlement decision through the outbox payload; the builders never infer it from `Payment.source` when the caller said. Two booking-edit wordings (#3536) — *Invoice correction — nothing refunded* (an unpaid pay-on-account invoice lowered) and *Refunded in cash* (an edit-review refund paid back by hand, when the resolving officer says it went in cash; never inferred, `INV-PAY-116`) — ride beside the method as `noteWording`, which retries and the repair tool carry forward; words only, no settlement changes. Since #3935 the cash wording also reaches a since-cancelled booking's review refund note (`readRefundNoteWording`: cash only beside the internet-banking method). |
 | `xero-supplementary-invoices` | Positive booking-modification delta invoices. Since #3530 (stage 2b) itemised from the edit's stored lines when they sum exactly to what the invoice bills; otherwise the single price-adjustment line, with the reason under `requestPayload.priceLines`. |
 | `xero-modification-credit-notes` | Negative booking-modification credit notes. Itemised the same way, every sign inverted, only when the note returns the whole reduction (#3530). |
 | `xero-modification-line-items` | The itemised lines on a booking-edit document (#3530): loads the codes the original invoice uses, renders one Xero line per stored line, one `Adjustment agreed with member: <note>` line per COMPLETED review share settled against the modification (stage 2c — how a parked edit's closure reads on its invoice or note), and the fee line; records `{source, reason, storedSumCents, sharesSumCents, billedCents}`. Selection is `booking-modification-document-lines` (pure); the per-line sentence is `booking-modification-lines`; the share rows are `edit-financial-review-charge-shape`'s. |
@@ -840,8 +851,11 @@ first (#3835), and whatever its route raises follows the netted figure. Since
 cancellation's own card refund raises (`INV-SSOT`): a `REFUND_CREDIT_NOTE` on
 the payment (`enqueueXeroRefundCreditNoteOperation`), unallocated and settled by
 its own refund payment from the card clearing or bank-transfer refund account,
-worded by the route (`INV-PAY-101`) - so the cancelled invoice is never reopened
-and the clearing or bank account has a document for every cent that left. The
+worded by the route (`INV-PAY-101`), or *Refunded in cash* when the officer
+answers "In cash" on a hand-back (#3935, `INV-PAY-116`: `noteWording` on the
+payload, words only, never in the key or the settlement) - so the cancelled
+invoice is never reopened and the clearing or bank account has a document for
+every cent that left. The
 hand-back's row is queued inside the completion transaction, after its ledger
 allocation, so it commits or rolls back with the money; the card refund's is
 queued after the Stripe call, since a note is capped at the cash Stripe has
@@ -1612,6 +1626,61 @@ the same operation finds the invoice already there, it records what it sees
 under `moneyReconciliationOnReplay` instead and leaves the raise-time verdict
 untouched — a retry months later must not be able to restate, or to erase, what
 was true when the money was invoiced.
+
+### The change fee on a booking's primary invoice (#3750, `INV-PAY-119`)
+
+The change fee recorded on a booking's payment (`recordedChangeFeeCents`) is
+the one figure the pay steps collect and the primary invoice bills, in full,
+on the one change-fee line (`changeFeeLineItem`). In full because no other
+document can have carried it first: an edit's supplementary invoice or credit
+note is raised only against an issued primary invoice, and no booking-payment
+writer clears that link once set. The combined group invoice bills each
+joiner's recorded fee the same way, and the guest-narration merge on an
+invoice update never relabels the fee line.
+
+The one gap is an invoice built before a fee was recorded — an edit committed
+while the create was in flight, or a lost response replayed under the same
+idempotency key, which returns the original invoice
+(`xero-primary-invoice-fee-gap.ts`):
+
+- **Measured at the link.** The create saves the payment's link and, in the
+  same transaction, writes onto its operation's payload what the returned
+  invoice billed (its fee lines and its total), the fee the payment held at
+  that instant, read back from the link's own row update, and the Stripe cash
+  recorded against the invoice (`primaryInvoiceCashCents`), computed once. The shortfall is
+  those two figures' difference — never the fee the payment records later,
+  which a later edit bills on its own document. A finished-stay correction
+  claims its fee write against the invoice link it read, so the row lock
+  orders the two: the figure read back holds every fee routed to the primary
+  invoice, and a later correction is refused.
+- **Billed on a supplementary invoice.** The shortfall is anchored on a
+  correction that routed its fee to the primary invoice (`feeOnPrimaryInvoice`
+  on its modification); none of those raised a document of its own. It is
+  raised unpaid, like any edit's supplementary invoice, unless a captured
+  Stripe payment holds it: the primary's Stripe payment is capped
+  (`primaryInvoiceStripeCashCents`) so the applied credit the card settle then
+  allocates still fits on it — the allocation engine's own ledger figure
+  (`cardSettleAppliedCreditCents`, `unallocatedAppliedCents`), never the
+  payment's `creditAppliedCents` mirror, which is only the settle's gate. The
+  cash left over after the stored `primaryInvoiceCashCents` must cover the
+  shortfall. Captured cash that neither invoice takes is logged with both
+  figures and recorded on the create's operation
+  (`primaryInvoiceCashShortfall`). Any enqueue outcome other than a fresh
+  operation is logged as an error.
+- **Retry-safe.** A run that dies after saving the link is re-driven through
+  the create's "invoice already exists" exit, which re-runs the check from the
+  stored figures alone. A shortfall already queued on one of the anchors is not
+  queued again, and no other edit's queued figure is raised. A run that dies
+  after recording its Stripe payment but before saving the link re-creates
+  under the same keys; where the invoice Xero returns already carries that
+  payment (found by its `Stripe <intent>` reference) and the cap reaches
+  zero, its `INVOICE_PAYMENT` link is recorded and its amount stored as the
+  primary's cash, rather than the cash being skipped.
+- **Limits.** The ordinary settled edit's fee increment (#3980) is not claimed
+  against the link, so its fee racing a create has no anchor: it is logged,
+  not billed. An invoice linked without stored figures (before this check, or
+  outside the create) is not checked; the retry warns when its payment records
+  a fee.
 
 ## OAuth and token lifecycle (supporting flow)
 

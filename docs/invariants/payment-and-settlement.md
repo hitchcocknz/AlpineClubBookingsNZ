@@ -47,7 +47,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   durable `MEMBER_PAID` / `NON_MEMBER_CONFIRMED` event. It composes a THIRD
   lock tier (global → per-lodge → MEMBER-CREDIT) and derives the settlement
   amount itself: no client-supplied amount is ever accepted, and the mirror
-  `amountCents + creditAppliedCents = finalPriceCents` is asserted explicitly.
+  `amountCents + creditAppliedCents` = the booking's worth (`INV-PAY-119`) is
+  asserted explicitly.
 
 ## INV-PAY-039
 
@@ -1515,30 +1516,34 @@ total at apply).
 **Related: `INV-PAY-101`** (the settlement decision).
 
 - **Two booking-edit credit notes carry wordings of their own, as words only**
-  (#3536; owner decisions, 2 and 3 October 2026). A booking change that lowers
+  (#3536; owner decisions, 2 and 3 October 2026). A change that lowers
   an UNPAID pay-on-account invoice raises a note that refunds nothing, worded
   *Invoice correction — nothing refunded*. An edit-review refund paid back by
-  hand (the `local-allocation` route) is worded *Refunded in cash* only when the
-  officer resolving it says it went back in cash. The app never infers cash
-  from "marked paid by hand", which covers bank transfers recorded outside Xero
-  too; with no answer the note keeps the bank-transfer wording. The settle
-  screen asks only where that route applies, and the completion re-chooses the
-  route under its lock. The applied-credit remainder note and the membership
-  cancellation credit note keep their own wordings.
+  hand (the `local-allocation` route) is worded *Refunded in cash* only when
+  the officer resolving it says so: its modification note, or on a
+  since-cancelled booking its refund note (#3935). The app never infers cash
+  from "marked paid by hand", which covers bank transfers recorded outside
+  Xero; unanswered, the note keeps the bank-transfer wording. The settle
+  screen asks only where that route applies; the completion re-chooses it under
+  its lock. The applied-credit remainder and membership
+  cancellation notes keep their own wordings.
 - **Neither is a refund method, and neither moves a settlement.** A
-  modification credit note is allocated against the original invoice and never
-  settled by a payment. A cash hand-back keeps the internet-banking method for
-  the ledger line and everything else; only the words differ.
+  modification note is allocated against the original invoice; a refund note's
+  settling payment keeps the bank-transfer account and reference. A cash
+  hand-back keeps the internet-banking method.
 - **The wording travels with the decision.** It rides as `noteWording` beside
-  the method in the outbox payload and on the recorded operation, and is read by
-  the one `readModificationNoteWording`, so a retry, or the repair tool
-  re-queueing a lost note, says what the first attempt did. A row without the field keeps its old wording. A caller's
-  own method, a Stripe refund, or a paid or unstated payment status is never an
+  the method in the outbox payload, read by `readModificationNoteWording` (a
+  refund note: `readRefundNoteWording`, cash only beside internet banking, so a
+  card note never stores it). An operator retry or requeue keeps it; the repair
+  tool's `QUEUE_REFUND_CREDIT_NOTE` for a lost row carries neither method nor
+  wording. A row without the field keeps its old wording. A caller's own
+  method, a Stripe refund, or a paid or unstated payment status is never an
   invoice correction.
 - Home: `src/lib/xero-refund-method.ts`, censused over `src/lib` with the other
   wordings. Pinned by `xero-booking-edit-settlement.test.ts`,
   `xero-refund-method-documents.test.ts`, `manual-refund-task.test.ts`,
   `xero-operation-retry.test.ts`, `xero-booking-repair.test.ts`,
+  `xero-operation-outbox.test.ts`, `xero-operation-outbox-payload.test.ts`,
   `booking-payment-state.test.ts`,
   `manual-refund-task-queue-financial-review.test.tsx` and
   `resolve-route.test.ts`.
@@ -2918,3 +2923,37 @@ _Split from `INV-PAY-057` (#3220)._
   (`REFUND_CREDIT_NOTE_UNSETTLED`) and settled only by an operator.
 - Home: `src/lib/xero-refund-note-settlement.ts`. Pinned by
   `xero-refund-note-crash-window.test.ts` and `xero-operation-outbox.test.ts`.
+
+## INV-PAY-119
+
+- **What a booking owes has one home: its worth less applied credit** (#3750;
+  owner decision of 7 Oct 2026, "Add fee to amount owed"). Worth is
+  `finalPriceCents` plus the change fee recorded on the payment
+  (`bookingWorthCents`, `recordedChangeFeeCents`). Every pay step reads
+  `bookingAmountOwedCents` or worth: the payment page, card intent, payment
+  link and its page (nothing to pay at or below zero), saved-card charge,
+  internet-banking switch, confirm-payment and webhook checks, settle,
+  officer's manual payment, a stored credit election's cap, a review share's
+  covered test and invoice reduction, and each joiner's group share and
+  invoice; confirmation emails quote worth. An edit's credit clamp,
+  zero-dollar decision and stale-intent comparison read worth; a guest's
+  acceptance nets credit to the price, as its return route admits only credit
+  and cash that sum to the price.
+- A fee a finished-stay correction keeps on a stay with nothing captured is
+  recorded on the payment, claimed against the invoice link the edit read, and
+  posts its `CHANGE_FEE` line under its modification's key at the settle,
+  counting as income once captured.
+- **The primary invoice bills the recorded fee in full.** Its link is saved
+  in one transaction with what it billed, the fee then recorded and its Stripe
+  cash (capped so unallocated ledger credit fits). A supplementary invoice,
+  anchored on a correction routing its fee there, bills the gap, paid from
+  cash the primary left, else unpaid; untaken cash is logged. Retries re-check
+  stored figures without re-queuing.
+- Limits: a capture recorded for its intent is not re-checked against a later
+  fee; a fee the ordinary settled edit (#3980, `applyPaymentAdjustments`)
+  records mid-create, before the link is saved, is unclaimed: logged, not
+  billed; an invoice linked without stored figures is unchecked, warning when
+  a fee is recorded.
+- Pinned by `amount-owed-one-home.test.ts`,
+  `booking-change-request-execution.realdb.test.ts` and
+  `xero-primary-invoice-fee-gap.test.ts`.
