@@ -233,20 +233,36 @@ and it can be dismissed (with a note) if the club settles it another way.
 
 **The same task for a group paid by internet banking (#4042).** When the
 organiser of a group they paid for with one internet banking settlement
-cancels it, each joiner's refund is recorded on the joiner's booking and in
-Xero straight away, but nobody has sent any money: the club repays the
-organiser by bank transfer. The cancel raises one of these tasks, on the
-organiser's booking, for the total of the joiners' refunds, and its reason
-lists each joiner's share. Admins get the **Manual refund needed** email once.
-Pay the organiser and mark it paid back; that records only that the money
-went, because the refunds are already in the ledger and Xero. Each group
-raises at most one task, however often the cancel is re-run.
+cancels it, each joiner's refund is recorded in the app's ledger straight
+away, but nobody has sent any money: the club repays the organiser by bank
+transfer. The cancel raises one of these tasks on the organiser's booking and
+adds each joiner's share to it as that joiner's place is cancelled; its reason
+lists the shares (a very large group lists the first ones and counts the rest:
+see each joiner's booking). Admins get the **Manual refund needed** email once,
+when the task is raised; the amount in it may be the first share only, so pay
+the total the task shows. Mark it paid back once the money has gone; that
+records only that the money went, because the refunds are already in the
+ledger. If the total changed while you had the page open, you are asked to
+refresh. It cannot be dismissed: the refunds are already recorded as made, so
+if the club decides not to repay the organiser, take it to the treasurer to
+correct the cancelled bookings. Each group raises at most one task, however
+often the cancel is re-run; a joiner's share recorded after the task was
+marked paid back gets a task of its own. If the group's combined Xero invoice
+was paid, the alert that it could not be voided points to this task and its
+amount: repay that amount, not the invoice's paid total, and record the
+refund against the invoice in Xero.
+
+A club that has customised the **Manual refund needed** message keeps its own
+wording for this email too. Add `{{handBackNote}}` to the body (and keep
+`{{handBackLabel}}` in the subject, which is now required) so the group
+wording appears; until then the email's reason line still says it is a
+group repayment.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
 ("Decide a booking change the system would not price"), an amount the club may
-not have asked for ("Check an amount the club may not have asked for"), and a
-late card payment held for approval. Each kind's explaining paragraph appears
+not have asked for ("Check an amount the club may not have asked for"), a
+late card payment held for approval, and a group organiser's repayment (above). Each kind's explaining paragraph appears
 only when a row of that kind is waiting, and none of them speaks for the others.
 
 ### Settle a part payment an officer cancelled as unpaid
@@ -738,7 +754,7 @@ Payments is a read-only ledger (aside from Generate Invoice). Its controls:
 | Reset | Restore filters, sort, and page | rolling three-month Updated range through today | Disabled while the ledger is already at its defaults |
 | Generate Invoice | Create a Xero invoice for a succeeded payment | — | Needs finance **edit**; only for succeeded, non-Internet-Banking payments with no invoice. Never offered for a manually recorded cash payment — no invoice is expected for one |
 | Record / Reverse manual payment | Record a cash or off-Xero bank-transfer settlement on a booking, or undo one | — | On the booking page, not here. Needs finance **edit**. Never contacts Xero |
-| Mark paid back / Dismiss | Close a hand-back task for a cancelled cash booking, for a price cut on a booking paid by internet banking or cash, or for a group's organiser repaid by bank transfer | — | Needs finance **edit**. "Mark paid back" writes the refund into the ledger (a group organiser's refund is already there, so it adds nothing); "Dismiss" needs a note |
+| Mark paid back / Dismiss | Close a hand-back task for a cancelled cash booking, for a price cut on a booking paid by internet banking or cash, or for a group's organiser repaid by bank transfer | — | Needs finance **edit**. "Mark paid back" writes the refund into the ledger (a group organiser's refund is already there, so it records only that the money went); "Dismiss" needs a note, and a group organiser's repayment cannot be dismissed |
 | Refund to card / Close without refunding | Decide a card payment that went through after its booking was cancelled and was held for a treasurer's approval | — | Needs finance **edit**. "Refund to card" refunds the card through Stripe now; "Close without refunding" refunds nothing and needs a note. Only appears on a payment held for approval, which stays held if the club later switches back to automatic refunds |
 | Record the adjustment / No adjustment | Close a booking change the system would not price | — | Needs finance **edit**. "Record the adjustment" is disabled until an amount has been confirmed; "No adjustment" closes the review as looked-at with nothing due, moves no money, and needs a note |
 | Refunded automatically — nothing to pay back | Read-only record of a payment Stripe returned by itself, because the booking had already been cancelled — the booking's own payment or one for a change to it | last 30 days | No controls at all: the money has already gone back. Every such refund of the last 30 days is listed, grouped into bookings that were deleted (worth a look) and bookings still on file (normally nothing to do); the audit log holds anything older. A capture you had already paid back by hand is not refunded again and is not listed here — you are emailed instead |

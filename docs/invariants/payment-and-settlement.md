@@ -2960,29 +2960,30 @@ _Split from `INV-PAY-057` (#3220)._
 
 ## INV-PAY-123
 
-- **An organiser's cancel of a group paid by Internet Banking raises ONE
-  officer task to repay the organiser** (#4042). The cancel books each
-  joiner's refund on the joiner's payment (mirror, `BANK_REFUND` line, Xero
-  refund credit note) but no Stripe refund can back it. The first per-child
-  claim that books a share, after its `lock(1)`, find-or-creates one
-  `CANCELLED_BOOKING_HAND_BACK` on the organiser's booking through
-  `raiseGroupOrganiserHandBackTask` (`src/lib/group-organiser-hand-back.ts`),
-  so the first refund the books record commits with the task that makes it
-  real.
-  - **One per settlement**: occurrence key
-    `group-organiser-hand-back:<settlement id>`, unique; later claims and every
-    re-drive find it and raise nothing, and only the run that created it sends
-    the "Manual refund needed" alert, after commit, in its group wording.
-  - **Its amount is the frozen plan's shares**, never re-tiered, less any
-    planned joiner already gone another way when the first share is booked;
-    the reason lists each joiner's share.
-  - **No `paymentId`, so completion moves nothing.** The refunds are already
-    booked, so the completion takes no settlement route: no allocation, ledger
-    line, Xero note or `REFUNDED` event. `isGroupOrganiserHandBackTask` marks
-    it; it is a cancellation's hand-back, not in
-    `isNonCancellationHandBackTask`, and the ledger census never counts it as
-    the organiser booking's own.
-- Limit: a group cancel interrupted across the release that adds this, with
-  shares booked before it, raises the task for the later shares only.
-- Pinned by `group-organiser-hand-back.test.ts`, `group-cancel.test.ts` and
+- **An organiser's cancel of a group paid by Internet Banking keeps ONE
+  officer task to repay the organiser, holding exactly the shares it booked**
+  (#4042). The cancel books each joiner's refund in the app's ledger (the
+  payment mirror, a `BANK_REFUND` line) but no Stripe refund backs it. Each
+  per-child claim that books a share, after its `lock(1)`, calls
+  `recordGroupOrganiserHandBackShare` (`src/lib/group-organiser-hand-back.ts`):
+  the first creates a `CANCELLED_BOOKING_HAND_BACK` on the organiser's
+  booking, keyed `group-organiser-hand-back:<settlement id>`; each later one
+  adds its share to it while OPEN, by a status-guarded update. A share booked
+  after it closed raises a supplementary task keyed per joiner. A cancel
+  resumed across the release that added this also counts each earlier joiner
+  whose settlement refund line is on its ledger, cancelled and not deleted.
+  - Only the creating claim alerts ("Manual refund needed", group wording),
+    straight after it commits. The reason lists shares to the column, then
+    counts the rest.
+  - **No `paymentId`, so completion moves nothing**: no allocation, ledger
+    line, Xero note or `REFUNDED` event. It closes under `lock(1)`, so a total
+    that grew since the screen loaded is refused as stale. **Never
+    dismissed**: the cancel already booked the refunds, so the officer is sent
+    to the treasurer instead.
+  - `isGroupOrganiserHandBackTask` marks it, outside
+    `isNonCancellationHandBackTask`. Net Collected (at its call site) and the
+    ledger census never count it as the organiser booking's own. A paid group
+    invoice's refused VOID names it and its amount.
+- Pinned by `group-organiser-hand-back.test.ts`, `group-cancel.test.ts`,
+  `manual-refund-task.test.ts` and
   `booking-ledger-group-settlement.realdb.test.ts`.

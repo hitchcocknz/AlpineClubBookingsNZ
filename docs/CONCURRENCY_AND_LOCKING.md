@@ -2958,17 +2958,24 @@ pending-refund sweep converge the child's refund lines after `lock(1)` and the
 (global, lodge, row), keyed so a replay inserts nothing; no key, order,
 participant or provider call changes.
 
-**#4042 adds the organiser's hand-back to the same claim, and no lock.** An
+**#4042 adds the organiser's hand-back to the same claim, and no key.** An
 Internet Banking settlement's per-child claim, after its `lock(1)` and the
-joiner's mirror, find-or-creates the one `ManualRefundTask` keyed
-`group-organiser-hand-back:<settlement id>` (`raiseGroupOrganiserHandBackTask`,
-`INV-PAY-123`). It is a find-then-create, made single by the `lock(1)` every
-group-cancel claim, the reaper's resume and the plan's replay already take,
-with the unique key as the backstop; it reads the planned children's statuses
-under that lock and makes no provider call. The alert is sent after the
-commit. No key, order or participant changes, so `advisory-lock-guard.test.ts`
-needs no new entry. Its completion takes no key either, like every
-cancellation hand-back: with no `paymentId` it moves no money.
+joiner's mirror, books that joiner's share on the one `ManualRefundTask` keyed
+`group-organiser-hand-back:<settlement id>` (`recordGroupOrganiserHandBackShare`,
+`INV-PAY-123`): the first share creates it, each later one grows it by a
+status-guarded `updateMany` while OPEN, and one booked after it closed creates
+a supplementary task keyed per joiner. That per-child claim is the ONLY raise
+site - it runs on the first cancel and on the reaper's resume, both through
+`settleGroupBookingOnOrganiserCancel` - and the plan's recovery replay never
+raises it (an Internet Banking plan is never replayed). Each step is a
+find-then-write made single by the claim's `lock(1)`, with the unique key as
+the backstop; it reads ledger lines and children under that lock and makes no
+provider call, and the creating claim's alert is sent after its commit. Its
+COMPLETION joins the cohort too: `resolveManualRefundTask` takes `lock(1)`
+first for this task (as for an edit review and a non-cancellation hand-back,
+`resolveManualRefundTask#1`), so a growth and a completion never interleave
+and a total that grew since the screen loaded is refused as stale. No new key
+or order.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`
@@ -3281,8 +3288,9 @@ does too, and both would post. So `resolveManualRefundTask` takes
   `updateMany` still fences on `OPEN` for every kind, pinned with the lock
   mocked in `manual-refund-task.test.ts`. Legacy hand-back kinds take no key,
   exactly as before — **except an edit refund hand-back** (#3827,
-  `INV-PAY-117`) and an approved refund appeal's (`INV-PAY-118`), which take
-  the same key first, decided from its immutable
+  `INV-PAY-117`), an approved refund appeal's (`INV-PAY-118`) and a group
+  organiser's (#4042, `INV-PAY-123`, which later joiners' claims grow under
+  it), which take the same key first, decided from its immutable
   `kind` and `occurrenceKey`. Its completion moves the payment's
   `refundedAmountCents` and closes the task in one commit, and every edit,
   acceptance, paid cancel and by-hand edit-review refund (refused before its

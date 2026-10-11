@@ -1996,14 +1996,18 @@ though the booking is cancelled, because the cancel came first and never
 counted it. See
 [`INV-PAY-118`](invariants/payment-and-settlement.md#inv-pay-118).
 
-**#4042: so does a group organiser's.** An organiser's cancel of a group paid
-by Internet Banking raises the task OPEN on the organiser's booking, inside
-the first per-child claim that books a joiner's refund, under `lock(1)`,
-keyed one per settlement, for the frozen plan's shares. It carries no
-`paymentId`: the cancel already booked those refunds on the joiners' own
-payments, so COMPLETED records only that the officer repaid the organiser and
-writes no allocation, ledger line, Xero note or `REFUNDED` event; DISMISSED
-moves nothing either. See
+**#4042: so does a group organiser's, except that it cannot be dismissed.** An
+organiser's cancel of a group paid by Internet Banking raises the task OPEN on
+the organiser's booking, inside the first per-child claim that books a
+joiner's refund, under `lock(1)`, keyed one per settlement; each later claim
+adds its share while it is OPEN (a share booked after it closed raises a
+supplementary task keyed per joiner). It carries no `paymentId`: the cancel
+already booked those refunds on the joiners' own payments, so COMPLETED
+records only that the officer repaid the organiser and writes no allocation,
+ledger line, Xero note or `REFUNDED` event. COMPLETED takes `lock(1)` and
+refuses a total that grew since the screen loaded. DISMISSED is refused: the
+refunds are booked as made, so not repaying is the treasurer's correction.
+See
 [`INV-PAY-123`](invariants/payment-and-settlement.md#inv-pay-123).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED

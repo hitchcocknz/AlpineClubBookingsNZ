@@ -94,16 +94,18 @@ arrives, the group is never released by the app, even if Xero shows the invoice
 unpaid or no longer has it: it is kept, and the treasurer gets one email, because the organiser may
 already have paid by bank transfer (#3635).
 
-**When the organiser cancels a paid group.** The joiners' refunds are recorded
-on their bookings and in Xero, and the club repays the organiser by bank
-transfer: a task appears in **Money to settle** on the
-[payments board](payments.md#pay-back-a-refund-for-a-cash-booking) for the
-total, listing each joiner's share, and admins are emailed once (#4042).
-
 The email goes to admins with the **payment failure** notification switched on.
 A send that fails is retried on the next run, including the email for a hold
 already released; one that reaches nobody (every address suppressed, for
 example) is tried again a day later, not every run.
+
+**When the organiser cancels a group they paid for.** Each joiner's refund is
+recorded in the app's ledger, and the club repays the organiser by bank
+transfer. A task appears in **Money to settle** on the
+[payments board](payments.md#pay-back-a-refund-for-a-cash-booking): it holds
+the total as each joiner's place is cancelled and lists their shares. The task
+is the record; admins get one **Manual refund needed** email when it is raised,
+which is not resent (#4042).
 
 ## Troubleshooting
 
