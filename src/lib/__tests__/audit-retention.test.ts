@@ -177,6 +177,15 @@ describe("audit retention lifecycle", () => {
       criticalMain: new Date("2019-05-10T00:00:00.000Z"),
       incidentPreserved: new Date("2016-05-10T00:00:00.000Z"),
     });
+    // #3939: a cutoff taken on 29 Feb lands on 28 Feb in a year without one,
+    // never 1 Mar, which would delete rows up to a day early.
+    expect(
+      getAuditLogRetentionCutoffs(new Date("2036-02-29T03:30:00.000Z"))
+    ).toMatchObject({
+      archivePrune: new Date("2029-02-28T03:30:00.000Z"),
+      criticalMain: new Date("2029-02-28T03:30:00.000Z"),
+      incidentPreserved: new Date("2026-02-28T03:30:00.000Z"),
+    });
     expect(
       isAuditLogRetentionCritical({
         action: "admin.member.view",
@@ -889,7 +898,26 @@ describe("audit retention lifecycle", () => {
           text
         );
         if (!match) throw new Error(`unexpected archive prune SQL: ${text}`);
-        const tokens = match[1].match(/"[A-Za-z]+"|\$\d+|[()<=]|\w+/g) ?? [];
+        // Sticky: each token must start exactly where the last one ended, after
+        // whitespace only, so an unrecognised character throws instead of being
+        // skipped (a skip would read `!= false` as `= false`). The comparison
+        // operators PostgreSQL has and this parser does not model are tokenised
+        // whole so they can be rejected by name below, never half-read.
+        const tokens: string[] = [];
+        const tokenPattern =
+          /\s*("[A-Za-z]+"|\$\d+|!=|<>|<=|>=|[()<>=]|[A-Za-z]+)/y;
+        const where = match[1];
+        tokenPattern.lastIndex = 0;
+        while (!/^\s*$/.test(where.slice(tokenPattern.lastIndex))) {
+          const start = tokenPattern.lastIndex;
+          const token = tokenPattern.exec(where);
+          if (!token) {
+            throw new Error(
+              `archive prune SQL: unrecognised text at ${start}: ${where.slice(start)}`
+            );
+          }
+          tokens.push(token[1]);
+        }
 
         type Node = (row: ArchiveFixture) => boolean;
         let position = 0;
@@ -921,17 +949,35 @@ describe("audit retention lifecycle", () => {
           }
           const key = column.slice(1, -1) as keyof ArchiveFixture;
           const op = take();
+          if (op !== "<" && op !== "=") {
+            // `!=`, `<>`, `<=`, `>=`, `>` and anything else: refused at parse
+            // time, so a mutated operator can never be evaluated as a modelled one.
+            throw new Error(`archive prune SQL: unsupported operator ${op}`);
+          }
           const right = operand();
           return (row) => {
             const left = row[key];
             if (left === undefined || left === null) {
               throw new Error(`archive prune SQL: fixture lacks ${key}`);
             }
+            const leftIsDate = left instanceof Date;
+            const rightIsDate = right instanceof Date;
             if (op === "<") {
-              return (left as Date).getTime() < (right as Date).getTime();
+              if (!leftIsDate || !rightIsDate) {
+                throw new Error(`archive prune SQL: \`<\` needs two dates (${key})`);
+              }
+              return left.getTime() < right.getTime();
             }
-            if (op === "=") return left === right;
-            throw new Error(`archive prune SQL: unsupported operator ${op}`);
+            if (leftIsDate || rightIsDate) {
+              if (!leftIsDate || !rightIsDate) {
+                throw new Error(`archive prune SQL: \`=\` mixes a date and a non-date (${key})`);
+              }
+              return left.getTime() === right.getTime();
+            }
+            if (typeof left !== typeof right) {
+              throw new Error(`archive prune SQL: \`=\` mixes types (${key})`);
+            }
+            return left === right;
           };
         };
         const conjunction = (): Node => {
@@ -966,6 +1012,43 @@ describe("audit retention lifecycle", () => {
         };
         return applyArchivePrune(query, rows);
       }
+
+      // The parser is part of the proof, so it is tested too: an operator it
+      // does not model must throw, never be read as one it does.
+      it.each([
+        ['"incidentPreserved" != false', /unsupported operator !=/],
+        ['"incidentPreserved" <> false', /unsupported operator <>/],
+        ['"createdAt" >= $0', /unsupported operator >=/],
+        ['"createdAt" > $0', /unsupported operator >/],
+        ['"createdAt" <= $0', /unsupported operator <=/],
+        ['"createdAt" < $0;', /unrecognised text/],
+        ['NOT "incidentPreserved" = false', /unsupported term NOT/],
+      ])("the test's SQL parser refuses %s", (clause, error) => {
+        // `$0` marks where a bound value goes, as in a Prisma.sql template.
+        const [head, ...rest] = clause.split("$0");
+        const query = {
+          strings: [`DELETE FROM "AuditLogArchive" WHERE ${head}`, ...rest],
+          values: rest.map(() => new Date("2019-05-10T00:00:00.000Z")),
+        };
+        expect(() =>
+          applyArchivePrune(query, [
+            { id: "row", createdAt: pastNormalRetention, incidentPreserved: false },
+          ])
+        ).toThrow(error);
+      });
+
+      it("the test's SQL parser compares dates by instant under =", () => {
+        const sameInstant = new Date(pastNormalRetention.getTime());
+        const query = {
+          strings: ['DELETE FROM "AuditLogArchive" WHERE "createdAt" = ', ""],
+          values: [sameInstant],
+        };
+        expect(
+          applyArchivePrune(query, [
+            { id: "row", createdAt: pastNormalRetention, incidentPreserved: false },
+          ])
+        ).toEqual([]);
+      });
 
       it("keeps a preserved copy past seven years and prunes its unpreserved twin", async () => {
         // Drop the `"incidentPreserved" = false OR …` condition and the

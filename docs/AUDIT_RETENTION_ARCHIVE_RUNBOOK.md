@@ -96,7 +96,7 @@ ORDER BY 3 DESC;
 ROLLBACK;
 ```
 
-`firstDeletion` is the earliest the oldest preserved row in each group can go: for the `critical` rows the app preserves today it is when that row goes, on the first nightly run after that moment, while a row whose normal rule keeps it longer (or has no `expiresAt`) stays until that rule is met.
+`firstDeletion` is the earliest the oldest preserved row in each group can go: for the `critical` rows the app preserves today it is when that row goes, on the first nightly run after that moment (a row created on 29 February goes a day later, because PostgreSQL rounds its anniversary down to 28 February and the job's cutoff errs towards keeping), while a row whose normal rule keeps it longer (or has no `expiresAt`) stays until that rule is met.
 
 ## Archive Table Columns
 
