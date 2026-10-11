@@ -44,7 +44,7 @@ const mockQueueSupersededPaymentIntentRefundRecovery = vi.fn();
 // #3341: the ADDITIONAL supersede runs for REAL (`INV-OPS-015`). These are its
 // I/O: the ledger read of the asks it retires, and the durable cancel it queues.
 const mockPaymentTransactionFindMany = vi.fn();
-const mockRecoveryOperationFindUnique = vi.fn(async (..._args: unknown[]) => null as unknown);
+const mockRecoveryOperationFindUnique = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => null);
 const mockEnqueuePaymentIntentCancellationRecovery = vi.fn();
 const mockQueueSupersededPrimaryIntentCancellations = vi.fn();
 const mockEnqueueXeroBookingInvoiceOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_booking", message: "queued" });
