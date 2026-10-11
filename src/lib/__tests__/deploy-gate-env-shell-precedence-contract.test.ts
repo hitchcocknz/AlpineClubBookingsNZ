@@ -120,9 +120,11 @@ function run(harnessLines: string[], options: { stopped?: Shell; pending?: Shell
 }
 
 describe(`${STOPPED} stays the validator's, never the containers' (#4027)`, () => {
-  const harness = [
-    STOPPED_DEFAULT,
-    STOPPED_UNEXPORT,
+  // Built per test, from the script's own lines, so a removed or reworded line
+  // fails every case below rather than one.
+  const harness = () => [
+    exactLine(STOPPED_DEFAULT),
+    exactLine(STOPPED_UNEXPORT),
     'info() { printf "%s\\n" "$1"; }',
     "list_pending_migration_sql_files() { echo prisma/migrations/20990101000000_x/migration.sql; }",
     'ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1',
@@ -160,7 +162,7 @@ describe(`${STOPPED} stays the validator's, never the containers' (#4027)`, () =
   });
 
   it("hands the validator the shell's 1, and the containers nothing", () => {
-    const result = run(harness, { stopped: { set: true, value: "1" } });
+    const result = run(harness(), { stopped: { set: true, value: "1" } });
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toContain(`VALIDATOR ${STOPPED}=1`);
     expect(result.stdout).toContain(`SHELL ${STOPPED}=1`);
@@ -170,7 +172,7 @@ describe(`${STOPPED} stays the validator's, never the containers' (#4027)`, () =
   });
 
   it("still defaults the validator to 0 when the shell never set it", () => {
-    const result = run(harness, { stopped: { set: false } });
+    const result = run(harness(), { stopped: { set: false } });
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toContain(`VALIDATOR ${STOPPED}=0`);
     expect(result.stdout).toContain(`DOCKER compose up -d --force-recreate app ${STOPPED}=UNSET`);
