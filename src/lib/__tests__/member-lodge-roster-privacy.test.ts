@@ -1131,7 +1131,7 @@ describe("member lodge roster — whole-lodge held nights (#3474)", () => {
 
   it("keeps a named custodian separate from an anonymous whole-lodge hold", async () => {
     mockGetLodgeHeldNights.mockResolvedValue(HELD);
-    mockFindCustodianBedHolds.mockResolvedValue([
+    mockFindCustodianOccupants.mockResolvedValue([
       custodianHold("Hemi", "Walker", HELD[0]!, HELD[2]!),
     ]);
     mockPrisma.booking.findMany.mockResolvedValue([
