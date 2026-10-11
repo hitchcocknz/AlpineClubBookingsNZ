@@ -173,10 +173,10 @@ async function waitForLoginState(page: Page): Promise<Exclude<LoginState, "pendi
     const pathname = new URL(page.url()).pathname;
     if (pathname === "/login/enroll" || pathname === "/login/verify") {
       const challenge = pathname === "/login/enroll" ? "enroll" : "verify";
-      const heading = challenge === "enroll"
-        ? "Set up two-factor authentication"
-        : "Verify your sign-in";
-      state = await page.getByRole("heading", { name: heading, exact: true }).isVisible()
+      const marker = challenge === "enroll"
+        ? page.getByRole("heading", { name: "Set up two-factor authentication", exact: true })
+        : page.getByText("Verify your sign-in", { exact: true }).filter({ visible: true }).first();
+      state = await marker.isVisible()
         ? challenge
         : "pending";
     } else if (pathname.startsWith("/login") || pathname === "/change-password") {

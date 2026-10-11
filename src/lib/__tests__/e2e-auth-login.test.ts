@@ -62,7 +62,7 @@ function mockPage(initialPath: string, destination = "/admin/payments") {
   let challengeVisible = true;
   const clicks: string[] = [];
   const fills = new Map<string, string>();
-  const locator = (name: string) => {
+  const locator = (name: string, role?: string) => {
     const result = {
       get value() { return fills.get(name) ?? ""; },
       first: () => result,
@@ -72,8 +72,11 @@ function mockPage(initialPath: string, destination = "/admin/payments") {
       innerText: async () => SECRET,
       allInnerTexts: async () => ["recovery-code"],
       isVisible: async () => {
-        if (name === "Set up two-factor authentication") return challengeVisible && new URL(page.url()).pathname === "/login/enroll";
-        if (name === "Verify your sign-in") return challengeVisible && new URL(page.url()).pathname === "/login/verify";
+        if (name === "Set up two-factor authentication") return (!role || role === "heading")
+          && challengeVisible && new URL(page.url()).pathname === "/login/enroll";
+        // Verify uses CardTitle without headingLevel: it is text, not a heading.
+        if (name === "Verify your sign-in") return !role
+          && challengeVisible && new URL(page.url()).pathname === "/login/verify";
         if (name === "Save your recovery codes") return recovery;
         if (name === ".app-brand-mark, .theme-aware-kiosk") return authenticated;
         return false;
@@ -93,8 +96,8 @@ function mockPage(initialPath: string, destination = "/admin/payments") {
     goto: vi.fn(async () => { pathname = "/login"; }),
     url: () => `http://local.test${pathname}`,
     locator,
-    getByRole: (_role: string, options: { name: string }) => locator(options.name),
-    getByText: locator,
+    getByRole: (role: string, options: { name: string }) => locator(options.name, role),
+    getByText: (name: string) => locator(name),
     waitForURL: vi.fn(async (predicate: RegExp | ((url: URL) => boolean), options?: { timeout: number }) => {
       const url = new URL(page.url());
       if (!(typeof predicate === "function" ? predicate(url) : predicate.test(url.href))) {
