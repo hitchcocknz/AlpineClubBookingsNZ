@@ -96,7 +96,7 @@ ORDER BY 3 DESC;
 ROLLBACK;
 ```
 
-`firstDeletion` is approximate: the job compares against its own clock at 03:30, so a row goes on the first nightly run after that moment.
+`firstDeletion` is the earliest the oldest preserved row in each group can go: for the `critical` rows the app preserves today it is when that row goes, on the first nightly run after that moment, while a row whose normal rule keeps it longer (or has no `expiresAt`) stays until that rule is met.
 
 ## Archive Table Columns
 
