@@ -69,13 +69,23 @@ const QUOTE = {
 };
 
 let rows: Array<Record<string, unknown>>;
+let memberGuestFind: { openSearchEnabled: boolean } | null;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   rows = [freeTextRequest()];
+  memberGuestFind = null;
   fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
+    if (url.includes("/member-guest-candidates")) {
+      return jsonResponse({
+        candidates: [
+          { memberId: "m-1", firstName: "Ada", lastName: "Lovelace", ageTier: "ADULT" },
+          { memberId: "m-9", firstName: "Kit", lastName: "Lovelace", ageTier: "CHILD" },
+        ],
+      });
+    }
     if (url.endsWith("/quote")) return jsonResponse({ id: "req-1", quote: QUOTE });
     if (init?.method === "PATCH") {
       return jsonResponse({
@@ -84,7 +94,7 @@ beforeEach(() => {
       });
     }
     if (url.includes("/api/admin/booking-change-requests")) {
-      return jsonResponse({ data: rows, page: 1, pageSize: 25, total: rows.length, memberGuestFind: null });
+      return jsonResponse({ data: rows, page: 1, pageSize: 25, total: rows.length, memberGuestFind });
     }
     return jsonResponse({});
   });
@@ -179,5 +189,27 @@ describe("change-request panel — the officer enters the guests (#4030)", () =>
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
     await waitFor(() => expect(patchBodies()).toHaveLength(1));
     expect(patchBodies()[0]).not.toHaveProperty("officerGuests");
+  });
+
+  it("disables, in the officer's member finder, a member already on the booking", async () => {
+    memberGuestFind = { openSearchEnabled: false };
+    rows = [
+      freeTextRequest({
+        booking: { ...freeTextRequest().booking, guests: [{ memberId: "m-1" }] },
+      }),
+    ];
+    render(<BookingChangeRequestsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "+ Add a member" }));
+    fireEvent.change(screen.getByPlaceholderText("their email address"), { target: { value: "lovelace@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    const owner = await screen.findByRole("option", { name: /Ada Lovelace/ });
+    expect(owner).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("option", { name: /Kit Lovelace/ })).not.toHaveAttribute("aria-disabled");
+    // The lookup went to the booking's own admin finder route.
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).startsWith("/api/admin/bookings/bk-1/member-guest-candidates"),
+      ),
+    ).toBe(true);
   });
 });

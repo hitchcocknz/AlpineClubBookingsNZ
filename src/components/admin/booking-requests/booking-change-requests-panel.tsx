@@ -545,6 +545,9 @@ export function BookingChangeRequestsPanel({
                           }
                           ageTierOptions={ageTierOptions}
                           memberGuestFind={memberGuestFind}
+                          existingMemberIds={(request.booking.guests ?? []).flatMap((guest) =>
+                            guest.memberId ? [guest.memberId] : [],
+                          )}
                           canEdit={canEdit}
                         />
                       ) : null}

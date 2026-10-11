@@ -87,6 +87,8 @@ export interface BookingChangeRequestData {
       email: string;
     } | null;
     organisation: { name: string; email: string | null } | null;
+    /** #4030: the member ids already on the booking (list route only), for the officer's finder. */
+    guests?: Array<{ memberId: string | null }>;
     payment: {
       id: string;
       amountCents: number;

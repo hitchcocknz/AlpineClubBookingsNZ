@@ -180,11 +180,14 @@ export function OfficerGuestEntry({
   onChange,
   ageTierOptions,
   memberGuestFind,
+  existingMemberIds,
   canEdit,
 }: {
   requestId: string;
   bookingId: string;
   stay: ChangeRequestStay;
+  /** Members already on the booking: the finder disables rather than hides them. */
+  existingMemberIds: readonly string[];
   guests: NewGuest[];
   onChange: (guests: NewGuest[]) => void;
   ageTierOptions: AgeTierOption[];
@@ -207,7 +210,7 @@ export function OfficerGuestEntry({
         onChange={onChange}
         ageTierOptions={ageTierOptions}
         stay={stay}
-        existingMemberIds={[]}
+        existingMemberIds={existingMemberIds}
         memberFind={
           memberGuestFind
             ? { ...memberGuestFind, endpoints: adminMemberGuestFindEndpoints(bookingId) }

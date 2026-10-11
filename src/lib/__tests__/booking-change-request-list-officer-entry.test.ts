@@ -106,4 +106,16 @@ describe("GET /api/admin/booking-change-requests — acceptsOfficerGuests (#4030
     expect((await list()).memberGuestFind).toBeNull();
     expect(mocks.gate).not.toHaveBeenCalled();
   });
+
+  it("reads only the member ids of the booking's guests, for the finder", async () => {
+    mocks.findMany.mockResolvedValue([]);
+    await list();
+    const [args] = mocks.findMany.mock.calls[0] as [
+      { include: { booking: { select: { guests: unknown } } } },
+    ];
+    expect(args.include.booking.select.guests).toEqual({
+      where: { memberId: { not: null } },
+      select: { memberId: true },
+    });
+  });
 });
