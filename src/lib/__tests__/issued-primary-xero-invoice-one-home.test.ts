@@ -549,17 +549,29 @@ describe("no edit door states the rule a second time", () => {
       /\bsizeAdditionalAsk\(/,
     );
     expect(sizers.length).toBeGreaterThan(0);
+    // Round 6: the fold is kept (for the edit's history) and its cents sized in.
     expect(
-      sizers.filter((file) => !/waitingReissuedAskCents:\s*await foldWaitingReissuedAsks\(/.test(read(file))),
-      "INV-PAY-120: pass waitingReissuedAskCents: await foldWaitingReissuedAsks(tx, booking), or the increase's mint overtakes a waiting re-issue and its money is lost.",
+      sizers.filter(
+        (file) =>
+          !/foldedReissuedAsks = await foldWaitingReissuedAsks\(/.test(read(file)) ||
+          !/waitingReissuedAskCents:\s*foldedReissuedAsks\.cents/.test(read(file)),
+      ),
+      "INV-PAY-120: fold with foldedReissuedAsks = await foldWaitingReissuedAsks(tx, booking) and pass waitingReissuedAskCents: foldedReissuedAsks.cents, or the increase's mint overtakes a waiting re-issue and its money is lost.",
+    ).toEqual([]);
+    // ...and records what it folded on its history row, or its replay loses it.
+    expect(
+      sizers.filter((file) => !/\bunpaidAskOffsetHistory\(|\bfoldedReissuedAsks,/.test(read(file))),
+      "INV-PAY-120 (round 6): record the fold on the increase's history (unpaidAskOffsetHistory), or a failed mint's replay asks without the re-issue.",
     ).toEqual([]);
   });
 
   it("INV-PAY-120: every door that records a reduction's unpaid-ask offset makes its re-issued ask and its billed offset's note durable in the same transaction (#3954 rounds 4 and 5)", () => {
+    // Round 6: a door that only FOLDS (the guest add, which never reduces)
+    // records its history with NO_UNPAID_ASK_SETTLEMENT and has no offset to follow up.
     const recorders = filesMentioning(
       sourceFilesUnder("src").filter((file) => file !== "src/lib/unpaid-ask-offset-marker.ts"),
       /\bunpaidAskOffsetHistory\(/,
-    );
+    ).filter((file) => /\bunpaidAskOffsetHistory\((?!\{\s*\.\.\.NO_UNPAID_ASK_SETTLEMENT)/.test(read(file)));
     expect(recorders.length).toBeGreaterThan(0);
     expect(
       recorders.filter((file) => (read(file).match(/\bqueueReductionAskFollowUps\(/g) ?? []).length !== 1),

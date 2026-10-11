@@ -435,6 +435,8 @@ beforeEach(() => {
     // #3954: no unpaid ask on this booking, so the removal retired none.
     unpaidAskOffsetCents: 0,
     retiredAdditionalAsks: [],
+    // #3954 round 6: and folded no waiting re-issue in.
+    foldedReissuedAsks: { cents: 0, modificationIds: [], invoiceCents: 0 },
     settlementMethod: null,
     policyRetainedAmountCents: 0,
     xeroRefundAmountCents: 0,

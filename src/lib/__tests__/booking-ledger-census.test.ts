@@ -617,7 +617,8 @@ describe("every ask-minting door routes through the sizing rule (INV-PAY-047)", 
       "INV-PAY-047: the guest-add door's STRIPE arm must size through " +
         "sizeAdditionalAsk (#3340, #3371).",
     ).toMatch(
-      /if \(hasSucceededPayment && priceDiffCents > 0\) \{\s*additionalAsk = sizeAdditionalAsk\(\{/,
+      // #3954 round 6: the fold that joins it is recorded first, then sized in.
+      /if \(hasSucceededPayment && priceDiffCents > 0\) \{\s*(?:\/\/[^\n]*\n\s*)*foldedReissuedAsks = await foldWaitingReissuedAsks\(tx, booking\);\s*additionalAsk = sizeAdditionalAsk\(\{/,
     );
     expect(
       source,
