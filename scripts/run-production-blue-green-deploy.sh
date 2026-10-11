@@ -1728,6 +1728,38 @@ require_exported_value_matches_env_file() {
   unset "$key"
 }
 
+# Says so when the shell's validator acknowledgement will not reach the app
+# (#4027).
+#
+# `export -n` above keeps BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED out of every
+# container, which is the fix. But an operator who exported `1` for a window and
+# has not put it in .env might expect the #3413 gate's acknowledgement to be on.
+# This prints a line, at step 3 of 20, saying the shell value is for the migration
+# validator only and the app reads .env. It runs here rather than beside the
+# `export -n` because that runs before the deploy has changed into the project
+# directory and before these readers are defined.
+#
+# INFORMATION ONLY, and the one place the .env copy is read. The value read here
+# goes into a message and nowhere else, and never into the validator's decision:
+# `old-runtimes-stopped-ack-source-contract.test.ts` allows this read only inside
+# this function.
+note_shell_stopped_ack_is_validator_only() {
+  local app_copy
+
+  if [ "$BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED" != "1" ]; then
+    return 0
+  fi
+  app_copy="$(compose_env_file_value BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED)" || return 1
+  if [ "$app_copy" = "1" ]; then
+    return 0
+  fi
+
+  info "BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1 is set in this shell but not in .env."
+  info "The shell value is for the migration validator only. The app reads .env alone,"
+  info "so the #3413 pending-school-adult gate and its cleanup stay off. To switch them"
+  info "on, see docs/PRODUCTION_UPGRADE_RUNBOOK.md, the #3413 section."
+}
+
 require_domain_matches_url() {
   local key="$1"
   local domain="$2"
@@ -1790,6 +1822,7 @@ validate_env_contract() {
   # BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED, is kept out of every child's
   # environment where the script sets its default, for the reason given there.
   require_exported_value_matches_env_file PENDING_SCHOOL_ADULTS_ENABLED
+  note_shell_stopped_ack_is_validator_only
   # Stripe credentials moved to encrypted, DB-backed storage (#2082) — no longer
   # required (or read) from .env. Legacy vars are warned about below.
   require_non_placeholder_env_key SMTP_HOST

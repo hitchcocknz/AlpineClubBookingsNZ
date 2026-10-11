@@ -248,3 +248,60 @@ describe(`${PENDING} exported in the shell must agree with .env (#4027)`, () => 
     expect(result.stderr).toContain("exported in this shell: '1?[2J'");
   });
 });
+
+describe(`a shell ${STOPPED}=1 that .env lacks is called out at step 3 (#4027)`, () => {
+  const NOTE = "note_shell_stopped_ack_is_validator_only";
+  const harness = () => [
+    exactLine(STOPPED_DEFAULT),
+    exactLine(STOPPED_UNEXPORT),
+    'info() { printf "INFO %s\\n" "$1"; }',
+    ...[
+      "trim_whitespace",
+      "printable_deploy_value",
+      "env_assignment_pattern",
+      "compose_env_file_value",
+      NOTE,
+    ].map((name) => shellFunctionSource(SCRIPT, name)),
+    NOTE,
+    "echo DONE",
+  ];
+
+  it("is called from validate_env_contract, after the PENDING check", () => {
+    const body = shellFunctionSource(SCRIPT, "validate_env_contract");
+    const calls = body.split("\n").filter((line) => line === `  ${NOTE}`);
+    expect(calls).toHaveLength(1);
+    expect(body.indexOf(`  ${NOTE}\n`)).toBeGreaterThan(
+      body.indexOf(`  require_exported_value_matches_env_file ${PENDING}\n`),
+    );
+  });
+
+  it.each([
+    [".env is silent", "OTHER=1\n"],
+    [".env says 0", `${STOPPED}=0\n`],
+    [".env has 1 first and 0 last", `${STOPPED}=1\n${STOPPED}: 0\n`],
+  ])("says the shell value is the validator's only when %s", (_label, envFile) => {
+    const result = run(harness(), { stopped: { set: true, value: "1" }, envFile });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`INFO ${STOPPED}=1 is set in this shell but not in .env.`);
+    expect(result.stdout).toContain("for the migration validator only");
+    expect(result.stdout).toContain("The app reads .env alone");
+    // Information only: the deploy carries on.
+    expect(result.stdout).toContain("DONE");
+  });
+
+  it.each([
+    ["the shell says 1 and .env agrees", { set: true, value: "1" } as Shell, `${STOPPED}=1\n`],
+    [
+      "the shell says 1 and .env agrees in the colon form",
+      { set: true, value: "1" } as Shell,
+      `export ${STOPPED}: "1"\n`,
+    ],
+    ["the shell never set it", { set: false } as Shell, "OTHER=1\n"],
+    ["the shell says 0", { set: true, value: "0" } as Shell, "OTHER=1\n"],
+  ])("stays quiet when %s", (_label, stopped, envFile) => {
+    const result = run(harness(), { stopped, envFile });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).not.toContain("INFO");
+    expect(result.stdout).toContain("DONE");
+  });
+});

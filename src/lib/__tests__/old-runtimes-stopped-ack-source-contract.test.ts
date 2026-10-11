@@ -27,20 +27,30 @@ const SCRIPTS = [
   "scripts/validate-blue-green-migrations.sh",
 ];
 
+/** The information-only reader, and the one read of `.env` it may make. */
+const NOTE_FUNCTION = "note_shell_stopped_ack_is_validator_only";
+const NOTE_READ = new RegExp(
+  `^app_copy="\\$\\(compose_env_file_value ${NAME}\\)" \\|\\| return 1$`,
+);
+
 const ALLOWED_SHAPES: RegExp[] = [
   // The shell default: the variable's own environment value, else 0.
   new RegExp(`^${NAME}="\\$\\{${NAME}:-0\\}"$`),
   // Passing the shell value on to the validator.
   new RegExp(`^${NAME}="\\$${NAME}" \\\\$`),
-  // Testing the shell value.
-  new RegExp(`^\\[ "\\$${NAME}" != "1" \\]; then$`),
+  // Testing the shell value, as a continuation line or a whole `if`.
+  new RegExp(`^(if )?\\[ "\\$${NAME}" != "1" \\]; then$`),
   // An operator message.
-  /^echo "[^$`]*"( >&2)?$/,
+  /^(echo|info) "[^$`]*"( >&2)?$/,
   // Taking the shell value out of every child's environment while keeping it in
   // the deploy shell, so `docker compose` reads the containers' copy from `.env`
   // alone (#4027). It reads nothing and loads nothing; the validator is still
   // handed the shell value by the pass-through above.
   new RegExp(`^export -n ${NAME}$`),
+  // The one read of the `.env` copy, for an information line only (#4027). It is
+  // allowed solely inside NOTE_FUNCTION, checked below, so it cannot become an
+  // input to the validator.
+  NOTE_READ,
 ];
 
 /**
@@ -162,6 +172,23 @@ describe(`${NAME} is read only from the deploy shell (#3964)`, () => {
           ".env is the app's lasting #3413 acknowledgement and must never satisfy " +
           "the windowed-migration validator (#3964).",
       ).toEqual([]);
+    });
+
+    it(`${script} reads the .env copy only in the information-only note`, () => {
+      // Bounds of the note function: its definition to the next column-0 `}`.
+      const start = lines.findIndex(({ line }) => line === `${NOTE_FUNCTION}() {`);
+      const end =
+        start < 0 ? -1 : lines.findIndex(({ line }, index) => index > start && line === "}");
+      const strays = lines
+        .filter(({ line }, index) => NOTE_READ.test(line) && !(index > start && index < end))
+        .map(({ line, number }) => `${script}:${number}: ${line}`);
+      expect(
+        strays,
+        `${NAME}'s .env copy may be read only by ${NOTE_FUNCTION}, for a message (#4027).`,
+      ).toEqual([]);
+      // And nothing but the step-3 preflight calls that function.
+      const calls = lines.filter(({ line }) => line === NOTE_FUNCTION);
+      expect(calls.length).toBeLessThanOrEqual(1);
     });
 
     it(`${script} never loads .env into its shell`, () => {
