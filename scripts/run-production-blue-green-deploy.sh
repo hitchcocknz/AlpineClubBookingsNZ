@@ -995,23 +995,67 @@ trim_whitespace() {
   printf '%s' "$value"
 }
 
-# Every shape Docker Compose accepts as an assignment of this key, as one
-# extended regular expression.
+# Every shape Docker Compose's `.env` parser accepts as an assignment of any of
+# the given keys, as one extended regular expression (#4026).
 #
-# THE SHAPE WAS THE FINDING. The first version counted with `awk -F=` and
-# `$1 == key`, which needs the key to be the WHOLE first `=`-field — so three
-# shapes Compose honours slipped past it, measured against real
-# `docker compose v5.3.1`: an INDENTED line, an `export `-prefixed line, and
-# spaces around the `=`. Any of those appearing a SECOND time further down a .env
-# whose first line is correct passed the duplicate check and handed every
-# container `non-production`. Appending to a .env by hand, or from a rehearsal
-# script, produces exactly those shapes.
+#   env_assignment_pattern KEY [KEY...]
 #
-# Deliberately scoped to THIS key rather than by changing `get_env_file_value`,
-# which every other `require_*_env_key` shares and which is not this issue to
-# change. A comment line cannot match: a `#` before the key fails the anchor.
+# FILE SCOPE, AND THE ONE SPELLING OF THIS GRAMMAR. Every reader in this script
+# that must agree with Compose about whether a line assigns a key builds its
+# pattern here, and so can a downstream fork's own deploy guard rather than
+# carrying a copy pinned equal by a test of its own.
+#
+# THE SHAPE WAS THE FINDING, twice. The first version of the #3034 check counted
+# with `awk -F=` and `$1 == key`, which needs the key to be the WHOLE first
+# `=`-field — so three shapes Compose honours slipped past it, measured against
+# real `docker compose v5.3.1`: an INDENTED line, an `export `-prefixed line, and
+# spaces around the `=`. Then #4026 measured `docker compose config` on Compose
+# v5.6.0 and found its parser also takes a YAML-style COLON as the separator:
+# `KEY: value`, `KEY:value`, `KEY : value` and `export KEY: value`. Any of those
+# appearing a SECOND time further down a .env whose first line is correct passed
+# the duplicate check and handed every container the second value. Appending to a
+# .env by hand, or from a rehearsal script, produces exactly those shapes.
+#
+# What it matches, mirroring Compose's dotenv parser: optional leading
+# whitespace; an optional `export` followed by whitespace; the key exactly; then
+# optional whitespace and an `=` or a `:`. A comment line cannot match, because a
+# `#` before the key fails the anchor, and a longer name sharing the prefix
+# (`KEY_EXTRA=`) cannot either, because only whitespace may sit between the key
+# and its separator.
+#
+# CAPTURE GROUPS ARE FIXED so a `sed -E` caller can append its own value group:
+# group 1 is the `export` prefix, group 2 is the key that matched, and a caller's
+# first group after the pattern is `\3`. The keys are literal environment-variable
+# names from this script ([A-Za-z_][A-Za-z0-9_]*); none of them holds a regex or
+# `sed` delimiter character, and a name that did would be refused below rather
+# than silently matching something else.
+env_assignment_pattern() {
+  local alternation=""
+  local key
+
+  for key in "$@"; do
+    case "$key" in
+      '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*)
+        echo "env_assignment_pattern: not a plain variable name: $(printable_deploy_value "$key")" >&2
+        return 1
+        ;;
+    esac
+    alternation="${alternation:+$alternation|}$key"
+  done
+  if [ -z "$alternation" ]; then
+    echo "env_assignment_pattern: needs at least one key" >&2
+    return 1
+  fi
+
+  printf '^[[:space:]]*(export[[:space:]]+)?(%s)[[:space:]]*[=:]' "$alternation"
+}
+
+# The #3034 check's pattern for one key: the shared grammar above, for exactly
+# that key. Deliberately scoped to the role check rather than by changing
+# `get_env_file_value`, which every other `require_*_env_key` shares and which is
+# not this issue to change.
 environment_role_env_pattern() {
-  printf '^[[:space:]]*(export[[:space:]]+)?%s[[:space:]]*=' "$1"
+  env_assignment_pattern "$1"
 }
 
 # How many lines in .env assign this key.
@@ -1020,8 +1064,12 @@ environment_role_env_pattern() {
 # abort inside the assignment, so the status is discarded and the count kept.
 count_environment_role_env_assignments() {
   local key="$1"
+  local pattern
 
-  grep -cE "$(environment_role_env_pattern "$key")" .env || true
+  # Built first and checked, so a refused key aborts rather than handing `grep`
+  # an empty pattern, which matches every line.
+  pattern="$(environment_role_env_pattern "$key")" || return 1
+  grep -cE "$pattern" .env || true
 }
 
 # The value Compose would resolve for this key.
@@ -1032,7 +1080,7 @@ count_environment_role_env_assignments() {
 # disagreeing with them, which is the safer default of the two.
 #
 # It then undoes what Compose undoes: an `export ` prefix, whitespace around the
-# `=`, an inline comment (the same `[[:space:]]+#` rule `get_env_file_value`
+# `=` or `:`, an inline comment (the same `[[:space:]]+#` rule `get_env_file_value`
 # applies for every other key), and ONE layer of matching surrounding quotes.
 # Those last three are why `APP_ENVIRONMENT_ROLE = production`,
 # `export APP_ENVIRONMENT_ROLE=production` and `APP_ENVIRONMENT_ROLE="production"`
@@ -1047,12 +1095,14 @@ count_environment_role_env_assignments() {
 # names the sanitized value it read.
 environment_role_env_value() {
   local key="$1"
+  local pattern
   local value
   local first
   local last
 
+  pattern="$(environment_role_env_pattern "$key")" || return 1
   value="$(
-    sed -nE "s/$(environment_role_env_pattern "$key")[[:space:]]*(.*)$/\2/p" .env |
+    sed -nE "s/${pattern}[[:space:]]*(.*)$/\3/p" .env |
       tail -n 1
   )"
   value="$(printf '%s' "$value" | sed -E 's/[[:space:]]+#.*$//')"

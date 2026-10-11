@@ -9,6 +9,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { bashFixturePath, bashGateArgs } from "@/lib/__tests__/helpers/bash-fixture-path";
 import { readRepoFile } from "@/lib/__tests__/helpers/compose";
+import { DEPLOY_SCRIPT, shellFunctionSource } from "@/lib/__tests__/helpers/deploy-script";
 
 /**
  * The in-container reads `verify_internal_health` makes, RUN rather than
@@ -42,18 +43,14 @@ import { readRepoFile } from "@/lib/__tests__/helpers/compose";
  * so it has no import edge to it (`docs/TESTING.md`).
  */
 
-const SCRIPT = readRepoFile("scripts/run-production-blue-green-deploy.sh");
+const SCRIPT = readRepoFile(DEPLOY_SCRIPT);
 const SECRET = "test-cron-secret-not-real";
 const RUN_TIMEOUT_MS = 30_000;
 const READINESS = "/api/health/ready";
 const RUNTIME_STATUS = "/api/deploy/runtime-status";
 
 function functionSource(name: string): string {
-  const start = SCRIPT.indexOf(`\n${name}() {`);
-  expect(start, `${name} must be defined in the deploy script`).toBeGreaterThan(0);
-  const end = SCRIPT.indexOf("\n}\n", start);
-  expect(end, `${name} must have a closing brace`).toBeGreaterThan(start);
-  return SCRIPT.slice(start + 1, end + 3);
+  return shellFunctionSource(SCRIPT, name);
 }
 
 function assignment(name: string): string {
