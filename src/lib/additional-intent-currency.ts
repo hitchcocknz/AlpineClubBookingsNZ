@@ -6,6 +6,7 @@ import type Stripe from "stripe";
 import type { AdditionalAsk } from "@/lib/additional-payment-ask";
 import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
 import type { ClubFormat } from "@/lib/club-format";
+import logger from "@/lib/logger";
 import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
 import {
@@ -110,10 +111,20 @@ export async function reissueAdditionalIntentInClubCurrency({
   });
   // #3954 round 8: the same ask, so the same provenance. Read off the stale
   // row - which the supersede below retires - before the new row is written.
-  const stale = await prisma.paymentTransaction.findUnique({
-    where: { stripePaymentIntentId: staleIntentId },
-    select: { hadIssuedXeroInvoice: true, bookingModificationId: true },
-  });
+  // Best-effort: a failed read leaves both unrecorded, which a later
+  // reduction reads as unsure (reported for a person), never as a guess.
+  let stale: { hadIssuedXeroInvoice: boolean | null; bookingModificationId: string | null } | null = null;
+  try {
+    stale = await prisma.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: staleIntentId },
+      select: { hadIssuedXeroInvoice: true, bookingModificationId: true },
+    });
+  } catch (err) {
+    logger.warn(
+      { err, bookingId, staleIntentId },
+      "Could not read a stale additional ask's provenance for its currency re-issue (#3954); the re-issue records none",
+    );
+  }
   await upsertPaymentIntentTransaction({
     paymentId,
     kind: PaymentTransactionKind.ADDITIONAL,

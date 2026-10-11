@@ -186,6 +186,25 @@ describe("reissueAdditionalIntentInClubCurrency", () => {
     );
   });
 
+  it("a provenance read that fails still re-issues the ask, recording none (#3954 round 8)", async () => {
+    mocks.staleRowRead.mockRejectedValue(new Error("database is down"));
+
+    const pi = await reissueAdditionalIntentInClubCurrency({
+      format: CLUB_FORMAT_TEST_OTHER,
+      bookingId: "bk1",
+      paymentId: "p1",
+      staleIntentId: "pi_nzd",
+      ask,
+      reason: null,
+      customerId: "cus_1",
+    });
+
+    expect(pi.id).toBe("pi_chf");
+    const written = mocks.upsertPaymentIntentTransaction.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written).not.toHaveProperty("hadIssuedXeroInvoice");
+    expect(written).not.toHaveProperty("bookingModificationId");
+  });
+
   it("cancels the stale ask it replaces, durably first and then at once (#3341: the supersede runs for real)", async () => {
     mocks.supersedeRead.mockResolvedValue([
       { id: "tx_nzd", stripePaymentIntentId: "pi_nzd", amountCents: 4500 },
