@@ -72,7 +72,7 @@ export async function linkedChangeInvoiceRetryRefusal(
 }
 
 /** The 409's words: the close's share is never recorded by hand, the card refunds always are. */
-export function linkedChangeInvoiceRetryRefusalMessage(
+function linkedChangeInvoiceRetryRefusalMessage(
   { closeCents, cardByHandCents }: { closeCents: number | null; cardByHandCents: number },
   format: ClubFormat,
 ): string {
