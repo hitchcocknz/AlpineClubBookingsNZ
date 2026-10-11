@@ -192,6 +192,13 @@ describe("POST /api/bookings/[id]/change-requests/quote (#4030)", () => {
     expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
   });
 
+  it("answers a deleted booking exactly as a missing one (INV-ADDPAY-031)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking(), deletedAt: new Date("2026-06-01T00:00:00.000Z") });
+    const response = await post({ addGuests: [child("Ari")] });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Booking not found" });
+  });
+
   it("refuses nights outside the stay", async () => {
     const response = await post({ addGuests: [child("Ari", { stayStart: "2026-06-29" })] });
     expect(response.status).toBe(400);

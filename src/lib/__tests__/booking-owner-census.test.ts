@@ -467,8 +467,9 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/arrival-time/route.ts:298",
   "src/app/api/bookings/[id]/arrival-time/route.ts:367",
   "src/app/api/bookings/[id]/cancel-preview/route.ts:75",
-  "src/app/api/bookings/[id]/change-requests/route.ts:214",
-  "src/app/api/bookings/[id]/change-requests/route.ts:542",
+  "src/app/api/bookings/[id]/change-requests/quote/route.ts:68",
+  "src/app/api/bookings/[id]/change-requests/route.ts:183",
+  "src/app/api/bookings/[id]/change-requests/route.ts:527",
   "src/app/api/bookings/[id]/confirm-draft/route.ts:175",
   "src/app/api/bookings/[id]/confirm-draft/route.ts:96",
   "src/app/api/bookings/[id]/confirm-modification-payment/route.ts:70",
@@ -782,7 +783,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // out of the route file to keep it in budget. Verified by hand: it is passed
   // as `include` to `bookingChangeRequest.findUnique`, and `organisation` sits
   // under its `booking` relation, which declares it.
-  "src/lib/booking-change-request-admin-decision.ts:79",
+  "src/lib/booking-change-request-admin-decision.ts:83",
   "src/lib/cron-additional-payment-reminders.ts:437",
   "src/lib/cron-confirm-pending.ts:208",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",

@@ -2,7 +2,7 @@ import type { AgeTier } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
-import { parseDateOnly } from "@/lib/date-only";
+import { dateOnlyInstantOf, requireCalendarDate } from "@/lib/club-time";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
 import { calculateBookingPrice, getStayNights, type GuestInput } from "@/lib/pricing";
 import { loadActiveSeasonRates } from "@/lib/booking-modify-plan";
@@ -45,6 +45,11 @@ import type {
 
 export const CHANGE_REQUEST_ESTIMATE_NO_RATE_MESSAGE =
   "These nights can't be priced at the moment (no active season covers them). You can still send the request; the booking officer confirms the price when they approve it.";
+
+/** A request's `yyyy-MM-dd` night bound as the pricing engine's date-only value. */
+function dateOnlyOf(value: string): Date {
+  return dateOnlyInstantOf(requireCalendarDate(value));
+}
 
 interface EstimateBooking {
   checkIn: Date;
@@ -107,8 +112,8 @@ export async function estimateChangeRequestAddedGuests(
       ageTier: guest.ageTier as AgeTier,
       isMember: false,
       memberId: null,
-      stayStart: guest.stayStart ? parseDateOnly(guest.stayStart) : checkIn,
-      stayEnd: guest.stayEnd ? parseDateOnly(guest.stayEnd) : checkOut,
+      stayStart: guest.stayStart ? dateOnlyOf(guest.stayStart) : checkIn,
+      stayEnd: guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut,
     })),
   });
   let priced;
@@ -129,8 +134,8 @@ export async function estimateChangeRequestAddedGuests(
   const guests = addGuests.map((guest, index) => {
     const row = byIndex.get(index);
     if (row) return { priceCents: row.priceCents, nights: row.nights };
-    const start = guest.stayStart ? parseDateOnly(guest.stayStart) : checkIn;
-    const end = guest.stayEnd ? parseDateOnly(guest.stayEnd) : checkOut;
+    const start = guest.stayStart ? dateOnlyOf(guest.stayStart) : checkIn;
+    const end = guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut;
     return { priceCents: null, nights: getStayNights(start, end).length };
   });
   return {

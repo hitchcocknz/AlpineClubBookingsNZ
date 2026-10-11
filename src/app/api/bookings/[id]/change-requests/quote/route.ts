@@ -7,7 +7,6 @@ import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
-import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import {
   addedGuestNightsRefusal,
   changeRequestAddGuestSchema,
@@ -61,15 +60,13 @@ export async function POST(
       },
     },
   });
-  if (!booking) {
+  // A deleted booking answers exactly as a missing one does (`INV-ADDPAY-031`):
+  // there is nothing to estimate against, and no reason to say why.
+  if (!booking || booking.deletedAt) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
   if (bookingOwner(booking).memberId !== session.user.id && !isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-  // After the 403, as on the request's own GET (`INV-ADDPAY-034`).
-  if (booking.deletedAt) {
-    return deletedBookingRefusalResponse();
   }
 
   let body: unknown;
