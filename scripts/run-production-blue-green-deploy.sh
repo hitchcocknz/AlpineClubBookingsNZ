@@ -1000,10 +1000,14 @@ trim_whitespace() {
 #
 #   env_assignment_pattern KEY [KEY...]
 #
-# FILE SCOPE, AND THE ONE SPELLING OF THIS GRAMMAR. Every reader in this script
-# that must agree with Compose about whether a line assigns a key builds its
-# pattern here, and so can a downstream fork's own deploy guard rather than
-# carrying a copy pinned equal by a test of its own.
+# THE ONE SPELLING OF THIS GRAMMAR. Every reader in this script that must agree
+# with Compose about whether a line assigns a key builds its pattern here. It is
+# a top-level function of the inner deploy, not of the file, and sourcing this
+# script starts the production wrapper, so nothing outside can CALL it. A
+# downstream fork's own deploy guard instead lifts the definition out of this
+# file, the way the contract tests do (`shellFunctionSource` in
+# src/lib/__tests__/helpers/deploy-script.ts), rather than keeping a hand-made
+# copy pinned equal by a test of its own.
 #
 # THE SHAPE WAS THE FINDING, twice. The first version of the #3034 check counted
 # with `awk -F=` and `$1 == key`, which needs the key to be the WHOLE first
