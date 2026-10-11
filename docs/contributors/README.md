@@ -117,6 +117,9 @@ method, scope and finish line for each.
 - [`../audits/FRAGILITY_AREAS_PROPOSAL.md`](../audits/FRAGILITY_AREAS_PROPOSAL.md)
   — the proposed business areas for the "bugs that came back" review, with
   raw repeat counts per area and how far to trust each signal.
+- [`../audits/FRAGILITY_RANKING_2026-10.md`](../audits/FRAGILITY_RANKING_2026-10.md)
+  — those areas ranked by hand-confirmed repeats, each with its chains of
+  fixes and the signal that found them; Phase 1 sweeps start at the top.
 
 ## Security
 

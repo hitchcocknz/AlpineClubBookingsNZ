@@ -5,8 +5,8 @@ Audience: Maintainer
 This is the first half of Goal 1's first move ([GOALS.md](../GOALS.md#first-move-find-where-bugs-come-back)):
 a list of business areas, with raw counts of "bugs that came back" per area.
 **Nothing here is ranked.** The maintainer confirmed the 15-area list as is on
-9 Oct 2026; the ranking, with each area's evidence pairs, follows in a
-separate task (ALP-7).
+9 Oct 2026; the ranking, with each area's evidence pairs, is
+[FRAGILITY_RANKING_2026-10.md](FRAGILITY_RANKING_2026-10.md).
 
 ## Owner decisions
 
@@ -21,8 +21,8 @@ there.
    as is means no 16th area.
 3. **Lookback.** Counts cover the full history; the "since 8 Aug" column
    counts only pairs whose later fix landed after the 8 Aug audit
-   (epics #2680, #2725). Open: rank on full history, the post-audit
-   window, or both side by side. ALP-7 needs this answer.
+   (epics #2680, #2725). Answered in ALP-7's brief: rank on full history,
+   with the since-8-Aug count beside each area.
 
 | # | Area | What it covers |
 | --: | --- | --- |

@@ -117,6 +117,15 @@ export function rankAreas(candidates, verdicts, areas = AREAS) {
   return rows.sort((a, b) => b.confirmed.length - a.confirmed.length || b.sinceAudit - a.sinceAudit || a.index - b.index);
 }
 
+/**
+ * Fill a side's missing title from GitHub: fix units take PR titles from merge
+ * commits, and some merge commits carry none.
+ */
+export function withTitles(entry, titleByNumber) {
+  const fill = (side) => (side.title ? side : { ...side, title: titleByNumber.get(side.pr ?? side.issue) ?? side.title });
+  return { ...entry, earlier: fill(entry.earlier), later: fill(entry.later) };
+}
+
 /** `[PR #12](…) fix title (2026-05-02)`, or the commit or issue the side is. */
 export function describeSide(side) {
   const date = side.date.slice(0, 10);
@@ -225,12 +234,17 @@ function option(name, fallback) {
 
 function screened() {
   const { repeats } = readJson(path.join(OUT_DIR, "repeats.json"));
-  return { total: repeats.length, candidates: repeats.map(screenCandidate).filter(Boolean) };
+  const github = readJson(path.join(OUT_DIR, "github.json"));
+  const titleByNumber = new Map(github.issues.filter((issue) => issue.title).map((issue) => [issue.number, issue.title]));
+  const candidates = repeats
+    .map(screenCandidate)
+    .filter(Boolean)
+    .map((entry) => withTitles(entry, titleByNumber));
+  return { total: repeats.length, candidates, github };
 }
 
 function writeCandidates() {
-  const { total, candidates } = screened();
-  const github = readJson(path.join(OUT_DIR, "github.json"));
+  const { total, candidates, github } = screened();
   const labelsByNumber = new Map(github.issues.map((issue) => [issue.number, issue.labels]));
   const out = candidates.map((entry) => ({
     key: pairKey(entry.earlier.key, entry.later.key),

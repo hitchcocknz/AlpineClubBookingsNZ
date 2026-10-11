@@ -38,8 +38,10 @@ Before sweeping, rank the business areas by bugs that came back — fixed, then
 re-broken or re-fixed (ALP-4). The review proposes the list of areas, the
 maintainer confirms it, and each area shows its evidence (the issues and fixes
 that make it "hot"). Every sweep below then starts with the hottest areas.
-The proposed list, awaiting confirmation, is
-[audits/FRAGILITY_AREAS_PROPOSAL.md](audits/FRAGILITY_AREAS_PROPOSAL.md).
+The confirmed list is
+[audits/FRAGILITY_AREAS_PROPOSAL.md](audits/FRAGILITY_AREAS_PROPOSAL.md); the
+ranking, with each area's evidence, is
+[audits/FRAGILITY_RANKING_2026-10.md](audits/FRAGILITY_RANKING_2026-10.md).
 
 ### The seven sweeps
 

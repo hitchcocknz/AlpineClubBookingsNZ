@@ -18,7 +18,7 @@ import {
   revertedCommit,
 } from "./fragility-lib.mjs";
 import { areasForPair } from "./fragility-areas.mjs";
-import { chainsOf, rankAreas, renderRanking, replaceGenerated, screenCandidate, validateVerdicts } from "./fragility-rank.mjs";
+import { chainsOf, describeSide, rankAreas, renderRanking, replaceGenerated, screenCandidate, validateVerdicts, withTitles } from "./fragility-rank.mjs";
 import { buildRepeats } from "./fragility-signals.mjs";
 
 /**
@@ -380,6 +380,15 @@ describe("ranking by confirmed repeats", () => {
     expect(() => validateVerdicts({ "a->b": { verdict: "confirmed", area: "dates", reason: "x" } })).toThrow(/area/);
     expect(() => validateVerdicts({ "a->b": { verdict: "maybe", reason: "x" } })).toThrow(/verdict/);
     expect(() => validateVerdicts({ "a->b": confirmed("email") })).not.toThrow();
+  });
+
+  it("fills a side's missing title from GitHub, keeping one it already has", () => {
+    const entry = pair("05-01", "06-01");
+    entry.earlier = { ...entry.earlier, title: "", pr: 12 };
+    entry.later = { ...entry.later, issue: 40 };
+    const filled = withTitles(entry, new Map([[12, "fix(xero): retry the outbox"], [40, "Outbox stuck again"]]));
+    expect(describeSide(filled.earlier)).toContain("fix(xero): retry the outbox");
+    expect(filled.later.title).toBe("06-01");
   });
 
   it("rewrites only the generated block of the ranking doc", () => {
