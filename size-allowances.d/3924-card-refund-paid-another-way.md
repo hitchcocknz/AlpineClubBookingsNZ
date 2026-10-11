@@ -12,7 +12,7 @@ the repair classifier needs no allowance: since round 13 it is shorter than on
 close reaches.
 
 file: src/lib/payment-transactions.ts
-lines: 1579
+lines: 1588
 reason: `applyLocalRefundAllocation` takes the charges to place a by-hand
   refund on first (`preferTransactionIds`), so a dead card refund closed as
   paid another way lands on the charges it was meant to come off - a superseded
@@ -26,7 +26,7 @@ reason: `applyLocalRefundAllocation` takes the charges to place a by-hand
   functions that raise them.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3344
+lines: 3320
 reason: round 4 (M3): `enqueueXeroRefundCreditNoteOperation` takes the record
   of a paid-another-way close as a key part (`paidAnotherWayTaskId`), so the
   close's bank-transfer note is a row of its own beside any card delta and is
