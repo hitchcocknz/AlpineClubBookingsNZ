@@ -375,6 +375,8 @@ export const ADDITIONAL_OWED_AMOUNT_CENTS = 21_000;
 export const CHANGE_REQUEST_FINISHED_BOOKING_ID = "e2e-change-request-finished";
 export const CHANGE_REQUEST_FREE_TEXT_ID = "e2e-change-request-free-text";
 export const CHANGE_REQUEST_FINISHED_WINDOW = relWindow(-60, 2);
+// The stay's owner (the demo seed's Heidi Hill), who is emailed the change.
+export const CHANGE_REQUEST_OWNER_EMAIL = demoEmail("heidi");
 
 // --- Membership application fixture (e2e/membership-application.spec.ts) --
 // A PENDING_NOMINATORS application whose two nomination tokens have KNOWN raw
