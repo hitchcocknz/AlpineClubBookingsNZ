@@ -7502,13 +7502,19 @@ describe("#3954: a reduction set against an unpaid ask", () => {
   });
 
   it("MUTATION (round 8, F2): a re-issue a later reduction retired in turn is not reported unsure twice - the later reduction carried it", async () => {
-    const booking = reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], reissuedAskInvoiceUnsureCents: 3000 });
-    booking.modifications.push({
-      ...booking.modifications[1]!,
-      id: "mod_reduction_later",
-      priceDiffCents: -1000,
-      newData: { unpaidAskOffsetCents: 1000, unpaidAskRetiredModificationIds: ["mod_reduction"] },
-      createdAt: new Date("2026-05-04T00:00:00Z"),
+    const booking = makeBooking({
+      modifications: [
+        ...reducedAfterUnpaidAsk(-2000, 2000, { unpaidAskRetiredModificationIds: ["mod_increase"], reissuedAskInvoiceUnsureCents: 3000 }).modifications,
+        {
+          id: "mod_reduction_later",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents: -1000,
+          changeFeeCents: 0,
+          newData: { unpaidAskOffsetCents: 1000, unpaidAskRetiredModificationIds: ["mod_reduction"] },
+          createdAt: new Date("2026-05-04T00:00:00Z"),
+        },
+      ],
     });
     const deps = createDependencies({ bookings: [booking], operations: [makePrimaryInvoiceCreateOperation()] });
 
