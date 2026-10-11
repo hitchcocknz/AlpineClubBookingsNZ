@@ -541,6 +541,23 @@ lists every one; these are in that class:
 - `20261101020000_add_pending_school_adult_capacity` (#3413) — additive DDL,
   but old capacity readers cannot see its new per-night reservation relation.
   Its server-side write gate stays disabled until the drained window completes.
+- `20261112010000_other_lodge_beds_and_facilities`
+  (triyder/AlpineClubBookingsNZ#50, Alpine Central Server API 2.1) — one
+  `CREATE TYPE` and one `ALTER TABLE "OtherLodge"` that adds six columns
+  (catalogue-only, no row rewritten) and **drops `bookingPath`**. That column
+  was added by `20261006020000_add_other_lodge_details_and_amenities`, which
+  ships in the same release, so the colour draining at cutover never names it.
+  It is windowed because a build carrying `20261006020000` without this
+  migration names the column on every other-lodge read and would fail. The
+  drop is a breaking statement, so the window also needs
+  `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and an override reason naming it.
+  `OtherLodge` is a small admin registry, so its `ACCESS EXCLUSIVE` lock is
+  brief. **Rollback:** its `rollback.sql` restores `bookingPath` as an empty
+  `VARCHAR(300)` on every row (the old text cannot come back; a 2.0 central
+  server refills it on the next download) and removes the six new columns and
+  the `OtherLodgeRoomType` type, losing what a 2.1 server sent. It is not
+  idempotent, and rolling forward afterwards means re-applying `migration.sql`
+  by hand, because `_prisma_migrations` still records it as applied.
 
 **If several are pending, they share ONE window.** `prisma migrate deploy` applies
 them in the same command — you do not stop and start the application repeatedly. Work
@@ -560,19 +577,26 @@ validator, deploy the new runtime, check canonical capacity readers, and set
 the migration override is not a write permission.
 
 The application reads both from its container environment. `docker-compose.yml`
-passes both through its `x-app-environment` block, empty by default (#3964). The
-only supported way to apply or remove either value is to edit the source
+passes both through its `x-app-environment` block, empty by default (#3964). To
+apply or remove either value **for the application**, edit the source
 repository's `.env`, then re-run `scripts/run-production-blue-green-deploy.sh` for
-the commit already deployed. Do not recreate containers by hand: the deploy copies
-`.env` into its workspace, pins `APP_IMAGE` and chooses the colour, and a hand-run
-`docker compose up` does none of that.
+the commit already deployed. The deploy makes `.env` the only source the
+containers read, although Compose would otherwise prefer a value exported in the
+shell (#4027): it refuses a `PENDING_SCHOOL_ADULTS_ENABLED` exported in its shell
+that differs from `.env`, and it never passes its shell's
+`BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED` to any container. Do not recreate
+containers by hand: the deploy copies `.env` into its workspace, pins `APP_IMAGE`
+and chooses the colour, and a hand-run `docker compose up` does none of that —
+and it would let a shell export override `.env` again.
 
-`BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED` therefore has two separate meanings.
-Its `.env` copy is the application's lasting acknowledgement that no pre-#3413
-runtime remains; pending-adult cleanup needs it as well as admissions. That copy
-never satisfies the migration validator, which reads only the deploy shell's own
-environment, so every windowed migration still needs the value set in the shell
-that runs the deploy, exactly as above.
+`BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED` therefore has two separate meanings,
+and each copy serves only one. Its `.env` copy is the application's lasting
+acknowledgement that no pre-#3413 runtime remains; pending-adult cleanup needs it
+as well as admissions. That copy never satisfies the migration validator, which
+reads only the deploy shell's own environment, so every windowed migration still
+needs the value set in the shell that runs the deploy, exactly as above. The
+shell copy, in turn, never reaches the containers (#4027), so exporting it for a
+window cannot open the gate.
 
 To roll back after activation, first disable `PENDING_SCHOOL_ADULTS_ENABLED`
 (one deploy, as above),
@@ -588,7 +612,9 @@ Do not restart old code before that proof. It would accept new capacity using an
 occupancy calculation that cannot see held unnamed adults.
 
 **Reverse every pending windowed migration in application order.** Stop all new
-app/worker processes first. If #3271 is present, run its `rollback.sql` before any
+app/worker processes first. If `20261112010000` (other lodges, API 2.1) is
+present, its `rollback.sql` runs first: it is the newest, and it touches only
+`OtherLodge`. If #3271 is present, run its `rollback.sql` before any
 older reverse and verify the pair table, functions, and triggers are gone while
 both source relationship tables are unchanged. A window containing #2739 next
 uses `20260810010000`'s `rollback.sql`, which changes no data: keep its night
