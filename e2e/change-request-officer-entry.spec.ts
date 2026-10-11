@@ -141,10 +141,14 @@ test("an officer enters the guests a free-text request described, checks the fig
   await expect(content.getByRole("heading", { name: "Booking Details" })).toBeVisible();
   for (const guest of GUESTS) {
     // Exact, so the request's own summary line ("add Ari Grandchild, …") is
-    // not what satisfies it: this is the guest row.
+    // not what satisfies it: this is the guest row. Visible-filtered, because
+    // the booking route streams (flake invariant 2): for a beat the row exists
+    // twice, once in a hidden template.
     await expect(
-      content.getByText(`${guest.firstName} ${guest.lastName}`, { exact: true }),
-    ).toBeVisible();
+      content
+        .getByText(`${guest.firstName} ${guest.lastName}`, { exact: true })
+        .filter({ visible: true }),
+    ).toHaveCount(1);
   }
   const modification = content
     .getByText("Booking Modified", { exact: true })
@@ -152,7 +156,9 @@ test("an officer enters the guests a free-text request described, checks the fig
   await expect(modification).toHaveCount(1);
   if (amountAsked) {
     // The payment due: exactly the figure the officer was shown before approving.
-    await expect(content.getByText(`+${amountAsked}`, { exact: true })).toBeVisible();
+    await expect(
+      content.getByText(`+${amountAsked}`, { exact: true }).filter({ visible: true }),
+    ).toHaveCount(1);
   }
 
   // The member is told through the usual change email (the internet-banking
