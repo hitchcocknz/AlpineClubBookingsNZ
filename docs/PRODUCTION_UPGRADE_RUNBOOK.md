@@ -582,7 +582,8 @@ Then, in order:
    deploy, for the migration validator, and deploy the new runtime as the
    window describes. That shell value tells the validator, for this deploy
    only, that the old app is stopped. It never reaches the application (#4027),
-   so it does not open the gate.
+   so it does not open the gate; while `.env` lacks the value, step 3 of 20
+   prints a note saying so.
 2. Check the canonical capacity readers on the new runtime.
 3. Switch the gate on: add **both** `PENDING_SCHOOL_ADULTS_ENABLED=1` and
    `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` to the source repository's `.env`,
