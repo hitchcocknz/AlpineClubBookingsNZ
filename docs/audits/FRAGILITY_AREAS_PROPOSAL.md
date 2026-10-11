@@ -1,28 +1,35 @@
 # Fragility review: business areas
 
-Audience: Maintainer
+Audience: Developer, Agent
 
 This is the first half of Goal 1's first move ([GOALS.md](../GOALS.md#first-move-find-where-bugs-come-back)):
 a list of business areas, with raw counts of "bugs that came back" per area.
-**Nothing here is ranked.** The maintainer confirmed the 15-area list as is on
-9 Oct 2026; the ranking, with each area's evidence pairs, follows in a
+**Nothing here is ranked.** The 15-area list is confirmed by the owner
+([recorded on #4024](https://github.com/thatskiff33/AlpineClubBookingsNZ/pull/4024#issuecomment-6113045008),
+11 Oct 2026); the ranking, with each area's evidence pairs, follows in a
 separate task (ALP-7).
 
 ## Owner decisions
 
-The list below is confirmed. Its mapping rules live in `AREAS` in
+The list under "The 15 areas" is confirmed. Its mapping rules live in `AREAS` in
 `scripts/audit/fragility-areas.mjs`, so any later edit is a one-line edit
 there.
 
-1. **Area list.** Confirmed as is (9 Oct 2026).
+1. **Area list.** Confirmed as is by the owner
+   ([recorded on #4024](https://github.com/thatskiff33/AlpineClubBookingsNZ/pull/4024#issuecomment-6113045008)).
 2. **Dates and club time.** Fixes for the NZ lodge-night boundary (for
    example the lodge kiosk using the tablet's clock) currently fall into
    whichever area the code sits in. Left spread: confirming the 15 areas
    as is means no 16th area.
-3. **Lookback.** Counts cover the full history; the "since 8 Aug" column
-   counts only pairs whose later fix landed after the 8 Aug audit
-   (epics #2680, #2725). Open: rank on full history, the post-audit
-   window, or both side by side. ALP-7 needs this answer.
+
+## Open — not a gate for this PR; decided in ALP-7
+
+- **Lookback.** Counts cover the full history; the "since 8 Aug" column
+  counts only pairs whose later fix landed after the 8 Aug audit
+  (epics #2680, #2725). Still open: rank on full history, the post-audit
+  window, or both side by side. ALP-7 settles this before it ranks.
+
+## The 15 areas
 
 | # | Area | What it covers |
 | --: | --- | --- |
@@ -70,6 +77,20 @@ more than one area: a mapped pair sits in 2.3 areas on average (median 2).
 of the 59 unmapped pairs are mentions whose later side is an epic or tracking
 issue with no files of its own.
 
+**Known artefacts in these counts.** A fix unit's scopes are the union of
+every `fix(<scope>)` subject in its PR, so a wide PR puts each of its pairs
+in every area those scopes name. The one revert shows it plainly: it undoes
+a single `fix(bookings)` commit, but its PR (#2618, branch
+`fix/issue-2597-hosting-queue-merge`) carries fix scopes for eight areas,
+so the run above counted it in all eight. The mapper has since been
+corrected for reverts (a revert pair now carries the reverted commit's own
+scope and files, which puts this one in booking creation only), and also
+folds plural scopes
+(`fix(beds)`, `fix(public-pages)`), matches only whole-word `lock` files to
+concurrency, and lets the test-infrastructure area see test files. The
+table is from the run before those corrections; the next run's counts will
+differ. Pairs from other signals still inherit their PR's full scope list.
+
 ## How much to trust each signal
 
 Spot checks on samples from this run. Read the counts with these alongside.
@@ -88,7 +109,10 @@ areas.
 
 ## How this was collected
 
-Run against `main` at `e45e41bb5` on 9 Oct 2026, over the full history:
+Run against `main` at `e45e41bb5` on 9 Oct 2026, over the full history.
+The collector now reads `origin/main` by default rather than the local
+`main` branch (fetch first); `--ref <rev>` analyses another revision, for
+example `--ref e45e41bb5` to reproduce this run:
 
 ```
 pnpm run audit:fragility:collect
@@ -102,14 +126,20 @@ pair behind each count, with the rule that mapped it.
 No `GITHUB_TOKEN` reaches Sekreton task containers, so the collector read
 every issue (#1–#4022, 4,018 issues and PRs, 4,373 comments) through
 Sekreton's integrations endpoint instead of the GitHub API. That source has
-gaps, recorded in `github.json`:
+gaps, which the collector records in `github.json` under `gaps`:
 
 - PR bodies and PR comments are not readable, so mentions and `Fixes #N` in
   PR text are missed; PR titles come from merge commits.
 - `reopened` events are not readable, so that signal is empty.
 - Issue creation times are estimated: the earlier of the first comment and the
   next-numbered PR's merge.
-- Four numbers (#964, #3594, #3613, #3749) are deleted or transferred.
+- Comments by authors outside the project's trusted roles are left out.
+- Numbers it could not read, and numbers it gave up on after ten rate-limit
+  waits, are listed by number. The run above predates that entry; it found
+  four unreadable numbers (#964, #3594, #3613, #3749), deleted or
+  transferred.
 
-A run with a token (`GITHUB_TOKEN=… pnpm run audit:fragility:collect`) fills
-the first three gaps; nothing else changes.
+A run with a token (`GITHUB_TOKEN=… pnpm run audit:fragility:collect`) reads
+the GitHub REST API instead, which has none of the first four gaps (deleted
+or transferred numbers stay absent). It sees more text, so its counts will
+differ from the table above.
