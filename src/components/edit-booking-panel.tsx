@@ -64,10 +64,7 @@ import {
   exceptionProposalSignature,
   exceptionRequestPayloadFromModification,
 } from "@/components/edit-booking/exception-request-payload";
-import {
-  eachNightKey,
-  shiftDateKey,
-} from "@/components/edit-booking/stay-nights";
+import { eachNightKey, shiftDateKey } from "@/components/edit-booking/stay-nights";
 import type {
   BookingData,
   FamilyMember,
@@ -1577,14 +1574,9 @@ export function EditBookingPanel({
 
     try {
       const body = buildModificationPayload();
-      // #4030: the guests named on the request card, beside any the editor adds.
-      // A request with no structured change is refused by the server, so the
-      // old effective-date-only body is no longer sent.
+      // #4030: the card's guests join the editor's; a note alone is refused.
       if (cardAddGuests.length > 0) {
-        body.addGuests = [
-          ...((body.addGuests as unknown[] | undefined) ?? []),
-          ...cardAddGuests,
-        ];
+        body.addGuests = [...((body.addGuests as unknown[] | undefined) ?? []), ...cardAddGuests];
       }
 
       const res = await fetch(`/api/bookings/${booking.id}/change-requests`, {
@@ -1887,18 +1879,7 @@ export function EditBookingPanel({
           error={requestError}
           success={requestSuccess}
           hasEditorChanges={hasChanges}
-          guestContext={{
-            bookingId: booking.id,
-            stay: { checkIn: booking.checkIn, checkOut: booking.checkOut },
-            ageTierOptions,
-            existingMemberIds: booking.guests.flatMap((guest) =>
-              guest.memberId ? [guest.memberId] : [],
-            ),
-            familyMembers,
-            memberFind: booking.memberGuest?.enabled
-              ? { openSearchEnabled: booking.memberGuest.openSearchEnabled }
-              : null,
-          }}
+          guestContext={{ booking, ageTierOptions, familyMembers }}
           onReasonChange={setRequestReason}
           onSubmit={handleSubmitChangeRequest}
         />

@@ -33,15 +33,18 @@ function renderCard(overrides: Partial<Parameters<typeof ChangeRequestCard>[0]> 
     success: "",
     hasEditorChanges: false,
     guestContext: {
-      bookingId: "bk-1",
-      stay: { checkIn: "2026-06-30", checkOut: "2026-07-03" },
+      booking: {
+        id: "bk-1",
+        checkIn: "2026-06-30",
+        checkOut: "2026-07-03",
+        guests: [{ memberId: "m-1" }] as never,
+        memberGuest: undefined,
+      },
       ageTierOptions: AGE_TIERS,
-      existingMemberIds: ["m-1"],
       familyMembers: [
         { id: "m-1", firstName: "Ada", lastName: "Owner", ageTier: "ADULT", relationship: "self" },
         { id: "m-2", firstName: "Kit", lastName: "Owner", ageTier: "CHILD", relationship: "dependent" },
       ],
-      memberFind: null,
     },
     onReasonChange: vi.fn(),
     onSubmit,

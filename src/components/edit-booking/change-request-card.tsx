@@ -12,7 +12,7 @@ import {
 } from "@/components/booking/change-request-guest-entry";
 import { MEMBER_GUEST_FIND_ENDPOINTS } from "@/components/book/member-guest-find-panel";
 import { useClubFormat } from "@/components/club-format-provider";
-import type { FamilyMember, NewGuest } from "@/components/edit-booking/types";
+import type { BookingData, FamilyMember, NewGuest } from "@/components/edit-booking/types";
 import type { AgeTierOption } from "@/lib/use-age-tier-options";
 import type {
   ChangeRequestAddGuest,
@@ -37,13 +37,10 @@ import { formatCents } from "@/lib/utils";
  * note stays as context. The server refuses a request with no structured change.
  */
 export interface ChangeRequestGuestContext {
-  bookingId: string;
-  stay: ChangeRequestStay;
+  /** The booking: its stay, who is already on it, and the member-guest finder's reach. */
+  booking: Pick<BookingData, "id" | "checkIn" | "checkOut" | "guests" | "memberGuest">;
   ageTierOptions: AgeTierOption[];
-  existingMemberIds: readonly string[];
   familyMembers: readonly FamilyMember[];
-  /** The member-guest finder's reach, when the club's module offers it. */
-  memberFind: { openSearchEnabled: boolean } | null;
 }
 
 type EstimateState = {
@@ -76,7 +73,9 @@ export function ChangeRequestCard({
   const format = useClubFormat();
   const [guests, setGuests] = useState<NewGuest[]>([]);
   const [estimateState, setEstimateState] = useState<EstimateState | null>(null);
-  const { bookingId, stay } = guestContext;
+  const { booking } = guestContext;
+  const bookingId = booking.id;
+  const stay: ChangeRequestStay = { checkIn: booking.checkIn, checkOut: booking.checkOut };
   const payload = changeRequestGuestsPayload(guests, stay);
   const payloadJson = payload.length > 0 ? JSON.stringify(payload) : null;
 
@@ -134,11 +133,14 @@ export function ChangeRequestCard({
           onChange={setGuests}
           ageTierOptions={guestContext.ageTierOptions}
           stay={stay}
-          existingMemberIds={guestContext.existingMemberIds}
+          existingMemberIds={booking.guests.flatMap((guest) => (guest.memberId ? [guest.memberId] : []))}
           familyMembers={guestContext.familyMembers}
           memberFind={
-            guestContext.memberFind
-              ? { ...guestContext.memberFind, endpoints: MEMBER_GUEST_FIND_ENDPOINTS }
+            booking.memberGuest?.enabled
+              ? {
+                  openSearchEnabled: booking.memberGuest.openSearchEnabled,
+                  endpoints: MEMBER_GUEST_FIND_ENDPOINTS,
+                }
               : null
           }
           disabled={submitting}
