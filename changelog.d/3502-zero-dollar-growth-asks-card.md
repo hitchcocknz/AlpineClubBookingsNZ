@@ -34,7 +34,8 @@
   same moment is refunded it automatically, or the change is refused with "try
   again in a moment" and nothing is changed; reminders stop for a cancelled
   request and quote the new amount for a smaller one, and the member's email
-  says when the additional payment was cancelled. A smaller request gets its
+  says when the additional payment was cancelled - and never asks for one that
+  a reduction made at the same moment had already cancelled. A smaller request gets its
   own Xero supplementary invoice, marked paid when the member pays it, so Xero
   matches what the member is asked to pay. An officer's review charge is never
   reduced this way.
