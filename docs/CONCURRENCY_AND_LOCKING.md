@@ -2995,7 +2995,23 @@ claim after its Stripe cancels, before queueing any invoice on its intent. The
 billed-offset invoice-correction note is enqueued inside the edit's
 transaction, after its locks, under the enqueue's own-key dedupe and no
 advisory key; it is raised after the edit's own note, waiting while that note
-is queued or running.
+is queued or running and - round 7 - while the edit expects one its Xero leg
+has not queued yet (recorded on the note's payload), for up to six hours, after
+which the repair pass hands it to a person. Round 7 also: the door's mint
+re-reads its new intent's row after its Stripe cancels and queues no invoice,
+and offers no client secret, when a reduction withdrew it meanwhile (a retire
+landing after that read leaves an invoice parked on a cancelled intent, which
+the stale-wait reaper retires); an increase's recovery that folded re-issues in
+is settled only by its own row, so a later ask cannot overtake that money; and
+both minters of a re-issue resolve its Stripe customer one way
+(`resolveAskCustomerId`). A deadlock mapped to the 409 is logged and kept as its
+cause. Deploy window: the previous release's recovery runner, still draining,
+can replay a re-issue's recovery this release wrote; it mints under the same key
+with its own request and no metadata stamp. If it writes its row, that intent is
+the ask and this release's mint of the key writes nothing. If it dies between
+mint and row, this release's replay meets an `idempotency_error` the metadata
+lookup cannot answer, retries, and fails for an officer, as any exhausted
+recovery does.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`

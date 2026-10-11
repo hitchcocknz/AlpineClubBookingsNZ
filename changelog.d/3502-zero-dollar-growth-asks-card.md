@@ -13,15 +13,16 @@
   waits for that card payment and records it, so the member is not billed
   twice. If the booking's first Xero invoice is only raised after the card
   payment, that invoice now includes any change fee the card already paid, so
-  the card payment and the account credit settle it exactly. No further account credit is taken for the extra.
+  the card payment and the account credit settle it exactly. No further
+  account credit is taken for the extra.
 
   Bookings that grew before this fix are not charged retrospectively. The
   read-only booking ledger census (`pnpm run payments:audit-booking-ledger`)
   lists them as owing; see the Maintenance guide before acting on one.
 
-- **A price reduction now cancels or shrinks an unpaid extra payment first
-  (#3954).** When a paid booking's price went up, the member was asked for the
-  extra by card. If the price then came back down before they paid it, the
+- **A price reduction now cancels or shrinks an unpaid additional payment
+  first (#3954).** When a paid booking's price went up, the member was asked for
+  the extra by card. If the price then came back down before they paid it, the
   reduction was refunded or credited (or kept, under the club's policy) and the
   card request stayed live, so a member who then paid it left the club holding
   more than the booking cost. Now the reduction comes off the unpaid request
@@ -33,30 +34,33 @@
   same moment is refunded it automatically, or the change is refused with "try
   again in a moment" and nothing is changed; reminders stop for a cancelled
   request and quote the new amount for a smaller one, and the member's email
-  says when the additional payment was cancelled. A smaller request gets its own Xero
-  supplementary invoice, marked paid when the member pays it, so Xero matches
-  what the member is asked to pay. An officer's review charge is never reduced
-  this way.
+  says when the additional payment was cancelled. A smaller request gets its
+  own Xero supplementary invoice, marked paid when the member pays it, so Xero
+  matches what the member is asked to pay. An officer's review charge is never
+  reduced this way.
 
-  The same holds when the card request for the increase could not be created at
-  the time and was waiting for its automatic retry: the reduction comes off it
-  first, and the retry asks only for what the booking still owes, or for nothing.
-  A change saved within two minutes of that retry starting is refused with "try
-  again in a moment", and goes through on the next save; a retry that stalled
-  longer no longer blocks it. A member-guest's decline or expiry caught in that
-  moment stays pending and is retried, instead of being parked for an officer.
+  The same holds when the card request for the increase could not be created
+  at the time and was waiting for its automatic retry: the reduction comes off
+  it first, and the retry asks only for what the booking still owes, or for
+  nothing. A change saved within two minutes of that retry starting is refused
+  with "try again in a moment", and goes through on the next save; a retry that
+  stalled longer no longer blocks it. A member-guest's decline or expiry caught
+  in that moment stays pending and is retried, instead of being parked for an
+  officer.
 
   Where the booking's Xero invoice was raised after the price went up, that
-  invoice already billed the extra the member had not yet paid. When a later
-  reduction cancels or shrinks that extra, the app now raises a credit note
-  against the invoice for exactly the part it had billed, worded as an invoice
-  correction, so Xero matches what the booking costs and the treasurer has
-  nothing to do. A booking-vs-Xero repair run checks the note is there and
-  raises it if it is missing. The app raises that note only where it can tell
-  from the booking's own records that the invoice billed the extra; where it
-  cannot, nothing is credited and the repair run lists the booking for a
+  invoice already billed the additional payment the member had not yet paid.
+  When a later reduction cancels or shrinks that additional payment, the app now
+  raises a credit note against the invoice for exactly the part it had billed,
+  worded as an invoice correction, so Xero matches what the booking costs and
+  the treasurer has nothing to do. The note is raised after the change's own
+  credit note, and a booking-vs-Xero repair run checks it is there and raises it
+  if it is missing. The app raises that note only where the booking's own
+  records show the invoice billed the additional payment; where they cannot,
+  nothing is credited or invoiced and the repair run lists the booking for a
   treasurer to check instead.
 
   A smaller request that a later price increase took into its own request keeps
   its own Xero invoice, and is asked for again if that increase's card request
-  has to be retried.
+  has to be retried, even when another change has asked the member for more in
+  the meantime.

@@ -339,10 +339,11 @@ Two consequences worth knowing before you edit one:
   change.** A refund, account credit added, account credit the booking had used
   being returned to the member (a reduction on a booking paid with credit), an
   amount still to pay, an unpaid additional payment cancelled by the change
-  (#3954) — whichever apply, already worded and with the amount in them. A refund names where it went: the member's original payment method, a
-  bank transfer the club will send, or, on a group booking the organiser paid
-  for by card, the group organiser's card.
-  Keep it on a line of its own, with no `$` or label in front.
+  (#3954) — whichever apply, already worded and with the amount in them. A
+  refund names where it went: the member's original payment method, a bank
+  transfer the club will send, or, on a group booking the organiser paid for
+  by card, the group organiser's card. Keep it on a line of its own, with no
+  `$` or label in front.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

@@ -82,7 +82,7 @@ file: src/app/api/bookings/[id]/guests/[guestId]/route.ts
 lines: 550
 reason: the guest-removal route builds the member's Booking Modified email
   from its removal's result; it passes the one required flag saying whether
-  the drop cancelled the unpaid extra payment.
+  the drop cancelled the unpaid additional payment.
 
 file: src/lib/email/booking.ts
 lines: 1798

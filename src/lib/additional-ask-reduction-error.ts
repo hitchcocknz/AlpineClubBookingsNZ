@@ -31,7 +31,7 @@ export const ADDITIONAL_ASK_BEING_RAISED_MESSAGE =
  * wording ("nothing was changed") is not theirs.
  */
 export const CONSENT_ANSWER_RACED_MESSAGE =
-  "Something changed on this booking while we recorded your answer. Please try again in a moment.";
+  "We couldn't record your answer because something changed on this booking. Please try again in a moment.";
 
 export class AdditionalAskChangedDuringReductionError extends ApiError {
   constructor(

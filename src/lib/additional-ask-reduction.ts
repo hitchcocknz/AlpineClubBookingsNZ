@@ -60,7 +60,7 @@ import {
 } from "@prisma/client";
 
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
-import { setReductionAgainstUnpaidAsk } from "@/lib/additional-payment-ask";
+import { reductionLeftAfterUnpaidAskCents, setReductionAgainstUnpaidAsk } from "@/lib/additional-payment-ask";
 import {
   isRecoveryReplaySettled,
   recoveryAskBeyondPaymentAskCents,
@@ -181,6 +181,22 @@ export type ReductionAgainstUnpaidAsk = {
   readonly netChargeCents: number;
   readonly ask: UnpaidPriceAsk;
 } & ReturnType<typeof setReductionAgainstUnpaidAsk>;
+
+/**
+ * Round 7 (`INV-SSOT-001`): what of THIS edit's reduction is left to refund,
+ * credit or note once the unpaid ask took its offset - 0 for an increase. The
+ * one reading of a read's `netChargeLeftCents` for the quote, the options'
+ * guard and a guest acceptance's return route, said by the rule the repair
+ * pass reads off recorded history (`reductionLeftAfterUnpaidAskCents`).
+ */
+export function reductionLeftAfterAskCents(
+  reduction: Pick<ReductionAgainstUnpaidAsk, "netChargeCents" | "offsetCents">,
+): number {
+  return reductionLeftAfterUnpaidAskCents({
+    netAmountCents: reduction.netChargeCents,
+    unpaidAskOffsetCents: reduction.offsetCents,
+  });
+}
 
 /** Nothing set against: an increase, an unpriced edit, or a booking with no ask. */
 export function noReductionAgainstUnpaidAsk(netChargeCents: number): ReductionAgainstUnpaidAsk {

@@ -127,7 +127,7 @@ const {
   buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey,
 } = await import("@/lib/payment-recovery-keys");
 const { ApiError } = await import("@/lib/api-error");
-const { noReductionAgainstUnpaidAsk, readReductionAgainstUnpaidAsk } = await import("@/lib/additional-ask-reduction");
+const { noReductionAgainstUnpaidAsk, readReductionAgainstUnpaidAsk, reductionLeftAfterAskCents } = await import("@/lib/additional-ask-reduction");
 const { WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE } = await import("@/lib/additional-ask-reissue");
 const { ADDITIONAL_ASK_BEING_RAISED_MESSAGE, AdditionalAskChangedDuringReductionError } = await import(
   "@/lib/additional-ask-reduction-error"
@@ -1186,6 +1186,13 @@ describe("#3954: one sizing for a failed mint's replay and the reduction that ma
     expect(isRecoveryReplaySettled(reissue, operation, foreign)).toBe(false);
     expect(isRecoveryReplaySettled(reissue, operation, own)).toBe(true);
     expect(isRecoveryReplaySettled(increase, operation, foreign)).toBe(true);
+  });
+
+  it("round 7 (F15): what a read's reduction leaves after the ask - one home, 0 for an increase", () => {
+    const read = (netChargeCents: number, unpaidAskCents: number) => ({ netChargeCents, ...setReductionAgainstUnpaidAsk({ netChargeCents, unpaidAskCents }) });
+    expect(reductionLeftAfterAskCents(read(-8_000, 5_000))).toBe(3_000);
+    expect(reductionLeftAfterAskCents(read(-2_000, 5_000))).toBe(0);
+    expect(reductionLeftAfterAskCents(read(3_000, 5_000))).toBe(0);
   });
 
   it("MUTATION (round 7): an increase that folded re-issues in is settled only by its own row - a later ask never overtakes the money it folded", () => {

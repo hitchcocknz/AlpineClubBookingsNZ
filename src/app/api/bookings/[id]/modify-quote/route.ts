@@ -140,7 +140,7 @@ import {
   usesActiveBookingEditLifecycle,
 } from "@/lib/booking-edit-policy";
 import { clubTime } from "@/lib/club-time/server";
-import { readReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
+import { readReductionAgainstUnpaidAsk, reductionLeftAfterAskCents } from "@/lib/additional-ask-reduction";
 import { dateOnlyInstantOf } from "@/lib/club-time";
 import {
   calculateModificationSettlementOptions, organiserChildChargeRefusal,
@@ -2486,13 +2486,12 @@ export async function POST(
     db: prisma, // advisory, unlocked; payment and open edit refunds read apart (#3827 stated limit: commit re-reads both under lock(1))
     todayAtClub,
   });
-  const netChargeLeftCents = reduction.netChargeLeftCents;
   // #3809: what saving would give back of the booking's applied credit - all of
   // a credit-paid booking's tiered reduction, or what the card basis leaves.
   const appliedCreditGiveBackCents = await previewPaidReductionCreditGiveBackCents({
     booking,
     ownerMemberId: bookingOwner(booking).memberId,
-    reductionCents: Math.max(0, -netChargeLeftCents),
+    reductionCents: reductionLeftAfterAskCents(reduction),
     cardBasisCents: settlementOptions?.basisAmountCents ?? 0,
     todayAtClub,
     db: prisma,

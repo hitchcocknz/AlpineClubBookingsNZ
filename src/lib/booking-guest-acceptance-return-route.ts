@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 
 import {
   assertReductionReadForNet,
+  reductionLeftAfterAskCents,
   type ReductionAgainstUnpaidAsk,
 } from "@/lib/additional-ask-reduction";
 import type { LoadedBookingForModify } from "@/lib/booking-modify";
@@ -66,8 +67,7 @@ export async function fullReductionReturnRoute(
   todayAtClub: CalendarDate,
 ): Promise<FullReductionReturnRoute | null> {
   assertReductionReadForNet(reduction, priceDiffCents, booking.id);
-  const netLeftCents = reduction.netChargeLeftCents;
-  const reductionCents = Math.max(0, -netLeftCents);
+  const reductionCents = reductionLeftAfterAskCents(reduction);
   if (reductionCents === 0) return { kind: "none" };
   const capturedCash = isSettledBookingStatus(booking.status) && hasCapturedPayment(booking.payment);
   if (!capturedCash && !isPaidLikeBookingStatus(booking.status)) return { kind: "none" };
@@ -79,7 +79,7 @@ export async function fullReductionReturnRoute(
   const settlementOptions = capturedCash
     ? calculateFullReductionSettlementOptions({
         booking: loaded,
-        netChargeCents: netLeftCents,
+        netChargeCents: reduction.netChargeLeftCents,
         refundableCashCents: await refundableCashNetOfOpenHandBacks(tx, booking.payment),
         todayAtClub,
       })

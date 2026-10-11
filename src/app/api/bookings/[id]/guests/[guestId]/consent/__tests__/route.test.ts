@@ -575,10 +575,11 @@ describe("DECLINE", () => {
     const res = await callRoute(makeRequest({ action: "DECLINE" }));
     expect(res.status).toBe(409);
     // Round 6: neutral wording - the member was answering, not saving a change.
+    // Round 7: and plain about the outcome - the answer was not recorded.
     expect(await res.json()).toEqual({
-      error: "Something changed on this booking while we recorded your answer. Please try again in a moment.",
+      error: "We couldn't record your answer because something changed on this booking. Please try again in a moment.",
     });
-    expect(CONSENT_ANSWER_RACED_MESSAGE).toMatch(/recorded your answer/);
+    expect(CONSENT_ANSWER_RACED_MESSAGE).toMatch(/couldn't record your answer/);
     // Not a blocked row: nothing is audited as needing a human.
     expect(h.logAudit).not.toHaveBeenCalled();
   });

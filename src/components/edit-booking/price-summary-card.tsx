@@ -388,7 +388,7 @@ export function PriceSummaryCard({
               </p>
             )}
 
-            {/* #3954: a reduction first comes off the extra payment the
+            {/* #3954: a reduction first comes off the additional payment the
                 member has not paid yet; only the rest is refunded or credited. */}
             {quote.netChargeCents < 0 && (quote.unpaidAskOffsetCents ?? 0) > 0 && (
               <p className="rounded-md border p-3 text-sm" data-testid="unpaid-ask-offset">
