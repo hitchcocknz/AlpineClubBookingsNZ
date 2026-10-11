@@ -60,13 +60,17 @@ export async function POST(
       },
     },
   });
-  // A deleted booking answers exactly as a missing one does (`INV-ADDPAY-031`):
-  // there is nothing to estimate against, and no reason to say why.
-  if (!booking || booking.deletedAt) {
+  if (!booking) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
   if (bookingOwner(booking).memberId !== session.user.id && !isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  // `INV-ADDPAY-031`: a deleted booking answers with the ordinary not-found
+  // body, AFTER the authorisation check, so a caller with no claim gets 403
+  // either way and this is never a deleted-or-live oracle.
+  if (booking.deletedAt) {
+    return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
 
   let body: unknown;

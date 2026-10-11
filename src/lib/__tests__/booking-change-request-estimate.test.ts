@@ -192,11 +192,14 @@ describe("POST /api/bookings/[id]/change-requests/quote (#4030)", () => {
     expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
   });
 
-  it("answers a deleted booking exactly as a missing one (INV-ADDPAY-031)", async () => {
+  it("answers a deleted booking exactly as a missing one, after the authorisation check (INV-ADDPAY-031)", async () => {
     mocks.bookingFindUnique.mockResolvedValue({ ...booking(), deletedAt: new Date("2026-06-01T00:00:00.000Z") });
     const response = await post({ addGuests: [child("Ari")] });
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "Booking not found" });
+    // A caller with no claim is refused the same way, deleted or not.
+    mocks.auth.mockResolvedValue({ user: { id: "member-2", role: "MEMBER", accessRoles: [] } });
+    expect((await post({ addGuests: [child("Ari")] })).status).toBe(403);
   });
 
   it("refuses nights outside the stay", async () => {
