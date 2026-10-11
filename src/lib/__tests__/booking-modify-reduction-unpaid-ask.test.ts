@@ -778,6 +778,21 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
     );
   });
 
+  it("MUTATION (round 7, F7): a re-issue a later reduction withdrew during the door's cancels is offered to nobody - no secret, no intent handed back", async () => {
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    queueReissueInvoice.mockResolvedValueOnce(false);
+    const { minted } = await mintAfter(result);
+    expect(queueReissueInvoice).toHaveBeenCalledTimes(1);
+    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined });
+  });
+
+  it("MUTATION (round 7, F7): an increase's ask a reduction withdrew during the door's cancels is offered to nobody", async () => {
+    const result = await adjust(grownBooking(), 1_000);
+    queueFoldedInvoices.mockResolvedValueOnce(false);
+    const { minted } = await mintAfter(result);
+    expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined });
+  });
+
   it("MUTATION (round 6): an increase's own mint queues the invoices of the re-issues it folded in, waiting on its intent", async () => {
     const result = await adjust(grownBooking(), 1_000);
     expect(result.additionalAsk.amountCents).toBe(6_000);

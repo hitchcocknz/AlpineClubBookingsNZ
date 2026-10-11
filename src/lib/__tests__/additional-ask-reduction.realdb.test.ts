@@ -960,6 +960,21 @@ let webhookClient: PrismaClient;
       },
     );
 
+    it.each([
+      { leavingNightCents: 4_000, refundLeftCents: 3_000, expected: true },
+      { leavingNightCents: 2_500, refundLeftCents: 0, expected: false },
+    ])(
+      "ROUND 7 (F6): the billed-offset note records whether the edit's own note is expected - a $refundLeftCents refund left after the ask",
+      async ({ leavingNightCents, refundLeftCents, expected }) => {
+        await grownBooking("card", leavingNightCents, 100, "minted", "primary-after-increase");
+        const result = await removeLeavingGuest();
+        expect(result.xeroRefundAmountCents).toBe(refundLeftCents);
+        const [note, ...others] = await billedOffsetNotes(result.bookingModificationId!);
+        expect(others).toEqual([]);
+        expect((note!.requestPayload as Record<string, unknown>).ownNoteExpected ?? false).toBe(expected);
+      },
+    );
+
     it("ROUND 5: where the increase's own invoice was parked on the ask, it is retired instead and no note is queued", async () => {
       await grownBooking("card", 2_500);
       const result = await removeLeavingGuest();
@@ -1153,6 +1168,69 @@ let webhookClient: PrismaClient;
       expect(invoices).toEqual([
         expect.objectContaining({ status: "WAITING_PAYMENT", requestPayload: expect.objectContaining({ paymentIntentId: intent!.id, priceDiffCents: 3_000 }) }),
       ]);
+    });
+
+    it("ROUND 7 (F2): a later ask minted while a folding increase's recovery waits never overtakes it - the replay asks for the folded re-issue, its own money and the later ask, superseding that ask", async () => {
+      // paid 10000; E1 +5000 asked; E2 -2000 leaves a 3000 re-issue waiting.
+      await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+      const reduction = await removeLeavingGuest();
+      const [{ applyPaymentAdjustments }, { noReductionAgainstUnpaidAsk }, { unpaidAskOffsetHistory }] = await Promise.all([
+        import("@/lib/booking-modify-settlement"),
+        import("@/lib/additional-ask-reduction"),
+        import("@/lib/unpaid-ask-offset-marker"),
+      ]);
+      const increaseBy = (cents: number) =>
+        prisma.$transaction(async (tx) => {
+          const booking = await tx.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, include: { payment: true, guests: true } });
+          const adjusted = await applyPaymentAdjustments(tx, {
+            booking: booking as never, priceDiffCents: cents, changeFeeCents: 0, reduction: noReductionAgainstUnpaidAsk(cents),
+            todayAtClub: "2026-07-01" as never, format: CLUB_FORMAT_TEST,
+          });
+          const row = await tx.bookingModification.create({
+            data: { bookingId: BOOKING_ID, memberId: MEMBER_ID, modificationType: "GUEST_ADD", previousData: {}, newData: unpaidAskOffsetHistory(adjusted), priceDiffCents: cents },
+          });
+          return { adjusted, id: row.id };
+        }, { maxWait: 10_000, timeout: 20_000 });
+      // E3 +1000 folds the waiting 3000 re-issue in; its own mint fails.
+      const folding = await increaseBy(1_000);
+      expect(folding.adjusted.additionalAsk.amountCents).toBe(4_000);
+      expect((await reissueRecovery(reduction.bookingModificationId!)).status).toBe("SUCCEEDED");
+      const [{ enqueueAdditionalPaymentIntentRecovery, runPaymentRecoveryOperationNow }, { buildAdditionalIntentRecoveryIdempotencyKey }, { upsertPaymentIntentTransaction }] = await Promise.all([
+        import("@/lib/payment-recovery"),
+        import("@/lib/payment-recovery-keys"),
+        import("@/lib/payment-transactions"),
+      ]);
+      const operation = await enqueueAdditionalPaymentIntentRecovery({
+        bookingId: BOOKING_ID, paymentId: PAYMENT_ID, idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(folding.id),
+        amountCents: 4_000, stripeIdempotencyKey: `mod_guest_${BOOKING_ID}_${folding.id}`, hadIssuedXeroInvoice: true,
+        nextRetryAt: new Date("2026-06-30T00:00:00.000Z"),
+      });
+      // The failed mint was queued before E4's ask was written (the frozen
+      // clock would otherwise stamp both the same instant).
+      await prisma.paymentRecoveryOperation.update({ where: { id: operation.id }, data: { createdAt: new Date("2026-06-30T00:00:00.000Z") } });
+      // E4 +500, sized off the Payment, which shows neither E3 nor what it folded: its door mints 500.
+      const later = await increaseBy(500);
+      expect(later.adjusted.additionalAsk.amountCents).toBe(500);
+      await upsertPaymentIntentTransaction({
+        paymentId: PAYMENT_ID, kind: "ADDITIONAL", paymentIntentId: "pi_race_3954_later", amountCents: 500,
+        carriedAskCents: later.adjusted.additionalAsk.carriedCents, status: "PENDING", reason: "guest_add_price_increase",
+        hadIssuedXeroInvoice: true, store: prisma,
+      });
+
+      // E3's replay: not overtaken. It asks for its 1000, the folded 3000 and E4's 500.
+      const stripe = fakeStripe();
+      expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      const [intent] = [...stripe.intents.values()];
+      expect(intent?.amount).toBe(4_500);
+      expect(await liveAsks()).toEqual([
+        expect.objectContaining({ stripePaymentIntentId: intent!.id, amountCents: 4_500, carriedAskCents: 3_500 }),
+      ]);
+      // E4's ask is superseded, its cancellation queued.
+      expect(await prisma.paymentRecoveryOperation.findMany({
+        where: { bookingId: BOOKING_ID, type: "CANCEL_PAYMENT_INTENT", paymentIntentId: "pi_race_3954_later" },
+        select: { paymentIntentId: true },
+      })).toEqual([{ paymentIntentId: "pi_race_3954_later" }]);
+      expect((await payment()).additionalAmountCents).toBe(4_500);
     });
 
     it("ROUND 6 (F5): the billed-offset note's scoped link never refuses the edit's own note, nor the repair pass's re-queue of it", async () => {
