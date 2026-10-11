@@ -52,10 +52,9 @@ import { runWarmup } from "@/lib/deploy/warmup-run";
  * Warming is idempotent — it populates a cache and reads pages — but a POST would
  * be the more honest verb. It is a GET because the deploy script asks it with the
  * runtime image's busybox `wget` (`node:24-alpine`), which has no POST support:
- * `docker compose exec -T <service> wget -O- …`. (The in-container readiness and
- * runtime-status reads use `node`'s `fetch` since #3965, for the response body on
- * a non-2xx status; this endpoint answers its text form with 200 instead.) Adding
- * an HTTP client to the production image to buy a verb would be the worse trade. The same reason is why
+ * `docker compose exec -T <service> wget -O- …` (its readiness and runtime-status
+ * reads use `node`'s `fetch` since #3965). Adding an HTTP client to the
+ * production image to buy a verb would be the worse trade. The same reason is why
  * the cron secret arrives in a header the container reads from its OWN environment,
  * so it never appears in a host process list.
  *
