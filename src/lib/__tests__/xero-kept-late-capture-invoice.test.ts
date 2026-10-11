@@ -71,6 +71,7 @@ vi.mock("@/lib/late-capture-paid-another-way", () => ({
 }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
   readLateCaptureXeroReceipt: (...a: unknown[]) => mocks.readReceipt(...a),
+  readPaidAnotherWayLateCaptureXeroReceipt: (...a: unknown[]) => mocks.readReceipt(...a),
 }));
 vi.mock("@/lib/club-time-zone-runtime", () => ({
   readClubTimeZoneOutsideRequest: async () => "Pacific/Auckland",

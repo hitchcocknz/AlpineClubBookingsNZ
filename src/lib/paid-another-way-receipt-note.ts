@@ -1,9 +1,9 @@
 import type { Prisma } from "@prisma/client";
-import { paidAnotherWayCloseNoteRowsWhere, readPaidAnotherWayCloseShare } from "@/lib/card-refund-paid-another-way-cash";
+import { paidAnotherWayCloseNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { KEPT_LATE_CAPTURE_INVOICE_ROLE, KEPT_LATE_CAPTURE_PAYMENT_ROLE } from "@/lib/late-capture-kept-xero-rules";
 import { findLateCaptureRefundPaidAnotherWay } from "@/lib/late-capture-paid-another-way";
-import { readLateCaptureXeroReceipt, type LateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
+import { readPaidAnotherWayLateCaptureXeroReceipt, type LateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
 import { prisma } from "@/lib/prisma";
 import { lockKeptLateCaptureTask } from "@/lib/xero-kept-late-capture-invoice";
 
@@ -23,7 +23,7 @@ import { lockKeptLateCaptureTask } from "@/lib/xero-kept-late-capture-invoice";
  * for the capture (`createXeroSupplementaryInvoice`), which a close found
  * queued, sending or FAILED and so could not credit yet. Under the approval
  * task's row lock it reads the receipt as Xero now holds it
- * (`readLateCaptureXeroReceipt`, the invoice the close's plan would name) and
+ * (`readPaidAnotherWayLateCaptureXeroReceipt`, the invoice the close's plan would name) and
  * queues the waiting close's note against it (`notePaidAnotherWayCloseOnReceipt`,
  * at most once). Nothing without an approval task, or a receipt not yet in
  * Xero. Returns the note row's id, or null. Throws on a failure; the caller
@@ -52,7 +52,7 @@ async function runWaitingNoteStep(
   const { notePaidAnotherWayCloseOnReceipt } = await import("@/lib/late-capture-refund-credit-note");
   return prisma.$transaction(async (tx) => {
     await lockKeptLateCaptureTask(tx, task.id);
-    const receipt = await readLateCaptureXeroReceipt(paymentIntentId, tx);
+    const receipt = await readPaidAnotherWayLateCaptureXeroReceipt(paymentIntentId, tx);
     if (receipt.kind !== "recorded" || receipt.invoiceId === null) return { noteOperationId: null, queuedNow: false };
     const close = await findLateCaptureRefundPaidAnotherWay(paymentIntentId, tx);
     const askedBefore =
@@ -93,38 +93,37 @@ export async function queueWaitingPaidAnotherWayNotesForPayment(paymentId: strin
 /**
  * #3924 round 8 (money review, `INV-PAY-122`): WHERE A WAITING CLOSE'S RECEIPT
  * AND NOTE STAND, for the repair tool. The capture's receipt as Xero holds it
- * (`readLateCaptureXeroReceipt`); whether the close's bank-transfer note was
+ * (`readPaidAnotherWayLateCaptureXeroReceipt`); whether the close's bank-transfer note was
  * ever asked for (its own rows, `paidAnotherWayCloseNoteRowsWhere`, in any
  * state but withdrawn - one an officer resolved by hand included, since the
  * resolve keeps its FAILED or PARTIAL status); and which of the receipt's
  * links the approval task carries - its invoice, and its Stripe payment,
  * which says a FAILED row may have reached Xero
- * (`keptReceiptMayHaveReachedXero`). Round 10: the close's share its own
- * notes do not yet cover (`readPaidAnotherWayCloseShare`), which is what is
- * left to record by hand.
+ * (`keptReceiptMayHaveReachedXero`). Round 11: what is left to record by
+ * hand when the receipt was resolved by hand (`recordByHandCents`) - the
+ * capture's refunds, its card refunds and the close's bank cash alike
+ * (`PaymentTransaction.refundedAmountCents`), less the refund notes naming the
+ * capture (`sumLateCaptureNotedCents`), as the kept invoice's own
+ * record-by-hand finding sizes it.
  */
 export interface PaidAnotherWayReceiptState {
   receipt: LateCaptureXeroReceipt;
   /** The close itself - its record and what it paid back (#3924 round 9). */
-  close: { id: string; amountCents: number; uncoveredCents: number } | null;
+  close: { id: string; amountCents: number } | null;
   noteAsked: boolean;
   invoiceLinked: boolean;
   paymentLinked: boolean;
+  recordByHandCents: number;
 }
 
 export async function readPaidAnotherWayReceiptState(paymentIntentId: string): Promise<PaidAnotherWayReceiptState> {
-  const receipt = await readLateCaptureXeroReceipt(paymentIntentId);
+  const receipt = await readPaidAnotherWayLateCaptureXeroReceipt(paymentIntentId);
   const close = await findLateCaptureRefundPaidAnotherWay(paymentIntentId);
   const noteAsked =
     close !== null && close.paymentId !== null ? await closeNoteAsked(prisma, close.paymentId, close.id) : false;
-  const amountCents = close ? Math.max(0, close.amountCents ?? 0) : 0;
-  const share =
-    close !== null && close.paymentId !== null
-      ? await readPaidAnotherWayCloseShare(prisma, close.paymentId, close.id)
-      : null;
   const task = await prisma.manualRefundTask.findUnique({
     where: { lateCaptureApprovalIntentId: paymentIntentId },
-    select: { id: true },
+    select: { id: true, paymentId: true },
   });
   const roles = task
     ? (
@@ -141,11 +140,28 @@ export async function readPaidAnotherWayReceiptState(paymentIntentId: string): P
     : [];
   return {
     receipt,
-    close: close ? { id: close.id, amountCents, uncoveredCents: share?.uncoveredCents ?? amountCents } : null,
+    close: close ? { id: close.id, amountCents: Math.max(0, close.amountCents ?? 0) } : null,
     noteAsked,
     invoiceLinked: roles.includes(KEPT_LATE_CAPTURE_INVOICE_ROLE),
     paymentLinked: roles.includes(KEPT_LATE_CAPTURE_PAYMENT_ROLE),
+    recordByHandCents:
+      receipt.kind === "resolved-by-hand" && task?.paymentId
+        ? await readUnnotedCaptureRefundCents(task.paymentId, paymentIntentId)
+        : 0,
   };
+}
+
+/** Round 11: the capture's refunds less the refund notes naming it (see `PaidAnotherWayReceiptState`). */
+async function readUnnotedCaptureRefundCents(paymentId: string, paymentIntentId: string): Promise<number> {
+  const capture = await prisma.paymentTransaction.findFirst({
+    where: { paymentId, source: "STRIPE", stripePaymentIntentId: paymentIntentId },
+    select: { refundedAmountCents: true },
+  });
+  const refundedCents = Math.max(0, capture?.refundedAmountCents ?? 0);
+  if (refundedCents === 0) return 0;
+  // Imported here, not at the top: that module reaches the outbox.
+  const { sumLateCaptureNotedCents } = await import("@/lib/late-capture-refund-credit-note");
+  return Math.max(0, refundedCents - (await sumLateCaptureNotedCents(paymentId, paymentIntentId)));
 }
 
 /** Was this close's bank-transfer note ever asked for: any row of it but a withdrawn one, resolved by hand included. */

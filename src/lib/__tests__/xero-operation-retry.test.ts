@@ -2598,7 +2598,7 @@ describe("retryXeroSyncOperation", () => {
       }),
     );
     mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ id: "task_late" });
-    mocks.findFirstXeroObjectLink.mockResolvedValueOnce({ id: "link_1" });
+    mocks.findFirstXeroObjectLink.mockResolvedValueOnce({ xeroObjectId: "inv_linked" });
 
     const refused = retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
     await expect(refused).rejects.toBeInstanceOf(XeroOperationRetryError);
@@ -2606,16 +2606,22 @@ describe("retryXeroSyncOperation", () => {
       status: 409,
       message: expect.stringContaining("Mark this operation resolved as fixed in Xero instead"),
     });
-    expect(mocks.findFirstXeroObjectLink).toHaveBeenCalledWith({
-      where: {
-        localModel: "BookingModification",
-        localId: "mod_123",
-        xeroObjectType: "INVOICE",
-        role: "SUPPLEMENTARY_INVOICE",
-        active: true,
-      },
-      select: { id: true },
+    // Round 11 (UX): linked, so the app raises the note - never recorded by hand too.
+    await expect(refused).rejects.toMatchObject({
+      message: expect.stringContaining("do not record the refund by hand"),
     });
+    // Round 11 (`INV-SSOT`): the receipt reader's own link query.
+    expect(mocks.findFirstXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          OR: [{ localModel: "BookingModification", localId: "mod_123" }],
+          xeroObjectType: "INVOICE",
+          role: "SUPPLEMENTARY_INVOICE",
+          active: true,
+        },
+        select: { xeroObjectId: true },
+      }),
+    );
     expect(mocks.updateManyOperation).not.toHaveBeenCalled();
     expect(mocks.createXeroSupplementaryInvoice).not.toHaveBeenCalled();
   });

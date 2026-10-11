@@ -503,12 +503,13 @@ export interface BookingClassificationContext {
         /**
          * #3924 round 8: for a close whose note waits for the receipt, where
          * the receipt and the note stand (`readPaidAnotherWayReceiptState`).
+         * Round 11: for every close of an approved capture, whatever its plan.
          */
         receiptState?: PaidAnotherWayReceiptState;
         /**
-         * #3924 round 9: the close's amount in the club's format, for the
-         * report-only finding that asks an officer to record it by hand -
-         * round 10: its share its own notes do not yet cover.
+         * #3924 round 9: in the club's format, for the report-only finding
+         * that asks an officer to record a refund by hand - round 11: what is
+         * left to record (`PaidAnotherWayReceiptState.recordByHandCents`).
          */
         amountLabel?: string;
       };

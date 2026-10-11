@@ -2008,7 +2008,18 @@ export function classifyBookingContext(
       const keptInvoice = getBlockingOperation(lateTask.operations, "INVOICE", "CREATE", {
         payloadQueueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
       });
-      if (keptInvoice?.kind === "resolved") {
+      // #3924 round 7 (money M2): the receipt a paid-another-way close waits
+      // for. Round 11: every close of an approved capture is answered by the
+      // close's finding first, read by the paid-another-way verdict - never by
+      // the kept invoice's record-by-hand finding below, which would ask an
+      // officer to record by hand a refund whose note the app raises.
+      const approvedClose = lateTask.status === "COMPLETED" ? lateTask.paidAnotherWayClose : undefined;
+      if (approvedClose) {
+        if (addPaidAnotherWayReceiptFinding({ findings, actionMap, booking, paymentId: payment.id, transaction, lateTask, keptInvoice })) {
+          continue;
+        }
+        if (keptInvoice?.kind === "resolved") continue;
+      } else if (keptInvoice?.kind === "resolved") {
         if (transaction.refundedAmountCents > 0) {
           addFinding(findings, {
             code: "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND",
@@ -2026,10 +2037,6 @@ export function classifyBookingContext(
             actionKeys: [],
           });
         }
-        continue;
-      }
-      // #3924 round 7 (money M2): the receipt a paid-another-way close waits for.
-      if (addPaidAnotherWayReceiptFinding({ findings, actionMap, booking, paymentId: payment.id, transaction, lateTask, keptInvoice })) {
         continue;
       }
       if (

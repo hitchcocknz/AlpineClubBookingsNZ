@@ -34,16 +34,28 @@ type ReceiptStore = Pick<
  *    `createInvoices` (`xeroCreateCallAttempted`), so Xero may hold it and an
  *    officer checks Xero before retrying. A kept row still queued or sending
  *    is not yet a receipt: its worker credits back any refund once it has
- *    sent (`createXeroKeptLateCaptureInvoice`). Round 10: a receipt is
- *    recorded against the invoice Xero holds wherever the app knows its id -
- *    a released change's active `SUPPLEMENTARY_INVOICE` link, or a row an
- *    officer resolved by hand AFTER the app had sent it (its `xeroObjectId`),
- *    since that invoice is the app's own document in Xero.
- *  - `resolved-by-hand`: an officer recorded the receipt by hand and resolved
- *    its row in Xero (`INV-INT-025`) before the app sent anything. The app
+ *    sent (`createXeroKeptLateCaptureInvoice`).
+ *  - `resolved-by-hand`: an officer resolved its row (`INV-INT-025`). The app
  *    raises no note for its refunds - the officer records those by hand too,
  *    and the repair tool says so.
  *  - `none`: nothing in Xero; a refund of it needs no note.
+ *
+ * TWO VERDICTS, ONE BODY (#3924 round 11). `readLateCaptureXeroReceipt` is the
+ * verdict every card-refund path reads - the refund note's eligible cash
+ * (`resolveRefundNoteEligibleCash`), the card note itself
+ * (`createXeroCreditNote`), the late-capture refund repair
+ * (`recordAndNoteRepairedLateCaptureRefunds`) and the card-note gap
+ * (`readRefundCreditNoteGap`) - and a resolved row is
+ * `resolved-by-hand` there, as before #3924.
+ * `readPaidAnotherWayLateCaptureXeroReceipt` is the verdict of a refund
+ * closed as paid another way only: the close's plan, its note step (the
+ * receipt's worker and the nightly credit check), and the repair tool's
+ * finding. There a receipt is recorded against the invoice Xero holds
+ * wherever the app knows its id (round 10): a row an officer resolved AFTER
+ * the app had sent it (its `xeroObjectId`), or a released change's active
+ * `SUPPLEMENTARY_INVOICE` link (`findActiveSupplementaryInvoiceLink`), since
+ * that invoice is the app's own document in Xero. Both run `readReceipt`, so
+ * they differ only where `widenToKnownInvoice` says.
  */
 export type LateCaptureXeroReceipt =
   | { kind: "none" }
@@ -53,6 +65,22 @@ export type LateCaptureXeroReceipt =
 export async function readLateCaptureXeroReceipt(
   paymentIntentId: string,
   store: ReceiptStore = prisma,
+): Promise<LateCaptureXeroReceipt> {
+  return readReceipt(paymentIntentId, store, { widenToKnownInvoice: false });
+}
+
+/** The paid-another-way verdict: a resolved row's or a linked change's invoice is recorded (see above). */
+export async function readPaidAnotherWayLateCaptureXeroReceipt(
+  paymentIntentId: string,
+  store: ReceiptStore = prisma,
+): Promise<LateCaptureXeroReceipt> {
+  return readReceipt(paymentIntentId, store, { widenToKnownInvoice: true });
+}
+
+async function readReceipt(
+  paymentIntentId: string,
+  store: ReceiptStore,
+  { widenToKnownInvoice }: { widenToKnownInvoice: boolean },
 ): Promise<LateCaptureXeroReceipt> {
   const task = await store.manualRefundTask.findUnique({
     where: { lateCaptureApprovalIntentId: paymentIntentId },
@@ -84,8 +112,8 @@ export async function readLateCaptureXeroReceipt(
       },
       select: { xeroObjectId: true },
     });
-    // Round 10: resolved after the app had sent it - the app's own invoice.
-    const keptSent = resolvedKept.find((row) => row.xeroObjectId);
+    // Paid another way only: resolved after the app had sent it.
+    const keptSent = widenToKnownInvoice ? resolvedKept.find((row) => row.xeroObjectId) : undefined;
     if (keptSent?.xeroObjectId) return { kind: "recorded", invoiceId: keptSent.xeroObjectId };
     resolvedByHand = resolvedKept.length > 0;
   }
@@ -108,11 +136,13 @@ export async function readLateCaptureXeroReceipt(
     },
   });
   const live = released.filter((row) => !row.manuallyResolvedAt);
-  const sent = live.find((row) => row.xeroObjectId) ?? released.find((row) => row.xeroObjectId);
+  const sent =
+    live.find((row) => row.xeroObjectId) ??
+    (widenToKnownInvoice ? released.find((row) => row.xeroObjectId) : undefined);
   if (sent?.xeroObjectId) return { kind: "recorded", invoiceId: sent.xeroObjectId };
-  // Round 10: a change whose invoice is linked in Xero though its row FAILED
-  // after the link (or was resolved by hand after it).
-  const linked = await findActiveSupplementaryInvoiceLink(released, store);
+  // Paid another way only: a change whose invoice is linked in Xero though
+  // its row FAILED after the link (or was resolved by hand after it).
+  const linked = widenToKnownInvoice ? await findActiveSupplementaryInvoiceLink(released, store) : null;
   if (linked) return { kind: "recorded", invoiceId: linked };
   if (live.length > 0) {
     if (!live.every((row) => row.status === "FAILED")) return { kind: "recorded", invoiceId: null };
@@ -128,11 +158,12 @@ export async function readLateCaptureXeroReceipt(
  * #3924 round 10: the Xero invoice of a change released for the capture, as
  * its active `SUPPLEMENTARY_INVOICE` link names it - the link
  * `createXeroSupplementaryInvoice` writes on the change (`localModel`,
- * `localId`) once Xero has returned the invoice. Null without one.
+ * `localId`) once Xero has returned the invoice. Null without one. Round 11:
+ * also the change-invoice retry's refusal (`linkedChangeInvoiceRetryRefusal`).
  */
-async function findActiveSupplementaryInvoiceLink(
+export async function findActiveSupplementaryInvoiceLink(
   rows: readonly { localModel: string | null; localId: string | null }[],
-  store: ReceiptStore,
+  store: Pick<Prisma.TransactionClient, "xeroObjectLink"> = prisma,
 ): Promise<string | null> {
   const anchors = rows.filter(
     (row): row is { localModel: string; localId: string } => row.localModel !== null && row.localId !== null,

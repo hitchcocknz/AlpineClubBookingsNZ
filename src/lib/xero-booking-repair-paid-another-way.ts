@@ -13,6 +13,8 @@ import type {
 } from "./xero-booking-repair-types";
 import { addAction, addFinding, buildRetryAction } from "./xero-booking-repair-findings";
 
+type LateCaptureTask = BookingClassificationContext["lateCaptureTasks"] extends Map<string, infer Task> ? Task : never;
+
 /**
  * #3924 round 7 (money M2, `INV-PAY-122`; owner, 8 Oct 2026: "Record receipt,
  * then credit"): THE REPAIR TOOL'S HALF OF A LATE CAPTURE'S REFUND PAID ANOTHER
@@ -33,7 +35,7 @@ export function addPaidAnotherWayReceiptFinding({
   booking: { id: string; status: string };
   paymentId: string;
   transaction: { stripePaymentIntentId: string | null; status: PaymentStatus; amountCents: number };
-  lateTask: BookingClassificationContext["lateCaptureTasks"] extends Map<string, infer Task> ? Task : never;
+  lateTask: LateCaptureTask;
   keptInvoice: BlockingOperationMatch | null;
 }): boolean {
   // An APPROVED capture whose card refund was closed as paid another way, with
@@ -44,7 +46,24 @@ export function addPaidAnotherWayReceiptFinding({
   // and the enqueue both re-read the task and the close under the task's row
   // lock before anything is sent.
   const close = lateTask.status === "COMPLETED" ? lateTask.paidAnotherWayClose : undefined;
-  if (close?.xeroRefundNote !== "after-receipt") return false;
+  if (!close) return false;
+  const details = {
+    paymentId,
+    manualRefundTaskId: lateTask.taskId,
+    paymentIntentId: transaction.stripePaymentIntentId,
+  };
+  // Round 11: a receipt resolved by hand, whatever the close planned. Read by
+  // the paid-another-way verdict (`readPaidAnotherWayLateCaptureXeroReceipt`),
+  // so a row resolved after the app sent it, or a change linked in Xero, is
+  // the app's receipt and its note follows - never "record it by hand". The
+  // close's finding answers its capture in place of the kept invoice's
+  // `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`, which the caller never reaches
+  // for a close. Report-only, so the caller still looks at a PARTIAL row.
+  if (close.receiptState?.receipt.kind === "resolved-by-hand") {
+    addRecordByHandFinding(findings, close, details);
+    return false;
+  }
+  if (close.xeroRefundNote !== "after-receipt") return false;
   const receiptCents = decideLateCapture({
     taskStatus: "COMPLETED",
     bookingStatus: booking.status,
@@ -55,11 +74,6 @@ export function addPaidAnotherWayReceiptFinding({
   if (receiptCents <= 0) return false;
   const state = close.receiptState;
   if (!state) return false;
-  const details = {
-    paymentId,
-    manualRefundTaskId: lateTask.taskId,
-    paymentIntentId: transaction.stripePaymentIntentId,
-  };
   const failed =
     keptInvoice?.kind === "retryable" && keptInvoice.operation.status === "FAILED" ? keptInvoice : null;
 
@@ -109,34 +123,8 @@ export function addPaidAnotherWayReceiptFinding({
   }
   // On its way to Xero (a change's invoice queued, sending or failed, which is
   // its own operation to retry): the note follows it, and no second receipt
-  // is queued beside it. Resolved by hand: the officer records the refund too.
+  // is queued beside it.
   if (state.receipt.kind === "recorded") return true;
-  if (state.receipt.kind === "resolved-by-hand") {
-    // Round 9: resolved by hand AFTER the close planned to wait for it (a
-    // close planned against a receipt already resolved raises `none`, and is
-    // never here). The waiting note will never be queued, so an officer is
-    // told to record the close's refund by hand. Report-only. Round 10: not
-    // when the close's note was asked for after all - any row of it, one an
-    // officer resolved by hand included, so the finding clears once the
-    // officer acts - and naming only the share the close's own notes do not
-    // yet cover, never what it paid back in all.
-    if (state.noteAsked || !state.close || state.close.uncoveredCents <= 0) return false;
-    const amount = close.amountLabel ? `${close.amountLabel} ` : "";
-    addFinding(findings, {
-      code: "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
-      severity: "warning",
-      summary: `A late card payment whose refund was paid another way has its Xero receipt - the change invoice or the late charge's own receipt - resolved by hand in Xero, so the app raises no refund note for it: record the ${amount}bank-transfer refund by hand in Xero.`,
-      safeToAutoApply: false,
-      details: {
-        ...details,
-        closeRecordId: state.close.id,
-        closeAmountCents: state.close.amountCents,
-        uncoveredCents: state.close.uncoveredCents,
-      },
-      actionKeys: [],
-    });
-    return false;
-  }
 
   if (!failed && keptLateCaptureInvoiceAsked(lateTask.operations)) return false;
   // Round 8 (money review): a FAILED receipt row that may have reached Xero -
@@ -183,4 +171,37 @@ export function addPaidAnotherWayReceiptFinding({
     actionKeys: [action.key],
   });
   return true;
+}
+
+/**
+ * Round 9 (`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND`): the capture's receipt
+ * was resolved by hand, so the app raises no note for the close, and an
+ * officer records its refunds by hand. Report-only. Round 10: not once the
+ * close's note was asked for after all - any row of it, one an officer
+ * resolved by hand included. Round 11: sized as the kept invoice's finding
+ * was, from the capture's refunds less the notes naming it
+ * (`recordByHandCents`), and it stays as a reminder until a note row exists:
+ * recording the refund by hand in Xero writes no row the app can read.
+ */
+function addRecordByHandFinding(
+  findings: MutableFinding[],
+  close: NonNullable<LateCaptureTask["paidAnotherWayClose"]>,
+  details: { paymentId: string; manualRefundTaskId: string; paymentIntentId: string | null },
+): void {
+  const state = close.receiptState;
+  if (!state || state.noteAsked || !state.close || state.recordByHandCents <= 0) return;
+  const amount = close.amountLabel ? `${close.amountLabel} ` : "";
+  addFinding(findings, {
+    code: "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
+    severity: "warning",
+    summary: `A late card payment whose refund was paid another way has its Xero receipt - the change invoice or the late charge's own receipt - resolved by hand in Xero, so the app raises no refund note for it: record the ${amount}refunded on it by hand in Xero.`,
+    safeToAutoApply: false,
+    details: {
+      ...details,
+      closeRecordId: state.close.id,
+      closeAmountCents: state.close.amountCents,
+      recordByHandCents: state.recordByHandCents,
+    },
+    actionKeys: [],
+  });
 }

@@ -6,7 +6,7 @@ import type { ClubTimeZone } from "@/lib/club-time";
 import { decideLateCapture } from "@/lib/late-capture-kept-xero-rules";
 import {
   findKeptLateCaptureInvoiceIdForPayment,
-  readLateCaptureXeroReceipt,
+  readPaidAnotherWayLateCaptureXeroReceipt,
 } from "@/lib/late-capture-xero-receipt";
 import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement-rules";
 import { lateCaptureIntentOfApprovalRefundRecoveryKey } from "@/lib/payment-recovery-keys";
@@ -100,7 +100,7 @@ export function paidAnotherWayXeroPromise(plan: PaidAnotherWayXeroPlan): PaidAno
  * never promises a note that will fail:
  *
  * - a treasurer-approved late capture's refund: the capture's own receipt.
- *   Recorded by the app (`readLateCaptureXeroReceipt`, `INV-PAY-110`): the note
+ *   Recorded by the app (`readPaidAnotherWayLateCaptureXeroReceipt`, `INV-PAY-110`): the note
  *   is queued `now`. Not in Xero at all: the charge is still in the Stripe
  *   account, so the close queues its receipt and the note follows it
  *   (`after-receipt`) - as long as the capture was taken and has its approval
@@ -144,7 +144,7 @@ export async function paidAnotherWayXeroPlan(
     select: { id: true, status: true, createdAt: true },
   });
   if (task && lockApprovalTask) await lockKeptLateCaptureTask(db, task.id);
-  const receipt = await readLateCaptureXeroReceipt(lateCaptureIntent, db);
+  const receipt = await readPaidAnotherWayLateCaptureXeroReceipt(lateCaptureIntent, db);
   // Round 7 (money M5, `INV-PAY-122`): the note credits THIS receipt, named by
   // its invoice id - never by `paymentIntentId`, which would count the bank
   // note as the capture's card refund note. Round 8: a receipt recorded but

@@ -51,7 +51,8 @@ const MAX_APPLY_PASSES = 3;
  * Round 8: with, for a close whose note waits for the receipt, where the
  * receipt and the note stand (`PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED`).
  * Round 9: and the close's amount in the club's format
- * (`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND`).
+ * (`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND`). Round 11: for every close
+ * of an approved capture, and the amount is what is left to record by hand.
  */
 async function withPaidAnotherWayCloses(
   contexts: Awaited<ReturnType<typeof loadAuditData>>,
@@ -66,17 +67,19 @@ async function withPaidAnotherWayCloses(
     for (const [intent, task] of context.lateCaptureTasks) {
       const close = closes.get(intent);
       if (!close) continue;
-      if (task.status !== "COMPLETED" || close.xeroRefundNote !== "after-receipt") {
+      if (task.status !== "COMPLETED") {
         task.paidAnotherWayClose = close;
         continue;
       }
+      // Round 11: every approved capture's close, whatever its plan - the
+      // close's finding, not the kept invoice's, answers its capture.
       const receiptState = await deps.readPaidAnotherWayReceiptState(intent);
       task.paidAnotherWayClose = {
         ...close,
         receiptState,
         // Round 9: named in the club's format by the record-by-hand finding;
-        // round 10: the close's share its own notes do not yet cover.
-        ...(receiptState.close ? { amountLabel: formatCents(receiptState.close.uncoveredCents, format) } : {}),
+        // round 11: what is left to record by hand.
+        amountLabel: formatCents(receiptState.recordByHandCents, format),
       };
     }
   }

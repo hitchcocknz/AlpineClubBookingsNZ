@@ -16,6 +16,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
   readLateCaptureXeroReceipt: (...args: unknown[]) => mocks.readLateCaptureXeroReceipt(...args),
+  readPaidAnotherWayLateCaptureXeroReceipt: (...args: unknown[]) => mocks.readLateCaptureXeroReceipt(...args),
   hasXeroReceiptForLateCapture: async (...args: unknown[]) =>
     ((await mocks.readLateCaptureXeroReceipt(...args)) as { kind: string }).kind === "recorded",
 }));

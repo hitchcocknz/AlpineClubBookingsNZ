@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 
-import { readLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
+import { readPaidAnotherWayLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
 import {
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
   closeKeysOf,
@@ -120,7 +120,7 @@ type ReceiptGateStore = Pick<
 
 /**
  * Whether the late capture a close's card refund was refunding now has the
- * receipt the app recorded IN XERO (`readLateCaptureXeroReceipt`, with its
+ * receipt the app recorded IN XERO (`readPaidAnotherWayLateCaptureXeroReceipt`, with its
  * invoice id). Asked of a close whose note waits for that receipt: until it is
  * in Xero, no refund note may answer the close's bank transfer. False for a
  * close that is not a late capture's.
@@ -143,6 +143,6 @@ export async function paidAnotherWayCloseReceiptRecorded(
   });
   const paymentIntentId = operation ? lateCaptureIntentOfApprovalRefundRecoveryKey(operation.idempotencyKey) : null;
   if (paymentIntentId === null) return false;
-  const receipt = await readLateCaptureXeroReceipt(paymentIntentId, store);
+  const receipt = await readPaidAnotherWayLateCaptureXeroReceipt(paymentIntentId, store);
   return receipt.kind === "recorded" && receipt.invoiceId !== null;
 }

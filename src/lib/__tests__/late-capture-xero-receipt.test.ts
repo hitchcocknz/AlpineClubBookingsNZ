@@ -34,6 +34,7 @@ import {
   findLateCapturePaymentIntents,
   hasXeroReceiptForLateCapture,
   readLateCaptureXeroReceipt,
+  readPaidAnotherWayLateCaptureXeroReceipt,
 } from "@/lib/late-capture-xero-receipt";
 import { cancelledBookingPrimaryPaymentRefundReason } from "@/lib/deleted-booking-modification-payment";
 
@@ -90,27 +91,34 @@ describe("readLateCaptureXeroReceipt", () => {
   });
 
   // #3924 round 10 (finding 1): a row resolved by hand AFTER the app sent
-  // it is the app's own invoice in Xero, so a refund of it is noted against
-  // that id - the kept receipt's row, and a change's.
-  it("MUTATION: round 10: a row resolved by hand after the app sent it is recorded against its invoice id", async () => {
+  // it is the app's own invoice in Xero, so a refund closed as paid another
+  // way is noted against that id - the kept receipt's row, and a change's.
+  // Round 11: for that close only; every card-refund path keeps the officer's
+  // record (`late-capture-xero-receipt-verdicts.test.ts`).
+  it("MUTATION: round 10: a row resolved by hand after the app sent it is recorded against its invoice id when paid another way", async () => {
     mocks.keptResolvedFindMany.mockResolvedValue([{ xeroObjectId: "inv_kept" }]);
-    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_kept" });
+    await expect(readPaidAnotherWayLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_kept" });
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "resolved-by-hand" });
     mocks.keptResolvedFindMany.mockResolvedValue([]);
     // PARTIAL (its payment failed) and then resolved by hand.
     mocks.operationFindMany.mockResolvedValue([
       { status: "PARTIAL", xeroObjectId: "inv_change", manuallyResolvedAt: new Date("2026-06-20T00:00:00Z") },
     ]);
-    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_change" });
+    await expect(readPaidAnotherWayLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_change" });
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "resolved-by-hand" });
   });
 
   // #3924 round 10 (finding 2): a change whose invoice is linked in Xero is
-  // recorded against the link, though its row failed after it.
-  it("MUTATION: round 10: a change's active SUPPLEMENTARY_INVOICE link is the receipt", async () => {
+  // recorded against the link, though its row failed after it - round 11:
+  // when paid another way only.
+  it("MUTATION: round 10: a change's active SUPPLEMENTARY_INVOICE link is the receipt when paid another way", async () => {
     mocks.operationFindMany.mockResolvedValue([
       { status: "FAILED", xeroObjectId: null, manuallyResolvedAt: null, localModel: "BookingModification", localId: "mod_1" },
     ]);
     mocks.changeLinkFindFirst.mockResolvedValue({ xeroObjectId: "inv_linked" });
-    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_linked" });
+    await expect(readLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: null, invoiceFailed: true });
+    expect(mocks.changeLinkFindFirst).not.toHaveBeenCalled();
+    await expect(readPaidAnotherWayLateCaptureXeroReceipt("pi_late")).resolves.toEqual({ kind: "recorded", invoiceId: "inv_linked" });
     expect(mocks.changeLinkFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

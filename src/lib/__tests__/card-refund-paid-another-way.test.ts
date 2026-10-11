@@ -61,6 +61,7 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
   readLateCaptureXeroReceipt: mocks.readLateCaptureXeroReceipt,
+  readPaidAnotherWayLateCaptureXeroReceipt: mocks.readLateCaptureXeroReceipt,
   findKeptLateCaptureInvoiceIdForPayment: mocks.findKeptLateCaptureInvoiceIdForPayment,
 }));
 vi.mock("@/lib/club-time-zone-runtime", () => ({
