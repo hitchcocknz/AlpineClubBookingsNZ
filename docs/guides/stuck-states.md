@@ -133,17 +133,27 @@ confirmation say so rather than "on its way". A record that failed after it may
 already have reached Xero - the late charge's own receipt, or a booking
 change's invoice - is never retried automatically, not even by closing the
 refund: check Xero for it first. If it is not there, retry it, and the note
-follows. If it is already there, mark it resolved as fixed in Xero and record
-the refund by hand. A booking change's invoice the app has already linked in
-Xero cannot be retried at all; mark it resolved instead. The Xero repair tool a
-developer runs retries the others, and queues a note that never followed its
-record. If the note itself fails, the record stays in Xero: press **Retry in
-background** on the failed note in Xero Operations. The nightly credit check
-queues a note that was never queued, but does not retry one that failed. If an
-officer recorded the charge in Xero by hand, before or after the close, no note
-is raised: record the refund by hand too. The repair tool names the amount -
-the part no note already covers - when that happened after the close, and stops
-asking once a note for the close exists.
+follows. If it is there, what you do depends on whether the app linked it:
+
+- **Not linked** - you found it in Xero, but its failed operation names no
+  Xero invoice: mark the operation resolved as fixed in Xero, and record the
+  refund by hand.
+- **Already linked** - the operation names its Xero invoice, or the retry
+  refuses because the booking change's invoice is already in Xero: mark it
+  resolved as fixed in Xero, and do **not** record the refund by hand. The app
+  raises the note against that invoice, through the nightly credit check or
+  the Xero repair tool.
+
+The Xero repair tool a developer runs retries the other failed records, and
+queues a note that never followed its record. If the note itself fails, the
+record stays in Xero: press **Retry in background** on the failed note in Xero
+Operations. The nightly credit check queues a note that was never queued, but
+does not retry one that failed. If an officer recorded the charge in Xero by
+hand before the app sent it, no note is raised: record the refund by hand too.
+The repair tool names the amount - what was refunded on the charge, less any
+note already raised for it. It is a reminder only, and stays until a note for
+the close exists, because the app cannot see a refund you record by hand in
+Xero.
 
 The dialog says before you close what will be recorded in Xero, and the
 confirmation says what was queued. When nothing is, check the refund is

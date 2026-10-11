@@ -1651,10 +1651,11 @@ mispricing a booking.
   commits first and is found by the note step; neither can miss the other. It
   adds no cycle: inside the dismissal it is a lock that transaction already
   holds, the worker and the repair tool take no other lock while holding it,
-  and the close takes it after `lock(1)` and the Payment row, as a resolution
-  claim that takes `lock(1)` (`resolveManualRefundTask#1`) takes its task row
-  after it; no holder takes `lock(1)` or the Payment row after the task row. No
-  provider call is made while it is held.
+  and the close takes it after `lock(1)` and the Payment row. The approval
+  task's own resolution and reopen claims take `lock(1)` first or not at all,
+  never after the task row (`resolveManualRefundTask#1`); no holder takes
+  `lock(1)` or the Payment row after the task row. No provider call is made
+  while it is held.
 
 - **Trusted legacy induction baseline** —
   `src/lib/induction-baseline.ts` (`runInductionBaseline`, #2361): apply takes
@@ -4636,8 +4637,9 @@ close waits for the row is read by the close, which then refuses an amount the
 refund already covered. Under the row the close also compares what is owed with
 the figure the treasurer chose against (`expectedOwedCents`, #3924 round 7,
 C7) and refuses a moved one with a 409, so a full or part answer is never
-applied to a figure nobody saw; the page refreshes and they choose again. The order is `lock(1)`, then the Payment row, then the
-allocation, which takes the row it already holds. The claim is a status-guarded
+applied to a figure nobody saw; the page refreshes and they choose again. The
+order is `lock(1)`, then the Payment row, then the allocation, which takes the
+row it already holds. The claim is a status-guarded
 `updateMany` before any money moves; a lost claim writes nothing. The close's
 hand-back task and ledger line are written in the same transaction. The worker
 never claims a dead row, and the Xero note is an outbox row kicked after the
@@ -4664,13 +4666,14 @@ row, reading the receipt under it; a failure there is logged, never failing the
 sent invoice, and the nightly credit reconciliation re-runs the step for any
 payment whose closes' notes do not cover them (round 9), as the repair tool's
 `QUEUE_PAID_ANOTHER_WAY_REFUND_NOTE` does (round 8): each queues a note never
-queued, and neither retries a failed one. A row that may have reached Xero is reported to the close as held for an
-officer, never as queued (round 9). None of these transactions writes
-the Payment row: a paid-another-way note always takes the refund-note enqueue's
-stepped path, which only reads it (C8), and is sized by the close's record less
-its own notes (`readPaidAnotherWayCloseShare`, round 8). A double click queues on the
-key and the second reads the row closed; a refund recorded mid-close gives a
-409 (`card-refund-paid-another-way.realdb.test.ts`). Registered as
+queued, and neither retries a failed one. A row that may have reached Xero is
+reported to the close as held for an officer, never as queued (round 9). None
+of these transactions writes the Payment row: a paid-another-way note always
+takes the refund-note enqueue's stepped path, which only reads it (C8), and is
+sized by the close's record less its own notes (`readPaidAnotherWayCloseShare`,
+round 8). A double click queues on the key and the second reads the row
+closed; a refund recorded mid-close gives a 409
+(`card-refund-paid-another-way.realdb.test.ts`). Registered as
 `closeCardRefundPaidAnotherWay#1`.
 
 A refund Stripe made before the close - the request whose answer was lost - can

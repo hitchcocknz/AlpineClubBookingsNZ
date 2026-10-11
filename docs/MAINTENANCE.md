@@ -1432,6 +1432,8 @@ task was reopened and approved. When an officer recorded the kept invoice by
 hand and resolved it in Xero, the app raises no refund note for it, so a refund
 of that capture raises the report-only
 `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`: record the refund by hand as well.
+A capture whose approved refund was closed as **Paid another way** never raises
+it (#3924 round 11): the close's findings below answer that capture.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had
@@ -1455,19 +1457,29 @@ queues no second receipt beside it: the note follows that invoice. If that
 invoice FAILED, retry it from the Xero operations list: since #3924 round 9 the
 retry sends it back through the outbox on its own row, and the note follows.
 Since round 10 the retry refuses (409) a change invoice whose booking change is
-already linked to its invoice in Xero: mark that operation resolved instead,
-and the receipt is read from the link. A failed change invoice that attempted
-the Xero call may already be in Xero: check Xero first, retry it if it is not
-there, or mark it resolved and record the refund by hand if it is. The nightly
+already linked to its invoice in Xero. A failed change invoice that attempted
+the Xero call may already be in Xero: check Xero first, and retry it if it is
+not there. If it is there, it depends on whether the app linked it (#3924
+round 11). **Not linked** (its operation names no Xero invoice): mark it
+resolved as fixed in Xero and record the refund by hand. **Already linked**
+(its operation names its Xero invoice, or the retry refuses with the 409):
+mark it resolved as fixed in Xero and do **not** record the refund by hand -
+the receipt is read from that invoice, and the app raises the close's note
+through the nightly credit check or `PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED`
+below. The nightly
 credit reconciliation also re-runs the note step for any payment whose closes'
 notes do not cover what they paid back; it queues a note that was never
 queued, but a FAILED note needs **Retry in background** in Xero Operations. If
-an officer resolved the capture's receipt by hand after the close - the change
-invoice or the late charge's own receipt - the report-only
-`PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's record and the
-share of it no note covers: record that bank-transfer refund by hand in Xero.
-It is not raised once any note row of the close exists, one resolved by hand
-included, so it clears once the officer acts.
+an officer resolved the capture's receipt by hand before the app sent it - the
+change invoice or the late charge's own receipt, before or after the close -
+the report-only `PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's
+record and what is left to record: the capture's refunds less the refund notes
+naming it. Record that by hand in Xero. A receipt row resolved after the app
+sent it, or a change linked in Xero, is the app's receipt, so the close's note
+follows it and this finding is not raised. It is not raised once any note row
+of the close exists, one resolved by hand included. Otherwise it stays as a
+reminder until such a row exists: recording the refund by hand in Xero writes
+no row the app can read.
 
 **Credit-paid card bookings invoiced before #3836.** A card booking paid
 entirely with account credit was invoiced at its full price, but the credit was
