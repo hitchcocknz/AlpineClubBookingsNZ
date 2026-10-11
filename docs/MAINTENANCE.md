@@ -1470,41 +1470,51 @@ not there. If it is there, it depends on whether the app linked it (#3924
 round 11). **Not linked** (its operation names no Xero invoice): mark it
 resolved as fixed in Xero and record the refund by hand. **Already linked**
 (its operation names its Xero invoice, or the retry refuses with the 409):
-mark it resolved as fixed in Xero. Do **not** record by hand what the close
-paid back: the receipt is read from that invoice, and the app raises the
-close's note through the nightly credit check or
-`PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED` below. Do record by hand what Stripe
-refunded to the card: every card-refund path reads the resolved row as
-resolved by hand and raises no card note (#3924 round 12). The 409 names both:
-the close's amount, and the capture's card refunds less the notes naming it
-(`readUnnotedLateCaptureCardRefundCents`). Since round 13 only a note in Xero
-counts: one still queued, or failed while it waited for the receipt, never
-reaches Xero once the row is resolved, so its amount is recorded by hand too.
-With no close, or a $0 one, it says to record any card refund by hand. The nightly credit check also re-runs the note step
-for any payment whose closes' notes do not cover what they paid back; it
-queues a note that was never queued, but a FAILED note needs **Retry in
-background** in Xero Operations. If an officer resolved the capture's receipt
+mark it resolved as fixed in Xero first, before recording anything by hand
+(#3924 round 14). Do **not** record by hand what the close paid back: the
+receipt is read from that invoice, and the app raises the close's note through
+the nightly credit check or `PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED` below.
+Do record by hand what Stripe refunded to the card: every card-refund path
+reads the resolved row as resolved by hand and raises no card note (round
+12). The 409 names both: the close's amount, and the capture's card refunds
+less the notes naming it (`readUnnotedLateCaptureCardRefunds`). Since round
+13 only a note in Xero counts. Since round 14 each card note is one of three:
+in Xero (its credit note's id recorded, or resolved by hand), taken off; never
+sent (still queued, or failed before it called Xero), which never reaches Xero
+once the row is resolved, so its amount is recorded by hand; or sent with no
+reply (it called Xero but the app never heard back), which may already be in
+Xero, so the 409 names it apart: check Xero for that credit note and record
+it by hand only if it is not there. While the capture still has another
+invoice in Xero, its card notes land there, and the 409 names only what no
+note asks for. With no close, or a $0 one, it says to record any card refund
+by hand. The nightly credit check also re-runs the note step for any payment
+whose closes' notes do not cover what they paid back; it queues a note that
+was never queued, but a FAILED note needs **Retry in background** in Xero
+Operations. If an officer resolved the capture's receipt
 by hand before the app sent it - the change invoice or the late charge's own
 receipt, before or after the close - the report-only
 `PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND` names the close's record and
 what is left to record: the capture's own card refunds less the refund notes
-in Xero naming it, plus what the close paid back (rounds 12 and 13; never the capture row's
-refunded total, which can carry another hand-back). Record that by hand in
-Xero. A receipt row resolved after the app sent it, or a change linked in
-Xero, is the app's receipt, so the close's note follows it and this finding is
-not raised. It is not raised once any note row of the close exists, one
-resolved by hand included. When every card-refund path reads the capture's
-receipt as resolved by hand, and no record-by-hand finding above names the
-capture, the report-only `LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND` names its
-card refunds that no note in Xero answers, whether or not a close exists
-(round 12). Since round 13 that covers the app's invoice in Xero whose row
-was resolved by hand, a change invoice resolved before the app sent it, and a
-close whose note row exists. Record those by hand in Xero. Each capture is
-named by one record-by-hand finding at most, and by none when the app raises
-its card note. Each record-by-hand finding keeps
-appearing after the refund is recorded by hand, and that is expected:
-recording a refund by hand in Xero writes no row the app can read, and the
-tool has no way to acknowledge a finding.
+in Xero naming it, plus what the close paid back (rounds 12 and 13; never the
+capture row's refunded total, which can carry another hand-back). Record that
+by hand in Xero. A card note sent with no reply is named apart (round 14):
+check Xero for it before recording that amount. A receipt row resolved after
+the app sent it, or a change linked in Xero, is the app's receipt, so the
+close's note follows it and this finding is not raised. It is not raised once
+any note row of the close exists, one resolved by hand included. When every
+card-refund path reads the capture's receipt as resolved by hand, and no
+record-by-hand finding above names the capture, the report-only
+`LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND` names its card refunds that no note
+in Xero answers, whether or not a close exists (round 12). Since round 13 that
+covers the app's invoice in Xero whose row was resolved by hand, a change
+invoice resolved before the app sent it, and a close whose note row exists.
+Record those by hand in Xero, except a card note sent with no reply, which it
+names apart for you to check in Xero first (round 14), as the kept invoice's
+finding does. Each capture is named by one record-by-hand finding at most, and
+by none when the app raises its card note. Each record-by-hand finding keeps
+appearing after the refund is recorded by hand, and that is expected: recording
+a refund by hand in Xero writes no row the app can read, and the tool has no
+way to acknowledge a finding.
 
 **Credit-paid card bookings invoiced before #3836.** A card booking paid
 entirely with account credit was invoiced at its full price, but the credit was

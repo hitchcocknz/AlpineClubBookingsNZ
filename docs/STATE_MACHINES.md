@@ -3364,7 +3364,12 @@ change invoice FAILED -> an officer's retry puts that row back to PENDING with
   raises its note. Round 12: the capture's card refunds are recorded by hand,
   and the 409 names them: every card-refund path reads the resolved row as
   resolved by hand, so no note is raised. Round 13: it names what no card
-  note in Xero answers; with no close, or a $0 one, any later card refund
+  note in Xero answers; with no close, or a $0 one, it says any later card
+  refund is recorded by hand. Round 14: it says to mark the row resolved
+  first, before anything is recorded by hand; names a card note sent with no
+  reply (executed payload, no credit note id) apart, to check in Xero before
+  recording; and while the card verdict still names an invoice in Xero, sizes
+  as the note writer does and says nothing of later card refunds
 note step never ran (receipt in Xero, no note asked) -> the repair tool's
   PAID_ANOTHER_WAY_REFUND_NOTE_NOT_QUEUED queues it through the same step
   (round 8), and the nightly credit check runs the step for every payment
@@ -3387,10 +3392,13 @@ receipt (change invoice or own receipt) resolved by hand before the app sent
   12), with or without a close, raised on every run. Round 13: on that
   card-refund verdict alone - so also a change invoice resolved before the
   app sent it (#4038), and a close whose note row exists - and sized by the
-  card notes in Xero only (one queued, or FAILED while it waited, never gets
-  there). Each capture is named once: the kept invoice's finding (only where
-  the card verdict is resolved by hand, #4039), the close's, or this one;
-  none where the app raises the card note
+  card notes in Xero only. Round 14: a note never sent (queued payload, still
+  queued or FAILED before it called Xero) never gets there, so it is recorded
+  by hand; one sent with no reply (executed payload, no id) may be in Xero, so
+  every record-by-hand finding names it apart, to check in Xero first. Each
+  capture is named once: the kept invoice's finding (only where the card
+  verdict is resolved by hand, #4039), the close's, or this one; none where
+  the app raises the card note
 ```
 
 A close Stripe also paid is listed as paid twice. The treasurer marks it

@@ -140,15 +140,21 @@ follows. If it is there, what you do depends on whether the app linked it:
   refund by hand.
 - **Already linked** - the operation names its Xero invoice, or the retry
   refuses because the booking change's invoice is already in Xero: mark it
-  resolved as fixed in Xero. Do **not** record by hand the amount you paid
-  back another way: the app raises that note against the invoice, through the
-  nightly credit check or the Xero repair tool. Any part of the charge that
-  Stripe refunded to the card is different. Once the operation is resolved
-  the app raises no note for a card refund of the charge, so record that by
-  hand. The retry's message names both amounts, and when nothing, or $0, was
-  closed as paid another way, it says to record any card refund by hand. A
-  card note still waiting to be sent, or failed while it waited, is never
-  sent once the operation is resolved, so its amount is recorded by hand too.
+  resolved as fixed in Xero, and do that first, before you record anything by
+  hand. Do **not** record by hand the amount you paid back another way: the
+  app raises that note against the invoice, through the nightly credit check
+  or the Xero repair tool. Any part of the charge that Stripe refunded to the
+  card is different. Once the operation is resolved the app raises no note
+  for a card refund of the charge, so record that by hand. The retry's
+  message names both amounts, and when nothing, or $0, was closed as paid
+  another way, it says to record any card refund by hand. A card note that
+  was never sent - still waiting, or failed before it reached Xero - is never
+  sent once the operation is resolved, so its amount is in the amount to
+  record by hand. A card note the app sent to Xero but never heard back about
+  may already be there: the message names it separately, so check Xero for
+  that credit note and record it by hand only if it is not there. If the
+  charge still has another invoice in Xero, the app notes its card refunds
+  against that one, and the message names only what no note covers.
 
 The Xero repair tool a developer runs retries the other failed records, and
 queues a note that never followed its record. If the note itself fails, the
@@ -157,15 +163,17 @@ Operations. The nightly credit check queues a note that was never queued, but
 does not retry one that failed. If an officer recorded the charge in Xero by
 hand before the app sent it, no note is raised: record the refund by hand too.
 The repair tool names the amount: what was refunded to the card, less any note
-already in Xero for it, plus what you paid back another way. Whenever the
-charge's record was resolved by hand and that finding does not apply - the
-app's own invoice in Xero whose operation was resolved by hand, a change's
-invoice resolved before the app sent it, or once a note for the close exists -
-the repair tool names the card refunds to record by hand on their own. It
-names each charge once at most, and not at all when the app raises the note.
-Either finding is a reminder only. It keeps appearing after you record the
-refund by hand, and that is expected: the app cannot see what you record by
-hand in Xero. The close's finding stops only once a note for the close exists.
+already in Xero for it, plus what you paid back another way. A card note the
+app sent but never heard back about is named separately: check Xero for it
+before you record that part. Whenever the charge's record was resolved by hand
+and that finding does not apply - the app's own invoice in Xero whose operation
+was resolved by hand, a change's invoice resolved before the app sent it, or
+once a note for the close exists - the repair tool names the card refunds to
+record by hand on their own. It names each charge once at most, and not at all
+when the app raises the note. Either finding is a reminder only. It keeps
+appearing after you record the refund by hand, and that is expected: the app
+cannot see what you record by hand in Xero. The close's finding stops only once
+a note for the close exists.
 
 The dialog says before you close what will be recorded in Xero, and the
 confirmation says what was queued. When nothing is, check the refund is
