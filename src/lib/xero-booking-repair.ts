@@ -81,6 +81,8 @@ async function withPaidAnotherWayCloses(
         // Round 9: named in the club's format by the record-by-hand finding;
         // round 11: what is left to record by hand.
         amountLabel: formatCents(receiptState.recordByHandCents, format),
+        // Round 14: named apart, to check in Xero first.
+        cardNoteMayBeInXeroLabel: formatCents(receiptState.cardNoteMayBeInXeroCents, format),
       };
     }
   }
@@ -90,7 +92,8 @@ async function withPaidAnotherWayCloses(
 /**
  * #3924 round 12 (`LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND`): on a cancelled
  * booking, each late capture's card refunds no note will answer
- * (`readLateCaptureCardRefundsByHand`), named in the club's format.
+ * (`readLateCaptureCardRefundsByHand`), named in the club's format - round
+ * 14: with, apart, those a card note sent without a reply may answer.
  */
 async function withLateCaptureCardRefundsByHand(
   contexts: Awaited<ReturnType<typeof loadAuditData>>,
@@ -106,7 +109,15 @@ async function withLateCaptureCardRefundsByHand(
     if (intents.length === 0) continue;
     const byHand = await deps.readLateCaptureCardRefundsByHand(payment.id, intents);
     context.lateCaptureCardRefundsByHand = new Map(
-      [...byHand].map(([intent, cents]) => [intent, { cents, amountLabel: formatCents(cents, format) }]),
+      [...byHand].map(([intent, { byHandCents, mayBeInXeroCents }]) => [
+        intent,
+        {
+          cents: byHandCents,
+          amountLabel: formatCents(byHandCents, format),
+          mayBeInXeroCents,
+          mayBeInXeroLabel: formatCents(mayBeInXeroCents, format),
+        },
+      ]),
     );
   }
   return contexts;

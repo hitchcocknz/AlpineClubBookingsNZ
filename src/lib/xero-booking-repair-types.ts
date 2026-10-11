@@ -517,6 +517,12 @@ export interface BookingClassificationContext {
          * left to record (`PaidAnotherWayReceiptState.recordByHandCents`).
          */
         amountLabel?: string;
+        /**
+         * #3924 round 14: in the club's format, a card note sent to Xero
+         * without a reply may already answer
+         * (`PaidAnotherWayReceiptState.cardNoteMayBeInXeroCents`).
+         */
+        cardNoteMayBeInXeroLabel?: string;
       };
     }
   >;
@@ -531,7 +537,7 @@ export interface BookingClassificationContext {
    * answer (`readLateCaptureCardRefundsByHand`), in cents and the club's format,
    * for the kept invoice's and the card's record-by-hand findings. Set after the load.
    */
-  lateCaptureCardRefundsByHand?: Map<string, { cents: number; amountLabel: string }>;
+  lateCaptureCardRefundsByHand?: Map<string, LateCaptureCardRefundsByHandEntry>;
   /**
    * #3635: the refund cents a note may still answer for a cancelled booking's
    * payment, any source (#3880 round 3), through `readRefundCreditNoteGap`, or
@@ -602,4 +608,16 @@ export interface MutableFinding {
   safeToAutoApply: boolean;
   details: Record<string, unknown>;
   actionKeys: string[];
+}
+
+/**
+ * #3924 rounds 12-14: one late capture's card refunds no note will answer
+ * (`cents`), and apart those a card note sent to Xero without a reply may
+ * already answer (`mayBeInXeroCents`), each in the club's format.
+ */
+export interface LateCaptureCardRefundsByHandEntry {
+  cents: number;
+  amountLabel: string;
+  mayBeInXeroCents: number;
+  mayBeInXeroLabel: string;
 }

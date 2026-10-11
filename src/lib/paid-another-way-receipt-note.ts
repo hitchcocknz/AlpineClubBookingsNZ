@@ -102,9 +102,11 @@ export async function queueWaitingPaidAnotherWayNotesForPayment(paymentId: strin
  * (`keptReceiptMayHaveReachedXero`). Round 11: what is left to record by
  * hand when the receipt was resolved by hand (`recordByHandCents`). Round 12:
  * the capture's own card refunds less the refund notes naming it
- * (`readUnnotedLateCaptureCardRefundCents`), plus what the close paid back -
+ * (`readUnnotedLateCaptureCardRefunds`), plus what the close paid back -
  * never `PaymentTransaction.refundedAmountCents`, which also carries any
- * other hand-back allocated to the capture's row.
+ * other hand-back allocated to the capture's row. Round 14: a card note sent
+ * to Xero without a reply is never in that figure, but named apart
+ * (`cardNoteMayBeInXeroCents`) for the officer to check Xero first.
  */
 export interface PaidAnotherWayReceiptState {
   receipt: LateCaptureXeroReceipt;
@@ -114,6 +116,7 @@ export interface PaidAnotherWayReceiptState {
   invoiceLinked: boolean;
   paymentLinked: boolean;
   recordByHandCents: number;
+  cardNoteMayBeInXeroCents: number;
 }
 
 export async function readPaidAnotherWayReceiptState(paymentIntentId: string): Promise<PaidAnotherWayReceiptState> {
@@ -138,24 +141,30 @@ export async function readPaidAnotherWayReceiptState(paymentIntentId: string): P
         })
       ).map((link) => link.role)
     : [];
+  const byHand = receipt.kind === "resolved-by-hand" && Boolean(task?.paymentId);
+  const card = byHand
+    ? await readCardRefundsByHand(task?.paymentId, paymentIntentId)
+    : { byHandCents: 0, mayBeInXeroCents: 0 };
   return {
     receipt,
     close: close ? { id: close.id, amountCents: Math.max(0, close.amountCents ?? 0) } : null,
     noteAsked,
     invoiceLinked: roles.includes(KEPT_LATE_CAPTURE_INVOICE_ROLE),
     paymentLinked: roles.includes(KEPT_LATE_CAPTURE_PAYMENT_ROLE),
-    recordByHandCents:
-      receipt.kind === "resolved-by-hand" && task?.paymentId
-        ? (await readCardRefundsByHandCents(task.paymentId, paymentIntentId)) + Math.max(0, close?.amountCents ?? 0)
-        : 0,
+    recordByHandCents: card.byHandCents + (byHand ? Math.max(0, close?.amountCents ?? 0) : 0),
+    cardNoteMayBeInXeroCents: card.mayBeInXeroCents,
   };
 }
 
-/** Round 12: the capture's card refunds no note answers (see `PaidAnotherWayReceiptState`). */
-async function readCardRefundsByHandCents(paymentId: string, paymentIntentId: string): Promise<number> {
+/**
+ * Round 12: the capture's card refunds no note answers (see
+ * `PaidAnotherWayReceiptState`), read only when the receipt was resolved by hand.
+ */
+async function readCardRefundsByHand(paymentId: string | null | undefined, paymentIntentId: string) {
+  if (!paymentId) return { byHandCents: 0, mayBeInXeroCents: 0 };
   // Imported here, not at the top: that module reaches the outbox.
-  const { readUnnotedLateCaptureCardRefundCents } = await import("@/lib/late-capture-refund-credit-note");
-  return readUnnotedLateCaptureCardRefundCents(paymentId, paymentIntentId);
+  const { readUnnotedLateCaptureCardRefunds } = await import("@/lib/late-capture-refund-credit-note");
+  return readUnnotedLateCaptureCardRefunds(paymentId, paymentIntentId);
 }
 
 /** Was this close's bank-transfer note ever asked for: any row of it but a withdrawn one, resolved by hand included. */

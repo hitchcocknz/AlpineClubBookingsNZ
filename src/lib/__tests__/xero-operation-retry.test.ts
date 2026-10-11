@@ -39,7 +39,9 @@ const mocks = vi.hoisted(() => ({
   // #3924 round 12: what the linked change invoice's 409 names - the close's
   // share, and the card refunds no note answers.
   findLateCaptureRefundPaidAnotherWay: vi.fn().mockResolvedValue(null),
-  readUnnotedLateCaptureCardRefundCents: vi.fn().mockResolvedValue(0),
+  readUnnotedLateCaptureCardRefunds: vi
+    .fn()
+    .mockResolvedValue({ byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand: false }),
   findFirstXeroObjectLink: vi.fn().mockResolvedValue(null),
   // #3548: the one read-back-then-settle the repair leg hands a note to.
   finishRefundCreditNoteSettlement: vi.fn().mockResolvedValue({ refundPaymentErr: null }),
@@ -137,7 +139,7 @@ vi.mock("@/lib/late-capture-paid-another-way", async (importOriginal) => ({
 }));
 vi.mock("@/lib/late-capture-refund-credit-note", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/late-capture-refund-credit-note")),
-  readUnnotedLateCaptureCardRefundCents: mocks.readUnnotedLateCaptureCardRefundCents,
+  readUnnotedLateCaptureCardRefunds: mocks.readUnnotedLateCaptureCardRefunds,
 }));
 
 vi.mock("@/lib/xero-sync", async (importOriginal) => {
@@ -2623,7 +2625,7 @@ describe("retryXeroSyncOperation", () => {
     // recorded by hand, and a later card refund is.
     await expect(refused).rejects.toMatchObject({
       message: expect.stringMatching(
-        /instead\. If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it\.$/,
+        /instead, and do that first, before recording anything by hand in Xero\. If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it\.$/,
       ),
     });
     await expect(refused).rejects.not.toMatchObject({ message: expect.stringMatching(/Do not record/) });
@@ -2666,7 +2668,17 @@ describe("retryXeroSyncOperation", () => {
           paymentIntentId: "pi_late",
         },
       });
-    const refusal = async ({ closeCents, cardCents }: { closeCents: number | null; cardCents: number }) => {
+    const refusal = async ({
+      closeCents,
+      cardCents,
+      mayBeInXeroCents = 0,
+      notesCanStillLand = false,
+    }: {
+      closeCents: number | null;
+      cardCents: number;
+      mayBeInXeroCents?: number;
+      notesCanStillLand?: boolean;
+    }) => {
       mocks.findUniqueOperation.mockResolvedValue(linkedLateChange());
       mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ id: "task_late" });
       mocks.findUniqueManualRefundTask.mockResolvedValueOnce({ paymentId: "payment_1" });
@@ -2674,7 +2686,11 @@ describe("retryXeroSyncOperation", () => {
       mocks.findLateCaptureRefundPaidAnotherWay.mockResolvedValueOnce(
         closeCents === null ? null : { id: "close_1", paymentId: "payment_1", amountCents: closeCents },
       );
-      mocks.readUnnotedLateCaptureCardRefundCents.mockResolvedValueOnce(cardCents);
+      mocks.readUnnotedLateCaptureCardRefunds.mockResolvedValueOnce({
+        byHandCents: cardCents,
+        mayBeInXeroCents,
+        notesCanStillLand,
+      });
       const error = await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(XeroOperationRetryError);
       expect(error).toMatchObject({ status: 409 });
@@ -2686,7 +2702,7 @@ describe("retryXeroSyncOperation", () => {
       const message = await refusal({ closeCents: null, cardCents: 40000 });
       expect(message).toMatch(/Record the \$400\.00 refunded to the card by hand in Xero: once this operation is resolved the app raises no refund note for a card refund of this charge\.$/);
       expect(message).not.toMatch(/Do not record/);
-      expect(mocks.readUnnotedLateCaptureCardRefundCents).toHaveBeenCalledWith("payment_1", "pi_late");
+      expect(mocks.readUnnotedLateCaptureCardRefunds).toHaveBeenCalledWith("payment_1", "pi_late");
     });
 
     it("MUTATION: split - the close's share is not recorded by hand, the card share is", async () => {
@@ -2707,6 +2723,42 @@ describe("retryXeroSyncOperation", () => {
       const message = await refusal({ closeCents: 0, cardCents: 0 });
       expect(message).not.toMatch(/Do not record/);
       expect(message).toMatch(/If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it\.$/);
+    });
+
+    // Round 14: the row is resolved before anything is recorded by hand -
+    // until then a card note waiting for the receipt may still be sent.
+    it("MUTATION: round 14: says to mark the row resolved first, before recording anything by hand", async () => {
+      const message = await refusal({ closeCents: null, cardCents: 40000 });
+      expect(message).toMatch(
+        /^This late card charge's change invoice is already in Xero, so retrying it could raise a second invoice\. Mark this operation resolved as fixed in Xero instead, and do that first, before recording anything by hand in Xero\. /,
+      );
+    });
+
+    // Round 14: a card note sent without a reply may be in Xero - named apart,
+    // never in the amount to record by hand, and checked in Xero first.
+    it("MUTATION: round 14: a card note sent without a reply is named apart, to check in Xero before recording", async () => {
+      const message = await refusal({ closeCents: null, cardCents: 25000, mayBeInXeroCents: 15000 });
+      expect(message).toMatch(/Record the \$250\.00 refunded to the card by hand in Xero/);
+      expect(message).toMatch(
+        /A refund credit note for \$150\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first, and record that \$150\.00 by hand only if Xero does not hold it\.$/,
+      );
+      expect(message).not.toMatch(/If this charge is refunded to the card/);
+      const onlySent = await refusal({ closeCents: null, cardCents: 0, mayBeInXeroCents: 15000 });
+      expect(onlySent).not.toMatch(/Record the|If this charge is refunded to the card/);
+      expect(onlySent).toMatch(/check Xero for that credit note first/);
+    });
+
+    // Round 14: while the card verdict still names an invoice in Xero, the
+    // app's card notes land against it: only what no note asks for is named,
+    // and nothing says the app raises no note.
+    it("MUTATION: round 14: while card notes can still land, names only what no note asks for and claims no note is withheld", async () => {
+      const message = await refusal({ closeCents: null, cardCents: 5000, notesCanStillLand: true });
+      expect(message).toMatch(
+        /Record the \$50\.00 refunded to the card that no refund note answers by hand in Xero; the app notes this charge's other card refunds against the invoice it has in Xero\.$/,
+      );
+      expect(message).not.toMatch(/raises no refund note/);
+      const nothing = await refusal({ closeCents: null, cardCents: 0, notesCanStillLand: true });
+      expect(nothing).not.toMatch(/Record the|If this charge is refunded to the card|raises no refund note/);
     });
   });
 

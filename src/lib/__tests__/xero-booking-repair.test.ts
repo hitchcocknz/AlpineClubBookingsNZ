@@ -261,6 +261,9 @@ function recomputePaymentSummary(payment: any) {
   );
 }
 
+/** #3924 round 14: a capture's by-hand card refunds - cents alone, or with the share a note sent without a reply may answer. */
+type CardByHand = number | { byHandCents: number; mayBeInXeroCents: number };
+
 function createDependencies(state: {
   bookings: any[];
   links?: any[];
@@ -302,8 +305,14 @@ function createDependencies(state: {
   paidAnotherWayCloseRecord?: { id: string; amountCents: number } | null;
   /** #3924 round 11: the capture's refunds less the notes naming it. */
   paidAnotherWayRecordByHandCents?: number;
-  /** #3924 round 12: by intent, a late capture's card refunds no note will answer. */
-  lateCaptureCardRefundsByHand?: Record<string, number>;
+  /** #3924 round 14: the capture's card refunds a note sent without a reply may answer. */
+  paidAnotherWayCardNoteMayBeInXeroCents?: number;
+  /**
+   * #3924 round 12: by intent, a late capture's card refunds no note will
+   * answer; round 14: or, as an object, with those a note sent without a reply
+   * may answer.
+   */
+  lateCaptureCardRefundsByHand?: Record<string, CardByHand>;
   // #3643 F2: the organisation late-cash arm's CANCELLED_BOOKING_HAND_BACK tasks.
   handBackTasks?: { bookingId: string; paymentId: string }[];
   // #3643 (owner decision 28 Sep 2026): DECISION 2 part-payment review tasks.
@@ -695,12 +704,21 @@ function createDependencies(state: {
       invoiceLinked: state.paidAnotherWayReceiptLinks?.includes("invoice") ?? false,
       paymentLinked: state.paidAnotherWayReceiptLinks?.includes("payment") ?? false,
       recordByHandCents: state.paidAnotherWayRecordByHandCents ?? 6000,
+      cardNoteMayBeInXeroCents: state.paidAnotherWayCardNoteMayBeInXeroCents ?? 0,
     })),
     queueWaitingPaidAnotherWayNote: vi.fn().mockResolvedValue("op_note"),
     // #3924 round 12: none, unless a test says so.
     readLateCaptureCardRefundsByHand: vi
       .fn()
-      .mockImplementation(async () => new Map(Object.entries(state.lateCaptureCardRefundsByHand ?? {}))),
+      .mockImplementation(
+        async () =>
+          new Map(
+            Object.entries(state.lateCaptureCardRefundsByHand ?? {}).map(([intent, value]) => [
+              intent,
+              typeof value === "number" ? { byHandCents: value, mayBeInXeroCents: 0 } : value,
+            ]),
+          ),
+      ),
   };
 }
 
@@ -4208,7 +4226,7 @@ describe("runBookingXeroRepair", () => {
       booking: ReturnType<typeof makeBooking>,
       status: string,
       operations: unknown[] = [],
-      lateCaptureCardRefundsByHand?: Record<string, number>,
+      lateCaptureCardRefundsByHand?: Record<string, CardByHand>,
     ) => {
       const deps = createDependencies({
         bookings: [booking],
@@ -4376,6 +4394,16 @@ describe("runBookingXeroRepair", () => {
       expect(bookingReport.actions).toEqual([]);
 
       expect(byHand((await run(keptBooking(), "DISMISSED", [resolved])).bookingReport)).toBeUndefined();
+
+      // Round 14: a card note sent without a reply is named apart, to check
+      // in Xero first, and never in the amount to record by hand.
+      const sent = await run(refunded, "COMPLETED", [resolved], { pi_kept: { byHandCents: 2500, mayBeInXeroCents: 5000 } });
+      expect(byHand(sent.bookingReport)).toMatchObject({
+        summary: expect.stringMatching(
+          /record the \$25\.00 refunded by hand in Xero too\. A refund credit note for \$50\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first, and record that \$50\.00 by hand only if Xero does not hold it\. This finding is report-only/,
+        ),
+        details: expect.objectContaining({ recordByHandCents: 2500, cardNoteMayBeInXeroCents: 5000 }),
+      });
     });
 
     // #3924 round 13 (#4039): a PARTIAL kept row resolved by hand whose
@@ -4437,6 +4465,24 @@ describe("runBookingXeroRepair", () => {
       expect(deps.readLateCaptureCardRefundsByHand).toHaveBeenCalledWith("payment_1", ["pi_kept"]);
     });
 
+    // Round 14: a capture whose only card refunds a note sent without a reply
+    // may answer is still named - nothing to record yet, Xero to check first.
+    it("MUTATION: round 14: a card note sent without a reply is named apart, with nothing said to record by hand", async () => {
+      const refunded = keptBooking(
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+        { refundedAmountCents: 10000, status: "REFUNDED" },
+      );
+      const { bookingReport } = await run(refunded, "COMPLETED", [], { pi_kept: { byHandCents: 0, mayBeInXeroCents: 10000 } });
+      const card = bookingReport.findings.find((finding) => finding.code === "LATE_CAPTURE_CARD_REFUND_RECORD_BY_HAND");
+      expect(card).toMatchObject({
+        details: { paymentId: "payment_1", paymentIntentId: "pi_kept", recordByHandCents: 0, cardNoteMayBeInXeroCents: 10000 },
+      });
+      expect(card?.summary).toMatch(
+        /raises no refund note for the card refunds of it\. A refund credit note for \$100\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first/,
+      );
+      expect(card?.summary).not.toMatch(/record the \$/);
+    });
+
     it("round 12: the card finding is read only for a cancelled booking", async () => {
       const { bookingReport, deps } = await run(
         makeBooking({ payment: { ...keptBooking().payment } }),
@@ -4465,6 +4511,7 @@ describe("runBookingXeroRepair", () => {
           | "paidAnotherWayReceiptLinks"
           | "paidAnotherWayCloseRecord"
           | "paidAnotherWayRecordByHandCents"
+          | "paidAnotherWayCardNoteMayBeInXeroCents"
           | "lateCaptureCardRefundsByHand"
         > = {},
         apply = false,
@@ -4644,6 +4691,23 @@ describe("runBookingXeroRepair", () => {
           expect(finding?.summary).toMatch(/the change invoice or the late charge's own receipt/);
           expect(finding?.summary).toMatch(/record the \$25\.00 refunded on it by hand in Xero\. This finding is report-only and keeps appearing/);
           expect(finding?.details).toMatchObject({ closeAmountCents: 6000, recordByHandCents: 2500 });
+        });
+
+        // Round 14: a card note sent without a reply is never in the close's
+        // amount to record by hand, but named apart, to check in Xero first.
+        it("MUTATION: round 14: the close's finding names a card note sent without a reply apart", async () => {
+          const bookingReport = await runClosed("after-receipt", [], keptBooking(), {
+            paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+            paidAnotherWayRecordByHandCents: 6000,
+            paidAnotherWayCardNoteMayBeInXeroCents: 1500,
+          });
+          const finding = bookingReport.findings.find(
+            (candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
+          ) as { summary: string; details: Record<string, unknown> } | undefined;
+          expect(finding?.summary).toMatch(
+            /record the \$60\.00 refunded on it by hand in Xero\. A refund credit note for \$15\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first/,
+          );
+          expect(finding?.details).toMatchObject({ recordByHandCents: 6000, cardNoteMayBeInXeroCents: 1500 });
         });
 
         // #3924 round 11 (F1): a kept receipt row resolved by hand, on a

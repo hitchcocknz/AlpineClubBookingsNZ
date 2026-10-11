@@ -1,4 +1,5 @@
 import type { ClubFormat } from "@/lib/club-format";
+import { cardNoteMayBeInXeroSentence } from "@/lib/late-capture-card-note-wording";
 import { findLateCaptureRefundPaidAnotherWay } from "@/lib/late-capture-paid-another-way";
 import { findActiveSupplementaryInvoiceLink } from "@/lib/late-capture-xero-receipt";
 import { prisma } from "@/lib/prisma";
@@ -44,7 +45,14 @@ export async function isLateCaptureApprovalChangeInvoice(payload: Record<string,
  * hand. Every card-refund path reads the row resolved by hand
  * (`readLateCaptureXeroReceipt`), so the app raises no note for the capture's
  * card refunds, and the refusal names what of them no note answers
- * (`readUnnotedLateCaptureCardRefundCents`) to record by hand.
+ * (`readUnnotedLateCaptureCardRefunds`) to record by hand.
+ *
+ * Round 14: the row is resolved FIRST, before anything is recorded by hand -
+ * until then a card note waiting for the receipt may still be sent. A card
+ * note sent to Xero without a reply is named apart, to check in Xero before
+ * recording it. And while the card verdict still names an invoice in Xero
+ * (`notesCanStillLand`), the app notes the capture's card refunds against it,
+ * so only what no note asks for is named, and nothing is said of later ones.
  */
 export async function linkedChangeInvoiceRetryRefusal(
   operation: { localModel: string | null; localId: string | null },
@@ -61,38 +69,57 @@ export async function linkedChangeInvoiceRetryRefusal(
   });
   const paymentId = close?.paymentId ?? task?.paymentId ?? null;
   // Imported here, not at the top: that module reaches the outbox.
-  const { readUnnotedLateCaptureCardRefundCents } = await import("@/lib/late-capture-refund-credit-note");
+  const { readUnnotedLateCaptureCardRefunds } = await import("@/lib/late-capture-refund-credit-note");
+  const card = paymentId
+    ? await readUnnotedLateCaptureCardRefunds(paymentId, paymentIntentId)
+    : { byHandCents: 0, mayBeInXeroCents: 0, notesCanStillLand: false };
   return linkedChangeInvoiceRetryRefusalMessage(
-    {
-      closeCents: close ? Math.max(0, close.amountCents ?? 0) : null,
-      cardByHandCents: paymentId ? await readUnnotedLateCaptureCardRefundCents(paymentId, paymentIntentId) : 0,
-    },
+    { closeCents: close ? Math.max(0, close.amountCents ?? 0) : null, ...card },
     format,
   );
 }
 
 /**
- * The 409's words: the close's share is never recorded by hand, the card
- * refunds always are. `cardByHandCents` counts only notes in Xero (round 13,
- * `readUnnotedLateCaptureCardRefundCents`).
+ * The 409's words: resolve the row first; the close's share is never recorded
+ * by hand; the card refunds no note answers are, and those a note sent
+ * without a reply may answer only once Xero is checked.
  */
 function linkedChangeInvoiceRetryRefusalMessage(
-  { closeCents, cardByHandCents }: { closeCents: number | null; cardByHandCents: number },
+  figures: {
+    closeCents: number | null;
+    byHandCents: number;
+    mayBeInXeroCents: number;
+    notesCanStillLand: boolean;
+  },
   format: ClubFormat,
 ): string {
+  const { closeCents, byHandCents, mayBeInXeroCents, notesCanStillLand } = figures;
   const parts = [
-    "This late card charge's change invoice is already in Xero, so retrying it could raise a second invoice. Mark this operation resolved as fixed in Xero instead.",
+    "This late card charge's change invoice is already in Xero, so retrying it could raise a second invoice. Mark this operation resolved as fixed in Xero instead, and do that first, before recording anything by hand in Xero.",
   ];
   if (closeCents !== null && closeCents > 0) {
     parts.push(
       `Do not record the ${formatCents(closeCents, format)} paid back another way by hand: the app raises that refund note against the invoice already there, through the nightly credit check or the Xero repair tool.`,
     );
   }
-  if (cardByHandCents > 0) {
+  if (notesCanStillLand) {
+    // The app's card notes still land against an invoice in Xero.
+    if (byHandCents > 0) {
+      parts.push(
+        `Record the ${formatCents(byHandCents, format)} refunded to the card that no refund note answers by hand in Xero; the app notes this charge's other card refunds against the invoice it has in Xero.`,
+      );
+    }
+    return parts.join(" ");
+  }
+  if (byHandCents > 0) {
     parts.push(
-      `Record the ${formatCents(cardByHandCents, format)} refunded to the card by hand in Xero: once this operation is resolved the app raises no refund note for a card refund of this charge.`,
+      `Record the ${formatCents(byHandCents, format)} refunded to the card by hand in Xero: once this operation is resolved the app raises no refund note for a card refund of this charge.`,
     );
-  } else if (!closeCents) {
+  }
+  if (mayBeInXeroCents > 0) {
+    parts.push(cardNoteMayBeInXeroSentence(formatCents(mayBeInXeroCents, format)));
+  }
+  if (byHandCents === 0 && mayBeInXeroCents === 0 && !closeCents) {
     // No close, or a $0 one (round 13): a later card refund is still the officer's to record.
     parts.push(
       "If this charge is refunded to the card, record that refund by hand in Xero: once this operation is resolved the app raises no refund note for it.",
