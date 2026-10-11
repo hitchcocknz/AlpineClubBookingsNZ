@@ -305,7 +305,14 @@ export async function getPaymentIntent(
  * cannot look an intent up by its key, so the minter stamps the key into the
  * intent's metadata and this finds it by that stamp. A list, not the search
  * API, because a list is read-after-write consistent; bounded to the intents
- * created since `createdSince` and to `maxScanned` of them.
+ * created since `createdSince` and to `maxScanned` of them per scan.
+ *
+ * Round 8: by `customerId` first - the list is newest first across the whole
+ * account, so a busy club's other intents could fill `maxScanned` before the
+ * one sought is reached - THEN, not found there, across the account with no
+ * customer filter. The earlier request may have named a different customer
+ * than this caller resolved (the reason the row records the customer the found
+ * intent carries), and a customer filter alone would never find it.
  */
 export async function findRecentPaymentIntentByMetadata({
   metadataKey,
@@ -317,26 +324,25 @@ export async function findRecentPaymentIntentByMetadata({
   metadataKey: string;
   metadataValue: string;
   createdSince: Date;
-  /**
-   * Round 7: the customer the intent was minted for. The list is newest first
-   * across the whole account, so without it a busy club's other intents could
-   * fill `maxScanned` before the one sought is reached.
-   */
+  /** The customer this caller would mint for: scanned first, never only. */
   customerId?: string;
   maxScanned?: number;
 }): Promise<Stripe.PaymentIntent | null> {
   const stripe = await getStripe();
-  let scanned = 0;
-  for await (const intent of stripe.paymentIntents.list({
-    ...(customerId ? { customer: customerId } : {}),
-    created: { gte: Math.floor(createdSince.getTime() / 1000) },
-    limit: 100,
-  })) {
-    if (intent.metadata?.[metadataKey] === metadataValue) return intent;
-    scanned += 1;
-    if (scanned >= maxScanned) break;
-  }
-  return null;
+  const scan = async (customer: string | undefined): Promise<Stripe.PaymentIntent | null> => {
+    let scanned = 0;
+    for await (const intent of stripe.paymentIntents.list({
+      ...(customer ? { customer } : {}),
+      created: { gte: Math.floor(createdSince.getTime() / 1000) },
+      limit: 100,
+    })) {
+      if (intent.metadata?.[metadataKey] === metadataValue) return intent;
+      scanned += 1;
+      if (scanned >= maxScanned) break;
+    }
+    return null;
+  };
+  return (customerId ? await scan(customerId) : null) ?? (await scan(undefined));
 }
 
 /**

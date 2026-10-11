@@ -28,8 +28,11 @@
  *
  * And a refusal that still comes back is answered by fetching the intent the
  * key already minted (`mintReissuedAskIntent`), found by the key it carries in
- * its metadata, among that customer's intents; the row records the customer
- * that intent was actually minted for (`mintedIntentCustomerId`).
+ * its metadata - looked for among this caller's customer's intents first, then,
+ * since the earlier request may have named another customer, across the
+ * account's recent intents (`findRecentPaymentIntentByMetadata`, round 8). The
+ * row records the customer the found intent was actually minted for
+ * (`mintedIntentCustomerId`), whichever scan found it.
  *
  * The rule is `INV-PAY-120`.
  */
