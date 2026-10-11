@@ -4370,9 +4370,9 @@ describe("runBookingXeroRepair", () => {
       expect(byHand(bookingReport)).toMatchObject({
         severity: "warning",
         safeToAutoApply: false,
+        summary: expect.stringMatching(/record the \$75\.00 refunded by hand in Xero too/),
         details: expect.objectContaining({ paymentIntentId: "pi_kept", recordByHandCents: 7500, operationId: resolved.id }),
       });
-      expect((byHand(bookingReport) as { summary: string }).summary).toMatch(/record the \$75\.00 refunded by hand in Xero too/);
       expect(bookingReport.actions).toEqual([]);
 
       expect(byHand((await run(keptBooking(), "DISMISSED", [resolved])).bookingReport)).toBeUndefined();
