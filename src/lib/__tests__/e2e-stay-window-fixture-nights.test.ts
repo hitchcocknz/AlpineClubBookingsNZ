@@ -146,50 +146,153 @@ function seedDateWriteProblems(code: string): string[] {
 // Comments and quoted descriptions cannot stand in for the live selector.
 function hostingDateBindings(code: string): { base: number | undefined; linked: boolean } {
   const source = ts.createSourceFile("hosting.ts", code, ts.ScriptTarget.Latest, true);
-  const imported = new Set<string>();
-  let base: number | undefined;
-  let linked = false;
+  // Resolve lexical bindings only; imports need no filesystem/module loading.
+  const options = { noLib: true, noResolve: true };
+  const host = ts.createCompilerHost(options);
+  host.getSourceFile = (file) => file === source.fileName ? source : undefined;
+  const checker = ts.createProgram([source.fileName], options, host).getTypeChecker();
+  const symbol = (node: ts.Node) => checker.getSymbolAtLocation(node);
+  const imported = new Map<string, ts.Symbol>();
+  const calls: ts.CallExpression[] = [];
+  const identifiers: ts.Identifier[] = [];
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) &&
-        node.moduleSpecifier.text === "./helpers/stay-dates") {
+        node.moduleSpecifier.text === "./helpers/stay-dates" && !node.importClause?.isTypeOnly) {
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamedImports(bindings)) {
         for (const binding of bindings.elements) {
-          if (!binding.propertyName) imported.add(binding.name.text);
+          const bindingSymbol = symbol(binding.name);
+          if (!binding.propertyName && !binding.isTypeOnly && bindingSymbol) {
+            imported.set(binding.name.text, bindingSymbol);
+          }
         }
       }
     }
-    if (ts.isCallExpression(node) && node.expression.getText(source) === "stayWindowForAttempt" &&
-        node.arguments[0] && ts.isNumericLiteral(node.arguments[0]) &&
-        node.arguments[1]?.getText(source) === "test.info().retry") {
-      base = Number(node.arguments[0].text);
-    }
-    if (ts.isCallExpression(node) && node.expression.getText(source) === "linkedMoveStayWindows" &&
-        node.arguments.length === 1 && node.arguments[0]?.getText(source) === "WINDOW" &&
-        ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name)) {
-      const pairName = node.parent.name.text;
-      let callback: ts.Node = node.parent;
-      while (!ts.isArrowFunction(callback) && !ts.isSourceFile(callback)) callback = callback.parent;
-      if (ts.isArrowFunction(callback) && ts.isCallExpression(callback.parent) &&
-          callback.parent.expression.getText(source) === "test" &&
-          callback.parent.arguments[0] && ts.isStringLiteral(callback.parent.arguments[0]) &&
-          callback.parent.arguments[0].text.includes("(#3232)") && ts.isBlock(callback.body)) {
-        const declarations = callback.body.statements.flatMap((statement) =>
-          ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : [],
-        );
-        linked = ["start", "target"].every((name) => declarations.some((declaration) =>
-          declaration.name.getText(source) === name &&
-          declaration.initializer?.getText(source) === `${pairName}.${name}.checkIn`,
-        ));
-      }
-    }
+    if (ts.isCallExpression(node)) calls.push(node);
+    if (ts.isIdentifier(node)) identifiers.push(node);
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return {
-    base: imported.has("stayWindowForAttempt") ? base : undefined,
-    linked: imported.has("linkedMoveStayWindows") && linked,
+  const helperCalls = (name: string) => calls.filter((call) =>
+    ts.isIdentifier(call.expression) && call.expression.text === name,
+  );
+  const canonicalCall = (call: ts.CallExpression, name: string) =>
+    imported.has(name) && symbol(call.expression) === imported.get(name);
+  const callbackBody = (call: ts.CallExpression) => {
+    const callback = call.arguments.at(-1);
+    return call.parent.parent === source && ts.isExpressionStatement(call.parent) &&
+      callback && ts.isArrowFunction(callback) && ts.isBlock(callback.body) ? callback.body : undefined;
   };
+  const directConst = (call: ts.CallExpression, body: ts.Block) => {
+    const declaration = call.parent;
+    return ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name) &&
+      ts.isVariableDeclarationList(declaration.parent) &&
+      (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      ts.isVariableStatement(declaration.parent.parent) && declaration.parent.parent.parent === body
+      ? declaration : undefined;
+  };
+
+  // There is one live anchor, directly assigned to the shared WINDOW in the
+  // top-level beforeAll. An unrelated call cannot choose the sweep's base.
+  const anchors = helperCalls("stayWindowForAttempt");
+  const setupCalls = calls.filter((call) => call.expression.getText(source) === "test.beforeAll");
+  const setup = setupCalls.length === 1 ? callbackBody(setupCalls[0]!) : undefined;
+  const anchor = anchors.length === 1 ? anchors[0] : undefined;
+  const window = anchor && setup ? directConst(anchor, setup) : undefined;
+  const windowDeclaration = source.statements.flatMap((statement) =>
+    ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : [],
+  ).find((declaration) => declaration.name.getText(source) === "WINDOW" && !declaration.initializer);
+  const windowSymbol = windowDeclaration && symbol(windowDeclaration.name);
+  const assignmentStatements = setup?.statements.filter((statement) =>
+    ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression) &&
+    statement.expression.left.getText(source) === "WINDOW",
+  ) ?? [];
+  const assignmentStatement = assignmentStatements.length === 1 ? assignmentStatements[0] : undefined;
+  const assignment = assignmentStatement && ts.isExpressionStatement(assignmentStatement) &&
+    ts.isBinaryExpression(assignmentStatement.expression) ? assignmentStatement.expression : undefined;
+  const projection = assignment && ts.isObjectLiteralExpression(assignment.right) ? assignment.right : undefined;
+  const projected = window && projection && projection.properties.length === 2 &&
+    ["checkIn", "checkOut"].every((name) => projection.properties.some((property) =>
+      ts.isPropertyAssignment(property) && property.name.getText(source) === name &&
+      ts.isPropertyAccessExpression(property.initializer) && property.initializer.name.text === name &&
+      symbol(property.initializer.expression) === symbol(window.name),
+    ));
+  const unchangedProjection = window && projection && identifiers.filter((use) =>
+    symbol(use) === symbol(window.name),
+  ).every((use) => use === window.name || projection.properties.some((property) =>
+    ts.isPropertyAssignment(property) && ts.isPropertyAccessExpression(property.initializer) &&
+    property.initializer.expression === use,
+  ));
+  const selectors = helperCalls("linkedMoveStayWindows");
+  const selector = selectors.length === 1 ? selectors[0] : undefined;
+  // Every WINDOW use must resolve to the shared binding and be a scalar read,
+  // its sole assignment, or the selector input. This excludes aliases, opaque
+  // mutation calls, property writes and a locally shadowed attempt window.
+  const unchangedWindow = windowSymbol && windowSymbol.declarations?.length === 1 &&
+    identifiers.filter((use) => use.text === "WINDOW").every((use) => {
+      if (symbol(use) !== windowSymbol) return false;
+      if (use === windowDeclaration?.name || use === assignment?.left) return true;
+      if (use === selector?.arguments[0]) return true;
+      const parent = use.parent;
+      if (!ts.isPropertyAccessExpression(parent) || parent.expression !== use ||
+          !["checkIn", "checkOut"].includes(parent.name.text)) return false;
+      for (let ancestor: ts.Node = parent.parent; ancestor !== source; ancestor = ancestor.parent) {
+        if ((ts.isBinaryExpression(ancestor) &&
+             ancestor.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+             ancestor.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+             ancestor.left.pos <= use.pos && use.end <= ancestor.left.end) ||
+            ts.isDeleteExpression(ancestor) ||
+            ((ts.isPrefixUnaryExpression(ancestor) || ts.isPostfixUnaryExpression(ancestor)) &&
+             [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(ancestor.operator))) return false;
+      }
+      return true;
+    });
+  const base = anchor && window && setup && assignment && projected && unchangedProjection && unchangedWindow &&
+    canonicalCall(anchor, "stayWindowForAttempt") && anchor.arguments.length === 2 &&
+    anchor.arguments[0] && ts.isNumericLiteral(anchor.arguments[0]) &&
+    anchor.arguments[1]?.getText(source) === "test.info().retry" &&
+    assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    symbol(assignment.left) === windowSymbol && window.getStart(source) < assignment.getStart(source)
+    ? Number(anchor.arguments[0].text) : undefined;
+
+  const linkedTests = calls.filter((call) => call.expression.getText(source) === "test" &&
+    call.arguments[0] && ts.isStringLiteral(call.arguments[0]) && call.arguments[0].text.includes("(#3232)"));
+  const body = linkedTests.length === 1 ? callbackBody(linkedTests[0]!) : undefined;
+  const pair = selector && body ? directConst(selector, body) : undefined;
+  const declarations = body?.statements.flatMap((statement) =>
+    ts.isVariableStatement(statement) && (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+      ? [...statement.declarationList.declarations] : [],
+  ) ?? [];
+  const consumedDates = ["start", "target"].map((name) => declarations.find((declaration) =>
+    declaration.name.getText(source) === name,
+  ));
+  const projections = consumedDates.map((declaration) => declaration?.initializer);
+  const unshadowedConsumers = body && identifiers.filter((use) =>
+    use.pos >= body.pos && use.end <= body.end && ["start", "target"].includes(use.text),
+  ).every((use) => {
+    const binding = symbol(use);
+    const local = binding?.declarations?.some((declaration) =>
+      ts.isVariableDeclaration(declaration) || ts.isParameter(declaration) || ts.isBindingElement(declaration) ||
+      ts.isFunctionDeclaration(declaration) || ts.isFunctionExpression(declaration),
+    );
+    return !local || consumedDates.some((declaration) => declaration && symbol(declaration.name) === binding);
+  });
+  const unchangedPair = pair && identifiers.filter((use) => symbol(use) === symbol(pair.name)).every((use) =>
+    use === pair.name || projections.some((date) => date && ts.isPropertyAccessExpression(date) &&
+      ts.isPropertyAccessExpression(date.expression) && date.expression.expression === use),
+  );
+  const linked = base !== undefined && !!selector && !!pair && !!unchangedPair && !!unshadowedConsumers &&
+    canonicalCall(selector, "linkedMoveStayWindows") && selector.arguments.length === 1 &&
+    symbol(selector.arguments[0]!) === windowSymbol &&
+    consumedDates.every((declaration, index) => {
+      const date = declaration?.initializer;
+      return declaration && symbol(declaration.name)?.declarations?.length === 1 &&
+        pair.getStart(source) < declaration.getStart(source) &&
+        date && ts.isPropertyAccessExpression(date) && date.name.text === "checkIn" &&
+        ts.isPropertyAccessExpression(date.expression) && date.expression.name.text === ["start", "target"][index] &&
+        symbol(date.expression.expression) === symbol(pair.name);
+    });
+  return { base, linked };
 }
 
 describe("#4002 stay windows are clear of every seeded booking night", () => {
@@ -197,8 +300,8 @@ describe("#4002 stay windows are clear of every seeded booking night", () => {
   const hostingBinding = hostingDateBindings(hostingSource);
 
   it("the hosting spec uses the reserved pair selector for its attempt window", () => {
-    expect(hostingBinding.base).toBeDefined();
-    expect(hostingBinding.linked).toBe(true);
+    expect(hostingBinding.base, "INV-SSOT-001: hosting sweep must bind the actual beforeAll WINDOW").toBeDefined();
+    expect(hostingBinding.linked, "INV-SSOT-001: hosting dates must consume the canonical linked selector").toBe(true);
   });
 
   it("hosting comments cannot supply the anchor or replace the consumed selector", () => {
@@ -224,6 +327,71 @@ describe("#4002 stay windows are clear of every seeded booking night", () => {
     )).linked).toBe(false);
     expect(hostingDateBindings(hostingSource.replace(
       "const target = pair.target.checkIn;", "const target = shiftDateOnly(WINDOW.checkIn, 10);",
+    )).linked).toBe(false);
+  });
+
+  it("hosting helper calls must resolve to the canonical imports", () => {
+    for (const helper of ["linkedMoveStayWindows", "stayWindowForAttempt"]) {
+      const marker = helper === "linkedMoveStayWindows"
+        ? "const pair = linkedMoveStayWindows(WINDOW);"
+        : "const window = stayWindowForAttempt(9, test.info().retry);";
+      const replacements = [
+        `const ${helper} = (w: typeof WINDOW) => ({ start: { checkIn: shiftDateOnly(w.checkIn, 3) },
+          target: { checkIn: shiftDateOnly(w.checkIn, 10) } });`,
+        `function ${helper}() { return oldOffsets; }`,
+        `const { ${helper} } = otherHelpers;`,
+      ];
+      for (const replacement of replacements) {
+        const result = hostingDateBindings(hostingSource.replace(marker, `${replacement} ${marker}`));
+        expect(result.linked, replacement).toBe(false);
+      }
+    }
+    expect(hostingDateBindings(hostingSource.replace(
+      'test("moving one booking offers to move the other, and both really move (#3232)", async ({}, testInfo) => {',
+      'test("moving one booking offers to move the other, and both really move (#3232)", async ({ linkedMoveStayWindows }, testInfo) => {',
+    )).linked).toBe(false);
+  });
+
+  it("hosting pair and consumers must share the direct test callback binding", () => {
+    const marker = "const pair = linkedMoveStayWindows(WINDOW);";
+    const nestedPair = hostingSource.replace(marker, `if (process.env.E2E_DATE_DEBUG) {
+      const pair = linkedMoveStayWindows(WINDOW); console.log(pair);
+    }
+    const pair = { start: { checkIn: shiftDateOnly(WINDOW.checkIn, 3) },
+      target: { checkIn: shiftDateOnly(WINDOW.checkIn, 10) } };`);
+    expect(hostingDateBindings(nestedPair).linked).toBe(false);
+    expect(hostingDateBindings(hostingSource.replace(marker, `if (false) { ${marker} }`)).linked).toBe(false);
+    expect(hostingDateBindings(hostingSource.replaceAll(
+      "const { source, dependent } = await withInternetBankingHolds(async () => ({",
+      "const { source, dependent } = await withInternetBankingHolds(async (start = shiftDateOnly(WINDOW.checkIn, 3)) => ({",
+    )).linked).toBe(false);
+    expect(hostingDateBindings(hostingSource.replace(marker,
+      `${marker} pair.start.checkIn = shiftDateOnly(WINDOW.checkIn, 3);`,
+    )).linked).toBe(false);
+  });
+
+  it("hosting sweep anchors only the sole unchanged beforeAll WINDOW projection", () => {
+    const assignment = "WINDOW = { checkIn: window.checkIn, checkOut: window.checkOut };";
+    const anchor = "const window = stayWindowForAttempt(9, test.info().retry);";
+    for (const replacement of [
+      "WINDOW = { checkIn: shiftDateOnly(window.checkIn, 14), checkOut: shiftDateOnly(window.checkOut, 14) };",
+      `${assignment} WINDOW.checkIn = shiftDateOnly(WINDOW.checkIn, 14);`,
+      `${assignment} (WINDOW.checkIn) = shiftDateOnly(WINDOW.checkIn, 14);`,
+      `${assignment} ({ date: WINDOW.checkIn } = changedDate);`,
+      `${assignment} WINDOW = otherWindow;`,
+      `${assignment} Object.assign(WINDOW, otherWindow);`,
+      `window.checkIn = shiftDateOnly(window.checkIn, 14); ${assignment}`,
+      `if (false) { ${assignment} }`,
+    ]) {
+      expect(hostingDateBindings(hostingSource.replace(assignment, replacement)).base, replacement).toBeUndefined();
+    }
+    expect(hostingDateBindings(hostingSource + "\nstayWindowForAttempt(0, test.info().retry);").base).toBeUndefined();
+    expect(hostingDateBindings(hostingSource.replace(anchor, "") + `\n${anchor}`).base).toBeUndefined();
+    expect(hostingDateBindings(hostingSource.replace(anchor, `if (false) { ${anchor} }`)).base).toBeUndefined();
+    expect(hostingDateBindings(hostingSource.replace("test.beforeAll(async", "test.afterAll(async")).base).toBeUndefined();
+    expect(hostingDateBindings(hostingSource.replace(
+      "const pair = linkedMoveStayWindows(WINDOW);",
+      "const WINDOW = oldWindow; const pair = linkedMoveStayWindows(WINDOW);",
     )).linked).toBe(false);
   });
 
