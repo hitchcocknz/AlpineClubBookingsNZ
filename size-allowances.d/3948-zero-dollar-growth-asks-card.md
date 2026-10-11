@@ -35,7 +35,7 @@ reason: the removal door writes its own BookingModification history row and
   result type; the offset and the retired asks join them there.
 
 file: src/lib/payment-recovery.ts
-lines: 3463
+lines: 3465
 reason: the intent-mint replay is where a reduction's re-issued ask is minted
   and its supplementary invoice raised, so the plumbing that cannot move lives
   here: the replay sizes through the shared `sizeRecoveryReplayAsk`, mints a
@@ -44,10 +44,11 @@ reason: the intent-mint replay is where a reduction's re-issued ask is minted
   it holds its claim and re-checks that claim before queueing any invoice
   (`holdAdditionalIntentRecoveryClaim`), and queues the invoices of the
   re-issues an increase folded in (`queueFoldedReissuedAskInvoices`). The
-  rules themselves live in those modules.
+  rules themselves live in those modules. Round 8: two lines - the replay's
+  row also records the edit whose ask it is, in the same upsert.
 
 file: src/lib/xero-booking-repair-classify.ts
-lines: 2369
+lines: 2372
 reason: the repair pass sizes a reduction's note and decides an increase's
   missing invoice inside its per-modification arms; the predicate and wording
   live in `unpaid-ask-offset-marker.ts`, and what is left is the arm itself,
@@ -59,7 +60,11 @@ reason: the repair pass sizes a reduction's note and decides an increase's
   reported for a person - each a few lines over the shared markers. Round 7
   moved both "could not be established" reports (the offset's and the
   re-issue invoice's) to `addUnpaidAskUnsureFindings` in the side-notes
-  module, so the file shrinks.
+  module, so the file shrinks. Round 8: three lines - a repair-queued
+  billed-offset note learns whether the edit's own note is due (the figure
+  the arm below already computed, read a few lines earlier), and a re-issue a
+  later reduction retired is not reported unsure twice
+  (`isReissueRetiredByLaterReduction`).
 
 file: src/lib/member-guest-consent-service.ts
 lines: 1389
@@ -94,9 +99,11 @@ reason: the Booking Modified sender's flat body composes its payment note
   appends the shared sentence (`unpaidAskCancelledNote`).
 
 file: src/lib/payment-transactions.ts
-lines: 1547
+lines: 1550
 reason: #3954 round 7 - the one ADDITIONAL-row upsert every mint shares
   stamps the asking edit's own invoice answer (`hadIssuedXeroInvoice`) in the
   same write as the row, so a later reduction knows which invoice billed the
   request; a separate write would leave a window where the row exists
-  unstamped. Six lines: the optional parameter and its one spread.
+  unstamped. Six lines: the optional parameter and its one spread. Round 8:
+  the edit whose ask the row is rides in the same write, for the same reason
+  - three more lines.

@@ -949,18 +949,11 @@ export async function upsertPaymentIntentTransaction({
   stripeCustomerId?: string | null;
   /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
-  /**
-   * #3954 round 8: the edit whose price ask this row is, stamped by the same
-   * mints, so a reduction that retires the row names that edit
-   * (`retiredAskModificationIds`); omitted, left alone.
-   */
+  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. */
   bookingModificationId?: string;
   store?: PaymentStore;
 }) {
-  const provenance = {
-    ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}),
-    ...(bookingModificationId !== undefined ? { bookingModificationId } : {}),
-  };
+  const provenance = { ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}), ...(bookingModificationId !== undefined ? { bookingModificationId } : {}) };
   await store.paymentTransaction.upsert({
     where: { stripePaymentIntentId: paymentIntentId },
     create: {

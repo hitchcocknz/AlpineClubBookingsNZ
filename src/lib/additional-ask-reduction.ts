@@ -61,11 +61,7 @@ import {
 
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { reductionLeftAfterUnpaidAskCents, setReductionAgainstUnpaidAsk } from "@/lib/additional-payment-ask";
-import {
-  isRecoveryReplaySettled,
-  recoveryAskBeyondPaymentAskCents,
-  sizeRecoveryReplayAsk,
-} from "@/lib/additional-ask-recovery-replay";
+import { pendingAskRecoveries, type AskRecoveryOperation } from "@/lib/additional-ask-pending-recoveries";
 import {
   AdditionalAskChangedDuringReductionError,
   isWriteConflictOrDeadlock,
@@ -76,21 +72,11 @@ import logger from "@/lib/logger";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import {
-  bookingModificationIdForAdditionalIntentRecoveryKey,
-  isEditFinancialReviewAdditionalIntentRecoveryKey,
-} from "@/lib/payment-recovery-keys";
-import {
   CAPTURED_TRANSACTION_STATUS_LIST,
   isCapturedTransactionStatus,
 } from "@/lib/payment-transaction-status";
 import { reconcilePaymentAggregates } from "@/lib/payment-transactions";
-import {
-  ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE,
-  recordedFoldedReissuedAskInvoiceCents,
-  recordedFoldedReissuedAskModificationIds,
-  recordedReissuedAskInvoiceCents,
-  recordedReissuedAskInvoiceUnsureCents,
-} from "@/lib/unpaid-ask-offset-marker";
+import { ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE } from "@/lib/unpaid-ask-offset-marker";
 import { waitingSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
 
 /** One unpaid row of the ask a reduction is set against. */
@@ -321,9 +307,9 @@ export async function readUnpaidPriceAsk(
   return askCents > 0 ? { askCents, rows: chain.rows, recoveries } : NO_UNPAID_PRICE_ASK;
 }
 
-type EditFigures = { id: string; priceDiffCents: number; changeFeeCents: number; newData: unknown };
+export type EditFigures = { id: string; priceDiffCents: number; changeFeeCents: number; newData: unknown };
 
-type AskTransaction = {
+export type AskTransaction = {
   id: string;
   kind: PaymentTransactionKind;
   source: PaymentSource;
@@ -429,104 +415,6 @@ export async function inFlightAskRecoveries(
   );
 }
 
-type AskRecoveryOperation = {
-  id: string;
-  status: PaymentRecoveryOperationStatus;
-  attempts: number;
-  nextRetryAt: Date | null;
-  processingStartedAt: Date | null;
-  idempotencyKey: string;
-  /** The Stripe key until its replay mints, then that intent's id. */
-  paymentIntentId: string;
-  amountCents: number;
-  hadIssuedXeroInvoice: boolean | null;
-  createdAt: Date;
-};
-
-/**
- * Asks whose mint failed and that their recovery will still mint, each sized
- * exactly as that replay will size it (`sizeRecoveryReplayAsk`), less what it
- * would carry from the rows' ask, which `unpaidChain` already counts. A
- * recovery with nothing left to mint (`isRecoveryReplaySettled`, the replay's
- * own rule) is not owed. Null - net nothing - for one this cannot size.
- *
- * ONLY THE MEMBER'S OWN PRICE ASKS (#3954, owner decision 9 Oct 2026, "Only
- * the member's request"). A review charge's recovery is an officer's money
- * (`INV-ADDPAY-040`): it is left exactly as set - not counted, not closed -
- * and the reduction still nets against the price asks beside it. (It used to
- * turn netting off for the whole booking.) When it mints, it carries what the
- * price ask then is, the reduction's smaller re-issue included.
- */
-function pendingAskRecoveries(
-  booking: UnpaidAskBooking,
-  payment: NonNullable<UnpaidAskBooking["payment"]>,
-  operations: readonly AskRecoveryOperation[],
-  transactions: readonly AskTransaction[],
-  modifications: readonly EditFigures[],
-): PendingAskRecovery[] | null {
-  const pending: PendingAskRecovery[] = [];
-  for (const operation of operations) {
-    if (isEditFinancialReviewAdditionalIntentRecoveryKey(operation.idempotencyKey)) continue;
-    const bookingModificationId = bookingModificationIdForAdditionalIntentRecoveryKey(
-      operation.idempotencyKey,
-    );
-    const modification = modifications.find((row) => row.id === bookingModificationId) ?? null;
-    const replay = bookingModificationId
-      ? sizeRecoveryReplayAsk({ frozenAmountCents: operation.amountCents, modification, payment })
-      : null;
-    const askCents = replay ? recoveryAskBeyondPaymentAskCents(replay) : null;
-    if (!bookingModificationId || !replay || replay.kind === "frozen" || askCents === null) {
-      logger.warn(
-        { bookingId: booking.id, paymentId: payment.id, operationId: operation.id },
-        "An additional ask waiting on its recovery cannot be sized; a reduction settles without setting against it (#3954)",
-      );
-      return null;
-    }
-    // CLAIMED FIRST, THEN SETTLED (review round 4). A retry already minting
-    // may have written its own row and still be on its way to its supersede
-    // and its invoice; skipping it as settled would leave it free to finish
-    // beside this reduction. So a claimed retry is always carried to the
-    // retire, which refuses or fences it; it adds nothing to the ask when a
-    // row already carries it.
-    const claimed = operation.status === PaymentRecoveryOperationStatus.PROCESSING;
-    const settled = isRecoveryReplaySettled(replay, operation, transactions);
-    if (settled && !claimed) continue;
-    pending.push({
-      id: operation.id,
-      bookingModificationId,
-      kind: replay.kind,
-      status: operation.status,
-      attempts: operation.attempts,
-      // Never `undefined`: an undefined filter is no filter at all in Prisma.
-      processingStartedAt: operation.processingStartedAt ?? null,
-      askCents: settled ? 0 : askCents,
-      invoiceCents: settled
-        ? 0
-        : replay.kind === "reissue"
-          ? recordedReissuedAskInvoiceCents(modification?.newData)
-          : operation.hadIssuedXeroInvoice === true
-            ? askCents - replay.foldedCents
-            : 0,
-      foldedInvoiceCents:
-        settled || replay.kind !== "increase" ? 0 : recordedFoldedReissuedAskInvoiceCents(modification?.newData),
-      // Round 8: a re-issue whose reduction was unsure of its invoice is no
-      // surer for being retired; nor is an increase's fold of one.
-      invoiceUnknown:
-        !settled &&
-        (replay.kind === "increase"
-          ? operation.hadIssuedXeroInvoice === null
-          : recordedReissuedAskInvoiceUnsureCents(modification?.newData) > 0),
-      foldedInvoiceUnknown:
-        !settled &&
-        replay.kind === "increase" &&
-        recordedFoldedReissuedAskModificationIds(modification?.newData).some(
-          (reductionId) =>
-            recordedReissuedAskInvoiceUnsureCents(modifications.find((row) => row.id === reductionId)?.newData) > 0,
-        ),
-    });
-  }
-  return pending;
-}
 
 /** A retired ask's intent, and the durable cancellation queued for it. */
 export type RetiredAdditionalAsk = {

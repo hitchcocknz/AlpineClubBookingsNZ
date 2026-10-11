@@ -924,28 +924,14 @@ export function classifyBookingContext(
     });
     const billedOffsetNote = scopedBilledOffsetNote({ newData: modification.newData, operations: modificationOperations });
     if (billedOffsetNote && primaryInvoice) {
-      addScopedSideNoteFindings({
-        bookingId: booking.id,
-        modificationId: modification.id,
-        note: billedOffsetNote,
-        edit: { operations: modificationOperations, links: modificationLinks },
-        // Round 8: a note queued here waits for the edit's own, when one is due.
-        ownNoteDue: reductionNoteDueCents > 0,
-        actionMap,
-        findings,
-      });
+      // Round 8: a note queued here waits for the edit's own, when one is due.
+      addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: billedOffsetNote, edit: { operations: modificationOperations, links: modificationLinks }, ownNoteDue: reductionNoteDueCents > 0, actionMap, findings });
     }
     // Round 6/7: what the edit could not establish of the offset's billing, or
     // of the re-issue's invoice, it acted on not at all; a person decides.
     if (primaryInvoice) {
-      addUnpaidAskUnsureFindings({
-        bookingId: booking.id,
-        modification,
-        reissueRetired: isReissueRetiredByLaterReduction(modification.id, booking.modifications),
-        xeroInvoiceId: primaryInvoice.objectId,
-        actionMap,
-        findings,
-      });
+      const reissueRetired = isReissueRetiredByLaterReduction(modification.id, booking.modifications);
+      addUnpaidAskUnsureFindings({ bookingId: booking.id, modification, reissueRetired, xeroInvoiceId: primaryInvoice.objectId, actionMap, findings });
     }
 
     if (reductionNoteDueCents > 0 && primaryInvoice) {
