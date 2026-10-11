@@ -4708,6 +4708,21 @@ describe("runBookingXeroRepair", () => {
             /record the \$60\.00 refunded on it by hand in Xero\. A refund credit note for \$15\.00 refunded to the card was sent to Xero but the app never heard back: check Xero for that credit note first/,
           );
           expect(finding?.details).toMatchObject({ recordByHandCents: 6000, cardNoteMayBeInXeroCents: 1500 });
+
+          // A $0 close whose only card refund a note sent without a reply may
+          // answer: nothing to record yet, but the capture is still named.
+          const onlySent = await runClosed("after-receipt", [], keptBooking(), {
+            paidAnotherWayReceipt: { kind: "resolved-by-hand" },
+            paidAnotherWayRecordByHandCents: 0,
+            paidAnotherWayCardNoteMayBeInXeroCents: 1500,
+          });
+          const sentOnly = onlySent.findings.find(
+            (candidate) => candidate.code === "PAID_ANOTHER_WAY_REFUND_NOTE_RECORD_BY_HAND",
+          ) as { summary: string } | undefined;
+          expect(sentOnly?.summary).toMatch(
+            /so the app raises no refund note for it\. A refund credit note for \$15\.00 refunded to the card was sent to Xero/,
+          );
+          expect(sentOnly?.summary).not.toMatch(/record the \$/);
         });
 
         // #3924 round 11 (F1): a kept receipt row resolved by hand, on a
