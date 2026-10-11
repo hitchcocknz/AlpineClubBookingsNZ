@@ -102,7 +102,7 @@ vi.mock("xero-node", () => ({
   RequestEmpty: class {},
 }));
 
-const handBackAggregate = vi.hoisted(() => vi.fn(async (_args: unknown) => ({ _sum: { amountCents: null as number | null } })));
+const handBackAggregate = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ _sum: { amountCents: number | null } }>>(async () => ({ _sum: { amountCents: null } })));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     environmentSafetySettings: {
