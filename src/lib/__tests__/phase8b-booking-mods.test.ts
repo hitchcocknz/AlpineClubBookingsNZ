@@ -88,6 +88,8 @@ vi.mock("@/lib/prisma", () => ({
     choreAssignment: { findMany: mockFindMany, delete: mockDelete, deleteMany: mockDeleteMany },
     season: { findMany: mockFindMany },
     payment: { update: mockUpdate },
+    // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
+    paymentTransaction: { findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }) },
     member: { count: mockMemberCount, findUnique: mockFindUnique, findMany: mockFindMany },
     familyGroupMember: { findMany: mockFindMany },
     auditLog: { create: vi.fn().mockResolvedValue({}) },

@@ -121,7 +121,11 @@ vi.mock("@/lib/prisma", () => ({
     // The real supersede reads the GLOBAL client for the live ADDITIONAL asks it
     // is about to retire. Empty by default because the default fixture carries
     // no earlier ask; the #3244 carry case below puts its unpaid row here.
-    paymentTransaction: { findMany: mockPaymentTransactionFindMany },
+    paymentTransaction: {
+      findMany: mockPaymentTransactionFindMany,
+      // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
+      findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }),
+    },
   },
 }));
 

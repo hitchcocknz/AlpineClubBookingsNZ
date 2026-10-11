@@ -130,6 +130,8 @@ vi.mock("@/lib/prisma", () => ({
     paymentTransaction: {
       updateMany: mockPaymentTransactionUpdateMany,
       findMany: (...args: unknown[]) => mockSupersedeRead(...args),
+      // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
+      findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }),
     },
     member: {
       findUnique: mockMemberFindUnique,
