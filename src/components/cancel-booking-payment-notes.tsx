@@ -2,9 +2,11 @@
 
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
+import { groupCancellationRefundSentence, organiserCardRefundSentence } from "@/lib/booking-modified-email-copy";
 
 /**
- * #3643: the two cancel-dialog lines internet banking needs, split out of
+ * #3643: the two cancel-dialog lines internet banking needs, and (#3973) the
+ * confirmation of an organiser-paid refund, split out of
  * `cancel-booking-button.tsx` for size.
  */
 
@@ -101,4 +103,36 @@ export function ForcedRefundNote({
       format={format}
     />
   );
+}
+
+/**
+ * #3973: the confirmation after cancelling a joiner's booking the group
+ * organiser paid for by card. The refund is the ORGANISER's, so it never reads
+ * "your original payment method": either this cancel's refund to the organiser's
+ * card (`refundCents`) or the one the organiser's cancellation of the group
+ * already owes (`owedCents`), in the "Booking Cancelled" email's own sentences.
+ */
+export function OrganiserRefundConfirmation({
+  refundCents,
+  owedCents,
+  format,
+  onBehalfOfMember,
+  emailSuppressed,
+}: {
+  refundCents: number;
+  owedCents: number;
+  format: ClubFormat;
+  onBehalfOfMember: boolean;
+  emailSuppressed: boolean;
+}) {
+  const sentence =
+    refundCents > 0
+      ? organiserCardRefundSentence(formatCents(refundCents, format))
+      : groupCancellationRefundSentence(formatCents(owedCents, format));
+  const emailNote = emailSuppressed
+    ? ""
+    : onBehalfOfMember
+      ? " They will receive a confirmation email shortly."
+      : " You will receive a confirmation email shortly.";
+  return <p className="text-sm text-success-11">{sentence + emailNote}</p>;
 }

@@ -135,13 +135,8 @@ interface CancelBookingResult {
   creditRestoredCents?: number;
   stripeRefundId?: string;
   manualRefundTaskId?: string;
-  /**
-   * #3973: the refund is the group organiser's, not the member's: a joiner's
-   * booking the organiser paid for by card. `refundMethod` stays "card", as the
-   * audit records it; the confirmation screen names the organiser's card.
-   */
+  /** #3973: the refund is the group organiser's (`refundMethod` stays "card"), or with `groupCancellationRefundCents` owed by the group's cancellation. */
   refundTo?: "organiser";
-  /** #3973: with `refundTo`, a refund the group organiser's cancellation already owes this booking (`refundAmountCents` is 0). */
   groupCancellationRefundCents?: number;
   message: string;
 }
@@ -2510,8 +2505,7 @@ async function performBookingCancellation(
       bookingOwner(fresh).member.firstName,
       fresh.checkIn,
       fresh.checkOut,
-      // #3973: the group's refund owed to the organiser's card, not "no refund".
-      groupRefundNote ? groupCancellationRefundCents : 0,
+      groupRefundNote ? groupCancellationRefundCents : 0, // #3973: the group's refund owed to the organiser's card
       format,
       groupRefundNote ? "organiser_card_owed" : "card",
       creditRestoredCents,

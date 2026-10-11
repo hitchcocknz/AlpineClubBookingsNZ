@@ -7,6 +7,8 @@
  * imports the Prisma client.
  */
 
+import type { BookingCancelledRefundMethod } from "@/lib/booking-modified-email-copy";
+
 /**
  * The settlement's frozen plan, in the shape #3653 writes:
  * `{ perChildRefunds: { childId: cents } }`. The children sit one level down
@@ -91,4 +93,29 @@ export type OrganiserChildRefundEvidence = {
 
 export function organiserChildCommittedRefundFrom(refundedAmountCents: number, evidence: OrganiserChildRefundEvidence): number {
   return Math.max(refundedAmountCents, evidence.recordedRefundCents) + evidence.childOwedCents;
+}
+
+/**
+ * #3973: what a joiner's "Booking Cancelled" email says about the refund when
+ * the organiser cancels the group. The joiner paid nothing, so no sentence may
+ * name "your original payment method". Reads the organiser cancel's own
+ * answers and never re-derives money: `refundForChild` is a refund made (a card
+ * settlement's Stripe refund, or an Internet Banking plan the club repays by
+ * hand); `owedForChild` a #3653 per-child refund Stripe has not made yet; and a
+ * card plan frozen before #3653 whose combined refund failed this run leaves
+ * the child's planned share owed (`refundForChild` cleared, the plan kept).
+ * With none of these the policy refunded nothing, or nothing was paid.
+ */
+export function organiserCancelJoinerEmailRefund(input: {
+  refundForChild: number;
+  owedForChild: number;
+  plannedRefundCents: number;
+  cardSettlement: boolean;
+}): { refundCents: number; refundMethod: BookingCancelledRefundMethod } {
+  if (input.refundForChild > 0) {
+    return { refundCents: input.refundForChild, refundMethod: input.cardSettlement ? "organiser_card" : "organiser_by_hand" };
+  }
+  const owed = input.owedForChild > 0 ? input.owedForChild : input.cardSettlement ? input.plannedRefundCents : 0;
+  if (owed > 0) return { refundCents: owed, refundMethod: "organiser_card_owed" };
+  return { refundCents: 0, refundMethod: "card" };
 }
