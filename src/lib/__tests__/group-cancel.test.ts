@@ -249,8 +249,9 @@ beforeEach(() => {
   mocks.planOrganiserCancelChildRefunds.mockResolvedValue(new Map());
   mocks.runPaymentRecoveryOperationNow.mockResolvedValue("succeeded");
   // A debt reads PENDING until the inline run has run it, then SUCCEEDED.
-  mocks.recoveryOperationFindUnique.mockImplementation(async ({ where }: { where: { idempotencyKey: string } }) => {
-    const id = `op-${where.idempotencyKey}`;
+  // Found by its key, then (#3973) re-read by its id after the run.
+  mocks.recoveryOperationFindUnique.mockImplementation(async ({ where }: { where: { idempotencyKey?: string; id?: string } }) => {
+    const id = where.id ?? `op-${where.idempotencyKey}`;
     const ran = mocks.runPaymentRecoveryOperationNow.mock.calls.some(([opId]) => opId === id);
     return { id, status: ran ? "SUCCEEDED" : "PENDING" };
   });

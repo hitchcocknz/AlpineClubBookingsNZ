@@ -54,9 +54,9 @@ import {
   enqueuePaymentIntentCancellationRecovery,
   markBookingCancellationRefundRecoverySucceeded,
   recordBookingCancellationRefundRecoveryInlineError,
-  runPaymentRecoveryOperationNow,
 } from "@/lib/payment-recovery";
 import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
 import {
   findGroupCancellationChildDebt,
   groupCancellationRefundNote,
@@ -2257,10 +2257,9 @@ async function performBookingCancellation(
   // event - only once Stripe has answered. A failure leaves it owed for the
   // recovery runner, which alerts on exhaustion.
   if (branch === "card" && organiserChildDebtId) {
-    await runPaymentRecoveryOperationNow(organiserChildDebtId, format);
     // #3973: made only once its debt says so; a failed or unclaimed run leaves it on its way.
-    const debtAfterRun = await prisma.paymentRecoveryOperation.findUnique({ where: { id: organiserChildDebtId }, select: { status: true } });
-    const organiserRefund = { method: organiserChildRefundMade(debtAfterRun) ? "organiser_card" : "organiser_card_pending", amountCents: refundAmountCents } as const;
+    const made = await runOrganiserChildRefundDebtNow(organiserChildDebtId, format);
+    const organiserRefund = { method: made ? "organiser_card" : "organiser_card_pending", amountCents: refundAmountCents } as const;
     await cleanupPromoRedemption(bookingId);
     logBookingCancellationAudit({
       booking: fresh,

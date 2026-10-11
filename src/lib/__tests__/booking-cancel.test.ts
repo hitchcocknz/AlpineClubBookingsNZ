@@ -2116,11 +2116,16 @@ describe("cancelBooking credit refunds", () => {
     });
 
     it.each([
-      ["failed", "FAILED"],
-      ["not-claimed", "PENDING"],
-    ] as const)("#3973: a refund the inline run left %s is on its way, never \"processed\"", async (outcome, status) => {
+      ["run failed", "failed", () => Promise.resolve({ status: "FAILED" })],
+      ["run not claimed", "not-claimed", () => Promise.resolve({ status: "PENDING" })],
+      // The debt's own status decides, never the run's answer.
+      ["run succeeded but the debt still PENDING", "succeeded", () => Promise.resolve({ status: "PENDING" })],
+      ["run succeeded but the debt not found", "succeeded", () => Promise.resolve(null)],
+      // A re-read that fails after the refund neither claims it nor fails the cancel.
+      ["run succeeded but the re-read threw", "succeeded", () => Promise.reject(new Error("database blip"))],
+    ] as const)("#3973: %s: the refund is on its way, never \"processed\"", async (_label, outcome, reread) => {
       mocks.runPaymentRecoveryOperationNow.mockResolvedValue(outcome);
-      mocks.recoveryOperationFindUnique.mockResolvedValue({ status });
+      mocks.recoveryOperationFindUnique.mockImplementation(reread);
 
       const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST);
 

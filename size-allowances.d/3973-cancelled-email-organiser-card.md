@@ -1,7 +1,7 @@
 # File-size allowances for #3973
 
 file: src/lib/booking-cancel.ts
-lines: 2818
+lines: 2817
 reason: the cancel result gains the organiser refund the confirmation screen
   reads, and the organiser-card branch re-reads its debt's status after the
   inline run so a refund Stripe has not made is never reported as made; the
