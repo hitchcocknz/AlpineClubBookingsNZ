@@ -784,7 +784,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:79",
   "src/lib/cron-additional-payment-reminders.ts:437",
-  "src/lib/cron-confirm-pending.ts:208",
+  "src/lib/cron-confirm-pending.ts:209",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through

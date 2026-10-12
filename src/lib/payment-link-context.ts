@@ -15,11 +15,10 @@ import {
   type NarrativeEvent,
   type ResolveBookingNarrativeInput,
 } from "@/lib/booking-narrative";
-import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { bindClubTime } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import logger from "@/lib/logger";
-import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { isPaidLikeStatus, loadPaymentLinkRecord } from "@/lib/payment-link";
 import { prisma } from "@/lib/prisma";
@@ -152,12 +151,7 @@ export async function getPaymentLinkContext(
   // recorded on its payment, less applied credit — read from the one home.
   // At or below zero the narrative says there is nothing to pay, and the page
   // offers neither a payment nor a fresh link.
-  const appliedCreditCents = await deriveBookingAppliedCreditCents(booking.id);
-  const owedCents = bookingAmountOwedCents({
-    finalPriceCents: booking.finalPriceCents,
-    changeFeeCents: booking.payment?.changeFeeCents ?? null,
-    appliedCreditCents,
-  });
+  const { owedCents, appliedCreditCents } = await readBookingAmountOwed(booking);
 
   const narrativeInput = {
     club,

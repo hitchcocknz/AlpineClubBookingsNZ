@@ -3015,8 +3015,7 @@ _Split from `INV-PAY-057` (#3220)._
 
 ## INV-PAY-119
 
-- **What a booking owes has one home: its worth less applied credit** (#3750;
-  owner decision of 7 Oct 2026, "Add fee to amount owed"). Worth is
+- **What a booking owes has one home: its worth less applied credit** (#3750). Worth is
   `finalPriceCents` plus the change fee recorded on the payment
   (`bookingWorthCents`, `recordedChangeFeeCents`). Every pay step reads
   `bookingAmountOwedCents` or worth: the payment page, card intent, payment
@@ -3024,7 +3023,8 @@ _Split from `INV-PAY-057` (#3220)._
   internet-banking switch, confirm-payment and webhook checks, settle,
   officer's manual payment, a stored credit election's cap, a review share's
   covered test and invoice reduction, and each joiner's group share and
-  invoice; confirmation emails quote worth. An edit's credit clamp,
+  invoice; confirmation emails quote worth. Emails quoting what is owed
+  (exception-approved, pay-link) read `readBookingAmountOwed` (#4058). An edit's credit clamp,
   zero-dollar decision and stale-intent comparison read worth; a guest's
   acceptance nets credit to the price, as its return route admits only credit
   and cash that sum to the price.

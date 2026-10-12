@@ -1769,6 +1769,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "adminNoteLine",
   "adminNotes",
   "adminNotesLine",
+  // #4058: what a pay-link email asks the member to pay now — the booking's
+  // price plus a recorded change fee, less applied credit. `{{price}}` stays the
+  // booking's own price, so an override written against it keeps its meaning.
+  "amountDue",
   "amountRecordedNote",
   "amount",
   // #3340: what is still owed on the booking AFTER a supersede refund, on both

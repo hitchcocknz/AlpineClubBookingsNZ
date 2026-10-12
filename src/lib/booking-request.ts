@@ -2708,6 +2708,9 @@ export async function approveBookingRequest(input: {
         guestCount: guests.length,
         lodgeId: conversion.lodgeId,
         priceCents,
+        // A new Payment row (no recorded fee) on a booking no credit election
+        // has reached yet, so what is owed is the price (#4058).
+        amountDueCents: priceCents,
         bookingReference: conversion.bookingId,
         expiresAt: paymentLinkExpiresAt,
       }, format);

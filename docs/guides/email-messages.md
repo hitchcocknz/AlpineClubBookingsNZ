@@ -135,6 +135,17 @@ refund $X to you by bank transfer.", and a booking paid partly by card names
 both parts (#3827). `{{amount}}` is still available to a saved override, but it
 cannot say which way the money goes, so use `{{refundSentence}}`.
 
+`{{amountDue}}` on the **Booking Request Approved** and **Split Guest Payment
+Link** messages is what the pay link asks the member to pay: the booking's price
+plus any change fee recorded on it, less account credit already applied - the
+same figure the `/pay/` page shows (#4058). Their default bodies read
+`Amount due: {{amountDue}}`. `{{price}}` stays the booking's own price, so an
+override written against it keeps its meaning, but it can differ from what the
+link asks for (applied credit lowers that, a recorded change fee raises it); use
+`{{amountDue}}` to name what to pay. A saved Split Guest Payment Link override
+copied from the old default reads `Amount due: {{price}}`: re-save it against
+the new default so it quotes `{{amountDue}}`.
+
 `{{promoSummary}}` on a booking that carries several promo codes shows one
 `Promo adjustment (CODE)` line per code, each with its own amount, while
 `{{promoCode}}` names every code, comma-separated (#3828). A booking with one
