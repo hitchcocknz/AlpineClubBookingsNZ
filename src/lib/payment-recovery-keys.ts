@@ -460,8 +460,18 @@ export function bookingModificationRefundReasonForKeyPrefix(
 // card payment. One recovery row per refund, and the row's key doubles as the
 // Stripe idempotency key, so a replay can only ever answer with the refund the
 // first attempt made. An edit's refund is keyed by its `BookingModification`; a
-// group cancellation's by its settlement and the child.
+// group cancellation's by its settlement and the child; an approved refund
+// appeal's by its `RefundRequest` (#3956, `INV-PAY-123`).
+//
+// The appeal's prefix is deliberately NOT under `organiser_child_refund_`
+// (#3956 review, blue/green): a worker older than #3956 routes only that
+// prefix to the #3653 executor, which would refund the appeal under a reduction's
+// Stripe metadata and write the booking event an appeal must not. Under its own
+// prefix, such a worker takes it for an ordinary modification refund, meets the
+// allocation that names no real transaction (`organiserChildRefundAllocationPlan`),
+// and fails the row before any Stripe call; the retry lands on a current worker.
 const ORGANISER_CHILD_REFUND_KEY_PREFIX = "organiser_child_refund_";
+const ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX = "organiser_card_appeal_refund_";
 export function buildOrganiserChildModificationRefundKey(bookingModificationId: string) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}mod_${bookingModificationId}`;
 }
@@ -471,16 +481,34 @@ export function buildOrganiserChildCancellationRefundKey(
 ) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_${settlementId}_${childBookingId}`;
 }
-export function isOrganiserChildRefundKey(key: string) {
-  return key.startsWith(ORGANISER_CHILD_REFUND_KEY_PREFIX);
+export function buildOrganiserChildAppealRefundKey(refundRequestId: string) {
+  return `${ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX}${refundRequestId}`;
 }
+/** Every child refund debt out of the combined payment: an edit's, a group cancel's or an appeal's. */
+export function isOrganiserChildRefundKey(key: string) {
+  return key.startsWith(ORGANISER_CHILD_REFUND_KEY_PREFIX) || isOrganiserChildAppealRefundKey(key);
+}
+/** #3956: an approved refund appeal's refund out of the combined payment - not the cancellation's money. */
+export function isOrganiserChildAppealRefundKey(key: string) {
+  return key.startsWith(ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX);
+}
+/**
+ * `isOrganiserChildRefundKey` as a `PaymentRecoveryOperation` where fragment -
+ * the one spelling a query uses, so no reader counts one prefix and misses the
+ * other (`INV-SSOT`).
+ */
+export const ORGANISER_CHILD_REFUND_KEY_WHERE = {
+  OR: [
+    { idempotencyKey: { startsWith: ORGANISER_CHILD_REFUND_KEY_PREFIX } },
+    { idempotencyKey: { startsWith: ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX } },
+  ],
+};
 /** The Stripe `reason` metadata, rebuilt from the key alone so a replay sends the same body. */
 export function organiserChildRefundReasonForKey(key: string) {
-  return key.startsWith(`${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_`)
-    ? "organiser_cancellation"
-    : "organiser_child_reduction";
+  if (key.startsWith(`${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_`)) return "organiser_cancellation";
+  if (isOrganiserChildAppealRefundKey(key)) return "organiser_child_appeal";
+  return "organiser_child_reduction";
 }
-export { ORGANISER_CHILD_REFUND_KEY_PREFIX };
 
 // Group organiser-cancel settlement refund (F3, #1351): the organiser cancel's
 // durable retry of a pre-#3653 group settlement refund - ONE operation for the

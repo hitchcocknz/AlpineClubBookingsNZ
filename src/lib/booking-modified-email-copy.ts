@@ -45,6 +45,16 @@ export function groupCancellationRefundSentence(amount: string, refunded: boolea
 }
 
 /**
+ * #3956 (`INV-PAY-123`): what the group ORGANISER is told when a joiner's
+ * approved refund appeal is refunded to the organiser's card. ONE wording for
+ * the HTML template and the admin-editable body's `{{refundSentence}}`.
+ * "Is being refunded" holds whether Stripe has answered yet or not.
+ */
+export function organiserJoinerAppealRefundSentence(amount: string, joinerName: string): string {
+  return `The club has approved a refund appeal from ${joinerName}, who is in your group booking. Because you paid for their place, ${amount} for their share is being refunded to the card you paid with.`;
+}
+
+/**
  * #3973: an organiser cancel of a group the organiser settled by Internet
  * Banking. There is no card to refund, so the club repays the organiser by
  * hand; it is promised, not reported, and never to the joiner.
@@ -66,6 +76,9 @@ export type OrganiserRefundMethod =
   | "organiser_card_pending"
   | "group_cancel_refunding"
   | "group_cancel_refunded";
+
+/** #3956: an approved appeal's refund to the organiser's card - made, or on its way. */
+export type OrganiserCardAppealRefund = Extract<OrganiserRefundMethod, "organiser_card" | "organiser_card_pending">;
 
 /**
  * Where a "Booking Cancelled" email says the refund went. B5 (#2262): "manual"
@@ -185,7 +198,18 @@ export function refundRequestApprovedRefundSentence(
   approvedCents: number,
   bankTransferCents: number,
   formatAmount: (cents: number) => string,
+  /**
+   * #3956 (`INV-PAY-123`): the booking was paid for by the group organiser's
+   * card, so the whole refund goes there - made (`organiser_card`, its debt
+   * says so), or still on its way (`organiser_card_pending`). Null for any
+   * other booking.
+   */
+  organiserCardRefund: OrganiserCardAppealRefund | null = null,
 ): string {
+  if (organiserCardRefund === "organiser_card") return organiserCardRefundSentence(formatAmount(approvedCents));
+  if (organiserCardRefund === "organiser_card_pending") {
+    return organiserCardRefundPendingSentence(formatAmount(approvedCents));
+  }
   const cardCents = approvedCents - bankTransferCents;
   if (bankTransferCents <= 0) {
     return `A refund of ${formatAmount(approvedCents)} will be processed to your original payment method.`;

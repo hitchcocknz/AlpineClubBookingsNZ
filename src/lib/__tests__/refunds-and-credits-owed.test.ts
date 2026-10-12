@@ -17,6 +17,7 @@ import {
   refundsOwedTaskRows,
 } from "@/lib/__tests__/helpers/net-collected-scope-fixture";
 import { getNetCollectedPaymentParts, summarizeCollectedCash } from "@/lib/payment-net-collected";
+import { mirrorPlanRefundUnmade } from "@/lib/group-settlement-refund-plan";
 import {
   legacyGroupSettlementRefundOwedCents,
   readRefundsAndCreditsOwed,
@@ -251,6 +252,16 @@ describe("pre-#3653 group settlement card refunds: one club-wide line in Refunds
 
   it("counts what the unclosed ones still have to send: $65.00 here", () => {
     expect(legacyGroupSettlementRefundOwedCents(settlements)).toBe(6_500);
+  });
+
+  it("is the rule the refund appeal waits on: a settlement owes here exactly when its combined refund is unmade (#3956, INV-SSOT)", () => {
+    for (const settlement of settlements) {
+      expect(mirrorPlanRefundUnmade(settlement), settlement.id).toBe(legacyGroupSettlementRefundOwedCents([settlement]) > 0);
+    }
+    expect(settlements.filter((settlement) => mirrorPlanRefundUnmade(settlement)).map((settlement) => settlement.id)).toEqual([
+      "s-open",
+      "s-dead",
+    ]);
   });
 
   it("adds that one amount to Refunds owed, beside every booking's own, and reads only the unclosed rows", async () => {
