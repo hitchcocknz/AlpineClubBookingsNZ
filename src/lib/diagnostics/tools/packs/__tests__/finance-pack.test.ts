@@ -1295,7 +1295,9 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
   });
 
   it("lists only refund operations as a refund_execution, never a payment-request cancel (#4076)", () => {
-    const sql = DIAGNOSTICS_TOOLS.find((tool) => tool.id === DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID)?.sql ?? "";
+    const tool = DIAGNOSTICS_TOOLS.find((entry) => entry.id === DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID);
+    const sql = tool && tool.source === "select_only_sql" ? tool.sql : "";
+    expect(sql).not.toBe("");
     expect(sql).toContain(`o."type"::text IN ('REFUND_SUPERSEDED_PAYMENT', 'REFUND_BOOKING_MODIFICATION')`);
     expect(sql).not.toContain("CANCEL_PAYMENT_INTENT");
   });
