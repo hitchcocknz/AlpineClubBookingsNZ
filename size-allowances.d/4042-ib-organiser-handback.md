@@ -17,3 +17,12 @@ reason: the "Manual refund needed" message gains its two note tokens, which
   trigger summary and frequency now name the group case; the third token
   (whom the money goes back to) and the required subject token sit in the
   same tables.
+
+file: src/lib/group-cancel.ts
+lines: 960
+reason: nine lines book each joiner's share on the organiser's hand-back inside
+  the per-child claim that records it (the writer itself is
+  `group-organiser-hand-back.ts`), carry it out of the claim, name it in the
+  child's audit, send its alert straight after the claim that created it
+  commits, and kick the group invoice's VOID after the children so its refusal
+  can name the task; each has to sit in the claim or the loop it belongs to.

@@ -10,14 +10,9 @@ reason: the cancel result gains the organiser refund the confirmation screen
   that builds it.
 
 file: src/lib/group-cancel.ts
-lines: 960
+lines: 951
 reason: one line computes the joiner email's refund line from this run's own
   settlement answers (the decision itself lives in the pure
   `group-settlement-refund-plan.ts`), and the email call passes the amount the
   sentence names beside `{{refundAmount}}`; the call site has to sit beside the
-  email it feeds. Re-measured for #4042, stacked on this change: nine lines
-  raise the organiser's hand-back inside the per-child claim that books each
-  share (the writer itself is `group-organiser-hand-back.ts`), carry it out of
-  the claim, name it in the child's audit, send its alert straight after the
-  claim that created it commits, and kick the group invoice's VOID after the
-  children; each has to sit in the claim or the loop it belongs to.
+  email it feeds.
