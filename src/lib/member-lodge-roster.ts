@@ -10,7 +10,7 @@ import {
 } from "./booking-owner";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "./booking-status";
 import { getLodgeHeldNights } from "./capacity";
-import { holdCoversNight } from "./custodian-occupancy";
+import { holdCoversNight, isCustodianOnNight } from "./custodian-occupancy";
 import { findCustodianOccupants, type CustodianOccupant } from "./custodian-occupants";
 import {
   addCalendarDays,
@@ -383,13 +383,6 @@ function buildOneLodgeRoster(
   // in the payload cannot be rendered by a later edit that forgets why.
   const lodgeNightTotals = new Map<string, number>();
 
-  // A custodian who is also a guest is listed ONCE, as custodian, on the
-  // nights they are custodian (#3821, owner decision on #3820, 13 Oct 2026,
-  // "Show once, as custodian"): their own booking keeps the rest of the party.
-  const isCustodianOn = (memberId: string | null, night: string) =>
-    memberId !== null &&
-    custodianHolds.some((hold) => hold.memberId === memberId && holdCoversNight(hold, night));
-
   // PASS ONE: who is present, on which nights, and how many people the lodge
   // holds each night. Sole occupancy cannot be decided until every booking has
   // been counted, so nothing is reduced or labelled in this pass.
@@ -397,8 +390,9 @@ function buildOneLodgeRoster(
     const present = booking.guests
       .map((guest) => ({
         guest,
+        // A custodian who also books is listed once, as custodian (#3821).
         nights: nightsForGuest(guest, booking, windowNights).filter(
-          (night) => !isCustodianOn(guest.memberId, night),
+          (night) => !isCustodianOnNight(custodianHolds, guest.memberId, night),
         ),
       }))
       .filter((entry) => entry.nights.length > 0);

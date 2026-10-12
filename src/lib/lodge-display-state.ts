@@ -31,7 +31,7 @@ import {
 } from "./club-theme-schema";
 import { getSanitizedLodgeInstructions } from "./lodge-instructions";
 import { DISPLAY_RELEVANT_MODULE_KEYS } from "./lodge-display/conditions";
-import { CUSTODIAN_OCCUPANCY_WHERE } from "./custodian-occupancy";
+import { CUSTODIAN_OCCUPANCY_WHERE, isCustodianOnNight } from "./custodian-occupancy";
 import { lodgeNullTolerantScope } from "./lodges";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "./member-guest-consent";
 import { loadEffectiveModuleFlags } from "./module-settings";
@@ -368,9 +368,7 @@ export async function buildDisplayState(
             ageTier: true,
             stayStart: true,
             stayEnd: true,
-            // #3821: read only to list a custodian once (see the row builder);
-            // never copied into the payload.
-            memberId: true,
+            memberId: true, // #3821: matches a custodian; never in the payload
             // #125 / #37: the member's opt-in + phone, released per-guest only
             // under `canServeMemberPhoneOnLodgeSurface` in the row builder.
             member: {
@@ -635,28 +633,17 @@ export async function buildDisplayState(
           ...lodgeNullTolerantScope(lodgeId),
         },
         select: {
-          // #3821: who and which nights, so the row builder lists them once.
-          memberId: true,
-          startDate: true,
-          endDate: true,
+          memberId: true, startDate: true, endDate: true, // #3821
           member: { select: { firstName: true, lastName: true, ageTier: true } },
         },
         orderBy: [{ startDate: "asc" }, { id: "asc" }],
         take: 8,
       })
     : [];
-  // A custodian in residence today who is also a guest is listed ONCE, as
-  // custodian (#3821, owner decision on #3820, 13 Oct 2026, "Show once, as
-  // custodian"): their own booking's row drops them on their custodian
-  // nights and keeps the rest of the party.
-  const isCustodianOn = (memberId: string | null | undefined, nightKey: string) =>
-    Boolean(memberId) &&
-    custodianAssignments.some(
-      (assignment) =>
-        assignment.memberId === memberId &&
-        formatDateOnly(assignment.startDate) <= nightKey &&
-        nightKey <= formatDateOnly(assignment.endDate),
-    );
+  // #3821: today's custodians, listed once (`isCustodianOnNight`).
+  const custodianNights = custodianAssignments.filter((a) => a.memberId).map((a) => ({
+    memberId: a.memberId, startDate: formatDateOnly(a.startDate), endDate: formatDateOnly(a.endDate),
+  }));
 
   // --- booking rows: split per (booking, room); privacy-reduce labels ------
   const rows: DisplayStateBooking[] = [];
@@ -698,7 +685,7 @@ export async function buildDisplayState(
       booking.guests.map((guest) => [
         guest.id,
         getGuestBedNightKeys(guest, booking).filter(
-          (key) => !isCustodianOn(guest.memberId, key),
+          (key) => !isCustodianOnNight(custodianNights, guest.memberId, key),
         ),
       ])
     );

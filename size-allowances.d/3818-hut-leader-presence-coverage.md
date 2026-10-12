@@ -12,3 +12,12 @@ reason: the hut-leader read stays in the page's one batched `Promise.all`
   (`uncoveredNightLabel`) live outside the page to keep the growth to these
   wiring lines; moving the read out of the batch would add a second round trip
   to every dashboard load, which #2091 removed on purpose.
+
+file: src/lib/lodge-display-state.ts
+lines: 941
+reason: the owner's "Show once, as custodian" (13 Oct 2026, #3820) has to drop
+  a custodian's own guest nights from the booking rows the wall builds, and
+  only this builder holds both today's custodian read and those rows. The
+  rule itself is one shared helper (`isCustodianOnNight` in
+  `custodian-occupancy.ts`) the member roster calls too; here it costs the two
+  selected columns, the custodian nights in key form and the one filter.

@@ -9,13 +9,15 @@ reason: the hub renders the new "Who can be hut leader for school bookings"
   module-gated render site with its vouch, and its comment.
 
 file: src/lib/school-booking-request.ts
-lines: 3040
+lines: 3043
 reason: approval now reads the booking lodge's teacher tick instead of the
   club-wide switch, computes the teacher's last night (checkout - 1) once for
   the assignment and its PIN email, and refuses if the default lodge moved
   between that read and the lodge lock. All three belong to the one approval
   flow and its pre-transaction read; the resolver itself lives in
-  `lodge-settings.ts`.
+  `lodge-settings.ts`. The compose review (#3821) also asks the Hut Leaders
+  module there, so a lodge's leftover teacher tick creates nothing while the
+  module is off.
 
 file: src/lib/config-transfer/categories/club-settings.ts
 lines: 1185
