@@ -32,6 +32,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
 import { DOOR_INTENT_CLOCK_SKEW_MS, ordinaryAskDoorRequest, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
+import { PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
 import { MINTED_INTENT_LOOKBACK_MS } from "@/lib/reissued-ask-mint";
 import { stripeChargeCurrency } from "@/lib/stripe-charge-currency";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
@@ -148,8 +149,8 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
         where: {
           bookingId: BOOKING,
           type: "CREATE_ADDITIONAL_PAYMENT_INTENT",
-          status: { in: ["PENDING", "PROCESSING"] },
           id: { not: RECOVERY.id },
+          ...PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE,
         },
       }),
     );
@@ -178,7 +179,7 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
   });
 
-  it("fails closed when another edit's unfinished recovery could own the one match - two edits never record one intent", async () => {
+  it("fails closed when another edit's in-flight recovery (FAILED, retry scheduled) could own the one match - two edits never record one intent", async () => {
     const err = refusal();
     mocks.createPaymentIntent.mockRejectedValue(err);
     stripeHolds(intent("pi_door"));
@@ -190,6 +191,10 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
         idempotencyKey: "payment_recovery_additional_intent_mod_other",
         paymentIntentId: other.idempotencyKey,
         amountCents: 6_000,
+        // Between retries: FAILED, with its next attempt scheduled.
+        status: "FAILED",
+        attempts: 1,
+        nextRetryAt: new Date("2026-07-01T00:05:00.000Z"),
       },
     ]);
 
@@ -208,6 +213,9 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
         idempotencyKey: "payment_recovery_additional_intent_mod_other",
         paymentIntentId: ordinaryAskDoorRequest("guestAdd", BOOKING, "mod_other").idempotencyKey,
         amountCents: 4_000,
+        status: "PENDING",
+        attempts: 0,
+        nextRetryAt: null,
       },
     ]);
 

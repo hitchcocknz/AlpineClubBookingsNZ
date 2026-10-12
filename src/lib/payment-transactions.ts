@@ -916,6 +916,58 @@ async function sumRecordedRefundsForTransaction(
   return recordedRefunds._sum.amountCents ?? 0;
 }
 
+/**
+ * #4036 review: an edit's ask row is never written over another edit's. Thrown
+ * by an ask write (one naming its `bookingModificationId`) that finds the
+ * intent's row already naming a different edit - the runner's replay and the
+ * door's mint alike, whether the intent was adopted or the key's own. The
+ * caller's failure path keeps the debt, so the recovery retries and, still
+ * refused, alerts an officer.
+ */
+export class AdditionalAskAttributionConflictError extends Error {
+  constructor(readonly paymentIntentId: string, readonly bookingModificationId: string) {
+    super(
+      `PaymentIntent ${paymentIntentId} is already recorded for another edit's ask; not writing it as ${bookingModificationId}'s (#4036)`,
+    );
+    this.name = "AdditionalAskAttributionConflictError";
+  }
+}
+
+/**
+ * #4036 review: the ask write's one atomic rule - update the intent's row only
+ * where it names this edit or none; else insert it; else refuse. Each step is
+ * one statement, so under READ COMMITTED a concurrent writer cannot slip between
+ * a check and the write: the guarded `updateMany` re-evaluates its WHERE on the
+ * row it locks, and `createMany` with `skipDuplicates` (`ON CONFLICT DO
+ * NOTHING`) waits for a concurrent insert of the same intent rather than
+ * aborting the caller's transaction, after which the guarded update is tried
+ * once more against the row that won. A row naming no edit (a webhook's, say)
+ * is still claimed, as the upsert did.
+ */
+async function writeEditAttributedTransaction(
+  store: PaymentStore,
+  {
+    paymentIntentId,
+    bookingModificationId,
+    create,
+    update,
+  }: {
+    paymentIntentId: string;
+    bookingModificationId: string;
+    create: Prisma.PaymentTransactionUncheckedCreateInput;
+    update: Prisma.PaymentTransactionUncheckedUpdateManyInput;
+  },
+): Promise<void> {
+  const ours = {
+    stripePaymentIntentId: paymentIntentId,
+    OR: [{ bookingModificationId: null }, { bookingModificationId }],
+  };
+  if ((await store.paymentTransaction.updateMany({ where: ours, data: update })).count === 1) return;
+  if ((await store.paymentTransaction.createMany({ data: [create], skipDuplicates: true })).count === 1) return;
+  if ((await store.paymentTransaction.updateMany({ where: ours, data: update })).count === 1) return;
+  throw new AdditionalAskAttributionConflictError(paymentIntentId, bookingModificationId);
+}
+
 export async function upsertPaymentIntentTransaction({
   paymentId,
   kind,
@@ -949,39 +1001,48 @@ export async function upsertPaymentIntentTransaction({
   stripeCustomerId?: string | null;
   /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
-  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. */
+  /**
+   * #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone.
+   * #4036 review: given, the write refuses a row already naming another edit (`AdditionalAskAttributionConflictError`).
+   */
   bookingModificationId?: string;
   store?: PaymentStore;
 }) {
   const provenance = { ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}), ...(bookingModificationId !== undefined ? { bookingModificationId } : {}) };
-  await store.paymentTransaction.upsert({
-    where: { stripePaymentIntentId: paymentIntentId },
-    create: {
-      paymentId,
-      kind,
-      source: PaymentSource.STRIPE,
-      stripePaymentIntentId: paymentIntentId,
-      amountCents,
-      status,
-      paymentMethodId: paymentMethodId ?? undefined,
-      reason,
-      ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
-      ...provenance,
-    },
-    update: {
-      paymentId,
-      kind,
-      source: PaymentSource.STRIPE,
-      amountCents,
-      status,
-      ...(paymentMethodId !== undefined
-        ? { paymentMethodId: paymentMethodId ?? null }
-        : {}),
-      ...(reason !== undefined ? { reason } : {}),
-      ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
-      ...provenance,
-    },
-  });
+  const create = {
+    paymentId,
+    kind,
+    source: PaymentSource.STRIPE,
+    stripePaymentIntentId: paymentIntentId,
+    amountCents,
+    status,
+    paymentMethodId: paymentMethodId ?? undefined,
+    reason,
+    ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+    ...provenance,
+  };
+  const update = {
+    paymentId,
+    kind,
+    source: PaymentSource.STRIPE,
+    amountCents,
+    status,
+    ...(paymentMethodId !== undefined
+      ? { paymentMethodId: paymentMethodId ?? null }
+      : {}),
+    ...(reason !== undefined ? { reason } : {}),
+    ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+    ...provenance,
+  };
+  if (bookingModificationId !== undefined) {
+    await writeEditAttributedTransaction(store, { paymentIntentId, bookingModificationId, create, update });
+  } else {
+    await store.paymentTransaction.upsert({
+      where: { stripePaymentIntentId: paymentIntentId },
+      create,
+      update,
+    });
+  }
 
   if (stripeCustomerId) {
     await store.payment.update({

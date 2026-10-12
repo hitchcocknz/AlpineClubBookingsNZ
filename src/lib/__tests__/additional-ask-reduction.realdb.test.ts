@@ -1663,6 +1663,110 @@ let webhookClient: PrismaClient;
         .toMatchObject({ status: "FAILED", attempts: 1, paymentIntentId: recovery.paymentIntentId });
     });
 
+    // #4036 delta review. Two guest-add edits of one booking, X and Y, each
+    // asking $60. X's door request differed from its replay (an old door named
+    // another customer) and that intent is gone, so X's replay is refused and
+    // looks for its intent by what it asks for - and finds Y's.
+    async function twoEditsOneFigure({ yDoorFails }: { yDoorFails: boolean }) {
+      await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+      const stripe = fakeStripe();
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      const recoveryOf = (editId: string) =>
+        prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(editId) } });
+      const failDoor = () => {
+        stripeRaceHooks.create = (async () => {
+          throw new Error("Stripe was unavailable");
+        }) as never;
+      };
+      // X: its door failed; the request an old door sent under X's key named
+      // another customer, and that intent was cancelled since.
+      const x = await ordinaryIncrease(1_000);
+      expect(x.adjusted.additionalAsk.amountCents).toBe(6_000);
+      failDoor();
+      expect((await mintIncreaseAtDoor(x)).additionalPaymentIntentId).toBeUndefined();
+      const xOld = await stripe.create({
+        amountCents: 6_000, customerId: "cus_race_4036_old_door", idempotencyKey: `mod_guest_${BOOKING_ID}_${x.id}`,
+        metadata: { bookingId: BOOKING_ID, type: "modification_additional", reason: "guest_add_price_increase" },
+      });
+      xOld.status = "canceled";
+      // Y: the same figure. Its door failed too, or has yet to mint.
+      const y = await ordinaryIncrease(1_000);
+      expect(y.adjusted.additionalAsk.amountCents).toBe(6_000);
+      if (yDoorFails) expect((await mintIncreaseAtDoor(y)).additionalPaymentIntentId).toBeUndefined();
+      stripeRaceHooks.create = stripe.create as never;
+      return { stripe, x, y, xRecovery: await recoveryOf(x.id), yRecovery: yDoorFails ? await recoveryOf(y.id) : null, recoveryOf };
+    }
+
+    /** Y's replay mints Y's own intent (its write then failed), exactly as the runner sends it. */
+    async function yMinted(stripe: ReturnType<typeof fakeStripe>, yId: string) {
+      return stripe.create({
+        amountCents: 6_000, customerId: "cus_race_3954", idempotencyKey: `mod_guest_${BOOKING_ID}_${yId}`,
+        metadata: { bookingId: BOOKING_ID, type: "modification_additional", reason: "guest_add_price_increase" },
+      });
+    }
+
+    it("#4036 delta review (finding 1): Y between retries (FAILED, retry scheduled) is still Y's - X's refused replay does not adopt Y's intent, and Y's retry records it", async () => {
+      const { stripe, y, xRecovery, yRecovery } = await twoEditsOneFigure({ yDoorFails: true });
+      const yIntent = await yMinted(stripe, y.id);
+      await prisma.paymentRecoveryOperation.update({
+        where: { id: yRecovery!.id },
+        data: { status: "FAILED", attempts: 1, nextRetryAt: new Date("2026-07-02T00:00:00.000Z"), lastError: "write failed" },
+      });
+
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(xRecovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).toEqual([ASK_INTENT]);
+
+      // Y's retry gets its own intent back and records it as Y's.
+      await prisma.paymentRecoveryOperation.update({ where: { id: yRecovery!.id }, data: { nextRetryAt: new Date("2026-06-01T00:00:00.000Z") } });
+      expect(await runPaymentRecoveryOperationNow(yRecovery!.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { stripePaymentIntentId: yIntent.id }, select: { bookingModificationId: true } }))
+        .toEqual({ bookingModificationId: y.id });
+      expect(stripe.intents.size).toBe(2);
+    });
+
+    it("#4036 delta review (findings 2, 3): X adopted Y's intent while Y's door was minting it - Y's own write then refuses, and X's row stays X's", async () => {
+      const { stripe, x, y, xRecovery, recoveryOf } = await twoEditsOneFigure({ yDoorFails: false });
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      // Between Y's door mint and its ledger write, X's runner runs: refused,
+      // it finds Y's fresh intent - no rival row, created inside the skew - and adopts it.
+      let xOutcome: string | null = null;
+      ordinaryAskMintHooks.afterMint = async ({ adopted }) => {
+        if (adopted || xOutcome !== null) return;
+        xOutcome = await runPaymentRecoveryOperationNow(xRecovery.id, CLUB_FORMAT_TEST);
+      };
+
+      const yDoor = await mintIncreaseAtDoor(y);
+
+      expect(xOutcome).toBe("succeeded");
+      const live = [...stripe.intents.values()].filter((intent) => intent.status !== "canceled");
+      expect(live).toHaveLength(1);
+      const yIntentId = live[0]!.id;
+      const row = () =>
+        prisma.paymentTransaction.findUniqueOrThrow({
+          where: { stripePaymentIntentId: yIntentId },
+          select: { bookingModificationId: true, reason: true, amountCents: true },
+        });
+      const { ORDINARY_ASK_RECOVERY_REASON } = await import("@/lib/ordinary-ask-request");
+      expect(await row()).toEqual({ bookingModificationId: x.id, reason: ORDINARY_ASK_RECOVERY_REASON, amountCents: 6_000 });
+      // Y's door got its own key's intent back, and its write refused rather
+      // than write Y over X's row: no secret offered, the debt kept on Y's recovery.
+      expect(yDoor.additionalPaymentIntentId).toBeUndefined();
+      const yRecovery = await recoveryOf(y.id);
+      expect(yRecovery).toMatchObject({ status: "PENDING", paymentIntentId: `mod_guest_${BOOKING_ID}_${y.id}` });
+      expect(await row()).toEqual({ bookingModificationId: x.id, reason: ORDINARY_ASK_RECOVERY_REASON, amountCents: 6_000 });
+
+      // Y's retry re-sizes from the ledger, which now carries X's $60 ask, so
+      // it asks $70 under the amount-named key: a new intent, recorded as Y's,
+      // superseding X's. X's row still names X.
+      await prisma.paymentRecoveryOperation.update({ where: { id: yRecovery.id }, data: { nextRetryAt: new Date("2026-06-01T00:00:00.000Z") } });
+      expect(await runPaymentRecoveryOperationNow(yRecovery.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      expect((await row()).bookingModificationId).toBe(x.id);
+      expect(await liveAsks()).toEqual([
+        expect.objectContaining({ amountCents: 7_000, carriedAskCents: 6_000, reason: ORDINARY_ASK_RECOVERY_REASON }),
+      ]);
+    });
+
     // #4036, the other ordering. An ordinary ask's recovery row is written only
     // once the door's own create has FAILED (`keepTheDebt`), so the door never
     // upserts after the runner: its call has already returned. What can arrive

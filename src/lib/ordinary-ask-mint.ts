@@ -22,8 +22,10 @@
  *
  * - the scan stopped at its bound with intents unread (`complete` false), so a
  *   second match may be among them;
- * - another unfinished additional-ask recovery row of the booking could own the
- *   match (`couldRecoveryRowOwnIntent`) - two edits must never record one intent.
+ * - another additional-ask recovery row of the booking still in flight
+ *   (`isPaymentRecoveryOperationInFlight`, a FAILED row with a retry scheduled
+ *   included) could own the match (`couldRecoveryRowOwnIntent`) - two edits
+ *   must never record one intent.
  *
  * And an intent under a door's reason created after the recovery row (beyond
  * `DOOR_INTENT_CLOCK_SKEW_MS`) is never a match: it is a later door's mint.
@@ -31,7 +33,7 @@
  * And the caller is told it adopted (`adopted`), so the runner confirms, under
  * its claim, that no ledger row took the intent meanwhile before writing its own.
  */
-import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType, type Prisma } from "@prisma/client";
+import { PaymentRecoveryOperationType, type Prisma } from "@prisma/client";
 import type Stripe from "stripe";
 
 import type { ClubFormat } from "@/lib/club-format";
@@ -41,6 +43,10 @@ import {
   isIntentForOrdinaryAskPlan,
   type OrdinaryAskMintPlan,
 } from "@/lib/ordinary-ask-request";
+import {
+  isPaymentRecoveryOperationInFlight,
+  PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE,
+} from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 import { MINTED_INTENT_LOOKBACK_MS } from "@/lib/reissued-ask-mint";
 import { createPaymentIntent, listRecentPaymentIntentsMatching } from "@/lib/stripe";
@@ -99,6 +105,12 @@ export async function mintOrdinaryAskIntent({
  * by this row's key, so another ask may have recorded it since the lookup.
  * That row is never written over: this throws, the claim's write rolls back,
  * and the retry's lookup finds no unrecorded match and fails closed.
+ *
+ * The ask write itself refuses a row naming ANOTHER EDIT, atomically
+ * (`writeEditAttributedTransaction` in `payment-transactions.ts`); this check
+ * is what still refuses an adopted intent whose row names NO edit - a review
+ * charge's, a webhook's, or one written before rows named their edit - which
+ * that write would claim, as it must for the key's own intent.
  */
 export async function refuseAdoptedIntentOnLedger(
   store: Prisma.TransactionClient,
@@ -165,16 +177,20 @@ async function findIntentMintedForOrdinaryAsk({
   const match = unrecorded[0]!;
   // Another edit's unfinished recovery could be the one that minted it: two
   // edits must never record one intent, so neither adopts it.
+  // In flight includes a FAILED row with a retry still scheduled: it will run again.
   const others = await prisma.paymentRecoveryOperation.findMany({
     where: {
       bookingId: plan.bookingId,
       type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
-      status: { in: [PaymentRecoveryOperationStatus.PENDING, PaymentRecoveryOperationStatus.PROCESSING] },
       id: { not: recovery.id },
+      ...PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE,
     },
-    select: { id: true, bookingId: true, idempotencyKey: true, paymentIntentId: true, amountCents: true },
+    select: {
+      id: true, bookingId: true, idempotencyKey: true, paymentIntentId: true, amountCents: true,
+      status: true, attempts: true, nextRetryAt: true,
+    },
   });
-  const rivals = others.filter((row) => couldRecoveryRowOwnIntent(row, match));
+  const rivals = others.filter((row) => isPaymentRecoveryOperationInFlight(row) && couldRecoveryRowOwnIntent(row, match));
   if (rivals.length > 0) {
     return failClosed(
       plan,

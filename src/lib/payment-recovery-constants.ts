@@ -1,4 +1,4 @@
-import type { PaymentRecoveryOperationStatus } from "@prisma/client";
+import type { PaymentRecoveryOperationStatus, Prisma } from "@prisma/client";
 
 // Shared payment-recovery constants kept in a dependency-light module so health
 // and visibility code can reuse them without importing the full payment-recovery
@@ -40,3 +40,16 @@ export function isPaymentRecoveryOperationInFlight(operation: {
   if (operation.status === "PENDING" || operation.status === "PROCESSING") return true;
   return operation.status === "FAILED" && operation.nextRetryAt !== null && operation.attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS;
 }
+
+/**
+ * #4036 review: {@link isPaymentRecoveryOperationInFlight} as a Prisma filter,
+ * for a reader that must find the in-flight rows in the database. Its twin, not
+ * a second rule: the reader still applies the predicate to what it reads, and
+ * `payment-recovery-constants.test.ts` holds the two to the same rows.
+ */
+export const PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE = {
+  OR: [
+    { status: { in: ["PENDING", "PROCESSING"] } },
+    { status: "FAILED", nextRetryAt: { not: null }, attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS } },
+  ],
+} satisfies Prisma.PaymentRecoveryOperationWhereInput;

@@ -65,9 +65,11 @@ vi.mock("@/lib/prisma", () => {
     for (const key of Object.keys(args)) if (!allowed.includes(key)) refuse(`argument "${key}"`);
   };
 
-  const matches = (row: Row, where: Row = {}): boolean =>
+  const matches: (row: Row, where?: Row) => boolean = (row, where = {}) =>
     Object.entries(where).every(([field, condition]) => {
-      if (field === "AND" || field === "OR" || field === "NOT") refuse(`combinator "${field}"`);
+      // #4036 review: the ask write's guard (`writeEditAttributedTransaction`) reads OR.
+      if (field === "OR") return (condition as Row[]).some((branch) => matches(row, branch));
+      if (field === "AND" || field === "NOT") refuse(`combinator "${field}"`);
       const value = row[field];
       if (condition !== null && typeof condition === "object" && !(condition instanceof Date)) {
         const c = condition as Record<string, unknown>;
@@ -116,6 +118,7 @@ vi.mock("@/lib/prisma", () => {
     withdrawnAt: null,
     carriedAskCents: 0,
     reason: null,
+    bookingModificationId: null,
   });
 
   return {
@@ -166,6 +169,18 @@ vi.mock("@/lib/prisma", () => {
           const hit = ledger.transactions.filter((row) => matches(row, where));
           hit.forEach((row) => apply(row, data));
           return { count: hit.length };
+        },
+        // #4036 review: `ON CONFLICT DO NOTHING` on the intent's unique id.
+        createMany: async (args: { data: Row[]; skipDuplicates?: boolean }) => {
+          onlyArgs(args, ["data", "skipDuplicates"]);
+          if (args.skipDuplicates !== true) refuse("createMany without skipDuplicates");
+          let count = 0;
+          for (const data of args.data) {
+            if (ledger.transactions.some((row) => row.stripePaymentIntentId === data.stripePaymentIntentId)) continue;
+            ledger.transactions.push({ id: `txn_${ledger.transactions.length + 1}`, ...transactionDefaults(), createdAt: tick(), ...data });
+            count += 1;
+          }
+          return { count };
         },
         // #3954 round 7: the door re-reads its new intent's row before it
         // queues anything on it (`isMintedAskStillLive`).
@@ -401,5 +416,44 @@ describe("mint -> supersede -> resulting ask, every seam real (#3341, INV-OPS-01
     // Row written before the supersede (#3340 fix round), so the reconcile the
     // mint ran reads the new ask as the latest ADDITIONAL, not the retired one.
     expect(payment()).toMatchObject({ additionalAmountCents: 14000, additionalPaymentIntentId: "pi_add_2" });
+  });
+});
+
+/*
+  #4036 review: an edit's ask write never lands on a row naming another edit.
+  Whatever handed the minter an intent already recorded for edit 1 - a runner's
+  adoption, or Stripe answering a replayed key - edit 2's write refuses, and its
+  door keeps the debt on a recovery row instead.
+*/
+describe("an ask's ledger write keeps each edit's row its own (#4036 review)", () => {
+  it("MUTATION: refuses an intent already recorded for another edit - the row is untouched and the debt is kept", async () => {
+    await editUp("mod_1", 7000);
+    const before = { ...additionalRows()[0] };
+    expect(before).toMatchObject({ stripePaymentIntentId: "pi_add_1", bookingModificationId: "mod_1", amountCents: 7000 });
+    stripe.createPaymentIntent.mockResolvedValueOnce({ id: "pi_add_1", client_secret: "pi_add_1_secret" });
+
+    const second = await editUp("mod_2", 7000);
+
+    expect(second.additionalPaymentIntentId).toBeUndefined();
+    expect(additionalRows()).toEqual([before]);
+    expect(ledger.operations).toEqual([
+      expect.objectContaining({ idempotencyKey: "payment_recovery_additional_intent_mod_2", amountCents: 14000, status: PaymentRecoveryOperationStatus.PENDING }),
+    ]);
+  });
+
+  it("still claims a row for the intent that names no edit (a webhook wrote it first)", async () => {
+    ledger.transactions.push({
+      id: "txn_webhook", paymentId: PAYMENT_ID, kind: PaymentTransactionKind.ADDITIONAL, source: PaymentSource.STRIPE,
+      stripePaymentIntentId: "pi_add_1", amountCents: 7000, refundedAmountCents: 0, status: PaymentStatus.PENDING,
+      paymentMethodId: null, reference: null, xeroInvoiceId: null, xeroInvoiceNumber: null, withdrawnAt: null,
+      carriedAskCents: 0, reason: null, bookingModificationId: null, createdAt: new Date(Date.UTC(2026, 7, 2)),
+    });
+
+    const first = await editUp("mod_1", 7000);
+
+    expect(first.additionalPaymentIntentId).toBe("pi_add_1");
+    expect(additionalRows()).toEqual([
+      expect.objectContaining({ id: "txn_webhook", bookingModificationId: "mod_1", reason: "date_change_price_increase" }),
+    ]);
   });
 });
