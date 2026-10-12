@@ -520,8 +520,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1337",
-  "src/lib/payment-recovery.ts:2656",
-  "src/lib/payment-recovery.ts:2708",
+  "src/lib/payment-recovery.ts:2643",
+  "src/lib/payment-recovery.ts:2695",
   "src/lib/xero-admin-health.ts:394",
 ];
 
