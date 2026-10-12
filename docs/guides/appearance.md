@@ -48,11 +48,16 @@ change these pages.
 ### Set the club identity
 
 1. Open the **Club Identity** card (`/admin/appearance/identity`).
-2. Under **Club identity**, edit the **Club name**, **Short name**,
-   **Hut-leader label**, and **Facebook URL**. These override the file
-   configuration — leave a field blank to fall back to the configured default.
-   Changes appear across the site and in emails within a few seconds. Click
-   **Save club identity**.
+2. Under **Club identity**, the fields open read-only. Click **Edit**, then
+   change the **Club name**, **Short name**, **Hut-leader label**, and
+   **Facebook URL**. These override the file configuration — leave a field
+   blank to fall back to the configured default. Click **Save club identity**
+   to save all four at once; changes appear across the site and in emails
+   within a few seconds. **Save club identity** stays greyed out until a value
+   actually changes (extra spaces at either end don't count), and **Cancel**
+   puts every field back to what was last saved without saving anything. If
+   your role can view but not change club identity, a note at the top of the
+   section says so and **Edit** is greyed out.
 
    ![The Club Identity page with the Club identity form (Club name, Short name, Hut-leader label, Facebook URL) above the Lodge details form (Lodge name, Address, Travel note, Door code)](../images/admin/admin-appearance-identity.png)
 

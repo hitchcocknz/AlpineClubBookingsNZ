@@ -7,3 +7,10 @@
   the singular, for example "Hut Leader". A club whose label is plural should
   change it to the singular, because the singular wording elsewhere ("held for
   a hut leader") still uses the label exactly as saved.
+
+- **Club identity now opens read-only, with Edit, Save and Cancel (#3976).**
+  Under Admin → Appearance → Identity, the club name, short name, hut-leader
+  label and Facebook URL fields are read-only until you click **Edit**.
+  **Save club identity** only becomes available once something has changed,
+  and **Cancel** restores the last saved values. Save and load messages now
+  appear at the top of the section instead of as pop-up notifications.

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
-import { toast } from "sonner";
+import { useId } from "react";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   FieldHint,
@@ -11,16 +11,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
+  ForbiddenSaveError,
+  useSectionEditState,
+} from "@/hooks/use-section-edit-state";
+import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 
+/**
+ * The persisted shape the route reads and writes. Every field is nullable: a
+ * null is "no override", and the site falls back to the file configuration.
+ */
 type Settings = {
   name: string | null;
   shortName: string | null;
   hutLeaderLabel: string | null;
   facebookUrl: string | null;
 };
+
+/**
+ * What the form edits: the same four keys as text, because a controlled
+ * `<Input>` holds a string. A null override shows as an empty box.
+ */
+type Draft = Record<keyof Settings, string>;
 
 /*
   #2257 — `[key, label, placeholder, hint]`. The EXAMPLE that used to sit in the
@@ -55,28 +69,76 @@ const fields: Array<
   ],
 ];
 
+const ENDPOINT = "/api/admin/club-identity";
+const LOAD_ERROR = "Could not load club identity settings.";
+const SAVE_ERROR = "Could not update club identity.";
+
+function toDraft(settings: Settings): Draft {
+  return {
+    name: settings.name ?? "",
+    shortName: settings.shortName ?? "",
+    hutLeaderLabel: settings.hutLeaderLabel ?? "",
+    facebookUrl: settings.facebookUrl ?? "",
+  };
+}
+
+/*
+  What the route will STORE for a box: it trims, and turns blank into null
+  (`emptyToNull` in the route). The dirty gate compares on that, not on the raw
+  text, so retyping a value, adding a trailing space, or clearing a box that was
+  already falling back cannot arm a Save that would write an unchanged row and a
+  misleading audit entry (#2143).
+*/
+function stored(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function identityChanged(draft: Draft, saved: Draft): boolean {
+  return fields.some(([key]) => stored(draft[key]) !== stored(saved[key]));
+}
+
+/**
+ * Club identity overrides (E3 #1929), on the canonical staged settings model
+ * since #3976: read-only on mount, one Edit opens the four fields, Save writes
+ * them once and is dirty-gated by `useSectionEditState`, and Cancel restores the
+ * last saved snapshot. All four fields go out in one whole-object PUT that this
+ * section alone owns, so there is no sibling card whose fields need merging.
+ */
 export function ClubIdentityPanel() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [loadFailed, setLoadFailed] = useState(false);
   const canEdit = useAdminAreaEditAccess("content");
   const viewOnlyReasonId = useId();
 
-  function load() {
-    setLoadFailed(false);
-    void fetch("/api/admin/club-identity")
-      .then(async (response) => {
-        if (!response.ok) throw new Error();
-        setSettings((await response.json()).settings);
-      })
-      .catch(() => {
-        setLoadFailed(true);
-        toast.error("Could not load club identity settings.");
+  const section = useSectionEditState<Draft>({
+    load: async (signal) => {
+      const response = await fetch(ENDPOINT, { signal });
+      if (!response.ok) throw new Error(LOAD_ERROR);
+      return toDraft((await response.json()).settings);
+    },
+    save: async (draft) => {
+      const response = await fetch(ENDPOINT, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: draft.name,
+          shortName: draft.shortName,
+          hutLeaderLabel: draft.hutLeaderLabel,
+          facebookUrl: draft.facebookUrl,
+        }),
       });
-  }
-  useEffect(() => {
-    load();
-  }, []);
+      if (response.status === 403) throw new ForbiddenSaveError();
+      if (!response.ok) throw new Error(SAVE_ERROR);
+      // Re-seeded from what the SERVER stored (trimmed, blanks cleared), never
+      // from the local draft.
+      return toDraft((await response.json()).settings);
+    },
+    successMessage: "Club identity updated.",
+    loadErrorFallback: LOAD_ERROR,
+    saveErrorFallback: SAVE_ERROR,
+    isDirty: identityChanged,
+  });
+
+  const { draft, editing, saving, dirty, error, success } = section;
 
   /*
     #2160: the view-only explanation lives here, once, at the top of the section —
@@ -85,8 +147,8 @@ export function ClubIdentityPanel() {
     mounted so the live region is registered in the accessibility tree before its
     content appears; a region injected already-populated is silently dropped by
     some screen-reader/browser pairings. It sits OUTSIDE the `space-y-*` stack so
-    the empty wrapper an edit-capable admin gets costs no layout. The hoisted
-    const is rendered in the failed/loading branches too, so the region exists
+    the empty wrapper an edit-capable admin gets costs no layout. The frame below
+    renders it in every state (loading, failed, loaded), so the region exists
     from the first paint rather than from whenever the fetch settles. The
     `viewOnlyReasonId` wrapper is kept because the disabled inputs below still
     point their `aria-describedby` at it.
@@ -100,55 +162,43 @@ export function ClubIdentityPanel() {
     </div>
   );
 
-  if (loadFailed)
+  const feedback = (
+    <>
+      {error ? (
+        <Alert variant="error" className="mb-4">
+          {error}
+        </Alert>
+      ) : null}
+      {success ? (
+        <Alert variant="success" className="mb-4">
+          {success}
+        </Alert>
+      ) : null}
+    </>
+  );
+
+  if (!draft) {
     return (
       <div>
         {viewOnlyBanner}
-        <div className="space-y-3">
-          <p className="text-sm text-danger">
-            Could not load club identity settings.
+        {feedback}
+        {section.loading ? (
+          <p className="text-sm text-muted-foreground">
+            Loading club identity…
           </p>
-          <Button variant="outline" onClick={load}>
+        ) : (
+          <Button variant="outline" onClick={() => void section.reload()}>
             Retry
           </Button>
-        </div>
+        )}
       </div>
     );
-  if (!settings)
-    return (
-      <div>
-        {viewOnlyBanner}
-        <p className="text-sm text-muted-foreground">Loading club identity…</p>
-      </div>
-    );
-
-  async function save() {
-    if (!settings) return;
-    setSaving(true);
-    try {
-      const response = await fetch("/api/admin/club-identity", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: settings.name ?? "",
-          shortName: settings.shortName ?? "",
-          hutLeaderLabel: settings.hutLeaderLabel ?? "",
-          facebookUrl: settings.facebookUrl ?? "",
-        }),
-      });
-      if (!response.ok) throw new Error();
-      setSettings((await response.json()).settings);
-      toast.success("Club identity updated.");
-    } catch {
-      toast.error("Could not update club identity.");
-    } finally {
-      setSaving(false);
-    }
   }
 
   return (
     <div>
       {viewOnlyBanner}
+      {feedback}
       <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         These override the file configuration. Leave a field blank to fall back
@@ -168,14 +218,16 @@ export function ClubIdentityPanel() {
               <Label htmlFor={`club-identity-${key}`}>{label}</Label>
               <Input
                 id={`club-identity-${key}`}
-                value={settings[key] ?? ""}
+                value={draft[key]}
                 placeholder={placeholder ?? undefined}
-                disabled={!canEdit}
+                // Read-only until Edit (#3976). Edit itself is permission-gated,
+                // so a view-only admin can never reach an enabled field.
+                disabled={!editing || saving}
                 aria-describedby={
                   hint ? describedByFieldHint(hintId, viewOnlyId) : viewOnlyId
                 }
                 onChange={(event) =>
-                  setSettings({ ...settings, [key]: event.target.value })
+                  section.setDraft({ [key]: event.target.value })
                 }
               />
               {hint ? <FieldHint id={hintId}>{hint}</FieldHint> : null}
@@ -183,9 +235,40 @@ export function ClubIdentityPanel() {
           );
         })}
       </div>
-      <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={saving} onClick={save}>
-        {saving ? "Saving…" : "Save club identity"}
-      </ViewOnlyActionButton>
+      <div className="flex flex-wrap items-center gap-2">
+        {editing ? (
+          <>
+            <ViewOnlyActionButton
+              canEdit={canEdit}
+              describeReason={false}
+              disabled={!dirty || saving}
+              onClick={() => void section.save()}
+            >
+              {saving ? "Saving…" : "Save club identity"}
+            </ViewOnlyActionButton>
+            <Button
+              variant="outline"
+              disabled={saving}
+              onClick={section.cancelEditing}
+            >
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            describeReason={false}
+            variant="outline"
+            onClick={() => {
+              section.setSuccess("");
+              section.setError("");
+              section.startEditing();
+            }}
+          >
+            Edit
+          </ViewOnlyActionButton>
+        )}
+      </div>
       </div>
     </div>
   );

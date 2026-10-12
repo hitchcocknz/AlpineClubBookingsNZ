@@ -367,8 +367,12 @@ const FIGURES = {
    * page's "Resolved" on a card refund paid back twice. Each dialog's confirm
    * is a plain Button, reachable only once its gated row button opened it.
    * MEASURED by re-running this census.
+   *
+   * 373 -> 374 (#3976): Club identity moved to the staged pattern, so its Save
+   * gained an Edit beside it. Cancel is a plain Button, as on the Retention
+   * section. MEASURED by re-running this census.
    */
-  callSites: 373,
+  callSites: 374,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -408,8 +412,9 @@ const FIGURES = {
    * 315 -> 316 (#3750): so does the change-request card's overbooking confirm.
    * 316 -> 318 (#3372): the dead card refunds panel's "Paid another way" and
    * the paid-twice list's "Resolved" each opt out under their own banner.
+   * 318 -> 319 (#3976): so does Club identity's new Edit.
    */
-  optOuts: 318,
+  optOuts: 319,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -477,8 +482,10 @@ const FIGURES = {
    * request panel itself, beside that panel's own banner.
    * 282 -> 284 (#3372): the dead card refunds panel's "Paid another way" and
    * the paid-twice list's "Resolved" sit in the same file as their banners.
+   * 284 -> 285 (#3976): Club identity's Edit sits in the same file as the
+   * panel's own banner, beside the Save that was already static.
    */
-  staticOptOuts: 284,
+  staticOptOuts: 285,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
