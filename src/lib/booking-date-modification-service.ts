@@ -1593,7 +1593,6 @@ async function dispatchDatePostTransactionSideEffects({
   ipAddress: string;
   result: DateModificationTransactionResult;
   additionalMint: ModificationAdditionalAskMint;
-  /** #4057: the refund's own answer after it ran (`executeBookingModificationRefund`). */
   refundDestination: BookingModifiedRefundDestination;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */

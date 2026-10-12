@@ -365,7 +365,6 @@ export async function DELETE(
           docblock), and why this is a single hand-off rather than a query.
         */
         financialReviewPending: result.financialReviewPending,
-        // #4057: the refund's own answer after it ran - an organiser-card one made or still on its way.
         refundDestination: refund.refundDestination,
         // D-3813-6: an internet-banking refund is the club's to send.
         refundByBankTransfer: editRefundGoesBackByHand(result),

@@ -1427,9 +1427,7 @@ export async function sendBookingModifiedEmail(params: {
    * instead (`INV-SSOT`, "prefer unrepresentable over policed").
    */
   financialReviewPending: boolean;
-  /** #3916, #4057: where the refund went - the member's own, or the group organiser's card (#3653), made
-   * or still on its way. REQUIRED, like `financialReviewPending`; the settlement's own answer
-   * (`executeBookingModificationRefund`), never recomputed (`BookingModifiedRefundDestination`). */
+  /** #3916, #4057: REQUIRED; the answer `executeBookingModificationRefund` gives after the refund ran, never recomputed. */
   refundDestination: BookingModifiedRefundDestination;
   /**
    * #3827 (D-3813-6, `INV-PAY-117`): the refund is a bank transfer the club
