@@ -2980,7 +2980,12 @@ helper, and a transient Stripe failure enqueues a
 `CREATE_ADDITIONAL_PAYMENT_INTENT` recovery operation keyed to the booking
 modification. The worker re-creates the intent with the original
 modification-scoped Stripe idempotency key (so route and cron can never
-double-mint), skips itself if a later edit already minted a newer additional
+double-mint) and, since #4036, the same request the door sent
+(`planOrdinaryAskMint`, `INV-MOD-060`): the door's reason, named by the frozen
+key, and the customer resolved one way (`resolveAskCustomerId`), because Stripe
+refuses a key replayed with other parameters. A replay it still refuses adopts
+the one unrecorded, unpaid intent the key minted for this booking and amount,
+or fails closed and retries (`mintOrdinaryAskIntent`). It skips itself if a later edit already minted a newer additional
 intent, and settles the Xero half two ways: it points any supplementary
 invoice operation still WAITING_PAYMENT at the recovered intent, and it raises
 the supplementary invoice outright for the edits that queued none — the inline

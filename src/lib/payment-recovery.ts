@@ -2909,8 +2909,7 @@ async function processCreateAdditionalPaymentIntentOperation(
    * suffix a second time. Here the base key is the ORIGINAL inline attempt's,
    * frozen on the row, so an unmoved amount must keep it bare to converge on
    * that attempt; the review path builds its base fresh at every attempt and has
-   * no bare form to preserve. #4036: `planOrdinaryAskMint` applies the rule,
-   * for this replay and the door alike.
+   * no bare form to preserve. #4036: `planOrdinaryAskMint` applies the rule.
    */
   // #3954 round 6: a RE-ISSUED ask sends the one request its door's mint sends
   // under the same key (`planReissuedAskMint`), so whichever of the two runs
@@ -2930,10 +2929,7 @@ async function processCreateAdditionalPaymentIntentOperation(
         customerId,
         recoveryCreatedAt: operation.createdAt,
       })
-    : // #4036: an ordinary increase replays the one request its door sent
-      // (`planOrdinaryAskMint`): the door's reason, named by the key frozen on
-      // this row, so Stripe answers with the intent a lost reply minted. A
-      // refusal is answered by finding that intent (`mintOrdinaryAskIntent`).
+    : // #4036: the one request its door sent (`planOrdinaryAskMint`, `INV-MOD-060`).
       await mintOrdinaryAskIntent({
         format,
         plan: planOrdinaryAskMint({

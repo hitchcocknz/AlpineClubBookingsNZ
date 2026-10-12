@@ -47,9 +47,9 @@ A modification price increase whose Stripe intent creation fails transiently is
 never lost silently (#1358, F29): every additional-intent flow routes through
 the shared helper whose failure path enqueues a durable
 `CREATE_ADDITIONAL_PAYMENT_INTENT` recovery operation keyed one-per-modification
-with the same modification-scoped Stripe idempotency key, so the replay collects
-exactly once; exhausted retries alert the admins with the member, booking, and
-amount, and stalled or exhausted queues surface through the recovery health
+with the same modification-scoped Stripe idempotency key and request
+(`INV-MOD-060`), so the replay collects exactly once; exhausted retries alert
+the admins with the member, booking, and amount, and stalled or exhausted queues surface through the recovery health
 checks. The recovery processor is execution-time honest about lifecycle: a
 booking CANCELLED after the modification completes the operation WITHOUT
 minting an intent — cancellation already tore down its additional intents, and
@@ -70,6 +70,30 @@ recovery row (`PaymentRecoveryOperation.hadIssuedXeroInvoice`) rather than
 re-derived at replay time: a booking whose primary invoice is minted after the
 edit is billed for the edit BY that invoice, so a re-derivation would raise a
 second ask for the same money. Not recorded means not raised.
+
+## INV-MOD-060
+
+- **An ordinary edit's price ask is one Stripe request, whichever of its door
+  and its recovery replay sends it** (#4036). Stripe refuses a key replayed with
+  other parameters (`idempotency_error`), and a refused replay never asks the
+  member. Both plan it with `planOrdinaryAskMint`: the door's key, or that key
+  naming the amount when the replay's re-derived figure moved; the amount; and
+  metadata whose reason is the door's own, named by the key frozen on the
+  recovery row (`ordinaryAskReasonForStripeKey`), so a row the previous
+  release's door wrote replays its request too. Each door's key and reason are
+  spelled once (`ordinaryAskDoorRequest`) and never renamed. Both name the
+  customer one way (`resolveAskCustomerId`): the payment's stored customer,
+  else the booking owner's, an organisation included. Ledger rows keep their
+  own reasons.
+- **A replay Stripe still refuses adopts the intent the key minted**
+  (`mintOrdinaryAskIntent`): an intent created since five minutes before the
+  recovery row, for this booking, an additional ask by this door's reason or
+  the pre-#4036 runner's, at this amount and charge currency, unpaid, and on no
+  ledger row. Exactly one is recorded, with its own customer. None or several,
+  and the refusal stands: the recovery retries, then alerts as `INV-MOD-003`
+  says. The door's own first mint looks nothing up.
+- **Not** a review charge, whose replay re-enters the door with its own request
+  (`INV-PAY-112`), nor a re-issued ask (`INV-PAY-120`).
 
 ## INV-MOD-004
 
