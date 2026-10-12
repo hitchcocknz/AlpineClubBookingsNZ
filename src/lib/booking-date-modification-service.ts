@@ -37,7 +37,9 @@ import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-cov
 import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import type { HostingCoverageLinkedMoveInput } from "@/lib/adult-member-hosting-linked-move";
 import {
+  additionalAmountToName,
   createModificationAdditionalPaymentIntent,
+  type ModificationAdditionalAskMint,
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
 } from "@/lib/booking-modification-settlement";
@@ -69,6 +71,8 @@ import {
   WholeLodgeHoldBlockedError,
 } from "@/lib/over-capacity-confirmation";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import { readReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
+import { queueReductionAskFollowUps } from "@/lib/unpaid-ask-billed-offset-note";
 import {
   editRefundGoesBackByHand,
   raiseEditRefundHandBackIfOwed,
@@ -156,6 +160,7 @@ import {
 } from "@/lib/booking-modification-lines";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
+import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
 
 export type ModifyBookingDatesInput = {
   checkIn?: string;
@@ -181,6 +186,8 @@ type ModifiedBooking = Booking & {
 
 type DateModificationTransactionResult =
   BookingModificationPaymentContext & {
+    /** #3954: the reduction cancelled the unpaid ask outright, for the member's email. */
+    unpaidAskCancelled: boolean;
     /**
      * The plain figure the emails, the response body and the Xero leg read.
      * Inherited from `BookingModificationPaymentContext` until #3371 replaced
@@ -867,11 +874,15 @@ export async function modifyBookingDates({
     // payment row, and returns zeros for both Xero legs. The existing machinery
     // is what proves nothing moved, rather than a parallel hand-built result
     // that could drift from it.
+    // #3954: the unpaid ask, read ONCE for this edit and handed to both the
+    // options and the save, so a capture between two reads cannot split them.
+    const reduction = await readReductionAgainstUnpaidAsk(tx, booking, netChargeCents);
     const settlementOptions = parked
       ? null
       : await calculateModificationSettlementOptions({
           booking: booking as unknown as LoadedBookingForModify,
           netChargeCents,
+          reduction,
           db: tx, // locked transaction; see `CancellationPolicyDb`
           todayAtClub,
         });
@@ -885,6 +896,7 @@ export async function modifyBookingDates({
       booking: booking as unknown as LoadedBookingForModify,
       priceDiffCents,
       changeFeeCents,
+      reduction,
       settlementOptions,
       settlementMethod,
       todayAtClub,
@@ -897,6 +909,9 @@ export async function modifyBookingDates({
       // #3371: the minter's own parameter. The plain figure above is the
       // emails' and the Xero leg's; they are not interchangeable.
       additionalAsk,
+      // #3954: the unpaid asks this reduction retired, for the minter to cancel.
+      retiredAdditionalAsks,
+      unpaidAskCancelled,
       pendingRefundAmountCents,
       hasSucceededPayment,
       hasIssuedXeroInvoice,
@@ -1314,6 +1329,8 @@ export async function modifyBookingDates({
           accountCreditAmountCents: payments.accountCreditAmountCents,
           policyRetainedAmountCents: payments.policyRetainedAmountCents,
           ...creditGiveBackHistory(payments.appliedCreditGiveBack),
+          // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
+          ...unpaidAskOffsetHistory(payments),
           // #2390: the same sentence the member was shown at the edit, kept on
           // the booking's own history so the split has an answer later.
           ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
@@ -1347,6 +1364,14 @@ export async function modifyBookingDates({
       bookingModificationId: bookingModification.id,
       adjusted: payments,
       editLabel: "date change",
+    });
+    // #3954: a smaller re-issued ask, and the note for an offset Xero had
+    // already billed, are durable from this commit, not from after it.
+    await queueReductionAskFollowUps(tx, {
+      bookingId,
+      paymentId: booking.payment?.id ?? null,
+      bookingModificationId: bookingModification.id,
+      settled: payments,
     });
 
     /**
@@ -1451,6 +1476,8 @@ export async function modifyBookingDates({
       policyRetainedAmountCents: payments.policyRetainedAmountCents,
       additionalAmountCents,
       additionalAsk,
+      retiredAdditionalAsks,
+      unpaidAskCancelled,
       pendingRefundAmountCents,
       promoRemoved,
       promoCoverage,
@@ -1494,15 +1521,14 @@ export async function modifyBookingDates({
       "Failed to enqueue payment recovery for Stripe refund failure after date change",
   });
 
-  const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-    await createModificationAdditionalPaymentIntent({
-      format,
-      bookingId,
-      result,
-      reason: "date_change_price_increase",
-      idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
-      failureMessage: "Failed to create additional PaymentIntent for modification",
-    });
+  const additionalMint = await createModificationAdditionalPaymentIntent({
+    format,
+    bookingId,
+    result,
+    reason: "date_change_price_increase",
+    idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
+    failureMessage: "Failed to create additional PaymentIntent for modification",
+  });
 
   // Issue #1668: under an admin override, close the approve → apply trail by
   // linking this modification to the booking's most recent approved-unlinked
@@ -1526,7 +1552,7 @@ export async function modifyBookingDates({
     actorMemberId: actor.id,
     ipAddress,
     result,
-    additionalPaymentIntentId,
+    additionalMint,
     linkedChangeRequestId,
     format,
   });
@@ -1541,7 +1567,7 @@ export async function modifyBookingDates({
     settlementMethod: result.settlementMethod,
     policyRetainedAmountCents: result.policyRetainedAmountCents,
     additionalAmountCents: result.additionalAmountCents,
-    additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+    additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
     stripeRefundId: stripeRefundId ?? null,
     promoRemoved: result.promoRemoved,
     promoCoverage: result.promoCoverage,
@@ -1555,7 +1581,7 @@ async function dispatchDatePostTransactionSideEffects({
   actorMemberId,
   ipAddress,
   result,
-  additionalPaymentIntentId,
+  additionalMint,
   linkedChangeRequestId,
   format,
 }: {
@@ -1563,7 +1589,7 @@ async function dispatchDatePostTransactionSideEffects({
   actorMemberId: string;
   ipAddress: string;
   result: DateModificationTransactionResult;
-  additionalPaymentIntentId: string | undefined;
+  additionalMint: ModificationAdditionalAskMint;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -1662,7 +1688,7 @@ async function dispatchDatePostTransactionSideEffects({
       result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     requiresAdditionalStripePayment:
       result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
-    additionalPaymentIntentId,
+    additionalPaymentIntentId: additionalMint.additionalPaymentIntentId,
   }).catch((err) =>
     logger.error({ err, bookingId }, "Failed to queue Xero settlement for date modification"),
   );
@@ -1711,6 +1737,8 @@ async function dispatchDatePostTransactionSideEffects({
       result.booking.id,
     );
 
+    // #3954 round 9: an ask a reduction retired before it was offered is not named.
+    const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
     sendBookingModifiedEmail({
       addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
@@ -1730,12 +1758,13 @@ async function dispatchDatePostTransactionSideEffects({
       refundAmountCents: result.refundAmountCents,
       accountCreditAmountCents: result.accountCreditAmountCents,
       appliedCreditGivenBackCents: result.appliedCreditGivenBackCents,
-      additionalAmountCents: result.additionalAmountCents,
+      additionalAmountCents: namedAdditionalCents,
+      unpaidAskCancelled: result.unpaidAskCancelled,
       additionalPaymentMethod:
-        result.additionalAmountCents > 0 &&
+        namedAdditionalCents > 0 &&
         result.paymentSource === PaymentSource.INTERNET_BANKING
           ? "INTERNET_BANKING"
-          : result.additionalAmountCents > 0 && result.hasSucceededPayment
+          : namedAdditionalCents > 0 && result.hasSucceededPayment
             ? "STRIPE"
             : undefined,
       paymentReference: result.paymentReference,
@@ -2305,6 +2334,7 @@ export async function adminShiftBookingDates({
       accountCreditAmountCents: 0,
       appliedCreditGivenBackCents: 0,
       additionalAmountCents: 0,
+      unpaidAskCancelled: false,
       additionalPaymentMethod: undefined,
       paymentReference: result.paymentReference,
       xeroInvoiceNumber: result.xeroInvoiceNumber,

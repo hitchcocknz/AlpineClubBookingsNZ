@@ -120,7 +120,9 @@ payment method." A refund on a booking paid by internet banking or in cash reads
 reported, because a treasurer still has to send it from the **Money to settle**
 card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
 (#3827). A reduction that goes back partly to the card and partly as account
-credit names both.
+credit names both. A reduction that cancels the member's unpaid additional
+payment outright adds "The additional payment we asked for has been
+cancelled, so you no longer need to pay it." (#3954).
 
 `{{refundSentence}}` on the **Refund Appeal Approved** message works the same
 way. A card refund reads "A refund of $X will be processed to your original
@@ -336,11 +338,12 @@ Two consequences worth knowing before you edit one:
 - **`{{paymentNote}}` on Booking Modified carries every money sentence for the
   change.** A refund, account credit added, account credit the booking had used
   being returned to the member (a reduction on a booking paid with credit), an
-  amount still to pay — whichever apply, already worded and with the amount in
-  them. A refund names where it went: the member's original payment method, a
-  bank transfer the club will send, or, on a group booking the organiser paid
-  for by card, the group organiser's card.
-  Keep it on a line of its own, with no `$` or label in front.
+  amount still to pay, an unpaid additional payment cancelled by the change
+  (#3954) — whichever apply, already worded and with the amount in them. A
+  refund names where it went: the member's original payment method, a bank
+  transfer the club will send, or, on a group booking the organiser paid for
+  by card, the group organiser's card. Keep it on a line of its own, with no
+  `$` or label in front.
 - **`{{changeSummary}}` on Booking Modified lists what changed, one line each.**
   Dates, guest count and total appear as a Previous/New pair only when they
   changed. When the change added people, a **Guests Added** line names each of

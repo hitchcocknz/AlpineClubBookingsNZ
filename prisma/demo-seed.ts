@@ -38,6 +38,8 @@ import { getClubFormat } from "../src/lib/club-format-settings";
 import { stripeChargeCurrency } from "../src/lib/stripe-charge-currency";
 import {
   DEMO_BOOKING_WINDOWS,
+  DEMO_SECOND_LODGE_BOOKING_WINDOWS,
+  seededBookingDates,
   DUAL_HAT_ADMIN,
   E2E_ADMIN,
   EMAIL_2FA_ENROLLEE,
@@ -548,13 +550,12 @@ async function main() {
     return prisma.booking.create({
       data: {
         memberId: member.id,
-        checkIn: d(checkIn),
-        checkOut: d(checkOut),
         status: status as never,
         totalPriceCents: total,
         finalPriceCents: total,
         lodgeId,
         ...over,
+        ...seededBookingDates(checkIn, checkOut),
       },
     });
   }
@@ -646,8 +647,6 @@ async function main() {
     data: {
       id: PAID_PROMO_BOOKING_ID,
       memberId: erin.id,
-      checkIn: d(W.erinPaid.checkIn),
-      checkOut: d(W.erinPaid.checkOut),
       status: "PAID",
       totalPriceCents: paidTotalPriceCents,
       discountCents: Math.max(0, -paidPromoAdjustmentCents),
@@ -657,6 +656,7 @@ async function main() {
         promoAdjustmentCents: paidPromoAdjustmentCents,
       }),
       lodgeId,
+      ...seededBookingDates(W.erinPaid.checkIn, W.erinPaid.checkOut),
     },
   });
   const erinGuest = await addGuest(bPaid.id, { firstName: "Erin", lastName: "Evans", ageTier: "ADULT", isMember: true, memberId: erin.id }, W.erinPaid.checkIn, W.erinPaid.checkOut, NIGHTLY);
@@ -765,8 +765,6 @@ async function main() {
     data: {
       memberId: mallory.id,
       parentBookingId: splitParent.id,
-      checkIn: d(W.mallorySplit.checkIn),
-      checkOut: d(W.mallorySplit.checkOut),
       status: "PENDING",
       hasNonMembers: true,
       cancelIfGuestsBumped: false,
@@ -774,6 +772,7 @@ async function main() {
       totalPriceCents: NIGHTLY * 2 * 2,
       finalPriceCents: NIGHTLY * 2 * 2,
       lodgeId,
+      ...seededBookingDates(W.mallorySplit.checkIn, W.mallorySplit.checkOut),
     },
   });
   await addGuest(splitChild.id, { firstName: "Gerry", lastName: "Guest", ageTier: "ADULT", isMember: false }, W.mallorySplit.checkIn, W.mallorySplit.checkOut, NIGHTLY * 2);
@@ -1126,11 +1125,10 @@ async function main() {
   const fillBooking = await prisma.booking.create({
     data: {
       memberId: fillOwner.id,
-      checkIn: d(WAITLIST_FULL_WINDOW.checkIn),
-      checkOut: d(WAITLIST_FULL_WINDOW.checkOut),
       status: "CONFIRMED",
       totalPriceCents: NIGHTLY * fillNights * WAITLIST_FILL_GUEST_COUNT,
       finalPriceCents: NIGHTLY * fillNights * WAITLIST_FILL_GUEST_COUNT,
+      ...seededBookingDates(WAITLIST_FULL_WINDOW.checkIn, WAITLIST_FULL_WINDOW.checkOut),
     },
   });
   for (let i = 1; i <= WAITLIST_FILL_GUEST_COUNT; i += 1) {
@@ -1159,14 +1157,13 @@ async function main() {
     data: {
       id: WAITLIST_OFFER_BOOKING_ID,
       memberId: wanda.id,
-      checkIn: d(WAITLIST_OFFER_WINDOW.checkIn),
-      checkOut: d(WAITLIST_OFFER_WINDOW.checkOut),
       status: "WAITLIST_OFFERED",
       waitlistPosition: 1,
       waitlistOfferedAt: new Date(),
       waitlistOfferExpiresAt: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
       totalPriceCents: NIGHTLY * offerNights,
       finalPriceCents: NIGHTLY * offerNights,
+      ...seededBookingDates(WAITLIST_OFFER_WINDOW.checkIn, WAITLIST_OFFER_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1185,11 +1182,10 @@ async function main() {
     data: {
       id: IB_BOOKING_ID,
       memberId: wanda.id,
-      checkIn: d(IB_WINDOW.checkIn),
-      checkOut: d(IB_WINDOW.checkOut),
       status: "PAYMENT_PENDING",
       totalPriceCents: NIGHTLY * ibNights,
       finalPriceCents: NIGHTLY * ibNights,
+      ...seededBookingDates(IB_WINDOW.checkIn, IB_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1229,11 +1225,10 @@ async function main() {
     data: {
       id: PAID_CANCEL_BOOKING_ID,
       memberId: nadia.id,
-      checkIn: d(PAID_CANCEL_WINDOW.checkIn),
-      checkOut: d(PAID_CANCEL_WINDOW.checkOut),
       status: "PAID",
       totalPriceCents: NIGHTLY * paidCancelNights,
       finalPriceCents: NIGHTLY * paidCancelNights,
+      ...seededBookingDates(PAID_CANCEL_WINDOW.checkIn, PAID_CANCEL_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1265,11 +1260,10 @@ async function main() {
     data: {
       id: UNRECONCILED_BOOKING_ID,
       memberId: nadia.id,
-      checkIn: d(UNRECONCILED_BOOKING_WINDOW.checkIn),
-      checkOut: d(UNRECONCILED_BOOKING_WINDOW.checkOut),
       status: "CONFIRMED",
       totalPriceCents: NIGHTLY,
       finalPriceCents: NIGHTLY,
+      ...seededBookingDates(UNRECONCILED_BOOKING_WINDOW.checkIn, UNRECONCILED_BOOKING_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1299,11 +1293,10 @@ async function main() {
     data: {
       id: ADDITIONAL_OWED_BOOKING_ID,
       memberId: nadia.id,
-      checkIn: d(ADDITIONAL_OWED_WINDOW.checkIn),
-      checkOut: d(ADDITIONAL_OWED_WINDOW.checkOut),
       status: "PAID",
       totalPriceCents: NIGHTLY * additionalOwedNights + ADDITIONAL_OWED_AMOUNT_CENTS,
       finalPriceCents: NIGHTLY * additionalOwedNights + ADDITIONAL_OWED_AMOUNT_CENTS,
+      ...seededBookingDates(ADDITIONAL_OWED_WINDOW.checkIn, ADDITIONAL_OWED_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1432,20 +1425,19 @@ async function main() {
       return prisma.booking.create({
         data: {
           memberId: member.id,
-          checkIn: d(checkIn),
-          checkOut: d(checkOut),
           status: status as never,
           totalPriceCents: total,
           finalPriceCents: total,
           lodgeId: lodge2Id,
+          ...seededBookingDates(checkIn, checkOut),
         },
       });
     }
 
     // Relative future windows (issue #2117) at this demo-only second lodge.
-    const b2DraftWin = { checkIn: relDateOnly(55), checkOut: relDateOnly(57) };
-    const b2ConfirmedWin = { checkIn: relDateOnly(60), checkOut: relDateOnly(63) };
-    const b2PendingWin = { checkIn: relDateOnly(65), checkOut: relDateOnly(67) };
+    const b2DraftWin = DEMO_SECOND_LODGE_BOOKING_WINDOWS.draft;
+    const b2ConfirmedWin = DEMO_SECOND_LODGE_BOOKING_WINDOWS.confirmed;
+    const b2PendingWin = DEMO_SECOND_LODGE_BOOKING_WINDOWS.pending;
 
     const b2Draft = await makeSecondLodgeBooking(alice, "DRAFT", b2DraftWin.checkIn, b2DraftWin.checkOut);
     await addGuest(b2Draft.id, { firstName: "Alice", lastName: "Anderson", ageTier: "ADULT", isMember: true, memberId: alice.id }, b2DraftWin.checkIn, b2DraftWin.checkOut, NIGHTLY2);

@@ -47,6 +47,7 @@ function params(addedGuests: ReadonlyArray<typeof ARI>) {
     xeroInvoiceNumber: "INV-4030",
     addedGuests,
     appliedCreditGivenBackCents: 0,
+    unpaidAskCancelled: false,
     financialReviewPending: false,
     refundByBankTransfer: false,
     refundReturnedToOrganiser: false,

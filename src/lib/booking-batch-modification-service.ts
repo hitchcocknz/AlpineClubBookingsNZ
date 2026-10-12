@@ -9,6 +9,8 @@ import {
 
 import { bookingPromoCodeLabel } from "@/lib/booking-promo-redemptions";
 import { bookingOwner } from "@/lib/booking-owner";
+import { readReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
+import { queueReductionAskFollowUps } from "@/lib/unpaid-ask-billed-offset-note";
 import { logAudit } from "@/lib/audit";
 import { ApiError } from "@/lib/api-error";
 import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
@@ -59,7 +61,9 @@ import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { assertBookingEnvelopeInvariants } from "@/lib/booking-envelope-invariants";
 import {
+  additionalAmountToName,
   createModificationAdditionalPaymentIntent,
+  type ModificationAdditionalAskMint,
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
@@ -152,6 +156,7 @@ import {
   type BookingGuestDietarySeeding,
 } from "@/lib/member-dietary-booking-writes";
 import type { ClubFormat } from "@/lib/club-format";
+import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
 import {
   assertFinishedStayCorrectionCall,
   classifyFinishedStayChangeFeeRule,
@@ -187,6 +192,8 @@ export const LINKED_MOVE_CHANGE_FEE_WAIVED_REASON =
 
 type BatchModificationTransactionResult =
   BookingModificationPaymentContext & {
+    /** #3954: the reduction cancelled the unpaid ask outright, for the member's email. */
+    unpaidAskCancelled: boolean;
     /**
      * The plain figure the emails, the response body and the Xero leg read.
      * Inherited from `BookingModificationPaymentContext` until #3371 replaced
@@ -1713,20 +1720,25 @@ export async function modifyBookingBatch({
     // payment row, and returns zeros for both Xero legs. The existing machinery
     // is what proves nothing moved, rather than a parallel hand-built result
     // that could drift from it.
+    // #3954: the unpaid ask, read ONCE for this edit and handed to both the
+    // options and the save, so a capture between two reads cannot split them.
+    const reduction = await readReductionAgainstUnpaidAsk(tx, booking, priceDiffCents + changeFeeCents);
     // #3750: a correction already paid the tier in its fee, so what remains of a
     // reduction comes back in full — the tier applies once, to the removed portion.
+    // #3954: what remains once the unpaid ask has taken its share.
     const settlementOptions = parked
       ? null
       : finishedStayRemovalCharged
         ? calculateFullReductionSettlementOptions({
             booking,
-            netChargeCents: priceDiffCents + changeFeeCents,
+            netChargeCents: reduction.netChargeLeftCents,
             refundableCashCents: await refundableCashNetOfOpenHandBacks(tx, booking.payment),
             todayAtClub: moneyTierDay,
           })
         : await calculateModificationSettlementOptions({
       booking,
       netChargeCents: priceDiffCents + changeFeeCents,
+      reduction,
       db: tx,
       todayAtClub: moneyTierDay,
     });
@@ -1831,6 +1843,7 @@ export async function modifyBookingBatch({
       booking,
       priceDiffCents,
       changeFeeCents,
+      reduction,
       settlementOptions,
       settlementMethod: input.settlementMethod,
       // #3750: the give-back tier is a refund tier too — the same 0-day frame.
@@ -1839,6 +1852,8 @@ export async function modifyBookingBatch({
       // #3750 (F2): the tier was already applied in the removal fee, so an
       // applied-credit give-back returns the remaining reduction once, untiered.
       reductionUntiered: finishedStayRemovalCharged,
+      // #3954 x #3750: recorded once, below, by `recordFinishedStayFeeOwed`.
+      changeFeeRecordedByCaller: feeAddedToAmountOwed,
     });
     if (feeAddedToAmountOwed) {
       // Owner decision (7 Oct 2026, "Add fee to amount owed"): recorded where
@@ -2093,6 +2108,8 @@ export async function modifyBookingBatch({
           accountCreditAmountCents: payments.accountCreditAmountCents,
           policyRetainedAmountCents: payments.policyRetainedAmountCents,
           ...creditGiveBackHistory(payments.appliedCreditGiveBack),
+          // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
+          ...unpaidAskOffsetHistory(payments),
           // #2266: what this edit did to the stored credit election (#2265),
           // recorded whenever the request carried a credit input — the
           // member's booking history reads it back.
@@ -2166,6 +2183,14 @@ export async function modifyBookingBatch({
       bookingModificationId: bookingModification.id,
       adjusted: payments,
       editLabel: "booking change",
+    });
+    // #3954: a smaller re-issued ask, and the note for an offset Xero had
+    // already billed, are durable from this commit, not from after it.
+    await queueReductionAskFollowUps(tx, {
+      bookingId,
+      paymentId: booking.payment?.id ?? null,
+      bookingModificationId: bookingModification.id,
+      settled: payments,
     });
 
     /**
@@ -2326,6 +2351,9 @@ export async function modifyBookingBatch({
       // plain figure above is the emails' and the Xero leg's; they are not
       // interchangeable.
       additionalAsk: payments.additionalAsk,
+      // #3954: the unpaid asks this reduction retired, for the minter to cancel.
+      retiredAdditionalAsks: payments.retiredAdditionalAsks,
+      unpaidAskCancelled: payments.unpaidAskCancelled,
       pendingRefundAmountCents: payments.pendingRefundAmountCents,
       promoRemoved: promo.promoRemoved,
       promoChanged: promo.promoChanged,
@@ -2529,15 +2557,14 @@ export async function modifyBookingBatch({
         "Failed to enqueue payment recovery for Stripe refund failure after batch modification",
     });
 
-    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-      await createModificationAdditionalPaymentIntent({
-        format,
-        bookingId,
-        result,
-        reason: "batch_modify_price_increase",
-        idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
-        failureMessage: "Failed to create additional PaymentIntent for batch modification",
-      });
+    const additionalMint = await createModificationAdditionalPaymentIntent({
+      format,
+      bookingId,
+      result,
+      reason: "batch_modify_price_increase",
+      idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
+      failureMessage: "Failed to create additional PaymentIntent for batch modification",
+    });
 
     // Issue #1668: under an admin override, link this modification to the
     // booking's most recent approved-unlinked change request. Best-effort.
@@ -2555,7 +2582,7 @@ export async function modifyBookingBatch({
       actorMemberId: actor.id,
       ipAddress,
       result,
-      additionalPaymentIntentId,
+      additionalMint,
       linkedChangeRequestId,
       format,
     });
@@ -2571,7 +2598,7 @@ export async function modifyBookingBatch({
       additionalAmountCents: result.additionalAmountCents,
       settlementMethod: result.settlementMethod,
       requiresSettlementMethod: result.requiresSettlementMethod,
-      additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+      additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
       stripeRefundId: stripeRefundId ?? null,
       promoRemoved: result.promoRemoved,
       promoChanged: result.promoChanged,
@@ -2640,7 +2667,7 @@ async function dispatchBatchPostTransactionSideEffects({
   actorMemberId,
   ipAddress,
   result,
-  additionalPaymentIntentId,
+  additionalMint,
   linkedChangeRequestId,
   format,
 }: {
@@ -2648,7 +2675,7 @@ async function dispatchBatchPostTransactionSideEffects({
   actorMemberId: string;
   ipAddress: string;
   result: BatchModificationTransactionResult;
-  additionalPaymentIntentId: string | undefined;
+  additionalMint: ModificationAdditionalAskMint;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -2766,7 +2793,7 @@ async function dispatchBatchPostTransactionSideEffects({
       result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     requiresAdditionalStripePayment:
       result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
-    additionalPaymentIntentId,
+    additionalPaymentIntentId: additionalMint.additionalPaymentIntentId,
   }).catch((err) =>
     logger.error(
       { err, bookingId },
@@ -2843,6 +2870,8 @@ async function dispatchBatchPostTransactionSideEffects({
     result.booking.id,
   );
 
+  // #3954 round 9: an ask a reduction retired before it was offered is not named.
+  const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
   sendBookingModifiedEmail({
     bookingId: result.booking.id,
     recipientMemberId: result.memberId,
@@ -2861,12 +2890,13 @@ async function dispatchBatchPostTransactionSideEffects({
     refundAmountCents: result.refundAmountCents,
     accountCreditAmountCents: result.accountCreditAmountCents,
     appliedCreditGivenBackCents: result.appliedCreditGivenBackCents,
-    additionalAmountCents: result.additionalAmountCents,
+    additionalAmountCents: namedAdditionalCents,
+    unpaidAskCancelled: result.unpaidAskCancelled,
     additionalPaymentMethod:
-      result.additionalAmountCents > 0 &&
+      namedAdditionalCents > 0 &&
       result.paymentSource === PaymentSource.INTERNET_BANKING
         ? "INTERNET_BANKING"
-        : result.additionalAmountCents > 0 && result.hasSucceededPayment
+        : namedAdditionalCents > 0 && result.hasSucceededPayment
           ? "STRIPE"
           : undefined,
     paymentReference: result.paymentReference,

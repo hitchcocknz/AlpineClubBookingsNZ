@@ -199,6 +199,8 @@ async function seed(
     promoAdjustmentCents?: number;
     /** #4030: paid by card (Stripe) rather than internet banking, with no invoice. */
     card?: boolean;
+    /** #3954 round 6: paid wholly with account credit - nothing captured, a card on file. */
+    creditPaid?: boolean;
   } = {},
 ): Promise<void> {
   const guestIds = options.secondGuest ? [GUEST_ID, GUEST_2_ID] : [GUEST_ID];
@@ -226,9 +228,11 @@ async function seed(
     data: {
       id: PAYMENT_ID,
       bookingId: BOOKING_ID,
-      amountCents: priceCents,
-      ...(options.card
-        ? { source: "STRIPE" as const, stripePaymentIntentId: "pi_race_4030" }
+      amountCents: options.creditPaid ? 0 : priceCents,
+      ...(options.creditPaid
+        ? { source: "STRIPE" as const, creditAppliedCents: priceCents, stripeCustomerId: "cus_race_3750" }
+        : options.card
+          ? { source: "STRIPE" as const, stripePaymentIntentId: "pi_race_4030" }
         : { source: "INTERNET_BANKING" as const, reference: "RACE3750" }),
       status: options.unpaid ? "PENDING" : "SUCCEEDED",
       // An issued primary invoice: the edit's extra is billed by a supplementary
@@ -518,6 +522,40 @@ function deferred() {
     expect(invoices.map((row) => row.idempotencyKey)).toEqual([
       `booking-mod:${modification.id}:supplementary-invoice:${priceDiff}:${swapFee}:v1`,
     ]);
+  }, 60_000);
+
+  it("#3954 round 6 (F4): a credit-paid finished stay's swap that ends as an increase records the same-day fee ONCE, and asks the card for it with the difference", async () => {
+    await seed({
+      secondGuest: true,
+      creditPaid: true,
+      requested: { removeGuests: [{ id: GUEST_2_ID }], summary: "swap Second Guest for Late Friend" },
+    });
+    await prisma.memberCredit.create({
+      data: {
+        memberId: OWNER_ID,
+        amountCents: -4 * STORED_NIGHT_CENTS,
+        type: "BOOKING_APPLIED",
+        appliedToBookingId: BOOKING_ID,
+        description: "Applied at booking",
+      },
+    });
+    const result = await approve(OFFICER_ID);
+    // The removed guest's 2 x 4,321 at the same-day tier - its credit share
+    // (80%) for a booking paid with credit, so the fee keeps 20% - and the
+    // added guest's 2 x 5,000 is dearer: the edit is an increase of both.
+    const swapFee = Math.round((2 * STORED_NIGHT_CENTS * 20) / 100);
+    const priceDiff = 2 * NIGHT_CENTS - 2 * STORED_NIGHT_CENTS;
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      priceDiffCents: priceDiff,
+      changeFeeCents: swapFee,
+      additionalAmountCents: priceDiff + swapFee,
+    });
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } });
+    // Once, by `recordFinishedStayFeeOwed` - not again by the increase's own arm.
+    expect(payment.changeFeeCents).toBe(swapFee);
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification.newData).toMatchObject({ finishedStayCorrection: { feeAddedToAmountOwed: true } });
   }, 60_000);
 
   it("a swap that lowers the price keeps the tier once, on the removed portion, and refunds the rest in full", async () => {
