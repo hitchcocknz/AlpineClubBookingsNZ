@@ -356,7 +356,7 @@ export function getAuditLogRetentionCutoffs(now = new Date()) {
   };
 }
 
-// test seam
+// test seam: the writer's classification, not what the prune keeps (#3524).
 export function isAuditLogRetentionCritical(input: {
   action: string;
   category?: string | null;
@@ -632,7 +632,7 @@ export async function archiveEligibleAuditLogs(
 // `expiresAt` exactly as before — retaining them forever would break data
 // minimisation. `diagnostic_high_volume` and the unclassified/`critical` classes
 // are never archived, so an unpreserved row of theirs prunes purely on its own
-// expiry.
+// expiry; a NULL severity is NOT critical (#3524).
 //
 // INCIDENT-PRESERVED ROWS (#3939, owner decision 11 Oct 2026). The app sets
 // `incidentPreserved` itself, on the audit entry for an admin capacity hold or
@@ -687,7 +687,7 @@ export async function pruneExpiredAuditLogs(
         {
           retentionClass: null,
           expiresAt: { lt: now },
-          NOT: { severity: "critical" },
+          OR: [{ severity: null }, { severity: { not: "critical" } }],
         },
         {
           retentionClass: "critical",

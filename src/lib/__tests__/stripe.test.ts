@@ -67,6 +67,7 @@ const {
   getPaymentMethod,
   detachPaymentMethod,
   constructWebhookEvent,
+  STRIPE_WEBHOOK_TOLERANCE_SECONDS,
   stripeChargeCurrency,
   UnsupportedChargeCurrencyError,
   findRecentPaymentIntentByMetadata,
@@ -439,8 +440,10 @@ describe("Stripe library", () => {
       expect(mockWebhooksConstructEvent).toHaveBeenCalledWith(
         "payload_body",
         "sig_header",
-        "whsec_test"
+        "whsec_test",
+        STRIPE_WEBHOOK_TOLERANCE_SECONDS
       );
+      expect(STRIPE_WEBHOOK_TOLERANCE_SECONDS).toBe(300);
       expect(result.type).toBe("payment_intent.succeeded");
     });
   });
