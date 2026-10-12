@@ -72,7 +72,8 @@ no hut-leader request or assignment write until a real lodge returns.
    day is blocked. If its nights include a school group's nights that this lodge
    does not accept this kind of leader for, it is saved with a note saying so:
    those nights stay without a hut leader who counts until you add one the lodge
-   accepts.
+   accepts. Changing an existing assignment on the table — its custodian mark or
+   its bed — shows the same note when the change leaves it on such nights.
 
    **Exception: a custodian does not block a school night they do not cover.**
    When the lodge leaves **The lodge custodian** unticked for school bookings,

@@ -18,8 +18,8 @@
   accept them for. A season-long custodian no longer blocks the leader you add
   for school nights when the lodge leaves the custodian unticked, as long as
   that leader is staying those nights and the lodge accepts them; a second
-  custodian is still blocked. Adding a
-  leader whose nights include school nights the lodge does not accept them for
-  saves with a note saying so. Teachers become hut leaders at approval only
+  custodian is still blocked. Adding or
+  changing a leader whose nights include school nights the lodge does not
+  accept them for saves with a note saying so. Teachers become hut leaders at approval only
   while the Hut leaders module is on, and a teacher's assignment can no longer
   be marked as custodian or hold a bed.

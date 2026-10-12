@@ -17,7 +17,7 @@ import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { getAuditRequestContext } from "@/lib/audit";
 import { recordHutLeaderAssignmentAudit } from "@/lib/hut-leader-assignment-audit";
 import { findHutLeaderOverlapRefusal } from "@/lib/hut-leader-overlap-guard";
-import { findSchoolNightsShiftDoesNotCover } from "@/lib/hut-leader-night-cover";
+import { readHutLeaderSchoolNightsWarning } from "@/lib/hut-leader-school-nights-warning";
 import {
   recordWholeLodgeHoldAmendment,
   type WholeLodgeHoldAmendment,
@@ -404,27 +404,17 @@ export async function POST(req: NextRequest) {
       "Hut leader assignment created"
     );
 
-    // #3821: advisory, read after the commit. A lodge may not accept this
-    // kind of leader on a school group's nights, and then those nights stay
-    // uncovered even though the row claims them.
-    let schoolNightsWarning: string | null = null;
-    try {
-      const nights = await findSchoolNightsShiftDoesNotCover(prisma, {
-        id: assignment.id,
-        memberId: created.member.id,
-        lodgeId: created.lodgeId,
-        startDate: newStart,
-        endDate: newEnd,
-        source: HutLeaderAssignmentSource.MANUAL,
-        bedId,
-        isCustodian,
-      });
-      if (nights.length > 0) {
-        schoolNightsWarning = `${nights.length === 1 ? "One of these nights is" : `${nights.length} of these nights are`} a school group's (from ${nights[0]}), and this lodge does not accept this kind of hut leader for school bookings, so ${nights.length === 1 ? "it stays" : "they stay"} without a hut leader who counts. Add a leader the lodge accepts for ${nights.length === 1 ? "that night" : "those nights"}, or change who can be hut leader for school bookings on the lodge's settings.`;
-      }
-    } catch (err) {
-      logger.error({ err, assignmentId: assignment.id }, "Failed to check school nights for a new hut leader assignment");
-    }
+    // #3821: advisory, read after the commit (shared with the edit).
+    const schoolNightsWarning = await readHutLeaderSchoolNightsWarning(prisma, {
+      id: assignment.id,
+      memberId: created.member.id,
+      lodgeId: created.lodgeId,
+      startDate: newStart,
+      endDate: newEnd,
+      source: HutLeaderAssignmentSource.MANUAL,
+      bedId,
+      isCustodian,
+    });
 
     return NextResponse.json(
       {

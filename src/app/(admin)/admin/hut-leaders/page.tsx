@@ -192,8 +192,9 @@ export default function HutLeadersPage() {
     null,
   );
   const [savingBedForId, setSavingBedForId] = useState<string | null>(null);
-  // Server-side privacy note: a minor custodian is never named on the lodge TV.
-  const [minorCustodianNote, setMinorCustodianNote] = useState<string | null>(
+  // The server's advisory note after a save: a minor custodian is never named
+  // on the lodge TV, and (#3821) school nights this leader's kind does not cover.
+  const [advisoryNote, setAdvisoryNote] = useState<string | null>(
     null,
   );
   const [error, setError] = useState<HutLeaderFormError | null>(null);
@@ -392,7 +393,7 @@ export default function HutLeadersPage() {
     setSelectedBedId(null);
     setOverCapacity(null);
     setError(null);
-    setMinorCustodianNote(null);
+    setAdvisoryNote(null);
     setPinMessage(null);
     setCreating(false);
     setSavingBedForId(null);
@@ -574,7 +575,7 @@ export default function HutLeadersPage() {
       const created = await res.json().catch(() => null);
       if (activeLodgeIdRef.current !== requestedLodgeId) return;
       // #3821: the school-nights warning shares the advisory note.
-      setMinorCustodianNote([created?.minorCustodianWarning, created?.schoolNightsWarning].filter(Boolean).join(" ") || null);
+      setAdvisoryNote([created?.minorCustodianWarning, created?.schoolNightsWarning].filter(Boolean).join(" ") || null);
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
       setSelectedBedId(null);
@@ -679,6 +680,13 @@ export default function HutLeadersPage() {
         });
         return;
       }
+      // #3821: the edit answers the create's school-nights advisory too, shown
+      // in the same note. Advisory: an unparseable body is no warning.
+      const saved = await res.json().catch(() => null);
+      if (activeLodgeIdRef.current !== requestedLodgeId) return;
+      setAdvisoryNote(
+        typeof saved?.schoolNightsWarning === "string" ? saved.schoolNightsWarning : null,
+      );
       setBedEditAssignmentId(null);
       setOverCapacity(null);
       setHoldAmendment(null);
@@ -1178,14 +1186,14 @@ export default function HutLeadersPage() {
         </Card>
       )}
 
-      {minorCustodianNote && (
+      {advisoryNote && (
         <Card className="border-info/20 bg-info-muted">
           <CardContent className="flex items-center justify-between gap-3 p-4">
-            <p className="text-sm text-info">{minorCustodianNote}</p>
+            <p className="text-sm text-info">{advisoryNote}</p>
             <Button
               type="button"
               variant="outline"
-              onClick={() => setMinorCustodianNote(null)}
+              onClick={() => setAdvisoryNote(null)}
             >
               Dismiss
             </Button>

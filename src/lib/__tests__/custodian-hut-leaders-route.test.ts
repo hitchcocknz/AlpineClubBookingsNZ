@@ -1208,7 +1208,7 @@ describe("#3817 — a role-only assignment may claim only nights the member stay
     const res = await PUT(putRequest({ isCustodian: true }), { params });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ success: true });
+    await expect(res.json()).resolves.toEqual({ success: true, schoolNightsWarning: null });
     expect(mocks.bookingGuestFindMany).not.toHaveBeenCalled();
   });
 
@@ -1283,6 +1283,55 @@ describe("#3821 — school nights and teacher rows", () => {
     ]);
     const res = await POST(postRequest({ ...CREATE_BODY, isCustodian: true }));
     await expect(res.json()).resolves.toMatchObject({ schoolNightsWarning: null });
+  });
+
+  it("PUT gives the same school-nights warning after the edit commits", async () => {
+    // Ticking an existing row Custodian changes its kind; the lodge does not
+    // accept the custodian on the school group's nights 2–3 Jul.
+    const row = {
+      id: "a1", memberId: "member-1", lodgeId: LODGE, bedId: null, isCustodian: false,
+      source: "MANUAL", startDate: day("2026-07-01"), endDate: day("2026-07-05"),
+    };
+    mocks.txAssignmentFindUnique.mockResolvedValue(row);
+    // The route's own reads: the pre-lock row, then the row as saved.
+    mocks.assignmentFindUnique
+      .mockResolvedValueOnce(row)
+      .mockResolvedValueOnce({ ...row, isCustodian: true });
+    mocks.bookingFindMany.mockResolvedValue([
+      { id: "school", lodgeId: LODGE, checkIn: day("2026-07-02"), checkOut: day("2026-07-04") },
+    ]);
+    mocks.lodgeSettingsFindUnique.mockResolvedValue({
+      capacity: null,
+      schoolHutLeaderTeacherOnBooking: false,
+      schoolHutLeaderCustodian: false,
+      schoolHutLeaderMemberOnBooking: true,
+      schoolHutLeaderMemberStayingSeparately: true,
+    });
+
+    const res = await PUT(putRequest({ isCustodian: true }), { params });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      success: true,
+      schoolNightsWarning: expect.stringMatching(/^2 of these nights are a school group's \(from 2026-07-02\)/),
+    });
+    expect(mocks.txAssignmentUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("PUT still answers success, with no warning, when the after-commit read fails", async () => {
+    const row = {
+      id: "a1", memberId: "member-1", lodgeId: LODGE, bedId: null, isCustodian: false,
+      source: "MANUAL", startDate: day("2026-07-01"), endDate: day("2026-07-05"),
+    };
+    mocks.txAssignmentFindUnique.mockResolvedValue(row);
+    mocks.assignmentFindUnique
+      .mockResolvedValueOnce(row)
+      .mockRejectedValueOnce(new Error("connection reset"));
+
+    const res = await PUT(putRequest({ isCustodian: true }), { params });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true, schoolNightsWarning: null });
   });
 
   it("PUT refuses ticking Custodian on a school teacher's row, writing nothing", async () => {
