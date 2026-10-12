@@ -16,8 +16,10 @@ import { acquireLodgeCapacityLock } from "./lodge-capacity-lock";
 import { findHutLeaderOverlapRefusal } from "./hut-leader-overlap-guard";
 import {
   isHutLeaderNightCovered,
+  leadableNightRun,
   loadHutLeaderNightCover,
   memberMayLeadNight,
+  type HutLeaderNightCoverReader,
 } from "./hut-leader-night-cover";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
@@ -34,7 +36,11 @@ import logger from "./logger";
  * The row it writes covers the NIGHTS that member stays (#3817): from the first
  * to the last night of the run of consecutive nights containing the date, so it
  * ends on `checkOut - 1`, never on the check-out day, and a split stay gets one
- * row per run. A night between two runs is not theirs and is not claimed.
+ * row per run. A night between two runs is not theirs and is not claimed. The
+ * run is then cut to the nights around the date that the member may lead
+ * (`leadableNightRun`, #3821): a stay longer than a school group's, at a lodge
+ * that does not tick the member's kind for school nights, stops at the school
+ * group's first night rather than claiming it.
  *
  * Runs per (lodge, night), never club-wide (#2915). Each lodge has its own hut
  * leader — the same rule the admin route states — so every decision here is
@@ -128,8 +134,9 @@ export async function autoAssignHutLeaders(): Promise<{
       // at THIS lodge rather than pooling every lodge's guests. The booking
       // filter is THE hut-leader stay definition the manual create/edit check
       // and the eligible-members list use (#3817, `INV-SSOT`): an operational
-      // stay (PAID or COMPLETED; a booking still ahead of its check-out is
-      // PAID, so COMPLETED adds nobody here) and never a soft-deleted booking.
+      // stay (PAID or COMPLETED), or an accepted school booking awaiting its
+      // invoice (CONFIRMED; owner decision on #3820, 13 Oct 2026) — never an
+      // unaccepted school quote's hold, and never a soft-deleted booking.
       const bookingsForDate = await prisma.booking.findMany({
         where: {
           ...hutLeaderStayBookingWhere({ lodgeId: lodge.id, rangeStart: day, rangeEnd: day }),
@@ -247,6 +254,29 @@ export async function autoAssignHutLeaders(): Promise<{
         continue;
       }
 
+      // #3821: the question above was asked of `day` alone, but the row spans
+      // the member's whole run. Cut it to the nights around `day` they may
+      // lead, read over the run itself (it can reach past this loop's window).
+      // Re-asked under the lock below, where the school bookings are read
+      // again on the transaction client.
+      const leadableSpan = async (db: HutLeaderNightCoverReader) =>
+        leadableNightRun(
+          await loadHutLeaderNightCover(db, {
+            scope: { kind: "lodge", lodgeId: lodge.id },
+            from: member.firstNight,
+            to: member.lastNight,
+          }),
+          {
+            lodgeId: lodge.id,
+            night: day,
+            first: member.firstNight,
+            last: member.lastNight,
+            stayBookingId: member.bookingId,
+          },
+        );
+      const earlySpan = await leadableSpan(prisma);
+      if (!earlySpan) continue;
+
       // Overlap validation, per lodge for the same reason the admin route is:
       // an assignment at another lodge is not a conflict here. Asked through
       // the SHARED predicate all four deciding call sites use (#2887), so the
@@ -267,10 +297,20 @@ export async function autoAssignHutLeaders(): Promise<{
       // nights. Being MANUAL-equivalent it then blocked officers across the
       // whole span too. Omitting the flag restores exactly the pre-carve-out
       // refusal for this job.
+      // #3821: the proposed row as it will be — an ordinary CRON row — so a
+      // custodian's school nights are exempted only where this member covers
+      // them (`hut-leader-overlap-guard.ts`).
+      const cronCandidate = {
+        memberId: member.id,
+        bedId: null,
+        isCustodian: false,
+        source: HutLeaderAssignmentSource.CRON,
+      };
       const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
         lodgeId: lodge.id,
-        startDate: member.firstNight,
-        endDate: member.lastNight,
+        startDate: earlySpan.first,
+        endDate: earlySpan.last,
+        candidate: cronCandidate,
       });
       if (earlyOverlap) continue;
 
@@ -294,10 +334,14 @@ export async function autoAssignHutLeaders(): Promise<{
           });
           if (lockedAssigned) return false;
 
+          const lockedSpan = await leadableSpan(tx);
+          if (!lockedSpan) return false;
+
           const lockedOverlap = await findHutLeaderOverlapRefusal(tx, {
             lodgeId: lodge.id,
-            startDate: member.firstNight,
-            endDate: member.lastNight,
+            startDate: lockedSpan.first,
+            endDate: lockedSpan.last,
+            candidate: cronCandidate,
           });
           if (lockedOverlap) return false;
 
@@ -305,9 +349,10 @@ export async function autoAssignHutLeaders(): Promise<{
             data: {
               memberId: member.id,
               // #3817: the guest's first and LAST NIGHT STAYED in this run of
-              // consecutive nights — never the check-out day (INV-DATE-002).
-              startDate: member.firstNight,
-              endDate: member.lastNight,
+              // consecutive nights — never the check-out day (INV-DATE-002) —
+              // cut to the nights they may lead (#3821).
+              startDate: lockedSpan.first,
+              endDate: lockedSpan.last,
               lodgeId: lodge.id,
               // #2926: the nightly sole-adult rule put this leader here. A CRON
               // row is an ordinary assignment for every purpose — it blocks and

@@ -10,7 +10,7 @@ import {
 } from "./booking-owner";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "./booking-status";
 import { getLodgeHeldNights } from "./capacity";
-import { holdCoversNight } from "./custodian-occupancy";
+import { holdCoversNight, isCustodianOnNight } from "./custodian-occupancy";
 import { findCustodianOccupants, type CustodianOccupant } from "./custodian-occupants";
 import {
   addCalendarDays,
@@ -119,6 +119,12 @@ export const MEMBER_ROSTER_BOOKING_SELECT = {
       stayStart: true,
       stayEnd: true,
       nights: { select: { stayDate: true } },
+      // CONSULTED, NEVER DISCLOSED, like `wholeLodgeHold` above (#3821, owner
+      // decision on #3820, 13 Oct 2026, "Show once, as custodian"). It matches
+      // a custodian to their own guest row, so a custodian who also books is
+      // listed once, as custodian; the builder reads it only to drop those
+      // nights and never copies it into the payload.
+      memberId: true,
     },
   },
 } satisfies Prisma.BookingSelect;
@@ -384,7 +390,10 @@ function buildOneLodgeRoster(
     const present = booking.guests
       .map((guest) => ({
         guest,
-        nights: nightsForGuest(guest, booking, windowNights),
+        // A custodian who also books is listed once, as custodian (#3821).
+        nights: nightsForGuest(guest, booking, windowNights).filter(
+          (night) => !isCustodianOnNight(custodianHolds, guest.memberId, night),
+        ),
       }))
       .filter((entry) => entry.nights.length > 0);
 

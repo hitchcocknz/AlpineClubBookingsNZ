@@ -82,6 +82,7 @@ interface HutLeaderAssignment {
   bedName: string | null;
   bedRoomName: string | null;
   isCustodian?: boolean; // #3817
+  source?: string; // #3821: SCHOOL_BOOKING rows get no custodian tick
 }
 
 interface UnassignedDate {
@@ -191,8 +192,9 @@ export default function HutLeadersPage() {
     null,
   );
   const [savingBedForId, setSavingBedForId] = useState<string | null>(null);
-  // Server-side privacy note: a minor custodian is never named on the lodge TV.
-  const [minorCustodianNote, setMinorCustodianNote] = useState<string | null>(
+  // The server's advisory note after a save: a minor custodian is never named
+  // on the lodge TV, and (#3821) school nights this leader's kind does not cover.
+  const [advisoryNote, setAdvisoryNote] = useState<string | null>(
     null,
   );
   const [error, setError] = useState<HutLeaderFormError | null>(null);
@@ -391,7 +393,7 @@ export default function HutLeadersPage() {
     setSelectedBedId(null);
     setOverCapacity(null);
     setError(null);
-    setMinorCustodianNote(null);
+    setAdvisoryNote(null);
     setPinMessage(null);
     setCreating(false);
     setSavingBedForId(null);
@@ -572,7 +574,8 @@ export default function HutLeadersPage() {
       // parsed must not turn a successful assignment into an error.
       const created = await res.json().catch(() => null);
       if (activeLodgeIdRef.current !== requestedLodgeId) return;
-      setMinorCustodianNote(created?.minorCustodianWarning ?? null);
+      // #3821: the school-nights warning shares the advisory note.
+      setAdvisoryNote([created?.minorCustodianWarning, created?.schoolNightsWarning].filter(Boolean).join(" ") || null);
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
       setSelectedBedId(null);
@@ -677,6 +680,13 @@ export default function HutLeadersPage() {
         });
         return;
       }
+      // #3821: the edit answers the create's school-nights advisory too, shown
+      // in the same note. Advisory: an unparseable body is no warning.
+      const saved = await res.json().catch(() => null);
+      if (activeLodgeIdRef.current !== requestedLodgeId) return;
+      setAdvisoryNote(
+        typeof saved?.schoolNightsWarning === "string" ? saved.schoolNightsWarning : null,
+      );
       setBedEditAssignmentId(null);
       setOverCapacity(null);
       setHoldAmendment(null);
@@ -1176,14 +1186,14 @@ export default function HutLeadersPage() {
         </Card>
       )}
 
-      {minorCustodianNote && (
+      {advisoryNote && (
         <Card className="border-info/20 bg-info-muted">
           <CardContent className="flex items-center justify-between gap-3 p-4">
-            <p className="text-sm text-info">{minorCustodianNote}</p>
+            <p className="text-sm text-info">{advisoryNote}</p>
             <Button
               type="button"
               variant="outline"
-              onClick={() => setMinorCustodianNote(null)}
+              onClick={() => setAdvisoryNote(null)}
             >
               Dismiss
             </Button>
@@ -1334,7 +1344,12 @@ export default function HutLeadersPage() {
                           <span className="sr-only">Release bed</span>
                         </ViewOnlyActionButton>
                       ) : null}
-                      {bedAllocationOn ? <ViewOnlyActionButton
+                      {/*
+                        #3821: a school teacher's row never holds a bed — a held
+                        bed is a custodian occupancy, and the server refuses it.
+                        Release bed above stays, for an older row that has one.
+                      */}
+                      {bedAllocationOn && a.source !== "SCHOOL_BOOKING" ? <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}
                         variant="ghost"
@@ -1356,9 +1371,10 @@ export default function HutLeadersPage() {
                       {/*
                         #3817: convert an existing row to or from Custodian
                         (lives on site). Unticking a row that has no bed and no
-                        stay is refused by the server, like Release bed.
+                        stay is refused by the server, like Release bed. A
+                        school teacher's row is never a custodian (#3821).
                       */}
-                      <ViewOnlyActionButton
+                      {a.source !== "SCHOOL_BOOKING" ? <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}
                         variant="ghost"
@@ -1372,7 +1388,7 @@ export default function HutLeadersPage() {
                         <Home className="h-4 w-4" />
                         {/* One label; aria-pressed carries the state. */}
                         <span className="sr-only">Custodian (lives on site)</span>
-                      </ViewOnlyActionButton>
+                      </ViewOnlyActionButton> : null}
                       <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}

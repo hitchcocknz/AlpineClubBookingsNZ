@@ -577,8 +577,8 @@ describe("admin dashboard hut-leader coverage card", () => {
     const html = renderToStaticMarkup(await AdminDashboardPage());
 
     // #3818: the night and how many guests are on site with nobody in charge.
-    expect(html).toContain("Nights without a hut leader staying");
-    expect(html).toContain("2 upcoming nights with guests but no hut leader staying");
+    expect(html).toContain("Nights without a hut leader who counts");
+    expect(html).toContain("2 upcoming nights with guests but no hut leader who counts");
     // Dates in the club's format, as the handovers card beside it shows them.
     expect(html).toContain("5 Jul · 2 guests; 6 Jul · 2 guests");
     // ADR-002 Presentation Rule: a club with one lodge is never shown a lodge

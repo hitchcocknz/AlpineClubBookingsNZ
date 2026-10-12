@@ -649,8 +649,8 @@ export async function correctBookingRequest(
     lodgeId,
     checkIn,
     checkOut,
-    wholeStayCapacityRanges(checkIn, checkOut, guests.map((_guest, index) => // links cleared above
-      partyChanged ? null : (storedLinks.find((link) => link.guestIndex === index)?.memberId ?? null))),
+    wholeStayCapacityRanges(checkIn, checkOut, [...guests.map((_guest, index) => // links cleared above; pending adults are nobody (#3821)
+      partyChanged ? null : (storedLinks.find((link) => link.guestIndex === index)?.memberId ?? null)), ...Array<null>(pendingAdultCount).fill(null)]),
   );
 
   return {

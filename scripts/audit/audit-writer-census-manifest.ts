@@ -634,20 +634,21 @@ export const AUDIT_CENSUS_TOTALS = {
   // one `logAudit` in `src/lib/booking-change-request-admin-decision.ts`,
   // categorised `booking` like the acknowledgement it sits beside. RE-MEASURED
   // with `pnpm run audit:census`.
-  // 500/498 -> 499 (hand sync of `main` f1ecdb5ff into epic #3789): #3819's
-  // one addition, #52's two removals and #3750's one addition are all
-  // disjoint. RE-MEASURED with `pnpm run audit:census` on the composed tree,
-  // never added together.
   // 498 -> 499 (#3372, composed with #52 and #3750): `booking-payment.card-refund.paid-another-way`,
   // the treasurer closing a card refund Stripe gave up on, awaited on the
   // close's own transaction under `payment`.
   // 499 -> 500 (#3372, owner 9 Oct 2026): `booking-payment.card-refund.paid-twice-resolved`,
   // the treasurer marking a refund paid back twice as sorted out, on the
   // write's own transaction under `payment`. RE-MEASURED.
-  // 499/500 -> 501 (hand sync of `main` f3b6c008b into epic #3789): the
-  // epic's #3819 addition and `main`'s two #3372 additions are disjoint.
-  // RE-MEASURED with `pnpm run audit:census` on the composed tree, never
-  // added together.
+  // 500/498 -> 499 (hand sync of `main` f1ecdb5ff into epic #3789): #3819's
+  // one addition, #52's two removals and #3750's one addition are all
+  // disjoint. RE-MEASURED with `pnpm run audit:census` on the composed tree,
+  // never added together.
+  // 499/500 -> 501 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3819's
+  // one site and #3372's two are disjoint. RE-MEASURED with
+  // `pnpm run audit:census` on the composed tree, never added together.
+  // Hand sync of `main` f3b6c008b (epic #3789): the same additions arrived again,
+  // disjoint; 501 RE-MEASURED on the merged tree.
   writeSites: 501,
   /**
    * Of those, sites whose event object carries no `category` key.
@@ -836,14 +837,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // 137 -> 138 (#3454): the two-factor enrolment / erasure-clear record,
     // awaited on the transaction that changes the second factor.
     // 138 -> 139 (#3792): the refused restored-booking allocation change record.
-    // 139 -> 140 (#3819): the school hut-leader kinds PUT, through
-    // `createAuditLog` like the lodge-settings route beside it.
     // 139 -> 140 (#3372): the paid-another-way close of a dead card refund,
     // awaited on the close's transaction so the row commits with the money.
     // 140 -> 141 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved,
     // awaited on the transaction that writes the resolution.
-    // 140/141 -> 142 (hand sync of `main` f3b6c008b into epic #3789): #3819's
-    // PUT and #3372's two closes are disjoint. RE-MEASURED.
+    // 139 -> 140 (#3819): the school hut-leader kinds PUT, through
+    // `createAuditLog` like the lodge-settings route beside it.
+    // 140/141 -> 142 (sync of `main` 0ff7e6d46 into epic #3789, #3821):
+    // #3819's one and #3372's two are disjoint. RE-MEASURED on the composed tree.
     createAuditLog: { total: 142, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.

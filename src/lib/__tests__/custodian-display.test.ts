@@ -278,6 +278,104 @@ describe("custodian slot on the lobby display", () => {
     expect(mockPrisma.hutLeaderAssignment.findMany).not.toHaveBeenCalled();
   });
 
+  describe("a custodian who also books (#3821, owner decision on #3820, 13 Oct 2026: 'Show once, as custodian')", () => {
+    const night = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
+    function lobbyGuest(first: string, memberId: string | null) {
+      return {
+        id: `g-${first}`,
+        firstName: first,
+        lastName: "Ranger",
+        ageTier: "ADULT",
+        stayStart: night("2026-07-02"),
+        stayEnd: night("2026-07-05"),
+        memberId,
+        member: null,
+        nights: [] as Array<{ stayDate: Date }>,
+        bedAllocations: [],
+      };
+    }
+
+    it("lists them once, as custodian, while their booking keeps the rest of the party", async () => {
+      mockPrisma.lodge.findUnique.mockResolvedValue(lodge("FULL_NAME"));
+      mockPrisma.booking.findMany.mockResolvedValue([
+        {
+          id: "b-1",
+          checkIn: night("2026-07-02"),
+          checkOut: night("2026-07-05"),
+          expectedArrivalTime: null,
+          wholeLodgeHold: false,
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+          guests: [lobbyGuest("Sam", "member-sam"), lobbyGuest("Pat", null)],
+        },
+      ]);
+      mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+        {
+          memberId: "member-sam",
+          startDate: night("2026-07-01"),
+          endDate: night("2026-07-03"),
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+        },
+      ]);
+
+      const state = await buildDisplayState(LODGE_ID);
+      expect(state?.custodian).toEqual({ label: "Sam Ranger", count: 1 });
+      const guests = state?.bookings.flatMap((row) => row.guests ?? []) ?? [];
+      // Pat keeps every night; Sam keeps only the night after the stint.
+      expect(guests.map((guest) => [guest.label, guest.nights])).toEqual([
+        ["Sam Ranger", ["2026-07-04"]],
+        ["Pat Ranger", ["2026-07-02", "2026-07-03", "2026-07-04"]],
+      ]);
+      expect(JSON.stringify(state)).not.toContain("member-sam");
+      // Sam's own dates follow the nights kept; the row still spans Pat's.
+      const sam = guests.find((guest) => guest.label === "Sam Ranger");
+      expect([sam?.stayStart, sam?.stayEnd]).toEqual(["2026-07-04", "2026-07-05"]);
+      expect([state?.bookings[0]?.stayStart, state?.bookings[0]?.stayEnd]).toEqual([
+        "2026-07-02",
+        "2026-07-05",
+      ]);
+    });
+
+    it("dates a custodian's own booking row from the nights it keeps, so it never claims their custodian nights", async () => {
+      mockPrisma.lodge.findUnique.mockResolvedValue(lodge("FULL_NAME"));
+      mockPrisma.booking.findMany.mockResolvedValue([
+        {
+          id: "b-solo",
+          checkIn: night("2026-07-02"),
+          checkOut: night("2026-07-05"),
+          // The booking's arrival, which is now a custodian night: not printed
+          // against a row that starts later.
+          expectedArrivalTime: "17:30",
+          wholeLodgeHold: false,
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+          guests: [lobbyGuest("Sam", "member-sam")],
+        },
+      ]);
+      mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+        {
+          memberId: "member-sam",
+          startDate: night("2026-07-01"),
+          endDate: night("2026-07-03"),
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+        },
+      ]);
+
+      const state = await buildDisplayState(LODGE_ID);
+      expect(state?.bookings).toHaveLength(1);
+      const row = state?.bookings[0];
+      expect(row).toMatchObject({
+        stayStart: "2026-07-04",
+        stayEnd: "2026-07-05",
+        nights: ["2026-07-04"],
+        arrivalTime: null,
+      });
+      expect(row?.guests?.[0]).toMatchObject({
+        stayStart: "2026-07-04",
+        stayEnd: "2026-07-05",
+        nights: ["2026-07-04"],
+      });
+    });
+  });
+
   describe("handover night — two custodians on two beds", () => {
     it("names BOTH and counts two, instead of naming one and hiding the other", async () => {
       mockPrisma.lodge.findUnique.mockResolvedValue(

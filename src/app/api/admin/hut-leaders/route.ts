@@ -17,6 +17,7 @@ import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { getAuditRequestContext } from "@/lib/audit";
 import { recordHutLeaderAssignmentAudit } from "@/lib/hut-leader-assignment-audit";
 import { findHutLeaderOverlapRefusal } from "@/lib/hut-leader-overlap-guard";
+import { readHutLeaderSchoolNightsWarning } from "@/lib/hut-leader-school-nights-warning";
 import {
   recordWholeLodgeHoldAmendment,
   type WholeLodgeHoldAmendment,
@@ -116,6 +117,8 @@ export async function GET(req: NextRequest) {
       bedRoomName: a.bed?.room.name ?? null,
       // #3817: the custodian tick, so the table can say so.
       isCustodian: a.isCustodian,
+      // #3821: a teacher row is never offered the custodian tick.
+      source: a.source,
     })),
   });
 }
@@ -187,6 +190,22 @@ export async function POST(req: NextRequest) {
   const newStart = parseDateOnly(parsed.data.startDate);
   const newEnd = parseDateOnly(parsed.data.endDate);
 
+  // Custodian bed hold (#2286): a bed can only mean anything while the
+  // bed-allocation module is on — rooms and beds exist only under it.
+  const bedId = parsed.data.bedId ?? null;
+  // #3817: a role-only, non-custodian assignment claims only nights the member
+  // stays here; a held bed or the custodian tick exempts it (INV-DATE-030).
+  // Re-asked under the lock.
+  const isCustodian = parsed.data.isCustodian === true;
+  // #3821: the proposed row, so a custodian is judged on the school nights it
+  // covers. The overlap guard's custodian note says why.
+  const overlapCandidate = {
+    memberId: member.id,
+    bedId,
+    isCustodian,
+    source: HutLeaderAssignmentSource.MANUAL,
+  };
+
   // The cheap pre-lock ask, through the SAME predicate the locked re-read
   // below uses, so the two can never disagree about what an overlap is.
   const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
@@ -195,18 +214,11 @@ export async function POST(req: NextRequest) {
     endDate: newEnd,
     // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
     allowOverlappingSchoolRows: true,
+    candidate: overlapCandidate,
   });
   if (earlyOverlap) {
     return NextResponse.json({ error: earlyOverlap.error }, { status: 409 });
   }
-
-  // Custodian bed hold (#2286): a bed can only mean anything while the
-  // bed-allocation module is on — rooms and beds exist only under it.
-  const bedId = parsed.data.bedId ?? null;
-  // #3817: a role-only, non-custodian assignment claims only nights the member
-  // stays here; a held bed or the custodian tick exempts it (INV-DATE-030).
-  // Re-asked under the lock.
-  const isCustodian = parsed.data.isCustodian === true;
   const stayExempt = isHutLeaderStayCheckExempt({
     bedId,
     isCustodian,
@@ -299,6 +311,7 @@ export async function POST(req: NextRequest) {
         endDate: newEnd,
         // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
         allowOverlappingSchoolRows: true,
+        candidate: overlapCandidate,
       });
       if (lockedOverlap) throw new HutLeaderOverlapError(lockedOverlap.error);
 
@@ -365,7 +378,7 @@ export async function POST(req: NextRequest) {
           userAgent: auditRequest?.userAgent,
         });
       }
-      return { assignment, member: lockedMember, amendments };
+      return { assignment, member: lockedMember, amendments, lodgeId: lockedLodgeId };
     });
     const { assignment } = created;
     let emailSent = true;
@@ -391,6 +404,18 @@ export async function POST(req: NextRequest) {
       "Hut leader assignment created"
     );
 
+    // #3821: advisory, read after the commit (shared with the edit).
+    const schoolNightsWarning = await readHutLeaderSchoolNightsWarning(prisma, {
+      id: assignment.id,
+      memberId: created.member.id,
+      lodgeId: created.lodgeId,
+      startDate: newStart,
+      endDate: newEnd,
+      source: HutLeaderAssignmentSource.MANUAL,
+      bedId,
+      isCustodian,
+    });
+
     return NextResponse.json(
       {
         id: assignment.id,
@@ -403,6 +428,7 @@ export async function POST(req: NextRequest) {
           isCustodianOccupancy({ bedId, isCustodian }) && isMinorAgeTier(created.member.ageTier)
             ? "This member is a minor, so the lodge screen will show the custodian role only and never their name."
             : null,
+        schoolNightsWarning,
       },
       { status: 201 }
     );

@@ -94,9 +94,10 @@ function withGuests(guests: Guest[]) {
     })),
   );
   mockPrisma.booking.findMany.mockImplementation(
-    async ({ where }: { where: { checkIn: { lte: Date }; AND?: unknown } }) => {
-      // The cover's school-booking read carries its filter under AND (#3819).
-      if (where.AND) return school.bookings;
+    async ({ where, select }: { where: { checkIn: { lte: Date } }; select: { guests?: unknown } }) => {
+      // The cover's school-booking read selects no guests (#3819); the job's
+      // candidate read does. Both carry a status half under AND (#3821).
+      if (!select.guests) return school.bookings;
       const asked = where.checkIn.lte;
       const present = guests.filter((g) => g.stayStart <= asked && asked < g.stayEnd);
       return present.map((g) => ({
@@ -112,7 +113,7 @@ function withGuests(guests: Guest[]) {
 /** The job's per-night candidate searches: every booking read but the cover's school read (#3819). */
 function candidateSearches() {
   return mockPrisma.booking.findMany.mock.calls.filter(
-    ([args]) => !(args as { where: { AND?: unknown } }).where.AND,
+    ([args]) => Boolean((args as { select: { guests?: unknown } }).select.guests),
   );
 }
 
@@ -295,6 +296,28 @@ describe("autoAssignHutLeaders writes stayed nights (#3817)", () => {
       await autoAssignHutLeaders();
 
       expect(written()).toEqual([]);
+    });
+
+    it("cuts a stay longer than the school group's to the nights the member may lead (#3821)", async () => {
+      // m-1 stays nights 1-7 Jul on their own booking; the school group holds
+      // nights 3-5. With "a member staying separately" unticked the job may
+      // write nights 1-2 and 6-7, and never the school nights in between: the
+      // whole run would claim nights the cover never counts, and block, by
+      // overlap, the leader an officer adds for the school group.
+      mockKinds.mockResolvedValue({
+        teacherOnBooking: false,
+        custodian: true,
+        memberOnBooking: true,
+        memberStayingSeparately: false,
+      });
+      withGuests([guest("m-1", "2026-07-01", "2026-07-08")]);
+
+      await autoAssignHutLeaders();
+
+      expect(written()).toEqual([
+        ["m-1", "2026-07-01", "2026-07-02"],
+        ["m-1", "2026-07-06", "2026-07-07"],
+      ]);
     });
 
     it("writes the member when that kind is ticked", async () => {

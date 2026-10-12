@@ -15,3 +15,15 @@ reason: the hut-leader read stays in the page's one batched `Promise.all`
   by the hand sync of `main` f3b6c008b into epic #3789, which composes these
   lines with `main`'s #3636/#3924 Net Collected and Refunds/Credits owed reads
   in the same batch (main's own allowance for them is inert against `main`).
+
+file: src/lib/lodge-display-state.ts
+lines: 963
+reason: the owner's "Show once, as custodian" (13 Oct 2026, #3820) has to drop
+  a custodian's own guest nights from the booking rows the wall builds, and
+  only this builder holds both today's custodian read and those rows. The
+  rule itself is one shared helper (`isCustodianOnNight` in
+  `custodian-occupancy.ts`) the member roster calls too; here it costs the two
+  selected columns, the custodian nights in key form and the one filter. The
+  compose review dates a guest whose nights the filter shortened from the
+  nights kept, so the row and the guest never claim a custodian night; that
+  span is built beside the night keys it reads, once per guest.

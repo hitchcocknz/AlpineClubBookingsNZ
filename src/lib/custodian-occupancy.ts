@@ -176,6 +176,19 @@ export function holdCoversNight(
 }
 
 /**
+ * Is this guest's member a custodian on `nightKey`? The roster and the lobby
+ * list a custodian who also books once, as custodian (#3821, owner decision
+ * on #3820, 13 Oct 2026), by dropping these nights from their guest entry.
+ */
+export function isCustodianOnNight(
+  holds: ReadonlyArray<Pick<CustodianBedHold, "startDate" | "endDate"> & { memberId: string }>,
+  memberId: string | null | undefined,
+  nightKey: string,
+): boolean {
+  return Boolean(memberId) && holds.some((hold) => hold.memberId === memberId && holdCoversNight(hold, nightKey));
+}
+
+/**
  * Is this bed-night held by a custodian? (`INV-CAP-038`, #2698.)
  *
  * THE predicate a whole-lodge hold subtracts through. ADR-001 says an

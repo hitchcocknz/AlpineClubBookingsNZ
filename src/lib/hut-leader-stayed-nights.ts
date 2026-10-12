@@ -1,5 +1,12 @@
-import { HutLeaderAssignmentSource, type Prisma } from "@prisma/client";
-import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import { BookingStatus, HutLeaderAssignmentSource, type Prisma } from "@prisma/client";
+import {
+  capacityHoldingBookingFilter,
+  OPERATIONAL_STAY_BOOKING_STATUSES,
+} from "@/lib/booking-status";
+import {
+  SCHOOL_GROUP_BOOKING_WHERE,
+  SCHOOL_GROUP_CONVERTED_BOOKING_WHERE,
+} from "@/lib/school-group-booking";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { getGuestBedNightKeys } from "@/lib/booking-guest-stay-ranges";
 import { isCustodianOccupancy } from "@/lib/custodian-occupancy";
@@ -19,7 +26,12 @@ import {
  * from and the rule that judges the pick cannot disagree:
  *
  * - a booking at THIS lodge, not soft-deleted, whose status is an operational
- *   stay (PAID or COMPLETED — a cancelled stay is not a stay), and
+ *   stay (PAID or COMPLETED — a cancelled stay is not a stay), or an accepted
+ *   school booking awaiting its invoice ({@link schoolBookingAwaitingInvoiceWhere}:
+ *   an approved school booking is CONFIRMED until its invoice is paid, which
+ *   can be after the group arrives; owner decision on #3820, 13 Oct 2026,
+ *   "Yes, count it"). A school quote the school has not accepted holds beds
+ *   (AWAITING_REVIEW) but is not a stay; and
  * - a guest row for the member on it whose own consent does not leave them
  *   operationally absent (owner decision D-12, #2307). Owning a booking is NOT
  *   a stay: a member counts only on nights they are a guest (owner decision on
@@ -40,6 +52,46 @@ export type HutLeaderMemberStay = {
 };
 
 /**
+ * A school group's booking on the nights it HOLDS BEDS — the capacity engine's
+ * own population (`capacityHoldingBookingFilter`), never a second status list
+ * (#3819). It answers only "is this a school night", which decides which kinds
+ * of leader a night accepts; it includes a quote the school has not accepted
+ * (an AWAITING_REVIEW hold), so it is NOT a stay and never makes a night need
+ * a leader — {@link schoolBookingAwaitingInvoiceWhere} does. Its top level is
+ * an `AND`; spread it under `AND` or `OR`.
+ */
+export function schoolBookingHoldingBedsWhere(): Prisma.BookingWhereInput {
+  return { AND: [capacityHoldingBookingFilter(), SCHOOL_GROUP_BOOKING_WHERE] };
+}
+
+/**
+ * An accepted school booking awaiting its invoice: CONFIRMED, and converted
+ * from a school request — the owner's words on #3820 (13 Oct 2026, "Yes, count
+ * it"): "a school booking that holds beds (CONFIRMED, awaiting its invoice)".
+ * An unaccepted quote's AWAITING_REVIEW hold is excluded, so it can neither
+ * need a leader nor give one of its members hut-leader duty (and with it lodge
+ * kiosk access). Once paid it is an operational stay like any other.
+ */
+export function schoolBookingAwaitingInvoiceWhere(): Prisma.BookingWhereInput {
+  return { status: BookingStatus.CONFIRMED, ...SCHOOL_GROUP_CONVERTED_BOOKING_WHERE };
+}
+
+/**
+ * The status half of a hut-leader stay: an operational stay, or an accepted
+ * school booking awaiting its invoice. The coverage reader asks it club-wide,
+ * where there is no lodge to pass {@link hutLeaderStayBookingWhere}, to decide
+ * which nights need a leader. Its top level is an `OR`.
+ */
+export function hutLeaderStayStatusWhere(): Prisma.BookingWhereInput {
+  return {
+    OR: [
+      { status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] } },
+      schoolBookingAwaitingInvoiceWhere(),
+    ],
+  };
+}
+
+/**
  * The bookings whose nights count as a member's stay at `lodgeId` overlapping a
  * range — THE one definition of "a booking that is a stay" for hut leaders
  * (`INV-SSOT`). The manual create/edit stay check, the eligible-members
@@ -47,7 +99,9 @@ export type HutLeaderMemberStay = {
  * they cannot disagree about which bookings count; so does the presence-aware
  * coverage reader (`hut-leader-night-cover.ts`, #3818), which asks for several
  * lodges at once and so passes a list. A soft-deleted booking is not a stay,
- * whatever its status.
+ * whatever its status. The same set decides which nights need a leader
+ * (`hut-leader-coverage.ts`), so a school group awaiting its invoice both needs
+ * a leader and can supply one from its own members.
  */
 export function hutLeaderStayBookingWhere(input: {
   lodgeId: string | readonly string[];
@@ -57,7 +111,7 @@ export function hutLeaderStayBookingWhere(input: {
   return {
     deletedAt: null,
     lodgeId: isLodgeIdList(input.lodgeId) ? { in: [...input.lodgeId] } : input.lodgeId,
-    status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
+    AND: [hutLeaderStayStatusWhere()],
     checkIn: { lte: input.rangeEnd },
     checkOut: { gt: input.rangeStart },
   };

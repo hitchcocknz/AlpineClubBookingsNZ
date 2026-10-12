@@ -194,8 +194,8 @@ const NON_OCCUPANCY_READERS: Array<{
     why: "lists a member's own capacity-holding bookings for the season roll-over; no bed count",
   },
   {
-    file: "src/lib/hut-leader-night-cover.ts",
-    why: "decides which nights a school group is staying, for who may lead them (#3819): a CONFIRMED, not-yet-paid school booking holds its beds and so stays; no bed count",
+    file: "src/lib/hut-leader-stayed-nights.ts",
+    why: "decides which nights are school nights, for which kinds of leader may lead them (#3819); which nights NEED a leader reads the narrower accepted-and-CONFIRMED rule (#3821), not this; no bed count",
   },
 ];
 

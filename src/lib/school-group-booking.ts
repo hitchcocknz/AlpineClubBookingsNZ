@@ -22,12 +22,22 @@ export function isSchoolGroupBooking(booking: {
 }
 
 /**
+ * The ACCEPTED half of {@link SCHOOL_GROUP_BOOKING_WHERE}: a booking converted
+ * from a school request, never one only held for a quote the school has not
+ * accepted. Hut-leader duty reads this half (owner decision on #3820, 13 Oct
+ * 2026: "a school booking that holds beds (CONFIRMED, awaiting its invoice)").
+ */
+export const SCHOOL_GROUP_CONVERTED_BOOKING_WHERE = {
+  originBookingRequest: { is: { type: BookingRequestType.SCHOOL } },
+} as const satisfies Prisma.BookingWhereInput;
+
+/**
  * {@link isSchoolGroupBooking} as a Prisma filter. Its top level is an `OR`, so
  * spread it under `AND` beside a where that has an `OR` of its own.
  */
 export const SCHOOL_GROUP_BOOKING_WHERE = {
   OR: [
-    { originBookingRequest: { is: { type: BookingRequestType.SCHOOL } } },
+    SCHOOL_GROUP_CONVERTED_BOOKING_WHERE,
     { heldForBookingRequest: { is: { type: BookingRequestType.SCHOOL } } },
   ],
 } as const satisfies Prisma.BookingWhereInput;

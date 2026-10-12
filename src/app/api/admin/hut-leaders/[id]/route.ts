@@ -12,6 +12,7 @@ import {
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { isCustodianOccupancy } from "@/lib/custodian-occupancy";
+import { readSavedHutLeaderSchoolNightsWarning } from "@/lib/hut-leader-school-nights-warning";
 
 const updateSchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -185,7 +186,9 @@ export async function PUT(
         { status: refusal.status },
       );
     }
-    return NextResponse.json({ success: true });
+    // #3821: the create's school-nights advisory, of the row as saved.
+    const schoolNightsWarning = await readSavedHutLeaderSchoolNightsWarning(prisma, id);
+    return NextResponse.json({ success: true, schoolNightsWarning });
   } catch (err) {
     const custodianResponse = custodianBedHoldErrorResponse(err);
     if (custodianResponse) return custodianResponse;

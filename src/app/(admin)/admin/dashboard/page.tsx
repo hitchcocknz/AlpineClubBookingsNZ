@@ -616,11 +616,11 @@ export default async function AdminDashboardPage() {
             <CardContent className="flex items-start gap-3 pt-5">
               <AlertTriangle className="h-5 w-5 text-warning-11 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="font-medium text-warning-11">{stats.unassignedNamesLodges ? "Lodge-nights" : "Nights"} without a {CLUB_HUT_LEADER_LABEL.toLowerCase()} staying</p>
+                <p className="font-medium text-warning-11">{stats.unassignedNamesLodges ? "Lodge-nights" : "Nights"} without a {CLUB_HUT_LEADER_LABEL.toLowerCase()} who counts</p>
                 <p className="text-sm text-warning-11 mt-1">
                   {unassignedDatesWithBookings.length} upcoming{" "}
                   {stats.unassignedNamesLodges ? "lodge-night" : "night"}
-                  {unassignedDatesWithBookings.length !== 1 ? "s" : ""} with guests but no {CLUB_HUT_LEADER_LABEL.toLowerCase()} staying:{" "}
+                  {unassignedDatesWithBookings.length !== 1 ? "s" : ""} with guests but no {CLUB_HUT_LEADER_LABEL.toLowerCase()} who counts:{" "}
                   {unassignedDatesWithBookings.slice(0, 5).join("; ")}
                   {unassignedDatesWithBookings.length > 5 ? ` and ${unassignedDatesWithBookings.length - 5} more` : ""}
                 </p>

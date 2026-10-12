@@ -145,10 +145,13 @@ const FORBIDDEN_KEYS = [
 /**
  * Read but never returned. `wholeLodgeHold` decides whether a party had the
  * building to itself, which is what SUPPRESSES their names — so the module
- * must select it, and the payload must not carry it. Consulting and
- * disclosing are different things and this suite checks them separately.
+ * must select it, and the payload must not carry it. A guest's `memberId`
+ * decides whether a custodian who also booked is listed once, as custodian
+ * (#3821, owner decision on #3820, 13 Oct 2026) — it too is selected and never
+ * carried. Consulting and disclosing are different things and this suite
+ * checks them separately.
  */
-const CONSULTED_NOT_DISCLOSED = ["wholeLodgeHold"] as const;
+const CONSULTED_NOT_DISCLOSED = ["wholeLodgeHold", "memberId"] as const;
 
 function instant(day: string): Date {
   return new Date(`${day}T00:00:00.000Z`);
@@ -179,6 +182,8 @@ function guest(
     stayStart: instant(first),
     stayEnd: instant(nextDay(last)),
     nights: nights.map((stayDate) => ({ stayDate: instant(stayDate) })),
+    // A real member id, so the payload tests catch it if it is ever copied.
+    memberId: SECRETS.memberId as string | null,
   };
 }
 
@@ -201,6 +206,7 @@ function envelopeGuest(
     stayStart: instant(firstNight),
     stayEnd: instant(checkoutMorning),
     nights: [] as { stayDate: Date }[],
+    memberId: null as string | null,
   };
 }
 
@@ -317,7 +323,13 @@ describe("member lodge roster — what the select may name", () => {
     // hands back. The payload test below is what proves `consentStatus` never
     // reaches a member.
     const { guests, ...rest } = MEMBER_ROSTER_BOOKING_SELECT;
-    const projection = JSON.stringify({ ...rest, guests: guests.select });
+    // The guest's `memberId` is the one consulted column (#3821): it only
+    // matches a custodian to their own guest row. It is set aside here and
+    // pinned by the exact-set test below; the payload tests prove it is never
+    // returned. Every other private key still fails this scan.
+    const { memberId: consultedMemberId, ...guestProjection } = guests.select;
+    expect(consultedMemberId).toBe(true);
+    const projection = JSON.stringify({ ...rest, guests: guestProjection });
     for (const key of FORBIDDEN_KEYS) {
       expect(
         projection,
@@ -363,6 +375,12 @@ describe("member lodge roster — what the select may name", () => {
       "ageTier",
       "firstName",
       "lastName",
+      // THE ARGUMENT FOR `memberId` (#3821): the owner decided on #3820 (13 Oct
+      // 2026, "Show once, as custodian") that a custodian who also books is
+      // listed once, as custodian. Matching the two needs the guest's member,
+      // and a name match would drop a different person who shares the name.
+      // Consulted, never disclosed — see CONSULTED_NOT_DISCLOSED.
+      "memberId",
       "nights",
       "stayEnd",
       "stayStart",
@@ -1253,5 +1271,68 @@ describe("member lodge roster — whole-lodge held nights (#3474)", () => {
       mockGetLodgeHeldNights.mock.calls.map((call) => call[0]),
       "INV-PRIV-017: held nights are read per reachable lodge only."
     ).toEqual(["lodge-a"]);
+  });
+});
+
+describe("member lodge roster — a custodian who is also a guest (#3821)", () => {
+  // Owner decisions on #3820, 13 Oct 2026.
+  const HELD = ["2026-07-12", "2026-07-13", "2026-07-14"];
+
+  function custodianOf(memberId: string, first: string, last: string, start: string, end: string) {
+    return { ...custodianHold(first, last, start, end, false, null), memberId };
+  }
+
+  it("lists a custodian who also books ONCE, as custodian, and keeps the rest of their party ('Show once, as custodian')", async () => {
+    mockFindCustodianOccupants.mockResolvedValue([
+      custodianOf("member-hemi", "Hemi", "Walker", TODAY, "2026-07-02"),
+    ]);
+    mockPrisma.booking.findMany.mockResolvedValue([
+      bookingRow({
+        lodgeId: "lodge-a",
+        organiser: { firstName: "Hemi", lastName: "Walker", ageTier: "ADULT" },
+        guests: [
+          { ...guest("Hemi", "Walker", "ADULT", [TODAY, "2026-07-02", "2026-07-03"]), memberId: "member-hemi" },
+          guest("Aroha", "Walker", "ADULT", [TODAY, "2026-07-02", "2026-07-03"]),
+        ],
+      }),
+    ]);
+
+    const roster = await buildMemberLodgeRoster("viewer-1");
+    expect(roster.lodges[0]?.custodians).toEqual([
+      { name: "Hemi Walker", nights: [TODAY, "2026-07-02"] },
+    ]);
+    // On the night after the custodian stint they are an ordinary guest again.
+    expect(roster.lodges[0]?.people).toEqual([
+      { name: "Aroha Walker", nights: [TODAY, "2026-07-02", "2026-07-03"] },
+      { name: "Hemi Walker", nights: ["2026-07-03"] },
+    ]);
+    expect(JSON.stringify(roster)).not.toContain("member-hemi");
+  });
+
+  it("names a custodian who is a guest of a whole-lodge hold on its reserved nights ('Show the custodian's name')", async () => {
+    mockGetLodgeHeldNights.mockResolvedValue(HELD);
+    mockFindCustodianOccupants.mockResolvedValue([
+      custodianOf("member-hemi", "Hemi", "Walker", HELD[0]!, HELD[2]!),
+    ]);
+    mockPrisma.booking.findMany.mockResolvedValue([
+      bookingRow({
+        lodgeId: "lodge-a",
+        organiser: { firstName: "Private", lastName: "Booker", ageTier: "ADULT" },
+        guests: [
+          { ...guest("Hemi", "Walker", "ADULT", HELD), memberId: "member-hemi" },
+          ...Array.from({ length: 5 }, (_, i) => guest(`Private${i}`, "Booker", "ADULT", HELD)),
+        ],
+        checkIn: HELD[0],
+        checkOut: "2026-07-15",
+        wholeLodgeHold: true,
+      }),
+    ]);
+
+    const roster = await buildMemberLodgeRoster("viewer-1");
+    // The reserved line stays, and the custodian's name is shown beside it.
+    expect(roster.lodges[0]?.heldNights).toEqual(HELD);
+    expect(roster.lodges[0]?.custodians).toEqual([{ name: "Hemi Walker", nights: HELD }]);
+    expect(roster.lodges[0]?.people).toEqual([]);
+    expect(roster.lodges[0]?.groups).toEqual([]);
   });
 });

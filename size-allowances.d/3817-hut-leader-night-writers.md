@@ -7,7 +7,7 @@ decision point and the response it renders. The shared capacity calculation
 grows for the one-space rule, whose predicate lives in `custodian-occupancy.ts`.
 
 file: src/app/api/admin/hut-leaders/route.ts
-lines: 433
+lines: 459
 reason: the stay check has to be asked twice, once cheaply before the lock and
   once under the lodge capacity key on the transaction client, exactly like the
   overlap check beside it, and its refusal has to be mapped to a 409 in the
@@ -18,10 +18,15 @@ reason: the stay check has to be asked twice, once cheaply before the lock and
   custodian's member id for the one-space rule. The query, the refusal and the
   thrown error all live in the shared
   module; splitting the create handler around a two-call change would scatter
-  one locked flow across files without shortening it.
+  one locked flow across files without shortening it. The compose review
+  (#3821) passes the proposed row to both overlap asks, so a custodian is
+  judged on the school nights it covers, and adds the post-commit
+  school-nights warning; its read, its night list and its sentence live in
+  `hut-leader-school-nights-warning.ts` (shared with the edit), and only the
+  call stays here.
 
 file: src/app/(admin)/admin/hut-leaders/page.tsx
-lines: 1414
+lines: 1430
 reason: the owner's refusal offers "Change last night to …", so the page has to
   carry the corrected end date from the 409 into its error state and own the one
   handler that adopts it while keeping the chosen member (picking new nights
@@ -34,7 +39,10 @@ reason: the owner's refusal offers "Change last night to …", so the page has t
   sharing the bed save path, which is why it lives beside Release bed and
   Change bed), and the tick reset on every member, night and lodge change. The
   delta review added the no-bed wording of the two confirm cards (which card
-  speaks of a bed depends on whether one is in play).
+  speaks of a bed depends on whether one is in play). The compose
+  review (#3821) hides the custodian button and Hold a bed on a school
+  teacher's row and shows the school-nights note, from a create or a row
+  edit, in the existing advisory slot.
 
 file: src/lib/capacity.ts
 lines: 1179

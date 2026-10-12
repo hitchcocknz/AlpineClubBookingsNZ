@@ -209,27 +209,28 @@ covered?": many rows were stamped through the leader's check-out day.
 
 - **One definition.** `src/lib/hut-leader-night-cover.ts` is the only home.
   The dashboard card, the sidebar badge, the stuck-state tile, the hut-leaders
-  calendar, the eligible-members suggestions and the auto-assign cron's
-  already-covered probe all read it; `hut-leader-night-cover-census.test.ts`
-  fails a reader that reads assignment dates as coverage itself.
-- **Presence, per row.** An ordinary member is present on a night of their own
-  stay at the same lodge, as a guest — a booking matching the writers'
-  `hutLeaderStayBookingWhere` (`INV-DATE-030`), consent operationally present,
-  judged by `isGuestActiveOnNight` (`INV-DATE-005`), never a restated range. A
-  custodian — holding a bed or ticked, `isCustodianOccupancy` — is present on
-  every night the assignment covers (`INV-LIFE-062`). A school teacher row is
-  present on a night its dates claim only while a school booking holds capacity
-  at its lodge (#3819); the writer stamps arrival to checkout − 1.
-- **School nights obey the lodge (#3819).** On a night a school booking stays,
-  a present leader covers only if a kind the lodge ticks applies: teacher,
-  custodian, member on that booking, or member staying separately.
+  calendar, the eligible-members suggestions, the auto-assign cron and the
+  overlap guard's custodian exemption read it;
+  `hut-leader-night-cover-census.test.ts` fails a reader that reads assignment
+  dates as coverage itself.
+- **Which nights need one.** Nights with guests on a booking in the hut-leader
+  stay set (`INV-DATE-030`), which includes an accepted school booking that
+  is CONFIRMED while it awaits its invoice (owner decision on #3820, 13 Oct
+  2026). An unaccepted quote's hold makes a school night but needs no leader.
+- **Presence, per row.** An ordinary member is present on a night they are a
+  guest on that set at the same lodge, consent operationally present, judged
+  by `isGuestActiveOnNight` (`INV-DATE-005`). A custodian — holding a bed or
+  ticked, `isCustodianOccupancy` — is present on every night the assignment
+  covers (`INV-LIFE-062`). A school teacher row is present only while a school
+  booking holds capacity at its lodge (#3819).
+- **School nights obey the lodge (#3819).** On a school night a present leader
+  covers only as a kind the lodge ticks: teacher, custodian, member on that
+  booking, or member staying separately.
 - **Readers heal rows; nothing is backfilled.** A row ending on its leader's
-  check-out day stops covering that night by being read correctly. The row is
-  never rewritten by this rule.
+  check-out day stops covering that night by being read correctly.
 - **Changeover labels are derived, never stored.** Day D's morning belongs to
-  night D − 1's leader and its afternoon to night D's (`INV-DATE-004`);
-  `src/lib/hut-leader-handover.ts` lines the two up for the calendar's AM/PM
-  labels and the dashboard's handovers.
+  night D − 1's leader and its afternoon to night D's (`INV-DATE-004`,
+  `src/lib/hut-leader-handover.ts`).
 
 ### INV-DATE-006
 
@@ -326,18 +327,18 @@ A hut-leader assignment's `startDate`..`endDate` are lodge nights, inclusive
 owner decisions on #3820):
 
 - The auto-assign cron writes the run of consecutive stayed nights containing
-  the night it is deciding: it ends on `checkOut - 1`, never the check-out day,
-  and a split stay gets one row per run.
+  the night it is deciding, cut to the nights around it the member may lead
+  (`leadableNightRun`, #3821): never the check-out day, one row per run.
 - The manual create and edit refuse a role-only assignment that claims a night
   the member does not stay at that lodge, with no override. Staying means a
-  consented guest row on a PAID or COMPLETED, not soft-deleted booking; owning
-  a booking one is not on does not count (owner decision, 3 Oct 2026). The
-  nightly auto-assign reads the same booking definition
+  consented guest row on a non-deleted PAID or COMPLETED booking, or a
+  CONFIRMED, accepted school booking (owner decision, 13 Oct 2026); owning a
+  booking one is not on does not count (3 Oct 2026). Every writer reads it
   (`hutLeaderStayBookingWhere`).
 - Exempt: a custodian occupancy (`isCustodianOccupancy`: a held bed,
   `INV-LIFE-062`, or the "Custodian (lives on site)" tick) and a school
-  teacher's row. An edit that removes the exemption — unticking, or Release
-  bed — is checked like a date move.
+  teacher's row. An edit removing the exemption (unticking, Release bed) is
+  checked like a date move.
 - A ticked custodian takes one space off the lodge's capacity on each covered
   night, as a held bed does, counted once if it also holds a bed. One person is
   one space (owner decision, 3 Oct 2026): on a night a custodian is a counted

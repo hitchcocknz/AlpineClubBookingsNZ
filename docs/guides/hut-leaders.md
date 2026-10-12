@@ -63,12 +63,25 @@ no hut-leader request or assignment write until a real lodge returns.
    stay that has been cancelled — the page refuses it, names the first night
    they are not staying and offers **Change last night to …** with their last
    night stayed. There is no override. Only paid (or completed) stays count,
+   plus a school group's accepted booking while it awaits its invoice,
    and only nights the member is a **guest** on: owning a booking they are not
    on does not count. A custodian is the one exception: tick **Custodian (lives
    on site)**, or hold a bed for them (see below).
 4. Review the summary — nights covered, red nights it fills, and any conflicts —
    then click to confirm. An assignment overlapping an existing one by more than a
-   day is blocked.
+   day is blocked. If its nights include a school group's nights that this lodge
+   does not accept this kind of leader for, it is saved with a note saying so:
+   those nights stay without a hut leader who counts until you add one the lodge
+   accepts. Changing an existing assignment on the table — its custodian mark or
+   its bed — shows the same note when the change leaves it on such nights.
+
+   **Exception: a custodian does not block a school night they do not cover.**
+   When the lodge leaves **The lodge custodian** unticked for school bookings,
+   a season-long custodian is not a leader who counts on the school group's
+   nights, so you can put someone else on those nights — someone the lodge
+   accepts for them and who is staying them. Each end of their stint may still
+   share one handover night with the custodian; sharing two or more ordinary
+   nights is still blocked, and so is a second custodian on the same nights.
 
    **Exception: a school group's teachers do not block you.** When a school
    booking is approved, the app records one assignment per teacher. Those do not
@@ -94,7 +107,7 @@ both of these are true:
 
 | Assignment | Counts as in the lodge on… |
 | --- | --- |
-| An ordinary member (assigned by hand or automatically) | the nights of their own paid stay at **this** lodge. A cancelled, bumped, archived or unpaid stay counts for nothing, and neither does a stay at another lodge, or a stay as another member's guest that they have not yet confirmed |
+| An ordinary member (assigned by hand or automatically) | the nights of their own paid stay at **this** lodge, or of a school group's accepted booking at this lodge while it awaits its invoice (a quote the school has not accepted does not count). A cancelled, bumped, archived or otherwise unpaid stay counts for nothing, and neither does a stay at another lodge, or a stay as another member's guest that they have not yet confirmed |
 | A custodian — ticked **Custodian (lives on site)**, or holding a bed | every night the assignment covers. They live in the lodge, so no booking is needed |
 | A school group's teacher | the assignment's own dates (arrival to the night before departure), but only while a school group is staying at this lodge that night. If the school booking is cancelled or moved, its teachers stop counting on nights no school group is there |
 
@@ -122,12 +135,30 @@ custodian and both member kinds are ticked and teachers are not; an upgrade
 carried the old club-wide **Assign school teachers as hut leaders** switch into
 every lodge's teacher tick.
 
-A school group counts as staying from the moment its booking holds beds — an
-approved school booking awaiting its invoice included — not only once it is paid.
+A night is a school night, for which kinds of leader count, from the moment a
+school booking holds beds there — a quote the school has not yet accepted
+included. Its nights **need** a hut leader once the school has accepted and the
+booking is confirmed, while it awaits its invoice, not only once it is paid.
+From then its nights show on the dashboard and the amber card while uncovered,
+and a club member on the school booking can be assigned to them, by hand or
+automatically, when the lodge ticks **A member on the school booking**. A quote
+still awaiting the school's answer neither needs a leader nor lets a member on
+it be one.
+
+Teachers are made hut leaders at approval only while the **Hut leaders** module
+is on: with it off, approval creates no teacher assignments and sends no PINs,
+whatever the lodge ticks. A teacher's assignment cannot be marked **Custodian
+(lives on site)** or hold a bed, since a held bed would make it the custodian;
+neither button is offered on those rows. **Release bed** stays for an older
+teacher row that holds one, and any other edit to that row is refused until
+the bed is released.
 
 The nightly automatic assignment follows the same rule: on a school night it
 adds the one adult member staying only if their kind is ticked, and otherwise
-leaves the night for you. The member suggestions on this page leave such nights
+leaves the night for you. A member whose stay runs past the school group's is
+assigned only the nights around it that their kind may lead, so the
+automatic row never reaches into school nights the lodge does not accept them
+for. The member suggestions on this page leave such nights
 out of a member's suggested dates and say how many school-group nights this
 lodge does not accept them for.
 
@@ -151,8 +182,10 @@ beside the one arriving or leaving, never as leaving. On a phone the lines drop
 "until midday" / "from midday" so the name still fits; a screen reader always
 hears the full wording. The admin dashboard lists the coming week's handovers —
 a day on which a leader finishes at midday and another is on duty from midday —
-under **Handovers this week**, and its **Nights without a hut leader staying**
-card gives each uncovered night with its guest count.
+under **Handovers this week**, and its **Nights without a hut leader who counts**
+card gives each uncovered night with its guest count: a night with nobody
+assigned and staying, or, on a school group's night, nobody of a kind the lodge
+accepts.
 
 ### Assign a custodian
 
@@ -166,7 +199,9 @@ the lodge without ever making a booking.
    calendar. The tick is there whether or not your club uses bed allocation.
    A ticked custodian, with or without a bed, is named on the lodge lobby screen
    and on members' **Who's at the lodge** list, once each; a custodian who is a minor
-   is never named.
+   is never named. A custodian who has also booked a stay is listed once, as
+   the custodian, on their custodian nights; their booking still lists the rest
+   of their party.
 3. If your club uses bed allocation, you can also **hold a bed** for them (below)
    so the allocation board shows which bed is theirs. A custodian with a bed
    still takes only one space.

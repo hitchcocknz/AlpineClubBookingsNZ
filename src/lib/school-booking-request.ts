@@ -814,9 +814,12 @@ export async function approveSchoolBookingRequest(input: {
   // connection while they are held (INV-LOCK-001, INV-LOCK-002). The lodge it
   // was read for is re-checked against the lodge the transaction locks.
   const hutLeaderPolicyLodgeId = approvalLodgeId ?? (await getDefaultLodgeId(prisma));
-  const assignTeachersAsHutLeaders = (
-    await loadSchoolHutLeaderKinds(prisma, hutLeaderPolicyLodgeId)
-  ).teacherOnBooking;
+  // #3821: and only while the Hut Leaders module is on. With it off the club
+  // has no hut leaders at all, so a lodge's leftover teacher tick must not
+  // create assignments or send PIN emails.
+  const assignTeachersAsHutLeaders =
+    (await loadSchoolHutLeaderKinds(prisma, hutLeaderPolicyLodgeId)).teacherOnBooking &&
+    (await isEffectiveModuleEnabled("hutLeaders"));
   // A teacher leads the school's nights, first to last: the night before
   // checkout is the last one (INV-DATE-002, #3789). Never the checkout day.
   const teacherLastNight = dateOnlyInstantOf(

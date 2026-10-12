@@ -8,6 +8,7 @@ import {
   loadHutLeaderStayedNightKeys,
   stayedNightRunContaining,
 } from "@/lib/hut-leader-stayed-nights";
+import { matchesWhere } from "@/lib/__tests__/support/prisma-where";
 
 /**
  * The stay check behind the manual hut-leader create and edit (#3817, owner
@@ -26,6 +27,10 @@ type Booking = {
   id: string;
   lodgeId: string;
   status: string;
+  /** #3821: the school request it came from, when it is a school group's. */
+  originBookingRequest?: { type: string } | null;
+  /** #3821: the school request it is held for, while the quote is unaccepted. */
+  heldForBookingRequest?: { type: string } | null;
   memberId: string | null;
   deletedAt?: Date | null;
   checkIn: Date;
@@ -42,7 +47,8 @@ type Booking = {
 type BookingWhere = {
   deletedAt?: null;
   lodgeId: string;
-  status: { in: string[] };
+  /** The status half: an operational stay or a school booking holding beds. */
+  AND: unknown[];
   checkIn: { lte: Date };
   checkOut: { gt: Date };
   memberId?: string;
@@ -52,7 +58,16 @@ function bookingMatches(booking: Booking, where: BookingWhere) {
   return (
     (where.deletedAt === undefined || (booking.deletedAt ?? null) === null) &&
     booking.lodgeId === where.lodgeId &&
-    where.status.in.includes(booking.status) &&
+    // The status half evaluated as Postgres would (#3821), never re-derived.
+    matchesWhere(
+      {
+        status: booking.status,
+        originBookingRequest: booking.originBookingRequest ?? null,
+        heldForBookingRequest: booking.heldForBookingRequest ?? null,
+        adminCapacityHoldAt: null,
+      },
+      { AND: where.AND },
+    ) &&
     booking.checkIn <= where.checkIn.lte &&
     booking.checkOut > where.checkOut.gt &&
     (where.memberId === undefined || booking.memberId === where.memberId)
@@ -165,6 +180,49 @@ describe("findHutLeaderStayRefusal (#3817)", () => {
     const refusal = await ask(fakeDb([cancelled]), "2026-07-06", "2026-07-07");
     expect(refusal).toEqual(
       expect.objectContaining({ firstNightNotStayed: "2026-07-06", lastNightStayed: null }),
+    );
+  });
+
+  it("counts a school booking that holds beds, awaiting its invoice (#3821, owner decision on #3820, 13 Oct 2026)", async () => {
+    // "Yes, count it": an approved school booking is CONFIRMED until its
+    // invoice is paid, and a member on it can lead its nights.
+    const school = stay("2026-07-06", "2026-07-08", {
+      status: "CONFIRMED",
+      originBookingRequest: { type: "SCHOOL" },
+    });
+    expect(await ask(fakeDb([school]), "2026-07-06", "2026-07-07")).toBeNull();
+  });
+
+  it("refuses an unaccepted school quote's AWAITING_REVIEW hold — it holds beds but is not a stay (#3821)", async () => {
+    // The owner's words: "a school booking that holds beds (CONFIRMED,
+    // awaiting its invoice)". A quote the school has not accepted holds beds,
+    // but its members get no hut-leader duty (and so no kiosk access) from it.
+    const held = stay("2026-07-06", "2026-07-08", {
+      status: "AWAITING_REVIEW",
+      heldForBookingRequest: { type: "SCHOOL" },
+    });
+    expect(await ask(fakeDb([held]), "2026-07-06", "2026-07-07")).toEqual(
+      expect.objectContaining({ firstNightNotStayed: "2026-07-06" }),
+    );
+  });
+
+  it("refuses a converted school quote still PENDING — only CONFIRMED counts (#3821)", async () => {
+    const pending = stay("2026-07-06", "2026-07-08", {
+      status: "PENDING",
+      originBookingRequest: { type: "SCHOOL" },
+    });
+    expect(await ask(fakeDb([pending]), "2026-07-06", "2026-07-07")).toEqual(
+      expect.objectContaining({ firstNightNotStayed: "2026-07-06" }),
+    );
+  });
+
+  it("still refuses a CONFIRMED booking that is not a school group's", async () => {
+    const general = stay("2026-07-06", "2026-07-08", {
+      status: "CONFIRMED",
+      originBookingRequest: { type: "GENERAL" },
+    });
+    expect(await ask(fakeDb([general]), "2026-07-06", "2026-07-07")).toEqual(
+      expect.objectContaining({ firstNightNotStayed: "2026-07-06" }),
     );
   });
 

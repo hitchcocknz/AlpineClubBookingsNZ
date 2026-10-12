@@ -365,18 +365,19 @@ const FIGURES = {
    * apply, shown when an executed finished-stay approval needs the officer to
    * confirm an over-capacity past night. MEASURED.
    *
-   * 371/371 -> 372 (sync of `main` f1ecdb5ff into epic #3789): #3817's Custodian
-   * toggle and #3750's overbooking confirm are disjoint files. MEASURED on the
-   * composed tree by re-running this census, never by adding the deltas.
    * 371 -> 372 (#3372): the stuck-states page's "Paid another way" close on a
    * card refund Stripe gave up on, and 372 -> 373 (owner 9 Oct 2026) the same
    * page's "Resolved" on a card refund paid back twice. Each dialog's confirm
    * is a plain Button, reachable only once its gated row button opened it.
    * MEASURED by re-running this census.
    *
-   * 372/373 -> 374 (hand sync of `main` f3b6c008b into epic #3789): the
-   * epic's and #3372's call sites are in disjoint files. MEASURED on the
+   * 371/371 -> 372 (sync of `main` f1ecdb5ff into epic #3789): #3817's Custodian
+   * toggle and #3750's overbooking confirm are disjoint files. MEASURED on the
    * composed tree by re-running this census, never by adding the deltas.
+   *
+   * 372/373 -> 374 (sync of `main` 0ff7e6d46 into epic #3789, #3821): the
+   * epic's sites and #3372's two stuck-states confirms are disjoint files.
+   * MEASURED on the composed tree by re-running this census.
    */
   callSites: 374,
   /**
@@ -417,14 +418,14 @@ const FIGURES = {
    * Delete) and one arrives (Edit my Lodge).
    *
    * 315 -> 316 (#3750): so does the change-request card's overbooking confirm.
-   *
-   * 316/316 -> 317 (sync of `main` f1ecdb5ff into epic #3789): the two sides'
-   * new opt-outs are disjoint. MEASURED on the composed tree.
    * 316 -> 318 (#3372): the dead card refunds panel's "Paid another way" and
    * the paid-twice list's "Resolved" each opt out under their own banner.
    *
-   * 317/318 -> 319 (hand sync of `main` f3b6c008b into epic #3789): disjoint.
-   * MEASURED on the composed tree.
+   * 316/316 -> 317 (sync of `main` f1ecdb5ff into epic #3789): the two sides'
+   * new opt-outs are disjoint. MEASURED on the composed tree.
+   *
+   * 317/318 -> 319 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3372's
+   * two opt-outs are disjoint from the epic's. MEASURED on the composed tree.
    */
   optOuts: 319,
   /**
@@ -494,17 +495,16 @@ const FIGURES = {
    *
    * 281 -> 282 (#3750): the overbooking confirm is rendered in the change-
    * request panel itself, beside that panel's own banner.
+   * 282 -> 284 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" sit in the same file as their banners.
    *
    * 280/282 -> 281 (sync of `main` f1ecdb5ff into epic #3789): the epic
    * measured 280 (its bump lines above add to 282, but the census, not the
    * lines, is the authority) and `main`'s #3750 adds one. MEASURED on the
    * composed tree by re-running this census, never by adding the deltas.
-   * 282 -> 284 (#3372): the dead card refunds panel's "Paid another way" and
-   * the paid-twice list's "Resolved" sit in the same file as their banners.
    *
-   * 281/284 -> 283 (hand sync of `main` f3b6c008b into epic #3789): `main`
-   * measured 284 against its own vouched/static split, the epic 281; the
-   * composed tree measures 281 + #3372's two. MEASURED on the composed tree by
+   * 281/284 -> 283 (sync of `main` 0ff7e6d46 into epic #3789, #3821): `main`'s
+   * #3372 adds two to the epic's 281. MEASURED on the composed tree by
    * re-running this census, never by adding the deltas.
    */
   staticOptOuts: 283,
