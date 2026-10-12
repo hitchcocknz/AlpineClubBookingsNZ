@@ -241,11 +241,11 @@ export default async function BookingDetailPage({
   });
   // #3956 (`INV-PAY-123`): an appeal on a booking the organiser paid for by card
   // is capped at what the organiser's combined payment can still return.
-  const organiserCardAppealCeiling = await loadOrganiserCardAppealCeiling(booking);
+  const organiserCardAppeal = await loadOrganiserCardAppealCeiling(booking);
   const payment =
-    organiserCardAppealCeiling === null
+    organiserCardAppeal === null
       ? resolvedPayment
-      : { ...resolvedPayment, maxRefundableCents: organiserCardAppealCeiling };
+      : { ...resolvedPayment, maxRefundableCents: organiserCardAppeal.ceilingCents };
   const { originalPaymentCaptured } = payment;
   const messages = renderBookingDetailMessages({
     booking,
@@ -406,7 +406,8 @@ export default async function BookingDetailPage({
         canDeleteDraft={canDeleteDraft}
         canSoftDeleteCancelled={canSoftDeleteCancelled}
         backHref={backHref}
-        organiserCardAppeal={organiserCardAppealCeiling !== null}
+        organiserCardAppeal={organiserCardAppeal !== null}
+        organiserCardAppealPending={organiserCardAppeal?.combinedRefundPending === true}
       />
 
       <BookingCancellationOutcome

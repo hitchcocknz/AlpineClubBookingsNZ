@@ -97,8 +97,16 @@ export async function GET(req: NextRequest) {
     requests.map(async (request) => {
       const payment = request.booking.payment;
       if (request.status !== "PENDING" || !payment) return request;
-      const ceiling = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
-      return ceiling === null ? request : { ...request, booking: { ...request.booking, organiserCardMaxRefundableCents: ceiling } };
+      const organiserCard = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
+      if (organiserCard === null) return request;
+      return {
+        ...request,
+        booking: {
+          ...request.booking,
+          organiserCardMaxRefundableCents: organiserCard.ceilingCents,
+          organiserCardCombinedRefundPending: organiserCard.combinedRefundPending,
+        },
+      };
     }),
   );
 

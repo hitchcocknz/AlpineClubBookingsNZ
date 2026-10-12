@@ -17,18 +17,21 @@ reason: the approval's status re-read, cap, claim and reservation must be one
   transaction out would split one lock decision across two files.
 
 file: src/app/(admin)/admin/refund-requests/page.tsx
-lines: 898
+lines: 914
 reason: one field on the row type, a three-line `appealCeiling` helper that
   both ceiling call sites now use, so the screen offers the figure the
   approval accepts, and the one muted line saying that figure is the group
-  organiser's card payment's. Each belongs next to the call site it serves.
+  organiser's card payment's - or, while the group cancel's own refund is
+  still being made, the line saying to approve once it is made in its place
+  (a wait, not "nothing left"). Each belongs next to the call site it serves.
 
 file: src/app/api/bookings/[id]/refund-request/route.ts
-lines: 297
+lines: 304
 reason: the member's appeal caps at the organiser-card figure, read through
   the shared `organiserCardAppealCeilingFor` (the admin list and the booking
   page use it too), and refuses with its own message when that payment has
-  nothing left. The call and the refusal sit in the route's existing cap
+  nothing left, or a temporary one while the group cancel's own refund is still
+  being made. The call and the refusals sit in the route's existing cap
   sequence, beside the ordinary ceiling they replace for such a booking.
 
 file: src/lib/email-message-registry.ts

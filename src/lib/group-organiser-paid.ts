@@ -51,6 +51,18 @@ export const ORGANISER_CARD_APPEAL_CEILING_NOTE =
   "Refunded to the group organiser's card; the most that payment can still return for this booking.";
 
 /**
+ * #3956 review round 3: while the group cancellation's own refund to the
+ * organiser's card is still being made, an appeal's ceiling reads zero only for
+ * now. The two lines say so - to the officer on the review screen, and to the
+ * member on the booking page and in the appeal route's refusal - so neither
+ * reads a wait as "nothing left to refund".
+ */
+export const ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE =
+  "The group cancellation's refund to the organiser's card is still being made or reconciled. Approve this once it is made.";
+export const ORGANISER_CARD_APPEAL_PENDING_MEMBER_NOTE =
+  "The group's cancellation refund is still being processed; you can appeal once it has been made.";
+
+/**
  * #3653 (`INV-PAY-114`): a joiner's booking the organiser paid for BY CARD - an
  * organiser-settled child whose payment mirror came from the group's combined
  * Stripe payment. Its reductions and cancellation go back to the organiser's

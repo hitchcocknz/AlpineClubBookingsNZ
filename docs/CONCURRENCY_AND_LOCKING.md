@@ -3013,6 +3013,11 @@ worker. Every current reader counts both prefixes (`isOrganiserChildRefundKey`,
 `ORGANISER_CHILD_REFUND_KEY_WHERE`). A pre-#3956 headroom reader does not count
 an appeal debt; each child's own room still bounds its refunds, and the
 approval runs its debt inline on the new code.
+On a rollback to that code an appeal debt also counts as an ordinary
+modification refund: the old `listDeadCardRefunds` and its "paid another way"
+close can act on it once it has used its attempts, and the old headroom readers
+ignore it, with each cancelled child's own room still bounding it. That is
+accepted for a short window; a rollback drains or closes these debts first.
 
 **#3854 adds booking-ledger lines to this cohort and no lock.** The settle
 posts each child's confirmation and share after its `lock(1)` and the sorted

@@ -616,20 +616,25 @@ async function groupCancelCombinedRefundPending(
   return retry !== null && retry.status !== PaymentRecoveryOperationStatus.SUCCEEDED;
 }
 
+/** What the screens and the member's appeal read of the cap: the ceiling, and whether a zero is only a wait (`OrganiserCardAppealCap.combinedRefundPending`). */
+export type OrganiserCardAppealCeiling = { ceilingCents: number; combinedRefundPending: boolean };
+
 /**
  * #3956: the appeal ceiling the screens and the member's appeal show - the
  * approval's cap net of `refundAppealHandedBackCents`, read unlocked as advice;
- * null unless the organiser paid by card. The approval re-reads both locked.
+ * null unless the organiser paid by card. A cap held at zero only until the
+ * group cancel's own refund is made says so (`combinedRefundPending`), so no
+ * screen reads a wait as "nothing left". The approval re-reads both locked.
  */
 export async function organiserCardAppealCeilingFor(
   db: Db,
   booking: { id: string; organiserSettled: boolean; parentBookingId: string | null; payment: { source: string } | null },
   payment: ChildPayment,
-): Promise<number | null> {
+): Promise<OrganiserCardAppealCeiling | null> {
   if (!paidByOrganiserCard(booking)) return null;
   const handedBackCents = await refundAppealHandedBackCents(db, { id: payment.id, bookingId: booking.id });
   const cap = await organiserCardAppealCap(db, booking, payment, handedBackCents);
-  return cap?.maxRefundableCents ?? null;
+  return cap ? { ceilingCents: cap.maxRefundableCents, combinedRefundPending: cap.combinedRefundPending } : null;
 }
 
 /**

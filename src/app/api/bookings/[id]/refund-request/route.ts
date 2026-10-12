@@ -15,6 +15,7 @@ import { hasAdminAccess } from "@/lib/access-roles";
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { clubFormat } from "@/lib/club-format-server";
 import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
+import { ORGANISER_CARD_APPEAL_PENDING_MEMBER_NOTE } from "@/lib/group-organiser-paid";
 
 const createSchema = z.object({
   reason: z.string().min(10).max(2000),
@@ -160,7 +161,13 @@ export async function POST(
   // refunded out of the organiser's combined payment, so what it can return is
   // the room that payment and this booking still have - the figure the
   // approval refuses past. Advisory here too, for the same reason.
-  const organiserCardCeiling = await organiserCardAppealCeilingFor(prisma, booking, booking.payment);
+  const organiserCard = await organiserCardAppealCeilingFor(prisma, booking, booking.payment);
+  // A wait, not "nothing left": the group cancellation's own refund to the
+  // organiser's card is still to be made, and the appeal can be made after it.
+  if (organiserCard?.combinedRefundPending) {
+    return NextResponse.json({ error: ORGANISER_CARD_APPEAL_PENDING_MEMBER_NOTE }, { status: 409 });
+  }
+  const organiserCardCeiling = organiserCard?.ceilingCents ?? null;
   const maxRefundable =
     organiserCardCeiling ??
     getRemainingRefundableCentsNetOf(booking.payment, await refundAppealHandedBackCents(prisma, booking.payment));

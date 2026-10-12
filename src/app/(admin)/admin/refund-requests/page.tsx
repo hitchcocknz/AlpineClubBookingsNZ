@@ -36,7 +36,10 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents, formatCentsPlain } from "@/lib/utils"
 import { useClubFormat } from "@/components/club-format-provider"
-import { ORGANISER_CARD_APPEAL_CEILING_NOTE } from "@/lib/group-organiser-paid"
+import {
+  ORGANISER_CARD_APPEAL_CEILING_NOTE,
+  ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE,
+} from "@/lib/group-organiser-paid"
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL"
 const reviewFilters = new Set<ReviewFilter>(["PENDING", "APPROVED", "REJECTED", "ALL"])
@@ -80,6 +83,9 @@ interface RefundRequestData {
     // organiser paid for by card, the server's `organiserCardAppealCap` - the
     // most the organiser's combined payment can still return. Null otherwise.
     organiserCardMaxRefundableCents?: number | null
+    // ...and whether that zero is only a wait: the group cancellation's own
+    // refund to the organiser's card is not made yet.
+    organiserCardCombinedRefundPending?: boolean
   }
   member: {
     id: string
@@ -518,7 +524,9 @@ export default function RefundRequestsPage() {
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Remaining refundable:</span>{" "}
-                                {formatCents(maxRefundable, format)}
+                                {req.booking.organiserCardCombinedRefundPending
+                                  ? "After the group refund"
+                                  : formatCents(maxRefundable, format)}
                               </div>
                               <div>
                                 <span className="text-muted-foreground">To card:</span>{" "}
@@ -606,13 +614,21 @@ export default function RefundRequestsPage() {
                                 }
                                 className="w-40"
                               />
-                              <p className="text-xs text-muted-foreground">
-                                Max refundable: {formatCents(maxRefundable, format)}
-                              </p>
-                              {req.booking.organiserCardMaxRefundableCents != null && (
+                              {req.booking.organiserCardCombinedRefundPending ? (
                                 <p className="text-xs text-muted-foreground">
-                                  {ORGANISER_CARD_APPEAL_CEILING_NOTE}
+                                  {ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE}
                                 </p>
+                              ) : (
+                                <>
+                                  <p className="text-xs text-muted-foreground">
+                                    Max refundable: {formatCents(maxRefundable, format)}
+                                  </p>
+                                  {req.booking.organiserCardMaxRefundableCents != null && (
+                                    <p className="text-xs text-muted-foreground">
+                                      {ORGANISER_CARD_APPEAL_CEILING_NOTE}
+                                    </p>
+                                  )}
+                                </>
                               )}
                             </div>
                             <div className="space-y-2">

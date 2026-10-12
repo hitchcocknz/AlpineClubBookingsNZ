@@ -307,7 +307,7 @@ export async function PUT(
       return NextResponse.json(
         {
           error:
-            "This booking was paid for by the group organiser's card, and the group cancellation's own refund to that card has not been made yet, so this appeal cannot be approved now. Approve it once that refund is made, or decline it.",
+            "This booking was paid for by the group organiser's card, and the group cancellation's own refund to that card is still being made or reconciled, so this appeal cannot be approved now. Approve it once that refund is made, or decline it.",
           maxRefundableCents: 0,
         },
         { status: 409 }

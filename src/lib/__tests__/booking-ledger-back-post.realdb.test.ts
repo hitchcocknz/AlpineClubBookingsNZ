@@ -857,8 +857,8 @@ async function lines(bookingId: string) {
         // The cancellation line still records what the cancel kept, not that less the appeal. The
         // census's one finding is the appeal's refund itself: a cancelled booking's PRICE reads
         // owed(b) == 0, and no component names money an approved appeal gives back after the cancel.
-        // That gap is every card appeal's, an ordinary card booking's included, and predates #3956;
-        // it is pinned here exactly, so a fix to it (or a new disagreement) shows.
+        // That gap is every card appeal's, an ordinary card booking's included, and predates #3956
+        // (filed as #4075); it is pinned here exactly, so a fix to it (or a new disagreement) shows.
         const appealGap = {
           ...NOTHING,
           disagreements: [{ bookingId: id!, identity: "PRICE", columnCents: 0, ledgerCents: 1_000, deltaCents: -1_000 }],

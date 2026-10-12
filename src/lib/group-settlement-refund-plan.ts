@@ -75,13 +75,33 @@ export function isMirrorRefundPlan(settlement: { refundPlan: unknown; stripePaym
 }
 
 /**
+ * What a pre-#3653 group cancel's ONE combined Stripe refund still has to send,
+ * in cents - the replay's own rule (`executeGroupSettlementRefundPlan`) and THE
+ * ONE spelling of it (`INV-SSOT`; #3956 round 3): while the settlement is still
+ * `SUCCEEDED` on a Stripe intent, the whole `{childId: cents}` plan is still to
+ * send; once it reads REFUNDED or PARTIALLY_REFUNDED the refund went, and a
+ * FAILED or PENDING settlement, one with no card intent, or an empty plan (a
+ * #3653 per-child plan reads empty) sends nothing. The club-wide "Refunds owed"
+ * line sums it (`legacyGroupSettlementRefundOwedCents`); the refund appeal
+ * waits on it (`mirrorPlanRefundUnmade`).
+ */
+export function legacyGroupSettlementRefundUnsentCents(settlement: {
+  status: string;
+  stripePaymentIntentId: string | null;
+  refundPlan: unknown;
+}): number {
+  if (settlement.status !== "SUCCEEDED" || !settlement.stripePaymentIntentId) return 0;
+  let unsentCents = 0;
+  for (const cents of deserializeRefundPlan(settlement.refundPlan).values()) unsentCents += cents;
+  return unsentCents;
+}
+
+/**
  * #3956 review F1: is a pre-#3653 plan's ONE combined refund still to be made?
- * A mirror plan that refunds something, on a settlement still `SUCCEEDED` -
- * `executeGroupSettlementRefundPlan` moves it on only once Stripe has refunded.
+ * It is when it has anything left to send (`legacyGroupSettlementRefundUnsentCents`).
  */
 export function mirrorPlanRefundUnmade(settlement: { status: string; refundPlan: unknown; stripePaymentIntentId: string | null }): boolean {
-  if (settlement.status !== "SUCCEEDED" || !isMirrorRefundPlan(settlement)) return false;
-  return [...deserializeRefundPlan(settlement.refundPlan).values()].some((cents) => cents > 0);
+  return legacyGroupSettlementRefundUnsentCents(settlement) > 0;
 }
 
 /**
