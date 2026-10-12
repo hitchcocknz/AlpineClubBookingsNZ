@@ -42,7 +42,7 @@ export async function loadBookingDetailHistory({
   /** The club's format (#3565), resolved once by the page and threaded here. */
   format: ClubFormat;
 }) {
-  const { canSeeAdminTools, isLinkedGuestViewer } = viewer;
+  const { canSeeAdminTools, canSeeOwnerCredit } = viewer;
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
       targetId: booking.id,
@@ -121,29 +121,23 @@ export async function loadBookingDetailHistory({
     payment row's mirror column. At or below zero the narrative says there is
     nothing to pay.
 
-    A linked guest is not told about the owner's account credit: the
-    credit-election notice, the pay card's credit row (owner and booking
-    managers only), the cancellation outcome's credit lines
-    (`showCancellationCreditLines`) and the timeline's "credit was not applied"
-    entry (the `linked_guest` audience below) withhold it from them, so the
-    narrative drops its credit wording for them too. The amount itself is unchanged — only
-    `appliedCreditCents`, which the narrative reads for that wording alone, is
-    withheld.
+    A viewer who cannot see the owner's account credit (`canSeeOwnerCredit`
+    false — a linked guest) is not told it here either: the narrative names no
+    credit (`ownerCreditHidden`) and the timeline is built for the
+    `linked_guest` audience below. The amount owed is the same for everyone.
   */
   const amountOwed = await readBookingAmountOwed(booking);
-  const narrativeAmountOwed = isLinkedGuestViewer
-    ? { dueCents: amountOwed.dueCents, appliedCreditCents: 0 }
-    : amountOwed;
 
   const bookingNarrative = resolveBookingNarrative({
     // The event stamps in the narrative are real instants and read in the
     // club's zone; its stay dates are @db.Date lodge nights and do not (#3123).
     club,
     financialReviewPending,
+    ownerCreditHidden: !canSeeOwnerCredit,
     booking: {
       status: booking.status,
       finalPriceCents: booking.finalPriceCents,
-      amountOwed: narrativeAmountOwed,
+      amountOwed,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
       firstName: bookingOwner(booking).member.firstName,
@@ -202,8 +196,8 @@ export async function loadBookingDetailHistory({
     // readable by anyone with booking-edit access, and by nobody else. The audit
     // query above already withholds the rows; this says the same thing to the
     // builder, so a future edit to either one cannot open the door on its own.
-    // #3991: a linked guest is its own audience, kept from the owner's credit.
-    audience: canSeeAdminTools ? "staff" : isLinkedGuestViewer ? "linked_guest" : "member",
+    // #3991: a viewer kept from the owner's credit is its own audience.
+    audience: canSeeAdminTools ? "staff" : canSeeOwnerCredit ? "member" : "linked_guest",
     payment: booking.payment
       ? {
           status: booking.payment.status,

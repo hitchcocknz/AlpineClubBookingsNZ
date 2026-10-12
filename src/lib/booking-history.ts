@@ -92,8 +92,12 @@ interface BookingHistoryDuplicateCaptureRefund {
  *
  * `"staff"` means the viewer holds `bookings:edit` (the page's `canSeeAdminTools`),
  * which is the readership the owner chose for that reason on 4 September 2026.
- * `"linked_guest"` (#3991) is a guest on someone else's booking, viewing it
- * read-only: everything a member reads except the owner's account credit.
+ * `"linked_guest"` (#3991) is a viewer who cannot see the booking owner's
+ * account credit (`canSeeOwnerCredit` false on the booking page — a guest on
+ * someone else's booking): everything a member reads, except that the
+ * "Saved account credit was not applied" entry is dropped and the
+ * "Booking cancelled" entry reads only "This booking was cancelled.", because
+ * its stored text can name the credit the cancellation issued.
  */
 export type BookingHistoryAudience = "member" | "linked_guest" | "staff";
 
@@ -417,7 +421,12 @@ export function buildBookingHistoryItems({
           occurredAt: auditLog.createdAt,
           category: "Booking",
           title: "Booking cancelled",
-          detail: auditLog.details ?? "This booking was cancelled.",
+          // #3991: the stored text can name the owner's account credit ("Credit
+          // 50% = $X as account credit"), so a linked guest reads only the fact.
+          detail:
+            audience === "linked_guest"
+              ? "This booking was cancelled."
+              : auditLog.details ?? "This booking was cancelled.",
           amountDisplay: null,
           tone: "warning",
         });

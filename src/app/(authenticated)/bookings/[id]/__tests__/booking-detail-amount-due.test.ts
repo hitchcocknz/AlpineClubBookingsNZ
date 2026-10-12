@@ -49,7 +49,7 @@ function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }
   return resolveBookingDetailPayment({
     booking: booking as never,
     modules: {} as never,
-    viewer: { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false } as never,
+    viewer: { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false, canSeeOwnerCredit: true } as never,
     access: { isDeleted: false } as never,
     party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
     amountOwed,

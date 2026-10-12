@@ -55,10 +55,12 @@ function cancelledMarkedPaid(
   };
 }
 
-const OFFICER = { canManageBooking: true, isBookingOwner: false, nonOwnerAdminViewer: true };
-const OWNER = { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false };
+// #3991: `canSeeOwnerCredit` is the viewer module's one answer to who sees the
+// owner's money beyond its price (`booking-detail-viewer.ts`).
+const OFFICER = { canManageBooking: true, isBookingOwner: false, nonOwnerAdminViewer: true, canSeeOwnerCredit: true };
+const OWNER = { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false, canSeeOwnerCredit: true };
 // A guest on the booking viewing it read-only (`isLinkedGuestViewer`).
-const LINKED_GUEST = { canManageBooking: false, isBookingOwner: false, nonOwnerAdminViewer: false };
+const LINKED_GUEST = { canManageBooking: false, isBookingOwner: false, nonOwnerAdminViewer: false, canSeeOwnerCredit: false };
 
 function project(booking: ReturnType<typeof cancelledMarkedPaid>, viewer = OFFICER) {
   return resolveBookingDetailPayment({
@@ -176,6 +178,9 @@ describe("the cancellation outcome's retained line (#3811)", () => {
     expect(guest).not.toContain("Previously applied credit restored");
     expect(guest).not.toContain("$20.00");
     expect(guest).not.toContain("$15.00");
+    // #3991: nor the "Credit Issued" badge or its sentence.
+    expect(guest).not.toMatch(/credit/i);
+    expect(render(OWNER)).toMatch(/Credit/);
     // What they could already see stays: the original payment and its outcome.
     expect(guest).toContain("Original payment:");
     expect(guest).toContain("$100.00");

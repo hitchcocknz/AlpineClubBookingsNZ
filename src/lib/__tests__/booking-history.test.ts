@@ -919,3 +919,36 @@ describe("a modification whose adjustment is still with the club (#3033)", () =>
     }
   });
 });
+
+// #3991: the cancel row replays its stored audit text, which can name the
+// account credit the cancellation issued — the owner's money, not a linked
+// guest's. They read only the fact.
+describe("buildBookingHistoryItems — the cancel row for a linked guest (#3991)", () => {
+  const cancelRow = (audience: BookingHistoryAudience) =>
+    buildBookingHistoryItems({
+      audience,
+      createdAt: new Date("2026-04-01T09:00:00Z"),
+      payment: null,
+      modifications: [],
+      refundRequests: [],
+      auditLogs: [
+        {
+          id: "audit-cancel",
+          action: "booking.cancel",
+          details: "Cancelled by member. Credit 50% = $60.00 as account credit.",
+          createdAt: new Date("2026-04-02T10:00:00Z"),
+        },
+      ],
+    }, CLUB_FORMAT_TEST).find((entry) => entry.id === "audit-audit-cancel");
+
+  it("reads only that the booking was cancelled", () => {
+    const row = cancelRow("linked_guest");
+    expect(row?.title).toBe("Booking cancelled");
+    expect(row?.detail).toBe("This booking was cancelled.");
+  });
+
+  it("CONTROL: the member and staff read the stored text", () => {
+    expect(cancelRow("member")?.detail).toContain("$60.00 as account credit");
+    expect(cancelRow("staff")?.detail).toContain("$60.00 as account credit");
+  });
+});

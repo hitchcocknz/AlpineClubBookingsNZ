@@ -807,3 +807,56 @@ describe("a stay change that saved while its money is still being worked out (#3
     expect(result.state).toBe("paid");
   });
 });
+
+/*
+  #3991: `ownerCreditHidden` — the viewer cannot see the booking owner's account
+  credit (a linked guest on the booking page). The narrative then names no
+  credit; the figures the viewer already sees (what was paid, what was retained)
+  stay.
+*/
+describe("resolveBookingNarrative with the owner's credit hidden (#3991)", () => {
+  const cancelledToCredit = (creditedCents: number) => [
+    event(BookingEventType.MEMBER_PAID, "2026-05-02T00:00:00.000Z", { amountCents: 12000 }),
+    event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z"),
+    event(BookingEventType.CREDITED, "2026-05-06T00:00:00.000Z", { amountCents: creditedCents }),
+  ];
+  const resolve = (events: NarrativeEvent[], ownerCreditHidden?: boolean, b = booking({ status: "CANCELLED" })) =>
+    resolveBookingNarrative({ club: CLUB, booking: b, events, ownerCreditHidden }, CLUB_FORMAT_TEST);
+
+  it("CONTROL: a cancellation settled as credit names the credit to the owner", () => {
+    const result = resolve(cancelledToCredit(9000));
+    expect(result.message).toContain("$90.00 was added to your account credit on 6 May 2026 and $30.00 was retained");
+  });
+
+  it("drops the credit clause and keeps what was retained", () => {
+    const result = resolve(cancelledToCredit(9000), true);
+    expect(result.state).toBe("cancelled_post_payment");
+    expect(result.message).not.toMatch(/credit/i);
+    expect(result.message).not.toContain("$90.00");
+    expect(result.message).toContain("after paying $120.00");
+    expect(result.message).toContain("$30.00 was retained");
+  });
+
+  it("says nothing was retained when the whole payment went to credit", () => {
+    const result = resolve(cancelledToCredit(12000), true);
+    expect(result.message).not.toMatch(/credit/i);
+    expect(result.message).toContain("nothing was retained");
+  });
+
+  it("leaves a card refund's wording alone", () => {
+    const refunded = [
+      event(BookingEventType.MEMBER_PAID, "2026-05-02T00:00:00.000Z", { amountCents: 12000 }),
+      event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z"),
+      event(BookingEventType.REFUNDED, "2026-05-06T00:00:00.000Z", { amountCents: 9000 }),
+    ];
+    expect(resolve(refunded, true).message).toBe(resolve(refunded).message);
+  });
+
+  it("says a credit-covered booking has nothing to pay without naming the credit", () => {
+    const covered = booking({ status: "PENDING", amountOwed: { dueCents: 0, appliedCreditCents: 12000 } });
+    expect(resolve([], false, covered).message).toMatch(/credit/);
+    const hidden = resolve([], true, covered);
+    expect(hidden.state).toBe("nothing_to_pay");
+    expect(hidden.message).not.toMatch(/credit/i);
+  });
+});

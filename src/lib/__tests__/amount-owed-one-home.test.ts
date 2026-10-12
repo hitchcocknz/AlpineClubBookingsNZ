@@ -186,12 +186,35 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     expect(composers.sort(), "INV-PAY-119: read it through readBookingAmountOwed, or list it in booking-amount-owed.ts").toEqual(
       [...KNOWN_COMPOSERS].sort(),
     );
-    // Its docblock names each one (read raw: the list lives in a comment).
+    // Its docblock names exactly these — no missing one, and no extra one left
+    // behind once a composer moves to the one read (read raw: it is a comment).
     const docblock = fs.readFileSync(path.join(REPO, ONE_HOME_READ), "utf8");
-    for (const file of KNOWN_COMPOSERS) {
-      const named = file.split("/").slice(-2).join("/").replace(/^lib\//, "");
-      expect(docblock, `booking-amount-owed.ts names ${named}`).toContain(`\`${named}\``);
+    const paragraph = docblock.slice(
+      docblock.indexOf("NOT YET EVERY READER"),
+      docblock.indexOf("`amount-owed-one-home.test.ts` pins"),
+    );
+    const named = [...paragraph.matchAll(/`([\w./[\]-]+\.ts)`/g)].map((match) => match[1]).sort();
+    const expected = KNOWN_COMPOSERS.map((file) =>
+      file.split("/").slice(-2).join("/").replace(/^lib\//, ""),
+    ).sort();
+    expect(named, "booking-amount-owed.ts's docblock names exactly the known composers").toEqual(expected);
+  });
+
+  // #3991 review: the booking page reads ledger credit ONCE, in the history
+  // loader through `readBookingAmountOwed`; nothing else on the page derives it
+  // again — not the pay card's projection, not the edit panel's payload.
+  it("no booking-page module derives the applied credit itself", () => {
+    const pageDir = "src/app/(authenticated)/bookings/[id]";
+    const pageFiles = sourceFiles(path.join(REPO, pageDir));
+    for (const required of [
+      `${pageDir}/_lib/booking-detail-editor-data.ts`,
+      `${pageDir}/_lib/booking-detail-payment.ts`,
+      `${pageDir}/_lib/booking-detail-history.ts`,
+    ]) {
+      expect(pageFiles, `the walk reached ${required}`).toContain(required);
     }
+    const offenders = pageFiles.filter((file) => /\bderiveBookingAppliedCreditCents\(/.test(read(file)));
+    expect(offenders, "INV-PAY-119: take history.amountOwed, the page's one read").toEqual([]);
   });
 
   it("no pay step sizes an amount at the bare price", () => {

@@ -105,8 +105,8 @@ function ledgerCredit(appliedCents: number) {
   });
 }
 
-const OWNER = { canSeeAdminTools: false, isLinkedGuestViewer: false };
-const LINKED_GUEST = { canSeeAdminTools: false, isLinkedGuestViewer: true };
+const OWNER = { canSeeAdminTools: false, canSeeOwnerCredit: true };
+const LINKED_GUEST = { canSeeAdminTools: false, canSeeOwnerCredit: false };
 
 async function historyFor(booking: never, viewer = OWNER) {
   return loadBookingDetailHistory({ booking, club: CLUB, viewer: viewer as never, format: CLUB_FORMAT_TEST });
