@@ -79,6 +79,9 @@ const JAVASCRIPT_VITEST_TESTS = [
   // deliberately remains JavaScript under the same convention.
   "scripts/ci/run-fast-censuses.test.mjs",
   "scripts/ci/server-only-boundary-selftest.test.mjs",
+  // ALP-4 (#4024): the fragility audit is a set of bare-node `.mjs` tools;
+  // their shared suite stays JavaScript under the same convention.
+  "scripts/audit/fragility.test.mjs",
   "scripts/issue-thread.test.mjs",
   "scripts/release/compile-changelog.test.mjs",
   // #3673: the `.mjs` worktree-removal tool's own suite; it stays JavaScript

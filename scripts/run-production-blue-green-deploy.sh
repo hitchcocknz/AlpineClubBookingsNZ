@@ -683,6 +683,26 @@ BLUE_GREEN_DRAIN_SECONDS="${BLUE_GREEN_DRAIN_SECONDS:-30}"
 ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS="${ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS:-0}"
 BLUE_GREEN_MIGRATION_OVERRIDE_REASON="${BLUE_GREEN_MIGRATION_OVERRIDE_REASON:-}"
 BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED="${BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:-0}"
+# KEPT IN THIS SHELL, TAKEN OUT OF EVERY CHILD'S ENVIRONMENT (#4027). The value
+# above is the operator's acknowledgement, for THIS deploy's migration validator,
+# that the old app and every worker are stopped; the validator is handed it
+# explicitly in validate_pending_migrations_blue_green_safe. Since #3964
+# docker-compose.yml also passes the SAME NAME to every app container, where it
+# means something else: the app's lasting acknowledgement that no pre-#3413
+# runtime remains, which opens the pending-school-adult gate. Compose prefers a
+# shell value over .env, so left exported, a windowed deploy's shell `1` reached
+# the new colour and the cron leader and could open that gate with nobody
+# deciding to (with PENDING_SCHOOL_ADULTS_ENABLED=1 already in .env, as the
+# runbook once said to set it).
+#
+# NOT refused on disagreement, as APP_ENVIRONMENT_ROLE and
+# PENDING_SCHOOL_ADULTS_ENABLED are (step 3): the shell and
+# .env copies legitimately differ on every windowed deploy that is not #3413's
+# activation (shell 1 for the window, .env empty), so a refusal would block the
+# very deploys the shell value exists for. Instead it stops being exported, and
+# every `docker compose` this script runs reads the containers' copy from .env
+# alone. `export -n` rather than `unset`, because this shell still needs it.
+export -n BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED
 MIGRATION_SAFETY_LEDGER="${MIGRATION_SAFETY_LEDGER:-docs/BLUE_GREEN_MIGRATION_SAFETY.tsv}"
 
 # The deploy guard's lock timeout (#3377). NO VALUE is declared here, and after
@@ -1076,10 +1096,11 @@ count_environment_role_env_assignments() {
   grep -cE "$pattern" .env || true
 }
 
-# The value Compose would resolve for this key.
+# The value Compose would resolve for this key from .env (#3034; shared since
+# #4027 by every reader that must agree with the containers).
 #
 # LAST-WINS, matching Compose dotenv parsing rather than the first-match reader
-# used for every other key. A duplicate is refused before this matters, but if
+# used for every other `require_*_env_key`. A duplicate is refused before this matters, but if
 # that refusal is ever relaxed this reader agrees with the containers instead of
 # disagreeing with them, which is the safer default of the two.
 #
@@ -1097,14 +1118,14 @@ count_environment_role_env_assignments() {
 # as an inline comment and truncated. That can only shorten a value, so it can only
 # turn an accepted value into a refused one — never the reverse — and the refusal
 # names the sanitized value it read.
-environment_role_env_value() {
+compose_env_file_value() {
   local key="$1"
   local pattern
   local value
   local first
   local last
 
-  pattern="$(environment_role_env_pattern "$key")" || return 1
+  pattern="$(env_assignment_pattern "$key")" || return 1
   value="$(
     sed -nE "s/${pattern}[[:space:]]*(.*)$/\3/p" .env |
       tail -n 1
@@ -1126,6 +1147,12 @@ environment_role_env_value() {
   fi
 
   printf '%s' "$value"
+}
+
+# The #3034 role check's reader: the shared one above, kept under the name the
+# role check and its contract test use.
+environment_role_env_value() {
+  compose_env_file_value "$1"
 }
 
 
@@ -1654,6 +1681,85 @@ require_environment_role_env_key() {
   unset APP_ENVIRONMENT_ROLE
 }
 
+# A gate value the app compares EXACTLY must reach the containers from .env
+# alone (#4027).
+#
+#   require_exported_value_matches_env_file KEY
+#
+# The same shell-versus-.env treatment `require_environment_role_env_key` gives
+# APP_ENVIRONMENT_ROLE, for a key with no case-folding: Compose prefers a value
+# exported in the invoking shell over .env, so a stale export left in the
+# deploy's shell, a systemd unit or a rehearsal script would hand the containers
+# a value nobody wrote in .env, and the runbook's "edit .env, then re-run the
+# deploy" would not be the only way to change it. A shell value that differs
+# from what Compose would resolve from .env — including one exported while .env
+# is silent, or an empty one beside a non-empty .env value — is refused, with
+# both named. Once they agree it is unset, so .env is the only source.
+#
+# Compared byte for byte, not trimmed or case-folded, because the app reads
+# these with `=== "1"` (src/lib/pending-school-adults-gate.ts): ` 1` in the
+# shell and `1` in .env would open different gates. The .env side is read with
+# Compose's own rules (`compose_env_file_value`: every assignment shape,
+# last-wins, unquoted). An unset shell variable is not a disagreement, because
+# Compose then reads .env.
+require_exported_value_matches_env_file() {
+  local key="$1"
+  local exported
+  local in_env_file
+
+  if [ -z "${!key+x}" ]; then
+    return 0
+  fi
+  exported="${!key}"
+  in_env_file="$(compose_env_file_value "$key")" || return 1
+
+  if [ "$exported" != "$in_env_file" ]; then
+    echo "$key disagrees between this shell and .env, and Docker Compose would" >&2
+    echo "hand the containers the SHELL value. Refusing rather than deploying the" >&2
+    echo "one you did not write in .env." >&2
+    echo "  exported in this shell: '$(printable_deploy_value "$exported")'" >&2
+    echo "  in .env:                '$(printable_deploy_value "$in_env_file")'" >&2
+    echo "Run 'unset $key' in this shell (and remove it from whatever exported" >&2
+    echo "it), set the value you want in .env, then re-run. .env is the only" >&2
+    echo "supported place for it: see docs/PRODUCTION_UPGRADE_RUNBOOK.md (#3413)." >&2
+    return 1
+  fi
+
+  unset "$key"
+}
+
+# Says so when the shell's validator acknowledgement will not reach the app
+# (#4027).
+#
+# `export -n` above keeps BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED out of every
+# container, which is the fix. But an operator who exported `1` for a window and
+# has not put it in .env might expect the #3413 gate's acknowledgement to be on.
+# This prints a line, at step 3 of 20, saying the shell value is for the migration
+# validator only and the app reads .env. It runs here rather than beside the
+# `export -n` because that runs before the deploy has changed into the project
+# directory and before these readers are defined.
+#
+# INFORMATION ONLY, and the one place the .env copy is read. The value read here
+# goes into a message and nowhere else, and never into the validator's decision:
+# `old-runtimes-stopped-ack-source-contract.test.ts` allows this read only inside
+# this function.
+note_shell_stopped_ack_is_validator_only() {
+  local app_copy
+
+  if [ "$BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED" != "1" ]; then
+    return 0
+  fi
+  app_copy="$(compose_env_file_value BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED)" || return 1
+  if [ "$app_copy" = "1" ]; then
+    return 0
+  fi
+
+  info "BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1 is set in this shell but not in .env."
+  info "The shell value is for the migration validator only. The app reads .env alone,"
+  info "so the #3413 pending-school-adult gate and its cleanup stay off. To switch them"
+  info "on, see docs/PRODUCTION_UPGRADE_RUNBOOK.md, the #3413 section."
+}
+
 require_domain_matches_url() {
   local key="$1"
   local domain="$2"
@@ -1711,6 +1817,12 @@ validate_env_contract() {
   # Refused here, in the step-3 preflight, rather than discovered after cutover —
   # see the helper's own comment for why an undeclared upgrade must abort.
   require_environment_role_env_key
+  # The #3413 admissions gate reads this inside the containers; it must come from
+  # .env, never from a shell export Compose would prefer (#4027). Its companion,
+  # BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED, is kept out of every child's
+  # environment where the script sets its default, for the reason given there.
+  require_exported_value_matches_env_file PENDING_SCHOOL_ADULTS_ENABLED
+  note_shell_stopped_ack_is_validator_only
   # Stripe credentials moved to encrypted, DB-backed storage (#2082) — no longer
   # required (or read) from .env. Legacy vars are warned about below.
   require_non_placeholder_env_key SMTP_HOST
