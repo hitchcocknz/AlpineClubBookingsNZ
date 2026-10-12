@@ -1,5 +1,9 @@
 import type { XeroContactUpdateData } from "@/lib/xero-contacts";
 import {
+  isLateCaptureApprovalChangeInvoice,
+  linkedChangeInvoiceRetryRefusal,
+} from "@/lib/late-capture-change-invoice-retry";
+import {
   readQueuedOutboxPayload,
   readQueueType,
   subscriptionInvoiceChargeId,
@@ -177,6 +181,47 @@ function keptLateCaptureInvoiceRequeuePayload(
         capturedOn: queued.capturedOn,
       }
     : null;
+}
+
+/**
+ * #3924 round 9 (`INV-PAY-122`; owner, 8 Oct 2026: "Raise a refund note for
+ * all"): a FAILED change invoice RELEASED FOR A LATE CAPTURE - its queued
+ * payload names the capture (`paymentIntentId`) - goes back to the outbox on
+ * its own row, with the payload it was queued with, never through the inline
+ * replay. The inline replay mints a new row that does not name the capture, so
+ * the capture's receipt (`readLateCaptureXeroReceipt`) never sees the invoice,
+ * and the worker's note step, which reads the capture off its own row, never
+ * queues the bank-transfer note a "Paid another way" close waits for. Run from
+ * this row, the worker sends under the same Xero idempotency key, records the
+ * invoice on this row, and queues that note. A second ask is left to its own
+ * branch.
+ *
+ * Round 10: only for an approval task's capture, and never one already
+ * linked in Xero (`late-capture-change-invoice-retry.ts`).
+ */
+function releasedLateCaptureChangeInvoiceRequeuePayload(
+  operation: RetryableOperation,
+): Record<string, unknown> | null {
+  if (
+    operation.status !== "FAILED" ||
+    operation.direction !== "OUTBOUND" ||
+    operation.entityType !== "INVOICE" ||
+    operation.operationType !== "CREATE" ||
+    operation.localModel !== "BookingModification"
+  ) {
+    return null;
+  }
+  const queued = readQueuedOutboxPayload(operation.requestPayload);
+  if (
+    queued?.queueType !== XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE ||
+    !queued.paymentIntentId ||
+    queued.shortfallReviewTaskId
+  ) {
+    return null;
+  }
+  // The whole stored payload: the charge day it already read
+  // (`keptLateCaptureDay`) rides with it, so the retry's document date never drifts.
+  return asRecord(operation.requestPayload);
 }
 
 /**
@@ -1340,6 +1385,22 @@ export async function retryXeroSyncOperation(
     return { message: "Queued the kept-payment Xero invoice for retry." };
   }
 
+  // #3924 round 9: a late capture's released change invoice, so its worker's
+  // note step runs (`releasedLateCaptureChangeInvoiceRequeuePayload`).
+  const releasedChangeInvoicePayload = releasedLateCaptureChangeInvoiceRequeuePayload(operation);
+  if (releasedChangeInvoicePayload && (await isLateCaptureApprovalChangeInvoice(releasedChangeInvoicePayload))) {
+    // Round 10: one already in Xero is marked resolved, never sent again.
+    const refusal = await linkedChangeInvoiceRetryRefusal(operation, releasedChangeInvoicePayload, format);
+    if (refusal) throw new XeroOperationRetryError(refusal, 409);
+    await requeueOutboxRowForRetry(
+      operation,
+      releasedChangeInvoicePayload,
+      ["FAILED"],
+      "late card charge's change invoice",
+    );
+    return { message: "Queued the late card charge's change invoice for retry." };
+  }
+
   const groupSettlementPayload = groupSettlementInvoiceRequeuePayload(operation);
   if (groupSettlementPayload) {
     await requeueOutboxRowForRetry(
@@ -1747,6 +1808,9 @@ export async function retryXeroSyncOperation(
           ...(retryInput.noteWording ? { noteWording: retryInput.noteWording } : {}),
           ...(retryInput.paymentIntentId ? { paymentIntentId: retryInput.paymentIntentId } : {}),
           ...(retryInput.documentDate ? { documentDate: retryInput.documentDate } : {}),
+          // #3924 round 7: a paid-another-way close's note retries as its own, on the invoice it named.
+          ...(retryInput.paidAnotherWayTaskId ? { paidAnotherWayTaskId: retryInput.paidAnotherWayTaskId } : {}),
+          ...(retryInput.creditsInvoiceId ? { creditsInvoiceId: retryInput.creditsInvoiceId } : {}),
           ...(retryInput.refundRequestId ? { refundRequestId: retryInput.refundRequestId } : {}),
           ...(options?.requeueOperationId ? { requeueOperationId: options.requeueOperationId } : {}),
           ...(retriedReviewTaskId ? { reviewTaskId: retriedReviewTaskId } : {}),

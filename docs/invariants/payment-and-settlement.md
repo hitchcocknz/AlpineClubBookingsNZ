@@ -263,8 +263,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     the payments board were not. `/admin/payments` rendered gross beside a
     "Partially refunded" chip, so a $130 capture with $65 refunded read as "paid
     $130" and a booking officer sized the balance at `430 - 130 = 300` when the
-    true figure was `430 - 65 = 365`. Both wrong numbers agreed with each other,
-    which is why nobody caught it.
+    true figure was `430 - 65 = 365`.
   - **`Payment.changeFeeCents` is a term.** A change fee is charged through an
     ask but is never added to `Booking.finalPriceCents`, so the mirror holds only
     as `finalPrice + changeFee = net paid + credit + uncollected ask`.
@@ -273,18 +272,23 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     (`queueSupersededAdditionalIntentCancellations`), so an ask sized on one
     edit's own delta deletes the unpaid balance of the ask it replaces. Two
     consecutive +$70 edits on a $130 paid booking asked $70 and lost $70,
-    permanently and silently: once the mis-sized ask was paid the booking page
-    stopped rendering the payment card and the reminder cron stopped, so the
-    shortfall became unreachable from every member- and officer-facing surface.
-    The ask is therefore the edit's own net PLUS the unpaid balance of the ask it
+    permanently and silently. The ask is therefore the edit's own net PLUS the unpaid balance of the ask it
     supersedes, which is `sizeAdditionalAsk` in
     `src/lib/additional-payment-ask.ts` — the one home for all of this
     arithmetic, and the module the census guard and the operator SQL are both
     folded from.
+  - **A booking paid wholly with credit is asked too (#3502).** Its
+    `{ amountCents: 0, SUCCEEDED }` row fails `hasCapturedPayment`, so three
+    edit doors sent its increase to a Xero supplementary invoice that, with Xero
+    off or the primary invoice not yet raised, did not exist: an `unasked`
+    residual. Every door now asks `canAskCardForIncrease`
+    (`booking-payment-state.ts`) and asks the card, fee recorded; reductions
+    still read `hasCapturedPayment`. No further credit is drawn ([INV-PAY-002]).
+    Rows grown earlier are reported by the census, never back-billed.
 
   **WHY THE ASK IS NOT READ STRAIGHT OFF THE PRICE.** `finalPriceCents - net paid
-  - creditAppliedCents` is the same figure wherever the ledger is clean, and the
-  tests assert that agreement rather than asserting it in prose. It stops being
+  - creditAppliedCents` is the same figure wherever the ledger is clean (the
+  tests assert it). It stops being
   the same figure in exactly the cases where the club legitimately holds money
   that is NOT the booking's price, and there it gives that money back: after a
   policy-tiered reduction the retained slice ([INV-MOD-011]) is a CHARGE, not a
@@ -299,7 +303,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `reconcilePaymentAggregates` goes on writing
   `additionalAmountCents: latestAdditional?.amountCents ?? 0` — the latest
   ADDITIONAL transaction's amount — and is NOT changed to recompute an
-  outstanding from `Booking.finalPriceCents`. Three reasons, in order of weight.
+  outstanding from `Booking.finalPriceCents`.
   It is a pure ledger projection: every other column it writes derives from the
   `PaymentTransaction` rows, and giving one column a second, disagreeing source
   of truth is the defect this whole entry is about. It would collide with the
@@ -307,8 +311,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   and would find them rewritten underneath it. And post-#3267/#3268 the function
   has already learned to preserve the Payment's own intent pointer and card
   column rather than always following the latest transaction
-  ([INV-PAY-054], [INV-PAY-055]), so the direction of travel is toward respecting
-  what other writers own, not away from it. The cost of leaving it is that a
+  ([INV-PAY-054], [INV-PAY-055]). The cost of leaving it is that a
   future mis-size would still be permanent; the compensating control is the
   census below, which makes one visible instead of silent.
 
@@ -318,8 +321,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   is money the price says is owed that no ask is collecting; a NEGATIVE one is
   the club holding more than the price, which is the expected shape after a
   policy-retained or credit-settled reduction. Nothing repairs either
-  automatically — the owner's 8 Sep 2026 decision, for a population of two rows
-  already handled by hand.
+  automatically (owner, 8 Sep 2026).
 
   **An Internet Banking price increase is an EXPECTED positive**, because it is
   billed on a supplementary Xero invoice and raises no ADDITIONAL
@@ -819,7 +821,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   booking's invoice nor its clearing note.
 - **Refunds** are the ordinary refund note, owed only once the APP recorded
   the capture's receipt (`readLateCaptureXeroReceipt`), never because
-  `payment.xeroInvoiceId` exists. Noted per capture (`noteLateCaptureRefunds`),
+  `payment.xeroInvoiceId` exists. An approved refund closed as paid another
+  way also owes the receipt (`INV-PAY-122`). Noted per capture (`noteLateCaptureRefunds`),
   naming its receipt, dated the refund's day. Refunds of a capture without one
   are outside the note-eligible cash (`refund-note-eligible-cash.ts`), so the
   self-heal never raises them.
@@ -830,8 +833,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - **The repair tool** queues a missing one (`KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE`).
   Its late-capture refund writes the webhook's record first, then notes per
   capture the same way (#3635).
-- **Resolved in Xero** (`INV-INT-025`): the app neither re-sends it nor notes
-  its refunds; `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND` asks an officer to.
+- **Resolved in Xero** (`INV-INT-025`): never re-sent; unless its invoice
+  link stays active, the app notes no refund of it and
+  `KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND` asks an officer to (#4039).
 - Pinned by `xero-kept-late-capture-ledger.test.ts` (the books, case by case,
   and the self-heal a day on), `xero-kept-late-capture-invoice.test.ts` and
   `refund-note-eligible-cash.test.ts`.
@@ -1871,29 +1875,27 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 
 - **A price reduction the club returns by hand raises ONE officer refund
   task** (#3827; owner decision D-3813-6 on #3492). When a batch modify, date
-  change, guest removal or a guest's acceptance re-price lowers a booking whose
-  money was not captured through Stripe (internet banking, or marked paid in
-  cash) and the reduction goes back as money rather than account credit, the
+  change, guest removal or acceptance re-price lowers a booking paid outside
+  Stripe (internet banking or cash) and the reduction goes back as money, not
+  credit, the
   edit raises a `ManualRefundTask` for that refund inside its own transaction,
   under its locks, with no provider call. `raiseEditRefundHandBackIfOwed`
   (`src/lib/edit-refund-hand-back.ts`) is the one writer and
-  `editRefundGoesBackByHand` the one test. A guest add never lowers a price, so
-  it raises none.
+  `editRefundGoesBackByHand` the one test. A guest add raises none.
   - **One task per edit**: occurrence key
     `edit-refund-hand-back:<BookingModification id>`, unique, inserted
     `ON CONFLICT DO NOTHING`: a replay neither duplicates it nor aborts the
     edit.
-  - **Kind `CANCELLED_BOOKING_HAND_BACK`, marked by that key**, reused (as
-    #3639 and #3643 do) so the previous app version reads it as a hand-back.
+  - **Kind `CANCELLED_BOOKING_HAND_BACK`, marked by that key**, reused so
+    the previous app version reads it as a hand-back.
     `isEditRefundHandBackTask` and `NOT_NON_CANCELLATION_HAND_BACK_WHERE`
     (`manual-refund-task-settlement-rules.ts`) are the one spelling; every
     reader selecting a cancellation's hand-backs by kind spreads the
     exclusion (`edit-refund-hand-back-readers-census.test.ts`).
-  - **The amount is the edit's refund, fixed at raise.** Completing it is a
-    hand-back's completion: the refund allocation on the payment, the
-    bank-refund ledger line and the `REFUNDED` event, marked
-    `edit_refund_hand_back_completed` so the narrative never reads it as a
-    cancellation's. It queues NO Xero document: the edit's credit note stands.
+  - **The amount is the edit's refund, fixed at raise.** Completing it writes
+    the refund allocation, the bank-refund ledger line and a `REFUNDED` event
+    marked `edit_refund_hand_back_completed`, which the narrative never reads
+    as a cancellation's. It queues NO Xero document: the edit's credit note stands.
   - **Promised cash is not refundable twice.** Until it closes, later edits,
     acceptances, paid cancels and by-hand reviews size refunds off captured
     cash less open tasks, `INV-PAY-118`'s too
@@ -1902,6 +1904,8 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     cancel counted it.
   - **The member is told the club WILL refund by bank transfer**, never that a
     refund "has been processed" (`bookingModifiedRefundSentence`).
+  - **Owed, not kept** (#3372, 7 Oct 2026): Net Collected subtracts an open one
+    at once; "Refunds owed" counts it until paid (`openTaskOwedCents`).
 
 ## INV-PAY-118
 
@@ -1940,6 +1944,91 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     hand-back reads refundable again, so an appeal could re-promise it.
   - **The member is told the club WILL refund by bank transfer**
     (`refundRequestApprovedRefundSentence`); card wording is unchanged.
+
+## INV-PAY-120
+
+- **A price reduction is first set against the member's unpaid card ask**
+  (#3954, owner decisions of 8-10 Oct 2026), card-paid and credit-paid alike, at
+  every reduction door: cancelled when covered, else re-issued smaller; only
+  the rest is refunded, credited or given back by `INV-MOD-011`'s tier, and the
+  offset is untiered. Each door reads the ask once
+  (`readReductionAgainstUnpaidAsk`).
+- **Retired in the edit's transaction** (`retireUnpaidAskChain`): waiting
+  recoveries closed first, then unpaid rows FAILED and `withdrawnAt` behind an
+  unpaid fence; cancellations queued; parked invoices CANCELLED. A capture or
+  deadlock in between rolls the edit back (409); a capture after commit is
+  refunded in full. The re-issue's recovery and the billed-offset note are
+  written in the same transaction.
+- **Asks awaiting a failed mint's retry** count, sized as the replay would. A
+  retry claimed within two minutes refuses the edit; an older claim is closed.
+  A later increase folds a waiting re-issue in and records it, so its own
+  replay asks for it again. Both minters send one Stripe request
+  (`planReissuedAskMint`).
+- **Only the member's price asks.** An officer's review charge is never set
+  against. Nor is a financial review's settled refund share: the officer
+  decided that refund from the booking's evidence, so it is paid as decided,
+  and the ledger census reports the booking if the member then pays the ask
+  too.
+- **Xero** (`splitUnpaidAskOffsetForXero`). The smaller ask gets its own
+  supplementary invoice for what the retired asks' invoices left after the
+  offset. The rest of the offset, where evidence shows the primary invoice
+  billed it (`unpaidAskBillingEvidence`), takes a scoped invoice-correction
+  note, raised after the edit's own note; where that cannot be established, the
+  repair pass reports it for a person.
+
+## INV-PAY-121
+
+- **A card refund not yet paid is owed until Stripe pays it or the treasurer
+  closes it as paid another way** (#3372, owner 7 Oct 2026: "count in both",
+  then "Count + add close action"). An unclosed card refund recovery row counts
+  in "Refunds owed" and comes off Net Collected at its unsent plan slices, dead
+  ones included (`openCardRefundOwedCents`).
+  - **A recorded refund fills a slice only if it is that slice's own**: on the
+    slice's transaction, exactly its amount, inside the row's window - recorded
+    after it was raised and, for a closed row, not after its `succeededAt` -
+    and not taken by a later row. A refund recorded before a row was raised is
+    never its own: a writer raising one after a partial send carries only the
+    remainder (an appeal's plan, a recording failure included, via
+    `PartialRefundError`). A superseded intent's row takes any later refund on
+    its transaction. A group settlement row (pre-#3653) is never owed on its
+    anchor payment.
+  - **"Refunds owed" is Net Collected's own per-payment figure**
+    (`refundsOwedOfCashParts`), so the two agree for every payment. Two parts
+    have no booking figure to agree with: a hand-back on a payment that shows
+    no capture counts at its amount, and the unsent remainder of the pre-#3653
+    group settlement refunds counts as one club-wide amount (owner, 8 Oct 2026:
+    "Separate club-wide line"; `legacyGroupSettlementRefundOwedCents`).
+
+## INV-PAY-122
+
+- **"Paid another way" records the close as a completed hand-back and ends the
+  refund** (#3372, owner 7 Oct 2026). `closeCardRefundPaidAnotherWay`
+  (finance:edit) takes `lock(1)`, then the payment row, refuses (409) unless
+  what is owed is the figure the treasurer saw, and claims a dead row to
+  `SUCCEEDED` with a status guard. It records the amount with
+  `applyLocalRefundAllocation` on the unsent slices' charges, writes a
+  COMPLETED hand-back task under `card-refund-paid-another-way:<row>` and its
+  `BANK_REFUND` line (`INV-MONEY-035`), and audits under `payment`. No Stripe call.
+  - **Full or part, chosen** (8 Oct): "full" is exactly what is owed,
+    "partial" strictly between nil and it, never $0; else 400. The rest is owed
+    nowhere; a review's netting counts the refund at its full raised amount.
+  - **Xero** (8 Oct): every kind queues a bank-transfer note keyed on the
+    task, sized by it less its own notes, dated the close's day, where there is
+    an invoice to credit; else none (`:no-xero-note`). No card note fills that
+    cash.
+  - **A late capture: receipt, then credit** (8 Oct). The note names the
+    capture's receipt by its invoice, never by intent. With none in Xero, the
+    close queues it (`INV-PAY-110`), requeuing a failed one that cannot have
+    reached Xero, or awaits one on its way; the link, then the note at most
+    once, are written under the approval task's row, which the close takes
+    before reading the receipt (`:note-after-receipt`). Cash evidence counts a
+    close only once noted.
+  - A superseded intent's row closes whole, only while its charge holds exactly
+    what it owes. An organiser child's is refused.
+  - A refund Stripe made inside a closed row's window (its clock) but recorded
+    later is listed as paid twice. The treasurer marks it Resolved with a note
+    against the card figure seen, kept on the task and audited; no money moves
+    (9 Oct).
 
 ## INV-PAY-070
 

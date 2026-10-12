@@ -474,13 +474,23 @@ export const CROSS_LODGE_OFFER_MEMBER_GUEST_WINDOW = relWindow(111, 2);
 // Alice on it) sat on stayWindow(15)'s Monday or Tuesday, and
 // e2e/guest-promo-code-chips.spec.ts stalled on the member-night conflict.
 //
-// A new seeded booking window belongs here. src/lib/__tests__/
-// e2e-stay-window-fixture-nights.test.ts fails if an exported `*_WINDOW` or a
-// DEMO_BOOKING_WINDOWS entry is missing.
+// A new seeded booking window belongs here. Seed Booking writes finish with
+// seededBookingDates(), checked structurally by the fixture-night census.
+// Reserve these even when the optional demo lodge is disabled, so the same
+// date allocator works with either seed configuration.
+export const DEMO_SECOND_LODGE_BOOKING_WINDOWS = {
+  draft: relWindow(55, 2),
+  confirmed: relWindow(60, 3),
+  pending: relWindow(65, 2),
+};
+
 export const SEEDED_BOOKING_WINDOWS: ReadonlyArray<{
+  readonly checkIn: string;
+  readonly checkOut: string;
   readonly nights: readonly string[];
 }> = [
   ...Object.values(DEMO_BOOKING_WINDOWS),
+  ...Object.values(DEMO_SECOND_LODGE_BOOKING_WINDOWS),
   WAITLIST_FULL_WINDOW,
   WAITLIST_OFFER_WINDOW,
   IB_WINDOW,
@@ -492,3 +502,21 @@ export const SEEDED_BOOKING_WINDOWS: ReadonlyArray<{
   CROSS_LODGE_OFFER_WINDOW,
   CROSS_LODGE_OFFER_MEMBER_GUEST_WINDOW,
 ];
+
+// Keep this as the FINAL spread in seed Booking data: caller overrides cannot
+// replace these dates. Matching the actual pair, rather than an export name,
+// makes inline dates, aliases and divergent imported windows fail closed.
+export function seededBookingDates(checkIn: string, checkOut: string) {
+  const window = SEEDED_BOOKING_WINDOWS.find(
+    (candidate) => candidate.checkIn === checkIn && candidate.checkOut === checkOut,
+  );
+  if (!window) {
+    throw new Error(
+      `INV-SSOT-001: seeded booking ${checkIn}..${checkOut} is missing from SEEDED_BOOKING_WINDOWS`,
+    );
+  }
+  return {
+    checkIn: new Date(`${window.checkIn}T00:00:00.000Z`),
+    checkOut: new Date(`${window.checkOut}T00:00:00.000Z`),
+  };
+}

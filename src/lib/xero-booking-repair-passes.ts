@@ -426,6 +426,16 @@ async function applyQueuedAction(
       action.resultMessage = result.message;
       return;
     }
+    case "QUEUE_PAID_ANOTHER_WAY_REFUND_NOTE": {
+      // #3924 round 8: the one note step, under the approval task's row lock;
+      // it reads the receipt and the close again there and queues at most once.
+      const queuedId = await deps.queueWaitingPaidAnotherWayNote(String(action.payload.paymentIntentId));
+      action.status = queuedId ? "queued" : "skipped";
+      action.resultMessage = queuedId
+        ? "Queued the bank-transfer refund note the paid-another-way close was waiting for."
+        : "Nothing queued: the receipt is not in Xero, or the close needs no note.";
+      return;
+    }
     case "QUEUE_PRIMARY_INVOICE_UPDATE": {
       const result = await deps.enqueueXeroBookingInvoiceUpdateOperation(
         String(action.payload.bookingId)
@@ -530,6 +540,8 @@ async function applyQueuedAction(
         ...readModificationNoteWording(action.payload),
         // #3809: a give-back note beside another keeps its own scope and keys.
         ...(typeof action.payload.reviewTaskId === "string" ? { reviewTaskId: action.payload.reviewTaskId } : {}),
+        // #3954 round 8: a billed-offset note waits for the edit's own note.
+        ...(action.payload.ownNoteExpected === true ? { ownNoteExpected: true } : {}),
       });
       action.status = result.queueOperationId ? "queued" : "skipped";
       action.resultMessage = result.message;
