@@ -6,9 +6,20 @@
 import "server-only";
 
 import {
+  ADDITIONAL_INTENT_RECOVERY_PREFIX,
+  BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
+  BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX,
+  CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
+  DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX,
+  EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
+  EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX,
   GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX,
+  LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX,
   ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX,
   ORGANISER_CHILD_REFUND_KEY_PREFIX,
+  PAYMENT_INTENT_CANCEL_RECOVERY_PREFIX,
+  REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
+  SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX,
 } from "@/lib/payment-recovery-keys";
 
 /**
@@ -16,14 +27,15 @@ import {
  * prefix into a stable SCENARIO code and a plain-English label, evaluated in SQL
  * so the key itself is never projected.
  *
- * Every prefix below is copied from `src/lib/payment-recovery-keys.ts` and
- * `src/lib/payment-recovery.ts`, which are the only writers; the organiser and
- * group-settlement prefixes are imported rather than copied. A key that matches
+ * Every prefix below is imported from `src/lib/payment-recovery-keys.ts`, the
+ * one place a recovery key's shape is spelled (`INV-SSOT`); none is copied. A key that matches
  * none of them projects `other_recovery`, which is honest: it means the platform
  * queued a recovery this catalogue does not recognise, and reporting an unknown
  * as one of the known scenarios would be worse than reporting it as unknown.
- * The finance-pack test fails when a recovery key builder has no entry here
- * (#4076), so a new writer cannot silently land in `other_recovery`.
+ * The finance-pack test fails when an export of that module is neither mapped
+ * to an entry here nor declared not-a-recovery-key (#4076), so a new writer
+ * cannot silently land in `other_recovery`. The scenario codes exist only in
+ * this query's output: nothing stores them.
  *
  * ORDER IS SIGNIFICANT: the SQL is a `CASE`, so the first prefix that matches
  * wins and a longer prefix must precede a shorter one it starts with. The
@@ -40,52 +52,58 @@ import {
  */
 export const RECOVERY_SCENARIO_CATALOGUE = [
   {
-    prefix: "booking_cancel_refund_recovery_",
+    prefix: BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
     code: "booking_cancellation_refund",
     label: "the card refund for a cancelled booking",
   },
   {
-    prefix: "capacity_claim_failed_refund_recovery_",
+    prefix: CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
     code: "capacity_claim_failed_refund",
     label: "an automatic refund of a payment that arrived after the beds had gone",
   },
   {
-    prefix: "duplicate_capture_",
+    prefix: DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX,
     code: "duplicate_capture_refund",
     label: "an automatic refund of a second card payment on an already-paid booking",
   },
   {
-    prefix: "refund_request_refund_",
+    prefix: REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
     code: "refund_appeal_refund",
     label: "the card refund for an approved refund appeal",
   },
   {
-    prefix: "payment_recovery_cancel_",
+    prefix: PAYMENT_INTENT_CANCEL_RECOVERY_PREFIX,
     code: "payment_intent_cancel",
-    label: "cancelling an unused card payment request",
+    label: "cancelling a card payment request that was replaced or withdrawn",
   },
   {
-    prefix: "payment_recovery_refund_",
+    prefix: SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX,
+    code: "superseded_payment_refund",
+    label:
+      "the refund of a card payment that was made on a payment request already replaced by a newer one",
+  },
+  {
+    prefix: BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX,
     code: "booking_modification_refund",
     label: "the card refund for a booking edit that lowered the price",
   },
   {
-    prefix: "payment_recovery_additional_intent_",
+    prefix: ADDITIONAL_INTENT_RECOVERY_PREFIX,
     code: "additional_payment_intent",
     label: "raising the card payment request for a booking edit that raised the price",
   },
   {
-    prefix: "edit_financial_review_refund_recovery_",
+    prefix: EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX,
     code: "edit_financial_review_refund",
     label: "the card refund an officer confirmed after reviewing a booking edit",
   },
   {
-    prefix: "edit_financial_review_additional_intent_recovery_",
+    prefix: EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
     code: "edit_financial_review_additional_intent",
     label: "the card payment request an officer raised after reviewing a booking edit",
   },
   {
-    prefix: "late_capture_approval_refund_recovery_",
+    prefix: LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX,
     code: "late_capture_approval_refund",
     label: "the refund of a late card payment on a cancelled booking, approved by an officer",
   },

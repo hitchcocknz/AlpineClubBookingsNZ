@@ -3,8 +3,59 @@
 // repair loader, #1491) can build keys without importing the Prisma client
 // that module initializes at load time.
 
+// THE PREFIXES BELOW ARE THE ONE SPELLING OF EACH RECOVERY KEY'S SHAPE (#4076).
+// The Diagnostics finance pack classifies a `PaymentRecoveryOperation` by these
+// and its test fails when an export here is neither mapped to a scenario nor
+// declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
+export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
+export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
+  "capacity_claim_failed_refund_recovery_";
+export const DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX = "duplicate_capture_";
+export const EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX =
+  "edit_financial_review_refund_recovery_";
+export const ADDITIONAL_INTENT_RECOVERY_PREFIX = "payment_recovery_additional_intent_";
+export const EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX =
+  "edit_financial_review_additional_intent_recovery_";
+/** An approved refund appeal's card refund (`enqueueRefundRequestRefundRecovery`). */
+export const REFUND_REQUEST_REFUND_RECOVERY_PREFIX = "refund_request_refund_";
+/** Cancelling a card payment request that was replaced or withdrawn. */
+export const PAYMENT_INTENT_CANCEL_RECOVERY_PREFIX = "payment_recovery_cancel_";
+/**
+ * Refunding a card payment taken on a REPLACED payment request that was paid
+ * anyway (`REFUND_SUPERSEDED_PAYMENT`). Not a booking edit's refund, whatever the
+ * similar spelling suggests.
+ */
+export const SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX = "payment_recovery_refund_";
+/** A booking edit's card refund (`enqueueBookingModificationRefundRecovery`). */
+export const BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX =
+  "payment_recovery_modification_refund_";
+
 export function buildBookingCancellationRefundIdempotencyKey(bookingId: string) {
-  return `booking_cancel_refund_recovery_${bookingId}`;
+  return `${BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX}${bookingId}`;
+}
+
+export function buildPaymentIntentCancelRecoveryIdempotencyKey(
+  paymentTransactionId: string,
+  paymentIntentId: string,
+) {
+  return `${PAYMENT_INTENT_CANCEL_RECOVERY_PREFIX}${paymentTransactionId}_${paymentIntentId}`;
+}
+
+export function buildSupersededPaymentRefundRecoveryIdempotencyKey(
+  paymentTransactionId: string,
+  paymentIntentId: string,
+) {
+  return `${SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX}${paymentTransactionId}_${paymentIntentId}`;
+}
+
+export function buildBookingModificationRefundRecoveryIdempotencyKey(
+  bookingModificationId: string,
+) {
+  return `${BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX}${bookingModificationId}`;
+}
+
+export function buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId: string) {
+  return `${REFUND_REQUEST_REFUND_RECOVERY_PREFIX}${refundRequestId}`;
 }
 
 // Capacity-race auto-refund durability: the recovery-operation dedup key for a
@@ -16,7 +67,7 @@ export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
   bookingId: string,
   paymentIntentId: string,
 ) {
-  return `capacity_claim_failed_refund_recovery_${bookingId}_${paymentIntentId}`;
+  return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_${paymentIntentId}`;
 }
 
 // The Stripe idempotency-key prefix the INLINE capacity-race auto-refund has
@@ -56,7 +107,7 @@ export function buildDuplicateCaptureRefundRecoveryIdempotencyKey(
 export function buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(
   bookingId: string,
 ) {
-  return `duplicate_capture_${bookingId}_`;
+  return `${DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX}${bookingId}_`;
 }
 
 // The Stripe idempotency-key prefix for the duplicate-capture auto-refund
@@ -84,7 +135,7 @@ export function buildDuplicateCaptureRefundStripeKeyPrefix(
 export function buildEditFinancialReviewRefundRecoveryIdempotencyKey(
   taskId: string,
 ) {
-  return `edit_financial_review_refund_recovery_${taskId}`;
+  return `${EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX}${taskId}`;
 }
 
 // #3032: the Stripe idempotency-key prefix for that same refund, task-scoped for
@@ -123,7 +174,7 @@ export function buildLateCaptureRefundMetadata(
 }
 // #3639: the recovery row of a treasurer-approved late-capture refund. One per
 // capture: the approval task is one per payment intent (its `occurrenceKey`).
-const LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX = "late_capture_approval_refund_recovery_";
+export const LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX = "late_capture_approval_refund_recovery_";
 export function buildLateCaptureApprovalRefundRecoveryIdempotencyKey(
   paymentIntentId: string,
 ) {
@@ -163,7 +214,7 @@ export function isLateCaptureRefundStripeKeyPrefix(
 export function buildAdditionalIntentRecoveryIdempotencyKey(
   bookingModificationId: string,
 ) {
-  return `payment_recovery_additional_intent_${bookingModificationId}`;
+  return `${ADDITIONAL_INTENT_RECOVERY_PREFIX}${bookingModificationId}`;
 }
 
 /**
@@ -227,7 +278,7 @@ export const REISSUED_ASK_REASON = "modification_reissued_ask";
 export function buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey(
   bookingModificationId: string,
 ) {
-  return `edit_financial_review_additional_intent_recovery_${bookingModificationId}`;
+  return `${EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX}${bookingModificationId}`;
 }
 
 // #3170: the Stripe idempotency key for that same additional PaymentIntent,
@@ -298,7 +349,7 @@ export function isEditFinancialReviewAdditionalIntentRecoveryKey(
 ): boolean {
   return Boolean(
     idempotencyKey?.startsWith(
-      "edit_financial_review_additional_intent_recovery_",
+      EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
     ),
   );
 }
@@ -320,8 +371,8 @@ export function isEditFinancialReviewAdditionalIntentRecoveryKey(
 // new caller builds one of these keys, or its recovery replay silently skips the
 // Xero attach.
 const ADDITIONAL_INTENT_RECOVERY_KEY_PREFIXES = [
-  "edit_financial_review_additional_intent_recovery_",
-  "payment_recovery_additional_intent_",
+  EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
+  ADDITIONAL_INTENT_RECOVERY_PREFIX,
 ] as const;
 
 export function bookingModificationIdForAdditionalIntentRecoveryKey(
