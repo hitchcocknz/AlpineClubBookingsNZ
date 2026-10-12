@@ -349,8 +349,8 @@ Settings, all optional and all read by `scripts/run-production-blue-green-deploy
 The accepted ranges are enforced twice on purpose. The deploy script checks them
 before it asks a container anything, so a mistyped setting is named immediately; the
 endpoint enforces them too, and reports a refusal as a readable `blocked` summary
-rather than a bare HTTP 400, because the container's only HTTP client is busybox
-`wget` and it discards the body of a non-2xx response. Out of range, either way, you
+rather than a bare HTTP 400, because the deploy script asks it with busybox
+`wget`, which discards the body of a non-2xx response. Out of range, either way, you
 are told **which** setting was refused — not that the gate could not be read.
 
 Widening the tolerance is allowed and recorded in the summary; it is never silent.

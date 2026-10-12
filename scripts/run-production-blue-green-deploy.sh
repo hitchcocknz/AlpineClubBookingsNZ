@@ -661,6 +661,19 @@ if [[ ! -d "$DEFAULT_PROJECT_DIR" && -d "$HOME/AlpineClubBookingsNZ" ]]; then
 fi
 PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
+# How long each in-container read verify_internal_health makes -- readiness, then
+# /api/deploy/runtime-status -- keeps retrying a container that is not yet
+# answering 200, at steps 14 and 15, before the cutover (#3965). Step 17, after
+# the switch, always makes a single attempt. See poll_service_endpoint. Checked
+# at step 3 against the range below, which the give-up message also quotes, so
+# the two cannot disagree (INV-SSOT). Read from the deploy shell only.
+DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS="${DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS:-60}"
+DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS=0
+DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS=600
+# The pause between attempts in every poll loop here: wait_for_health,
+# wait_for_url, verify_cron_registration and poll_service_endpoint. One value,
+# so the loops cannot drift apart (#3965, INV-SSOT).
+DEPLOY_POLL_INTERVAL_SECONDS=2
 PRUNE_UNTIL="${PRUNE_UNTIL:-12h}"
 FORCE_NO_CACHE="${FORCE_NO_CACHE:-0}"
 SKIP_APP_IMAGE_BUILD="${SKIP_APP_IMAGE_BUILD:-0}"
@@ -982,23 +995,71 @@ trim_whitespace() {
   printf '%s' "$value"
 }
 
-# Every shape Docker Compose accepts as an assignment of this key, as one
-# extended regular expression.
+# Every shape Docker Compose's `.env` parser accepts as an assignment of any of
+# the given keys, as one extended regular expression (#4026).
 #
-# THE SHAPE WAS THE FINDING. The first version counted with `awk -F=` and
-# `$1 == key`, which needs the key to be the WHOLE first `=`-field — so three
-# shapes Compose honours slipped past it, measured against real
-# `docker compose v5.3.1`: an INDENTED line, an `export `-prefixed line, and
-# spaces around the `=`. Any of those appearing a SECOND time further down a .env
-# whose first line is correct passed the duplicate check and handed every
-# container `non-production`. Appending to a .env by hand, or from a rehearsal
-# script, produces exactly those shapes.
+#   env_assignment_pattern KEY [KEY...]
 #
-# Deliberately scoped to THIS key rather than by changing `get_env_file_value`,
-# which every other `require_*_env_key` shares and which is not this issue to
-# change. A comment line cannot match: a `#` before the key fails the anchor.
+# THE ONE SPELLING OF THIS GRAMMAR. Every reader in this script that must agree
+# with Compose about whether a line assigns a key builds its pattern here. It is
+# a top-level function of the inner deploy, not of the file, and sourcing this
+# script starts the production wrapper, so nothing outside can CALL it. A
+# downstream fork's own deploy guard instead lifts the definition out of this
+# file, the way the contract tests do (`shellFunctionSource` in
+# src/lib/__tests__/helpers/deploy-script.ts), rather than keeping a hand-made
+# copy pinned equal by a test of its own.
+#
+# THE SHAPE WAS THE FINDING, twice. The first version of the #3034 check counted
+# with `awk -F=` and `$1 == key`, which needs the key to be the WHOLE first
+# `=`-field — so three shapes Compose honours slipped past it, measured against
+# real `docker compose v5.3.1`: an INDENTED line, an `export `-prefixed line, and
+# spaces around the `=`. Then #4026 measured `docker compose config` on Compose
+# v5.6.0 and found its parser also takes a YAML-style COLON as the separator:
+# `KEY: value`, `KEY:value`, `KEY : value` and `export KEY: value`. Any of those
+# appearing a SECOND time further down a .env whose first line is correct passed
+# the duplicate check and handed every container the second value. Appending to a
+# .env by hand, or from a rehearsal script, produces exactly those shapes.
+#
+# What it matches, mirroring Compose's dotenv parser: optional leading
+# whitespace; an optional `export` followed by whitespace; the key exactly; then
+# optional whitespace and an `=` or a `:`. A comment line cannot match, because a
+# `#` before the key fails the anchor, and a longer name sharing the prefix
+# (`KEY_EXTRA=`) cannot either, because only whitespace may sit between the key
+# and its separator.
+#
+# CAPTURE GROUPS ARE FIXED so a `sed -E` caller can append its own value group:
+# group 1 is the `export` prefix, group 2 is the key that matched, and a caller's
+# first group after the pattern is `\3`. The keys are literal environment-variable
+# names from this script ([A-Za-z_][A-Za-z0-9_]*); none of them holds a regex or
+# `sed` delimiter character, and a name that did would be refused below rather
+# than silently matching something else.
+env_assignment_pattern() {
+  local alternation=""
+  local key
+
+  for key in "$@"; do
+    case "$key" in
+      '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*)
+        echo "env_assignment_pattern: not a plain variable name: $(printable_deploy_value "$key")" >&2
+        return 1
+        ;;
+    esac
+    alternation="${alternation:+$alternation|}$key"
+  done
+  if [ -z "$alternation" ]; then
+    echo "env_assignment_pattern: needs at least one key" >&2
+    return 1
+  fi
+
+  printf '^[[:space:]]*(export[[:space:]]+)?(%s)[[:space:]]*[=:]' "$alternation"
+}
+
+# The #3034 check's pattern for one key: the shared grammar above, for exactly
+# that key. Deliberately scoped to the role check rather than by changing
+# `get_env_file_value`, which every other `require_*_env_key` shares and which is
+# not this issue to change.
 environment_role_env_pattern() {
-  printf '^[[:space:]]*(export[[:space:]]+)?%s[[:space:]]*=' "$1"
+  env_assignment_pattern "$1"
 }
 
 # How many lines in .env assign this key.
@@ -1007,8 +1068,12 @@ environment_role_env_pattern() {
 # abort inside the assignment, so the status is discarded and the count kept.
 count_environment_role_env_assignments() {
   local key="$1"
+  local pattern
 
-  grep -cE "$(environment_role_env_pattern "$key")" .env || true
+  # Built first and checked, so a refused key aborts rather than handing `grep`
+  # an empty pattern, which matches every line.
+  pattern="$(environment_role_env_pattern "$key")" || return 1
+  grep -cE "$pattern" .env || true
 }
 
 # The value Compose would resolve for this key.
@@ -1019,7 +1084,7 @@ count_environment_role_env_assignments() {
 # disagreeing with them, which is the safer default of the two.
 #
 # It then undoes what Compose undoes: an `export ` prefix, whitespace around the
-# `=`, an inline comment (the same `[[:space:]]+#` rule `get_env_file_value`
+# `=` or `:`, an inline comment (the same `[[:space:]]+#` rule `get_env_file_value`
 # applies for every other key), and ONE layer of matching surrounding quotes.
 # Those last three are why `APP_ENVIRONMENT_ROLE = production`,
 # `export APP_ENVIRONMENT_ROLE=production` and `APP_ENVIRONMENT_ROLE="production"`
@@ -1034,12 +1099,14 @@ count_environment_role_env_assignments() {
 # names the sanitized value it read.
 environment_role_env_value() {
   local key="$1"
+  local pattern
   local value
   local first
   local last
 
+  pattern="$(environment_role_env_pattern "$key")" || return 1
   value="$(
-    sed -nE "s/$(environment_role_env_pattern "$key")[[:space:]]*(.*)$/\2/p" .env |
+    sed -nE "s/${pattern}[[:space:]]*(.*)$/\3/p" .env |
       tail -n 1
   )"
   value="$(printf '%s' "$value" | sed -E 's/[[:space:]]+#.*$//')"
@@ -1783,8 +1850,8 @@ wait_for_health() {
       return 1
     fi
 
-    sleep 2
-    waited=$((waited + 2))
+    sleep "$DEPLOY_POLL_INTERVAL_SECONDS"
+    waited=$((waited + DEPLOY_POLL_INTERVAL_SECONDS))
   done
 }
 
@@ -1803,8 +1870,8 @@ wait_for_url() {
       return 1
     fi
 
-    sleep 2
-    waited=$((waited + 2))
+    sleep "$DEPLOY_POLL_INTERVAL_SECONDS"
+    waited=$((waited + DEPLOY_POLL_INTERVAL_SECONDS))
   done
 }
 
@@ -2373,15 +2440,17 @@ get_service_runtime_payload() {
   # environment (docker-compose.yml), so the request is authorised from inside
   # rather than by interpolating the secret into a `docker compose exec` argument
   # list, where it would be readable in the host`s process table. That is the same
-  # care `verify_external_health` takes by feeding curl its header on stdin.
-  # busybox wget (v1.37 in node:24.17-alpine) supports --header; the readiness
-  # fetch above already relies on the same wget being present.
+  # care `verify_external_health` takes by feeding curl its header on stdin. The
+  # trailing `1` asks read_service_endpoint_once to send it.
   #
-  # REACHABLE AT THIS POINT, verified from the step order: step 14 runs
-  # `up -d --force-recreate` then wait_for_health, and the container`s own
+  # REACHABLE AT THIS POINT, but not necessarily READY (#3965). Steps 14 and 15
+  # run `up -d --force-recreate` then wait_for_health, and the container`s own
   # healthcheck polls /api/health/ready on this exact loopback address, so the
-  # server is answering before this runs. The route is force-dynamic and touches
-  # no database.
+  # server was answering moments before this runs. The route is force-dynamic and
+  # touches no database. Even so, the 7 Oct 2026 deploy died at step 15 on this
+  # read with nothing printed, and a hand check moments later passed, so the read
+  # goes through poll_service_endpoint, which retries it for a bounded time and
+  # says why it gave up.
   #
   # ONE DELIBERATE BEHAVIOUR CHANGE, which is a correctness gain: cronEnabled now
   # comes from the application`s rule (CRON_ENABLED lowercased must equal "true")
@@ -2391,17 +2460,237 @@ get_service_runtime_payload() {
   # cron-leader that does nothing. Every documented value is true or false
   # (CONFIGURATION.md, .env.staging.example), so this refuses nothing that was
   # ever documented, and where the two differ the application is right.
-  #
-  # The path is passed as a positional argument rather than interpolated into the
-  # single-quoted script, so no quoting of a host variable happens inside it.
+  poll_service_endpoint "$service" "$DEPLOY_RUNTIME_STATUS_PATH" 1
+}
+
+# The readiness answer, asked of the container from inside it, through the same
+# bounded retry as the runtime status (#3965). No secret: the route needs none,
+# and a secret is not sent where it is not needed.
+get_service_readiness_payload() {
+  local service="$1"
+
+  poll_service_endpoint "$service" "$READINESS_PATH" 0
+}
+
+# Seconds on the clock poll_service_endpoint measures its deadline against. A
+# function rather than a bare $SECONDS so the contract test can drive a clock
+# that advances only when it says so; in a deploy it is always bash's own.
+deploy_clock_seconds() {
+  printf '%s' "$SECONDS"
+}
+
+# What Docker says about a service's container, as one line, for a read that got
+# no HTTP answer at all. A `docker compose exec` into a container that is killed
+# or restarted mid-read exits 137 with no output, and `restart: unless-stopped`
+# brings it back seconds later, so without this line the restart is invisible
+# (#3965). `ps -a` so an exited container is still found. Never fails.
+describe_service_container_state() {
+  local service="$1"
+  local cid=""
+  local state=""
+
+  cid="$(docker compose ps -a -q "$service" 2>/dev/null | head -n 1)" || cid=""
+  if [ -z "$cid" ]; then
+    printf '%s' "no container found for ${service}"
+    return 0
+  fi
+  state="$(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' "$cid" 2>/dev/null)" || state=""
+  printf '%s' "${state:-state unreadable}"
+}
+
+# What stopping here means for traffic, which depends on WHERE the read failed.
+# verify_internal_health runs at steps 14 and 15, before the cutover, and again
+# at step 17, after Caddy has been switched (#3965 review).
+#
+# The first blue/green deploy is different on both sides of the switch: Caddy
+# pointed at the cron leader itself (`app`), and step 15 recreated that very
+# container on the new release. So before the switch a step-15 failure leaves
+# the new release behind Caddy, and after it a rollback lands on that same
+# recreated `app` rather than on the previous release.
+describe_internal_read_stop() {
+  local service="${1:-}"
+
+  if [ "${SWITCHED_TRAFFIC:-0}" = "1" ] && [ "${ACTIVE_SERVICE:-}" = "$CRON_SERVICE" ]; then
+    echo "This is the check after the traffic switch: Caddy already points at ${TARGET_SERVICE:-the new colour}. The deploy now fails, and its failure handling points Caddy back at ${CRON_SERVICE}. On this first blue/green deploy ${CRON_SERVICE} was recreated on the new release at step 15, so the rollback lands on the release that just failed, not on the previous one." >&2
+  elif [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
+    echo "This is the check after the traffic switch: Caddy already points at ${TARGET_SERVICE:-the new colour}. The deploy now fails, and its failure handling tries to point Caddy back at ${ACTIVE_SERVICE:-the previous colour}, which serves only if it is still running." >&2
+  elif [ -n "$service" ] && [ "$service" = "$CRON_SERVICE" ] && [ "${ACTIVE_SERVICE:-}" = "$CRON_SERVICE" ]; then
+    echo "Traffic has not been switched, so the deploy stops before the cutover. But Caddy points at ${CRON_SERVICE}, and this step has just recreated ${CRON_SERVICE} on the new release, so the previous release is not serving: whatever answers now is the new release that failed this check." >&2
+  else
+    echo "Traffic has not been switched, so the deploy stops before the cutover. Caddy still points at ${ACTIVE_SERVICE:-the previous colour}, which serves only if it is still running: in a windowed deploy, where the old app and workers were stopped first, nothing is serving until the deploy is re-run." >&2
+  fi
+}
+
+# Asks one path on a service's own loopback until it answers HTTP 200, and prints
+# the body (#3965). Used for both in-container reads verify_internal_health makes.
+#
+# BOUNDED BY A DEADLINE, NOT BY COUNTING PAUSES. The bound is
+# DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS from the first attempt, measured on a clock, so
+# the time an attempt itself takes counts against it. Each attempt waits at most
+# INTERNAL_READ_REQUEST_TIMEOUT_MS for a reply, and the last attempt can start up
+# to one pause before the deadline, so a read gives up at most about ten seconds
+# after its bound. A bound of 0 means one attempt and no retry, and after the
+# traffic switch (step 17) the bound is always 0.
+#
+# LOUD ON EVERY FAILED ATTEMPT. Each one prints a line to stderr naming the HTTP
+# status, or the `docker compose exec` exit code and the container's state, so a
+# restart mid-read is seen even when a later attempt succeeds.
+#
+# NOT EVERY ANSWER IS WORTH WAITING FOR. An empty CRON_SECRET, and HTTP 401, 403
+# or 404, are configuration -- the wrong secret, or a route this image does not
+# have -- not a container still starting, so they stop at once.
+#
+# SAFE UNDER `set -Eeuo pipefail` AND THE ERR TRAP. Each attempt runs as the
+# left-hand side of `||`, so a failed attempt neither exits the script nor fires
+# `fail`; only the give-up returns non-zero. Callers take that return as
+# `x="$(poll_service_endpoint ...)" || return 1`: without the `||`, errtrace
+# fires the trap inside the command substitution as well as in the caller, so
+# `fail` runs twice -- two failure records, the first one's output captured into
+# the variable rather than printed.
+poll_service_endpoint() {
+  local service="$1"
+  local path="$2"
+  local send_cron_secret="$3"
+  local timeout="$DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS"
+  local attempt_word
+  local deadline
+  local now
+  local attempts=0
+  local rc
+  local response
+  local status
+  local body
+  local last_result=""
+  local last_body=""
+
+  # After the traffic switch (step 17) members are already being sent to this
+  # container, so a failing read must hand over to the rollback at once rather
+  # than retry while they get errors: one attempt, as before #3965.
+  if [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
+    timeout=0
+  fi
+  deadline=$(( $(deploy_clock_seconds) + timeout ))
+
+  while true; do
+    attempts=$((attempts + 1))
+    rc=0
+    response="$(read_service_endpoint_once "$service" "$path" "$send_cron_secret")" || rc=$?
+
+    if [ "$rc" -eq "$RUNTIME_STATUS_NO_SECRET_EXIT" ]; then
+      # The container has said why on stderr. Waiting cannot fix configuration.
+      echo "CRON_SECRET reaches the container from .env through docker-compose.yml; set it there and re-run the deploy." >&2
+      describe_internal_read_stop "$service"
+      return 1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+      # First line is the HTTP status (000 when no HTTP response came back), the
+      # rest is the body (or the client error's name and code for 000).
+      status="${response%%$'\n'*}"
+      if [ "$status" = "$response" ]; then
+        body=""
+      else
+        body="${response#*$'\n'}"
+      fi
+      case "$status" in
+        200)
+          printf '%s' "$body"
+          return 0
+          ;;
+        401|403|404)
+          echo "Internal ${service}: ${path} answered HTTP ${status}. That is configuration -- the wrong secret, or a route this image does not have -- not a container still starting, so the deploy does not wait for it." >&2
+          echo "Response body: ${body:0:2000}" >&2
+          describe_internal_read_stop "$service"
+          return 1
+          ;;
+        000)
+          last_result="no HTTP response (${body})"
+          last_body=""
+          ;;
+        *)
+          last_result="HTTP ${status}"
+          last_body="$body"
+          ;;
+      esac
+    else
+      last_result="docker compose exec exited ${rc} with no HTTP answer; container: $(describe_service_container_state "$service")"
+      last_body=""
+    fi
+
+    now="$(deploy_clock_seconds)"
+    if [ "$now" -ge "$deadline" ]; then
+      attempt_word="attempts"
+      if [ "$attempts" -eq 1 ]; then
+        attempt_word="attempt"
+      fi
+      echo "Internal ${service}: ${path} did not answer HTTP 200 within ${timeout}s (${attempts} ${attempt_word})." >&2
+      echo "Last result: ${last_result}" >&2
+      if [ -n "$last_body" ]; then
+        echo "Last response body: ${last_body:0:2000}" >&2
+      fi
+      describe_internal_read_stop "$service"
+      if [ "${SWITCHED_TRAFFIC:-0}" = "1" ]; then
+        echo "After the traffic switch this read is tried once, whatever DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS says, so the rollback starts at once." >&2
+      else
+        echo "To wait longer, set DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS (${DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS}-${DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS}) in the shell that runs the deploy; it is not read from .env." >&2
+      fi
+      return 1
+    fi
+
+    echo "  Internal ${service}: ${path} attempt ${attempts}: ${last_result}; asking again in ${DEPLOY_POLL_INTERVAL_SECONDS}s." >&2
+    sleep "$DEPLOY_POLL_INTERVAL_SECONDS"
+  done
+}
+
+# One GET of a path on a service's own loopback, from inside the container.
+#
+# Prints the HTTP status on the first line and the response body after it, and
+# exits 0 whenever the request was MADE, whatever came back: a non-200 is for
+# poll_service_endpoint to retry or report, not for this to swallow. A request
+# that got no HTTP response at all (connection refused, timeout) prints status
+# 000 with the client error's name and code as the body. When asked to send the
+# cron secret and the container has none, exits RUNTIME_STATUS_NO_SECRET_EXIT,
+# having said why on stderr.
+#
+# The request is made by `node`, which the app image runs as its server, rather
+# than by busybox wget: busybox wget (v1.37 in node:24.17-alpine) has no
+# --content-on-error, so on a non-2xx status it writes no body at all, and the
+# body is half of what an operator needs when a read gives up (#3965).
+#
+# On a client error it prints only the error's name and its cause's code, never
+# the message: undici quotes an invalid header VALUE in its message, and the one
+# header this sends is the cron secret.
+#
+# The path, exit status, secret flag and request timeout are passed as positional
+# arguments rather than interpolated into the single-quoted script, so no quoting
+# of a host variable happens inside it. The secret is read from the container's
+# own environment, never from an argument.
+RUNTIME_STATUS_NO_SECRET_EXIT=3
+INTERNAL_READ_REQUEST_TIMEOUT_MS=5000
+read_service_endpoint_once() {
+  local service="$1"
+  local path="$2"
+  local send_cron_secret="$3"
+
   docker compose exec -T "$service" /bin/sh -c '
-secret="${CRON_SECRET:-}"
-if [ -z "$secret" ]; then
-  echo "CRON_SECRET is empty inside this container, so the deploy cannot ask the application which release and which environment role it is running." >&2
-  exit 1
+if [ "$3" = "1" ] && [ -z "${CRON_SECRET:-}" ]; then
+  echo "CRON_SECRET is empty inside this container, so the deploy cannot ask the application which role and which environment role it is running." >&2
+  exit "$2"
 fi
-wget -q -O- --header "x-cron-secret: $secret" "http://127.0.0.1:3000$1"
-' sh "$DEPLOY_RUNTIME_STATUS_PATH"
+node - "http://127.0.0.1:3000$1" "$3" "$4" <<"NODE"
+const [url, sendCronSecret, timeoutMs] = process.argv.slice(2);
+const headers = sendCronSecret === "1" ? { "x-cron-secret": process.env.CRON_SECRET } : {};
+fetch(url, { headers, signal: AbortSignal.timeout(Number(timeoutMs)) })
+  .then(async (response) => {
+    process.stdout.write(response.status + "\n" + (await response.text()));
+  })
+  .catch((error) => {
+    const name = (error && error.name) || "Error";
+    const code = error && error.cause && error.cause.code;
+    process.stdout.write("000\n" + name + (code ? " (" + code + ")" : ""));
+  });
+NODE
+' sh "$path" "$RUNTIME_STATUS_NO_SECRET_EXIT" "$send_cron_secret" "$INTERNAL_READ_REQUEST_TIMEOUT_MS"
 }
 
 assert_logs_contain_any() {
@@ -2433,9 +2722,12 @@ verify_internal_health() {
 
   expected_role="$(get_expected_runtime_role "$service")"
   expected_cron_enabled="$(get_expected_cron_enabled "$service")"
-  payload="$(docker compose exec -T "$service" wget -qO- "http://127.0.0.1:3000${READINESS_PATH}")"
+  # Both reads are retried and explain themselves when they give up (#3965), and
+  # both take `|| return 1` so a give-up fires the ERR trap once, here, rather
+  # than once inside the command substitution as well (see poll_service_endpoint).
+  payload="$(get_service_readiness_payload "$service")" || return 1
   assert_readiness_payload_healthy "Internal ${service}" "$payload"
-  runtime_payload="$(get_service_runtime_payload "$service")"
+  runtime_payload="$(get_service_runtime_payload "$service")" || return 1
   assert_runtime_identity "Internal ${service}" "$runtime_payload" "$expected_role" "$expected_cron_enabled" "$EXPECTED_ENVIRONMENT_ROLE_DECLARATION"
 }
 
@@ -2507,8 +2799,8 @@ verify_cron_registration() {
       return 1
     fi
 
-    sleep 2
-    waited=$((waited + 2))
+    sleep "$DEPLOY_POLL_INTERVAL_SECONDS"
+    waited=$((waited + DEPLOY_POLL_INTERVAL_SECONDS))
   done
 
   assert_logs_contain_any \
@@ -2563,8 +2855,8 @@ warmup_gate_is_enabled() {
 #
 # The range is mirrored here rather than left to the endpoint for a plain operational
 # reason: the endpoint answers HTTP 400 with the offending parameter named in the body,
-# and the container's only HTTP client is busybox `wget`, which on a non-2xx status
-# writes no body at all. The endpoint now also answers the text form with a readable
+# and the warm-up gate asks it with busybox `wget` (run_warmup_gate), which on a
+# non-2xx status writes no body at all. The endpoint now also answers the text form with a readable
 # `blocked` report, so the reason survives either way — but catching it HERE means the
 # operator is told which setting is wrong before a container is even asked, and the
 # ranges cannot drift unnoticed because the argument list reads like the endpoint's.
@@ -3132,6 +3424,11 @@ validate_image_reference_contract
 # used: a mistyped or removed lock-timeout bound should stop the deploy before
 # it pulls an image, never after a migration has already started waiting (#3377).
 validate_migration_lock_timeout_contract
+# Same reasoning (#3965): an unreadable bound must stop the deploy here, not
+# make the in-container read retry at step 14 compare against a non-number.
+require_integer_setting_in_range DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS "$DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS" \
+  "$DEPLOY_INTERNAL_READ_TIMEOUT_MIN_SECONDS" "$DEPLOY_INTERNAL_READ_TIMEOUT_MAX_SECONDS" \
+  "how long steps 14 and 15 keep retrying each in-container readiness and /api/deploy/runtime-status read, in seconds"
 info ".env contains the required production settings."
 info "Migrations will wait at most ${MIGRATION_LOCK_TIMEOUT_MS_EFFECTIVE}ms for any lock."
 
