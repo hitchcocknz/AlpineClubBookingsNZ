@@ -344,6 +344,20 @@ Two consequences worth knowing before you edit one:
   transfer the club will send, or, on a group booking the organiser paid for
   by card, the group organiser's card. Keep it on a line of its own, with no
   `$` or label in front.
+- **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
+  says where the refund went: the member's original payment method, account
+  credit, or a refund the club will arrange directly. Otherwise it says no
+  refund applied. On a group booking the organiser paid for by card, it names
+  the organiser instead: the refund has been processed to the group organiser's
+  card, or is on its way there when the card refund has not gone through yet.
+  If the organiser had already cancelled the whole group, it says that
+  cancellation is refunding, or has refunded, the booking to the organiser's
+  card. When the organiser cancels a group they paid for by Internet Banking,
+  it says the club will repay the organiser directly. A joiner cancelling their
+  own place on a group the organiser paid for by Internet Banking gets account
+  credit, worded as above. `{{refundAmount}}` is always this booking's own
+  refund, so it can read $0.00 while the sentence names the organiser's refund.
+  Keep it on a line of its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

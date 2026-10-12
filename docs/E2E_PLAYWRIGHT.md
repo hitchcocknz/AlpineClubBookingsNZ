@@ -246,6 +246,18 @@ local `DATABASE_URL`, and no non-demo member emails), shared with the specs thro
   seeded nominators (`wanda-waitlist@`, `nadia@`) have complete, confirmed
   profiles so the onboarding modal never blocks their nomination pages.
 
+The shared `loginPersona` and `signIn` helpers wait for a visible two-factor
+challenge or the rendered authenticated layout before continuing. A destination
+URL alone can appear before a delayed `/login/verify` redirect (#4020). The
+completion signal is the navigation brand mark for member/admin/finance pages,
+or the kiosk root for lodge accounts; both render after their layout's sign-in
+gate. After completing a challenge, the helper navigates to the returned
+destination through the server gate before checking that rendered signal;
+client navigation after the cookie change can leave an empty streamed shell.
+`loginPersona` preserves scoped-role landing pages, while `signIn` also
+checks Alice's `/admin/dashboard` destination. Forced password changes, a return
+to login, and pages without either authenticated signal fail the helper.
+
 Because these fixtures (and the two-factor enrollment) mutate seeded state, the
 suite is designed to run against a **fresh** prepare each time; re-running
 `test:e2e:run` without a preceding `test:e2e:prepare` is not supported.

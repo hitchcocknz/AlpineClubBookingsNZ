@@ -216,7 +216,7 @@ export async function GET(
           keptAmountCents: preview.keptAmountCents + preview.refundAmountCents,
           groupCancellationRefundCents: groupDebt.amountCents,
           groupCancellationRefundNote: groupCancellationRefundNote(
-            groupDebt.amountCents,
+            groupDebt,
             await clubFormatValues(),
           ),
         }

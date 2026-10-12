@@ -24,7 +24,12 @@ import {
 } from "@/lib/booking-money-lines";
 import type { PromoCodeAdjustment } from "@/lib/booking-promo-redemptions";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
-import { bookingModifiedRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  bookingCancelledRefundMade,
+  bookingCancelledRefundSentence,
+  type BookingCancelledRefundMethod,
+  bookingModifiedRefundSentence,
+} from "@/lib/booking-modified-email-copy";
 import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";
 import { escapeHtml } from "./escape";
 import {
@@ -365,37 +370,21 @@ export function bookingCancelledTemplate(
   checkOut: Date,
   refundCents: number,
   format: ClubFormat,
-  // B5 (#2262): "manual" is a cash / off-Xero settlement being handed back by a
-  // person. It must NEVER read as "on its way to your card" (no card was
-  // charged) nor as account credit (none was minted — a hand-back task was
-  // raised instead), so it gets its own honest copy.
-  refundMethod: "card" | "credit" | "manual" = "card",
+  // B5 (#2262) "manual", #3973 the organiser's refunds: see `BookingCancelledRefundMethod`.
+  refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // #3792: a cancel the member did not choose (capacity, hold expiry) restores
   // the applied credit in full, so no cancellation policy applies to it.
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
+  // #3973: the amount the refund line names when the refund is not this
+  // booking's own (the group organiser's cancellation carries it).
+  refundSentenceCents: number = refundCents,
 ): string {
-  let refundInfo: string;
-  if (refundCents > 0 && refundMethod === "manual") {
-    refundInfo = alertBox(
-      "You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of " +
-        formatCents(refundCents, format) +
-        " directly and will be in touch.",
-      "info"
-    );
-  } else if (refundCents > 0 && refundMethod === "credit") {
-    refundInfo = alertBox(
-      "A credit of " + formatCents(refundCents, format) + " has been added to your account for future bookings.",
-      "success"
-    );
-  } else if (refundCents > 0) {
-    refundInfo = alertBox(
-      "A refund of " + formatCents(refundCents, format) + " has been processed to your original payment method.",
-      "success"
-    );
-  } else {
-    refundInfo = alertBox("No refund was applicable based on the cancellation policy.", "info");
-  }
+  // #3973: the one wording `{{refundMessage}}` also reads, and its one tone.
+  const refundInfo = alertBox(
+    bookingCancelledRefundSentence(refundSentenceCents, formatCents(refundSentenceCents, format), refundMethod),
+    bookingCancelledRefundMade(refundSentenceCents, refundMethod) ? "success" : "info",
+  );
 
   // #1164 / D7: the account credit originally applied to this booking is now
   // restored subject to the same cancellation policy as the card slice, so a

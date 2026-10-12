@@ -107,7 +107,7 @@ import {
   enqueueGroupSettlementRefundRecovery,
   markGroupSettlementRefundRecoverySucceeded,
 } from "@/lib/payment-recovery";
-import { deserializeRefundPlan, isMirrorRefundPlan, mirrorPlanRefundedCents } from "@/lib/group-settlement-refund-plan";
+import { deserializeRefundPlan, isMirrorRefundPlan, mirrorPlanRefundedCents, organiserCancelJoinerEmailRefund } from "@/lib/group-settlement-refund-plan";
 import { refundOrganiserCancelChildren } from "@/lib/organiser-child-refund-executor";
 import { enqueueXeroGroupSettlementInvoiceVoidOperation } from "@/lib/xero-group-settlement-void-outbox";
 import logger from "@/lib/logger";
@@ -691,17 +691,20 @@ export async function settleGroupBookingOnOrganiserCancel(
       )
     );
 
+    const joinerRefund = organiserCancelJoinerEmailRefund({ refundForChild, owedForChild, plannedRefundCents: plannedMirrorRefunds.get(child.id) ?? 0, cardSettlement: Boolean(settlement?.stripePaymentIntentId) });
     sendBookingCancelledEmail(
       { bookingId: child.id, recipientMemberId: bookingOwner(child).memberId },
       bookingOwner(child).member.email,
       bookingOwner(child).member.firstName,
       child.checkIn,
       child.checkOut,
-      refundForChild,
+      joinerRefund.refundCents,
       format,
-      "card",
+      joinerRefund.refundMethod,
       0,
-      child.lodgeId
+      child.lodgeId,
+      "cancellation-policy",
+      joinerRefund.sentenceCents,
     ).catch((err) =>
       logger.error(
         { err, bookingId: child.id },

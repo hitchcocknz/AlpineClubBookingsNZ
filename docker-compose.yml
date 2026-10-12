@@ -236,8 +236,14 @@ x-app-environment: &app-environment
   # anything else keeps the gate closed, so the empty defaults are the safe,
   # disabled state. Before #3964 neither was named here, so the runbook step
   # that sets them changed nothing inside the container and the feature could
-  # never be switched on. Set them in the project `.env` (or the deploy's own
-  # environment) only as docs/PRODUCTION_UPGRADE_RUNBOOK.md's #3413 section says.
+  # never be switched on. To switch the gate on, put BOTH lines, each exactly `1`,
+  # in the project `.env` and re-run the deploy, as
+  # docs/PRODUCTION_UPGRADE_RUNBOOK.md's #3413 section says. `.env` is the only
+  # source: the production deploy refuses a shell PENDING_SCHOOL_ADULTS_ENABLED
+  # that differs from `.env`, and never exports its shell
+  # BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED to Compose, because that shell value
+  # is the migration validator's acknowledgement for one deploy, not the app's
+  # (#4027).
   PENDING_SCHOOL_ADULTS_ENABLED: ${PENDING_SCHOOL_ADULTS_ENABLED:-}
   BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED: ${BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:-}
 
