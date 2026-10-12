@@ -111,11 +111,12 @@ areas.
 
 Run against `main` at `e45e41bb5` on 9 Oct 2026, over the full history.
 The collector now reads `origin/main` by default rather than the local
-`main` branch (fetch first); `--ref <rev>` analyses another revision, for
-example `--ref e45e41bb5` to reproduce this run:
+`main` branch (fetch first); `--ref <rev>` analyses another revision, as
+`--ref e45e41bb5` does below to reproduce this run (drop it to analyse the
+current `origin/main`):
 
 ```
-pnpm run audit:fragility:collect
+pnpm run audit:fragility:collect --ref e45e41bb5
 pnpm run audit:fragility:signals
 pnpm run audit:fragility:areas
 ```

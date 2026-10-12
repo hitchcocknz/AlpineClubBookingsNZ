@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  analysedRevision,
   blameCommitCounts,
   changedOldRanges,
   closingReferences,
@@ -17,11 +18,13 @@ import {
   parseMergeSubject,
   refFromArgs,
   repeatMentions,
+  resolveRef,
   revertedCommit,
+  unwrapRevertSubject,
   withRateLimitRetries,
 } from "./fragility-lib.mjs";
 import { AREAS, areasForPair } from "./fragility-areas.mjs";
-import { buildRepeats } from "./fragility-signals.mjs";
+import { buildRepeats, revertScopes } from "./fragility-signals.mjs";
 
 /**
  * The fragility review's evidence rules: which merges are fixes, which issue
@@ -67,6 +70,16 @@ describe("fix units", () => {
     expect(issueNumbersFromBranch("fix/2026-guest-form")).toEqual([2026]);
     expect(issueNumbersFromBranch("fix/2026-13-guest-form")).toEqual([2026]);
     expect(issueNumbersFromBranch("fix/issue-2026-10-guest-form")).toEqual([2026]);
+    expect(issueNumbersFromBranch("issue-2026-10")).toEqual([2026]);
+  });
+
+  it("reads an issue number followed by a month-like word as an issue, not a date", () => {
+    // Issue #2080, then a branch word that happens to start with 01–12.
+    expect(issueNumbersFromBranch("fix/2080-12-guest")).toEqual([2080]);
+    expect(issueNumbersFromBranch("fix/2080-01-bed-count")).toEqual([2080]);
+    // A bare year-month is a date only where releases are named that way.
+    expect(issueNumbersFromBranch("fix/2080-12")).toEqual([2080]);
+    expect(issueNumbersFromBranch("release/2026-10")).toEqual([]);
   });
 
   it("splits fix scopes into area names and issue numbers, folding plurals", () => {
@@ -213,12 +226,46 @@ describe("analysed revision", () => {
     expect(() => refFromArgs(["--ref"])).toThrow(/--ref needs/);
     expect(() => refFromArgs(["--ref", "--git-only"])).toThrow(/--ref needs/);
   });
+
+  it("resolves the ref to a commit sha with rev-parse --verify", () => {
+    const calls = [];
+    const runGit = (args) => {
+      calls.push(args);
+      return `${SHA_A}\n`;
+    };
+    expect(resolveRef("origin/main", runGit)).toBe(SHA_A);
+    expect(calls).toEqual([["rev-parse", "--verify", "--quiet", "origin/main^{commit}"]]);
+  });
+
+  it("explains a missing ref instead of surfacing git's ambiguous-argument error", () => {
+    const missing = () => {
+      throw new Error("Command failed: git rev-parse");
+    };
+    expect(() => resolveRef("origin/main", missing)).toThrow(/"origin\/main" does not exist.*git fetch origin.*--ref <rev>/);
+    expect(() => resolveRef("lane3/nope", missing)).toThrow(/"lane3\/nope" does not exist.*git fetch origin.*--ref <rev>/);
+  });
+
+  it("reads reverts from the sha collect recorded, not the ref name that may have moved", () => {
+    expect(analysedRevision({ ref: "origin/main", head: SHA_A, units: [] })).toBe(SHA_A);
+    // fix-units.json written before head was recorded.
+    expect(analysedRevision({ ref: "e45e41bb5", units: [] })).toBe("e45e41bb5");
+    expect(analysedRevision({ units: [] })).toBe("origin/main");
+  });
 });
 
 describe("repeat wording", () => {
   it("pairs a reference with repeat wording only inside one sentence, outside code", () => {
     const text = "Related to #10. The guest form regressed after #20 landed. `#30 again` is code.\n\nFollow-up to #40";
     expect(repeatMentions(text).map((mention) => mention.number)).toEqual([20, 40]);
+  });
+
+  it("peels every Revert wrapper and conventional revert prefix off a subject", () => {
+    expect(unwrapRevertSubject('Revert "fix(xero): stop double sync"')).toBe("fix(xero): stop double sync");
+    expect(unwrapRevertSubject('Revert "Revert "fix(xero): stop double sync""')).toBe("fix(xero): stop double sync");
+    expect(unwrapRevertSubject("revert: fix(booking): keep facts")).toBe("fix(booking): keep facts");
+    expect(unwrapRevertSubject("revert(#60)!: fix(booking): keep facts")).toBe("fix(booking): keep facts");
+    expect(unwrapRevertSubject('Revert "Merge pull request #61 from o/fix/60-x"')).toBe("Merge pull request #61 from o/fix/60-x");
+    expect(unwrapRevertSubject("fix(xero): untouched")).toBe("fix(xero): untouched");
   });
 
   it("reads the reverted sha from a revert body", () => {
@@ -331,6 +378,42 @@ describe("buildRepeats", () => {
     expect(repeats[0].earlier).toMatchObject({ scopes: ["booking"], files: ["src/lib/booking-requests.ts"] });
     expect(areasForPair(repeats[0], new Map()).map((match) => match.area)).toEqual(["booking-create"]);
   });
+
+  describe("revert scopes when the revert subject names none", () => {
+    const SHA_C = "c".repeat(40);
+    const wide = unit("pr-2618", "2026-07-01T00:00:00.000Z", { pr: 2618, tip: SHA_C, commits: [SHA_A, SHA_B], scopes: ["admin", "booking", "xero"] });
+    const revert = (subject, reverts, revertedSubject = "") => ({ sha: "d".repeat(40), subject, reverts: reverts.slice(0, 12), revertedSubject });
+
+    it("uses a conventional revert subject's own fix scope", () => {
+      expect(revertScopes(revert("revert: fix(xero): stop double sync", SHA_A), wide)).toEqual(["xero"]);
+    });
+
+    it("falls back to the reverted commit's own subject", () => {
+      expect(revertScopes(revert('Revert "Tidy the sync"', SHA_A, "fix(bookings): keep facts"), wide)).toEqual(["booking"]);
+      // Revert of a revert: neither subject names a scope until both wrappers are peeled.
+      expect(revertScopes(revert('Revert "Revert "fix(xero): x""', SHA_A, 'Revert "fix(xero): x"'), wide)).toEqual(["xero"]);
+    });
+
+    it("uses the unit's scopes only when the revert undid the whole unit", () => {
+      // GitHub's Revert button on the merged PR reverts its merge commit.
+      expect(revertScopes(revert('Revert "Merge pull request #2618 from o/fix/x"', SHA_C, "Merge pull request #2618 from o/fix/x"), wide)).toEqual(["admin", "booking", "xero"]);
+      const single = unit("commit-a", "2026-07-01T00:00:00.000Z", { commits: [SHA_A], scopes: ["xero"] });
+      expect(revertScopes(revert('Revert "Fix the sync"', SHA_A, "Fix the sync"), single)).toEqual(["xero"]);
+      // One unscoped commit out of a wide PR: no scope, so the files decide, not every PR scope.
+      expect(revertScopes(revert('Revert "Fix the sync"', SHA_A, "Fix the sync"), wide)).toEqual([]);
+    });
+
+    it("pairs a revert of a PR's merge commit with that PR", () => {
+      const repeats = buildRepeats({
+        units: [wide],
+        codePairs: [],
+        github: github(),
+        reverts: [{ ...revert('Revert "Merge pull request #2618 from o/fix/x"', SHA_C, "Merge pull request #2618 from o/fix/x"), date: "2026-07-02T00:00:00.000Z", files: [] }],
+      });
+      expect(repeats).toHaveLength(1);
+      expect(repeats[0]).toMatchObject({ signals: ["revert"], earlier: { unit: "pr-2618", scopes: ["admin", "booking", "xero"] } });
+    });
+  });
 });
 
 describe("Sekreton integrations fallback", () => {
@@ -407,10 +490,23 @@ describe("proposed business areas", () => {
     expect(scoped.map((match) => match.area)).toEqual(["admin"]);
     const testsOnly = { files: ["src/lib/__tests__/xero-sync.test.ts"] };
     expect(areasForPair(entry(side("pr-1", testsOnly), side("pr-2", testsOnly)), new Map())).toEqual([]);
-    const e2e = { files: ["e2e/booking-wizard.spec.ts", "src/lib/__tests__/helpers/clock.ts"] };
+    const e2e = { files: ["e2e/helpers/booking.ts", "src/lib/__tests__/helpers/clock.ts"] };
     expect(areasForPair(entry(side("pr-1", e2e), side("pr-2", e2e)), new Map())).toEqual([{ area: "tests", via: "both sides' files" }]);
+    // Fix PRs that each add a regression spec are not test-infrastructure repeats.
+    const specs = { files: ["e2e/booking-wizard.spec.ts"] };
+    expect(areasForPair(entry(side("pr-1", specs), side("pr-2", specs)), new Map())).toEqual([]);
     const e2eDocs = { files: ["e2e/README.md"] };
     expect(areasForPair(entry(side("pr-1", e2eDocs), side("pr-2", e2eDocs)), new Map())).toEqual([]);
+  });
+
+  it("counts e2e support files, not specs or tests, as test infrastructure", () => {
+    const tests = AREAS.find((area) => area.id === "tests");
+    for (const file of ["e2e/helpers/booking.ts", "e2e/helpers/fixtures.ts", "e2e/fixtures/users.ts", "e2e/setup/seed-second-lodge.ts", "e2e/pre-setup/x.ts", "e2e/auth.setup.ts", "e2e/global-setup.ts", "playwright.config.ts", "src/lib/__tests__/support/db.ts"]) {
+      expect({ file, matches: tests.files.test(file) }).toEqual({ file, matches: true });
+    }
+    for (const file of ["e2e/booking-wizard.spec.ts", "e2e/multi-lodge/switch.spec.ts", "e2e/helpers/booking.test.ts", "src/lib/__tests__/helpers/clock.test.ts", "e2e/README.md", "e2e/tools/capture-screenshots.ts"]) {
+      expect({ file, matches: tests.files.test(file) }).toEqual({ file, matches: false });
+    }
   });
 
   it("lists every area scope in the folded form parseFixScope produces", () => {

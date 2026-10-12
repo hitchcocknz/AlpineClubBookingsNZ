@@ -9,8 +9,9 @@
  *
  * The git collectors read `origin/main` by default, not the local `main`
  * branch, which in a lane worktree is often stale; run `git fetch origin`
- * first. `--ref` picks any other revision, and the ref used is recorded in
- * `fix-units.json` for the signals step.
+ * first (a missing ref stops the run with that advice). `--ref` picks any
+ * other revision; the ref and the sha it resolved to are recorded in
+ * `fix-units.json`, and the signals step reads reverts from that sha.
  *
  * Writes `tmp/fragility/*.json` (git-ignored) under the checkout root, wherever
  * it is run from. Every run rebuilds every file it owns from scratch, so a
@@ -67,6 +68,7 @@ import {
   parseIntegrationsIssue,
   parseMergeSubject,
   refFromArgs,
+  resolveRef,
   withRateLimitRetries,
 } from "./fragility-lib.mjs";
 
@@ -74,6 +76,8 @@ const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const OUT_DIR = path.join(ROOT, "tmp/fragility");
 const REF = refFromArgs(process.argv.slice(2));
+/** The sha REF resolved to at start-up; every git read uses it, so a fetch mid-run cannot mix two commits. */
+let HEAD = REF;
 const BLAME_CONCURRENCY = 3;
 const GIT_BUFFER = 512 * 1024 * 1024;
 
@@ -294,7 +298,7 @@ async function waitForReset(response) {
 
 /** Every commit reachable from the analysed ref: parents, date (UTC), subject, body, files (non-merges). */
 function readCommits() {
-  const raw = git(["log", REF, "--format=%x1e%H%x1f%P%x1f%aI%x1f%s%x1f%b%x1f", "--name-only", "--no-renames"]);
+  const raw = git(["log", HEAD, "--format=%x1e%H%x1f%P%x1f%aI%x1f%s%x1f%b%x1f", "--name-only", "--no-renames"]);
   const commits = new Map();
   for (const record of raw.split("\x1e").slice(1)) {
     const [sha, parents, date, subject, body, files] = record.split("\x1f");
@@ -311,7 +315,7 @@ function readCommits() {
 }
 
 function firstParentShas() {
-  return new Set(git(["rev-list", "--first-parent", REF]).split("\n").filter(Boolean));
+  return new Set(git(["rev-list", "--first-parent", HEAD]).split("\n").filter(Boolean));
 }
 
 function netFiles(base, tip) {
@@ -469,12 +473,19 @@ async function main() {
     process.exit(2);
   }
 
+  try {
+    HEAD = resolveRef(REF, git);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
+
   const commits = readCommits();
   if (!gitOnly) write("github.json", token ? await collectGithub(token) : await collectViaIntegrations(commits));
 
   console.error("git: fix units");
   const units = buildFixUnits(commits);
-  write("fix-units.json", { collectedAt: new Date().toISOString(), ref: REF, head: git(["rev-parse", REF]).trim(), units });
+  write("fix-units.json", { collectedAt: new Date().toISOString(), ref: REF, head: HEAD, units });
   console.error(`git: ${units.length} fix units`);
 
   console.error("git: code-history repeats (blame)");

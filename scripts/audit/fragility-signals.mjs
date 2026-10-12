@@ -28,16 +28,17 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  analysedRevision,
   AUDIT_CUTOFF,
   closingReferences,
   commitUrl,
-  DEFAULT_REF,
   issueUrl,
   pairKey,
   parseFixScope,
   pullUrl,
   repeatMentions,
   revertedCommit,
+  unwrapRevertSubject,
 } from "./fragility-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -50,7 +51,7 @@ const OUT_DIR = path.join(ROOT, "tmp/fragility");
  * @param {Array} input.units        fix units (fix-units.json), sorted by date
  * @param {Array} input.codePairs    code-history pairs (code-repeats.json)
  * @param {object} input.github      github.json: { issues, comments, reopened }
- * @param {Array} input.reverts      [{ sha, date, subject, reverts, files }] revert commits on the analysed ref
+ * @param {Array} input.reverts      [{ sha, date, subject, reverts, revertedSubject, files }] revert commits on the analysed ref
  */
 export function buildRepeats({ units, codePairs, github, reverts }) {
   const byNumber = new Map(github.issues.map((issue) => [issue.number, issue]));
@@ -124,12 +125,14 @@ export function buildRepeats({ units, codePairs, github, reverts }) {
   }
 
   for (const revert of reverts) {
-    const earlier = linked.find((unit) => unit.commits.some((sha) => sha.startsWith(revert.reverts)));
+    // GitHub's "Revert" button on a merged PR reverts the merge commit, which
+    // is the unit's tip rather than one of its own commits.
+    const earlier = linked.find((unit) => unit.tip?.startsWith(revert.reverts) || unit.commits.some((sha) => sha.startsWith(revert.reverts)));
     if (!earlier) continue;
     // A revert undoes one commit, not the whole fix unit: both sides carry that
     // commit's own scope and files, so a wide PR's union of scopes does not
     // spread one revert across every area the PR touched.
-    const reverted = { scopes: parseFixScope(/^Revert "(.*)"$/.exec(revert.subject)?.[1] ?? "").scopes, files: revert.files ?? [] };
+    const reverted = { scopes: revertScopes(revert, earlier), files: revert.files ?? [] };
     add({ ...unitRef(earlier), ...reverted }, { key: `commit-${revert.sha.slice(0, 12)}`, commit: revert.sha, date: revert.date, title: revert.subject, ...reverted, url: commitUrl(revert.sha) }, {
       kind: "revert",
       url: commitUrl(revert.sha),
@@ -152,6 +155,22 @@ export function buildRepeats({ units, codePairs, github, reverts }) {
   return [...entries.values()]
     .map((entry) => ({ ...entry, sinceAudit: entry.laterDate >= AUDIT_CUTOFF }))
     .sort((a, b) => a.laterDate.localeCompare(b.laterDate));
+}
+
+/**
+ * The scopes a revert undid: the `fix(<scope>)` of the revert's own subject
+ * once its `Revert "…"` / `revert:` wrappers are peeled, else of the reverted
+ * commit's subject, else — only when the revert undid the whole unit (its
+ * merge commit, or its only commit) — the unit's scopes. A partial revert with
+ * no scope of its own gets none, and is mapped by its files.
+ */
+export function revertScopes(revert, unit) {
+  for (const subject of [revert.subject, revert.revertedSubject]) {
+    const { scopes } = parseFixScope(unwrapRevertSubject(subject));
+    if (scopes.length > 0) return scopes;
+  }
+  const wholeUnit = unit.tip?.startsWith(revert.reverts) || (unit.commits.length === 1 && unit.commits[0].startsWith(revert.reverts));
+  return wholeUnit ? unit.scopes : [];
 }
 
 function unitRef(unit) {
@@ -185,7 +204,17 @@ function readRevertCommits(ref) {
       const [sha, date, subject, body, files] = record.split("\x1f");
       return { sha, date: new Date(date).toISOString(), subject, reverts: revertedCommit(body), files: files.split("\n").filter(Boolean) };
     })
-    .filter((revert) => revert.reverts);
+    .filter((revert) => revert.reverts)
+    .map((revert) => ({ ...revert, revertedSubject: commitSubject(revert.reverts) }));
+}
+
+/** A commit's subject, or "" when the commit is not in this checkout. */
+function commitSubject(sha) {
+  try {
+    return execFileSync("git", ["show", "-s", "--format=%s", sha], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
 }
 
 function readJson(name) {
@@ -199,9 +228,10 @@ function readJson(name) {
 
 function main() {
   const github = readJson("github.json");
-  const { units, ref = DEFAULT_REF } = readJson("fix-units.json");
+  const fixUnits = readJson("fix-units.json");
   const { pairs } = readJson("code-repeats.json");
-  const repeats = buildRepeats({ units, codePairs: pairs, github, reverts: readRevertCommits(ref) });
+  // The recorded sha, not the ref name: origin/main may have moved since collect ran.
+  const repeats = buildRepeats({ units: fixUnits.units, codePairs: pairs, github, reverts: readRevertCommits(analysedRevision(fixUnits)) });
   writeFileSync(path.join(OUT_DIR, "repeats.json"), `${JSON.stringify({ builtAt: new Date().toISOString(), repeats }, null, 1)}\n`);
   const bySignal = {};
   for (const entry of repeats) for (const signal of entry.signals) bySignal[signal] = (bySignal[signal] ?? 0) + 1;

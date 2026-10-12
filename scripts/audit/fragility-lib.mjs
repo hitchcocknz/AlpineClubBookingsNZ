@@ -73,12 +73,24 @@ export function issueNumbersFromBranch(branch) {
   if (explicit) return [Number(explicit[1])];
   const match = /(?:^|\/)(?:(?:hot)?fix(?:es)?[/-])?(?:gh-|#)?(\d{2,5})(?=$|[-_/])/i.exec(branch);
   if (!match) return [];
-  // A year followed by a month (`codex/2026-10-05-…`, `release/2026-10`) is a date, not issue #2026.
-  if (YEAR_MONTH.test(branch.slice(match.index + match[0].length - match[1].length))) return [];
+  const start = match.index + match[0].length - match[1].length;
+  if (isDateAt(branch.slice(0, start), branch.slice(start))) return [];
   return [Number(match[1])];
 }
 
-const YEAR_MONTH = /^20\d\d-(0[1-9]|1[0-2])(?=$|[-_/])/;
+/**
+ * A full date (`codex/2026-10-05-…`, `fix/2026-12-31-rollover`), or a bare
+ * year-month that ends a `release/` branch (`release/2026-10`), is a date, not
+ * issue #2026. A year-month followed by anything else is an issue and a word:
+ * `fix/2080-12-guest` is issue #2080.
+ */
+function isDateAt(before, rest) {
+  if (FULL_DATE.test(rest)) return true;
+  return /(^|\/)release\/$/i.test(before) && RELEASE_MONTH.test(rest);
+}
+
+const FULL_DATE = /^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?=$|[-_/])/;
+const RELEASE_MONTH = /^20\d\d-(0[1-9]|1[0-2])$/;
 
 /**
  * The scope of a conventional `fix(<scope>):` subject, split into the named
@@ -205,6 +217,48 @@ export function refFromArgs(argv) {
   const value = argv[index].startsWith("--ref=") ? argv[index].slice("--ref=".length) : argv[index + 1];
   if (!value || value.startsWith("--")) throw new Error("--ref needs a git revision, for example --ref origin/main");
   return value;
+}
+
+/**
+ * The commit `ref` names, or an error that says how to get it. A lane worktree
+ * that has never fetched has no `origin/main`, and git's own "ambiguous
+ * argument" message does not say what to do about it.
+ *
+ * @param {string} ref
+ * @param {(args: string[]) => string} runGit runs git and returns stdout, throwing on a non-zero exit
+ * @returns {string} the full commit sha
+ */
+export function resolveRef(ref, runGit) {
+  try {
+    return runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).trim();
+  } catch {
+    throw new Error(
+      `git revision "${ref}" does not exist in this checkout. ` +
+        (ref === DEFAULT_REF ? "Run `git fetch origin` first, or " : "Check the name, run `git fetch origin` if it is a remote branch, or ") +
+        "pass --ref <rev> to analyse another revision (for example --ref main or --ref <sha>).",
+    );
+  }
+}
+
+/** The revision the signals step reads reverts from: the sha the collector recorded, so both steps analyse the same commit. */
+export function analysedRevision(fixUnits) {
+  return fixUnits.head ?? fixUnits.ref ?? DEFAULT_REF;
+}
+
+/**
+ * The subject a revert commit undid, with every `Revert "…"` wrapper and
+ * conventional `revert:` / `revert(scope):` prefix peeled off:
+ * `Revert "Revert "fix(xero): x""` → `fix(xero): x`, `revert: fix(x): y` → `fix(x): y`.
+ */
+export function unwrapRevertSubject(subject) {
+  let current = subject ?? "";
+  for (;;) {
+    const quoted = /^Revert "(.*)"$/.exec(current);
+    const conventional = /^revert(\([^)]*\))?!?:\s*(.*)$/i.exec(current);
+    if (quoted) current = quoted[1];
+    else if (conventional) current = conventional[2];
+    else return current;
+  }
 }
 
 /**

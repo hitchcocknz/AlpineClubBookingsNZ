@@ -143,7 +143,9 @@ export const AREAS = [
     name: "Test and E2E infrastructure (flaky or wrong tests)",
     scopes: /^(e2e|test)$/,
     labels: /^$/,
-    files: /^e2e\/(?!.*\.md$)|__tests__\/(support|helpers)\/|^playwright/i,
+    // E2E support code (helpers, fixtures, setup, config), not the specs: a fix
+    // that adds a regression spec is about the area it tests, not the harness.
+    files: /^(?!.*\.(spec|test)\.[cm]?[jt]sx?$)(e2e\/(helpers|fixtures|support|setup|pre-setup)\/|e2e\/[^/]*(setup|teardown|config|fixtures?)[^/]*\.[cm]?[jt]s$|.*__tests__\/(support|helpers)\/|playwright[^/]*\.config\.[cm]?[jt]s$)/i,
     testFiles: true,
   },
 ];
