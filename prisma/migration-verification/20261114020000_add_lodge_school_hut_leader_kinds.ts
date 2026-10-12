@@ -55,7 +55,7 @@ const ROWS_SQL = `
 const OTHER_KINDS = { custodian: true, memberOnBooking: true, memberSeparately: true };
 
 const verification: DataMigrationVerification = {
-  migration: "20261104010000_add_lodge_school_hut_leader_kinds",
+  migration: "20261114020000_add_lodge_school_hut_leader_kinds",
   intent:
     "Add the four per-lodge school hut-leader kinds and carry #3416's club-wide teacher switch into every lodge's setting, inserting an own row only for a lodge no row serves, without changing any lodge's capacity or soft cap.",
   idempotentReRun: false,

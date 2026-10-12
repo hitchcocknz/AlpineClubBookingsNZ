@@ -6,7 +6,7 @@
 -- application and workers stopped.
 --
 -- WARNING: this does NOT remove the migration's row from "_prisma_migrations".
--- Prisma still records 20261104010000_add_lodge_school_hut_leader_kinds as
+-- Prisma still records 20261114020000_add_lodge_school_hut_leader_kinds as
 -- applied, so a later forward deploy will NOT re-add these columns and the
 -- release that needs them will fail on its first read. Before deploying
 -- forward again, either re-run migration.sql by hand or delete that row from
