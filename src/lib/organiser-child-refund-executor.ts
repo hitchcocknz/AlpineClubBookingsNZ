@@ -32,6 +32,7 @@ import {
 import { runPaymentRecoveryOperationNow } from "@/lib/payment-recovery";
 import {
   buildOrganiserChildCancellationRefundKey,
+  isOrganiserChildAppealRefundKey,
   isOrganiserChildRefundKey,
   organiserChildRefundReasonForKey,
 } from "@/lib/payment-recovery-keys";
@@ -237,15 +238,21 @@ export async function processOrganiserChildRefundOperation(
       { operationId: operation.id, settlementId: settlement.id, stripeRefundId: refund.id, refundCents: refund.amount },
       "Organiser child refund recorded against the combined payment (#3653)",
     );
-    await recordBookingEvent({
-      bookingId: operation.bookingId,
-      type: BookingEventType.REFUNDED,
-      actorMemberId: null,
-      amountCents: refund.amount,
-      reason: `${amount} was refunded to the group organiser's card, who paid for this booking.`,
-    }).catch((err) =>
-      logger.error({ err, bookingId: operation.bookingId }, "Failed to record the organiser child refund event"),
-    );
+    // #3956: an approved appeal's refund writes no booking event, as no Stripe
+    // appeal refund does - the booking is already cancelled, and the narrative
+    // reads a REFUNDED event after the cancel as the cancellation's settlement.
+    // The appeal's own approval and its audit row carry the record.
+    if (!isOrganiserChildAppealRefundKey(key)) {
+      await recordBookingEvent({
+        bookingId: operation.bookingId,
+        type: BookingEventType.REFUNDED,
+        actorMemberId: null,
+        amountCents: refund.amount,
+        reason: `${amount} was refunded to the group organiser's card, who paid for this booking.`,
+      }).catch((err) =>
+        logger.error({ err, bookingId: operation.bookingId }, "Failed to record the organiser child refund event"),
+      );
+    }
     // A refund an earlier attempt failed to make (the first claim is attempt
     // 1), or one Stripe failed after it was recorded (the debt was reopened,
     // with its attempts restarted at 0 - so the reopen's durable marker, not

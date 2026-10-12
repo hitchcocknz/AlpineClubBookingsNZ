@@ -75,6 +75,10 @@ interface RefundRequestData {
       // #3827: every hand-back still promised back by bank transfer.
       manualRefundTasks?: Array<{ amountCents: number | null }>
     } | null
+    // #3956 (`INV-PAY-123`): on a pending appeal for a booking the group
+    // organiser paid for by card, the server's `organiserCardAppealCap` - the
+    // most the organiser's combined payment can still return. Null otherwise.
+    organiserCardMaxRefundableCents?: number | null
   }
   member: {
     id: string
@@ -82,6 +86,18 @@ interface RefundRequestData {
     lastName: string
     email: string
   }
+}
+
+/**
+ * The figure the approve route caps an appeal at: the organiser-card cap the
+ * server read for a booking the group organiser paid for by card (#3956), and
+ * otherwise `refundAppealCeiling` (#3827).
+ */
+function appealCeiling(req: RefundRequestData): number {
+  return (
+    req.booking.organiserCardMaxRefundableCents ??
+    refundAppealCeiling(req.booking.payment, req.booking.creditsFromCancellation)
+  )
 }
 
 interface AdminActor {
@@ -371,7 +387,7 @@ export default function RefundRequestsPage() {
     // (`INV-PAY-118`) - and there is
     // an ELSE: a request whose booking has no captured payment used to leave
     // the amount prefilled for the request viewed before it (#2932 review).
-    const max = refundAppealCeiling(req.booking.payment, req.booking.creditsFromCancellation)
+    const max = appealCeiling(req)
     const requested = req.requestedAmountCents
     setApprovedAmount(max > 0 ? formatCentsPlain(Math.min(requested || max, max)) : "")
   }
@@ -457,7 +473,7 @@ export default function RefundRequestsPage() {
                         req.booking.creditsFromCancellation
                       )
                     : null
-                  const maxRefundable = refundAppealCeiling(payment, req.booking.creditsFromCancellation)
+                  const maxRefundable = appealCeiling(req)
                   const isReviewing = reviewingRefundId === req.id
 
                   return (

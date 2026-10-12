@@ -510,6 +510,11 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Your group booking is settled — {{CLUB_NAME}}",
     "defaultBody": "Your Group Booking Is Settled\n\nHi {{firstName}}, thanks for settling your group's stay at {{CLUB_NAME}}'s lodge. Everyone you are paying for is now confirmed.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nJoiners settled: {{joinerCount}}\nTotal paid: {{total}}\n\nEach joiner has been emailed to confirm their spot. There is nothing more for them to pay.\n\nIf anything looks wrong, contact the club at {{SUPPORT_EMAIL}}."
   },
+  // #3956 (`INV-PAY-123`): a joiner's approved appeal refunded to the organiser's card.
+  "group-organiser-joiner-refund": {
+    "defaultSubject": "A refund to your card for your group booking — {{CLUB_NAME}}",
+    "defaultBody": "Refund to Your Card\n\nHi {{firstName}},\n\n{{refundSentence}}\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nIf you have questions, contact the club at {{SUPPORT_EMAIL}}."
+  },
   "group-join-settled": {
     "defaultSubject": "Your spot is confirmed — {{CLUB_NAME}}",
     "defaultBody": "Your Spot Is Confirmed\n\nHi {{firstName}}, {{organiserName}} has settled the cost of your stay at {{CLUB_NAME}}'s lodge as part of their group booking. Your spot is confirmed and there is nothing for you to pay.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nIf you have any questions about your stay, contact the club at {{SUPPORT_EMAIL}}."

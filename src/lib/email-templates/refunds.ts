@@ -66,6 +66,8 @@ export function refundRequestApprovedTemplate(data: {
    * transfer (an officer task), 0 when a card refund carries all of it.
    */
   bankTransferCents: number;
+  /** #3956: the refund goes to the group organiser's card - made or on its way; null otherwise. */
+  organiserCardRefund?: "made" | "pending" | null;
   adminNotes: string | null;
   checkIn: Date;
   checkOut: Date;
@@ -77,7 +79,12 @@ export function refundRequestApprovedTemplate(data: {
     headingText: "Refund Appeal Approved",
     outcomeSentence:
       "Your refund appeal for your booking (" + emailCalendarDay(data.checkIn) + " - " + emailCalendarDay(data.checkOut) + ") has been approved. " +
-      refundRequestApprovedRefundSentence(data.amountCents ?? 0, data.bankTransferCents, (cents) => formatCents(cents, format)),
+      refundRequestApprovedRefundSentence(
+        data.amountCents ?? 0,
+        data.bankTransferCents,
+        (cents) => formatCents(cents, format),
+        data.organiserCardRefund ?? null,
+      ),
     outcomeTone: "success",
     adminNotes: data.adminNotes,
   });

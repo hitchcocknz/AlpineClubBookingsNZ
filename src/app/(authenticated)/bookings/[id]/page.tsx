@@ -24,6 +24,7 @@ import { resolveBookingDetailConsent } from "./_lib/booking-detail-consent";
 import { loadBookingDetailHistory } from "./_lib/booking-detail-history";
 import { resolveBookingDetailEditAccess } from "./_lib/booking-detail-edit-access";
 import { resolveBookingDetailPayment } from "./_lib/booking-detail-payment";
+import { loadOrganiserCardAppealCeiling } from "./_lib/booking-detail-organiser-card-appeal";
 import { resolveBookingDetailLinkedParty } from "./_lib/booking-detail-linked-party";
 import { buildBookingDetailEditorData } from "./_lib/booking-detail-editor-data";
 import { renderBookingDetailMessages } from "./_lib/booking-detail-messages";
@@ -231,13 +232,20 @@ export default async function BookingDetailPage({
     viewer,
     access,
   });
-  const payment = resolveBookingDetailPayment({
+  const resolvedPayment = resolveBookingDetailPayment({
     booking,
     modules,
     viewer,
     access,
     party,
   });
+  // #3956 (`INV-PAY-123`): an appeal on a booking the organiser paid for by card
+  // is capped at what the organiser's combined payment can still return.
+  const organiserCardAppealCeiling = await loadOrganiserCardAppealCeiling(booking);
+  const payment =
+    organiserCardAppealCeiling === null
+      ? resolvedPayment
+      : { ...resolvedPayment, maxRefundableCents: organiserCardAppealCeiling };
   const { originalPaymentCaptured } = payment;
   const messages = renderBookingDetailMessages({
     booking,

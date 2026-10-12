@@ -460,8 +460,10 @@ export function bookingModificationRefundReasonForKeyPrefix(
 // card payment. One recovery row per refund, and the row's key doubles as the
 // Stripe idempotency key, so a replay can only ever answer with the refund the
 // first attempt made. An edit's refund is keyed by its `BookingModification`; a
-// group cancellation's by its settlement and the child.
+// group cancellation's by its settlement and the child; an approved refund
+// appeal's by its `RefundRequest` (#3956, `INV-PAY-123`).
 const ORGANISER_CHILD_REFUND_KEY_PREFIX = "organiser_child_refund_";
+const ORGANISER_CHILD_APPEAL_REFUND_KEY_PREFIX = `${ORGANISER_CHILD_REFUND_KEY_PREFIX}appeal_`;
 export function buildOrganiserChildModificationRefundKey(bookingModificationId: string) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}mod_${bookingModificationId}`;
 }
@@ -471,14 +473,21 @@ export function buildOrganiserChildCancellationRefundKey(
 ) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_${settlementId}_${childBookingId}`;
 }
+export function buildOrganiserChildAppealRefundKey(refundRequestId: string) {
+  return `${ORGANISER_CHILD_APPEAL_REFUND_KEY_PREFIX}${refundRequestId}`;
+}
 export function isOrganiserChildRefundKey(key: string) {
   return key.startsWith(ORGANISER_CHILD_REFUND_KEY_PREFIX);
 }
+/** #3956: an approved refund appeal's refund out of the combined payment - not the cancellation's money. */
+export function isOrganiserChildAppealRefundKey(key: string) {
+  return key.startsWith(ORGANISER_CHILD_APPEAL_REFUND_KEY_PREFIX);
+}
 /** The Stripe `reason` metadata, rebuilt from the key alone so a replay sends the same body. */
 export function organiserChildRefundReasonForKey(key: string) {
-  return key.startsWith(`${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_`)
-    ? "organiser_cancellation"
-    : "organiser_child_reduction";
+  if (key.startsWith(`${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_`)) return "organiser_cancellation";
+  if (isOrganiserChildAppealRefundKey(key)) return "organiser_child_appeal";
+  return "organiser_child_reduction";
 }
 export { ORGANISER_CHILD_REFUND_KEY_PREFIX };
 

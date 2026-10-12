@@ -201,6 +201,7 @@ import {
   groupJoinPaySelfTemplate,
   groupJoinReleasedTemplate,
   groupJoinSettledTemplate,
+  groupOrganiserJoinerRefundTemplate,
   groupSettlementExpiredTemplate,
   groupSettlementReceiptTemplate,
 } from "@/lib/email-templates/groups";
@@ -1010,6 +1011,11 @@ const GENERATED_CASES: EmailRenderCase[] = [
     refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 102, adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "refundRequestApprovedTemplate:cardAndBankTransfer", fn: "refundRequestApprovedTemplate", render: () =>
     refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 40, adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+  // #3956: a booking the group organiser paid for by card - refunded, or on its way.
+  { id: "refundRequestApprovedTemplate:organiserCardMade", fn: "refundRequestApprovedTemplate", render: () =>
+    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 0, organiserCardRefund: "made", adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+  { id: "refundRequestApprovedTemplate:organiserCardPending", fn: "refundRequestApprovedTemplate", render: () =>
+    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 0, organiserCardRefund: "pending", adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "refundRequestDeclinedTemplate:minimal", fn: "refundRequestDeclinedTemplate", render: () =>
     refundRequestDeclinedTemplate({ firstName: "firstName-1", adminNotes: "adminNotes-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "bookingRequestVerificationTemplate:minimal", fn: "bookingRequestVerificationTemplate", render: () =>
@@ -1018,6 +1024,8 @@ const GENERATED_CASES: EmailRenderCase[] = [
     groupSettlementReceiptTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), joinerCount: 104, totalCents: 105 }, CLUB_FORMAT_TEST) },
   { id: "groupJoinSettledTemplate:minimal", fn: "groupJoinSettledTemplate", render: () =>
     groupJoinSettledTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105 }) },
+  { id: "groupOrganiserJoinerRefundTemplate:minimal", fn: "groupOrganiserJoinerRefundTemplate", render: () =>
+    groupOrganiserJoinerRefundTemplate({ firstName: "firstName-1", joinerName: "joinerName-2 <&>", amountCents: 103, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "groupSettlementExpiredTemplate:minimal", fn: "groupSettlementExpiredTemplate", render: () =>
     groupSettlementExpiredTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), joinerCount: 104, totalCents: 105 }, CLUB_FORMAT_TEST) },
   { id: "groupJoinReleasedTemplate:minimal", fn: "groupJoinReleasedTemplate", render: () =>

@@ -55,6 +55,7 @@ import { organiserHasPaidSettlement, paidByOrganiserCard } from "@/lib/group-org
 import { calculateRefundAmount, type CancellationRule } from "@/lib/cancellation";
 import logger from "@/lib/logger";
 import {
+  buildOrganiserChildAppealRefundKey,
   buildOrganiserChildCancellationRefundKey,
   buildOrganiserChildModificationRefundKey,
   ORGANISER_CHILD_REFUND_KEY_PREFIX,
@@ -547,6 +548,70 @@ export async function reserveOrganiserChildModificationRefund(
     amountCents: plan.amountCents,
     overCap: "refuse",
   });
+}
+
+/**
+ * #3956 (`INV-PAY-123`): THE ONE CAP on a refund appeal for a booking the group
+ * organiser paid for by card - null for any other booking. It comes out of the
+ * organiser's combined payment, so it is the room a child refund debt may take
+ * (`organiserChildRefundHeadroomCents`: the combined payment's and this child's
+ * refunds made and owed both count; the stored mirror alone is not safe to size
+ * from), less `handedBackCents` - what the caller's `refundAppealHandedBackCents`
+ * read says is already promised back another way. Zero, with no settlement, once
+ * that payment no longer holds the money. The approval reads it under `lock(1)`
+ * and refuses past it; the member's form and the review screen read it unlocked,
+ * as advice.
+ */
+export async function organiserCardAppealCap(
+  db: Db,
+  booking: { organiserSettled: boolean; parentBookingId: string | null; payment: { source: string } | null },
+  childPayment: ChildPayment,
+  handedBackCents: number,
+): Promise<{ settlement: CombinedCardSettlement | null; maxRefundableCents: number } | null> {
+  if (!paidByOrganiserCard(booking)) return null;
+  const found = await findRefundableCombinedCardSettlement(db, booking);
+  if (!found) return { settlement: null, maxRefundableCents: 0 };
+  const settlement = { id: found.id, stripePaymentIntentId: found.stripePaymentIntentId, amountCents: found.amountCents };
+  const roomCents = await organiserChildRefundHeadroomCents(db, settlement, childPayment);
+  return { settlement, maxRefundableCents: Math.max(0, roomCents - handedBackCents) };
+}
+
+/**
+ * #3956 (`INV-PAY-123`): write an approved appeal's refund debt (step 1), keyed
+ * by its `RefundRequest`, in the approval's transaction after it claimed the
+ * request. The caller has already refused an amount over
+ * `organiserCardAppealCap`; the reservation refuses rather than clamps, so an
+ * approval never promises more than the organiser's card can return. A key
+ * already taken - a debt from an earlier approval of this request - refuses
+ * too, rather than reporting that frozen debt as this approval's refund.
+ */
+export async function reserveOrganiserChildAppealRefund(
+  db: Db,
+  input: {
+    settlement: CombinedCardSettlement;
+    refundRequestId: string;
+    childBookingId: string;
+    childPayment: ChildPayment;
+    amountCents: number;
+  },
+): Promise<PaymentRecoveryOperation> {
+  const key = buildOrganiserChildAppealRefundKey(input.refundRequestId);
+  const taken = await db.paymentRecoveryOperation.findUnique({ where: { idempotencyKey: key }, select: { id: true } });
+  if (taken) {
+    throw new OrganiserChildRefundRefusedError(
+      "This appeal already has a refund to the group organiser's card from an earlier approval, so it was not approved again.",
+    );
+  }
+  const debt = await reserveOrganiserChildRefund(db, {
+    key,
+    settlement: input.settlement,
+    childBookingId: input.childBookingId,
+    childPayment: input.childPayment,
+    amountCents: input.amountCents,
+    overCap: "refuse",
+  });
+  if (!debt) throw new Error(`Refund appeal ${input.refundRequestId} reserved no refund for its approved amount`);
+  return debt;
 }
 
 /**
