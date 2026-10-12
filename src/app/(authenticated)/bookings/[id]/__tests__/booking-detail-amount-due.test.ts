@@ -15,6 +15,10 @@ import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
 function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }) {
   const booking = {
     status: "PAYMENT_PENDING",
+    // #3372 (composed with #3924): the loader selects these for the retained
+    // line's Net Collected rule (`getNetCollectedCashParts`).
+    deletedAt: null,
+    manualRefundTasks: [],
     finalPriceCents: 20000,
     organiserSettled: false,
     creditsFromCancellation: [],
@@ -26,6 +30,9 @@ function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }
       source: "STRIPE",
       amountCents: 0,
       refundedAmountCents: 0,
+      _count: { transactions: 0 },
+      recoveryOperations: [],
+      refunds: [],
       manualRefundTasks: [],
       changeFeeCents: payment.changeFeeCents,
       creditAppliedCents: payment.creditAppliedCents + 999,
