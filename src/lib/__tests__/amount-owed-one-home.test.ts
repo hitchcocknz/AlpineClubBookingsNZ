@@ -135,7 +135,8 @@ const quotesIn = (text: string) =>
   [...text.matchAll(BARE_PRICE_QUOTED)].map((match) => match[0].replace(/\s+/g, " "));
 const duePropertiesIn = (text: string) =>
   [...text.matchAll(DUE_PROPERTY)]
-    .filter((match) => !/readBookingAmountOwed\(/.test(match[1] ?? ""))
+    // The floored `dueCents`, never `owedCents`, which goes negative when credit exceeds the price.
+    .filter((match) => !/readBookingAmountOwed\([^)]*\)\)\.dueCents\b/.test(match[1] ?? ""))
     .map((match) => match[0].replace(/\s+/g, " ").trim());
 const comparisonsIn = (text: string) =>
   [...text.matchAll(CREDIT_VS_BARE_PRICE)].map((match) => match[0].replace(/\s+/g, " "));
@@ -258,6 +259,7 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
       "{ priceCents, amountDueCents, bookingReference }",
       "{ amountDueCents: priceCents, bookingReference }",
       "{ amountDueCents: settled ? 0 : booking.finalPriceCents }",
+      "amountDueCents: (await readBookingAmountOwed(booking)).owedCents,",
     ]) {
       expect(duePropertiesIn(expression), expression).toHaveLength(1);
     }
