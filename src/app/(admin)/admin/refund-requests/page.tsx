@@ -525,7 +525,7 @@ export default function RefundRequestsPage() {
                               <div>
                                 <span className="text-muted-foreground">Remaining refundable:</span>{" "}
                                 {req.booking.organiserCardCombinedRefundPending
-                                  ? "After the group refund"
+                                  ? "Waiting for the group refund"
                                   : formatCents(maxRefundable, format)}
                               </div>
                               <div>

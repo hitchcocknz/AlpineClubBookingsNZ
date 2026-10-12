@@ -1013,7 +1013,7 @@ describe("Admin refund and credit review page", () => {
         ).toBeTruthy();
         expect(screen.queryByText(/Max refundable/)).toBeNull();
         expect(screen.getByText("Remaining refundable:").parentElement).toHaveTextContent(
-          "Remaining refundable: After the group refund",
+          "Remaining refundable: Waiting for the group refund",
         );
       } else {
         expect(screen.getByText("Max refundable: $40.00")).toBeTruthy();
