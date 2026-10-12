@@ -341,6 +341,12 @@ Two consequences worth knowing before you edit one:
   bank transfer the club will send, or, on a group booking the organiser paid
   for by card, the group organiser's card.
   Keep it on a line of its own, with no `$` or label in front.
+- **`{{changeSummary}}` on Booking Modified lists what changed, one line each.**
+  Dates, guest count and total appear as a Previous/New pair only when they
+  changed. When the change added people, a **Guests Added** line names each of
+  them, with their own nights in brackets for anyone not staying the whole stay
+  (#4030) — the same line the built-in email shows. Keep the token on a line of
+  its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

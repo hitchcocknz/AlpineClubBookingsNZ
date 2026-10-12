@@ -356,6 +356,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
     );
 
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Alice",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -390,6 +391,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
     );
 
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Bob",
       modificationType: "GUEST_ADD",
       oldCheckIn: new Date("2026-06-01"),
@@ -423,6 +425,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
     );
 
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Charlie",
       modificationType: "GUEST_REMOVE",
       oldCheckIn: new Date("2026-06-01"),
@@ -454,6 +457,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
     );
 
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: '<script>alert("xss")</script>',
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -485,6 +489,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
     );
 
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Dan",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),

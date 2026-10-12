@@ -21,3 +21,10 @@
   fee, the member guest rules and the overbooking confirmation, the amount due
   raised and settled, and the usual change email. The entry and the approval
   are one step: if the approval is refused, nothing entered is kept.
+
+- **The "Booking Modified" email names the guests a change added (#4030).** It
+  used to give only the new guest count. A **Guests Added** line now names each
+  person added, with their own nights for anyone not staying the whole stay, on
+  every kind of change that adds guests — the member's own edit, an officer's
+  edit or approval, and adding a guest from the booking page — in the built-in
+  email and in a club's own wording through `{{changeSummary}}`.

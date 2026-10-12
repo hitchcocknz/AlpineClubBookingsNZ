@@ -11,7 +11,7 @@
  * with the admin alerts about the same booking).
  */
 import {
-  type AppliedCreditSummary,
+  type AppliedCreditSummary, type BookingModificationAddedGuest,
   appliedCreditSummaryRows,
   bookingModificationSummaryRows,
   bookingModificationTypeLabel,
@@ -468,6 +468,7 @@ export function bookingModifiedTemplate(params: {
   // saved without. One more change row, so the HTML and the flat body cannot be
   // the ones to disagree about what the member asked for.
   promoChangeNotAppliedNote?: string | null;
+  addedGuests: ReadonlyArray<BookingModificationAddedGuest>; // #4030: named in the shared rows; `[]` = nobody
   /**
    * #3033 (epic #2797): this change saved and its refund or credit could not be
    * worked out from what the booking has stored, so the club is deciding it.
@@ -532,6 +533,7 @@ export function bookingModifiedTemplate(params: {
     changeFeeCents,
     promoCoverageNote,
     promoChangeNotAppliedNote,
+    addedGuests: params.addedGuests,
   }, format).map((row) => ({
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),

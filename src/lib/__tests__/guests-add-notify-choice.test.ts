@@ -378,6 +378,10 @@ describe("POST /api/bookings/[id]/guests notify choice (#1769b)", () => {
 
     expect(res.status).toBe(200);
     expect(mockedSendModifiedEmail).toHaveBeenCalledTimes(1);
+    // #4030: the change email names who was added, from the rows this add created.
+    expect(mockedSendModifiedEmail.mock.calls[0][0].addedGuests).toEqual([
+      expect.objectContaining({ firstName: "Bob", lastName: "Jones" }),
+    ]);
     const metadata = mockedLogAudit.mock.calls[0][0].metadata as Record<string, unknown>;
     expect(metadata).not.toHaveProperty("notifyMember");
   });

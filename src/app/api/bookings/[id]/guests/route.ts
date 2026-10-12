@@ -1506,6 +1506,7 @@ export async function POST(
         xeroInvoiceNumber: result.xeroInvoiceNumber,
         // #2390: same words as the edit preview and the booking history.
         promoCoverageNote: result.promoCoverage?.message ?? null,
+        addedGuests: result.addedGuests, // #4030: named in the change rows
         financialReviewPending,
         refundReturnedToOrganiser: false,
         lodgeId: result.booking.lodgeId,

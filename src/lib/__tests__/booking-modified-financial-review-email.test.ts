@@ -62,6 +62,7 @@ function params(overrides: Record<string, unknown> = {}) {
     oldFinalPriceCents: 24000,
     newFinalPriceCents: 12000,
     changeFeeCents: 0,
+    addedGuests: [],
     refundAmountCents: 0,
     additionalAmountCents: 0,
     // #3032 made this required, so the base fixture states the CONTROL value

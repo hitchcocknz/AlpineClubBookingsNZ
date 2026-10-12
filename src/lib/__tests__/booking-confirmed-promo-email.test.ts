@@ -736,6 +736,7 @@ describe("booking-modified default body (#2267)", () => {
   }): Promise<{ templateData: EmailTemplateData; html: string }> {
     const { sendBookingModifiedEmail } = await import("../email/booking");
     await sendBookingModifiedEmail({
+      addedGuests: [],
       bookingId: "bk_test",
       recipientMemberId: "member_1",
       email: "member@example.org",

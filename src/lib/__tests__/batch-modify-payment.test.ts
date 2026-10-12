@@ -878,6 +878,11 @@ describe("PUT /api/bookings/[id]/modify", () => {
     expect(result.stripeRefundId).toBeNull();
     // The deferred thunk runs the post-commit work (idempotent, returns void).
     await expect(result.deferredPostCommit!()).resolves.toBeUndefined();
+    // #4030: a member's own edit that adds a guest names them in the change email.
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+      expect.objectContaining({ firstName: "New", lastName: "Guest" }),
+    ]);
   }, 10_000);
 
   /**
@@ -1078,6 +1083,20 @@ describe("PUT /api/bookings/[id]/modify", () => {
         },
       }),
     );
+
+    // #4030: an officer's edit (the path a finished-stay approval runs) names the
+    // added guest in the change email, with their own nights since they stay
+    // only part of the booking.
+    await result.deferredPostCommit?.();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+      expect.objectContaining({
+        firstName: "Sparse",
+        lastName: "Guest",
+        stayStart: sparseNight,
+        stayEnd: new Date("2026-08-22T00:00:00.000Z"),
+      }),
+    ]);
   }, 10_000);
 
   it("allows identity-only edits on a quote-priced booking without repricing (#1099)", async () => {

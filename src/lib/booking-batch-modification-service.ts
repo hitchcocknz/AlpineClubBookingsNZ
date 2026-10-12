@@ -254,6 +254,7 @@ type BatchModificationTransactionResult =
     oldCheckIn: Date;
     oldCheckOut: Date;
     oldGuestCount: number;
+    addedGuests: BookingGuest[]; // #4030: the rows this edit created, named in its change email
     hasIssuedXeroInvoice: boolean;
     paymentStatus: PaymentStatus | null;
     paymentSource: PaymentSource | null;
@@ -2346,6 +2347,7 @@ export async function modifyBookingBatch({
       oldCheckIn: booking.checkIn,
       oldCheckOut: booking.checkOut,
       oldGuestCount: booking.guests.length,
+      addedGuests: createdGuests,
       hasSucceededPayment: payments.hasSucceededPayment,
       hasIssuedXeroInvoice: payments.hasIssuedXeroInvoice,
       paymentStatus: booking.payment?.status ?? null,
@@ -2876,6 +2878,7 @@ async function dispatchBatchPostTransactionSideEffects({
     // says THAT in the same words too. The email is the durable copy: a member
     // who closed the panel without reading the banner still has this.
     promoChangeNotAppliedNote: result.promoChangeNotApplied?.message ?? null,
+    addedGuests: result.addedGuests, // #4030: named in the change rows
     financialReviewPending,
     refundReturnedToOrganiser: result.organiserChildRefund !== null,
     refundByBankTransfer: editRefundGoesBackByHand(result),

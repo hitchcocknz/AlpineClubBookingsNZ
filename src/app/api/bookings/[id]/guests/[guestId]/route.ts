@@ -335,6 +335,7 @@ export async function DELETE(
         email: member.email,
         firstName: member.firstName,
         modificationType: "GUEST_REMOVE",
+        addedGuests: [], // #4030: adds nobody
         oldCheckIn: result.booking.checkIn,
         oldCheckOut: result.booking.checkOut,
         newCheckIn: result.booking.checkIn,

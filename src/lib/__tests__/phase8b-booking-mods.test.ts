@@ -3217,6 +3217,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders date change template", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Alice",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3247,6 +3248,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders guest add template", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Bob",
       modificationType: "GUEST_ADD",
       oldCheckIn: new Date("2026-06-01"),
@@ -3276,6 +3278,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders guest remove with refund", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Carol",
       modificationType: "GUEST_REMOVE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3304,6 +3307,7 @@ describe("bookingModifiedTemplate", () => {
   it("shows change fee when present", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Dave",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3332,6 +3336,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders Internet Banking additional payment context", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Eve",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3365,6 +3370,7 @@ describe("bookingModifiedTemplate", () => {
   it("escapes HTML in firstName", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "<script>alert('xss')</script>",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),

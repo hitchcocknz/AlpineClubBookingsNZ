@@ -1712,6 +1712,7 @@ async function dispatchDatePostTransactionSideEffects({
     );
 
     sendBookingModifiedEmail({
+      addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
       email: member.email,
@@ -2285,6 +2286,7 @@ export async function adminShiftBookingDates({
     );
 
     sendBookingModifiedEmail({
+      addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
       email: result.memberEmail,
