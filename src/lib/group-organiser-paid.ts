@@ -42,6 +42,15 @@ export const ORGANISER_CHILD_CHARGE_REFUSAL =
   "This booking was paid for by the group organiser, so a change that raises its price cannot be charged here. Contact the club to make this change.";
 
 /**
+ * #3956 (`INV-PAY-123`): the line the admin review screen and the member's
+ * appeal form show under a refund appeal's ceiling when the booking was paid
+ * for by the group organiser's card, so neither reads that ceiling as the
+ * booking's own payment.
+ */
+export const ORGANISER_CARD_APPEAL_CEILING_NOTE =
+  "Refunded to the group organiser's card; the most that payment can still return for this booking.";
+
+/**
  * #3653 (`INV-PAY-114`): a joiner's booking the organiser paid for BY CARD - an
  * organiser-settled child whose payment mirror came from the group's combined
  * Stripe payment. Its reductions and cancellation go back to the organiser's

@@ -154,6 +154,12 @@ export async function PUT(
     // figures holds; claimed in the same transaction.
     const capped = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      // #3956 review: a request another approval or decline settled while this
+      // one waited for the lock is "already reviewed", never a cap refusal read
+      // from money that approval has since spoken for. The claim below stays the
+      // authority; this re-read only puts the answer before the cap.
+      const current = await tx.refundRequest.findUnique({ where: { id }, select: { status: true } });
+      if (current?.status !== "PENDING") return { kind: "lost" as const };
       // What is already handed back is read BEFORE the payment, so a
       // cancellation hand-back completing in between (it takes no `lock(1)`)
       // is counted twice and the cap errs low, never high.
@@ -182,6 +188,7 @@ export async function PUT(
         ? await organiserCardAppealCap(tx, booking, lockedPayment, handedBackCents)
         : null;
       if (organiserCard) {
+        if (organiserCard.combinedRefundPending) return { kind: "organiserCardCombinedRefundPending" as const };
         if (!organiserCard.settlement || approvedAmountCents > organiserCard.maxRefundableCents) {
           return { kind: "organiserCardShort" as const, maxRefundable: organiserCard.maxRefundableCents };
         }
@@ -296,10 +303,26 @@ export async function PUT(
       );
     }
 
-    if (capped.kind === "organiserCardShort") {
+    if (capped.kind === "organiserCardCombinedRefundPending") {
       return NextResponse.json(
         {
-          error: `This booking was paid for by the group organiser's card, and that payment can refund at most ${money.cents(capped.maxRefundable)} more for it, so an appeal for ${money.cents(approvedAmountCents)} cannot be approved. Approve ${money.cents(capped.maxRefundable)} or less, or decline the appeal.`,
+          error:
+            "This booking was paid for by the group organiser's card, and the group cancellation's own refund to that card has not been made yet, so this appeal cannot be approved now. Approve it once that refund is made, or decline it.",
+          maxRefundableCents: 0,
+        },
+        { status: 409 }
+      );
+    }
+
+    if (capped.kind === "organiserCardShort") {
+      // #3956 review: with nothing left there is no smaller amount to approve,
+      // so the officer is told to decline rather than to approve "$0.00 or less".
+      return NextResponse.json(
+        {
+          error:
+            capped.maxRefundable > 0
+              ? `This booking was paid for by the group organiser's card, and that payment can refund at most ${money.cents(capped.maxRefundable)} more for it, so an appeal for ${money.cents(approvedAmountCents)} cannot be approved. Approve ${money.cents(capped.maxRefundable)} or less, or decline the appeal.`
+              : "This booking was paid for by the group organiser's card, and that payment has nothing left to refund for it, so this appeal cannot be approved. Decline it.",
           maxRefundableCents: capped.maxRefundable,
         },
         { status: 409 }
@@ -706,4 +729,3 @@ export async function PUT(
 
   return NextResponse.json(updated);
 }
-

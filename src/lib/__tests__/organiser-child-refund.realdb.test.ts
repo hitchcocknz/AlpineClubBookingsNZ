@@ -780,7 +780,7 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
 
       it("records the refund once Stripe answers - its own Xero note, no booking event - and a replay records nothing", async () => {
         const debt = await prisma.paymentRecoveryOperation.findFirstOrThrow({
-          where: { bookingId: H.child, idempotencyKey: { startsWith: "organiser_child_refund_appeal_" } },
+          where: { bookingId: H.child, idempotencyKey: { startsWith: "organiser_card_appeal_refund_" } },
         });
         expect(debt).toMatchObject({ amountCents: 3_000, status: "PENDING", paymentIntentId: H.pi });
         const notesBefore = await prisma.xeroSyncOperation.count({ where: { localModel: "Payment", localId: H.payment, entityType: "CREDIT_NOTE" } });
@@ -808,12 +808,53 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
 
       it("never reserves twice for one request, and the room shrinks by what was refunded", async () => {
         const reserved = await prisma.paymentRecoveryOperation.findFirstOrThrow({
-          where: { bookingId: H.child, idempotencyKey: { startsWith: "organiser_child_refund_appeal_" } },
+          where: { bookingId: H.child, idempotencyKey: { startsWith: "organiser_card_appeal_refund_" } },
         });
-        const requestId = reserved.idempotencyKey.slice("organiser_child_refund_appeal_".length);
+        const requestId = reserved.idempotencyKey.slice("organiser_card_appeal_refund_".length);
         await expect(approveAppeal(requestId, 1_000)).rejects.toBeInstanceOf(core.OrganiserChildRefundRefusedError);
         expect(await prisma.paymentRecoveryOperation.count({ where: { idempotencyKey: reserved.idempotencyKey } })).toBe(1);
         expect((await room()).maxRefundableCents).toBe(2_000);
+      });
+
+      it("offers nothing while the group cancel's own combined refund is not made: a pre-#3653 plan on a SUCCEEDED settlement, or its retry owed (review F1)", async () => {
+        const before = await prisma.groupBookingSettlement.findUniqueOrThrow({ where: { id: H.settlement }, select: { status: true, refundPlan: true } });
+        const pending = { settlement: null, maxRefundableCents: 0, combinedRefundPending: true };
+        const retryKey = `group_settlement_refund_recovery_${H.settlement}`;
+        try {
+          // A plan frozen before #3653 whose one combined refund is still to be made: the replay
+          // (`executeGroupSettlementRefundPlan`) would record it without the room the cap reads.
+          await prisma.groupBookingSettlement.update({ where: { id: H.settlement }, data: { status: "SUCCEEDED", refundPlan: { [H.child]: 1_000 } } });
+          expect(await room()).toEqual(pending);
+          expect(await approveAppeal(`${P}-h-rr-f1-plan`, 500)).toEqual({ kind: "refused", maxRefundableCents: 0 });
+          // CONTROL: a pre-#3653 plan that refunds nothing has no refund to wait for.
+          await prisma.groupBookingSettlement.update({ where: { id: H.settlement }, data: { refundPlan: { [H.child]: 0 } } });
+          expect(await room()).toMatchObject({ combinedRefundPending: false, maxRefundableCents: 2_000 });
+
+          // Its durable retry still owed, whatever the settlement and plan read.
+          await prisma.groupBookingSettlement.update({ where: { id: H.settlement }, data: { status: before.status, refundPlan: before.refundPlan ?? undefined } });
+          const retry = await prisma.paymentRecoveryOperation.create({
+            data: {
+              type: "REFUND_BOOKING_MODIFICATION",
+              status: "FAILED",
+              bookingId: H.child,
+              paymentId: H.payment,
+              paymentIntentId: H.pi,
+              amountCents: 1_000,
+              idempotencyKey: retryKey,
+              nextRetryAt: new Date(),
+            },
+          });
+          expect(await room()).toEqual(pending);
+          expect(await approveAppeal(`${P}-h-rr-f1-retry`, 500)).toEqual({ kind: "refused", maxRefundableCents: 0 });
+          // CONTROL: once the retry has succeeded, the room is back.
+          await prisma.paymentRecoveryOperation.update({ where: { id: retry.id }, data: { status: "SUCCEEDED" } });
+          expect(await room()).toMatchObject({ combinedRefundPending: false, maxRefundableCents: 2_000 });
+          expect(await prisma.paymentRecoveryOperation.count({ where: { idempotencyKey: { endsWith: "-h-rr-f1-plan" } } })).toBe(0);
+          expect(await prisma.paymentRecoveryOperation.count({ where: { idempotencyKey: { endsWith: "-h-rr-f1-retry" } } })).toBe(0);
+        } finally {
+          await prisma.paymentRecoveryOperation.deleteMany({ where: { idempotencyKey: retryKey } });
+          await prisma.groupBookingSettlement.update({ where: { id: H.settlement }, data: { status: before.status, refundPlan: before.refundPlan ?? undefined } });
+        }
       });
     });
   },

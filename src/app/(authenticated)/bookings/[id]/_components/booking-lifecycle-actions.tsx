@@ -23,6 +23,7 @@ export function BookingLifecycleActions({
   canDeleteDraft,
   canSoftDeleteCancelled,
   backHref,
+  organiserCardAppeal = false,
 }: {
   booking: BookingDetailRecord;
   viewer: BookingDetailViewer;
@@ -32,6 +33,8 @@ export function BookingLifecycleActions({
   canDeleteDraft: boolean;
   canSoftDeleteCancelled: boolean;
   backHref: string;
+  /** #3956: the appeal ceiling is the group organiser's card payment's (`organiserCardAppealCeilingFor`). */
+  organiserCardAppeal?: boolean;
 }) {
   const { viewerAuthorizationRole, actingOnBehalf, canManageBooking } = viewer;
   const { canCancel, isDeleted } = access;
@@ -92,6 +95,7 @@ export function BookingLifecycleActions({
             bookingId={booking.id}
             maxRefundableCents={maxRefundableCents}
             description={refundAppealDescription}
+            organiserCardRefund={organiserCardAppeal}
           />
         )}
     </>

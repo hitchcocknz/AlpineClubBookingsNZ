@@ -406,6 +406,7 @@ export default async function BookingDetailPage({
         canDeleteDraft={canDeleteDraft}
         canSoftDeleteCancelled={canSoftDeleteCancelled}
         backHref={backHref}
+        organiserCardAppeal={organiserCardAppealCeiling !== null}
       />
 
       <BookingCancellationOutcome

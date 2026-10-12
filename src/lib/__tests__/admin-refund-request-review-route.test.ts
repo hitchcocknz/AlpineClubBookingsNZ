@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   requireActiveSessionUser: vi.fn(),
   refundRequestFindUnique: vi.fn(),
   refundRequestUpdateMany: vi.fn(),
+  // #3956 review: the approval's re-read of the request's status under lock(1).
+  lockedRefundRequestFindUnique: vi.fn(),
   paymentFindUnique: vi.fn(),
   paymentUpdate: vi.fn(),
   executeRaw: vi.fn(),
@@ -165,6 +167,7 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       refundedAmountCents: 0,
     });
     mocks.executeRaw.mockResolvedValue(1);
+    mocks.lockedRefundRequestFindUnique.mockResolvedValue({ status: "PENDING" });
     mocks.manualRefundTaskAggregate.mockResolvedValue({ _sum: { amountCents: null } });
     mocks.memberCreditAggregate.mockResolvedValue({ _sum: { amountCents: null } });
     mocks.manualRefundTaskCreateMany.mockResolvedValue({ count: 1 });
@@ -179,6 +182,7 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
           deleteMany: mocks.manualRefundTaskDeleteMany,
         },
         refundRequest: {
+          findUnique: mocks.lockedRefundRequestFindUnique,
           updateMany: mocks.refundRequestUpdateMany,
         },
         memberCredit: { aggregate: mocks.memberCreditAggregate },
@@ -647,7 +651,7 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
             createMany: mocks.manualRefundTaskCreateMany,
             deleteMany: mocks.manualRefundTaskDeleteMany,
           },
-          refundRequest: { updateMany: mocks.refundRequestUpdateMany },
+          refundRequest: { findUnique: mocks.lockedRefundRequestFindUnique, updateMany: mocks.refundRequestUpdateMany },
           memberCredit: { aggregate: mocks.memberCreditAggregate },
           payment: { findUnique: mocks.paymentFindUnique, update: mocks.paymentUpdate },
         }).catch((err: unknown) => {

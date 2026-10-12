@@ -36,6 +36,7 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents, formatCentsPlain } from "@/lib/utils"
 import { useClubFormat } from "@/components/club-format-provider"
+import { ORGANISER_CARD_APPEAL_CEILING_NOTE } from "@/lib/group-organiser-paid"
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL"
 const reviewFilters = new Set<ReviewFilter>(["PENDING", "APPROVED", "REJECTED", "ALL"])
@@ -608,6 +609,11 @@ export default function RefundRequestsPage() {
                               <p className="text-xs text-muted-foreground">
                                 Max refundable: {formatCents(maxRefundable, format)}
                               </p>
+                              {req.booking.organiserCardMaxRefundableCents != null && (
+                                <p className="text-xs text-muted-foreground">
+                                  {ORGANISER_CARD_APPEAL_CEILING_NOTE}
+                                </p>
+                              )}
                             </div>
                             <div className="space-y-2">
                               <Label htmlFor="adminNotes">Admin Notes (optional)</Label>

@@ -3,9 +3,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT } from "@/lib/manual-refund-task-settlement-rules";
-import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
-import { organiserCardAppealCap } from "@/lib/organiser-child-refund";
-import { refundAppealHandedBackCents } from "@/lib/edit-refund-hand-back";
+import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("PENDING"),
@@ -98,10 +96,9 @@ export async function GET(req: NextRequest) {
   const data = await Promise.all(
     requests.map(async (request) => {
       const payment = request.booking.payment;
-      if (request.status !== "PENDING" || !payment || !paidByOrganiserCard(request.booking)) return request;
-      const handedBackCents = await refundAppealHandedBackCents(prisma, { id: payment.id, bookingId: request.booking.id });
-      const cap = await organiserCardAppealCap(prisma, request.booking, payment, handedBackCents);
-      return { ...request, booking: { ...request.booking, organiserCardMaxRefundableCents: cap?.maxRefundableCents ?? null } };
+      if (request.status !== "PENDING" || !payment) return request;
+      const ceiling = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
+      return ceiling === null ? request : { ...request, booking: { ...request.booking, organiserCardMaxRefundableCents: ceiling } };
     }),
   );
 

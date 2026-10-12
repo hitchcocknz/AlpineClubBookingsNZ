@@ -14,7 +14,7 @@ import { refundAppealHandedBackCents } from "@/lib/edit-refund-hand-back";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { clubFormat } from "@/lib/club-format-server";
-import { organiserCardAppealCap } from "@/lib/organiser-child-refund";
+import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
 
 const createSchema = z.object({
   reason: z.string().min(10).max(2000),
@@ -156,15 +156,15 @@ export async function POST(
   // bank transfer - the same figure the approval caps at. Advisory here and
   // read without a lock: an appeal moves no money, and the approval re-reads
   // it under `lock(1)` before anything is approved.
-  const handedBackCents = await refundAppealHandedBackCents(prisma, booking.payment);
   // #3956 (`INV-PAY-123`): a booking the group organiser paid for by card is
   // refunded out of the organiser's combined payment, so what it can return is
   // the room that payment and this booking still have - the figure the
   // approval refuses past. Advisory here too, for the same reason.
-  const organiserCard = await organiserCardAppealCap(prisma, booking, booking.payment, handedBackCents);
+  const organiserCardCeiling = await organiserCardAppealCeilingFor(prisma, booking, booking.payment);
   const maxRefundable =
-    organiserCard?.maxRefundableCents ?? getRemainingRefundableCentsNetOf(booking.payment, handedBackCents);
-  if (organiserCard && maxRefundable <= 0) {
+    organiserCardCeiling ??
+    getRemainingRefundableCentsNetOf(booking.payment, await refundAppealHandedBackCents(prisma, booking.payment));
+  if (organiserCardCeiling !== null && maxRefundable <= 0) {
     return NextResponse.json(
       {
         error:

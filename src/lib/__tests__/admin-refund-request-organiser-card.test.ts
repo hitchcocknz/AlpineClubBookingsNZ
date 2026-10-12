@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   refundRequestFindUnique: vi.fn(),
   refundRequestUpdateMany: vi.fn(),
+  lockedRefundRequestFindUnique: vi.fn(),
   bookingFindUnique: vi.fn(),
   paymentFindUnique: vi.fn(),
   executeRaw: vi.fn(),
@@ -136,7 +137,8 @@ describe("approving a refund appeal on a booking the group organiser paid for by
     mocks.executeRaw.mockResolvedValue(1);
     mocks.manualRefundTaskAggregate.mockResolvedValue({ _sum: { amountCents: null } });
     mocks.memberCreditAggregate.mockResolvedValue({ _sum: { amountCents: null } });
-    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: SETTLEMENT, maxRefundableCents: 5_000 });
+    mocks.lockedRefundRequestFindUnique.mockResolvedValue({ status: "PENDING" });
+    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: SETTLEMENT, maxRefundableCents: 5_000, combinedRefundPending: false });
     mocks.reserveOrganiserChildAppealRefund.mockResolvedValue({ id: "debt_1", amountCents: 5_000 });
     mocks.runOrganiserChildRefundDebtNow.mockResolvedValue(true);
     mocks.sendEmail.mockResolvedValue(undefined);
@@ -153,7 +155,7 @@ describe("approving a refund appeal on a booking the group organiser paid for by
         $executeRaw: mocks.executeRaw,
         manualRefundTask: { aggregate: mocks.manualRefundTaskAggregate },
         memberCredit: { aggregate: mocks.memberCreditAggregate },
-        refundRequest: { updateMany: mocks.refundRequestUpdateMany },
+        refundRequest: { findUnique: mocks.lockedRefundRequestFindUnique, updateMany: mocks.refundRequestUpdateMany },
         payment: { findUnique: mocks.paymentFindUnique },
       }),
     );
@@ -242,7 +244,7 @@ describe("approving a refund appeal on a booking the group organiser paid for by
   it("refuses an amount the combined payment cannot cover, naming what it can, before claiming anything", async () => {
     // Paid 10000 for the joiner, 5000 refunded by the group cancel: 5000 left on
     // the child, but the combined payment holds only 3000 more.
-    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: SETTLEMENT, maxRefundableCents: 3_000 });
+    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: SETTLEMENT, maxRefundableCents: 3_000, combinedRefundPending: false });
 
     const response = await approve(5_000);
 
@@ -259,15 +261,62 @@ describe("approving a refund appeal on a booking the group organiser paid for by
     expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
   });
 
-  it("refuses when the organiser's payment no longer holds the money, naming $0.00", async () => {
-    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: null, maxRefundableCents: 0 });
+  it("refuses when the organiser's payment has nothing left for it, saying the appeal can only be declined", async () => {
+    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: null, maxRefundableCents: 0, combinedRefundPending: false });
 
     const response = await approve(1_000);
 
     expect(response.status).toBe(409);
-    expect((await response.json()).error).toContain("at most $0.00");
+    const body = await response.json();
+    expect(body.error).toBe(
+      "This booking was paid for by the group organiser's card, and that payment has nothing left to refund for it, so this appeal cannot be approved. Decline it.",
+    );
+    expect(body.maxRefundableCents).toBe(0);
     expect(mocks.refundRequestUpdateMany).not.toHaveBeenCalled();
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+  });
+
+  it("says the same when the payment is found but its room is spent (cap 0 with a settlement)", async () => {
+    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: SETTLEMENT, maxRefundableCents: 0, combinedRefundPending: false });
+
+    const response = await approve(1_000);
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("nothing left to refund for it, so this appeal cannot be approved. Decline it.");
+    expect(mocks.reserveOrganiserChildAppealRefund).not.toHaveBeenCalled();
+  });
+
+  it("refuses while the group cancel's own combined refund is not made, claiming and moving nothing (review F1)", async () => {
+    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: null, maxRefundableCents: 0, combinedRefundPending: true });
+
+    const response = await approve(1_000);
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toBe(
+      "This booking was paid for by the group organiser's card, and the group cancellation's own refund to that card has not been made yet, so this appeal cannot be approved now. Approve it once that refund is made, or decline it.",
+    );
+    expect(mocks.refundRequestUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.reserveOrganiserChildAppealRefund).not.toHaveBeenCalled();
+    expect(mocks.runOrganiserChildRefundDebtNow).not.toHaveBeenCalled();
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+  });
+
+  it("answers 'already reviewed' when another review settled the request while this one waited for the lock, before any cap (review fix 4)", async () => {
+    // Read PENDING before the lock; settled by the time this approval holds it.
+    mocks.lockedRefundRequestFindUnique.mockResolvedValue({ status: "APPROVED" });
+    mocks.organiserCardAppealCap.mockResolvedValue({ settlement: SETTLEMENT, maxRefundableCents: 0, combinedRefundPending: false });
+
+    const response = await approve(5_000);
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toBe("This refund request has already been reviewed");
+    expect(mocks.lockedRefundRequestFindUnique).toHaveBeenCalledWith({ where: { id: "refund_1" }, select: { status: true } });
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.lockedRefundRequestFindUnique.mock.invocationCallOrder[0]!);
+    expect(mocks.organiserCardAppealCap).not.toHaveBeenCalled();
+    expect(mocks.refundRequestUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.reserveOrganiserChildAppealRefund).not.toHaveBeenCalled();
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
   });
 
   it("asks the cap under the lock, from the locked payment, net of what is already handed back", async () => {
