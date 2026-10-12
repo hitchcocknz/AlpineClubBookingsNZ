@@ -389,6 +389,17 @@ assignment directly and is no longer refused. Anything NEW that refuses a write
 on the strength of an overlap belongs behind `findHutLeaderOverlapRefusal`
 rather than behind its own read.
 
+**The custodian exemption reads the cover under the same key (#3821).** When a
+clash involves a custodian row — existing, or the proposed row an admin caller
+passes as `candidate` — the predicate loads `hut-leader-night-cover.ts` on the
+client it was given and leaves out the school nights that custodian does not
+cover, then applies the one-night rule to each remaining run. These are reads
+on the transaction client after `acquireLodgeCapacityLock`, like the overlap
+read itself: no new key, no new order, and nothing is read when no custodian is
+in a clash. The cron passes no candidate and writes no custodian; its span is
+cut to the nights the member may lead (`leadableNightRun`), re-read on `tx`
+under the key before the locked overlap ask.
+
 ### Composition: roster-date writers (#2586)
 
 `lockRosterDate` is the only source of the `roster:<date>` key. Every operation

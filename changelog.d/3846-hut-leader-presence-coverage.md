@@ -12,7 +12,7 @@
   The hut-leaders calendar now shows **AM · Smith until midday** and **PM ·
   Jones from midday** on a changeover day and **No hut leader tonight** (in your
   club's own word for the role) on a night with guests and no leader staying; the dashboard's card becomes **Nights
-  without a hut leader staying** with each night's guest count, and a new
+  without a hut leader who counts** with each night's guest count, and a new
   **Handovers this week** card lists the coming week's changeovers. The nightly
   automatic assignment also now works through today and the nights ahead in the
   club's own calendar, where before, in a container running New Zealand time, it
@@ -22,4 +22,7 @@
   the lodge" list whenever they are ticked as living on site, with or without a
   bed.** Before, only a custodian holding a bed was shown. A custodian who
   holds a bed and is ticked is shown once, and a custodian who is a minor is
-  never named.
+  never named. A custodian who has also booked a stay is listed once, as the
+  custodian, on their custodian nights; their booking still lists the rest of
+  their party. On nights the whole lodge is privately booked, the custodian is
+  still named beside the reserved line.

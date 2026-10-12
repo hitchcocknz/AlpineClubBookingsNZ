@@ -85,6 +85,9 @@ actually happens:
    with two custodians), whatever
    your club calls the role elsewhere in the admin area, and it never names a
    child: if the person may not be named, the wall shows the role alone. A
+   custodian who has also booked a stay is shown once, as the custodian: their
+   booking's line drops them for their custodian nights and lists the rest of
+   their party. A
    value the board asks for but the lodge has not saved renders as a visible
    `⟨config:key?⟩` placeholder on the wall. Anything beyond these is edited on
    the lodge's full display settings, linked from the step.
