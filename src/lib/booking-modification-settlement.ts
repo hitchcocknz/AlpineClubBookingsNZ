@@ -180,11 +180,17 @@ export async function executeBookingModificationRefund({
   // #4057: made only once the debt's own status, re-read after the run and
   // outside any transaction, says so (`runOrganiserChildRefundDebtNow`).
   if (result.organiserChildRefund) {
-    const debt = await prisma.paymentRecoveryOperation.findUnique({
-      where: { idempotencyKey: buildOrganiserChildModificationRefundKey(result.bookingModificationId) },
-      select: { id: true },
-    });
-    if (!debt) logger.error({ bookingId }, "Organiser child refund debt missing after the edit committed (#3653)");
+    // #4057: the edit has committed, so a failed read is logged, not thrown, and the debt stays owed.
+    const debt = await prisma.paymentRecoveryOperation
+      .findUnique({
+        where: { idempotencyKey: buildOrganiserChildModificationRefundKey(result.bookingModificationId) },
+        select: { id: true },
+      })
+      .catch((err: unknown) => {
+        logger.error({ err, bookingId }, "Could not read the organiser child refund debt after the edit committed (#4057)");
+        return undefined;
+      });
+    if (debt === null) logger.error({ bookingId }, "Organiser child refund debt missing after the edit committed (#3653)");
     const made = debt ? await runOrganiserChildRefundDebtNow(debt.id, format) : false;
     return { stripeRefundId: undefined, refundDestination: made ? "organiser_card" : "organiser_card_pending" };
   }

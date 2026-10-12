@@ -123,9 +123,10 @@ card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking)
 the group organiser's card, and the sentence says it has been processed there
 only once that card refund has gone through; until then it says the refund is
 on its way to the group organiser's card (#4057). A reduction that goes back
-partly to the card and partly as account credit names both. A reduction that cancels the member's unpaid additional
-payment outright adds "The additional payment we asked for has been
-cancelled, so you no longer need to pay it." (#3954).
+partly to the card and partly as account credit names both. A reduction that
+cancels the member's unpaid additional payment outright adds "The additional
+payment we asked for has been cancelled, so you no longer need to pay it."
+(#3954).
 
 `{{refundSentence}}` on the **Refund Appeal Approved** message works the same
 way. A card refund reads "A refund of $X will be processed to your original

@@ -208,15 +208,17 @@ describe("DELETE /api/bookings/[id]/guests/[guestId] refund recovery", () => {
 describe("DELETE guest removal on an organiser-paid child: the email's refund destination (#4057)", () => {
   const organiserChild = () => makeResult({ organiserChildRefund: { amountCents: 2000 } });
 
-  it.each(ORGANISER_REFUND_DEBT_STATES)("debt $label -> $destination", async ({ reread, destination }) => {
+  it.each(ORGANISER_REFUND_DEBT_STATES)("debt $label -> $destination", async ({ lookupThrows, reread, runs, destination }) => {
     mocks.removeBookingGuestInTransaction.mockResolvedValue(organiserChild());
     mocks.runPaymentRecoveryOperationNow.mockResolvedValue("succeeded");
-    primeOrganiserRefundDebt(mocks.recoveryFindUnique, { bookingModificationId: "mod_1", debtId: "op_child", reread });
+    primeOrganiserRefundDebt(mocks.recoveryFindUnique, { bookingModificationId: "mod_1", debtId: "op_child", lookupThrows, reread });
 
     const res = await DELETE(makeRequest(), { params });
 
     expect(res.status).toBe(200);
-    expect(mocks.runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+    // A lookup that throws leaves nothing to run; the debt stays owed.
+    if (runs) expect(mocks.runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+    else expect(mocks.runPaymentRecoveryOperationNow).not.toHaveBeenCalledWith("op_child", expect.anything());
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
     expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 2000, refundDestination: destination }),

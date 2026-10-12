@@ -1167,7 +1167,7 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
   // reduction to the ORGANISER's card through its debt. The real refund helper
   // runs that debt and re-reads it after commit; the email says the refund was
   // made only when the debt says so.
-  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's date reduction emails refund destination: debt $label -> $destination (#4057)", async ({ reread, destination }) => {
+  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's date reduction emails refund destination: debt $label -> $destination (#4057)", async ({ lookupThrows, reread, runs, destination }) => {
     const booking = makeBooking({ organiserSettled: true, parentBookingId: "organiser_bk" });
     const tx = makeTx(booking) as ReturnType<typeof makeTx> & Record<string, unknown>;
     Object.assign(tx, {
@@ -1197,7 +1197,7 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     mockedCalcChangeFee.mockReturnValue({ feeCents: 0, fromTierRefundPct: 0, toTierRefundPct: 0 });
     mockPaymentUpdate.mockResolvedValue({});
     mockMemberFindUnique.mockResolvedValue({ active: true, email: "alice@test.com", firstName: "Alice" });
-    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod1", debtId: "op_child", reread });
+    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod1", debtId: "op_child", lookupThrows, reread });
 
     try {
       const res = await PUT(
@@ -1212,7 +1212,9 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
       expect(res.status).toBe(200);
       expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
       const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
-      expect(runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      // A lookup that throws leaves nothing to run; the debt stays owed.
+      if (runs) expect(runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      else expect(runPaymentRecoveryOperationNow).not.toHaveBeenCalledWith("op_child", expect.anything());
       const { sendBookingModifiedEmail } = await import("@/lib/email");
       expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
         expect.objectContaining({ refundAmountCents: 3000, refundDestination: destination }),

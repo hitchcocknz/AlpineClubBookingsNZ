@@ -3788,12 +3788,14 @@ describe("PUT /api/bookings/[id]/modify", () => {
 
   // #4057: the real refund helper runs the debt and re-reads it after commit;
   // the email says the refund was made only when the debt says so.
-  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's email refund destination: debt $label -> $destination (#4057)", async ({ reread, destination }) => {
-    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod_1", debtId: "op_child", reread });
+  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's email refund destination: debt $label -> $destination (#4057)", async ({ lookupThrows, reread, runs, destination }) => {
+    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod_1", debtId: "op_child", lookupThrows, reread });
     try {
       const { response } = await reduceOrganiserChild();
       expect(response.status).toBe(200);
-      expect(mockRunPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      // A lookup that throws leaves nothing to run; the debt stays owed.
+      if (runs) expect(mockRunPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      else expect(mockRunPaymentRecoveryOperationNow).not.toHaveBeenCalledWith("op_child", expect.anything());
       await new Promise((resolve) => setTimeout(resolve, 0));
       const { sendBookingModifiedEmail } = await import("@/lib/email");
       expect(sendBookingModifiedEmail).toHaveBeenCalledWith(

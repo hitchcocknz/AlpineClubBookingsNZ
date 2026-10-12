@@ -749,13 +749,13 @@ describe("an organiser-paid child's reduction goes back to the organiser's card,
 
   // #4057: the real refund helper runs the debt and re-reads it; the email says
   // the refund was made only when the debt says so.
-  it.each(ORGANISER_REFUND_DEBT_STATES)("the email's refund destination: debt $label -> $destination (#4057)", async ({ reread, destination }) => {
+  it.each(ORGANISER_REFUND_DEBT_STATES)("the email's refund destination: debt $label -> $destination (#4057)", async ({ lookupThrows, reread, runs, destination }) => {
     const { client } = organiserChild(SETTLEMENT);
     const result = await acceptChild(client);
     h.executeBookingModificationRefund.mockImplementation(h.realExecuteBookingModificationRefund);
     h.runPaymentRecoveryOperationNow.mockResolvedValue("succeeded");
     h.sendBookingModifiedEmail.mockResolvedValue(undefined);
-    primeOrganiserRefundDebt(h.recoveryFindUnique, { bookingModificationId: "mod-1", debtId: "debt-1", reread });
+    primeOrganiserRefundDebt(h.recoveryFindUnique, { bookingModificationId: "mod-1", debtId: "debt-1", lookupThrows, reread });
 
     await settleGuestAcceptanceRepriceAfterCommit({
       bookingId: "booking-1",
@@ -764,7 +764,9 @@ describe("an organiser-paid child's reduction goes back to the organiser's card,
       format: CLUB_FORMAT_TEST,
     });
 
-    expect(h.runPaymentRecoveryOperationNow).toHaveBeenCalledWith("debt-1", CLUB_FORMAT_TEST);
+    // A lookup that throws leaves nothing to run; the debt stays owed.
+    if (runs) expect(h.runPaymentRecoveryOperationNow).toHaveBeenCalledWith("debt-1", CLUB_FORMAT_TEST);
+    else expect(h.runPaymentRecoveryOperationNow).not.toHaveBeenCalledWith("debt-1", expect.anything());
     expect(h.sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 6000, refundDestination: destination }),
       CLUB_FORMAT_TEST,
