@@ -28,6 +28,8 @@ import {
   bookingCancelledRefundMade,
   bookingCancelledRefundSentence,
   type BookingCancelledRefundMethod,
+  type BookingModifiedRefundDestination,
+  bookingModifiedRefundPending,
   bookingModifiedRefundSentence,
 } from "@/lib/booking-modified-email-copy";
 import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";
@@ -476,7 +478,7 @@ export function bookingModifiedTemplate(params: {
    * review, the way `confirmedAmountCents` is asked for (`INV-SSOT`).
    */
   financialReviewPending: boolean;
-  refundReturnedToOrganiser: boolean; // #3916: see `sendBookingModifiedEmail`
+  refundDestination: BookingModifiedRefundDestination; // #3916, #4057: see `sendBookingModifiedEmail`
   /** #3827 (D-3813-6, `INV-PAY-117`): a bank transfer the club must still send.
    * REQUIRED, as `financialReviewPending` is (`bookingModifiedRefundSentence`). */
   refundByBankTransfer: boolean;
@@ -564,8 +566,9 @@ export function bookingModifiedTemplate(params: {
   let settlementNote = "";
   if (refundAmountCents > 0) {
     settlementNote = alertBox(
-      bookingModifiedRefundSentence(formatCents(refundAmountCents, format), params.refundByBankTransfer, params.refundReturnedToOrganiser),
-      "success"
+      bookingModifiedRefundSentence(formatCents(refundAmountCents, format), params.refundByBankTransfer, params.refundDestination),
+      // #4057: an organiser-card refund still on its way is information, not a success.
+      bookingModifiedRefundPending(params.refundDestination) ? "info" : "success"
     );
     // #3827 (D-3813-5): a split payment's reduction goes back partly as cash and
     // partly as the credit it was paid with; the member is told both.
