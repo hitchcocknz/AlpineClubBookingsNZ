@@ -520,11 +520,8 @@ export async function PUT(
 
     // #3956: where the refund goes to the organiser's card, the joiner is told
     // so - made, or on its way while Stripe has not answered.
-    const organiserCardRefund = organiserChildDebtId
-      ? organiserCardRefundMade
-        ? ("organiser_card" as const)
-        : ("organiser_card_pending" as const)
-      : null;
+    const organiserCardRefund = !organiserChildDebtId ? null
+      : organiserCardRefundMade ? "organiser_card" : "organiser_card_pending";
 
     // Email the member unless the admin chose not to notify (#1792).
     if (memberEmail && notifyMember !== false) {

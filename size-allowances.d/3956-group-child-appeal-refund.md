@@ -6,7 +6,7 @@ and the organiser's email live in the new `organiser-child-appeal-refund.ts`, so
 what stays behind in each file below is the branch point itself.
 
 file: src/app/api/admin/refund-requests/[id]/route.ts
-lines: 708
+lines: 709
 reason: the approval's cap, claim and reservation must be one `lock(1)`
   transaction (`INV-LOCK-001`), and the new organiser-card branch has to sit
   inside it, beside the existing card and bank-transfer branches, choosing
