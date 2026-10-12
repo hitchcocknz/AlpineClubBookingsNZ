@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 
@@ -16,12 +18,15 @@ import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
  * No `server-only` import: `payment-link-context.ts` is reachable from
  * `src/instrumentation.node.ts`, where it throws.
  */
-export async function readBookingAmountOwed(booking: {
-  id: string;
-  finalPriceCents: number;
-  payment: { changeFeeCents: number } | null;
-}): Promise<{ owedCents: number; dueCents: number; appliedCreditCents: number }> {
-  const appliedCreditCents = await deriveBookingAppliedCreditCents(booking.id);
+export async function readBookingAmountOwed(
+  booking: {
+    id: string;
+    finalPriceCents: number;
+    payment: { changeFeeCents: number | null } | null;
+  },
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<{ owedCents: number; dueCents: number; appliedCreditCents: number }> {
+  const appliedCreditCents = await deriveBookingAppliedCreditCents(booking.id, db);
   const owedCents = bookingAmountOwedCents({
     finalPriceCents: booking.finalPriceCents,
     changeFeeCents: booking.payment?.changeFeeCents ?? null,
