@@ -2987,7 +2987,9 @@ refuses a key replayed with other parameters. A replay it still refuses adopts
 an unrecorded, unpaid intent that matches this ask (`mintOrdinaryAskIntent`),
 and fails closed and retries instead when none or several match, when the
 intent scan stopped at its bound, or when another unfinished recovery of the
-booking could own the match; under its claim it re-checks that no ledger row
+booking could own the match; it never takes an intent under a door's reason
+that Stripe created after the recovery row (`DOOR_INTENT_CLOCK_SKEW_MS`), since
+the row exists only once the door's create failed; under its claim it re-checks that no ledger row
 took the adopted intent, and it leaves the payment's customer as it was. It
 skips itself if a later edit already minted a newer additional intent, and
 settles the Xero half two ways: it points any supplementary

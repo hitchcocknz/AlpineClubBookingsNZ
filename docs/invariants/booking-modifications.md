@@ -94,7 +94,9 @@ second ask for the same money. Not recorded means not raised.
   no ledger row. It fails closed, and the recovery retries and then alerts as
   `INV-MOD-003` says, when none or several match, when the scan stopped at its
   bound, or when another unfinished recovery of the booking could own the
-  match. The runner re-checks under its claim that no row took the intent, and
+  match. A door-reason intent must predate its recovery row (60 seconds'
+  skew), which is written only after the door's create failed; an old-runner
+  intent need not. The runner re-checks under its claim that no row took the intent, and
   leaves the payment's customer as it was. The door's own mint looks nothing up.
 - **Not** a review charge, whose replay re-enters the door with its own request
   (`INV-PAY-112`), nor a re-issued ask (`INV-PAY-120`).
