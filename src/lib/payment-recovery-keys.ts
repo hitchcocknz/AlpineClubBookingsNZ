@@ -470,8 +470,8 @@ export function bookingModificationRefundReasonForKeyPrefix(
 // prefix, such a worker takes it for an ordinary modification refund, meets the
 // allocation that names no real transaction (`organiserChildRefundAllocationPlan`),
 // and fails the row before any Stripe call; the retry lands on a current worker.
-const ORGANISER_CHILD_REFUND_KEY_PREFIX = "organiser_child_refund_";
-const ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX = "organiser_card_appeal_refund_";
+export const ORGANISER_CHILD_REFUND_KEY_PREFIX = "organiser_child_refund_";
+export const ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX = "organiser_card_appeal_refund_";
 export function buildOrganiserChildModificationRefundKey(bookingModificationId: string) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}mod_${bookingModificationId}`;
 }
@@ -517,7 +517,7 @@ export function organiserChildRefundReasonForKey(key: string) {
 // frozen `{childId: cents}` plan - so a reader of the row's payment must
 // recognise it by this key. Here, not in payment-recovery.ts, so a reader can
 // recognise one without importing the Prisma client.
-const GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX = "group_settlement_refund_recovery_";
+export const GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX = "group_settlement_refund_recovery_";
 export function buildGroupSettlementRefundRecoveryIdempotencyKey(settlementId: string) {
   return `${GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX}${settlementId}`;
 }

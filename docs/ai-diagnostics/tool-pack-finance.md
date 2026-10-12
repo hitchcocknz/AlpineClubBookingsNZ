@@ -254,6 +254,16 @@ classifies it with `pg_catalog.starts_with` against a closed list of prefixes fr
 `payment-recovery-keys.ts` and projects the resulting **code**. The key itself never
 leaves the database, so a future projection bug cannot leak it either.
 
+The catalogue is `RECOVERY_SCENARIO_CATALOGUE` in `finance-recovery-scenarios.ts`: one entry per
+prefix, each with its **code** and a plain-English **label**. The statement and the
+labels shipped to the model in both tools' evidence scope are generated from it, so
+they cannot drift. A key that matches no entry projects `other_recovery`, meaning
+"queued by something this catalogue does not recognise". The finance-pack test fails
+when any recovery key `payment-recovery-keys.ts` builds has no entry (#4076), unless
+its prefix is listed in the test's allow-list with a reason (none today). Because
+the statement is a `CASE`, the first matching prefix wins, so a longer prefix must
+come before a shorter one it starts with; the test pins that too.
+
 ## What is never returned
 
 Four classes, and they are not merely unprojected — with the two exceptions argued

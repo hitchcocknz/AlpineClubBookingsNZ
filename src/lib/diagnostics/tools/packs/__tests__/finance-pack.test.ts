@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AUDIT_CORRELATION_DOMAIN_AREAS } from "@/lib/audit-categories";
+import * as paymentRecoveryKeys from "@/lib/payment-recovery-keys";
 
 import { SELECT_GRANTS } from "../../provision-role";
 import { renderToolResultEvidenceBlock } from "../../render";
@@ -48,6 +49,7 @@ import {
   DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID,
   DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
 } from "../finance-records";
+import { RECOVERY_SCENARIO_CATALOGUE } from "../finance-recovery-scenarios";
 import {
   DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID,
   DIAGNOSTICS_FINANCE_PAYMENT_SEARCH_TOOL_ID,
@@ -102,6 +104,7 @@ const FINANCE_PACK_MODULES = [
   "finance-shared.ts",
   "finance-search.ts",
   "finance-records.ts",
+  "finance-recovery-scenarios.ts",
   "finance-evidence.ts",
   "finance-state.ts",
 ] as const;
@@ -1083,5 +1086,124 @@ describe("AID-6C finance pack: the blocker catalogue (#2377)", () => {
     // An empty list IS "nothing is blocking". A code for it would let a caller treat
     // the healthy case as a finding.
     expect([...FINANCE_BLOCKER_CODES]).not.toContain("none");
+  });
+});
+
+describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
+  /** The attempt ledger's statement, which classifies a recovery key by prefix. */
+  const ledger = financeTools.find(
+    (tool) => tool.id === DIAGNOSTICS_PAYMENT_ATTEMPT_LEDGER_TOOL_ID,
+  );
+  const ledgerSql = ledger?.source === "select_only_sql" ? ledger.sql : "";
+
+  /** `[prefix, code]` in the order the `CASE` evaluates them. */
+  const sqlCases = [
+    ...ledgerSql.matchAll(
+      /starts_with\(o\."idempotencyKey", '([^']+)'\) THEN '([^']+)'/g,
+    ),
+  ].map((match) => [match[1], match[2]] as const);
+
+  /**
+   * Every recovery key `payment-recovery-keys.ts` builds, discovered from its
+   * exports rather than listed: a `build*Key` function that is not a Stripe
+   * idempotency key. A new builder is found without anyone editing this test.
+   */
+  const builtRecoveryKeys = Object.entries(paymentRecoveryKeys)
+    .filter(
+      ([name, value]) =>
+        typeof value === "function" &&
+        /^build.*Key/.test(name) &&
+        !/Stripe/.test(name),
+    )
+    .map(([name, builder]) => ({
+      name,
+      key: (builder as (...args: string[]) => string)(
+        ...Array.from({ length: (builder as () => string).length }, () => "ID"),
+      ),
+    }));
+
+  /**
+   * Prefixes that DELIBERATELY project `other_recovery`, each with its reason.
+   * Empty today: every recovery key has a scenario. Adding one here is a decision
+   * that Finance Officers will be told "an unrecognised recovery is pending".
+   */
+  const DELIBERATELY_OTHER_RECOVERY: Record<string, string> = {};
+
+  it("finds the builders it is meant to guard", () => {
+    // A discovery that silently found nothing would pass the guard below vacuously.
+    expect(builtRecoveryKeys.length).toBeGreaterThanOrEqual(12);
+    expect(sqlCases.length).toBe(RECOVERY_SCENARIO_CATALOGUE.length);
+  });
+
+  it("gives every recovery key payment-recovery-keys.ts builds a scenario code (#4076, INV-SSOT)", () => {
+    for (const { name, key } of builtRecoveryKeys) {
+      const hit = sqlCases.find(([prefix]) => key.startsWith(prefix));
+      const reason = Object.entries(DELIBERATELY_OTHER_RECOVERY).find(
+        ([prefix]) => key.startsWith(prefix),
+      );
+      expect(
+        hit !== undefined || reason !== undefined,
+        `#4076: ${name} builds "${key}", which RECOVERY_SCENARIO_CATALOGUE ` +
+          `(finance-recovery-scenarios.ts) does not map, so Diagnostics would call it ` +
+          `other_recovery. Add a catalogue entry, or list the prefix in ` +
+          `DELIBERATELY_OTHER_RECOVERY with a reason.`,
+      ).toBe(true);
+    }
+  });
+
+  it("maps the key to the first prefix that matches, so a longer prefix is not shadowed", () => {
+    for (const [index, [prefix]] of sqlCases.entries()) {
+      for (const [earlierPrefix, earlierCode] of sqlCases.slice(0, index)) {
+        expect(
+          prefix.startsWith(earlierPrefix),
+          `#4076: "${prefix}" is shadowed by the earlier, shorter prefix ` +
+            `"${earlierPrefix}" (${earlierCode}); the CASE returns the first match.`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("projects the three organiser and group refund scenarios Finance Officers ask about (#4076)", () => {
+    const codeFor = (key: string) =>
+      sqlCases.find(([prefix]) => key.startsWith(prefix))?.[1];
+    expect(
+      codeFor(paymentRecoveryKeys.buildOrganiserChildModificationRefundKey("m1")),
+    ).toBe("organiser_child_refund");
+    expect(
+      codeFor(
+        paymentRecoveryKeys.buildOrganiserChildCancellationRefundKey("s1", "c1"),
+      ),
+    ).toBe("organiser_child_refund");
+    expect(
+      codeFor(paymentRecoveryKeys.buildOrganiserChildAppealRefundKey("r1")),
+    ).toBe("organiser_card_appeal_refund");
+    expect(
+      codeFor(
+        paymentRecoveryKeys.buildGroupSettlementRefundRecoveryIdempotencyKey("s1"),
+      ),
+    ).toBe("group_settlement_refund");
+  });
+
+  it("ships a plain-English label for every code to the model, on both tools that project one", () => {
+    const scopes = [
+      DIAGNOSTICS_PAYMENT_ATTEMPT_LEDGER_TOOL_ID,
+      DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID,
+    ].map(
+      (id) => DIAGNOSTICS_TOOLS.find((tool) => tool.id === id)?.evidenceScope ?? "",
+    );
+    for (const scope of scopes) {
+      for (const { code, label } of RECOVERY_SCENARIO_CATALOGUE) {
+        expect(scope, `${code} has no label in the shipped evidenceScope`).toContain(
+          `${code} is ${label}`,
+        );
+      }
+      expect(scope).toContain("other_recovery is a queued recovery");
+    }
+  });
+
+  it("keeps the prefixes in the statement exactly as the catalogue spells them", () => {
+    expect(sqlCases).toEqual(
+      RECOVERY_SCENARIO_CATALOGUE.map(({ prefix, code }) => [prefix, code]),
+    );
   });
 });
