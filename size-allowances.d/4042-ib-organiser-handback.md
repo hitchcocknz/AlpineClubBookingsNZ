@@ -20,13 +20,13 @@ reason: the "Manual refund needed" message gains its two note tokens, which
   same tables.
 
 file: src/lib/group-cancel.ts
-lines: 964
-reason: thirteen lines book each joiner's share on the organiser's hand-back inside
+lines: 962
+reason: eleven lines book each joiner's share on the organiser's hand-back inside
   the per-child claim that records it (the writer itself is
   `group-organiser-hand-back.ts`), carry it out of the claim, name it in the
-  child's audit, and send its alert once, after the children, from a finally
-  around the loop so an escaping error still sends it; each has to sit in the
-  claim or around the loop it belongs to.
+  child's audit, and run the alert sweep once the loop ends, from a finally
+  around it so an escaping error still runs it; each has to sit in the claim
+  or around the loop it belongs to.
 
 file: src/lib/email-message-renderer.ts
 lines: 958
