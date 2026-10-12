@@ -321,6 +321,7 @@ import {
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
 import { UNSUPPORTED_CHARGE_CURRENCY_MEMBER_BODY } from "@/lib/stripe-charge-currency";
 import {
   ADDITIONAL_PAYMENT_ALREADY_MADE_CODE,
@@ -1160,6 +1161,69 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
         createdByMemberId: "m1",
       },
     );
+  });
+
+  // #4057: a joiner's booking the group organiser paid for by card refunds the
+  // reduction to the ORGANISER's card through its debt. The real refund helper
+  // runs that debt and re-reads it after commit; the email says the refund was
+  // made only when the debt says so.
+  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's date reduction emails refund destination: debt $label -> $destination (#4057)", async ({ lookupThrows, reread, runs, destination }) => {
+    const booking = makeBooking({ organiserSettled: true, parentBookingId: "organiser_bk" });
+    const tx = makeTx(booking) as ReturnType<typeof makeTx> & Record<string, unknown>;
+    Object.assign(tx, {
+      groupBookingSettlement: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "settlement_1",
+          stripePaymentIntentId: "pi_combined",
+          amountCents: 20000,
+          status: "SUCCEEDED",
+          refundPlan: null,
+        }),
+      },
+      paymentRefund: { aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: null } }) },
+      paymentRecoveryOperation: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+        create: vi.fn().mockResolvedValue({ id: "op_child", amountCents: 3000 }),
+      },
+    });
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacity.mockResolvedValue({ available: true, availableBeds: 20 } as any);
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 7000, // price decreased from 10000
+      guests: [{ priceCents: 7000, perNightCents: [3500] }],
+    } as any);
+    mockedCalcChangeFee.mockReturnValue({ feeCents: 0, fromTierRefundPct: 0, toTierRefundPct: 0 });
+    mockPaymentUpdate.mockResolvedValue({});
+    mockMemberFindUnique.mockResolvedValue({ active: true, email: "alice@test.com", firstName: "Alice" });
+    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod1", debtId: "op_child", lookupThrows, reread });
+
+    try {
+      const res = await PUT(
+        new NextRequest("http://localhost/api/bookings/bk1/modify-dates", {
+          method: "PUT",
+          // No settlement method: the organiser's card is the only disposition.
+          body: JSON.stringify({ checkOut: "2026-08-02" }),
+        }),
+        { params: Promise.resolve({ id: "bk1" }) },
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      // A lookup that throws leaves nothing to run; the debt stays owed.
+      if (runs) expect(runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      else expect(runPaymentRecoveryOperationNow).not.toHaveBeenCalledWith("op_child", expect.anything());
+      const { sendBookingModifiedEmail } = await import("@/lib/email");
+      expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ refundAmountCents: 3000, refundDestination: destination }),
+        expect.anything(),
+      );
+    } finally {
+      mockRecoveryOperationFindUnique.mockReset();
+      mockRecoveryOperationFindUnique.mockResolvedValue(null);
+    }
   });
 
   it("does not send Internet Banking date reductions to Stripe refund recovery", async () => {

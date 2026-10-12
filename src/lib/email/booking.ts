@@ -2,6 +2,7 @@ import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
 import {
   bookingCancelledRefundSentence,
   type BookingCancelledRefundMethod,
+  type BookingModifiedRefundDestination,
   bookingModifiedRefundSentence,
 } from "@/lib/booking-modified-email-copy";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
@@ -1426,9 +1427,8 @@ export async function sendBookingModifiedEmail(params: {
    * instead (`INV-SSOT`, "prefer unrepresentable over policed").
    */
   financialReviewPending: boolean;
-  /** #3916: the refund went to the group organiser's card (#3653). REQUIRED, like `financialReviewPending`;
-   * the settlement's own `result.organiserChildRefund !== null`, never recomputed. */
-  refundReturnedToOrganiser: boolean;
+  /** #3916, #4057: REQUIRED; the answer `executeBookingModificationRefund` gives after the refund ran, never recomputed. */
+  refundDestination: BookingModifiedRefundDestination;
   /**
    * #3827 (D-3813-6, `INV-PAY-117`): the refund is a bank transfer the club
    * still has to send. REQUIRED, as `financialReviewPending` is; the template's
@@ -1494,7 +1494,7 @@ export async function sendBookingModifiedEmail(params: {
           bookingModifiedRefundSentence(
             formatMoneyCents(params.refundAmountCents, format),
             params.refundByBankTransfer,
-            params.refundReturnedToOrganiser,
+            params.refundDestination,
           ),
           accountCreditAmountCents > 0
             ? `Account credit of ${formatMoneyCents(accountCreditAmountCents, format)} has been added for future bookings.`
