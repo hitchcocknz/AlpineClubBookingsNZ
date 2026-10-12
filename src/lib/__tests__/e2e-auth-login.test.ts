@@ -93,7 +93,7 @@ function mockPage(initialPath: string, destination = "/admin/payments") {
   const page = {
     setExtraHTTPHeaders: vi.fn(async () => {}),
     context: () => ({ clearCookies: vi.fn(async () => {}) }),
-    goto: vi.fn(async () => { pathname = "/login"; }),
+    goto: vi.fn(async (url: string) => { pathname = new URL(url, "http://local.test").pathname; }),
     url: () => `http://local.test${pathname}`,
     locator,
     getByRole: (role: string, options: { name: string }) => locator(options.name, role),
@@ -165,6 +165,36 @@ describe("settled E2E persona sign-in (#4020)", () => {
       ? ["Sign in", "Enroll", "Continue"] : ["Sign in", "Verify"]);
     expect(browser.page.url()).toBe("http://local.test/admin/payments");
     if (path.endsWith("enroll")) expect(harness.writeFileSync).toHaveBeenCalledOnce();
+  });
+
+  it("re-enters the verified destination through the server gate before accepting a scoped layout", async () => {
+    const browser = mockPage("/login/verify", "/dashboard");
+    vi.mocked(browser.page.goto).mockImplementation(async (url) => {
+      const path = new URL(url, "http://local.test").pathname;
+      browser.navigate(path);
+      if (path === "/dashboard") {
+        // The server gate redirects a lodge-only account; the client shell
+        // itself never rendered an authenticated marker.
+        browser.navigate("/lodge/kiosk");
+        browser.renderAuthenticated();
+      }
+      return null;
+    });
+    await loginPersona(browser.page, EMAIL);
+    expect(browser.page.goto).toHaveBeenNthCalledWith(2, "http://local.test/dashboard");
+    expect(browser.page.url()).toBe("http://local.test/lodge/kiosk");
+    expect(browser.clicks).toEqual(["Sign in", "Verify"]);
+  });
+
+  it("refuses a destination that the server gate returns to a challenge", async () => {
+    const browser = mockPage("/login/verify", "/dashboard");
+    vi.mocked(browser.page.goto).mockImplementation(async (url) => {
+      const path = new URL(url, "http://local.test").pathname;
+      browser.navigate(path === "/dashboard" ? "/login/verify" : path);
+      return null;
+    });
+    await expect(loginPersona(browser.page, EMAIL)).rejects.toThrow("Sign-in did not complete");
+    expect(browser.clicks).toEqual(["Sign in", "Verify"]);
   });
 
   it.each(["/dashboard", "/admin/payments", "/finance", "/lodge/kiosk"])("preserves completed scoped landing %s", async (path) => {

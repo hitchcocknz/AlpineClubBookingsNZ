@@ -251,7 +251,10 @@ challenge or the rendered authenticated layout before continuing. A destination
 URL alone can appear before a delayed `/login/verify` redirect (#4020). The
 completion signal is the navigation brand mark for member/admin/finance pages,
 or the kiosk root for lodge accounts; both render after their layout's sign-in
-gate. `loginPersona` preserves scoped-role landing pages, while `signIn` also
+gate. After completing a challenge, the helper navigates to the returned
+destination through the server gate before checking that rendered signal;
+client navigation after the cookie change can leave an empty streamed shell.
+`loginPersona` preserves scoped-role landing pages, while `signIn` also
 checks Alice's `/admin/dashboard` destination. Forced password changes, a return
 to login, and pages without either authenticated signal fail the helper.
 

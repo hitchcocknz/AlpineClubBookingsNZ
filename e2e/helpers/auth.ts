@@ -226,6 +226,12 @@ export async function loginPersona(
     throw new Error(`Sign-in reached an unexpected destination: ${page.url()}`);
   }
 
+  if (state !== "authenticated") {
+    // Re-enter the destination through its server auth gate after the challenge.
+    // Client navigation can leave an empty streamed shell after the cookie changes.
+    await page.goto(page.url());
+  }
+
   if (state !== "authenticated" && await waitForLoginState(page) !== "authenticated") {
     throw new Error(`Sign-in did not complete at an authenticated destination: ${page.url()}`);
   }
