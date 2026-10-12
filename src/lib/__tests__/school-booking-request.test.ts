@@ -1144,6 +1144,27 @@ describe("approveSchoolBookingRequest", () => {
     expect(prisma.booking.create).not.toHaveBeenCalled();
   });
 
+  it("assigns no teacher and sends no PIN while the Hut Leaders module is off, whatever the lodge ticks (#3821)", async () => {
+    mockedFindUnique.mockResolvedValue(schoolRequest() as never);
+    vi.mocked(prisma.lodgeSettings.findUnique).mockResolvedValue({
+      capacity: null,
+      schoolHutLeaderTeacherOnBooking: true,
+    } as never);
+    // Every other module stays on, so only the hut-leader gate can refuse.
+    mockedModuleEnabled.mockImplementation((async (key: string) => key !== "hutLeaders") as never);
+
+    const result = await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result).toMatchObject({ type: "approved", teacherHutLeaderAssignmentsCreated: false });
+    expect(mockedModuleEnabled).toHaveBeenCalledWith("hutLeaders");
+    expect(prisma.hutLeaderAssignment.create).not.toHaveBeenCalled();
+    expect(mockedGenerateHutLeaderPin).not.toHaveBeenCalled();
+    expect(mockedSendPin).not.toHaveBeenCalled();
+  });
+
   it("keeps teacher guests and school contact people without hut-leader PINs when the lodge does not tick teachers (#3416, #3819)", async () => {
     mockedFindUnique.mockResolvedValue(schoolRequest() as never);
     vi.mocked(prisma.lodgeSettings.findUnique).mockResolvedValue({

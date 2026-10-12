@@ -1,4 +1,4 @@
-import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import { hutLeaderStayStatusWhere } from "@/lib/hut-leader-stayed-nights";
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
 import { addDaysDateOnly, formatDateOnly } from "@/lib/date-only";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
@@ -158,7 +158,11 @@ export async function getUnassignedHutLeaderDates(input: {
         ...(input.scope.kind === "lodge"
           ? { lodgeId: input.scope.lodgeId }
           : {}),
-        status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
+        // THE hut-leader stay set (`hutLeaderStayStatusWhere`): an operational
+        // stay, or a school booking that holds beds — a school group awaiting
+        // its invoice needs a leader too (owner decision on #3820, 13 Oct
+        // 2026, "Yes, count it"), and a member on it can be one.
+        AND: [hutLeaderStayStatusWhere()],
         deletedAt: null,
         checkIn: { lte: endDate },
         checkOut: { gt: windowStart },
@@ -195,8 +199,8 @@ export async function getUnassignedHutLeaderDates(input: {
   /**
    * The uncovered lodges on one night, keyed by lodge.
    *
-   * The trigger condition per lodge: an operational booking occupying that
-   * night, at a lodge with no leader validly covering it (assigned AND staying,
+   * The trigger condition per lodge: a hut-leader stay booking (operational,
+   * or a school booking holding beds) occupying that night, at a lodge with no leader validly covering it (assigned AND staying,
    * #3818), carrying at least one guest active on that night —
    * `countActiveGuestsForNight`, i.e. `isGuestActiveOnNight`. Only the grouping
    * changed: the counts are now banked per lodge instead of summed across all of

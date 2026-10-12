@@ -1,13 +1,14 @@
 import { HutLeaderAssignmentSource, type Prisma } from "@prisma/client";
-import { capacityHoldingBookingFilter } from "@/lib/booking-status";
-import { SCHOOL_GROUP_BOOKING_WHERE } from "@/lib/school-group-booking";
 import {
   isGuestActiveOnNight,
   type GuestStayRange,
 } from "@/lib/booking-guest-stay-ranges";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { isCustodianOccupancy } from "@/lib/custodian-occupancy";
-import { hutLeaderStayBookingWhere } from "@/lib/hut-leader-stayed-nights";
+import {
+  hutLeaderStayBookingWhere,
+  schoolBookingHoldingBedsWhere,
+} from "@/lib/hut-leader-stayed-nights";
 import {
   loadSchoolHutLeaderKinds,
   type LodgeSettingsReader,
@@ -56,15 +57,15 @@ import {
  *    `BookingGuest` row for that member (owning a booking one is not a guest on
  *    does not count), on a booking matching THE hut-leader stay definition
  *    `hutLeaderStayBookingWhere` (#3817: non-deleted, an operational-stay
- *    status — the same set that decides a night needs a leader at all — the
- *    one rule the writers and suggestions read too), operationally consented,
- *    and active on the
+ *    status or a school booking that holds beds — the same set that decides a
+ *    night needs a leader at all — the one rule the writers and suggestions
+ *    read too), operationally consented, and active on the
  *    night by `isGuestActiveOnNight` — the frozen night-model predicate, reused,
  *    never restated (`INV-DATE-003`/`INV-DATE-005`). A cancelled, bumped or
  *    archived stay is simply not loaded, so it covers nothing.
  *
  * **On a school booking's nights the lodge decides who may lead (#3819).** A
- * night on which a school booking ({@link SCHOOL_GROUP_BOOKING_WHERE}) is
+ * night on which a school booking (`schoolBookingHoldingBedsWhere`) is
  * staying at the lodge is covered only by a present leader of a kind that
  * lodge ticks in "Who can be hut leader for school bookings"
  * (`loadSchoolHutLeaderKinds`): a teacher on the booking, the lodge custodian,
@@ -152,6 +153,13 @@ export type HutLeaderNightCoverReader =
 export type HutLeaderNightCover = {
   /** The assignments that validly cover `night` at `lodgeId`, in load order. */
   coveringShifts(lodgeId: string | null, night: Date): HutLeaderShift[];
+  /**
+   * Whether this one row validly covers `night` at its own lodge — the same
+   * answer {@link coveringShifts} gives for a loaded row, for a row the caller
+   * holds (the overlap guard's existing or proposed custodian). Its member's
+   * stays must have been loaded (`memberIds` on the loader).
+   */
+  shiftCoversNight(shift: HutLeaderShift, night: Date): boolean;
   /** Whether any assignment validly covers `night` at `lodgeId`. */
   isCovered(lodgeId: string | null, night: Date): boolean;
   /**
@@ -283,25 +291,22 @@ export function buildHutLeaderNightCover(
       : ((lodgeId !== null ? school.kindsByLodge.get(lodgeId) : undefined) ??
         DEFAULT_SCHOOL_HUT_LEADER_KINDS);
 
-  const coveringShifts = (lodgeId: string | null, night: Date) => {
-    const present = shifts.filter(
-      (shift) =>
-        shift.lodgeId === lodgeId &&
-        shiftClaimsNight(shift, night) &&
-        isPresent(shift, night),
-    );
-    const ticked = schoolNightKinds(lodgeId, night);
-    if (!ticked) return present;
-    return present.filter((shift) =>
-      schoolHutLeaderKindsOfShift(shift, night, staysByMember, schoolBookingIds).some(
-        (kind) => ticked[kind],
-      ),
+  const shiftCoversNight = (shift: HutLeaderShift, night: Date): boolean => {
+    if (!shiftClaimsNight(shift, night) || !isPresent(shift, night)) return false;
+    const ticked = schoolNightKinds(shift.lodgeId, night);
+    if (!ticked) return true;
+    return schoolHutLeaderKindsOfShift(shift, night, staysByMember, schoolBookingIds).some(
+      (kind) => ticked[kind],
     );
   };
+
+  const coveringShifts = (lodgeId: string | null, night: Date) =>
+    shifts.filter((shift) => shift.lodgeId === lodgeId && shiftCoversNight(shift, night));
 
   return {
     shifts,
     coveringShifts,
+    shiftCoversNight,
     isCovered: (lodgeId, night) => coveringShifts(lodgeId, night).length > 0,
     schoolNightKinds,
     isSchoolBooking: (bookingId) => schoolBookingIds.has(bookingId),
@@ -325,6 +330,52 @@ export function memberMayLeadNight(
   return ticked[
     cover.isSchoolBooking(input.stayBookingId) ? "memberOnBooking" : "memberStayingSeparately"
   ];
+}
+
+/**
+ * The nights around `night`, inside the member's stayed run `[first, last]`,
+ * that they may lead ({@link memberMayLeadNight}) — contiguous, so one row.
+ * Null when they may not lead `night` itself. The nightly auto-assign writes
+ * exactly this span (#3821): a run longer than a school group's stay must not
+ * carry the member onto school nights their kind is not ticked for, nor
+ * through them onto the ordinary nights beyond. `cover` must reach `[first,
+ * last]`, so a school booking on any of those nights is known.
+ */
+export function leadableNightRun(
+  cover: HutLeaderNightCover,
+  input: { lodgeId: string | null; night: Date; first: Date; last: Date; stayBookingId: string },
+): { first: Date; last: Date } | null {
+  const mayLead = (night: Date) =>
+    memberMayLeadNight(cover, { lodgeId: input.lodgeId, night, stayBookingId: input.stayBookingId });
+  if (!mayLead(input.night)) return null;
+  let first = input.night;
+  for (let previous = shiftNight(first, -1); previous.getTime() >= input.first.getTime() && mayLead(previous); previous = shiftNight(previous, -1)) {
+    first = previous;
+  }
+  let last = input.night;
+  for (let next = shiftNight(last, 1); next.getTime() <= input.last.getTime() && mayLead(next); next = shiftNight(next, 1)) {
+    last = next;
+  }
+  return { first, last };
+}
+
+/**
+ * The school-group nights in the row's own span that it does not cover,
+ * because the lodge does not tick its kind for school bookings (#3821) — the
+ * nights the manual create warns about. `cover` must reach the row's span and
+ * its member's stays (`memberIds`).
+ */
+export function schoolNightsShiftDoesNotCover(
+  cover: HutLeaderNightCover,
+  shift: HutLeaderShift,
+): string[] {
+  return eachNight(shift.startDate, shift.endDate)
+    .filter(
+      (night) =>
+        cover.schoolNightKinds(shift.lodgeId, night) !== null &&
+        !cover.shiftCoversNight(shift, night),
+    )
+    .map(calendarDateOfDateOnlyInstant);
 }
 
 /** The scalar columns every coverage answer needs. */
@@ -362,6 +413,9 @@ const SHIFT_COVER_SELECT_WITH_NAMES = {
  *
  * Pass the transaction client when the answer decides a write (the cron's
  * locked re-ask): it is a read, so it is only authoritative under that lock.
+ * `memberIds` adds members whose stays to load beside the assignments' own,
+ * for a caller asking {@link HutLeaderNightCover.shiftCoversNight} about a row
+ * not yet written.
  */
 export async function loadHutLeaderNightCover(
   reader: HutLeaderNightCoverReader,
@@ -370,6 +424,7 @@ export async function loadHutLeaderNightCover(
     from: Date;
     to: Date;
     withNames?: boolean;
+    memberIds?: readonly string[];
   },
 ): Promise<HutLeaderNightCover> {
   const db = reader as unknown as HutLeaderNightCoverDb;
@@ -390,34 +445,26 @@ export async function loadHutLeaderNightCover(
     ),
   ];
 
-  // A school group is "staying" on the nights its booking HOLDS CAPACITY — the
-  // capacity engine's own population (`capacityHoldingBookingFilter`), never a
-  // second status list. An approved school booking is CONFIRMED until its Xero
-  // invoice is paid, which can be after arrival, so the paid-only member stay
-  // definition would drop its nights. A cancelled or deleted one makes none.
-  const schoolBookings = (await db.booking.findMany({
-    where: {
-      deletedAt: null,
-      // Every school booking in scope, not only at lodges with assignments:
-      // the auto-assign and the suggestions ask which kinds a night accepts
-      // before any leader exists there.
-      ...(input.scope.kind === "lodge" ? { lodgeId: input.scope.lodgeId } : {}),
-      checkIn: { lte: input.to },
-      checkOut: { gt: input.from },
-      AND: [capacityHoldingBookingFilter(), SCHOOL_GROUP_BOOKING_WHERE],
-    },
-    select: { id: true, lodgeId: true, checkIn: true, checkOut: true },
-  })) as HutLeaderSchoolBooking[];
+  const schoolBookings = await loadHutLeaderSchoolBookings(db, input);
 
   const memberShifts = shifts.filter(needsMemberStays);
+  const extraMemberIds = input.memberIds ?? [];
+  const stayLodgeIds = [
+    ...new Set([
+      ...lodgeIdsOf(memberShifts),
+      ...(extraMemberIds.length > 0 && input.scope.kind === "lodge" ? [input.scope.lodgeId] : []),
+    ]),
+  ];
   const stays =
-    memberShifts.length === 0
+    memberShifts.length === 0 && extraMemberIds.length === 0
       ? []
       : await db.bookingGuest.findMany({
           where: {
-            memberId: { in: [...new Set(memberShifts.map((shift) => shift.memberId))] },
+            memberId: {
+              in: [...new Set([...memberShifts.map((shift) => shift.memberId), ...extraMemberIds])],
+            },
             booking: hutLeaderStayBookingWhere({
-              lodgeId: lodgeIdsOf(memberShifts),
+              lodgeId: stayLodgeIds,
               rangeStart: input.from,
               rangeEnd: input.to,
             }),
@@ -448,6 +495,53 @@ export async function loadHutLeaderNightCover(
     bookings: schoolBookings,
     kindsByLodge,
   });
+}
+
+/**
+ * The school bookings staying in `scope` over `[from, to]`. A school group is
+ * "staying" on the nights its booking HOLDS CAPACITY — the capacity engine's
+ * own population, never a second status list (`schoolBookingHoldingBedsWhere`,
+ * shared with the member stay definition). An approved school booking is
+ * CONFIRMED until its Xero invoice is paid, which can be after arrival. A
+ * cancelled or deleted one makes none.
+ */
+async function loadHutLeaderSchoolBookings(
+  db: HutLeaderNightCoverDb,
+  input: { scope: HutLeaderNightCoverScope; from: Date; to: Date },
+): Promise<HutLeaderSchoolBooking[]> {
+  return (await db.booking.findMany({
+    where: {
+      deletedAt: null,
+      // Every school booking in scope, not only at lodges with assignments:
+      // the auto-assign and the suggestions ask which kinds a night accepts
+      // before any leader exists there.
+      ...(input.scope.kind === "lodge" ? { lodgeId: input.scope.lodgeId } : {}),
+      checkIn: { lte: input.to },
+      checkOut: { gt: input.from },
+      AND: [schoolBookingHoldingBedsWhere()],
+    },
+    select: { id: true, lodgeId: true, checkIn: true, checkOut: true },
+  })) as HutLeaderSchoolBooking[];
+}
+
+/**
+ * {@link schoolNightsShiftDoesNotCover} for a row at a lodge, read: the school
+ * bookings first, and the whole cover only when one is there, so a lodge with
+ * no school group pays one read (#3821, the manual create's warning).
+ */
+export async function findSchoolNightsShiftDoesNotCover(
+  reader: HutLeaderNightCoverReader,
+  shift: HutLeaderShift & { lodgeId: string },
+): Promise<string[]> {
+  const db = reader as unknown as HutLeaderNightCoverDb;
+  const window = {
+    scope: { kind: "lodge" as const, lodgeId: shift.lodgeId },
+    from: shift.startDate,
+    to: shift.endDate,
+  };
+  if ((await loadHutLeaderSchoolBookings(db, window)).length === 0) return [];
+  const cover = await loadHutLeaderNightCover(reader, { ...window, memberIds: [shift.memberId] });
+  return schoolNightsShiftDoesNotCover(cover, shift);
 }
 
 /**

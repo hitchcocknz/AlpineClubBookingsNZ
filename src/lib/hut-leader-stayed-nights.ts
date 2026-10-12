@@ -1,5 +1,9 @@
 import { HutLeaderAssignmentSource, type Prisma } from "@prisma/client";
-import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import {
+  capacityHoldingBookingFilter,
+  OPERATIONAL_STAY_BOOKING_STATUSES,
+} from "@/lib/booking-status";
+import { SCHOOL_GROUP_BOOKING_WHERE } from "@/lib/school-group-booking";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { getGuestBedNightKeys } from "@/lib/booking-guest-stay-ranges";
 import { isCustodianOccupancy } from "@/lib/custodian-occupancy";
@@ -19,7 +23,11 @@ import {
  * from and the rule that judges the pick cannot disagree:
  *
  * - a booking at THIS lodge, not soft-deleted, whose status is an operational
- *   stay (PAID or COMPLETED — a cancelled stay is not a stay), and
+ *   stay (PAID or COMPLETED — a cancelled stay is not a stay), or a school
+ *   group's booking that holds beds ({@link schoolBookingHoldingBedsWhere}:
+ *   an approved school booking is CONFIRMED until its invoice is paid, which
+ *   can be after the group arrives; owner decision on #3820, 13 Oct 2026,
+ *   "Yes, count it"), and
  * - a guest row for the member on it whose own consent does not leave them
  *   operationally absent (owner decision D-12, #2307). Owning a booking is NOT
  *   a stay: a member counts only on nights they are a guest (owner decision on
@@ -40,6 +48,30 @@ export type HutLeaderMemberStay = {
 };
 
 /**
+ * A school group's booking on the nights it HOLDS BEDS — the capacity engine's
+ * own population (`capacityHoldingBookingFilter`), never a second status list
+ * (#3819). Its top level is an `AND`; spread it under `AND` or `OR`.
+ */
+export function schoolBookingHoldingBedsWhere(): Prisma.BookingWhereInput {
+  return { AND: [capacityHoldingBookingFilter(), SCHOOL_GROUP_BOOKING_WHERE] };
+}
+
+/**
+ * The status half of a hut-leader stay: an operational stay, or a school
+ * booking that holds beds (owner decision on #3820, 13 Oct 2026, "Yes, count
+ * it"). The coverage reader asks it club-wide, where there is no lodge to pass
+ * {@link hutLeaderStayBookingWhere}. Its top level is an `OR`.
+ */
+export function hutLeaderStayStatusWhere(): Prisma.BookingWhereInput {
+  return {
+    OR: [
+      { status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] } },
+      schoolBookingHoldingBedsWhere(),
+    ],
+  };
+}
+
+/**
  * The bookings whose nights count as a member's stay at `lodgeId` overlapping a
  * range — THE one definition of "a booking that is a stay" for hut leaders
  * (`INV-SSOT`). The manual create/edit stay check, the eligible-members
@@ -47,7 +79,9 @@ export type HutLeaderMemberStay = {
  * they cannot disagree about which bookings count; so does the presence-aware
  * coverage reader (`hut-leader-night-cover.ts`, #3818), which asks for several
  * lodges at once and so passes a list. A soft-deleted booking is not a stay,
- * whatever its status.
+ * whatever its status. The same set decides which nights need a leader
+ * (`hut-leader-coverage.ts`), so a school group awaiting its invoice both needs
+ * a leader and can supply one from its own members.
  */
 export function hutLeaderStayBookingWhere(input: {
   lodgeId: string | readonly string[];
@@ -57,7 +91,7 @@ export function hutLeaderStayBookingWhere(input: {
   return {
     deletedAt: null,
     lodgeId: isLodgeIdList(input.lodgeId) ? { in: [...input.lodgeId] } : input.lodgeId,
-    status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
+    AND: [hutLeaderStayStatusWhere()],
     checkIn: { lte: input.rangeEnd },
     checkOut: { gt: input.rangeStart },
   };

@@ -55,6 +55,8 @@ const mocks = vi.hoisted(() => ({
   // night these cases assign, so the pre-existing cases are unaffected.
   bookingGuestFindMany: vi.fn(),
   bookingFindMany: vi.fn(),
+  // #3821: the lodge's school hut-leader kinds, read by the create's warning.
+  lodgeSettingsFindUnique: vi.fn(),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -142,6 +144,7 @@ vi.mock("@/lib/prisma", () => ({
     lodge: { findUnique: mocks.lodgeFindUnique },
     bookingGuest: { findMany: mocks.bookingGuestFindMany },
     booking: { findMany: mocks.bookingFindMany },
+    lodgeSettings: { findUnique: mocks.lodgeSettingsFindUnique },
   },
 }));
 
@@ -238,6 +241,7 @@ beforeEach(() => {
     hutLeaderStayGuestRow("2026-06-01", "2026-10-01"),
   ]);
   mocks.bookingFindMany.mockResolvedValue([]);
+  mocks.lodgeSettingsFindUnique.mockResolvedValue(null);
 
   mocks.acquireLodgeCapacityLock.mockImplementation(async () => {
     callOrder.push("lock");
@@ -1246,5 +1250,59 @@ describe("#3817 — a role-only assignment may claim only nights the member stay
 
     expect(res.status).toBe(200);
     expect(mocks.bookingGuestFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("#3821 — school nights and teacher rows", () => {
+  const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
+
+  it("POST warns when the new row's nights include school nights its kind does not cover", async () => {
+    // A school group holds nights 2–3 Jul; the lodge leaves custodians unticked.
+    mocks.bookingFindMany.mockResolvedValue([
+      { id: "school", lodgeId: LODGE, checkIn: day("2026-07-02"), checkOut: day("2026-07-04") },
+    ]);
+    mocks.lodgeSettingsFindUnique.mockResolvedValue({
+      capacity: null,
+      schoolHutLeaderTeacherOnBooking: false,
+      schoolHutLeaderCustodian: false,
+      schoolHutLeaderMemberOnBooking: true,
+      schoolHutLeaderMemberStayingSeparately: true,
+    });
+
+    const res = await POST(postRequest({ ...CREATE_BODY, isCustodian: true }));
+
+    expect(res.status).toBe(201);
+    await expect(res.json()).resolves.toMatchObject({
+      schoolNightsWarning: expect.stringMatching(/^2 of these nights are a school group's \(from 2026-07-02\)/),
+    });
+  });
+
+  it("POST gives no warning when the lodge accepts the kind", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      { id: "school", lodgeId: LODGE, checkIn: day("2026-07-02"), checkOut: day("2026-07-04") },
+    ]);
+    const res = await POST(postRequest({ ...CREATE_BODY, isCustodian: true }));
+    await expect(res.json()).resolves.toMatchObject({ schoolNightsWarning: null });
+  });
+
+  it("PUT refuses ticking Custodian on a school teacher's row, writing nothing", async () => {
+    mocks.txAssignmentFindUnique.mockResolvedValue({
+      id: "a1",
+      memberId: "teacher-1",
+      lodgeId: LODGE,
+      bedId: null,
+      isCustodian: false,
+      source: "SCHOOL_BOOKING",
+      startDate: day("2026-07-01"),
+      endDate: day("2026-07-05"),
+    });
+
+    const res = await PUT(putRequest({ isCustodian: true }), { params });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/school teacher's assignment cannot be marked Custodian/),
+    });
+    expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
   });
 });

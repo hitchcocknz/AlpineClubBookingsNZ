@@ -3,13 +3,16 @@ import { BookingStatus } from "@prisma/client";
 
 import { capacityHoldingBookingFilter } from "@/lib/booking-status";
 import { SCHOOL_GROUP_BOOKING_WHERE } from "@/lib/school-group-booking";
+import { hutLeaderStayStatusWhere } from "@/lib/hut-leader-stayed-nights";
 
 import {
   buildHutLeaderNightCover,
   isHutLeaderNightCovered,
+  leadableNightRun,
   listHutLeaderHandovers,
   listHutLeaderNightLeaders,
   loadHutLeaderNightCover,
+  schoolNightsShiftDoesNotCover,
   type HutLeaderSchoolBooking,
   type HutLeaderShift,
   type HutLeaderStay,
@@ -201,8 +204,9 @@ describe("loadHutLeaderNightCover", () => {
       memberId: { in: ["leader"] },
       booking: {
         lodgeId: { in: ["lodge-a"] },
-        // A cancelled, bumped or pending stay is never loaded, so never covers.
-        status: { in: ["PAID", "COMPLETED"] },
+        // A cancelled, bumped or pending stay is never loaded, so never covers;
+        // a school booking holding beds is (#3821, owner decision on #3820).
+        AND: [hutLeaderStayStatusWhere()],
         deletedAt: null,
         // Any stay overlapping the window: in by `to`, out after `from`.
         checkIn: { lte: d("2026-08-31") },
@@ -276,7 +280,7 @@ describe("loadHutLeaderNightCover", () => {
       checkOut: { gt: d("2026-08-01") },
       // The capacity engine's population, not the paid-only stay list: an
       // approved school booking is CONFIRMED until its invoice is paid.
-      AND: [capacityHoldingBookingFilter(), SCHOOL_GROUP_BOOKING_WHERE],
+      AND: [{ AND: [capacityHoldingBookingFilter(), SCHOOL_GROUP_BOOKING_WHERE] }],
     });
     expect(db.lodgeSettings.findUnique).toHaveBeenCalledWith({ where: { id: "lodge-a" } });
     // The custodian is present, but this lodge does not accept a custodian
@@ -467,5 +471,67 @@ describe("a school booking's nights obey the lodge's ticked kinds (#3819)", () =
       { bookings: [SCHOOL], kindsByLodge: new Map() },
     );
     expect(custodian.isCovered("lodge-a", d("2026-08-11"))).toBe(true);
+  });
+});
+
+describe("the nights a member may lead, around one night (#3821)", () => {
+  // The member stays 7–15 Aug on their own booking; the school group is there
+  // 10–12 Aug. The lodge does not tick "a member staying separately".
+  const runInput = {
+    lodgeId: "lodge-a",
+    first: d("2026-08-07"),
+    last: d("2026-08-15"),
+    stayBookingId: "own-booking",
+  };
+  const cover = buildHutLeaderNightCover(
+    [],
+    [],
+    schoolNights(onlyKinds("custodian", "memberOnBooking")),
+  );
+
+  it("stops before the school group's first night", () => {
+    expect(leadableNightRun(cover, { ...runInput, night: d("2026-08-08") })).toEqual({
+      first: d("2026-08-07"),
+      last: d("2026-08-09"),
+    });
+  });
+
+  it("starts after the school group's last night", () => {
+    expect(leadableNightRun(cover, { ...runInput, night: d("2026-08-14") })).toEqual({
+      first: d("2026-08-13"),
+      last: d("2026-08-15"),
+    });
+  });
+
+  it("is null on a school night they may not lead", () => {
+    expect(leadableNightRun(cover, { ...runInput, night: d("2026-08-11") })).toBeNull();
+  });
+
+  it("is the whole run when their kind is ticked", () => {
+    const ticked = buildHutLeaderNightCover([], [], schoolNights());
+    expect(leadableNightRun(ticked, { ...runInput, night: d("2026-08-08") })).toEqual({
+      first: d("2026-08-07"),
+      last: d("2026-08-15"),
+    });
+  });
+});
+
+describe("one row's own school-night cover (#3821)", () => {
+  const custodian = shift({ id: "cust", isCustodian: true, startDate: d("2026-08-08"), endDate: d("2026-08-14") });
+
+  it("names the school nights a custodian does not cover when the lodge leaves custodians unticked", () => {
+    const cover = buildHutLeaderNightCover([custodian], [], schoolNights(onlyKinds("memberOnBooking")));
+    expect(cover.shiftCoversNight(custodian, d("2026-08-09"))).toBe(true);
+    expect(cover.shiftCoversNight(custodian, d("2026-08-11"))).toBe(false);
+    expect(schoolNightsShiftDoesNotCover(cover, custodian)).toEqual([
+      "2026-08-10",
+      "2026-08-11",
+      "2026-08-12",
+    ]);
+  });
+
+  it("names none when the custodian kind is ticked", () => {
+    const cover = buildHutLeaderNightCover([custodian], [], schoolNights());
+    expect(schoolNightsShiftDoesNotCover(cover, custodian)).toEqual([]);
   });
 });

@@ -8,6 +8,7 @@ import {
   getHutLeaderDashboardCoverage,
   getUnassignedHutLeaderDates,
 } from "@/lib/hut-leader-coverage";
+import { matchesWhere } from "@/lib/__tests__/support/prisma-where";
 
 function dateOnly(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -26,6 +27,10 @@ function buildDb(options: {
     lodgeId?: string | null;
     /** The booking's lodge `active` flag; defaults to an active lodge. */
     lodgeActive?: boolean;
+    /** Defaults to PAID, an operational stay. */
+    status?: string;
+    /** A school group's booking (#3819/#3821). */
+    school?: boolean;
     checkIn: Date;
     checkOut: Date;
     guests?: Array<{
@@ -48,6 +53,8 @@ function buildDb(options: {
   leaderStays?: Array<{
     memberId: string;
     lodgeId?: string;
+    /** The booking the stay is on, e.g. `booking-0` for the first booking. */
+    bookingId?: string;
     checkIn: Date;
     checkOut: Date;
   }>;
@@ -60,7 +67,7 @@ function buildDb(options: {
     ...assignment,
     lodgeId: assignment.lodgeId ?? "lodge-a",
   }));
-  const leaderStays =
+  const leaderStays: NonNullable<typeof options.leaderStays> =
     options.leaderStays ??
     assignments.map((assignment) => ({
       memberId: assignment.memberId,
@@ -77,20 +84,39 @@ function buildDb(options: {
       }),
     },
     booking: {
-      // The cover's own school-booking read (#3819) carries the school filter
-      // under `AND`; none of these bookings is a school group's.
-      findMany: vi.fn().mockImplementation(async (args?: { where?: { AND?: unknown } }) =>
-        args?.where?.AND ? [] : (options.bookings ?? []).map((booking) => {
-          const lodgeId = booking.lodgeId ?? "lodge-a";
-          return {
-            lodge: {
-              name: LODGE_NAMES[lodgeId] ?? lodgeId,
-              active: booking.lodgeActive ?? true,
-            },
-            ...booking,
-            lodgeId,
-          };
-        }),
+      // Two reads share this delegate: the coverage reader's (it selects the
+      // guests) and the cover's school-booking read (#3819). Each one's status
+      // half, under `AND`, is applied as Postgres would (#3821), so a school
+      // booking awaiting its invoice is found by both and anything else only
+      // by its own rule.
+      findMany: vi.fn().mockImplementation(
+        async (args?: { where?: { AND?: unknown[] }; select?: { guests?: unknown } }) =>
+          (options.bookings ?? [])
+            .filter((booking) =>
+              matchesWhere(
+                {
+                  status: booking.status ?? "PAID",
+                  originBookingRequest: booking.school ? { type: "SCHOOL" } : null,
+                  heldForBookingRequest: null,
+                  adminCapacityHoldAt: null,
+                },
+                { AND: args?.where?.AND ?? [] },
+              ),
+            )
+            .map((booking, index) => {
+              const lodgeId = booking.lodgeId ?? "lodge-a";
+              if (!args?.select?.guests) {
+                return { id: `booking-${index}`, lodgeId, checkIn: booking.checkIn, checkOut: booking.checkOut };
+              }
+              return {
+                lodge: {
+                  name: LODGE_NAMES[lodgeId] ?? lodgeId,
+                  active: booking.lodgeActive ?? true,
+                },
+                ...booking,
+                lodgeId,
+              };
+            }),
       ),
     },
     hutLeaderAssignment: {
@@ -104,6 +130,7 @@ function buildDb(options: {
           stayEnd: stay.checkOut,
           nights: [],
           booking: {
+            id: stay.bookingId ?? `stay-${stay.memberId}`,
             lodgeId: stay.lodgeId ?? "lodge-a",
             checkIn: stay.checkIn,
             checkOut: stay.checkOut,
@@ -634,6 +661,62 @@ describe("getUnassignedHutLeaderDates — a leader must be staying (#3818)", () 
     });
 
     expect(result.map((row) => row.date)).toEqual(["2026-08-03"]);
+  });
+});
+
+describe("getUnassignedHutLeaderDates — a school booking awaiting its invoice (#3821)", () => {
+  // Owner decision on #3820, 13 Oct 2026, "Yes, count it": a school booking
+  // that holds beds (CONFIRMED until its invoice is paid) needs a leader, a
+  // member on it can lead, and the dashboard warns while nobody does.
+  const school = {
+    status: "CONFIRMED",
+    school: true,
+    checkIn: dateOnly("2026-08-03"),
+    checkOut: dateOnly("2026-08-05"),
+    guests: [{}, {}, {}],
+  };
+
+  it("reports its nights while no leader covers them", async () => {
+    const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-a" },
+      db: buildDb({ bookings: [school] }),
+      from: dateOnly("2026-08-03"),
+      to: dateOnly("2026-08-04"),
+    });
+    expect(result).toEqual([uncovered("2026-08-03", 1, 3), uncovered("2026-08-04", 1, 3)]);
+  });
+
+  it("is covered by a member staying on it", async () => {
+    const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-a" },
+      db: buildDb({
+        bookings: [school],
+        assignments: [
+          { memberId: "parent", startDate: dateOnly("2026-08-03"), endDate: dateOnly("2026-08-04") },
+        ],
+        leaderStays: [
+          {
+            memberId: "parent",
+            bookingId: "booking-0",
+            checkIn: dateOnly("2026-08-03"),
+            checkOut: dateOnly("2026-08-05"),
+          },
+        ],
+      }),
+      from: dateOnly("2026-08-03"),
+      to: dateOnly("2026-08-04"),
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("still ignores a CONFIRMED booking that is not a school group's", async () => {
+    const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-a" },
+      db: buildDb({ bookings: [{ ...school, school: false }] }),
+      from: dateOnly("2026-08-03"),
+      to: dateOnly("2026-08-04"),
+    });
+    expect(result).toEqual([]);
   });
 });
 

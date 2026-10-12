@@ -644,9 +644,10 @@ describe("#25: Auto-Assign Hut Leaders", () => {
       await autoAssignHutLeaders();
 
       // One sole-adult read per uncovered night, each on a UTC-midnight day.
-      // The cover's school-group read (#3819, filter under AND) is not one.
+      // The cover's school-group read (#3819) is not one: it selects no
+      // guests, the job's candidate read does (#3821).
       const nights = mockPrisma.booking.findMany.mock.calls
-        .filter((call: unknown[]) => !(call[0] as { where: { AND?: unknown } }).where.AND)
+        .filter((call: unknown[]) => Boolean((call[0] as { select: { guests?: unknown } }).select.guests))
         .map((call: unknown[]) =>
         (call[0] as { where: { checkIn: { lte: Date } } }).where.checkIn.lte.toISOString(),
       );
@@ -837,7 +838,7 @@ describe("#25: Dashboard Hut Leader Warning", () => {
     // Should have the warning UI, using the configurable hut-leader label
     // (CLUB_HUT_LEADER_LABEL) rather than a hard-coded "Hut Leader" literal.
     expect(content).toContain("CLUB_HUT_LEADER_LABEL");
-    expect(content).toContain("staying"); // #3818: "Nights without a … staying"
+    expect(content).toContain("who counts"); // #3821: "Nights without a … who counts"
     // Should link to hut leaders page
     expect(content).toContain("/admin/hut-leaders");
     // Should show unassigned dates count

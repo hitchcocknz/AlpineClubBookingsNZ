@@ -6,6 +6,7 @@ import {
   wholeLodgeHoldAmendmentNights,
   type WholeLodgeHoldAmendment,
 } from "@/lib/custodian-assignment";
+import { HutLeaderAssignmentSource } from "@prisma/client";
 import { MODULE_DISABLED_ERROR_CODE } from "@/lib/api-error-message";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { isCustodianOccupancy } from "@/lib/custodian-occupancy";
@@ -137,6 +138,17 @@ export async function applyHutLeaderAssignmentEditUnderLocks(input: {
     if (finalStart > finalEnd) {
       return { status: 400, error: "startDate must be before or equal to endDate" };
     }
+    // #3821: a school teacher is never the lodge custodian. The teacher row is
+    // the school booking's, and its kind is "a teacher on the booking"; ticking
+    // it would make it present every night with no school group there, and
+    // count as the custodian kind too. The page hides the control on these rows.
+    if (updateData.isCustodian === true && locked.source === HutLeaderAssignmentSource.SCHOOL_BOOKING) {
+      return {
+        status: 400,
+        error:
+          "A school teacher's assignment cannot be marked Custodian (lives on site). Add the custodian as their own assignment instead.",
+      };
+    }
     const nextBedId = input.bedIdProvided ? input.requestedBedId : locked.bedId;
     const nightsOrLodgeMove =
       finalStart.getTime() !== locked.startDate.getTime() ||
@@ -164,6 +176,14 @@ export async function applyHutLeaderAssignmentEditUnderLocks(input: {
       excludeAssignmentId: id,
       // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
       allowOverlappingSchoolRows: true,
+      // #3821: the row as it will be, so a custodian is judged on the school
+      // nights it covers.
+      candidate: {
+        memberId: locked.memberId,
+        bedId: nextBedId ?? null,
+        isCustodian: updateData.isCustodian ?? locked.isCustodian,
+        source: locked.source,
+      },
     });
     if (overlap) return { status: 409, error: overlap.error };
 

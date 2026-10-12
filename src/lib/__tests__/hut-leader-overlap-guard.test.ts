@@ -187,3 +187,86 @@ describe("findHutLeaderOverlapRefusal (#2887)", () => {
     );
   });
 });
+
+describe("a custodian does not block a school night it does not cover (#3821)", () => {
+  // The custodian lives on site all season; a school group holds nights
+  // 10–12 Aug. The lodge leaves "the lodge custodian" unticked for school
+  // bookings, so on those nights the officer must add a leader the cover counts.
+  const d = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
+  const CUSTODIAN = {
+    id: "cust",
+    memberId: "m-cust",
+    lodgeId: "lodge-1",
+    startDate: d("2026-07-01"),
+    endDate: d("2026-09-30"),
+    source: "MANUAL",
+    bedId: null,
+    isCustodian: true,
+    member: { firstName: "Cara", lastName: "Custodian" },
+  };
+  const SCHOOL = { id: "school", lodgeId: "lodge-1", checkIn: d("2026-08-10"), checkOut: d("2026-08-13") };
+
+  function db(rows: Array<Record<string, unknown>>, custodianTicked: boolean) {
+    return {
+      hutLeaderAssignment: { findMany: vi.fn(async () => rows) },
+      booking: { findMany: vi.fn(async () => [SCHOOL]) },
+      bookingGuest: { findMany: vi.fn(async () => []) },
+      lodgeSettings: {
+        findUnique: vi.fn(async () => ({
+          capacity: null,
+          schoolHutLeaderTeacherOnBooking: false,
+          schoolHutLeaderCustodian: custodianTicked,
+          schoolHutLeaderMemberOnBooking: true,
+          schoolHutLeaderMemberStayingSeparately: true,
+        })),
+      },
+    } as unknown as Parameters<typeof findHutLeaderOverlapRefusal>[0];
+  }
+  const ask = (client: Parameters<typeof findHutLeaderOverlapRefusal>[0], start: string, end: string, extra = {}) =>
+    findHutLeaderOverlapRefusal(client, { lodgeId: "lodge-1", startDate: d(start), endDate: d(end), ...extra });
+
+  it("lets a replacement cover exactly the school nights", async () => {
+    await expect(ask(db([CUSTODIAN], false), "2026-08-10", "2026-08-12")).resolves.toBeNull();
+  });
+
+  it("allows a one-night handover at each end of the school stay", async () => {
+    await expect(ask(db([CUSTODIAN], false), "2026-08-09", "2026-08-13")).resolves.toBeNull();
+  });
+
+  it("still refuses two shared ordinary nights, which the custodian does cover", async () => {
+    await expect(ask(db([CUSTODIAN], false), "2026-08-08", "2026-08-12")).resolves.toMatchObject({
+      error: expect.stringContaining("by 2 days"),
+    });
+  });
+
+  it("still refuses the school nights when the lodge ticks the custodian", async () => {
+    await expect(ask(db([CUSTODIAN], true), "2026-08-10", "2026-08-12")).resolves.toMatchObject({
+      error: expect.stringContaining("Cara Custodian"),
+    });
+  });
+
+  it("judges a PROPOSED custodian the same way, against an existing replacement", async () => {
+    const replacement = {
+      ...CUSTODIAN,
+      id: "rep",
+      memberId: "m-rep",
+      isCustodian: false,
+      startDate: d("2026-08-10"),
+      endDate: d("2026-08-12"),
+      member: { firstName: "Rewi", lastName: "Replacement" },
+    };
+    const candidate = { memberId: "m-cust", bedId: null, isCustodian: true, source: "MANUAL" as const };
+    await expect(
+      ask(db([replacement], false), "2026-07-01", "2026-09-30", { candidate }),
+    ).resolves.toBeNull();
+    await expect(
+      ask(db([replacement], true), "2026-07-01", "2026-09-30", { candidate }),
+    ).resolves.toMatchObject({ error: expect.stringContaining("Rewi Replacement") });
+  });
+
+  it("reads no cover when no custodian is in the clash", async () => {
+    const client = db([{ ...CUSTODIAN, isCustodian: false }], false);
+    await expect(ask(client, "2026-08-10", "2026-08-12")).resolves.not.toBeNull();
+    expect((client as unknown as { booking: { findMany: ReturnType<typeof vi.fn> } }).booking.findMany).not.toHaveBeenCalled();
+  });
+});

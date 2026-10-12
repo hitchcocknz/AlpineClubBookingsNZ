@@ -82,6 +82,7 @@ interface HutLeaderAssignment {
   bedName: string | null;
   bedRoomName: string | null;
   isCustodian?: boolean; // #3817
+  source?: string; // #3821: SCHOOL_BOOKING rows get no custodian tick
 }
 
 interface UnassignedDate {
@@ -572,7 +573,8 @@ export default function HutLeadersPage() {
       // parsed must not turn a successful assignment into an error.
       const created = await res.json().catch(() => null);
       if (activeLodgeIdRef.current !== requestedLodgeId) return;
-      setMinorCustodianNote(created?.minorCustodianWarning ?? null);
+      // #3821: the school-nights warning shares the advisory note.
+      setMinorCustodianNote([created?.minorCustodianWarning, created?.schoolNightsWarning].filter(Boolean).join(" ") || null);
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
       setSelectedBedId(null);
@@ -1356,9 +1358,10 @@ export default function HutLeadersPage() {
                       {/*
                         #3817: convert an existing row to or from Custodian
                         (lives on site). Unticking a row that has no bed and no
-                        stay is refused by the server, like Release bed.
+                        stay is refused by the server, like Release bed. A
+                        school teacher's row is never a custodian (#3821).
                       */}
-                      <ViewOnlyActionButton
+                      {a.source !== "SCHOOL_BOOKING" ? <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}
                         variant="ghost"
@@ -1372,7 +1375,7 @@ export default function HutLeadersPage() {
                         <Home className="h-4 w-4" />
                         {/* One label; aria-pressed carries the state. */}
                         <span className="sr-only">Custodian (lives on site)</span>
-                      </ViewOnlyActionButton>
+                      </ViewOnlyActionButton> : null}
                       <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}
