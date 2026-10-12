@@ -215,7 +215,8 @@ and run the deploy again. It also refuses a `.env` that says
 assignment anywhere in the file (Compose would use the last one), and refuses a
 value set in your shell that disagrees with the file, because Compose would take
 the shell's. The usual `.env` shapes are all fine: an `export ` prefix, spaces
-around the `=`, quotes round the value, a leading indent.
+around the `=`, quotes round the value, a leading indent, and the colon form
+Compose also reads (`APP_ENVIRONMENT_ROLE: production`).
 
 Then, at **step 14**, it asks each newly started container — by calling the
 application's own `GET /api/deploy/runtime-status` from inside it — which

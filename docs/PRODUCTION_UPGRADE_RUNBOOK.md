@@ -176,8 +176,9 @@ APP_ENVIRONMENT_ROLE=production
 ```
 
 **Exactly one such line.** The usual `.env` shapes are all accepted — an
-`export ` prefix, spaces around the `=`, quotes round the value, a leading indent
-— but a SECOND line assigning the same key is refused, in any of those shapes,
+`export ` prefix, spaces around the `=`, quotes round the value, a leading indent,
+and the colon form Compose also reads (`APP_ENVIRONMENT_ROLE: production`) — but
+a SECOND line assigning the same key is refused, in any of those shapes,
 because Docker Compose would use the last one and you would not know which you
 had deployed. Search the file rather than trusting the top of it.
 
