@@ -890,6 +890,75 @@ describe("reissuePaymentLinkForToken", () => {
     );
   });
 
+  // #4058 (`INV-PAY-119`): the email is about the page it links to, so it quotes
+  // what that page asks - price plus a recorded change fee, less applied credit.
+  it("quotes the amount owed in the re-issued booking-request email, matching the pay page", async () => {
+    const record = baseLink({
+      expiresAt: new Date("2000-01-01T00:00:00.000Z"),
+      booking: baseBooking({
+        finalPriceCents: 30000,
+        payment: { id: "pay-1", source: "STRIPE", status: PaymentStatus.PENDING, changeFeeCents: 2500 },
+      }),
+    });
+    mockedFindUnique.mockResolvedValue(record as never);
+
+    await reissuePaymentLinkForToken(RAW_TOKEN);
+
+    // 300.00 + 25.00 recorded fee = 325.00, never the bare 300.00.
+    expect(sendBookingRequestApprovedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ priceCents: 32500 }),
+      CLUB_FORMAT_TEST,
+    );
+    // The page for the same booking asks the same figure.
+    mockedFindUnique.mockResolvedValue(
+      baseLink({ booking: { ...record.booking, status: BookingStatus.PAYMENT_PENDING } }) as never,
+    );
+    const context = await getPaymentLinkContext(RAW_TOKEN, noReview());
+    expect(context.payable?.amountCents).toBe(32500);
+  });
+
+  it("quotes price plus recorded fee less applied credit in the re-issued email", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        expiresAt: new Date("2000-01-01T00:00:00.000Z"),
+        booking: baseBooking({
+          finalPriceCents: 30000,
+          payment: { id: "pay-1", source: "STRIPE", status: PaymentStatus.PENDING, changeFeeCents: 2500 },
+        }),
+      }) as never
+    );
+    vi.mocked(prisma.memberCredit.aggregate).mockResolvedValueOnce({ _sum: { amountCents: -5000 } } as never);
+
+    await reissuePaymentLinkForToken(RAW_TOKEN);
+
+    expect(sendBookingRequestApprovedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ priceCents: 27500 }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("quotes the amount owed in the re-issued split-guest email", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        bookingRequestId: null,
+        expiresAt: new Date("2000-01-01T00:00:00.000Z"),
+        booking: baseBooking({
+          finalPriceCents: 30000,
+          parentBookingId: "parent-1",
+          groupBookingJoin: null,
+          payment: { id: "pay-1", source: "STRIPE", status: PaymentStatus.PENDING, changeFeeCents: 2500 },
+        }),
+      }) as never
+    );
+
+    await reissuePaymentLinkForToken(RAW_TOKEN);
+
+    expect(sendSplitGuestPaymentLinkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ priceCents: 32500 }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
   it("returns emailed:false when the requester's address is actively suppressed (F25, #1885)", async () => {
     mockedFindUnique.mockResolvedValue(
       baseLink({ expiresAt: new Date("2000-01-01T00:00:00.000Z") }) as never
@@ -1961,6 +2030,26 @@ describe("issueSplitGuestPaymentLink (#1967)", () => {
         guestCount: 2,
         bookingReference: "child-1",
       }), CLUB_FORMAT_TEST
+    );
+  });
+
+  it("quotes the amount owed, not the bare price, in the guest-portion email (#4058)", async () => {
+    mockedBookingFindUnique
+      .mockResolvedValueOnce(
+        splitChild({
+          finalPriceCents: 30000,
+          payment: { id: "pay-1", source: "STRIPE", status: PaymentStatus.PENDING, changeFeeCents: 2500 },
+        }) as never,
+      )
+      .mockResolvedValueOnce({ status: BookingStatus.PENDING } as never);
+    mockedPaymentLinkFindFirst.mockResolvedValue(null);
+    mockedPaymentLinkCreate.mockResolvedValue({ id: "pl-1" } as never);
+
+    await issueSplitGuestPaymentLink("child-1", CLUB_FORMAT_TEST);
+
+    expect(sendSplitGuestPaymentLinkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ priceCents: 32500 }),
+      CLUB_FORMAT_TEST,
     );
   });
 
