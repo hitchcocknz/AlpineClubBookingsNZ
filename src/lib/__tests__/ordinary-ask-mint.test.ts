@@ -30,7 +30,7 @@ vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { mintOrdinaryAskIntent } from "@/lib/ordinary-ask-mint";
+import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
 import { ordinaryAskDoorRequest, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { MINTED_INTENT_LOOKBACK_MS } from "@/lib/reissued-ask-mint";
 import { stripeChargeCurrency } from "@/lib/stripe-charge-currency";
@@ -232,5 +232,31 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
       mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
     ).rejects.toBe(err);
     expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("refuseAdoptedIntentOnLedger (#4036 review)", () => {
+  const storeHolding = (row: { id: string } | null) => {
+    const findUnique = vi.fn().mockResolvedValue(row);
+    return { store: { paymentTransaction: { findUnique } } as never, findUnique };
+  };
+
+  it("throws for an adopted intent another ask's ledger row already holds", async () => {
+    const { store, findUnique } = storeHolding({ id: "txn_other" });
+    await expect(refuseAdoptedIntentOnLedger(store, { intent: { id: "pi_door" } as never, adopted: true })).rejects.toThrow(
+      /already on another ask's ledger row/,
+    );
+    expect(findUnique).toHaveBeenCalledWith({ where: { stripePaymentIntentId: "pi_door" }, select: { id: true } });
+  });
+
+  it("lets an adopted intent no row holds through", async () => {
+    const { store } = storeHolding(null);
+    await expect(refuseAdoptedIntentOnLedger(store, { intent: { id: "pi_door" } as never, adopted: true })).resolves.toBeUndefined();
+  });
+
+  it("never checks the key's own intent, which its own earlier attempt may have recorded", async () => {
+    const { store, findUnique } = storeHolding({ id: "txn_mine" });
+    await expect(refuseAdoptedIntentOnLedger(store, { intent: { id: "pi_door" } as never, adopted: false })).resolves.toBeUndefined();
+    expect(findUnique).not.toHaveBeenCalled();
   });
 });

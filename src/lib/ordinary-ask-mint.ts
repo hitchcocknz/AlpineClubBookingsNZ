@@ -28,7 +28,7 @@
  * And the caller is told it adopted (`adopted`), so the runner confirms, under
  * its claim, that no ledger row took the intent meanwhile before writing its own.
  */
-import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType } from "@prisma/client";
+import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType, type Prisma } from "@prisma/client";
 import type Stripe from "stripe";
 
 import type { ClubFormat } from "@/lib/club-format";
@@ -87,6 +87,27 @@ export async function mintOrdinaryAskIntent({
       "An ordinary additional ask's key had already minted an intent under other parameters; using that intent (#4036)",
     );
     return { intent: minted, adopted: true };
+  }
+}
+
+/**
+ * #4036 review: run by the recovery runner inside its claim-held write, before
+ * it records the intent. An ADOPTED intent was found by what it asks for, not
+ * by this row's key, so another ask may have recorded it since the lookup.
+ * That row is never written over: this throws, the claim's write rolls back,
+ * and the retry's lookup finds no unrecorded match and fails closed.
+ */
+export async function refuseAdoptedIntentOnLedger(
+  store: Prisma.TransactionClient,
+  { intent, adopted }: OrdinaryAskMint,
+): Promise<void> {
+  if (!adopted) return;
+  const recorded = await store.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: intent.id },
+    select: { id: true },
+  });
+  if (recorded) {
+    throw new Error(`Adopted PaymentIntent ${intent.id} is already on another ask's ledger row; not recording it twice (#4036)`);
   }
 }
 

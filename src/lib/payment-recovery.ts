@@ -48,7 +48,7 @@ import {
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
-import { mintOrdinaryAskIntent } from "@/lib/ordinary-ask-mint";
+import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
 import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
@@ -2923,15 +2923,7 @@ async function processCreateAdditionalPaymentIntentOperation(
     : null;
   const rowReason = reissuePlan?.reason ?? ORDINARY_ASK_RECOVERY_REASON;
   const { intent: pi, adopted } = reissuePlan
-    ? {
-        intent: await mintReissuedAskIntent({
-          format,
-          plan: reissuePlan,
-          customerId,
-          recoveryCreatedAt: operation.createdAt,
-        }),
-        adopted: false,
-      }
+    ? { intent: await mintReissuedAskIntent({ format, plan: reissuePlan, customerId, recoveryCreatedAt: operation.createdAt }), adopted: false }
     : // #4036: the one request its door sent (`planOrdinaryAskMint`, `INV-MOD-060`).
       await mintOrdinaryAskIntent({
         format,
@@ -2963,13 +2955,8 @@ async function processCreateAdditionalPaymentIntentOperation(
   const { queueSupersededAdditionalIntentCancellationRows, cancelSupersededAdditionalIntentsNow } =
     await import("@/lib/booking-payment-cleanup");
   const held = await holdAdditionalIntentRecoveryClaim(operation, async (store) => {
-    // #4036 review: an ADOPTED intent was found by what it asks for, not by
-    // this row's key, so another ask may have recorded it since the lookup.
-    // Its row is never overwritten: throwing rolls this claim's write back, and
-    // the retry's lookup finds no unrecorded match and fails closed.
-    if (adopted && (await store.paymentTransaction.findUnique({ where: { stripePaymentIntentId: pi.id }, select: { id: true } }))) {
-      throw new Error(`Adopted PaymentIntent ${pi.id} is already on another ask's ledger row; not recording it twice (#4036)`);
-    }
+    // #4036 review: an adopted intent another ask recorded meanwhile is never written over.
+    await refuseAdoptedIntentOnLedger(store, { intent: pi, adopted });
     await upsertPaymentIntentTransaction({
       paymentId: operation.paymentId,
       kind: PaymentTransactionKind.ADDITIONAL,
@@ -2982,10 +2969,8 @@ async function processCreateAdditionalPaymentIntentOperation(
       reason: rowReason,
       // #3954 round 7: the customer the intent was minted for, which an intent
       // the re-issue's metadata lookup recovered need not share with this run.
-      // #4036 review: never an ADOPTED intent's - it was found by what it asks
-      // for, so its customer is not known to be this payment's, and writing it
-      // would pair the payment's saved card with another customer
-      // (`saved-payment-method.ts`). The payment keeps the customer it had.
+      // #4036 review: never an ADOPTED intent's, whose customer is not known to be this
+      // payment's - writing it would split the saved-card pair (`saved-payment-method.ts`).
       ...(adopted ? {} : { stripeCustomerId: mintedIntentCustomerId(pi, customerId) }),
       // #3954 round 7: the edit's frozen invoice answer rides onto its row.
       ...(operation.hadIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice } : {}),

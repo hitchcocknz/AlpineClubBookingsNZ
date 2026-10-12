@@ -65,7 +65,7 @@ const ordinaryAskMintHooks = vi.hoisted(() => ({
   afterMint: null as null | ((minted: { intent: { id: string }; adopted: boolean }) => Promise<void>),
 }));
 vi.mock("@/lib/ordinary-ask-mint", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/ordinary-ask-mint")>();
+  const actual = (await importOriginal()) as typeof import("@/lib/ordinary-ask-mint");
   return {
     ...actual,
     mintOrdinaryAskIntent: async (...args: Parameters<typeof actual.mintOrdinaryAskIntent>) => {
