@@ -505,6 +505,15 @@ export async function cancelSetupIntentIfCancellable(
 }
 
 /**
+ * How old a webhook signature's timestamp may be, in seconds, before the event
+ * is refused as a possible replay. Stripe's own default is 300, but it is passed
+ * explicitly because stripe-node 23 changed what an omitted or zero tolerance
+ * means in `verifyHeader`, and a later major could do the same to
+ * `constructEvent` (#4029). 0 would SKIP the check, so it must stay positive.
+ */
+export const STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300;
+
+/**
  * Construct and verify a Stripe webhook event.
  *
  * NOTE (#2082): the export NAME `constructWebhookEvent` is intentionally
@@ -520,5 +529,10 @@ export async function constructWebhookEvent(
   webhookSecret: string
 ): Promise<Stripe.Event> {
   const stripe = await getStripe();
-  return stripe.webhooks.constructEvent(payload, signature, webhookSecret);
+  return stripe.webhooks.constructEvent(
+    payload,
+    signature,
+    webhookSecret,
+    STRIPE_WEBHOOK_TOLERANCE_SECONDS
+  );
 }
