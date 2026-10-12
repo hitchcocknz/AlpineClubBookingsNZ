@@ -195,7 +195,13 @@ providers, and `scripts/e2e-stack.sh` refuses to run if it sees `sk_live`/
   seasons never need manual extension. Seeded windows slide a weekday per run
   date while a stay window's Monday holds for a week, so `stayWindow` skips
   every Monday whose nights a seeded booking holds (`SEEDED_BOOKING_WINDOWS`,
-  #4002); a new seeded booking window must be added to that list. The
+  #4002); a new seeded booking window must be added to that list. Seed Booking
+  data in both seed scripts ends with `seededBookingDates(checkIn, checkOut)`,
+  which rejects a pair missing from the canonical list, including demo second-lodge
+  windows. The fixture-night census checks that final spread so inline dates,
+  renamed windows and later overrides cannot bypass it (#4004). The linked-move
+  hosting case uses `linkedMoveStayWindows` to reserve both Thursday/Friday
+  pairs against seeded nights and season gaps for every retry. The
   production first-run seed (`prisma/seed.ts`) keeps its fixed real-world season
   dates — only the demo/E2E database is relativized.
 

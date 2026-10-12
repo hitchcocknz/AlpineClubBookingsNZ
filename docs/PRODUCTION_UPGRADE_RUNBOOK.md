@@ -224,6 +224,22 @@ matter for this upgrade:
   [§2.1a](#21a-step-1320-stopped-on-a-lock-timeout) for what to do when it fires.
 - **Step 14/20 / Step 15/20 — starts the new (target) web color and refreshes
   the cron leader on the new release, both before cutover.**
+  Each container is asked, from inside it, whether it is ready
+  (`/api/health/ready`) and which role and environment role it is running
+  (`/api/deploy/runtime-status`). A read that does not get HTTP 200 is
+  retried every 2 seconds for up to `DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS` (60 by
+  default, set in the deploy shell), and every failed attempt prints one of
+  three lines: the HTTP status; `no HTTP response (TimeoutError)` or
+  `no HTTP response (TypeError (ECONNREFUSED))` when the request got no answer
+  inside the container; or the `docker compose exec` exit code and the
+  container's state (`restarts=`, `oom=`) when Docker could not reach it.
+  HTTP 401, 403 or 404 stops at once. On giving up the step prints the last
+  result and response body, and the deploy stops before the cutover. Caddy
+  still points at the old colour, but that serves only if it is still running: in a windowed deploy,
+  where the old app and workers were stopped first, the site stays down until
+  the deploy is re-run. On a first blue/green deploy Caddy points at `app`
+  itself, which step 15 has just recreated on the new release, so a step-15
+  failure leaves that new release behind Caddy (#3965).
 - **Step 16/20 — "Warming the new release and verifying its page cache before
   cutover".** The #2566 gate: it renders every eligible public page on the new
   colour, proves the page cache was populated for the addresses this release stores,
@@ -237,6 +253,14 @@ matter for this upgrade:
   the **cutover**: Caddy is repointed to the new color, external/internal health
   is verified, then the previous color's connections are drained. Everything
   before this step is reversible by aborting; see [§4](#4-rollback-plan).
+  The internal check here is the same pair of reads as steps 14 and 15, but it
+  runs **after** the switch, so each read is tried **once**, whatever
+  `DEPLOY_INTERNAL_READ_TIMEOUT_SECONDS` says: members are already being sent
+  to the new colour, and a failure must hand over to the rollback at once. The
+  deploy then fails and tries to point Caddy back at the old colour, which
+  serves only if it is still running. On a first blue/green deploy the "old
+  colour" is `app`, which step 15 recreated on the new release, so the rollback
+  lands on the release that just failed (#3965).
 
 ### 2.1 The validator gate is expected green
 

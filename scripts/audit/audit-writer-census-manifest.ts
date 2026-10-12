@@ -634,11 +634,20 @@ export const AUDIT_CENSUS_TOTALS = {
   // one `logAudit` in `src/lib/booking-change-request-admin-decision.ts`,
   // categorised `booking` like the acknowledgement it sits beside. RE-MEASURED
   // with `pnpm run audit:census`.
+  // 498 -> 499 (#3372, composed with #52 and #3750): `booking-payment.card-refund.paid-another-way`,
+  // the treasurer closing a card refund Stripe gave up on, awaited on the
+  // close's own transaction under `payment`.
+  // 499 -> 500 (#3372, owner 9 Oct 2026): `booking-payment.card-refund.paid-twice-resolved`,
+  // the treasurer marking a refund paid back twice as sorted out, on the
+  // write's own transaction under `payment`. RE-MEASURED.
   // 500/498 -> 499 (hand sync of `main` f1ecdb5ff into epic #3789): #3819's
   // one addition, #52's two removals and #3750's one addition are all
   // disjoint. RE-MEASURED with `pnpm run audit:census` on the composed tree,
   // never added together.
-  writeSites: 499,
+  // 499/500 -> 501 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3819's
+  // one site and #3372's two are disjoint. RE-MEASURED with
+  // `pnpm run audit:census` on the composed tree, never added together.
+  writeSites: 501,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -826,9 +835,15 @@ export const AUDIT_CENSUS_TOTALS = {
     // 137 -> 138 (#3454): the two-factor enrolment / erasure-clear record,
     // awaited on the transaction that changes the second factor.
     // 138 -> 139 (#3792): the refused restored-booking allocation change record.
+    // 139 -> 140 (#3372): the paid-another-way close of a dead card refund,
+    // awaited on the close's transaction so the row commits with the money.
+    // 140 -> 141 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved,
+    // awaited on the transaction that writes the resolution.
     // 139 -> 140 (#3819): the school hut-leader kinds PUT, through
     // `createAuditLog` like the lodge-settings route beside it.
-    createAuditLog: { total: 140, uncategorised: 0 },
+    // 140/141 -> 142 (sync of `main` 0ff7e6d46 into epic #3789, #3821):
+    // #3819's one and #3372's two are disjoint. RE-MEASURED on the composed tree.
+    createAuditLog: { total: 142, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1016,7 +1031,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // made and withheld, read by the same people.
     // 49 -> 51 (#3639): the held late capture and its approved refund.
     // 51 -> 52 (#3639 review): the setting-change record.
-    payment: 52,
+    // 52 -> 53 (#3372): the paid-another-way close of a dead card refund - a
+    // refund the club settled outside Stripe, read by the people who reconcile
+    // its money, beside the hand-back completion it mirrors.
+    // 53 -> 54 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved -
+    // the treasurer's note on money paid back twice, read by the same people.
+    payment: 54,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -2951,28 +2971,33 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
  * `auditLog` statements that do not produce a row, and are therefore approved
  * NOT to carry a category.
  *
- * Today these are the three retention statements only: the archive `updateMany`,
- * the prune `deleteMany`, and the request-data anonymisation `updateMany`. They
- * mutate or remove rows that already have whatever category they were written
- * with, so "why does this not set a category" has an answer, and the answer is
- * recorded here rather than assumed by a scan that skips non-`create` methods.
+ * Today these are the three retention statements only: the archive move's
+ * `deleteMany`, the prune `deleteMany`, and the request-data anonymisation
+ * `updateMany`. They mutate or remove rows that already have whatever category
+ * they were written with, so "why does this not set a category" has an answer,
+ * and the answer is recorded here rather than assumed by a scan that skips
+ * non-`create` methods.
  *
  * A new entry here is a hand-written mutation of the platform's audit trail and
  * needs the same scrutiny as a new writer.
  */
 export const APPROVED_NON_PRODUCING_AUDIT_DML: Readonly<Record<string, string>> = {
   "src/lib/audit-retention.ts::archiveEligibleAuditLogs#0":
-    "Retention archive: stamps `archivedAt` on rows past their archive threshold.",
+    // Corrected in #3939: this statement never stamped `archivedAt`. It
+    // `deleteMany`s, by id, the rows the archive step has just copied into
+    // `AuditLogArchive`, so it completes a move, not a loss.
+    "Retention archive: deletes from the main table the rows past their archive " +
+      "threshold that were just copied to the archive database (a move).",
   "src/lib/audit-retention.ts::pruneExpiredAuditLogs#0":
-    // Corrected in #2581 child 2, because this change is what makes it matter:
-    // `incidentPreserved` is NOT in the prune predicate. It guards only
-    // `anonymizeExpiredAuditRequestData` and the archive's request-data copy, so
-    // there is no per-row exemption from deletion. Every one of the 83 sites this
-    // change classifies lands in `critical`, whose branch is `createdAt < cutoff`
-    // AND `expiresAt < now` — unconditional at seven years.
+    // Corrected again in #3939 (owner decision, 11 Oct 2026): a row with
+    // `incidentPreserved` set must ALSO be ten years past its `createdAt`, so it
+    // goes at the later of its normal rule and that cap. Before #3939 the flag
+    // guarded only `anonymizeExpiredAuditRequestData` and the archive's
+    // request-data copy, and a preserved row was deleted at its expiry (for
+    // `critical`, at seven years).
     "Retention prune: deletes rows past `expiresAt` (for `critical`, also past " +
-      "the seven-year `createdAt` cutoff). There is no incident-preservation " +
-      "exemption from this statement.",
+      "the seven-year `createdAt` cutoff); an `incidentPreserved` row must also " +
+      "be ten years past its `createdAt` (#3939).",
   "src/lib/audit-retention.ts::anonymizeExpiredAuditRequestData#0":
     "Retention anonymisation: clears `ipAddress`/`userAgent` on rows past the request-data window.",
 };
