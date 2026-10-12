@@ -801,7 +801,9 @@ with #52's two removals and #3750's addition, all disjoint: `admin` 108,
 (RE-MEASURED with `pnpm run audit:census` on the composed tree, never added
 together). The later sync of `main` 0ff7e6d46 into the epic (#3821) composed
 #3372's two `payment` additions with that tree, also disjoint: `admin` 108,
-`payment` 54, 501 row-producing sites (RE-MEASURED the same way).
+`payment` 54, 501 row-producing sites (RE-MEASURED the same way). The hand sync of `main`
+f3b6c008b (epic #3789) brought the same two `payment` additions in again from
+the other side and measured the same figures on the merged tree.
 
 #3498 then added one more (`payment` 45 -> 46, 483 -> 484, MEASURED with
 `npm run audit:census` on that branch rather than added to the literal):

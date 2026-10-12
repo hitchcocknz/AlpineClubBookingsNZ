@@ -11,7 +11,10 @@ reason: the hut-leader read stays in the page's one batched `Promise.all`
   (`getHutLeaderDashboardCoverage`) and the uncovered-night label
   (`uncoveredNightLabel`) live outside the page to keep the growth to these
   wiring lines; moving the read out of the batch would add a second round trip
-  to every dashboard load, which #2091 removed on purpose.
+  to every dashboard load, which #2091 removed on purpose. Re-measured at 998
+  by the hand sync of `main` f3b6c008b into epic #3789, which composes these
+  lines with `main`'s #3636/#3924 Net Collected and Refunds/Credits owed reads
+  in the same batch (main's own allowance for them is inert against `main`).
 
 file: src/lib/lodge-display-state.ts
 lines: 963

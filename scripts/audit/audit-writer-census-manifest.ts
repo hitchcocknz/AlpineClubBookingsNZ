@@ -647,6 +647,8 @@ export const AUDIT_CENSUS_TOTALS = {
   // 499/500 -> 501 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3819's
   // one site and #3372's two are disjoint. RE-MEASURED with
   // `pnpm run audit:census` on the composed tree, never added together.
+  // Hand sync of `main` f3b6c008b (epic #3789): the same additions arrived again,
+  // disjoint; 501 RE-MEASURED on the merged tree.
   writeSites: 501,
   /**
    * Of those, sites whose event object carries no `category` key.
