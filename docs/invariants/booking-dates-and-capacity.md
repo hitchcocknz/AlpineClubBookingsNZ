@@ -331,10 +331,9 @@ owner decisions on #3820):
   (`leadableNightRun`, #3821): never the check-out day, one row per run.
 - The manual create and edit refuse a role-only assignment that claims a night
   the member does not stay at that lodge, with no override. Staying means a
-  consented guest row on a non-deleted PAID or COMPLETED booking, or an
-  accepted CONFIRMED school booking awaiting its invoice, never an unaccepted
-  quote's hold (owner decision, 13 Oct 2026); owning a booking one is
-  not on does not count (3 Oct 2026). Every writer reads it
+  consented guest row on a non-deleted PAID or COMPLETED booking, or a
+  CONFIRMED, accepted school booking (owner decision, 13 Oct 2026); owning a
+  booking one is not on does not count (3 Oct 2026). Every writer reads it
   (`hutLeaderStayBookingWhere`).
 - Exempt: a custodian occupancy (`isCustodianOccupancy`: a held bed,
   `INV-LIFE-062`, or the "Custodian (lives on site)" tick) and a school
