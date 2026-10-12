@@ -195,7 +195,13 @@ providers, and `scripts/e2e-stack.sh` refuses to run if it sees `sk_live`/
   seasons never need manual extension. Seeded windows slide a weekday per run
   date while a stay window's Monday holds for a week, so `stayWindow` skips
   every Monday whose nights a seeded booking holds (`SEEDED_BOOKING_WINDOWS`,
-  #4002); a new seeded booking window must be added to that list. The
+  #4002); a new seeded booking window must be added to that list. Seed Booking
+  data in both seed scripts ends with `seededBookingDates(checkIn, checkOut)`,
+  which rejects a pair missing from the canonical list, including demo second-lodge
+  windows. The fixture-night census checks that final spread so inline dates,
+  renamed windows and later overrides cannot bypass it (#4004). The linked-move
+  hosting case uses `linkedMoveStayWindows` to reserve both Thursday/Friday
+  pairs against seeded nights and season gaps for every retry. The
   production first-run seed (`prisma/seed.ts`) keeps its fixed real-world season
   dates — only the demo/E2E database is relativized.
 
@@ -239,6 +245,18 @@ local `DATABASE_URL`, and no non-demo member emails), shared with the specs thro
   the email that would normally carry the link is unconfigured on staging. Both
   seeded nominators (`wanda-waitlist@`, `nadia@`) have complete, confirmed
   profiles so the onboarding modal never blocks their nomination pages.
+
+The shared `loginPersona` and `signIn` helpers wait for a visible two-factor
+challenge or the rendered authenticated layout before continuing. A destination
+URL alone can appear before a delayed `/login/verify` redirect (#4020). The
+completion signal is the navigation brand mark for member/admin/finance pages,
+or the kiosk root for lodge accounts; both render after their layout's sign-in
+gate. After completing a challenge, the helper navigates to the returned
+destination through the server gate before checking that rendered signal;
+client navigation after the cookie change can leave an empty streamed shell.
+`loginPersona` preserves scoped-role landing pages, while `signIn` also
+checks Alice's `/admin/dashboard` destination. Forced password changes, a return
+to login, and pages without either authenticated signal fail the helper.
 
 Because these fixtures (and the two-factor enrollment) mutate seeded state, the
 suite is designed to run against a **fresh** prepare each time; re-running

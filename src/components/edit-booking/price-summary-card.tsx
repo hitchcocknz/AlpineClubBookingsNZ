@@ -388,6 +388,22 @@ export function PriceSummaryCard({
               </p>
             )}
 
+            {/* #3954: a reduction first comes off the additional payment the
+                member has not paid yet; only the rest is refunded or credited. */}
+            {quote.netChargeCents < 0 && (quote.unpaidAskOffsetCents ?? 0) > 0 && (
+              <p className="rounded-md border p-3 text-sm" data-testid="unpaid-ask-offset">
+                Comes off your unpaid additional payment:{" "}
+                <span className="font-medium">{formatCents(quote.unpaidAskOffsetCents ?? 0, format)}</span>
+                {/* Round 6: said only when the quote states what is left - an
+                    absent figure is not "nothing left to pay". */}
+                {quote.askLeftCents === undefined
+                  ? null
+                  : quote.askLeftCents > 0
+                    ? ` (you will then owe ${formatCents(quote.askLeftCents, format)})`
+                    : " (nothing left to pay)"}
+              </p>
+            )}
+
             {quote.netChargeCents < 0 && quote.settlementOptions && (
               <div className="space-y-2 rounded-md border p-3 text-sm">
                 <div className="flex items-center justify-between">

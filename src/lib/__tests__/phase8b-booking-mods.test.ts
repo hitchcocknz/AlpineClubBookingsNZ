@@ -67,6 +67,8 @@ vi.mock("@/lib/prisma", () => ({
     // #3032: the pending-review fence reads this under the booking-edit locks.
     // Empty by default - no financial review is open - so every pre-#3032 test
     // asserts exactly what it asserted before.
+    // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
+    paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
     manualRefundTask: {
       // #3827 (`INV-PAY-117`): no open edit refund hand-back on file.
       aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })),
@@ -86,6 +88,8 @@ vi.mock("@/lib/prisma", () => ({
     choreAssignment: { findMany: mockFindMany, delete: mockDelete, deleteMany: mockDeleteMany },
     season: { findMany: mockFindMany },
     payment: { update: mockUpdate },
+    // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
+    paymentTransaction: { findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }) },
     member: { count: mockMemberCount, findUnique: mockFindUnique, findMany: mockFindMany },
     familyGroupMember: { findMany: mockFindMany },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
@@ -499,6 +503,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // #3032: the pending-review fence reads this under the booking-edit locks.
     // Empty by default - no financial review is open - so every pre-#3032 test
     // asserts exactly what it asserted before.
+    // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
+    paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
     manualRefundTask: {
       // #3827 (`INV-PAY-117`): no open edit refund hand-back on file.
       aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })),
@@ -3104,6 +3110,34 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     );
   });
 
+  // #3954 round 9: the same liveness that withholds the secret. A reduction that
+  // retired the just-minted ask settled it, and its own email said so.
+  it("MUTATION (round 9): an ask a reduction retired before it was offered is never named as due in the member's email", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.paymentTransaction.findUnique).mockResolvedValueOnce(
+      { status: "FAILED", withdrawnAt: new Date("2026-07-01T00:00:00.000Z") } as never,
+    );
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2000 }));
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
   it("does not hand the owner's client secret to a self-removing linked guest (#1042)", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "guest-member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
     const booking = makePromoIncreaseBooking({
@@ -3235,6 +3269,7 @@ describe("bookingModifiedTemplate", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
+      unpaidAskCancelled: false,
       refundReturnedToOrganiser: false,
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Booking Modified");
@@ -3265,6 +3300,7 @@ describe("bookingModifiedTemplate", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
+      unpaidAskCancelled: false,
       refundReturnedToOrganiser: false,
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Guests Added");
@@ -3294,6 +3330,7 @@ describe("bookingModifiedTemplate", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
+      unpaidAskCancelled: false,
       refundReturnedToOrganiser: false,
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Guest Removed");
@@ -3322,6 +3359,7 @@ describe("bookingModifiedTemplate", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
+      unpaidAskCancelled: false,
       refundReturnedToOrganiser: false,
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Change Fee");
@@ -3353,6 +3391,7 @@ describe("bookingModifiedTemplate", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
+      unpaidAskCancelled: false,
       refundReturnedToOrganiser: false,
     }, CLUB_FORMAT_TEST);
 
@@ -3383,6 +3422,7 @@ describe("bookingModifiedTemplate", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
+      unpaidAskCancelled: false,
       refundReturnedToOrganiser: false,
     }, CLUB_FORMAT_TEST);
     expect(html).not.toContain("<script>");

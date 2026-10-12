@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   // #3341 (INV-OPS-015): the supersede runs for REAL; these are its leaves - the
   // ledger read of asks to retire, and the durable + immediate cancel.
   supersedeRead: vi.fn(),
+  // #3954 round 8: the stale row's provenance, copied onto the re-issue.
+  staleRowRead: vi.fn(),
   enqueueCancel: vi.fn(),
   cancelNow: vi.fn(),
 }));
@@ -31,7 +33,10 @@ vi.mock("@/lib/payment-transactions", () => ({
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    paymentTransaction: { findMany: (...a: unknown[]) => mocks.supersedeRead(...a) },
+    paymentTransaction: {
+      findMany: (...a: unknown[]) => mocks.supersedeRead(...a),
+      findUnique: (...a: unknown[]) => mocks.staleRowRead(...a),
+    },
   },
 }));
 vi.mock("@/lib/payment-recovery", () => ({
@@ -61,6 +66,7 @@ beforeEach(() => {
   });
   mocks.upsertPaymentIntentTransaction.mockResolvedValue({});
   mocks.supersedeRead.mockResolvedValue([]);
+  mocks.staleRowRead.mockResolvedValue(null);
   mocks.enqueueCancel.mockResolvedValue({ id: "op-cancel-1" });
   mocks.cancelNow.mockResolvedValue("succeeded");
   mocks.reconcilePaymentAggregates.mockResolvedValue(null);
@@ -153,6 +159,50 @@ describe("reissueAdditionalIntentInClubCurrency", () => {
     expect(order(mocks.supersedeRead)).toBeLessThan(
       order(mocks.reconcilePaymentAggregates),
     );
+  });
+
+  it("carries the stale row's provenance - its edit's invoice answer and the edit - onto the re-issue (#3954 round 8)", async () => {
+    mocks.staleRowRead.mockResolvedValue({ hadIssuedXeroInvoice: false, bookingModificationId: "mod_increase" });
+
+    await reissueAdditionalIntentInClubCurrency({
+      format: CLUB_FORMAT_TEST_OTHER,
+      bookingId: "bk1",
+      paymentId: "p1",
+      staleIntentId: "pi_nzd",
+      ask,
+      reason: null,
+      customerId: "cus_1",
+    });
+
+    expect(mocks.staleRowRead).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { stripePaymentIntentId: "pi_nzd" } }),
+    );
+    expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentIntentId: "pi_chf",
+        hadIssuedXeroInvoice: false,
+        bookingModificationId: "mod_increase",
+      }),
+    );
+  });
+
+  it("a provenance read that fails still re-issues the ask, recording none (#3954 round 8)", async () => {
+    mocks.staleRowRead.mockRejectedValue(new Error("database is down"));
+
+    const pi = await reissueAdditionalIntentInClubCurrency({
+      format: CLUB_FORMAT_TEST_OTHER,
+      bookingId: "bk1",
+      paymentId: "p1",
+      staleIntentId: "pi_nzd",
+      ask,
+      reason: null,
+      customerId: "cus_1",
+    });
+
+    expect(pi.id).toBe("pi_chf");
+    const written = mocks.upsertPaymentIntentTransaction.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written).not.toHaveProperty("hadIssuedXeroInvoice");
+    expect(written).not.toHaveProperty("bookingModificationId");
   });
 
   it("cancels the stale ask it replaces, durably first and then at once (#3341: the supersede runs for real)", async () => {

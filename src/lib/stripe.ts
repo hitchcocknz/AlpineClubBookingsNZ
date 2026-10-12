@@ -300,6 +300,52 @@ export async function getPaymentIntent(
 }
 
 /**
+ * #3954 review round 6: the intent an earlier request minted under an
+ * idempotency key whose replay Stripe refused (`idempotency_error`). Stripe
+ * cannot look an intent up by its key, so the minter stamps the key into the
+ * intent's metadata and this finds it by that stamp. A list, not the search
+ * API, because a list is read-after-write consistent; bounded to the intents
+ * created since `createdSince` and to `maxScanned` of them per scan.
+ *
+ * Round 8: by `customerId` first - the list is newest first across the whole
+ * account, so a busy club's other intents could fill `maxScanned` before the
+ * one sought is reached - THEN, not found there, across the account with no
+ * customer filter. The earlier request may have named a different customer
+ * than this caller resolved (the reason the row records the customer the found
+ * intent carries), and a customer filter alone would never find it.
+ */
+export async function findRecentPaymentIntentByMetadata({
+  metadataKey,
+  metadataValue,
+  createdSince,
+  customerId,
+  maxScanned = 1000,
+}: {
+  metadataKey: string;
+  metadataValue: string;
+  createdSince: Date;
+  /** The customer this caller would mint for: scanned first, never only. */
+  customerId?: string;
+  maxScanned?: number;
+}): Promise<Stripe.PaymentIntent | null> {
+  const stripe = await getStripe();
+  const scan = async (customer: string | undefined): Promise<Stripe.PaymentIntent | null> => {
+    let scanned = 0;
+    for await (const intent of stripe.paymentIntents.list({
+      ...(customer ? { customer } : {}),
+      created: { gte: Math.floor(createdSince.getTime() / 1000) },
+      limit: 100,
+    })) {
+      if (intent.metadata?.[metadataKey] === metadataValue) return intent;
+      scanned += 1;
+      if (scanned >= maxScanned) break;
+    }
+    return null;
+  };
+  return (customerId ? await scan(customerId) : null) ?? (await scan(undefined));
+}
+
+/**
  * #3170 (epic #2797): raise what an EXISTING, unpaid PaymentIntent asks for.
  *
  * The one operation that lets a booking edit carry ONE request while more than
@@ -459,6 +505,15 @@ export async function cancelSetupIntentIfCancellable(
 }
 
 /**
+ * How old a webhook signature's timestamp may be, in seconds, before the event
+ * is refused as a possible replay. Stripe's own default is 300, but it is passed
+ * explicitly because stripe-node 23 changed what an omitted or zero tolerance
+ * means in `verifyHeader`, and a later major could do the same to
+ * `constructEvent` (#4029). 0 would SKIP the check, so it must stay positive.
+ */
+export const STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300;
+
+/**
  * Construct and verify a Stripe webhook event.
  *
  * NOTE (#2082): the export NAME `constructWebhookEvent` is intentionally
@@ -474,5 +529,10 @@ export async function constructWebhookEvent(
   webhookSecret: string
 ): Promise<Stripe.Event> {
   const stripe = await getStripe();
-  return stripe.webhooks.constructEvent(payload, signature, webhookSecret);
+  return stripe.webhooks.constructEvent(
+    payload,
+    signature,
+    webhookSecret,
+    STRIPE_WEBHOOK_TOLERANCE_SECONDS
+  );
 }
