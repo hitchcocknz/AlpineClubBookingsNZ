@@ -18,5 +18,6 @@ reason: one line computes the joiner email's refund line from this run's own
   email it feeds. Re-measured for #4042, stacked on this change: nine lines
   raise the organiser's hand-back inside the per-child claim that books each
   share (the writer itself is `group-organiser-hand-back.ts`), carry it out of
-  the claim, name it in the child's audit and send its alert after the loop;
-  each has to sit in the claim or the loop it belongs to.
+  the claim, name it in the child's audit, send its alert straight after the
+  claim that created it commits, and kick the group invoice's VOID after the
+  children; each has to sit in the claim or the loop it belongs to.
