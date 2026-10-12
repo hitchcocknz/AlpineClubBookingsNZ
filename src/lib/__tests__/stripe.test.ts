@@ -13,6 +13,8 @@ const mockSetupIntentsCreate = vi.fn();
 const mockRefundsCreate = vi.fn();
 const mockPaymentIntentsRetrieve = vi.fn();
 const mockPaymentIntentsCancel = vi.fn();
+// #3954 round 8: the metadata lookup's list, an async iterable per call.
+const mockPaymentIntentsList = vi.fn();
 const mockSetupIntentsRetrieve = vi.fn();
 const mockPaymentMethodsRetrieve = vi.fn();
 // #3268: retiring a permanently unusable saved card.
@@ -28,6 +30,7 @@ vi.mock("stripe", () => {
         create: mockPaymentIntentsCreate,
         retrieve: mockPaymentIntentsRetrieve,
         cancel: mockPaymentIntentsCancel,
+        list: mockPaymentIntentsList,
       },
       setupIntents: {
         create: mockSetupIntentsCreate,
@@ -67,6 +70,7 @@ const {
   STRIPE_WEBHOOK_TOLERANCE_SECONDS,
   stripeChargeCurrency,
   UnsupportedChargeCurrencyError,
+  findRecentPaymentIntentByMetadata,
 } = await import("../stripe");
 
 describe("Stripe library", () => {
@@ -442,5 +446,54 @@ describe("Stripe library", () => {
       expect(STRIPE_WEBHOOK_TOLERANCE_SECONDS).toBe(300);
       expect(result.type).toBe("payment_intent.succeeded");
     });
+  });
+});
+
+/**
+ * #3954 round 8 (F3): a re-issue's earlier intent is looked for by the
+ * customer the caller resolved first, and then across the account - the
+ * earlier request may have named another customer.
+ */
+describe("findRecentPaymentIntentByMetadata", () => {
+  const listOf = (intents: Array<{ id: string; metadata: Record<string, string> }>) => ({
+    async *[Symbol.asyncIterator]() {
+      yield* intents;
+    },
+  });
+  const CALL = {
+    metadataKey: "reissuedAskKey",
+    metadataValue: "mod_reissued_ask_mod_1",
+    createdSince: new Date("2026-07-01T00:00:00.000Z"),
+  };
+
+  beforeEach(() => {
+    mockPaymentIntentsList.mockReset();
+  });
+
+  it("finds it among the caller's customer's intents without scanning the account", async () => {
+    mockPaymentIntentsList.mockReturnValueOnce(listOf([{ id: "pi_found", metadata: { reissuedAskKey: "mod_reissued_ask_mod_1" } }]));
+    const found = await findRecentPaymentIntentByMetadata({ ...CALL, customerId: "cus_1" });
+    expect(found?.id).toBe("pi_found");
+    expect(mockPaymentIntentsList).toHaveBeenCalledTimes(1);
+    expect(mockPaymentIntentsList).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_1" }));
+  });
+
+  it("MUTATION: not found under the caller's customer, it falls back to a bounded scan of the account with no customer filter", async () => {
+    mockPaymentIntentsList
+      .mockReturnValueOnce(listOf([{ id: "pi_other", metadata: {} }]))
+      .mockReturnValueOnce(listOf([{ id: "pi_found", metadata: { reissuedAskKey: "mod_reissued_ask_mod_1" } }]));
+    const found = await findRecentPaymentIntentByMetadata({ ...CALL, customerId: "cus_1", maxScanned: 5 });
+    expect(found?.id).toBe("pi_found");
+    expect(mockPaymentIntentsList).toHaveBeenCalledTimes(2);
+    expect(mockPaymentIntentsList.mock.calls[1]![0]).not.toHaveProperty("customer");
+  });
+
+  it("stops each scan at maxScanned and answers null when neither finds it", async () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({ id: `pi_${index}`, metadata: {} }));
+    mockPaymentIntentsList.mockReturnValueOnce(listOf(many)).mockReturnValueOnce(listOf([
+      ...many,
+      { id: "pi_late", metadata: { reissuedAskKey: "mod_reissued_ask_mod_1" } },
+    ]));
+    expect(await findRecentPaymentIntentByMetadata({ ...CALL, customerId: "cus_1", maxScanned: 10 })).toBeNull();
   });
 });

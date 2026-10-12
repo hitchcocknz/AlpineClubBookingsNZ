@@ -41,6 +41,7 @@ import {
   PaidUpAdultMemberRequiredError,
 } from "@/lib/subscription-lockout-enforcement";
 import {
+  additionalAmountToName,
   createModificationAdditionalPaymentIntent,
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
@@ -252,16 +253,16 @@ export async function DELETE(
     // No-op when nothing is owed or the payment is not a captured Stripe
     // payment (Internet Banking increases bill via the Xero supplementary
     // invoice below, unchanged).
-    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-      await createModificationAdditionalPaymentIntent({
-        format,
-        bookingId,
-        result,
-        reason: "guest_removal_price_increase",
-        idempotencyKey: `mod_guest_remove_${bookingId}_${result.bookingModificationId}`,
-        failureMessage:
-          "Failed to create additional PaymentIntent for guest removal",
-      });
+    const additionalMint = await createModificationAdditionalPaymentIntent({
+      format,
+      bookingId,
+      result,
+      reason: "guest_removal_price_increase",
+      idempotencyKey: `mod_guest_remove_${bookingId}_${result.bookingModificationId}`,
+      failureMessage:
+        "Failed to create additional PaymentIntent for guest removal",
+    });
+    const { additionalPaymentClientSecret, additionalPaymentIntentId } = additionalMint;
 
     // Audit log. #3530: what the figure is made of, line by line and in dollars.
     const linesAudit = await loadModificationLinesAuditFields(prisma, result.priceLines, logger, format);
@@ -329,6 +330,10 @@ export async function DELETE(
       firstName: result.memberFirstName,
     };
     if (notifyMember) {
+      const namedAdditionalCents = additionalAmountToName(
+        result.hasIssuedXeroInvoice || additionalPaymentIntentId ? result.additionalAmountCents : 0,
+        additionalMint,
+      );
       sendBookingModifiedEmail({
         bookingId: result.booking.id,
         recipientMemberId: result.memberId,
@@ -347,6 +352,7 @@ export async function DELETE(
         refundAmountCents: result.refundAmountCents,
         accountCreditAmountCents: result.accountCreditAmountCents,
         appliedCreditGivenBackCents: result.appliedCreditGivenBackCents,
+        unpaidAskCancelled: result.unpaidAskCancelled,
         // #2390: same words as the edit preview and the booking history when a
         // usage cap stopped the promotion reaching somebody on this booking.
         promoCoverageNote: result.promoCoverage?.message ?? null,
@@ -370,15 +376,13 @@ export async function DELETE(
         // PaymentIntent now created for captured Stripe payments (#1042). If
         // Stripe intent creation failed, stay silent — an "additional payment
         // required" note with no way to pay is worse than saying nothing; the
-        // price change still shows via old/new total.
-        additionalAmountCents:
-          result.hasIssuedXeroInvoice || additionalPaymentIntentId
-            ? result.additionalAmountCents
-            : 0,
+        // price change still shows via old/new total. #3954 round 9: nor is an
+        // ask a reduction retired before it was offered named as due.
+        additionalAmountCents: namedAdditionalCents,
         additionalPaymentMethod:
-          result.additionalAmountCents > 0 && additionalPaymentIntentId
+          namedAdditionalCents > 0 && additionalPaymentIntentId
             ? "STRIPE"
-            : result.hasIssuedXeroInvoice && result.additionalAmountCents > 0
+            : namedAdditionalCents > 0
               ? "INTERNET_BANKING"
               : undefined,
       }, format).catch((err) =>

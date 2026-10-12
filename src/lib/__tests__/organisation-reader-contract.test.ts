@@ -419,8 +419,8 @@ const DECLARED_FILES: Record<string, string> = {
     "the same, on the signed-in payment path",
   "src/app/api/payments/create-setup-intent/route.ts":
     "the same, when a card is saved for later",
-  "src/lib/payment-recovery.ts":
-    "a recovery replay re-resolves the owner's Stripe customer",
+  "src/lib/reissued-ask-mint.ts":
+    "an additional ask's mint resolves the owner's Stripe customer one way for the recovery replay and the door's re-issue (#3954 round 7, moved here from payment-recovery.ts)",
   "src/lib/xero-inbound/invoice-paid-effects.ts":
     "an Internet Banking over-payment on a school's booking has no member ledger to credit, and names the organisation in the warning that tells an officer to refund it directly",
   "src/app/api/admin/bookings/search/route.ts":
