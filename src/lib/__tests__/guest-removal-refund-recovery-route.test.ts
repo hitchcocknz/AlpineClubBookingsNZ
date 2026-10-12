@@ -238,6 +238,20 @@ describe("DELETE guest removal on an organiser-paid child: the email's refund de
     );
   });
 
+  it("a refund the helper could not run here (no payment to refund from) is still owed, so on its way", async () => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(
+      makeResult({ organiserChildRefund: { amountCents: 2000 }, paymentId: null }),
+    );
+
+    await DELETE(makeRequest(), { params });
+
+    expect(mocks.runPaymentRecoveryOperationNow).not.toHaveBeenCalled();
+    expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundDestination: "organiser_card_pending" }),
+      expect.anything(),
+    );
+  });
+
   it("the member's own card refund stays the member's own", async () => {
     mocks.removeBookingGuestInTransaction.mockResolvedValue(makeResult());
     mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [{ refundId: "re_1" }] });
