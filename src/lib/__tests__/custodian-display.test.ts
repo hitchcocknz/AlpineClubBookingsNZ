@@ -326,6 +326,53 @@ describe("custodian slot on the lobby display", () => {
         ["Pat Ranger", ["2026-07-02", "2026-07-03", "2026-07-04"]],
       ]);
       expect(JSON.stringify(state)).not.toContain("member-sam");
+      // Sam's own dates follow the nights kept; the row still spans Pat's.
+      const sam = guests.find((guest) => guest.label === "Sam Ranger");
+      expect([sam?.stayStart, sam?.stayEnd]).toEqual(["2026-07-04", "2026-07-05"]);
+      expect([state?.bookings[0]?.stayStart, state?.bookings[0]?.stayEnd]).toEqual([
+        "2026-07-02",
+        "2026-07-05",
+      ]);
+    });
+
+    it("dates a custodian's own booking row from the nights it keeps, so it never claims their custodian nights", async () => {
+      mockPrisma.lodge.findUnique.mockResolvedValue(lodge("FULL_NAME"));
+      mockPrisma.booking.findMany.mockResolvedValue([
+        {
+          id: "b-solo",
+          checkIn: night("2026-07-02"),
+          checkOut: night("2026-07-05"),
+          // The booking's arrival, which is now a custodian night: not printed
+          // against a row that starts later.
+          expectedArrivalTime: "17:30",
+          wholeLodgeHold: false,
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+          guests: [lobbyGuest("Sam", "member-sam")],
+        },
+      ]);
+      mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+        {
+          memberId: "member-sam",
+          startDate: night("2026-07-01"),
+          endDate: night("2026-07-03"),
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+        },
+      ]);
+
+      const state = await buildDisplayState(LODGE_ID);
+      expect(state?.bookings).toHaveLength(1);
+      const row = state?.bookings[0];
+      expect(row).toMatchObject({
+        stayStart: "2026-07-04",
+        stayEnd: "2026-07-05",
+        nights: ["2026-07-04"],
+        arrivalTime: null,
+      });
+      expect(row?.guests?.[0]).toMatchObject({
+        stayStart: "2026-07-04",
+        stayEnd: "2026-07-05",
+        nights: ["2026-07-04"],
+      });
     });
   });
 

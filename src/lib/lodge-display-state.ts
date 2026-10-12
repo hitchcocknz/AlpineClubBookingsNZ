@@ -21,6 +21,7 @@ import {
   addDaysDateOnly,
   eachDateOnlyInRange,
   formatDateOnly,
+  parseDateOnly,
 } from "./date-only";
 import { clubTodayDateOnlyInstant } from "./club-time/server";
 import { getCachedClubIdentity } from "./public-layout-config";
@@ -681,14 +682,33 @@ export async function buildDisplayState(
     // envelope when they do not. Derived once per guest and reused for the
     // in-window test, the row's own night set and the per-guest payload, so
     // those three can never disagree about which nights a guest is here.
-    const nightKeysByGuest = new Map<string, string[]>(
-      booking.guests.map((guest) => [
+    const nightKeysByGuest = new Map<string, string[]>();
+    // #3821: each guest's displayed span, from the SAME nights. A custodian
+    // who also booked is listed once, as custodian, so their custodian nights
+    // leave their booking's row — and its dates must not still claim them, or
+    // the row would say they arrive or leave on a day they are shown only as
+    // custodian. When the filter took nights away, the span is rebuilt from
+    // the nights kept (first night to the morning after the last); otherwise
+    // it is the guest's own envelope, exactly as before.
+    const spanByGuest = new Map<string, { start: Date; end: Date }>();
+    for (const guest of booking.guests) {
+      const allNights = getGuestBedNightKeys(guest, booking);
+      const kept = allNights.filter(
+        (key) => !isCustodianOnNight(custodianNights, guest.memberId, key),
+      );
+      nightKeysByGuest.set(guest.id, kept);
+      spanByGuest.set(
         guest.id,
-        getGuestBedNightKeys(guest, booking).filter(
-          (key) => !isCustodianOnNight(custodianNights, guest.memberId, key),
-        ),
-      ])
-    );
+        kept.length < allNights.length && kept.length > 0
+          ? {
+              start: parseDateOnly(kept[0]),
+              end: addDaysDateOnly(parseDateOnly(kept[kept.length - 1]), 1),
+            }
+          : { start: getGuestStayStart(guest, booking), end: getGuestStayEnd(guest, booking) },
+      );
+    }
+    const spanOf = (guestId: string) =>
+      spanByGuest.get(guestId) ?? { start: booking.checkIn, end: booking.checkOut };
 
     const byRoom = new Map<string | null, typeof booking.guests>();
     for (const guest of booking.guests) {
@@ -716,8 +736,8 @@ export async function buildDisplayState(
 
     let rowIndex = 0;
     for (const [roomId, guests] of byRoom) {
-      const stayStarts = guests.map((g) => getGuestStayStart(g, booking).getTime());
-      const stayEnds = guests.map((g) => getGuestStayEnd(g, booking).getTime());
+      const stayStarts = guests.map((g) => spanOf(g.id).start.getTime());
+      const stayEnds = guests.map((g) => spanOf(g.id).end.getTime());
       const rowStayStart = Math.min(...stayStarts);
       // The row's own night set: the union of its guests' nights, sorted. For
       // every contiguous stay this is exactly `[stayStart, stayEnd)` expanded,
@@ -797,8 +817,8 @@ export async function buildDisplayState(
               return {
                 label:
                   reduceName(guest.firstName, guest.lastName, granularity) ?? "",
-                stayStart: formatDateOnly(getGuestStayStart(guest, booking)),
-                stayEnd: formatDateOnly(getGuestStayEnd(guest, booking)),
+                stayStart: formatDateOnly(spanOf(guest.id).start),
+                stayEnd: formatDateOnly(spanOf(guest.id).end),
                 nights: nightKeysByGuest.get(guest.id) ?? [],
                 ...(phone ? { phone } : {}),
               };
