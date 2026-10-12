@@ -400,7 +400,8 @@ describe("the linked-move offer's UI contract (#3232, INV-HOST-050)", () => {
     expect(
       page,
       "the history builder must be handed the viewer's audience (#3232 D3)",
-    ).toContain('audience: canSeeAdminTools ? "staff" : "member"');
+    // #3991: a linked guest is its own non-staff audience; staff stays first.
+    ).toContain('audience: canSeeAdminTools ? "staff" : isLinkedGuestViewer ? "linked_guest" : "member"');
   });
 
   it("keeps the shared browser contract free of server-only dependencies", () => {
