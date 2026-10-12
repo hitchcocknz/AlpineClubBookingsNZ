@@ -9,10 +9,11 @@
   switch into every lodge. Teacher assignments now end on the night before the
   school leaves, and they stop counting if the school booking is cancelled or
   moved.
-- **A school booking awaiting its invoice now needs a hut leader.** From the
-  moment an approved school booking holds beds, its nights show on the
+- **A school booking awaiting its invoice now needs a hut leader.** Once the
+  school accepts and its booking is confirmed, its nights show on the
   dashboard while nobody covers them, and a club member on the school booking
-  can be assigned to them, by hand or by the nightly job. The nightly job no
+  can be assigned to them, by hand or by the nightly job. A quote the school
+  has not accepted yet does neither. The nightly job no
   longer stretches a member's assignment into school nights the lodge does not
   accept them for. A season-long custodian no longer blocks the leader you add
   for school nights when the lodge leaves the custodian unticked. Adding a

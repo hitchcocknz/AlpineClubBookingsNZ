@@ -159,9 +159,10 @@ export async function getUnassignedHutLeaderDates(input: {
           ? { lodgeId: input.scope.lodgeId }
           : {}),
         // THE hut-leader stay set (`hutLeaderStayStatusWhere`): an operational
-        // stay, or a school booking that holds beds — a school group awaiting
-        // its invoice needs a leader too (owner decision on #3820, 13 Oct
-        // 2026, "Yes, count it"), and a member on it can be one.
+        // stay, or an accepted school booking (CONFIRMED) — a school group
+        // awaiting its invoice needs a leader too (owner decision on #3820, 13
+        // Oct 2026, "Yes, count it"), and a member on it can be one. An
+        // unaccepted quote's hold does not.
         AND: [hutLeaderStayStatusWhere()],
         deletedAt: null,
         checkIn: { lte: endDate },

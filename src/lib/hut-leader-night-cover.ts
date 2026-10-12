@@ -57,9 +57,10 @@ import {
  *    `BookingGuest` row for that member (owning a booking one is not a guest on
  *    does not count), on a booking matching THE hut-leader stay definition
  *    `hutLeaderStayBookingWhere` (#3817: non-deleted, an operational-stay
- *    status or a school booking that holds beds — the same set that decides a
- *    night needs a leader at all — the one rule the writers and suggestions
- *    read too), operationally consented, and active on the
+ *    status or an accepted school booking awaiting its invoice — the same
+ *    set that decides a night needs a leader at all — the one rule the
+ *    writers and suggestions read too), operationally consented, and active
+ *    on the
  *    night by `isGuestActiveOnNight` — the frozen night-model predicate, reused,
  *    never restated (`INV-DATE-003`/`INV-DATE-005`). A cancelled, bumped or
  *    archived stay is simply not loaded, so it covers nothing.

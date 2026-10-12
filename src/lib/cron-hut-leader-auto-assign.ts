@@ -134,8 +134,9 @@ export async function autoAssignHutLeaders(): Promise<{
       // at THIS lodge rather than pooling every lodge's guests. The booking
       // filter is THE hut-leader stay definition the manual create/edit check
       // and the eligible-members list use (#3817, `INV-SSOT`): an operational
-      // stay (PAID or COMPLETED), or a school booking that holds beds (owner
-      // decision on #3820, 13 Oct 2026), and never a soft-deleted booking.
+      // stay (PAID or COMPLETED), or an accepted school booking awaiting its
+      // invoice (CONFIRMED; owner decision on #3820, 13 Oct 2026) — never an
+      // unaccepted school quote's hold, and never a soft-deleted booking.
       const bookingsForDate = await prisma.booking.findMany({
         where: {
           ...hutLeaderStayBookingWhere({ lodgeId: lodge.id, rangeStart: day, rangeEnd: day }),

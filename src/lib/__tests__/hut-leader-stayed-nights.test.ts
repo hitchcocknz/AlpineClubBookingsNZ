@@ -29,6 +29,8 @@ type Booking = {
   status: string;
   /** #3821: the school request it came from, when it is a school group's. */
   originBookingRequest?: { type: string } | null;
+  /** #3821: the school request it is held for, while the quote is unaccepted. */
+  heldForBookingRequest?: { type: string } | null;
   memberId: string | null;
   deletedAt?: Date | null;
   checkIn: Date;
@@ -61,7 +63,7 @@ function bookingMatches(booking: Booking, where: BookingWhere) {
       {
         status: booking.status,
         originBookingRequest: booking.originBookingRequest ?? null,
-        heldForBookingRequest: null,
+        heldForBookingRequest: booking.heldForBookingRequest ?? null,
         adminCapacityHoldAt: null,
       },
       { AND: where.AND },
@@ -189,6 +191,29 @@ describe("findHutLeaderStayRefusal (#3817)", () => {
       originBookingRequest: { type: "SCHOOL" },
     });
     expect(await ask(fakeDb([school]), "2026-07-06", "2026-07-07")).toBeNull();
+  });
+
+  it("refuses an unaccepted school quote's AWAITING_REVIEW hold — it holds beds but is not a stay (#3821)", async () => {
+    // The owner's words: "a school booking that holds beds (CONFIRMED,
+    // awaiting its invoice)". A quote the school has not accepted holds beds,
+    // but its members get no hut-leader duty (and so no kiosk access) from it.
+    const held = stay("2026-07-06", "2026-07-08", {
+      status: "AWAITING_REVIEW",
+      heldForBookingRequest: { type: "SCHOOL" },
+    });
+    expect(await ask(fakeDb([held]), "2026-07-06", "2026-07-07")).toEqual(
+      expect.objectContaining({ firstNightNotStayed: "2026-07-06" }),
+    );
+  });
+
+  it("refuses a converted school quote still PENDING — only CONFIRMED counts (#3821)", async () => {
+    const pending = stay("2026-07-06", "2026-07-08", {
+      status: "PENDING",
+      originBookingRequest: { type: "SCHOOL" },
+    });
+    expect(await ask(fakeDb([pending]), "2026-07-06", "2026-07-07")).toEqual(
+      expect.objectContaining({ firstNightNotStayed: "2026-07-06" }),
+    );
   });
 
   it("still refuses a CONFIRMED booking that is not a school group's", async () => {

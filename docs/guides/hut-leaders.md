@@ -63,7 +63,7 @@ no hut-leader request or assignment write until a real lodge returns.
    stay that has been cancelled — the page refuses it, names the first night
    they are not staying and offers **Change last night to …** with their last
    night stayed. There is no override. Only paid (or completed) stays count,
-   plus a school group's booking that holds beds while it awaits its invoice,
+   plus a school group's accepted booking while it awaits its invoice,
    and only nights the member is a **guest** on: owning a booking they are not
    on does not count. A custodian is the one exception: tick **Custodian (lives
    on site)**, or hold a bed for them (see below).
@@ -105,7 +105,7 @@ both of these are true:
 
 | Assignment | Counts as in the lodge on… |
 | --- | --- |
-| An ordinary member (assigned by hand or automatically) | the nights of their own paid stay at **this** lodge, or of a school group's booking at this lodge that holds beds while it awaits its invoice. A cancelled, bumped, archived or otherwise unpaid stay counts for nothing, and neither does a stay at another lodge, or a stay as another member's guest that they have not yet confirmed |
+| An ordinary member (assigned by hand or automatically) | the nights of their own paid stay at **this** lodge, or of a school group's accepted booking at this lodge while it awaits its invoice (a quote the school has not accepted does not count). A cancelled, bumped, archived or otherwise unpaid stay counts for nothing, and neither does a stay at another lodge, or a stay as another member's guest that they have not yet confirmed |
 | A custodian — ticked **Custodian (lives on site)**, or holding a bed | every night the assignment covers. They live in the lodge, so no booking is needed |
 | A school group's teacher | the assignment's own dates (arrival to the night before departure), but only while a school group is staying at this lodge that night. If the school booking is cancelled or moved, its teachers stop counting on nights no school group is there |
 
@@ -133,12 +133,15 @@ custodian and both member kinds are ticked and teachers are not; an upgrade
 carried the old club-wide **Assign school teachers as hut leaders** switch into
 every lodge's teacher tick.
 
-A school group counts as staying from the moment its booking holds beds — an
-approved school booking awaiting its invoice included — not only once it is paid.
-From that moment its nights need a hut leader: they show on the dashboard and
-the amber card while uncovered, and a club member on the school booking can be
-assigned to them, by hand or automatically, when the lodge ticks **A member on
-the school booking**.
+A night is a school night, for which kinds of leader count, from the moment a
+school booking holds beds there — a quote the school has not yet accepted
+included. Its nights **need** a hut leader once the school has accepted and the
+booking is confirmed, while it awaits its invoice, not only once it is paid.
+From then its nights show on the dashboard and the amber card while uncovered,
+and a club member on the school booking can be assigned to them, by hand or
+automatically, when the lodge ticks **A member on the school booking**. A quote
+still awaiting the school's answer neither needs a leader nor lets a member on
+it be one.
 
 Teachers are made hut leaders at approval only while the **Hut leaders** module
 is on: with it off, approval creates no teacher assignments and sends no PINs,

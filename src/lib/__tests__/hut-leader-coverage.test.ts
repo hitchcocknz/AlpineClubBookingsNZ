@@ -31,6 +31,8 @@ function buildDb(options: {
     status?: string;
     /** A school group's booking (#3819/#3821). */
     school?: boolean;
+    /** Held for a school quote not yet accepted (an AWAITING_REVIEW hold). */
+    heldForSchool?: boolean;
     checkIn: Date;
     checkOut: Date;
     guests?: Array<{
@@ -97,7 +99,7 @@ function buildDb(options: {
                 {
                   status: booking.status ?? "PAID",
                   originBookingRequest: booking.school ? { type: "SCHOOL" } : null,
-                  heldForBookingRequest: null,
+                  heldForBookingRequest: booking.heldForSchool ? { type: "SCHOOL" } : null,
                   adminCapacityHoldAt: null,
                 },
                 { AND: args?.where?.AND ?? [] },
@@ -702,6 +704,21 @@ describe("getUnassignedHutLeaderDates — a school booking awaiting its invoice 
             checkOut: dateOnly("2026-08-05"),
           },
         ],
+      }),
+      from: dateOnly("2026-08-03"),
+      to: dateOnly("2026-08-04"),
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("does not need a leader for an unaccepted school quote's AWAITING_REVIEW hold", async () => {
+    // The owner's words: "a school booking that holds beds (CONFIRMED,
+    // awaiting its invoice)". A hold for a quote the school has not accepted
+    // holds beds but is not yet a stay, so nobody is chased to lead it.
+    const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-a" },
+      db: buildDb({
+        bookings: [{ ...school, status: "AWAITING_REVIEW", school: false, heldForSchool: true }],
       }),
       from: dateOnly("2026-08-03"),
       to: dateOnly("2026-08-04"),

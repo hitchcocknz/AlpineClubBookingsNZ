@@ -285,7 +285,7 @@ async function clearFixtures(): Promise<void> {
       // A custodian clash loads `hut-leader-night-cover.ts` on the client it
       // was given: the school-booking read (capacity-holding AND school), the
       // stay read (`hutLeaderStayBookingWhere`, its OR of an operational stay
-      // and a school hold) and the lodge's school kinds. A mocked client
+      // and an accepted, CONFIRMED school booking) and the lodge's school kinds. A mocked client
       // accepts any where; PostgreSQL through Prisma proves these shapes are
       // valid. With no school group there, the clash is refused as before.
       await prisma.hutLeaderAssignment.create({
