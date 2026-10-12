@@ -13,8 +13,7 @@
 import {
   type AppliedCreditSummary, type BookingModificationAddedGuest,
   appliedCreditSummaryRows,
-  bookingModificationSummaryRows,
-  bookingModificationTypeLabel,
+  bookingModificationSummaryRows, bookingModificationTypeLabel,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
   resolveUnpaidCreditNetting,
@@ -533,8 +532,7 @@ export function bookingModifiedTemplate(params: {
     newFinalPriceCents,
     changeFeeCents,
     promoCoverageNote,
-    promoChangeNotAppliedNote,
-    addedGuests: params.addedGuests,
+    promoChangeNotAppliedNote, addedGuests: params.addedGuests,
   }, format).map((row) => ({
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),

@@ -10,7 +10,7 @@ each existing call site; none of these files can lose its call site, and
 splitting them is unrelated to this change.
 
 file: src/app/api/bookings/[id]/guests/[guestId]/route.ts
-lines: 550
+lines: 554
 reason: one `addedGuests: []` line in the guest-removal route's existing call
   to the booking-modified sender, which the required argument demands.
 
@@ -20,17 +20,17 @@ reason: one line handing the guest-add route's created rows to the
   booking-modified sender, so the member's add-a-guest email names them.
 
 file: src/lib/booking-batch-modification-service.ts
-lines: 2892
+lines: 2922
 reason: three lines - the created guest rows carried on the result type, set
   where the result is built, and handed to the change email - which is the
   path both a member's own edit and the officer's finished-stay approval send.
 
 file: src/lib/booking-date-modification-service.ts
-lines: 2355
+lines: 2385
 reason: one `addedGuests: []` line at each of the service's two existing calls
   to the booking-modified sender, which the required argument demands.
 
 file: src/lib/email/booking.ts
-lines: 1792
+lines: 1799
 reason: the sender's one new required parameter; the rows it composes live in
   booking-money-lines.ts, so nothing else grew here.
