@@ -10,7 +10,7 @@
  * (2) the workflow's own `jq` step round-trips such a body byte for byte; (3) no
  * workflow puts `pull_request.body` back into an `env:` or `run:`.
  */
-import { existsSync, execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
