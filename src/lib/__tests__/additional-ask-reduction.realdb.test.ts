@@ -58,6 +58,24 @@ vi.mock("@/lib/stripe", async (importOriginal) =>
   (await import("./support/stripe-race-double")).stripeRaceDouble(await importOriginal()),
 );
 
+// #4036 review: a seam between an ordinary ask's mint and the runner's
+// claim-held write, so a case can record the adopted intent elsewhere in that
+// window. Pass-through unless a case installs `afterMint`.
+const ordinaryAskMintHooks = vi.hoisted(() => ({
+  afterMint: null as null | ((minted: { intent: { id: string }; adopted: boolean }) => Promise<void>),
+}));
+vi.mock("@/lib/ordinary-ask-mint", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ordinary-ask-mint")>();
+  return {
+    ...actual,
+    mintOrdinaryAskIntent: async (...args: Parameters<typeof actual.mintOrdinaryAskIntent>) => {
+      const minted = await actual.mintOrdinaryAskIntent(...args);
+      await ordinaryAskMintHooks.afterMint?.(minted);
+      return minted;
+    },
+  };
+});
+
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
@@ -358,7 +376,10 @@ let webhookClient: PrismaClient;
       await webhookClient.$connect();
     }, 60_000);
 
-    afterEach(() => resetStripeRaceHooks());
+    afterEach(() => {
+      resetStripeRaceHooks();
+      ordinaryAskMintHooks.afterMint = null;
+    });
 
     afterAll(async () => {
       await webhookClient?.$disconnect().catch(() => {});
@@ -1040,8 +1061,10 @@ let webhookClient: PrismaClient;
       stripeRaceHooks.create = create as never;
       stripeRaceHooks.findByMetadata = (async ({ metadataKey, metadataValue }: { metadataKey: string; metadataValue: string }) =>
         [...intents.values()].find((intent) => intent.metadata[metadataKey] === metadataValue) ?? null) as never;
-      stripeRaceHooks.list = (async ({ matches }: { matches: (intent: never) => boolean }) =>
-        [...intents.values()].filter((intent) => matches(intent as never))) as never;
+      stripeRaceHooks.list = (async ({ matches }: { matches: (intent: never) => boolean }) => ({
+        intents: [...intents.values()].filter((intent) => matches(intent as never)),
+        complete: true,
+      })) as never;
       stripeRaceHooks.cancel = (async (id: string) => ({ paymentIntent: { id, status: "canceled" }, canceled: true })) as never;
       return { intents, create };
     }
@@ -1475,7 +1498,7 @@ let webhookClient: PrismaClient;
       expect((await payment()).additionalPaymentIntentId).toBe(doorIntent.id);
     });
 
-    it("#4036: the runner's replay is refused (the stored customer moved since the door) - it finds the intent the key minted and records it", async () => {
+    it("#4036: the runner's replay is refused (the stored customer moved since the door) - it finds the door's intent, records it, and leaves the payment's customer alone", async () => {
       const { stripe, recovery, doorIntent } = await increaseWhoseReplyIsLost();
       await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { stripeCustomerId: "cus_race_4036_moved" } });
       let refused = 0;
@@ -1495,8 +1518,10 @@ let webhookClient: PrismaClient;
       expect(refused).toBe(1);
       expect(stripe.intents.size).toBe(1);
       expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).toEqual([doorIntent.id]);
-      // The payment records the customer the intent was minted for, not this run's.
-      expect((await payment()).stripeCustomerId).toBe("cus_race_3954");
+      // Review round: an ADOPTED intent's customer is never written over the
+      // payment's - it was found by what it asks for, and the payment's saved
+      // card stays paired with the customer it was saved under.
+      expect((await payment()).stripeCustomerId).toBe("cus_race_4036_moved");
       expect((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } })).status).toBe("SUCCEEDED");
     });
 
@@ -1544,6 +1569,114 @@ let webhookClient: PrismaClient;
       const after = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } });
       expect(after).toMatchObject({ status: "FAILED", attempts: 1, paymentIntentId: recovery.paymentIntentId });
       expect(after.nextRetryAt).not.toBeNull();
+    });
+
+    // #4036 review: the refused replay finds the door's intent, and another
+    // ask records that same intent before the runner's claim-held write. The
+    // runner must not write over that row: its write rolls back, and the retry
+    // finds no unrecorded match and fails closed.
+    it("#4036: an adopted intent another ask recorded meanwhile is never written over - the replay fails, and its retry fails closed", async () => {
+      const { stripe, recovery, doorIntent } = await increaseWhoseReplyIsLost();
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { stripeCustomerId: "cus_race_4036_moved" } });
+      stripeRaceHooks.create = stripe.create as never;
+      const OTHER_ROW = { reason: "date_change_price_increase", amountCents: 6_000 };
+      ordinaryAskMintHooks.afterMint = async ({ intent, adopted }) => {
+        expect(adopted).toBe(true);
+        await webhookClient.paymentTransaction.create({
+          data: {
+            paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: intent.id,
+            status: "PENDING", ...OTHER_ROW,
+          },
+        });
+      };
+
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+
+      const otherRow = () =>
+        prisma.paymentTransaction.findUniqueOrThrow({
+          where: { stripePaymentIntentId: doorIntent.id },
+          select: { reason: true, amountCents: true, carriedAskCents: true, bookingModificationId: true },
+        });
+      // The other ask's row is exactly as it wrote it.
+      expect(await otherRow()).toEqual({ ...OTHER_ROW, carriedAskCents: 0, bookingModificationId: null });
+      const failed = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } });
+      expect(failed).toMatchObject({ status: "FAILED", attempts: 1, paymentIntentId: recovery.paymentIntentId });
+
+      // The retry: the one match is now on the ledger, so nothing is adopted.
+      ordinaryAskMintHooks.afterMint = null;
+      await prisma.paymentRecoveryOperation.update({ where: { id: recovery.id }, data: { nextRetryAt: new Date("2026-06-01T00:00:00.000Z") } });
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(await otherRow()).toEqual({ ...OTHER_ROW, carriedAskCents: 0, bookingModificationId: null });
+      expect(stripe.intents.size).toBe(1);
+      expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } }))
+        .toMatchObject({ status: "FAILED", attempts: 2, paymentIntentId: recovery.paymentIntentId });
+    });
+
+    it("#4036: a refused replay does not adopt an intent another edit's unfinished recovery could own (same door, same amount)", async () => {
+      const { stripe, recovery } = await increaseWhoseReplyIsLost();
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { stripeCustomerId: "cus_race_4036_moved" } });
+      stripeRaceHooks.create = stripe.create as never;
+      // Another guest-add edit of this booking, its own ask for the same figure
+      // still waiting on its recovery: its replay could be what minted the match.
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "CREATE_ADDITIONAL_PAYMENT_INTENT", status: "PENDING", bookingId: BOOKING_ID, paymentId: PAYMENT_ID,
+          paymentIntentId: `mod_guest_${BOOKING_ID}_race-4036-rival`, amountCents: 6_000,
+          idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey("race-4036-rival"),
+          nextRetryAt: new Date("2026-07-02T00:00:00.000Z"),
+        },
+      });
+
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+
+      expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).toEqual([ASK_INTENT]);
+      expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } }))
+        .toMatchObject({ status: "FAILED", attempts: 1, paymentIntentId: recovery.paymentIntentId });
+    });
+
+    // #4036, the other ordering. An ordinary ask's recovery row is written only
+    // once the door's own create has FAILED (`keepTheDebt`), so the door never
+    // upserts after the runner: its call has already returned. What can arrive
+    // after the runner is the door's REQUEST - one the door gave up on whose
+    // delivery to Stripe was delayed. Stripe answers it with the runner's intent,
+    // because the two sent one request under one key.
+    it("#4036: the runner mints and records first; the door's delayed request then reaches Stripe and is answered with that same intent, never refused", async () => {
+      await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+      const increase = await ordinaryIncrease(1_000);
+      const stripe = fakeStripe();
+      // The door's request leaves but has not reached Stripe when the door's
+      // client gives up on it.
+      let delayed: Parameters<typeof stripe.create>[0] | null = null;
+      stripeRaceHooks.create = (async (args: Parameters<typeof stripe.create>[0]) => {
+        delayed = args;
+        throw new Error("Request timed out");
+      }) as never;
+      expect((await mintIncreaseAtDoor(increase)).additionalPaymentIntentId).toBeUndefined();
+      expect(stripe.intents.size).toBe(0);
+      const { buildAdditionalIntentRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      const recovery = await prisma.paymentRecoveryOperation.findUniqueOrThrow({
+        where: { idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(increase.id) },
+      });
+
+      // The runner first: it mints under the door's key and records the row.
+      stripeRaceHooks.create = stripe.create as never;
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      expect(stripe.intents.size).toBe(1);
+      const runnerIntent = [...stripe.intents.values()][0]!;
+
+      // Then the door's delayed request lands: the same intent, no refusal.
+      expect(delayed).not.toBeNull();
+      await expect(stripe.create(delayed!)).resolves.toBe(runnerIntent);
+      expect(stripe.intents.size).toBe(1);
+      const { ORDINARY_ASK_RECOVERY_REASON } = await import("@/lib/ordinary-ask-request");
+      expect(await liveAsks()).toEqual([
+        { stripePaymentIntentId: runnerIntent.id, amountCents: 6_000, carriedAskCents: 5_000, reason: ORDINARY_ASK_RECOVERY_REASON },
+      ]);
+      expect((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } })).status).toBe("SUCCEEDED");
     });
   },
 );
