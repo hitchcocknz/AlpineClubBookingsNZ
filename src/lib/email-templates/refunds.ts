@@ -13,7 +13,10 @@
  * sender does live in `src/lib/email/booking.ts` — booking-scoped, so the
  * per-booking "No emails" switch withholds it.
  */
-import { refundRequestApprovedRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  refundRequestApprovedRefundSentence,
+  type OrganiserCardAppealRefund,
+} from "@/lib/booking-modified-email-copy";
 import { supersededRefundOwingSentence } from "@/lib/superseded-additional-refund-event";
 
 import { escapeHtml } from "./escape";
@@ -67,7 +70,7 @@ export function refundRequestApprovedTemplate(data: {
    */
   bankTransferCents: number;
   /** #3956: the refund goes to the group organiser's card - made or on its way; null otherwise. */
-  organiserCardRefund?: "made" | "pending" | null;
+  organiserCardRefund?: OrganiserCardAppealRefund | null;
   adminNotes: string | null;
   checkIn: Date;
   checkOut: Date;

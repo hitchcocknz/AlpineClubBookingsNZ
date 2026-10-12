@@ -1020,9 +1020,9 @@ const GENERATED_CASES: EmailRenderCase[] = [
     refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 40, adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   // #3956: a booking the group organiser paid for by card - refunded, or on its way.
   { id: "refundRequestApprovedTemplate:organiserCardMade", fn: "refundRequestApprovedTemplate", render: () =>
-    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 0, organiserCardRefund: "made", adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 0, organiserCardRefund: "organiser_card", adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "refundRequestApprovedTemplate:organiserCardPending", fn: "refundRequestApprovedTemplate", render: () =>
-    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 0, organiserCardRefund: "pending", adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, bankTransferCents: 0, organiserCardRefund: "organiser_card_pending", adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "refundRequestDeclinedTemplate:minimal", fn: "refundRequestDeclinedTemplate", render: () =>
     refundRequestDeclinedTemplate({ firstName: "firstName-1", adminNotes: "adminNotes-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "bookingRequestVerificationTemplate:minimal", fn: "bookingRequestVerificationTemplate", render: () =>

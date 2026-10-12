@@ -77,6 +77,9 @@ export type OrganiserRefundMethod =
   | "group_cancel_refunding"
   | "group_cancel_refunded";
 
+/** #3956: an approved appeal's refund to the organiser's card - made, or on its way. */
+export type OrganiserCardAppealRefund = Extract<OrganiserRefundMethod, "organiser_card" | "organiser_card_pending">;
+
 /**
  * Where a "Booking Cancelled" email says the refund went. B5 (#2262): "manual"
  * is a cash / off-Xero settlement a person hands back, so it must never read as
@@ -197,13 +200,16 @@ export function refundRequestApprovedRefundSentence(
   formatAmount: (cents: number) => string,
   /**
    * #3956 (`INV-PAY-123`): the booking was paid for by the group organiser's
-   * card, so the whole refund goes there - made, or still on its way while
-   * Stripe has not answered. Null for any other booking.
+   * card, so the whole refund goes there - made (`organiser_card`, its debt
+   * says so), or still on its way (`organiser_card_pending`). Null for any
+   * other booking.
    */
-  organiserCardRefund: "made" | "pending" | null = null,
+  organiserCardRefund: OrganiserCardAppealRefund | null = null,
 ): string {
-  if (organiserCardRefund === "made") return organiserCardRefundSentence(formatAmount(approvedCents));
-  if (organiserCardRefund === "pending") return organiserCardRefundPendingSentence(formatAmount(approvedCents));
+  if (organiserCardRefund === "organiser_card") return organiserCardRefundSentence(formatAmount(approvedCents));
+  if (organiserCardRefund === "organiser_card_pending") {
+    return organiserCardRefundPendingSentence(formatAmount(approvedCents));
+  }
   const cardCents = approvedCents - bankTransferCents;
   if (bankTransferCents <= 0) {
     return `A refund of ${formatAmount(approvedCents)} will be processed to your original payment method.`;
