@@ -2985,6 +2985,40 @@ mirror, Xero note, settlement status and the debt's close together, so a
 concurrent headroom read sees the debt either owed or recorded. The status-
 guarded recovery claim is the guarded claim before the provider effect.
 
+**#3956 adds a fourth writer of a child refund debt, and no key: a refund
+appeal's approval (`INV-PAY-123`).** `PUT /api/admin/refund-requests/[id]#1`
+already holds `lock(1)` alone. Under it the approval first re-reads the
+request's status, so one another review settled while it waited answers
+"already reviewed" rather than a cap refusal. On a booking the organiser paid
+for by card it then reads the same headroom (`organiserCardAppealCap`), refuses
+past it before the claim, claims the request with its status-guarded
+`updateMany`, and reserves the debt (`reserveOrganiserChildAppealRefund`) in
+that transaction - so a reduction, a cancel or a second approval queues behind
+it and reads the debt as owed (proven by
+`organiser-child-refund.realdb.test.ts`). The cap is zero while the group
+cancel's own combined refund is unmade - a pre-#3653 plan on a settlement still
+`SUCCEEDED`, or its `group_settlement_refund_recovery_` retry not yet
+`SUCCEEDED` - because `executeGroupSettlementRefundPlan` records that refund
+without reading this headroom. Stripe is called after the commit through the
+recorder above, never by the route; the debt, not an inline refund, is the
+durable record, so the approval's release path (`#2`) is never reached on this
+branch.
+
+The appeal's debt is keyed `organiser_card_appeal_refund_<request>`, outside
+the `organiser_child_refund_` prefix a pre-#3956 worker routes to the executor.
+During a blue/green window such a worker takes the row for an ordinary
+modification refund, meets the allocation that names no real transaction, and
+fails it before any Stripe call; the retry, with backoff, lands on a current
+worker. Every current reader counts both prefixes (`isOrganiserChildRefundKey`,
+`ORGANISER_CHILD_REFUND_KEY_WHERE`). A pre-#3956 headroom reader does not count
+an appeal debt; each child's own room still bounds its refunds, and the
+approval runs its debt inline on the new code.
+On a rollback to that code an appeal debt also counts as an ordinary
+modification refund: the old `listDeadCardRefunds` and its "paid another way"
+close can act on it once it has used its attempts, and the old headroom readers
+ignore it, with each cancelled child's own room still bounding it. That is
+accepted for a short window; a rollback drains or closes these debts first.
+
 **#3854 adds booking-ledger lines to this cohort and no lock.** The settle
 posts each child's confirmation and share after its `lock(1)` and the sorted
 child-lodge keys, beside the PAID flips; the organiser cancel's per-child claim

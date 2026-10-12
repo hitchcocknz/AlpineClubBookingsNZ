@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT } from "@/lib/manual-refund-task-settlement-rules";
+import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("PENDING"),
@@ -41,6 +42,9 @@ export async function GET(req: NextRequest) {
             // choice the mailer will not honour. Admin-only route, so the field
             // never reaches a member.
             noEmails: true,
+            // #3956: whether the group organiser paid for it by card.
+            organiserSettled: true,
+            parentBookingId: true,
             creditsFromCancellation: {
               select: {
                 amountCents: true,
@@ -58,6 +62,8 @@ export async function GET(req: NextRequest) {
                 // hand-back still open on the payment and the late-cash credit
                 // in `creditsFromCancellation` above (`refundAppealCeiling`),
                 // the figure the approve route caps at.
+                id: true,
+                source: true,
                 status: true,
                 amountCents: true,
                 refundedAmountCents: true,
@@ -83,5 +89,26 @@ export async function GET(req: NextRequest) {
     prisma.refundRequest.count({ where }),
   ]);
 
-  return NextResponse.json({ data: requests, page, pageSize, total });
+  // #3956 (`INV-PAY-123`): a pending appeal on a booking the group organiser
+  // paid for by card is capped at what the organiser's combined payment can
+  // still return - the approve route's own cap, read here unlocked as advice -
+  // so the screen offers the figure the approval will accept.
+  const data = await Promise.all(
+    requests.map(async (request) => {
+      const payment = request.booking.payment;
+      if (request.status !== "PENDING" || !payment) return request;
+      const organiserCard = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
+      if (organiserCard === null) return request;
+      return {
+        ...request,
+        booking: {
+          ...request.booking,
+          organiserCardMaxRefundableCents: organiserCard.ceilingCents,
+          organiserCardCombinedRefundPending: organiserCard.combinedRefundPending,
+        },
+      };
+    }),
+  );
+
+  return NextResponse.json({ data, page, pageSize, total });
 }

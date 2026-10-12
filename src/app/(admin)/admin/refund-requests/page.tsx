@@ -36,6 +36,10 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents, formatCentsPlain } from "@/lib/utils"
 import { useClubFormat } from "@/components/club-format-provider"
+import {
+  ORGANISER_CARD_APPEAL_CEILING_NOTE,
+  ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE,
+} from "@/lib/group-organiser-paid"
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL"
 const reviewFilters = new Set<ReviewFilter>(["PENDING", "APPROVED", "REJECTED", "ALL"])
@@ -75,6 +79,13 @@ interface RefundRequestData {
       // #3827: every hand-back still promised back by bank transfer.
       manualRefundTasks?: Array<{ amountCents: number | null }>
     } | null
+    // #3956 (`INV-PAY-123`): on a pending appeal for a booking the group
+    // organiser paid for by card, the server's `organiserCardAppealCap` - the
+    // most the organiser's combined payment can still return. Null otherwise.
+    organiserCardMaxRefundableCents?: number | null
+    // ...and whether that zero is only a wait: the group cancellation's own
+    // refund to the organiser's card is not made yet.
+    organiserCardCombinedRefundPending?: boolean
   }
   member: {
     id: string
@@ -82,6 +93,18 @@ interface RefundRequestData {
     lastName: string
     email: string
   }
+}
+
+/**
+ * The figure the approve route caps an appeal at: the organiser-card cap the
+ * server read for a booking the group organiser paid for by card (#3956), and
+ * otherwise `refundAppealCeiling` (#3827).
+ */
+function appealCeiling(req: RefundRequestData): number {
+  return (
+    req.booking.organiserCardMaxRefundableCents ??
+    refundAppealCeiling(req.booking.payment, req.booking.creditsFromCancellation)
+  )
 }
 
 interface AdminActor {
@@ -371,7 +394,7 @@ export default function RefundRequestsPage() {
     // (`INV-PAY-118`) - and there is
     // an ELSE: a request whose booking has no captured payment used to leave
     // the amount prefilled for the request viewed before it (#2932 review).
-    const max = refundAppealCeiling(req.booking.payment, req.booking.creditsFromCancellation)
+    const max = appealCeiling(req)
     const requested = req.requestedAmountCents
     setApprovedAmount(max > 0 ? formatCentsPlain(Math.min(requested || max, max)) : "")
   }
@@ -457,7 +480,7 @@ export default function RefundRequestsPage() {
                         req.booking.creditsFromCancellation
                       )
                     : null
-                  const maxRefundable = refundAppealCeiling(payment, req.booking.creditsFromCancellation)
+                  const maxRefundable = appealCeiling(req)
                   const isReviewing = reviewingRefundId === req.id
 
                   return (
@@ -501,7 +524,9 @@ export default function RefundRequestsPage() {
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Remaining refundable:</span>{" "}
-                                {formatCents(maxRefundable, format)}
+                                {req.booking.organiserCardCombinedRefundPending
+                                  ? "Waiting for the group refund"
+                                  : formatCents(maxRefundable, format)}
                               </div>
                               <div>
                                 <span className="text-muted-foreground">To card:</span>{" "}
@@ -589,9 +614,22 @@ export default function RefundRequestsPage() {
                                 }
                                 className="w-40"
                               />
-                              <p className="text-xs text-muted-foreground">
-                                Max refundable: {formatCents(maxRefundable, format)}
-                              </p>
+                              {req.booking.organiserCardCombinedRefundPending ? (
+                                <p className="text-xs text-muted-foreground">
+                                  {ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE}
+                                </p>
+                              ) : (
+                                <>
+                                  <p className="text-xs text-muted-foreground">
+                                    Max refundable: {formatCents(maxRefundable, format)}
+                                  </p>
+                                  {req.booking.organiserCardMaxRefundableCents != null && (
+                                    <p className="text-xs text-muted-foreground">
+                                      {ORGANISER_CARD_APPEAL_CEILING_NOTE}
+                                    </p>
+                                  )}
+                                </>
+                              )}
                             </div>
                             <div className="space-y-2">
                               <Label htmlFor="adminNotes">Admin Notes (optional)</Label>

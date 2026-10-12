@@ -50,18 +50,24 @@ import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
-import { openNonCancellationHandBackCents } from "@/lib/edit-refund-hand-back";
+import { openNonCancellationHandBackCents, refundAppealHandedBackCents } from "@/lib/edit-refund-hand-back";
 import { organiserHasPaidSettlement, paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import { calculateRefundAmount, type CancellationRule } from "@/lib/cancellation";
 import logger from "@/lib/logger";
 import {
+  buildOrganiserChildAppealRefundKey,
   buildOrganiserChildCancellationRefundKey,
   buildOrganiserChildModificationRefundKey,
-  ORGANISER_CHILD_REFUND_KEY_PREFIX,
+  buildGroupSettlementRefundRecoveryIdempotencyKey,
+  ORGANISER_CHILD_REFUND_KEY_WHERE,
 } from "@/lib/payment-recovery-keys";
 import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
-import { organiserChildCommittedRefundFrom, readPerChildRefundPlan } from "@/lib/group-settlement-refund-plan";
+import {
+  mirrorPlanRefundUnmade,
+  organiserChildCommittedRefundFrom,
+  readPerChildRefundPlan,
+} from "@/lib/group-settlement-refund-plan";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
 import { groupCancellationRefundSentence } from "@/lib/booking-modified-email-copy";
@@ -168,7 +174,7 @@ async function committedCents(db: Db, paymentIntentId: string, childPaymentId: s
     db.paymentRecoveryOperation.findMany({
       where: {
         paymentIntentId,
-        idempotencyKey: { startsWith: ORGANISER_CHILD_REFUND_KEY_PREFIX },
+        ...ORGANISER_CHILD_REFUND_KEY_WHERE,
         status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
       },
       select: { paymentId: true, amountCents: true },
@@ -547,6 +553,126 @@ export async function reserveOrganiserChildModificationRefund(
     amountCents: plan.amountCents,
     overCap: "refuse",
   });
+}
+
+/** `organiserCardAppealCap`'s answer for a booking the group organiser paid for by card. */
+export type OrganiserCardAppealCap = {
+  /** The combined payment the appeal is refunded from; null when nothing can be. */
+  settlement: CombinedCardSettlement | null;
+  maxRefundableCents: number;
+  /**
+   * The group cancel's own refund out of that payment is not done yet: a plan
+   * frozen before #3653 whose one combined refund is still to be made, or its
+   * `group_settlement_refund_recovery_` retry still owed. Until it is, nothing is
+   * offered: that refund is recorded without the room this cap reads, so an
+   * appeal sized now could promise money the cancel's refund then also takes
+   * (#3956 review F1).
+   */
+  combinedRefundPending: boolean;
+};
+
+/**
+ * #3956 (`INV-PAY-123`): THE ONE CAP on a refund appeal for a booking the group
+ * organiser paid for by card - null for any other booking. It comes out of the
+ * organiser's combined payment, so it is the room a child refund debt may take
+ * (`organiserChildRefundHeadroomCents`: the combined payment's and this child's
+ * refunds made and owed both count; the stored mirror alone is not safe to size
+ * from), less `handedBackCents` - what the caller's `refundAppealHandedBackCents`
+ * read says is already promised back another way. Zero, with no settlement, once
+ * that payment no longer holds the money, or while the group cancel's own
+ * combined refund is not done (`combinedRefundPending`). The approval reads it
+ * under `lock(1)` and refuses past it; the member's form, the review screen and
+ * the booking page read it unlocked, as advice (`organiserCardAppealCeilingFor`).
+ */
+export async function organiserCardAppealCap(
+  db: Db,
+  booking: { organiserSettled: boolean; parentBookingId: string | null; payment: { source: string } | null },
+  childPayment: ChildPayment,
+  handedBackCents: number,
+): Promise<OrganiserCardAppealCap | null> {
+  if (!paidByOrganiserCard(booking)) return null;
+  const found = await findCombinedCardSettlementForChild(db, booking);
+  if (!found || !organiserHasPaidSettlement(found)) {
+    return { settlement: null, maxRefundableCents: 0, combinedRefundPending: false };
+  }
+  if (await groupCancelCombinedRefundPending(db, found)) {
+    return { settlement: null, maxRefundableCents: 0, combinedRefundPending: true };
+  }
+  const settlement = { id: found.id, stripePaymentIntentId: found.stripePaymentIntentId, amountCents: found.amountCents };
+  const roomCents = await organiserChildRefundHeadroomCents(db, settlement, childPayment);
+  return { settlement, maxRefundableCents: Math.max(0, roomCents - handedBackCents), combinedRefundPending: false };
+}
+
+/** The group cancel's own combined refund still to make: a pre-#3653 plan's (`mirrorPlanRefundUnmade`), or its retry owed. */
+async function groupCancelCombinedRefundPending(
+  db: Db,
+  settlement: { id: string; status: string; refundPlan: Prisma.JsonValue; stripePaymentIntentId: string },
+): Promise<boolean> {
+  if (mirrorPlanRefundUnmade(settlement)) return true;
+  const retry = await db.paymentRecoveryOperation.findUnique({
+    where: { idempotencyKey: buildGroupSettlementRefundRecoveryIdempotencyKey(settlement.id) },
+    select: { status: true },
+  });
+  return retry !== null && retry.status !== PaymentRecoveryOperationStatus.SUCCEEDED;
+}
+
+/** What the screens and the member's appeal read of the cap: the ceiling, and whether a zero is only a wait (`OrganiserCardAppealCap.combinedRefundPending`). */
+export type OrganiserCardAppealCeiling = { ceilingCents: number; combinedRefundPending: boolean };
+
+/**
+ * #3956: the appeal ceiling the screens and the member's appeal show - the
+ * approval's cap net of `refundAppealHandedBackCents`, read unlocked as advice;
+ * null unless the organiser paid by card. A cap held at zero only until the
+ * group cancel's own refund is made says so (`combinedRefundPending`), so no
+ * screen reads a wait as "nothing left". The approval re-reads both locked.
+ */
+export async function organiserCardAppealCeilingFor(
+  db: Db,
+  booking: { id: string; organiserSettled: boolean; parentBookingId: string | null; payment: { source: string } | null },
+  payment: ChildPayment,
+): Promise<OrganiserCardAppealCeiling | null> {
+  if (!paidByOrganiserCard(booking)) return null;
+  const handedBackCents = await refundAppealHandedBackCents(db, { id: payment.id, bookingId: booking.id });
+  const cap = await organiserCardAppealCap(db, booking, payment, handedBackCents);
+  return cap ? { ceilingCents: cap.maxRefundableCents, combinedRefundPending: cap.combinedRefundPending } : null;
+}
+
+/**
+ * #3956 (`INV-PAY-123`): write an approved appeal's refund debt (step 1), keyed
+ * by its `RefundRequest`, in the approval's transaction after it claimed the
+ * request. The caller has already refused an amount over
+ * `organiserCardAppealCap`; the reservation refuses rather than clamps, so an
+ * approval never promises more than the organiser's card can return. A key
+ * already taken - a debt from an earlier approval of this request - refuses
+ * too, rather than reporting that frozen debt as this approval's refund.
+ */
+export async function reserveOrganiserChildAppealRefund(
+  db: Db,
+  input: {
+    settlement: CombinedCardSettlement;
+    refundRequestId: string;
+    childBookingId: string;
+    childPayment: ChildPayment;
+    amountCents: number;
+  },
+): Promise<PaymentRecoveryOperation> {
+  const key = buildOrganiserChildAppealRefundKey(input.refundRequestId);
+  const taken = await db.paymentRecoveryOperation.findUnique({ where: { idempotencyKey: key }, select: { id: true } });
+  if (taken) {
+    throw new OrganiserChildRefundRefusedError(
+      "This appeal already has a refund to the group organiser's card from an earlier approval, so it was not approved again.",
+    );
+  }
+  const debt = await reserveOrganiserChildRefund(db, {
+    key,
+    settlement: input.settlement,
+    childBookingId: input.childBookingId,
+    childPayment: input.childPayment,
+    amountCents: input.amountCents,
+    overCap: "refuse",
+  });
+  if (!debt) throw new Error(`Refund appeal ${input.refundRequestId} reserved no refund for its approved amount`);
+  return debt;
 }
 
 /**
