@@ -148,7 +148,7 @@ describe("#3973: the Booking Cancelled refund line names where the refund went",
 
   it("is the Booking Modified sentence, from the one home", () => {
     expect(organiserCardRefundSentence("$45.00")).toBe(ORGANISER_CARD);
-    expect(bookingModifiedRefundSentence("$45.00", false, true)).toBe(ORGANISER_CARD);
+    expect(bookingModifiedRefundSentence("$45.00", false, "organiser_card")).toBe(ORGANISER_CARD);
   });
 
   it.each([
