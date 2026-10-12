@@ -330,19 +330,69 @@ export async function findRecentPaymentIntentByMetadata({
 }): Promise<Stripe.PaymentIntent | null> {
   const stripe = await getStripe();
   const scan = async (customer: string | undefined): Promise<Stripe.PaymentIntent | null> => {
-    let scanned = 0;
-    for await (const intent of stripe.paymentIntents.list({
-      ...(customer ? { customer } : {}),
-      created: { gte: Math.floor(createdSince.getTime() / 1000) },
-      limit: 100,
-    })) {
-      if (intent.metadata?.[metadataKey] === metadataValue) return intent;
-      scanned += 1;
-      if (scanned >= maxScanned) break;
-    }
-    return null;
+    let found: Stripe.PaymentIntent | null = null;
+    await scanRecentPaymentIntents(stripe, { customer, createdSince, maxScanned }, (intent) => {
+      if (intent.metadata?.[metadataKey] !== metadataValue) return false;
+      found = intent;
+      return true;
+    });
+    return found;
   };
   return (customerId ? await scan(customerId) : null) ?? (await scan(undefined));
+}
+
+/**
+ * #4036: EVERY recent intent `matches` accepts - for a caller that has no key
+ * stamped in the metadata to look for and so must tell one candidate from
+ * several (`mintOrdinaryAskIntent`). The same bounded, customer-first scan as
+ * {@link findRecentPaymentIntentByMetadata}: the customer's own intents, and
+ * only if none of them matches, the account's.
+ */
+export async function listRecentPaymentIntentsMatching({
+  matches,
+  createdSince,
+  customerId,
+  maxScanned = 1000,
+}: {
+  matches: (intent: Stripe.PaymentIntent) => boolean;
+  createdSince: Date;
+  /** The customer this caller would mint for: scanned first, never only. */
+  customerId?: string;
+  maxScanned?: number;
+}): Promise<Stripe.PaymentIntent[]> {
+  const stripe = await getStripe();
+  const scan = async (customer: string | undefined): Promise<Stripe.PaymentIntent[]> => {
+    const found: Stripe.PaymentIntent[] = [];
+    await scanRecentPaymentIntents(stripe, { customer, createdSince, maxScanned }, (intent) => {
+      if (matches(intent)) found.push(intent);
+      return false;
+    });
+    return found;
+  };
+  const own = customerId ? await scan(customerId) : [];
+  return own.length > 0 ? own : scan(undefined);
+}
+
+/**
+ * The one bounded scan of recent intents both finders read: newest first, those
+ * created since `createdSince`, at most `maxScanned` that `visit` did not stop
+ * on. `visit` returns true to stop.
+ */
+async function scanRecentPaymentIntents(
+  stripe: Stripe,
+  { customer, createdSince, maxScanned }: { customer: string | undefined; createdSince: Date; maxScanned: number },
+  visit: (intent: Stripe.PaymentIntent) => boolean,
+): Promise<void> {
+  let scanned = 0;
+  for await (const intent of stripe.paymentIntents.list({
+    ...(customer ? { customer } : {}),
+    created: { gte: Math.floor(createdSince.getTime() / 1000) },
+    limit: 100,
+  })) {
+    if (visit(intent)) return;
+    scanned += 1;
+    if (scanned >= maxScanned) return;
+  }
 }
 
 /**

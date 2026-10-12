@@ -43,6 +43,7 @@ import {
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
 } from "@/lib/booking-modification-settlement";
+import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 import {
   assertNoPendingEditFinancialReview,
 } from "@/lib/edit-financial-review";
@@ -1526,8 +1527,7 @@ export async function modifyBookingDates({
     format,
     bookingId,
     result,
-    reason: "date_change_price_increase",
-    idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
+    ...ordinaryAskDoorRequest("dateChange", bookingId, result.bookingModificationId),
     failureMessage: "Failed to create additional PaymentIntent for modification",
   });
 

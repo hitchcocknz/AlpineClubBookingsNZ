@@ -22,7 +22,6 @@ import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
 import { prisma } from "@/lib/prisma";
 import {
   cancelPaymentIntentIfCancellableWithResult,
-  createPaymentIntent,
   processRefund,
 } from "@/lib/stripe";
 import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
@@ -49,6 +48,8 @@ import {
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
+import { mintOrdinaryAskIntent } from "@/lib/ordinary-ask-mint";
+import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
@@ -569,7 +570,6 @@ import {
   groupSettlementIdForRefundRecoveryKey,
   isGroupSettlementRefundRecoveryKey,
   isOrganiserChildRefundKey,
-  stripeIdempotencyKeyForAskAmount,
 } from "./payment-recovery-keys";
 export {
   buildBookingCancellationRefundMetadata,
@@ -2909,7 +2909,8 @@ async function processCreateAdditionalPaymentIntentOperation(
    * suffix a second time. Here the base key is the ORIGINAL inline attempt's,
    * frozen on the row, so an unmoved amount must keep it bare to converge on
    * that attempt; the review path builds its base fresh at every attempt and has
-   * no bare form to preserve.
+   * no bare form to preserve. #4036: `planOrdinaryAskMint` applies the rule,
+   * for this replay and the door alike.
    */
   // #3954 round 6: a RE-ISSUED ask sends the one request its door's mint sends
   // under the same key (`planReissuedAskMint`), so whichever of the two runs
@@ -2921,7 +2922,7 @@ async function processCreateAdditionalPaymentIntentOperation(
         payment,
       })
     : null;
-  const rowReason = reissuePlan?.reason ?? "modification_additional_recovery";
+  const rowReason = reissuePlan?.reason ?? ORDINARY_ASK_RECOVERY_REASON;
   const pi = reissuePlan
     ? await mintReissuedAskIntent({
         format,
@@ -2929,19 +2930,21 @@ async function processCreateAdditionalPaymentIntentOperation(
         customerId,
         recoveryCreatedAt: operation.createdAt,
       })
-    : await createPaymentIntent({
+    : // #4036: an ordinary increase replays the one request its door sent
+      // (`planOrdinaryAskMint`): the door's reason, named by the key frozen on
+      // this row, so Stripe answers with the intent a lost reply minted. A
+      // refusal is answered by finding that intent (`mintOrdinaryAskIntent`).
+      await mintOrdinaryAskIntent({
         format,
-        amountCents: askCents,
-        customerId,
-        metadata: {
+        plan: planOrdinaryAskMint({
           bookingId: operation.bookingId,
-          type: "modification_additional",
-          reason: "modification_additional_recovery",
-        },
-        idempotencyKey:
-          askCents === operation.amountCents
-            ? operation.paymentIntentId
-            : stripeIdempotencyKeyForAskAmount(operation.paymentIntentId, askCents),
+          bookingModificationId,
+          stripeKey: operation.paymentIntentId,
+          frozenAmountCents: operation.amountCents,
+          amountCents: askCents,
+        }),
+        customerId,
+        recovery: { createdAt: operation.createdAt },
       });
 
   // The new intent's row FIRST, then the supersede - see the same ordering and

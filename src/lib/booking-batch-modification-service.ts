@@ -68,6 +68,7 @@ import {
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
 } from "@/lib/booking-modification-settlement";
+import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 import {
   sendAdminMinorsOnlyReviewAlert,
   sendBookingModifiedEmail,
@@ -2560,8 +2561,7 @@ export async function modifyBookingBatch({
       format,
       bookingId,
       result,
-      reason: "batch_modify_price_increase",
-      idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
+      ...ordinaryAskDoorRequest("batchModify", bookingId, result.bookingModificationId),
       failureMessage: "Failed to create additional PaymentIntent for batch modification",
     });
 

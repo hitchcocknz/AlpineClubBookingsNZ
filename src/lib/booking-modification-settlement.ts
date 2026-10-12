@@ -15,9 +15,11 @@ import {
   mintedIntentCustomerId,
   mintReissuedAskIntent,
   planReissuedAskMint,
-  readReissueMintPayment,
+  readAskMintPayment,
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
+import { mintOrdinaryAskIntent } from "@/lib/ordinary-ask-mint";
+import { ADDITIONAL_ASK_INTENT_TYPE, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import {
   cancelSupersededAdditionalIntentsNow,
   queueSupersededAdditionalIntentCancellationRows,
@@ -447,7 +449,7 @@ export async function createModificationAdditionalPaymentIntent({
       // superseded away, and the two never answer each other with an
       // `idempotency_error`. The row, the recovery's completion and the
       // supersede's durable rows commit together, or not at all (see above).
-      const current = await readReissueMintPayment(paymentId);
+      const current = await readAskMintPayment(paymentId);
       // Round 7: the customer resolved exactly as the recovery runner resolves
       // it, so the two minters of this key send one request.
       const customerId = await resolveAskCustomerId(current);
@@ -510,27 +512,55 @@ export async function createModificationAdditionalPaymentIntent({
       return mintedAsk(pi, live);
     }
 
-    let customerId = result.paymentCustomerId ?? undefined;
-    if (!customerId) {
-      const customer = await findOrCreateCustomer({
-        email: result.memberEmail,
-        name: result.memberName,
-        memberId: result.memberId,
+    let customerId: string | undefined;
+    let pi: Awaited<ReturnType<typeof createPaymentIntent>>;
+    if (recoveryIdempotencyKey) {
+      // #3170: a review charge's request. Its replay re-enters this function
+      // (`syncEditFinancialReviewChargeRequest`), so both of its minters send
+      // this same request.
+      customerId = result.paymentCustomerId ?? undefined;
+      if (!customerId) {
+        const customer = await findOrCreateCustomer({
+          email: result.memberEmail,
+          name: result.memberName,
+          memberId: result.memberId,
+        });
+        customerId = customer.id;
+      }
+      pi = await createPaymentIntent({
+        format,
+        amountCents: result.additionalAsk.amountCents,
+        customerId,
+        metadata: {
+          bookingId,
+          type: ADDITIONAL_ASK_INTENT_TYPE,
+          reason,
+        },
+        idempotencyKey: stripeIdempotencyKey,
       });
-      customerId = customer.id;
+    } else {
+      // #4036: an ordinary increase's request is the one its recovery replays
+      // (`planOrdinaryAskMint`) - the same key, amount, metadata and reason, and
+      // the customer resolved exactly as the runner resolves it
+      // (`resolveAskCustomerId`, the organisation included) - so a lost reply's
+      // replay is answered with this intent, never an `idempotency_error`. The
+      // stored customer is that rule's first answer, and this edit has just
+      // read it; the owner is read only when there is none.
+      customerId =
+        result.paymentCustomerId ?? (await resolveAskCustomerId(await readAskMintPayment(paymentId)));
+      pi = await mintOrdinaryAskIntent({
+        format,
+        plan: planOrdinaryAskMint({
+          bookingId,
+          bookingModificationId: result.bookingModificationId,
+          stripeKey: stripeIdempotencyKey,
+          frozenAmountCents: result.additionalAsk.amountCents,
+          amountCents: result.additionalAsk.amountCents,
+        }),
+        customerId,
+        recovery: null,
+      });
     }
-
-    const pi = await createPaymentIntent({
-      format,
-      amountCents: result.additionalAsk.amountCents,
-      customerId,
-      metadata: {
-        bookingId,
-        type: "modification_additional",
-        reason,
-      },
-      idempotencyKey: stripeIdempotencyKey,
-    });
 
     // THE NEW INTENT'S OWN ROW IS WRITTEN FIRST, AND THE ORDER IS LOAD-BEARING
     // (#3340 fix round). Cancelling a superseded intent reconciles the payment

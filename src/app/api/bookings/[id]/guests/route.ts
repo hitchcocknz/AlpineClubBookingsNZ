@@ -73,6 +73,7 @@ import {
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
 import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
 import { additionalAmountToName, createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
+import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
 import { z } from "zod";
@@ -1384,8 +1385,7 @@ export async function POST(
       // Guest adds never decrease the price, so the shared settlement
       // context's refund side is always zero here.
       result: { ...result, pendingRefundAmountCents: 0, organiserChildRefund: null },
-      reason: "guest_add_price_increase",
-      idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
+      ...ordinaryAskDoorRequest("guestAdd", bookingId, result.bookingModificationId),
       failureMessage:
         "Failed to create additional PaymentIntent for guest addition",
     });

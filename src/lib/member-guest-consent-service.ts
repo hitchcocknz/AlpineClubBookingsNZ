@@ -17,6 +17,7 @@ import {
   type RemoveBookingGuestResult,
 } from "@/lib/booking-guest-removal-service";
 import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
+import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 import { AdditionalAskChangedDuringReductionError } from "@/lib/additional-ask-reduction-error";
 import {
   familyAdultDelegateResolver,
@@ -962,8 +963,7 @@ export async function finaliseMemberGuestConsentTransition(params: {
       format,
       bookingId,
       result: outcome.askRetirement,
-      reason: "guest_consent_removal_reissued_ask",
-      idempotencyKey: `mod_guest_consent_${bookingId}_${outcome.askRetirement.bookingModificationId}`,
+      ...ordinaryAskDoorRequest("guestConsentRemoval", bookingId, outcome.askRetirement.bookingModificationId),
       failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a member-guest consent removal",
     }).catch((err) => logger.error({ err, bookingId, guestId }, "Failed to settle the asks a member-guest consent removal retired"));
   }

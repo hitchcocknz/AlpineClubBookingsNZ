@@ -87,7 +87,21 @@ vi.mock("@/lib/prisma", () => ({
     promoCode: { update: mockUpdate },
     choreAssignment: { findMany: mockFindMany, delete: mockDelete, deleteMany: mockDeleteMany },
     season: { findMany: mockFindMany },
-    payment: { update: mockUpdate },
+    payment: {
+      update: mockUpdate,
+      // #4036: with no stored customer, the door reads the owner after commit
+      // and resolves the customer as the recovery runner does.
+      findUnique: vi.fn(async () => ({
+        additionalAmountCents: 0,
+        additionalPaymentStatus: null,
+        stripeCustomerId: null,
+        booking: {
+          organisationId: null,
+          member: { id: "m1", email: "alice@test.com", firstName: "Alice", lastName: "Smith" },
+          organisation: null,
+        },
+      })),
+    },
     // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
     paymentTransaction: { findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }) },
     member: { count: mockMemberCount, findUnique: mockFindUnique, findMany: mockFindMany },

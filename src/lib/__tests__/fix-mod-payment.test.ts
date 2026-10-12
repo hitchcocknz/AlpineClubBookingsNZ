@@ -1005,6 +1005,16 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     // A $10 change fee, so the fee half of the ask is pinned too.
     mockedCalcChangeFee.mockReturnValue({ feeCents: 1000, fromTierRefundPct: 50, toTierRefundPct: 100 });
     mockedFindOrCreateCustomer.mockResolvedValue({ id: "cus_new" } as any);
+    // #4036: no stored customer, so the door reads the owner after commit and
+    // resolves the customer as the recovery runner does (`readAskMintPayment`).
+    mockPaymentFindUnique.mockResolvedValue({
+      ...zeroDollarPayment(xeroInvoiceId),
+      booking: {
+        organisationId: null,
+        member: { id: "m1", email: "alice@test.com", firstName: "Alice", lastName: "Smith" },
+        organisation: null,
+      },
+    });
     mockedCreatePaymentIntent.mockResolvedValue({
       id: "pi_zero_extra",
       client_secret: "zero_extra_secret", currency: "nzd",
