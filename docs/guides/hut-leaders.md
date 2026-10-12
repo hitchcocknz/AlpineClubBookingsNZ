@@ -77,9 +77,10 @@ no hut-leader request or assignment write until a real lodge returns.
    **Exception: a custodian does not block a school night they do not cover.**
    When the lodge leaves **The lodge custodian** unticked for school bookings,
    a season-long custodian is not a leader who counts on the school group's
-   nights, so you can put someone else on those nights. Each end of their stint
-   may still share one handover night with the custodian; sharing two or more
-   ordinary nights is still blocked.
+   nights, so you can put someone else on those nights — someone the lodge
+   accepts for them and who is staying them. Each end of their stint may still
+   share one handover night with the custodian; sharing two or more ordinary
+   nights is still blocked, and so is a second custodian on the same nights.
 
    **Exception: a school group's teachers do not block you.** When a school
    booking is approved, the app records one assignment per teacher. Those do not
@@ -146,7 +147,10 @@ it be one.
 Teachers are made hut leaders at approval only while the **Hut leaders** module
 is on: with it off, approval creates no teacher assignments and sends no PINs,
 whatever the lodge ticks. A teacher's assignment cannot be marked **Custodian
-(lives on site)**; the button is not offered on those rows.
+(lives on site)** or hold a bed, since a held bed would make it the custodian;
+neither button is offered on those rows. **Release bed** stays for an older
+teacher row that holds one, and any other edit to that row is refused until
+the bed is released.
 
 The nightly automatic assignment follows the same rule: on a school night it
 adds the one adult member staying only if their kind is ticked, and otherwise

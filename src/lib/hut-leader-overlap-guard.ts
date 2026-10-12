@@ -70,13 +70,18 @@ export type HutLeaderOverlapCandidate = {
  * may leave "the lodge custodian" unticked for school bookings (#3819), so on
  * a school group's nights a season-long custodian row is not a leader the
  * cover counts, and the officer has to add one who is. Those nights are left
- * out of the overlap with a custodian row — the existing row's, or the
- * proposed row's when the caller passes `candidate` — whenever that custodian
- * does not cover them (`shiftCoversNight`, the coverage reader's own answer).
- * The one-night allowance then applies to each run of shared nights that is
- * left, so a replacement may hand over at both ends of the school stay. Every
- * other overlap is judged exactly as before, and the cover is read only when a
- * custodian row is in a clash.
+ * out of the overlap between a custodian row and an ordinary one — either
+ * side may be the custodian, the existing row or the proposed `candidate` —
+ * only when the custodian does not cover the night AND the ordinary side does
+ * (`shiftCoversNight`, the coverage reader's own answer): the exemption makes
+ * room for the leader the school night needs, never for a second row that
+ * does not lead it either. Two custodians are never exempted from each other,
+ * so they cannot double up on uncovered school nights, and with no
+ * `candidate` the proposed side is unknown and nothing is exempted. The
+ * one-night allowance then applies to each run of shared nights that is left,
+ * so a replacement may hand over at both ends of the school stay. Every other
+ * overlap is judged exactly as before, and the cover is read only when a
+ * custodian row clashes with an ordinary one.
  */
 export async function findHutLeaderOverlapRefusal(
   tx: Pick<
@@ -113,8 +118,9 @@ export async function findHutLeaderOverlapRefusal(
     allowOverlappingSchoolRows?: boolean;
     /**
      * The proposed row, so a proposed custodian is judged like an existing
-     * one. Omitted (the nightly job, which never writes a custodian), the
-     * proposed row is an ordinary one.
+     * one, and a proposed ordinary leader by whether it covers the school
+     * nights it would share with a custodian. Omitted, the proposed row is an
+     * ordinary one whose cover is unknown, so no night is exempted.
      */
     candidate?: HutLeaderOverlapCandidate;
   },
@@ -138,19 +144,18 @@ export async function findHutLeaderOverlapRefusal(
     include: { member: { select: { firstName: true, lastName: true } } },
   });
 
-  const candidateShift: HutLeaderShift | null =
-    input.candidate && isCustodianOccupancy(input.candidate)
-      ? {
-          id: input.excludeAssignmentId ?? "proposed",
-          memberId: input.candidate.memberId,
-          lodgeId: input.lodgeId,
-          startDate: input.startDate,
-          endDate: input.endDate,
-          source: input.candidate.source,
-          bedId: input.candidate.bedId,
-          isCustodian: input.candidate.isCustodian,
-        }
-      : null;
+  const candidateShift: HutLeaderShift | null = input.candidate
+    ? {
+        id: input.excludeAssignmentId ?? "proposed",
+        memberId: input.candidate.memberId,
+        lodgeId: input.lodgeId,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        source: input.candidate.source,
+        bedId: input.candidate.bedId,
+        isCustodian: input.candidate.isCustodian,
+      }
+    : null;
   let cover: HutLeaderNightCover | null = null;
 
   for (const other of overlaps) {
@@ -161,18 +166,15 @@ export async function findHutLeaderOverlapRefusal(
       other.startDate,
       other.endDate,
     );
-    const custodians = [
-      ...(isCustodianOccupancy(other) ? [other] : []),
-      ...(candidateShift ? [candidateShift] : []),
-    ];
-    if (overlapDays > 1 && custodians.length > 0) {
+    const pair = custodianAndOrdinary(other, candidateShift);
+    if (overlapDays > 1 && pair) {
       cover ??= await loadHutLeaderNightCover(tx, {
         scope: { kind: "lodge", lodgeId: input.lodgeId },
         from: input.startDate,
         to: input.endDate,
         memberIds: candidateShift ? [candidateShift.memberId] : [],
       });
-      overlapDays = longestSharedRun(cover, input, other, custodians);
+      overlapDays = longestSharedRun(cover, input, other, pair);
     }
     if (overlapDays > 1) {
       const name = `${other.member.firstName} ${other.member.lastName}`;
@@ -185,14 +187,32 @@ export async function findHutLeaderOverlapRefusal(
 }
 
 /**
- * The longest run of nights both rows claim, leaving out each school night on
- * which one of `custodians` does not cover (see the custodian note above).
+ * The custodian and the ordinary row of a clash, or null when the clash is not
+ * exactly one of each: two custodians, two ordinary rows, or an ordinary
+ * existing row against a proposed row the caller did not describe.
+ */
+function custodianAndOrdinary(
+  other: HutLeaderShift,
+  candidate: HutLeaderShift | null,
+): { custodian: HutLeaderShift; ordinary: HutLeaderShift } | null {
+  if (!candidate) return null;
+  const otherIsCustodian = isCustodianOccupancy(other);
+  if (otherIsCustodian === isCustodianOccupancy(candidate)) return null;
+  return otherIsCustodian
+    ? { custodian: other, ordinary: candidate }
+    : { custodian: candidate, ordinary: other };
+}
+
+/**
+ * The longest run of nights both rows claim, leaving out each school night the
+ * custodian does not cover and the ordinary row does (see the custodian note
+ * above).
  */
 function longestSharedRun(
   cover: HutLeaderNightCover,
   input: { lodgeId: string; startDate: Date; endDate: Date },
   other: { startDate: Date; endDate: Date },
-  custodians: readonly HutLeaderShift[],
+  pair: { custodian: HutLeaderShift; ordinary: HutLeaderShift },
 ): number {
   const from = Math.max(input.startDate.getTime(), other.startDate.getTime());
   const to = Math.min(input.endDate.getTime(), other.endDate.getTime());
@@ -201,7 +221,8 @@ function longestSharedRun(
   for (let night = new Date(from); night.getTime() <= to; night = addDaysDateOnly(night, 1)) {
     const exempt =
       cover.schoolNightKinds(input.lodgeId, night) !== null &&
-      custodians.some((custodian) => !cover.shiftCoversNight(custodian, night));
+      !cover.shiftCoversNight(pair.custodian, night) &&
+      cover.shiftCoversNight(pair.ordinary, night);
     run = exempt ? 0 : run + 1;
     longest = Math.max(longest, run);
   }

@@ -297,10 +297,20 @@ export async function autoAssignHutLeaders(): Promise<{
       // nights. Being MANUAL-equivalent it then blocked officers across the
       // whole span too. Omitting the flag restores exactly the pre-carve-out
       // refusal for this job.
+      // #3821: the proposed row as it will be — an ordinary CRON row — so a
+      // custodian's school nights are exempted only where this member covers
+      // them (`hut-leader-overlap-guard.ts`).
+      const cronCandidate = {
+        memberId: member.id,
+        bedId: null,
+        isCustodian: false,
+        source: HutLeaderAssignmentSource.CRON,
+      };
       const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
         lodgeId: lodge.id,
         startDate: earlySpan.first,
         endDate: earlySpan.last,
+        candidate: cronCandidate,
       });
       if (earlyOverlap) continue;
 
@@ -331,6 +341,7 @@ export async function autoAssignHutLeaders(): Promise<{
             lodgeId: lodge.id,
             startDate: lockedSpan.first,
             endDate: lockedSpan.last,
+            candidate: cronCandidate,
           });
           if (lockedOverlap) return false;
 
