@@ -368,8 +368,17 @@ const FIGURES = {
    * 371/371 -> 372 (sync of `main` f1ecdb5ff into epic #3789): #3817's Custodian
    * toggle and #3750's overbooking confirm are disjoint files. MEASURED on the
    * composed tree by re-running this census, never by adding the deltas.
+   * 371 -> 372 (#3372): the stuck-states page's "Paid another way" close on a
+   * card refund Stripe gave up on, and 372 -> 373 (owner 9 Oct 2026) the same
+   * page's "Resolved" on a card refund paid back twice. Each dialog's confirm
+   * is a plain Button, reachable only once its gated row button opened it.
+   * MEASURED by re-running this census.
+   *
+   * 372/373 -> 374 (hand sync of `main` f3b6c008b into epic #3789): the
+   * epic's and #3372's call sites are in disjoint files. MEASURED on the
+   * composed tree by re-running this census, never by adding the deltas.
    */
-  callSites: 372,
+  callSites: 374,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -411,8 +420,13 @@ const FIGURES = {
    *
    * 316/316 -> 317 (sync of `main` f1ecdb5ff into epic #3789): the two sides'
    * new opt-outs are disjoint. MEASURED on the composed tree.
+   * 316 -> 318 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" each opt out under their own banner.
+   *
+   * 317/318 -> 319 (hand sync of `main` f3b6c008b into epic #3789): disjoint.
+   * MEASURED on the composed tree.
    */
-  optOuts: 317,
+  optOuts: 319,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -485,8 +499,15 @@ const FIGURES = {
    * measured 280 (its bump lines above add to 282, but the census, not the
    * lines, is the authority) and `main`'s #3750 adds one. MEASURED on the
    * composed tree by re-running this census, never by adding the deltas.
+   * 282 -> 284 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" sit in the same file as their banners.
+   *
+   * 281/284 -> 283 (hand sync of `main` f3b6c008b into epic #3789): `main`
+   * measured 284 against its own vouched/static split, the epic 281; the
+   * composed tree measures 281 + #3372's two. MEASURED on the composed tree by
+   * re-running this census, never by adding the deltas.
    */
-  staticOptOuts: 281,
+  staticOptOuts: 283,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -570,8 +591,11 @@ const FIGURES = {
    * 97 -> 98 (#3596): the club currency and locale panel, which #3563 built
    * without one because every visitor was a Full Admin. #3596 gave it a view
    * tier. Mounted in all three of its branches (load failed, loading, loaded).
+   *
+   * 98 -> 99 (#3372): the stuck-states page's dead card refunds panel, gated on
+   * finance inside a support page, so it states its own area's reason.
    */
-  bannerComponents: 98,
+  bannerComponents: 99,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

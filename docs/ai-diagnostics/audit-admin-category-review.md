@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  499
+row-producing sites:  501
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 52,
+category values: admin 108, booking 108, xero 39, family 35, payment 54,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -772,7 +772,13 @@ both (RE-MEASURED on the tree #3829 composed): #3827's
 `booking.modify.promo_reprice`, a guest's acceptance re-pricing the booking's
 promo codes (`booking` 106 -> 107, 497 -> 498), and #3492's
 `promo_code.guest_lookup`, a booker looking up their guests' promo codes for
-the chips (`privacy` 20 -> 21, 498 -> 499). #3819 then added one, disjoint from
+the chips (`privacy` 20 -> 21, 498 -> 499). #3372 then added
+`booking-payment.card-refund.paid-another-way`, the treasurer closing a card
+refund Stripe gave up on (`payment` 52 -> 53, 499 -> 500), and
+`booking-payment.card-refund.paid-twice-resolved`, the treasurer marking a
+refund paid back twice as sorted out with the member (`payment` 53 -> 54; 499 ->
+500 on the tree composed with #52's removals below and #3750's change-request
+approval, MEASURED). #3819 then added one, disjoint from
 both (`admin` 109 -> 110, 499 -> 500, RE-MEASURED): the per-lodge "Who can be
 hut leader for school bookings" save, `LODGE_SETTINGS_UPDATED` beside its
 lodge-settings sibling.
@@ -793,7 +799,9 @@ stay (`booking` 107 -> 108, `booking-change-request.approve` with
 with #52's two removals and #3750's addition, all disjoint: `admin` 108,
 `booking` 108, 499 row-producing sites, and the lodge-gated keep eighteen
 (RE-MEASURED with `pnpm run audit:census` on the composed tree, never added
-together).
+together). The next hand sync (`main` f3b6c008b) brought #3372's two `payment`
+additions in beside #3819's, all disjoint: `admin` 108, `booking` 108,
+`payment` 54, 501 row-producing sites (RE-MEASURED on the composed tree).
 
 #3498 then added one more (`payment` 45 -> 46, 483 -> 484, MEASURED with
 `npm run audit:census` on that branch rather than added to the literal):

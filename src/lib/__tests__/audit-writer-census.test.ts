@@ -1430,7 +1430,12 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // 129/126 -> 127 pinned, 372 unpinned (hand sync of `main` f1ecdb5ff into
     // epic #3789): #3819's +1 and #52's -2 compose. RE-MEASURED with
     // `pnpm run audit:census` on the composed tree.
-    ).toEqual({ pinned: 127, unpinned: 372 });
+    // 372 -> 373 (#3372): the paid-another-way close, unpinned `payment`.
+    // 373 -> 374 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved, unpinned `payment`.
+    // 127/126 pinned, 372/374 unpinned -> 127 pinned, 374 unpinned (hand sync of
+    // `main` f3b6c008b into epic #3789): #3819's pinned site and #3372's two
+    // unpinned ones are disjoint. RE-MEASURED with `pnpm run audit:census`.
+    ).toEqual({ pinned: 127, unpinned: 374 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {
