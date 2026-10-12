@@ -160,6 +160,13 @@ export function planOrdinaryAskMint({
 }
 
 /**
+ * #4036 review: how far after its recovery row's creation an intent under a
+ * DOOR's reason may have been created and still be that door's. Allows for the
+ * clock difference between Stripe and the database, and nothing more.
+ */
+export const DOOR_INTENT_CLOCK_SKEW_MS = 60 * 1000;
+
+/**
  * Whether `intent` is the ask `plan` describes, minted by an earlier request
  * under its key with other parameters: this booking, an additional ask, this
  * door's reason (or the pre-#4036 runner's), this amount in this currency, and
@@ -167,17 +174,28 @@ export function planOrdinaryAskMint({
  * customer is deliberately not compared - a different one is one way the
  * earlier request differed. Whether the intent is already on the ledger, and
  * whether it is the only one, is `mintOrdinaryAskIntent`'s to ask.
+ *
+ * #4036 review: an intent under the DOOR's reason must have been created by
+ * the time its recovery row was (`DOOR_INTENT_CLOCK_SKEW_MS` allowed for), since
+ * the row is written only once the door's own create has failed. A later one is
+ * another edit's door minting now, not this ask's. An intent under the old
+ * runner's reason is minted after the row by design, and is not held to it.
  */
 export function isIntentForOrdinaryAskPlan(
-  intent: { amount: number; currency: string; status: string; metadata?: Record<string, string> | null },
+  intent: { amount: number; currency: string; status: string; created?: number; metadata?: Record<string, string> | null },
   plan: OrdinaryAskMintPlan,
   currency: string,
+  recoveryCreatedAt: Date,
 ): boolean {
   const metadata = intent.metadata ?? {};
+  const byDoor = metadata.reason === plan.metadata.reason && metadata.reason !== ORDINARY_ASK_RECOVERY_REASON;
   return (
     metadata.bookingId === plan.bookingId &&
     metadata.type === ADDITIONAL_ASK_INTENT_TYPE &&
-    (metadata.reason === plan.metadata.reason || metadata.reason === ORDINARY_ASK_RECOVERY_REASON) &&
+    (byDoor
+      ? typeof intent.created === "number" &&
+        intent.created * 1000 <= recoveryCreatedAt.getTime() + DOOR_INTENT_CLOCK_SKEW_MS
+      : metadata.reason === ORDINARY_ASK_RECOVERY_REASON) &&
     intent.amount === plan.amountCents &&
     intent.currency === currency &&
     staleIntentAction(intent) === "reissue"

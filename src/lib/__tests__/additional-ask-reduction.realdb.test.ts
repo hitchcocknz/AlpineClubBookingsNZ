@@ -1037,7 +1037,7 @@ let webhookClient: PrismaClient;
     // with the same parameters returns the first intent; with different ones it
     // is refused (`idempotency_error`).
     function fakeStripe() {
-      const intents = new Map<string, { id: string; amount: number; currency: string; customer: string | null; client_secret: string; metadata: Record<string, string>; status: string }>();
+      const intents = new Map<string, { id: string; amount: number; currency: string; customer: string | null; created: number; client_secret: string; metadata: Record<string, string>; status: string }>();
       const byKey = new Map<string, { params: string; id: string }>();
       const create = async (args: { amountCents: number; customerId?: string; metadata?: Record<string, string>; idempotencyKey?: string }) => {
         const params = JSON.stringify({ amount: args.amountCents, customer: args.customerId ?? null, metadata: args.metadata ?? {} });
@@ -1052,7 +1052,8 @@ let webhookClient: PrismaClient;
         const { stripeChargeCurrency } = await import("@/lib/stripe-charge-currency");
         const intent = {
           id: `pi_fake_3954_${intents.size + 1}`, amount: args.amountCents, currency: stripeChargeCurrency(CLUB_FORMAT_TEST),
-          customer: args.customerId ?? null, client_secret: `secret_${intents.size + 1}`, metadata: args.metadata ?? {}, status: "requires_payment_method",
+          customer: args.customerId ?? null, created: Math.floor(Date.now() / 1000), client_secret: `secret_${intents.size + 1}`,
+          metadata: args.metadata ?? {}, status: "requires_payment_method",
         };
         intents.set(intent.id, intent);
         if (args.idempotencyKey) byKey.set(args.idempotencyKey, { params, id: intent.id });
@@ -1628,6 +1629,31 @@ let webhookClient: PrismaClient;
           nextRetryAt: new Date("2026-07-02T00:00:00.000Z"),
         },
       });
+
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+
+      expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).toEqual([ASK_INTENT]);
+      expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } }))
+        .toMatchObject({ status: "FAILED", attempts: 1, paymentIntentId: recovery.paymentIntentId });
+    });
+
+    // #4036 review: a recovery row is written only once its door's create has
+    // failed, so an intent under a door's reason created after the row (beyond
+    // the clock skew) is a later door's mint, never this ask's.
+    it("#4036: a refused replay does not adopt a door-reason intent created after its recovery row - another edit's door is minting it", async () => {
+      const { stripe, recovery, doorIntent } = await increaseWhoseReplyIsLost();
+      // The key's own intent is gone, and the stored customer moved, so the replay is refused.
+      doorIntent.status = "canceled";
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { stripeCustomerId: "cus_race_4036_moved" } });
+      stripeRaceHooks.create = stripe.create as never;
+      // Another guest-add edit's door, minting the same figure after the row, not yet recorded.
+      const laterDoor = await stripe.create({
+        amountCents: 6_000, customerId: "cus_race_3954", idempotencyKey: `mod_guest_${BOOKING_ID}_race-4036-later`,
+        metadata: { bookingId: BOOKING_ID, type: "modification_additional", reason: "guest_add_price_increase" },
+      });
+      const { DOOR_INTENT_CLOCK_SKEW_MS } = await import("@/lib/ordinary-ask-request");
+      laterDoor.created = Math.floor((recovery.createdAt.getTime() + DOOR_INTENT_CLOCK_SKEW_MS) / 1000) + 1;
 
       const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
       expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");

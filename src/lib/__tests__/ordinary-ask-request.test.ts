@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ADDITIONAL_ASK_INTENT_TYPE,
+  DOOR_INTENT_CLOCK_SKEW_MS,
   ORDINARY_ASK_RECOVERY_REASON,
   couldRecoveryRowOwnIntent,
   isIntentForOrdinaryAskPlan,
@@ -118,20 +119,26 @@ describe("isIntentForOrdinaryAskPlan (#4036)", () => {
     frozenAmountCents: 6_000,
     amountCents: 6_000,
   });
+  // The recovery row was written when the door's create failed; the door's
+  // intent was created no later.
+  const ROW_AT = new Date("2026-06-30T00:00:00.000Z");
+  const atRow = ROW_AT.getTime() / 1000;
   const minted = {
     amount: 6_000,
     currency: "nzd",
     status: "requires_payment_method",
+    created: atRow - 1,
     metadata: { bookingId: BOOKING, type: ADDITIONAL_ASK_INTENT_TYPE, reason: "guest_add_price_increase" },
   };
 
   it("matches the door's intent, and one a pre-#4036 runner minted under its old reason", () => {
-    expect(isIntentForOrdinaryAskPlan(minted, plan, "nzd")).toBe(true);
+    expect(isIntentForOrdinaryAskPlan(minted, plan, "nzd", ROW_AT)).toBe(true);
     expect(
       isIntentForOrdinaryAskPlan(
         { ...minted, metadata: { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON } },
         plan,
         "nzd",
+        ROW_AT,
       ),
     ).toBe(true);
   });
@@ -146,7 +153,19 @@ describe("isIntentForOrdinaryAskPlan (#4036)", () => {
     ["already paid", { status: "succeeded" }],
     ["no metadata", { metadata: null }],
   ])("refuses %s", (_label, change) => {
-    expect(isIntentForOrdinaryAskPlan({ ...minted, ...change }, plan, "nzd")).toBe(false);
+    expect(isIntentForOrdinaryAskPlan({ ...minted, ...change }, plan, "nzd", ROW_AT)).toBe(false);
+  });
+
+  it("MUTATION: a door-reason intent is this ask's only if created by the row (clock skew allowed) - a later one is another door minting now", () => {
+    const skew = DOOR_INTENT_CLOCK_SKEW_MS / 1000;
+    expect(isIntentForOrdinaryAskPlan({ ...minted, created: atRow + skew }, plan, "nzd", ROW_AT)).toBe(true);
+    expect(isIntentForOrdinaryAskPlan({ ...minted, created: atRow + skew + 1 }, plan, "nzd", ROW_AT)).toBe(false);
+    expect(isIntentForOrdinaryAskPlan({ ...minted, created: undefined }, plan, "nzd", ROW_AT)).toBe(false);
+  });
+
+  it("an old-runner intent is minted after the row by design and is not held to it", () => {
+    const oldRunner = { ...minted, created: atRow + 3_600, metadata: { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON } };
+    expect(isIntentForOrdinaryAskPlan(oldRunner, plan, "nzd", ROW_AT)).toBe(true);
   });
 });
 

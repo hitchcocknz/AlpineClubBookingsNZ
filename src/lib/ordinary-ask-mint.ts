@@ -25,6 +25,9 @@
  * - another unfinished additional-ask recovery row of the booking could own the
  *   match (`couldRecoveryRowOwnIntent`) - two edits must never record one intent.
  *
+ * And an intent under a door's reason created after the recovery row (beyond
+ * `DOOR_INTENT_CLOCK_SKEW_MS`) is never a match: it is a later door's mint.
+ *
  * And the caller is told it adopted (`adopted`), so the runner confirms, under
  * its claim, that no ledger row took the intent meanwhile before writing its own.
  */
@@ -129,7 +132,7 @@ async function findIntentMintedForOrdinaryAsk({
 }): Promise<Stripe.PaymentIntent | null> {
   const currency = stripeChargeCurrency(format);
   const scan = await listRecentPaymentIntentsMatching({
-    matches: (intent) => isIntentForOrdinaryAskPlan(intent, plan, currency),
+    matches: (intent) => isIntentForOrdinaryAskPlan(intent, plan, currency, recovery.createdAt),
     createdSince: new Date(recovery.createdAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
     customerId,
   });

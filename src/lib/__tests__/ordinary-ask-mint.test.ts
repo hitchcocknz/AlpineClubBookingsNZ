@@ -31,7 +31,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
-import { ordinaryAskDoorRequest, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
+import { DOOR_INTENT_CLOCK_SKEW_MS, ordinaryAskDoorRequest, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { MINTED_INTENT_LOOKBACK_MS } from "@/lib/reissued-ask-mint";
 import { stripeChargeCurrency } from "@/lib/stripe-charge-currency";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
@@ -56,6 +56,8 @@ function intent(id: string, overrides: Record<string, unknown> = {}) {
     currency: CURRENCY,
     customer: "cus_door",
     status: "requires_payment_method",
+    // Created before the recovery row, as the door's own mint always is.
+    created: RECOVERY.createdAt.getTime() / 1000 - 30,
     metadata: { bookingId: BOOKING, type: "modification_additional", reason: door.reason },
     ...overrides,
   };
@@ -151,6 +153,18 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
         },
       }),
     );
+  });
+
+  it("does not adopt a door-reason intent created after the recovery row plus the clock skew - a later door is minting it", async () => {
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    const late = RECOVERY.createdAt.getTime() / 1000 + DOOR_INTENT_CLOCK_SKEW_MS / 1000 + 1;
+    stripeHolds(intent("pi_later_door", { created: late }));
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
   });
 
   it("fails closed when the scan stopped at its bound - a second match may be among the intents it never read", async () => {
