@@ -2984,9 +2984,13 @@ double-mint) and, since #4036, the same request the door sent
 (`planOrdinaryAskMint`, `INV-MOD-060`): the door's reason, named by the frozen
 key, and the customer resolved one way (`resolveAskCustomerId`), because Stripe
 refuses a key replayed with other parameters. A replay it still refuses adopts
-the one unrecorded, unpaid intent the key minted for this booking and amount,
-or fails closed and retries (`mintOrdinaryAskIntent`). It skips itself if a later edit already minted a newer additional
-intent, and settles the Xero half two ways: it points any supplementary
+an unrecorded, unpaid intent that matches this ask (`mintOrdinaryAskIntent`),
+and fails closed and retries instead when none or several match, when the
+intent scan stopped at its bound, or when another unfinished recovery of the
+booking could own the match; under its claim it re-checks that no ledger row
+took the adopted intent, and it leaves the payment's customer as it was. It
+skips itself if a later edit already minted a newer additional intent, and
+settles the Xero half two ways: it points any supplementary
 invoice operation still WAITING_PAYMENT at the recovered intent, and it raises
 the supplementary invoice outright for the edits that queued none — the inline
 dispatch skips that queue while no intent exists, so those edits had a

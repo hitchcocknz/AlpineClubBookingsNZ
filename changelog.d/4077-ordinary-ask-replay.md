@@ -7,7 +7,8 @@
   request the edit sent, and Stripe hands back the card request it already made.
   If Stripe still refuses, the retry finds that request itself: one unpaid
   request for this booking and amount that the club has not recorded. If it
-  finds none, or more than one, it records nothing, keeps retrying, and alerts
-  an administrator as before. A school's booking with no saved card customer
+  finds none, more than one, or one that another change to the booking could
+  own, it records nothing, keeps retrying, and alerts an administrator as
+  before. A school's booking with no saved card customer
   now gets its request when the change is saved, instead of only on the retry.
   Nothing needs doing.
