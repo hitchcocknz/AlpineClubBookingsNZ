@@ -95,7 +95,8 @@ interface BookingHistoryDuplicateCaptureRefund {
  * `"linked_guest"` (#3991) is a viewer who cannot see the booking owner's
  * account credit (`canSeeOwnerCredit` false on the booking page — a guest on
  * someone else's booking): everything a member reads, except that the
- * "Saved account credit was not applied" entry is dropped and the
+ * "Saved account credit was not applied" entry and any "Credit Choice Updated"
+ * modification row are dropped and the
  * "Booking cancelled" entry reads only "This booking was cancelled.", because
  * its stored text can name the credit the cancellation issued.
  */
@@ -437,6 +438,10 @@ export function buildBookingHistoryItems({
   }
 
   for (const modification of modifications) {
+    // #3991: a credit-choice edit is about the owner's credit ("$X of account
+    // credit will be applied"); dropped for a linked guest, like the timeline's
+    // "Saved account credit was not applied" entry.
+    if (audience === "linked_guest" && modification.modificationType === "CREDIT_ELECTION") continue;
     const detailParts = [describeModification(modification, format)];
     // #3530: the itemised lines behind the figure, when the edit stored them.
     const linesNote = describeModificationLines(modification, rateLabels, format);

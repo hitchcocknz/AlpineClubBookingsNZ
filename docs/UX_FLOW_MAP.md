@@ -885,8 +885,11 @@ guest gets the admin answer everywhere. For a viewer it excludes:
 - the banner names no credit: a credit-covered booking says only *"nothing left to
   pay"*, and a cancellation settled as credit drops *"$X was added to your account
   credit"* and says only what was retained;
-- the timeline drops the *"Saved account credit was not applied"* entry, and the
-  *"Booking cancelled"* entry reads only *"This booking was cancelled."*;
+- the timeline drops the *"Saved account credit was not applied"* entry and any
+  *"Credit Choice Updated"* edit, and the *"Booking cancelled"* entry reads only
+  *"This booking was cancelled."*. That entry's stored text is free-form, so a
+  guest also loses its non-credit detail, such as a cancellation reason: a
+  deliberate trade-off, since the credit cannot be picked out of free text;
 - the cancellation outcome drops its *"Held as account credit"* and *"Previously
   applied credit restored"* lines, its badge reads *"Settled on Cancellation"*
   rather than *"Credit Issued"*, and the hand-back note is hidden;

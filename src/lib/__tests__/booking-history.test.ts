@@ -952,3 +952,52 @@ describe("buildBookingHistoryItems — the cancel row for a linked guest (#3991)
     expect(cancelRow("staff")?.detail).toContain("$60.00 as account credit");
   });
 });
+
+// #3991: a credit-choice edit names the owner's credit ("$X of account credit
+// will be applied at payment"); a linked guest's history drops the row, as it
+// drops the "Saved account credit was not applied" entry.
+describe("buildBookingHistoryItems — a credit-choice edit for a linked guest (#3991)", () => {
+  const rows = (audience: BookingHistoryAudience) =>
+    buildBookingHistoryItems({
+      audience,
+      createdAt: new Date("2026-04-01T09:00:00Z"),
+      payment: null,
+      modifications: [
+        {
+          id: "mod-credit",
+          modificationType: "CREDIT_ELECTION",
+          previousData: { creditElectionCents: 0 },
+          newData: { creditElectionCents: 4500 },
+          priceDiffCents: 0,
+          changeFeeCents: 0,
+          createdAt: new Date("2026-04-03T10:00:00Z"),
+        },
+        {
+          id: "mod-guests",
+          modificationType: "GUEST_ADD",
+          previousData: { guestCount: 2 },
+          newData: { guestCount: 3 },
+          priceDiffCents: 6000,
+          changeFeeCents: 0,
+          createdAt: new Date("2026-04-04T10:00:00Z"),
+        },
+      ],
+      refundRequests: [],
+      auditLogs: [],
+    }, CLUB_FORMAT_TEST);
+
+  it("drops the credit-choice row and keeps the other edits", () => {
+    const items = rows("linked_guest");
+    expect(items.find((item) => item.id === "modification-mod-credit")).toBeUndefined();
+    expect(items.find((item) => item.id === "modification-mod-guests")).toBeDefined();
+    expect(JSON.stringify(items)).not.toMatch(/credit/i);
+  });
+
+  it("CONTROL: the member and staff read it with its amount", () => {
+    for (const audience of ["member", "staff"] as const) {
+      const row = rows(audience).find((item) => item.id === "modification-mod-credit");
+      expect(row?.title).toBe("Credit Choice Updated");
+      expect(row?.detail).toContain("$45.00 of account credit will be applied at payment");
+    }
+  });
+});
