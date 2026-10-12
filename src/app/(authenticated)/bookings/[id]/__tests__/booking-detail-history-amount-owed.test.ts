@@ -80,12 +80,18 @@ function bookingWith(payment: { changeFeeCents: number | null; creditAppliedCent
           updatedAt: new Date("2026-07-01T00:00:00.000Z"),
           creditAppliedCents: payment.creditAppliedCents ?? 0,
           changeFeeCents: payment.changeFeeCents,
+          // #3924: what the Net Collected cash parts read on the pay projection.
+          _count: { transactions: 0 },
+          recoveryOperations: [],
+          refunds: [],
         }
       : null,
     modifications: [],
     refundRequests: [],
     moneyReconciliation: null,
     guests: [],
+    manualRefundTasks: [],
+    creditsApplied: [],
     organiserSettled: false,
     creditsFromCancellation: [],
     parentBooking: null,
