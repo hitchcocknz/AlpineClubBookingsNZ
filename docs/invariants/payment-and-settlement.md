@@ -3050,29 +3050,27 @@ _Split from `INV-PAY-057` (#3220)._
 ## INV-PAY-123
 
 - **An organiser's cancel of a group paid by Internet Banking keeps ONE
-  officer task to repay the organiser, holding exactly the shares it booked**
-  (#4042). The cancel books each joiner's refund in the app's ledger (the
-  payment mirror, a `BANK_REFUND` line) but no Stripe refund backs it. Each
-  per-child claim that books a share, after its `lock(1)`, calls
-  `recordGroupOrganiserHandBackShare` (`src/lib/group-organiser-hand-back.ts`):
-  the first creates a `CANCELLED_BOOKING_HAND_BACK` on the organiser's
-  booking, keyed `group-organiser-hand-back:<settlement id>`; each later one
-  adds its share to it while OPEN, by a status-guarded update. A share booked
-  after it closed raises a supplementary task keyed per joiner. A cancel
-  resumed across the release that added this also counts each earlier joiner
-  whose settlement refund line is on its ledger, cancelled and not deleted.
-  - Only the creating claim alerts ("Manual refund needed", group wording),
-    straight after it commits. The reason lists shares to the column, then
-    counts the rest.
+  officer task to repay the organiser, holding every joiner refund the ledger
+  proves** (#4042). The cancel books each joiner's refund in the app's ledger
+  (the payment mirror, a `BANK_REFUND` line) but no Stripe refund backs it.
+  Each per-child claim that books a share, after its `lock(1)`, calls
+  `recordGroupOrganiserHandBackShare` (`src/lib/group-organiser-hand-back.ts`),
+  which DERIVES the total: every planned joiner with this settlement's refund
+  line (`groupSettlementRefundKey`; no `deletedAt` filter, the line is the
+  proof), every joiner a group task records, and its own; less closed group
+  tasks. The first claim creates a `CANCELLED_BOOKING_HAND_BACK` on the
+  organiser's booking, keyed `group-organiser-hand-back:<settlement id>`;
+  later ones set it while OPEN, by a status-guarded update. After it closes, a
+  supplementary task keyed per joiner carries only what no task covers. The
+  shares are data on the row.
+  - The run that created it alerts once, after the children, re-reading it.
   - **No `paymentId`, so completion moves nothing**: no allocation, ledger
-    line, Xero note or `REFUNDED` event. It closes under `lock(1)`, so a total
-    that grew since the screen loaded is refused as stale. **Never
-    dismissed**: the cancel already booked the refunds, so the officer is sent
-    to the treasurer instead.
-  - `isGroupOrganiserHandBackTask` marks it, outside
-    `isNonCancellationHandBackTask`. Net Collected (at its call site) and the
-    ledger census never count it as the organiser booking's own. A paid group
-    invoice's refused VOID names it and its amount.
+    line, Xero note or `REFUNDED` event. It closes under `lock(1)` and must
+    name the total its screen showed; a missing or grown total is refused.
+    **Never dismissed**: not repaying is the treasurer's correction.
+  - `isGroupOrganiserHandBackTask` marks it. Refunds owed counts it at its own
+    amount; no Net Collected and no ledger census counts it as the organiser
+    booking's own.
 - Pinned by `group-organiser-hand-back.test.ts`, `group-cancel.test.ts`,
-  `manual-refund-task.test.ts` and
+  `manual-refund-task.test.ts`, `refunds-and-credits-owed.test.ts` and
   `booking-ledger-group-settlement.realdb.test.ts`.

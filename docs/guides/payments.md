@@ -235,28 +235,33 @@ and it can be dismissed (with a note) if the club settles it another way.
 organiser of a group they paid for with one internet banking settlement
 cancels it, each joiner's refund is recorded in the app's ledger straight
 away, but nobody has sent any money: the club repays the organiser by bank
-transfer. The cancel raises one of these tasks on the organiser's booking and
-adds each joiner's share to it as that joiner's place is cancelled; its reason
-lists the shares (a very large group lists the first ones and counts the rest:
-see each joiner's booking). Admins get the **Manual refund needed** email once,
-when the task is raised; the amount in it may be the first share only, so pay
-the total the task shows. Mark it paid back once the money has gone; that
-records only that the money went, because the refunds are already in the
-ledger. If the total changed while you had the page open, you are asked to
-refresh. It cannot be dismissed: the refunds are already recorded as made, so
-if the club decides not to repay the organiser, take it to the treasurer to
-correct the cancelled bookings. Each group raises at most one task, however
-often the cancel is re-run; a joiner's share recorded after the task was
-marked paid back gets a task of its own. If the group's combined Xero invoice
-was paid, the alert that it could not be voided points to this task and its
-amount: repay that amount, not the invoice's paid total, and record the
-refund against the invoice in Xero.
+transfer. The cancel raises one of these tasks on the organiser's booking, and
+its total is every joiner refund the ledger shows for the group, kept up to
+date as each joiner's place is cancelled; its reason lists the shares (a very
+large group lists the first ones and counts the rest: see each joiner's
+booking). Admins get the **Manual refund needed** email once, after the cancel
+has worked through the joiners, with the amount to repay. Mark the task paid
+back once the money has gone; that records only that the money went, because
+the refunds are already in the ledger, and sends nothing to Xero. If the total
+changed while you had the page open, you are told the new total: repay the
+difference, then mark it paid back. It cannot be dismissed: the refunds are
+already recorded as made, so if the club decides not to repay the organiser,
+take it to the treasurer to correct the cancelled bookings. Each group raises
+at most one task, however often the cancel is re-run; a joiner's share
+recorded after the task was marked paid back gets a task of its own for what
+the first did not cover. If the group's combined Xero invoice was paid, the
+alert that it could not be voided points to this task: pay the organiser what
+the task shows, not the invoice's paid total, then raise a credit note on the
+invoice in Xero for the amount you repaid and record the refund against that
+credit note.
 
 A club that has customised the **Manual refund needed** message keeps its own
 wording for this email too. Add `{{handBackNote}}` to the body (and keep
 `{{handBackLabel}}` in the subject, which is now required) so the group
 wording appears; until then the email's reason line still says it is a
-group repayment.
+group repayment. `{{handBackHeading}}`, `{{handBackRecipientLabel}}` and
+`{{handBackAmountLabel}}` fill in the heading and the row labels for whichever
+case it is. The editor's preview shows the cash wording.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
@@ -819,7 +824,10 @@ owed on a booking your filters leave out, or on a deleted booking, is in
 **Refunds owed** but not in the Net Collected beside it, so the two are not a
 subtraction of one another either. Nor is the club-wide group cancellation
 amount, or a refund owed by hand on a payment that never showed money taken:
-both are in Refunds owed and in no booking's Net Collected.
+both are in Refunds owed and in no booking's Net Collected. So is a group
+organiser's repayment task (#4042): it is in Refunds owed at its own amount
+but comes off no booking's Net Collected - not the organiser's, and not the
+joiners', whose Net Collected already treats that money as refunded.
 
 ## Troubleshooting
 

@@ -8,7 +8,7 @@ import {
   groupOrganiserHandBackTasksWhere,
   readGroupOrganiserHandBackShares,
   type GroupOrganiserHandBackShares,
-} from "@/lib/manual-refund-task-settlement-rules";
+} from "@/lib/group-organiser-hand-back-rules";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
 import { sendAdminManualRefundTaskAlert } from "@/lib/email";
 import logger from "@/lib/logger";

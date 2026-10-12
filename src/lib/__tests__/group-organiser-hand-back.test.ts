@@ -38,12 +38,14 @@ import {
   recordGroupOrganiserHandBackShare,
 } from "@/lib/group-organiser-hand-back";
 import {
-  groupOrganiserHandBackOccurrenceKey,
-  isGroupOrganiserHandBackTask,
   isNonCancellationHandBackTask,
   NOT_NON_CANCELLATION_HAND_BACK_WHERE,
-  readGroupOrganiserHandBackShares,
 } from "@/lib/manual-refund-task-settlement-rules";
+import {
+  groupOrganiserHandBackOccurrenceKey,
+  isGroupOrganiserHandBackTask,
+  readGroupOrganiserHandBackShares,
+} from "@/lib/group-organiser-hand-back-rules";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const tx = {

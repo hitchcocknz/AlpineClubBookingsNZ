@@ -8,10 +8,10 @@ import {
 } from "@/lib/booking-payment-state";
 import { sumInternetBankingLateCashCreditCents } from "@/lib/internet-banking-late-cash-credit";
 import {
-  isGroupOrganiserHandBackTask,
   openTaskOwedCents,
   type HandBackTaskRow,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import {
   openCardRefundOwedCents,
   type CardRefundOperationRow,

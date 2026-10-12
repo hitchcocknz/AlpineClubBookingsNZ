@@ -29,7 +29,7 @@ import { deriveCardAppliedCreditDoublePayFinding } from "@/lib/card-applied-cred
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
 import { internetBankingSettlementEvidence, type InternetBankingSettlementEvidence } from "@/lib/internet-banking-settlement-evidence";
 import { isCreditAppliedToBooking, isCreditIssuedFromBooking } from "@/lib/member-credit-booking-rows";
-import { isGroupOrganiserHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
 import {

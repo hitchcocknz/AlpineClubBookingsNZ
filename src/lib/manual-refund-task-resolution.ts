@@ -31,7 +31,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 // both read it (`INV-SSOT`).
 import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import {
-  EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, groupOrganiserHandBackRefusal, isGroupOrganiserHandBackTask,
+  EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE,
   isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
@@ -39,6 +39,7 @@ import {
   nonCancellationHandBackCompletedSnapshot,
   manualRefundTaskSettlementRefusal,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { groupOrganiserHandBackRefusal, isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 // #3498: what a settle MAY repair is the plan module's; the writes are the store's.
 import { planStoredNightPriceRepair } from "@/lib/stored-night-price-repair-plan";
 import { recordReviewClosurePricing } from "@/lib/stored-night-price-repair-store";

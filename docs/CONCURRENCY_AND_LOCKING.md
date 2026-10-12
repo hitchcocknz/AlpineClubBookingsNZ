@@ -3061,19 +3061,23 @@ limit of the window, not of the release.
 Internet Banking settlement's per-child claim, after its `lock(1)` and the
 joiner's mirror, books that joiner's share on the one `ManualRefundTask` keyed
 `group-organiser-hand-back:<settlement id>` (`recordGroupOrganiserHandBackShare`,
-`INV-PAY-123`): the first share creates it, each later one grows it by a
-status-guarded `updateMany` while OPEN, and one booked after it closed creates
+`INV-PAY-123`): the first share creates it, each later one sets it, by a
+status-guarded `updateMany` while OPEN, to the total derived under the lock
+(the joiners whose refund lines are on the ledger, those a group task records,
+and its own, less closed group tasks), and one booked after it closed creates
 a supplementary task keyed per joiner. That per-child claim is the ONLY raise
 site - it runs on the first cancel and on the reaper's resume, both through
 `settleGroupBookingOnOrganiserCancel` - and the plan's recovery replay never
 raises it (an Internet Banking plan is never replayed). Each step is a
 find-then-write made single by the claim's `lock(1)`, with the unique key as
 the backstop; it reads ledger lines and children under that lock and makes no
-provider call, and the creating claim's alert is sent after its commit. Its
+provider call, and the run that created the task alerts once, after the
+children loop, outside every transaction. Its
 COMPLETION joins the cohort too: `resolveManualRefundTask` takes `lock(1)`
 first for this task (as for an edit review and a non-cancellation hand-back,
-`resolveManualRefundTask#1`), so a growth and a completion never interleave
-and a total that grew since the screen loaded is refused as stale. No new key
+`resolveManualRefundTask#1`), so a growth and a completion never interleave,
+and a completion must name the total its screen showed; a grown one is
+refused. No new key
 or order.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**

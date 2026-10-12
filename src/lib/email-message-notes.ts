@@ -270,17 +270,12 @@ export function internetBankingHoldKeptParagraph(
 
 /**
  * #4042 (`INV-PAY-123`) — which hand-back the "Manual refund needed" alert is
- * about. The cash cancel's (#2262) asks an officer to pay a member back and
- * says the ledger records it when the task is marked paid back. An organiser's
- * cancel of a group paid by Internet Banking has already recorded the joiners'
- * refunds in the app's ledger, so the cash wording would be false of it.
- *
- * These feed the SENDER's subject and the editable text body's tokens
- * (`{{handBackLabel}}`, `{{handBackHeading}}`, `{{handBackNote}}`,
- * `{{handBackRecipientLabel}}`, `{{handBackAmountLabel}}`), and the GROUP arm
- * of the hand-built HTML (the amount label, both arms). The CASH HTML keeps its own literal
- * blocks, byte-for-byte as pinned; `manualRefundTaskAlertNote` for the cash arm
- * is those same three blocks, so its text default still says what its HTML says.
+ * about: the cash cancel's (#2262), whose ledger records the refund when it is
+ * paid back, or an organiser's Internet Banking group cancel, whose joiners'
+ * refunds the ledger already holds. These feed the sender's subject, the text
+ * body's `{{handBack…}}` tokens, the group arm of the HTML and both arms' amount
+ * label. The cash HTML keeps its own pinned literal blocks; the cash note is
+ * those same blocks, so its text default still says what its HTML says.
  */
 export type ManualRefundTaskAlertSituation = "cash-cancellation" | "group-organiser-internet-banking";
 

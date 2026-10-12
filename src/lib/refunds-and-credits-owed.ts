@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { netCollectedBookingSelect, netCollectedPaymentSelect } from "@/lib/additional-ledger-gap";
-import { isGroupOrganiserHandBackTask, openTaskOwedCents } from "@/lib/manual-refund-task-settlement-rules";
+import { openTaskOwedCents } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import {
   readMemberCreditBalances,
   sumOutstandingCreditCents,

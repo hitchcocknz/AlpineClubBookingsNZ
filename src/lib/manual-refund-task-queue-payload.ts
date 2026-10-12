@@ -9,8 +9,8 @@ import {
   isEditRefundHandBackTask,
   isPartPaymentReviewTask,
   isRefundRequestHandBackTask,
-  isGroupOrganiserHandBackTask,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import type { QueueRepairableStrand } from "@/lib/stored-night-price-repair-queue";
 
 /**

@@ -238,7 +238,8 @@ vi.mock("@/lib/member-credit", () => {
 });
 
 import { resolveManualRefundTask } from "@/lib/manual-refund-task-resolution";
-import { EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE } from "@/lib/manual-refund-task-settlement-rules";
+import { EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE } from "@/lib/manual-refund-task-settlement-rules";
+import { GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE } from "@/lib/group-organiser-hand-back-rules";
 import { completionMessage } from "@/lib/manual-refund-task-copy";
 import { loadCancellationPolicy } from "@/lib/cancellation";
 import logger from "@/lib/logger";

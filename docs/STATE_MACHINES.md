@@ -2051,12 +2051,13 @@ counted it. See
 organiser's cancel of a group paid by Internet Banking raises the task OPEN on
 the organiser's booking, inside the first per-child claim that books a
 joiner's refund, under `lock(1)`, keyed one per settlement; each later claim
-adds its share while it is OPEN (a share booked after it closed raises a
-supplementary task keyed per joiner). It carries no `paymentId`: the cancel
+sets its total, derived from the joiners the ledger proves refunded, while it
+is OPEN (a share booked after it closed raises a supplementary task keyed per
+joiner for what nothing covers). It carries no `paymentId`: the cancel
 already booked those refunds on the joiners' own payments, so COMPLETED
 records only that the officer repaid the organiser and writes no allocation,
 ledger line, Xero note or `REFUNDED` event. COMPLETED takes `lock(1)` and
-refuses a total that grew since the screen loaded. DISMISSED is refused: the
+must name the total the screen showed; a missing or grown total is refused. DISMISSED is refused: the
 refunds are booked as made, so not repaying is the treasurer's correction.
 See
 [`INV-PAY-123`](invariants/payment-and-settlement.md#inv-pay-123).
