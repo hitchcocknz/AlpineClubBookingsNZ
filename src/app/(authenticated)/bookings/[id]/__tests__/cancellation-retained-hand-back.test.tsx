@@ -161,7 +161,7 @@ describe("the cancellation outcome's retained line (#3811)", () => {
         <BookingCancellationOutcome
           booking={booking as unknown as BookingDetailRecord}
           money={money}
-          payment={project(booking, viewer)}
+          payment={project(booking as unknown as ReturnType<typeof cancelledMarkedPaid>, viewer)}
         />,
       );
     for (const viewer of [OWNER, OFFICER]) {
