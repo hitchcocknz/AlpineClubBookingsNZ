@@ -71,6 +71,7 @@ const {
   stripeChargeCurrency,
   UnsupportedChargeCurrencyError,
   findRecentPaymentIntentByMetadata,
+  listRecentPaymentIntentsMatching,
 } = await import("../stripe");
 
 describe("Stripe library", () => {
@@ -454,6 +455,44 @@ describe("Stripe library", () => {
  * customer the caller resolved first, and then across the account - the
  * earlier request may have named another customer.
  */
+/*
+ * #4036: an ordinary ask's refused replay must tell one candidate from several,
+ * so the listing returns every match from BOTH bounded scans - the caller's
+ * customer's and the account's - merged by id.
+ */
+describe("listRecentPaymentIntentsMatching", () => {
+  const listOf = (intents: Array<{ id: string; amount: number }>) => ({
+    async *[Symbol.asyncIterator]() {
+      yield* intents;
+    },
+  });
+  const matches = (intent: { amount: number }) => intent.amount === 6_000;
+  const createdSince = new Date("2026-07-01T00:00:00.000Z");
+
+  beforeEach(() => {
+    mockPaymentIntentsList.mockReset();
+  });
+
+  it("MUTATION: a match under the caller's customer never hides a second one under another customer", async () => {
+    mockPaymentIntentsList
+      .mockReturnValueOnce(listOf([{ id: "pi_mine", amount: 6_000 }, { id: "pi_small", amount: 10 }]))
+      .mockReturnValueOnce(listOf([{ id: "pi_mine", amount: 6_000 }, { id: "pi_theirs", amount: 6_000 }]));
+    const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, customerId: "cus_1" });
+    expect(found.map((intent) => intent.id)).toEqual(["pi_mine", "pi_theirs"]);
+    expect(mockPaymentIntentsList.mock.calls[0]![0]).toEqual(expect.objectContaining({ customer: "cus_1", created: { gte: 1782864000 } }));
+    expect(mockPaymentIntentsList.mock.calls[1]![0]).not.toHaveProperty("customer");
+  });
+
+  it("with no customer scans the account once, and stops at maxScanned", async () => {
+    mockPaymentIntentsList.mockReturnValueOnce(
+      listOf([{ id: "pi_1", amount: 6_000 }, { id: "pi_2", amount: 6_000 }, { id: "pi_3", amount: 6_000 }]),
+    );
+    const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, maxScanned: 2 });
+    expect(found.map((intent) => intent.id)).toEqual(["pi_1", "pi_2"]);
+    expect(mockPaymentIntentsList).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("findRecentPaymentIntentByMetadata", () => {
   const listOf = (intents: Array<{ id: string; metadata: Record<string, string> }>) => ({
     async *[Symbol.asyncIterator]() {

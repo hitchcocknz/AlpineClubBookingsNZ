@@ -344,9 +344,11 @@ export async function findRecentPaymentIntentByMetadata({
 /**
  * #4036: EVERY recent intent `matches` accepts - for a caller that has no key
  * stamped in the metadata to look for and so must tell one candidate from
- * several (`mintOrdinaryAskIntent`). The same bounded, customer-first scan as
- * {@link findRecentPaymentIntentByMetadata}: the customer's own intents, and
- * only if none of them matches, the account's.
+ * several (`mintOrdinaryAskIntent`). The same bounded scans as
+ * {@link findRecentPaymentIntentByMetadata}, but BOTH of them, merged: the
+ * customer's own intents (reliable however busy the account) and the
+ * account's (where an intent minted for another customer is), so a match under
+ * this customer never hides a second one under another.
  */
 export async function listRecentPaymentIntentsMatching({
   matches,
@@ -356,7 +358,7 @@ export async function listRecentPaymentIntentsMatching({
 }: {
   matches: (intent: Stripe.PaymentIntent) => boolean;
   createdSince: Date;
-  /** The customer this caller would mint for: scanned first, never only. */
+  /** The customer this caller would mint for: scanned as well as the account. */
   customerId?: string;
   maxScanned?: number;
 }): Promise<Stripe.PaymentIntent[]> {
@@ -369,8 +371,11 @@ export async function listRecentPaymentIntentsMatching({
     });
     return found;
   };
-  const own = customerId ? await scan(customerId) : [];
-  return own.length > 0 ? own : scan(undefined);
+  const found = new Map<string, Stripe.PaymentIntent>();
+  for (const intent of [...(customerId ? await scan(customerId) : []), ...(await scan(undefined))]) {
+    found.set(intent.id, intent);
+  }
+  return [...found.values()];
 }
 
 /**
