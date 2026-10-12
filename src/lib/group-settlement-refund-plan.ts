@@ -75,6 +75,16 @@ export function isMirrorRefundPlan(settlement: { refundPlan: unknown; stripePaym
 }
 
 /**
+ * #3956 review F1: is a pre-#3653 plan's ONE combined refund still to be made?
+ * A mirror plan that refunds something, on a settlement still `SUCCEEDED` -
+ * `executeGroupSettlementRefundPlan` moves it on only once Stripe has refunded.
+ */
+export function mirrorPlanRefundUnmade(settlement: { status: string; refundPlan: unknown; stripePaymentIntentId: string | null }): boolean {
+  if (settlement.status !== "SUCCEEDED" || !isMirrorRefundPlan(settlement)) return false;
+  return [...deserializeRefundPlan(settlement.refundPlan).values()].some((cents) => cents > 0);
+}
+
+/**
  * What a card organiser's settlement since #3653 has already handed back, or
  * still owes, on one child — the figure a cancellation of the child tiers from.
  * The ONE formula (`INV-SSOT`; #3854 F1): the larger of the child's stored

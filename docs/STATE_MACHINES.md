@@ -474,9 +474,10 @@ refund against the combined intent; its child's refund row, mirror, Xero note,
 the settlement's `SUCCEEDED -> PARTIALLY_REFUNDED -> REFUNDED` move and the
 operation's close commit together, after Stripe answered. A joiner's reduction,
 a joiner's own cancellation and, since #3956, an approved refund appeal on the
-joiner's booking (`INV-PAY-123`, keyed by the request) use the same operation, so a live group's
-settlement can now read `PARTIALLY_REFUNDED` - still paid
-(`organiserHasPaidSettlement`), and the organiser is not asked to pay again. A
+joiner's booking (`INV-PAY-123`, keyed `organiser_card_appeal_refund_*` by the
+request) use the same operation, so a live group's settlement can now read
+`PARTIALLY_REFUNDED` - still paid (`organiserHasPaidSettlement`), and the
+organiser is not asked to pay again. A
 refund Stripe answered `pending` and later failed moves its operation
 `SUCCEEDED -> PENDING` (owed again with a fresh retry budget, first due once
 Stripe's 24-hour idempotency window on its key has passed, since a retry inside

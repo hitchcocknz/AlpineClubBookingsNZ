@@ -15,5 +15,8 @@
 
   The most you can approve is what the organiser's payment can still return
   for that booking. Approving more is refused with a message naming how much
-  can still be refunded. The review screen and the joiner's appeal form now
-  show that same figure.
+  can still be refunded, or saying to decline the appeal when nothing is left.
+  The review screen and the joiner's appeal form now show that same figure,
+  with a line saying it is refunded to the organiser's card. While an older
+  group cancellation's own refund to that card is still being retried,
+  approval is refused until it has been made.

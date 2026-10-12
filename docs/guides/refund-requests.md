@@ -95,9 +95,14 @@ change and not yet sent ([Payments](payments.md)).
    card, and the organiser is emailed that it is being refunded to their card
    for that joiner's share. Your notify choice covers both emails. The most you
    can approve is what the organiser's payment can still return for this booking
-   after the group's cancellation refunds. Approving more is refused with a
-   message naming how much can still be refunded; approve that amount or less,
-   or decline the appeal.
+   after the group's cancellation refunds; the review screen says so under
+   **Max refundable**, and the joiner's appeal form says the same. Approving
+   more is refused with a message naming how much can still be refunded;
+   approve that amount or less, or decline the appeal. When that payment has
+   nothing left for the booking, the appeal can only be declined. While the
+   group cancellation's own refund to the organiser's card has not been made
+   yet (an older group cancellation still being retried), approval is refused
+   until it has.
 
    A booking paid by **card** whose card ledger shows less refundable than the
    amount you approve refunds what the card can carry and logs the difference
@@ -136,6 +141,8 @@ governed by the [cancellation policy](../CANCELLATIONS.md#refund-policy).
 | A credit approval is disabled for me | You raised it — the two-person rule needs a different reviewer | Ask another admin to review it |
 | The refund amount won't go above a certain figure | It is capped at the remaining refundable amount (paid minus already refunded, minus any refund task still waiting to be sent by bank transfer, minus account credit already given for a bank transfer that arrived after the cancellation) | Refund up to that cap; the rest may already be refunded, credited or promised back |
 | Approving a group joiner's appeal says the organiser's card payment "can refund at most" a smaller amount | The organiser paid for the group by card, and that one payment has already returned money for the group's cancellation or other changes (#3956) | Approve the amount it names or less, or decline the appeal |
+| Approving a group joiner's appeal says the organiser's card payment "has nothing left to refund for it" | That payment has already returned everything it can for this booking (#3956) | Decline the appeal |
+| Approving a group joiner's appeal says the group cancellation's own refund "has not been made yet" | An older group cancellation's single refund to the organiser's card is still being retried (#3956) | Wait for the automatic retry to make that refund, then approve; or decline the appeal |
 | The queue is empty | The status filter excludes the request | Switch to **All** to see approved/rejected items |
 
 ## Related links

@@ -1332,13 +1332,14 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   no transaction of its own, so the ordinary appeal refunded $0 while
   queuing a full Xero note and promising the money.
   - **One cap** (`organiserCardAppealCap`): the room a child refund debt may
-    take, less what is already handed back. The approval reads it under
-    `lock(1)`; the member's form and the review screen read it as advice.
-  - **Refused past it, never clamped**: a 409 naming the most that can still
-    be refunded, before the request is claimed.
+    take, less what is already handed back; zero while the group cancel's
+    own combined refund is unmade. The approval reads it under `lock(1)`;
+    screens read it as advice (`organiserCardAppealCeilingFor`).
+  - **Refused past it, never clamped**: a 409 naming what can still be
+    refunded, or saying to decline, before the request is claimed.
   - **The debt is written in the approval's transaction**, after the claim:
-    keyed `organiser_child_refund_appeal_<request>`, amount frozen, reason
-    `organiser_child_appeal`. A taken key refuses, and the claim rolls back.
+    keyed `organiser_card_appeal_refund_<request>` (a prefix older workers
+    fail safe on), amount frozen. A taken key refuses; the claim rolls back.
   - **Then `INV-PAY-114`'s executor runs it** after commit; a failure leaves
     it owed for the recovery runner. The route plans no card refund and
     queues no Xero note: the executor queues one once Stripe answers. No
@@ -1350,7 +1351,8 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   - **The ledger's kept figure stays the cancel's**: the group child planner
     takes these debts back out of the child's refunds
     (`organiserCardAppealRefundsFromRows`).
-  - Proven by `admin-refund-request-organiser-card.test.ts` and
+  - Proven by `admin-refund-request-organiser-card.test.ts`,
+    `organiser-card-appeal-refund-key.test.ts` and
     `organiser-child-refund.realdb.test.ts`.
 
 ## INV-PAY-105

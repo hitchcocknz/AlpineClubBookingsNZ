@@ -38,7 +38,6 @@
 import {
   BookingStatus,
   PaymentRecoveryOperationStatus,
-  PaymentStatus,
   PaymentRecoveryOperationType,
   PaymentSource,
   type PaymentRecoveryOperation,
@@ -65,8 +64,7 @@ import {
 import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import {
-  deserializeRefundPlan,
-  isMirrorRefundPlan,
+  mirrorPlanRefundUnmade,
   organiserChildCommittedRefundFrom,
   readPerChildRefundPlan,
 } from "@/lib/group-settlement-refund-plan";
@@ -605,21 +603,12 @@ export async function organiserCardAppealCap(
   return { settlement, maxRefundableCents: Math.max(0, roomCents - handedBackCents), combinedRefundPending: false };
 }
 
-/**
- * Is the group cancel's own combined refund out of this settlement still to be
- * made? A pre-#3653 plan (`isMirrorRefundPlan`) that refunds something, on a
- * settlement still `SUCCEEDED` - `executeGroupSettlementRefundPlan` flips it
- * only once Stripe has refunded - or the settlement's
- * `group_settlement_refund_recovery_` retry not yet `SUCCEEDED`.
- */
+/** The group cancel's own combined refund still to make: a pre-#3653 plan's (`mirrorPlanRefundUnmade`), or its retry owed. */
 async function groupCancelCombinedRefundPending(
   db: Db,
   settlement: { id: string; status: string; refundPlan: Prisma.JsonValue; stripePaymentIntentId: string },
 ): Promise<boolean> {
-  if (settlement.status === PaymentStatus.SUCCEEDED && isMirrorRefundPlan(settlement)) {
-    const plannedCents = [...deserializeRefundPlan(settlement.refundPlan).values()].reduce((sum, cents) => sum + cents, 0);
-    if (plannedCents > 0) return true;
-  }
+  if (mirrorPlanRefundUnmade(settlement)) return true;
   const retry = await db.paymentRecoveryOperation.findUnique({
     where: { idempotencyKey: buildGroupSettlementRefundRecoveryIdempotencyKey(settlement.id) },
     select: { status: true },
@@ -629,10 +618,8 @@ async function groupCancelCombinedRefundPending(
 
 /**
  * #3956: the appeal ceiling the screens and the member's appeal show - the
- * approval's own cap (`organiserCardAppealCap`), read unlocked as advice, net of
- * what `refundAppealHandedBackCents` says is already promised back. Null for a
- * booking the group organiser did not pay for by card, which keeps
- * `refundAppealCeiling`. The approval re-reads both under `lock(1)`.
+ * approval's cap net of `refundAppealHandedBackCents`, read unlocked as advice;
+ * null unless the organiser paid by card. The approval re-reads both locked.
  */
 export async function organiserCardAppealCeilingFor(
   db: Db,
