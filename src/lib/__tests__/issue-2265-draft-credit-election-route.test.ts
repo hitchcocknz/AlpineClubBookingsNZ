@@ -174,6 +174,7 @@ import { POST as createPaymentIntentRoute } from "@/app/api/payments/create-paym
 const mockPrisma = prisma as unknown as {
   booking: { findUnique: ReturnType<typeof vi.fn> };
   payment: { upsert: ReturnType<typeof vi.fn> };
+  memberCredit: { aggregate: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 const mockAuth = auth as ReturnType<typeof vi.fn>;
