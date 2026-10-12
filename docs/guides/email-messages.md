@@ -128,8 +128,18 @@ cancelled, so you no longer need to pay it." (#3954).
 way. A card refund reads "A refund of $X will be processed to your original
 payment method."; on a booking paid by internet banking it reads "The club will
 refund $X to you by bank transfer.", and a booking paid partly by card names
-both parts (#3827). `{{amount}}` is still available to a saved override, but it
-cannot say which way the money goes, so use `{{refundSentence}}`.
+both parts (#3827). On a group joiner's booking the organiser paid for by card
+it reads "A refund of $X has been processed to the group organiser's card,
+because the group organiser paid for this booking." (or "is on its way to" while
+the card provider has not answered yet) (#3956). `{{amount}}` is still available
+to a saved override, but it cannot say which way the money goes, so use
+`{{refundSentence}}`.
+
+The organiser of that group gets their own message at the same time, **Group
+Organiser Joiner Refund** (#3956). Its `{{refundSentence}}` names the joiner and
+says the amount for their share is being refunded to the card the organiser paid
+with; `{{joinerName}}` and `{{amount}}` are there for an override too. It is not
+sent when the admin chose not to email, or when the organiser is the joiner.
 
 `{{promoSummary}}` on a booking that carries several promo codes shows one
 `Promo adjustment (CODE)` line per code, each with its own amount, while

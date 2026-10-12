@@ -84,6 +84,21 @@ change and not yet sent ([Payments](payments.md)).
    already received because their bank transfer arrived after the booking was
    cancelled. The member's own appeal form uses the same limit.
 
+   **A group joiner's booking the organiser paid for by card is refunded to the
+   organiser's card (#3956).** When a group organiser paid for everyone in one
+   card payment, the joiner's booking has no card payment of its own, so
+   approving its appeal refunds the amount out of the organiser's payment, back
+   to the card the organiser paid with. The refund is made straight away, or
+   retried automatically if the card provider does not answer. Its Xero refund
+   credit note is queued once the refund has gone through, not at approval. The
+   joiner is emailed that the refund went (or is on its way) to the organiser's
+   card, and the organiser is emailed that it is being refunded to their card
+   for that joiner's share. Your notify choice covers both emails. The most you
+   can approve is what the organiser's payment can still return for this booking
+   after the group's cancellation refunds. Approving more is refused with a
+   message naming how much can still be refunded; approve that amount or less,
+   or decline the appeal.
+
    A booking paid by **card** whose card ledger shows less refundable than the
    amount you approve refunds what the card can carry and logs the difference
    for investigation; it never turns into a bank-transfer task.
@@ -120,6 +135,7 @@ governed by the [cancellation policy](../CANCELLATIONS.md#refund-policy).
 | Everything is read-only ("… can view refund appeals and credit approvals but cannot approve, reject, or process them") | Your finance role is view-only | Ask a finance-edit admin |
 | A credit approval is disabled for me | You raised it — the two-person rule needs a different reviewer | Ask another admin to review it |
 | The refund amount won't go above a certain figure | It is capped at the remaining refundable amount (paid minus already refunded, minus any refund task still waiting to be sent by bank transfer, minus account credit already given for a bank transfer that arrived after the cancellation) | Refund up to that cap; the rest may already be refunded, credited or promised back |
+| Approving a group joiner's appeal says the organiser's card payment "can refund at most" a smaller amount | The organiser paid for the group by card, and that one payment has already returned money for the group's cancellation or other changes (#3956) | Approve the amount it names or less, or decline the appeal |
 | The queue is empty | The status filter excludes the request | Switch to **All** to see approved/rejected items |
 
 ## Related links
