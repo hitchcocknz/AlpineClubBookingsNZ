@@ -80,7 +80,7 @@ export const RECOVERY_SCENARIO_CATALOGUE = [
     prefix: SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX,
     code: "superseded_payment_refund",
     label:
-      "the refund of a card payment that was made on a payment request already replaced by a newer one",
+      "the refund of a card payment that was made on a payment request already cancelled or replaced",
   },
   {
     prefix: BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX,

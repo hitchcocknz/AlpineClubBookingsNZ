@@ -280,7 +280,7 @@ longer prefix must come before a shorter one it starts with; the test pins that 
 
 Two `payment_recovery_` refunds are easy to confuse and are not the same thing:
 `payment_recovery_refund_` is the refund of a card payment made on a payment request
-that had already been replaced (`superseded_payment_refund`), whereas
+that had already been cancelled or replaced (`superseded_payment_refund`), whereas
 `payment_recovery_modification_refund_` is a booking edit's refund
 (`booking_modification_refund`).
 

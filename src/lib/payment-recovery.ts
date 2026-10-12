@@ -547,7 +547,7 @@ import {
   buildRefundRequestRefundMetadata,
   buildRefundRequestRefundRecoveryIdempotencyKey,
   buildSupersededPaymentRefundRecoveryIdempotencyKey,
-  BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX,
+  buildLegacyModificationRefundStripeKeyPrefix,
   REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
   isLateCaptureRefundStripeKeyPrefix,
   bookingModificationIdForAdditionalIntentRecoveryKey,
@@ -2168,7 +2168,7 @@ async function processBookingModificationRefundOperation(
     // shared-key with the inline refund).
     idempotencyKeyPrefix =
       operation.stripeKeyPrefix ??
-      `${BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX}${operation.id}`;
+      buildLegacyModificationRefundStripeKeyPrefix(operation.id);
     metadata = buildBookingModificationRefundMetadata(
       operation.bookingId,
       bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),

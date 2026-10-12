@@ -147,6 +147,15 @@ export function buildEditFinancialReviewRefundRecoveryIdempotencyKey(
 // REFUNDED event. The member is told their money came back when only half of it
 // did. The inline refund and the recovery replay share this prefix, which is what
 // makes a genuine replay of ONE task's refund converge instead of double-refund.
+// A booking-edit refund recovery row written before its stored Stripe prefix
+// existed replays under this operation-scoped Stripe key. It is FROZEN: it only
+// happens to share its text with `BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX`,
+// and renaming the recovery prefix must never move an in-flight legacy replay's
+// Stripe key (that would refund twice).
+export function buildLegacyModificationRefundStripeKeyPrefix(operationId: string) {
+  return `payment_recovery_modification_refund_${operationId}`;
+}
+
 export function buildEditFinancialReviewRefundStripeKeyPrefix(taskId: string) {
   return `edit_financial_review_refund_${taskId}`;
 }

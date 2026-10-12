@@ -1180,6 +1180,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     buildEditFinancialReviewAdditionalIntentStripeKey: "Stripe idempotency key",
     buildEditFinancialReviewChargeReason: "ledger reason",
     buildEditFinancialReviewRefundStripeKeyPrefix: "Stripe idempotency key prefix",
+    buildLegacyModificationRefundStripeKeyPrefix: "Stripe idempotency key prefix (frozen legacy booking-edit refund replay)",
     buildLateCaptureRefundMetadata: "Stripe metadata",
     buildLateCaptureRefundStripeKeyPrefix: "Stripe idempotency key prefix",
     buildReissuedAskStripeIdempotencyKey: "Stripe idempotency key",
@@ -1291,6 +1292,12 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
         ),
       ),
     ).toBe("booking_modification_refund");
+  });
+
+  it("lists only refund operations as a refund_execution, never a payment-request cancel (#4076)", () => {
+    const sql = DIAGNOSTICS_TOOLS.find((tool) => tool.id === DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID)?.sql ?? "";
+    expect(sql).toContain(`o."type"::text IN ('REFUND_SUPERSEDED_PAYMENT', 'REFUND_BOOKING_MODIFICATION')`);
+    expect(sql).not.toContain("CANCEL_PAYMENT_INTENT");
   });
 
   it("ships a plain-English label for every code to the model, on both tools that project one", () => {

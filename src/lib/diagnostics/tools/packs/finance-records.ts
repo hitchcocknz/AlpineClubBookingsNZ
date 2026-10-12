@@ -435,7 +435,7 @@ SELECT
   ${utcInstant('o."createdAt"')} AS occurred_at_utc
 FROM public."PaymentRecoveryOperation" o
 WHERE o."paymentId" = $1::text
-  AND o."type"::text <> 'CREATE_ADDITIONAL_PAYMENT_INTENT'
+  AND o."type"::text IN ('REFUND_SUPERSEDED_PAYMENT', 'REFUND_BOOKING_MODIFICATION')
 UNION ALL
 SELECT
   'manual_refund_task' AS entry_kind,
