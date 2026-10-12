@@ -360,7 +360,8 @@ describe("#3809: applied credit given back is named in the Booking Modified emai
   went on every route, in the HTML email and the flat {{paymentNote}} alike,
   because both read the one home (`bookingModifiedRefundSentence`), and says it
   was made only when the refund's own debt says so (#4057): otherwise it is on
-  its way, in an info box.
+  its way, in an info box. A refund to the member's own card likewise, when
+  Stripe did not make it (#4070).
 
   MUTATION PROOF. Make `bookingModifiedRefundSentence` answer one organiser case
   with the other, or with the own-card sentence, and that case fails in both
@@ -368,7 +369,7 @@ describe("#3809: applied credit given back is named in the Booking Modified emai
   info box fails; drop the destination at either call site (HTML or sender) and
   that path's assertion fails.
 */
-describe("#3916, #4057: the Booking Modified refund sentence names where the refund went", () => {
+describe("#3916, #4057, #4070: the Booking Modified refund sentence names where the refund went", () => {
   const OWN_CARD = "A refund of $45.00 has been processed to your original payment method.";
   const ORGANISER_CARD =
     "A refund of $45.00 has been processed to the group organiser's card, because the group organiser paid for this booking.";
@@ -404,6 +405,21 @@ describe("#3916, #4057: the Booking Modified refund sentence names where the ref
     // An organiser-card refund is a Stripe one: never by hand, made or not.
     expect(bookingModifiedRefundSentence("$45.00", true, "organiser_card_pending")).toBe(ORGANISER_CARD_PENDING);
     expect(bookingModifiedRefundSentence("$45.00", true, "organiser_card")).toBe(ORGANISER_CARD);
+  });
+
+  // #4070: the member's own-card refund Stripe did not make, queued for retry.
+  it("own card, not made yet: on its way, in an info box, never 'has been processed' (#4070)", async () => {
+    const OWN_CARD_PENDING = "A refund of $45.00 is on its way to your original payment method.";
+    const overrides = { refundAmountCents: 4500, refundDestination: "own_card_pending" };
+    const html = bookingModifiedTemplate(params(overrides), CLUB_FORMAT_TEST);
+    const note = await paymentNoteFromSender(overrides);
+
+    expect(html).toContain(alertBox(OWN_CARD_PENDING, "info"));
+    expect(html).not.toContain(alertBox(OWN_CARD_PENDING, "success"));
+    expect(html).not.toMatch(/has been processed|bank transfer/);
+    expect(note).toBe(OWN_CARD_PENDING);
+    // A card refund the club did not send by hand: the card's pending wording, whatever the flag says.
+    expect(bookingModifiedRefundSentence("$45.00", true, "own_card_pending")).toBe(OWN_CARD_PENDING);
   });
 
   it("own card: the member's original payment method, byte-identical to before", async () => {

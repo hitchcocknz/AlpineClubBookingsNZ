@@ -1405,11 +1405,8 @@ export async function refundPaymentTransactions({
     slices = derived.slices;
   }
 
-  const refunds: Array<{
-    paymentIntentId: string;
-    refundId: string;
-    amountCents: number;
-  }> = [];
+  // #4070: Stripe's own status rides along, so a caller can tell a refund made from one it refused.
+  const refunds: Array<PartialRefundError["refunds"][number] & { status: string | null }> = [];
   let completedRefundCents = 0;
 
   for (const { transaction, amountCents: refundAmountForTransaction } of slices) {
@@ -1462,6 +1459,7 @@ export async function refundPaymentTransactions({
       paymentIntentId: transaction.stripePaymentIntentId,
       refundId: refund.id,
       amountCents: refund.amount,
+      status: refund.status,
     });
     completedRefundCents += refundAmountForTransaction;
   }

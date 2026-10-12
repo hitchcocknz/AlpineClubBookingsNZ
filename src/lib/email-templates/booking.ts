@@ -567,7 +567,7 @@ export function bookingModifiedTemplate(params: {
   if (refundAmountCents > 0) {
     settlementNote = alertBox(
       bookingModifiedRefundSentence(formatCents(refundAmountCents, format), params.refundByBankTransfer, params.refundDestination),
-      // #4057: an organiser-card refund still on its way is information, not a success.
+      // #4057, #4070: a card refund still on its way is information, not a success.
       bookingModifiedRefundPending(params.refundDestination) ? "info" : "success"
     );
     // #3827 (D-3813-5): a split payment's reduction goes back partly as cash and
