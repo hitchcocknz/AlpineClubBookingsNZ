@@ -118,7 +118,8 @@ export async function reissuePaymentLinkForToken(
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
     guestCount: booking.guests.length,
-    priceCents: (await readBookingAmountOwed(booking)).dueCents,
+    priceCents: booking.finalPriceCents,
+    amountDueCents: (await readBookingAmountOwed(booking)).dueCents,
     bookingReference: booking.id,
     expiresAt,
     // The pay link is about this booking (#2258).

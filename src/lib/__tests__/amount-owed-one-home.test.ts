@@ -25,11 +25,15 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
  *    `<=`, `>=`, either way round) with a bare final price — "does the credit
  *    cover the booking?" asked without the fee (#3955 round 5, finding 1:
  *    `appliedCreditCents + reviewGiveBacksCents < previousFinalPriceCents`);
- *  - over every non-test file under `src/`: an `amountDueCents` or `priceCents`
- *    property set from a bare final price. Those are the fields the
- *    member-facing emails that quote what is owed take (the exception-approved
- *    email, the pay-link emails), so a bare price there tells a member to pay
- *    less than the page asks (#4058). `readBookingAmountOwed` is the one reader.
+ *  - over every non-test file under `src/`: an `amountDueCents` property set
+ *    from a bare final price. It is the field the member-facing emails that
+ *    quote what is owed take (the exception-approved email, the pay-link
+ *    emails), so a bare price there tells a member to pay less than the page
+ *    asks (#4058). `readBookingAmountOwed` is the one reader. (`priceCents`
+ *    on those emails is the booking's PRICE and stays one.)
+ *  - over every file that calls one of those senders: each `amountDueCents`
+ *    property, shorthand included, reads `readBookingAmountOwed` or is pinned
+ *    by its text with the reason it cannot owe more than the price.
  *
  * WHAT THIS CANNOT SEE: an amount spelled another way (a sum in a different
  * order, a helper of its own, a variable that holds the bare price).
@@ -73,8 +77,14 @@ const CREDIT_VS_BARE_PRICE =
 // An intent, charge or payment amount that is a bare final price, in a pay step.
 const BARE_PRICE_AMOUNT = /\bamountCents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
 
-// An email's amount-due or price field set from a bare final price (#4058).
-const BARE_PRICE_QUOTED = /\b(?:amountDueCents|priceCents):\s*[^,;}]*[Ff]inalPriceCents\b/g;
+// An email's amount-due field set from a bare final price (#4058).
+const BARE_PRICE_QUOTED = /\bamountDueCents:\s*[^,;}]*[Ff]inalPriceCents\b/g;
+// A pay-link or exception-approved email send, and the `amountDueCents` property
+// inside it, shorthand (`amountDueCents,`) included - a type position
+// (`amountDueCents: number`) and a read (`params.amountDueCents`) are not one.
+const QUOTING_SENDER =
+  /\bsend(?:BookingRequestApproved|SplitGuestPaymentLink|BookingPolicyExceptionApproved)Email\(/;
+const DUE_PROPERTY = /(?<![.\w])amountDueCents\b(?!\s*\??:\s*number\b)(?:\s*:\s*([^,;}]*))?/g;
 
 /**
  * The exact expressions allowed to stay, each pinned by its text (whitespace
@@ -108,22 +118,25 @@ const ALLOWED_COMPARISONS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * The amount-due or price fields allowed to stay, pinned by text. Neither
- * tells a member what to pay: the first is the group organiser's per-joiner
- * price column, the second a booking-request approval's own result (the booking
- * total the admin route reports back), and no email reads either.
+ * The amount-due properties on a quoting send that may read something other
+ * than `readBookingAmountOwed`, pinned by text (#4058). Both send the pay link
+ * of a booking created a moment before: its Payment row is new (no recorded
+ * change fee) and no credit election has reached it, so what it owes is its
+ * price. A held request booking is still AWAITING_REVIEW, which holds no credit.
  */
-const ALLOWED_QUOTES: Readonly<Record<string, readonly string[]>> = {
-  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-linked-party.ts": [
-    "priceCents: joinerBooking.finalPriceCents",
-  ],
-  "src/lib/school-booking-request.ts": ["priceCents: committed?.finalPriceCents"],
+const ALLOWED_DUE_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  "src/lib/booking-request.ts": ["amountDueCents: priceCents"],
+  "src/lib/group-booking.ts": ["amountDueCents: priceCents"],
 };
 
 const matchesIn = (text: string) =>
   [...text.matchAll(BARE_PRICE_LESS_CREDIT)].map((match) => match[0].replace(/\s+/g, " "));
 const quotesIn = (text: string) =>
   [...text.matchAll(BARE_PRICE_QUOTED)].map((match) => match[0].replace(/\s+/g, " "));
+const duePropertiesIn = (text: string) =>
+  [...text.matchAll(DUE_PROPERTY)]
+    .filter((match) => !/readBookingAmountOwed\(/.test(match[1] ?? ""))
+    .map((match) => match[0].replace(/\s+/g, " ").trim());
 const comparisonsIn = (text: string) =>
   [...text.matchAll(CREDIT_VS_BARE_PRICE)].map((match) => match[0].replace(/\s+/g, " "));
 
@@ -194,30 +207,68 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     }
   });
 
-  it("no source file sets an amount-due or price field from a bare final price (#4058)", () => {
+  it("no source file sets an amount-due field from a bare final price (#4058)", () => {
     const offenders = sourceFiles(path.join(REPO, "src")).flatMap((file) =>
-      quotesIn(read(file))
-        .filter((match) => !(ALLOWED_QUOTES[file] ?? []).includes(match))
-        .map((match) => `${file}: ${match}`),
+      quotesIn(read(file)).map((match) => `${file}: ${match}`),
     );
-    expect(offenders, "INV-PAY-119: quote it through readBookingAmountOwed / bookingAmountOwedCents").toEqual([]);
+    expect(offenders, "INV-PAY-119: quote it through readBookingAmountOwed").toEqual([]);
   });
 
-  it("every allowed amount-due or price field is still there, exactly once", () => {
-    for (const [file, allowed] of Object.entries(ALLOWED_QUOTES)) {
-      expect(quotesIn(read(file)).sort(), file).toEqual([...allowed].sort());
+  it("every send that quotes what is owed reads it through readBookingAmountOwed (#4058)", () => {
+    const callers = sourceFiles(path.join(REPO, "src")).filter(
+      (file) => !file.startsWith("src/lib/email/") && QUOTING_SENDER.test(read(file)),
+    );
+    // The five senders of a pay link plus the exception-approved email.
+    expect(callers.sort()).toEqual([
+      "src/lib/booking-exception-approval.ts",
+      "src/lib/booking-request.ts",
+      "src/lib/cron-confirm-pending.ts",
+      "src/lib/group-booking.ts",
+      "src/lib/payment-link-reissue.ts",
+      "src/lib/payment-link-split-guest.ts",
+    ]);
+    const offenders = callers.flatMap((file) => {
+      const text = read(file);
+      expect(text, `${file} passes amountDueCents`).toMatch(/amountDueCents\b/);
+      return duePropertiesIn(text)
+        .filter((match) => !(ALLOWED_DUE_PROPERTIES[file] ?? []).includes(match))
+        .map((match) => `${file}: ${match}`);
+    });
+    expect(offenders, "INV-PAY-119: read it through readBookingAmountOwed, or pin it by text").toEqual([]);
+  });
+
+  it("every allowed amount-due property is still there, exactly once", () => {
+    for (const [file, allowed] of Object.entries(ALLOWED_DUE_PROPERTIES)) {
+      expect(duePropertiesIn(read(file)).sort(), file).toEqual([...allowed].sort());
     }
   });
 
-  it("catches an amount-due or price field set from a bare final price", () => {
+  it("catches an amount-due field set from a bare final price", () => {
     for (const expression of [
       "amountDueCents: settled ? 0 : booking.finalPriceCents",
-      "priceCents: booking.finalPriceCents,",
-      "priceCents: resolution.booking.finalPriceCents",
+      "amountDueCents: resolution.booking.finalPriceCents",
     ]) {
       expect(quotesIn(expression), expression).toHaveLength(1);
     }
-    expect(quotesIn("priceCents: (await readBookingAmountOwed(booking)).dueCents,")).toEqual([]);
+    expect(quotesIn("amountDueCents: (await readBookingAmountOwed(booking)).dueCents,")).toEqual([]);
+  });
+
+  it("catches a shorthand or locally derived amount-due property on a send", () => {
+    for (const expression of [
+      "{ priceCents, amountDueCents, bookingReference }",
+      "{ amountDueCents: priceCents, bookingReference }",
+      "{ amountDueCents: settled ? 0 : booking.finalPriceCents }",
+    ]) {
+      expect(duePropertiesIn(expression), expression).toHaveLength(1);
+    }
+    for (const expression of [
+      "amountDueCents: (await readBookingAmountOwed(booking)).dueCents,",
+      "amountDueCents: settled ? 0 : (await readBookingAmountOwed(booking)).dueCents,",
+      "  amountDueCents: number;",
+      "data.amountDueCents",
+    ]) {
+      expect(duePropertiesIn(expression), expression).toEqual([]);
+    }
   });
 
   it("catches a credit-against-bare-price comparison in either order and any strictness", () => {

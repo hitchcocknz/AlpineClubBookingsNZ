@@ -2042,7 +2042,7 @@ describe("Cron: Confirm Pending Bookings", () => {
     await confirmPendingBookings();
 
     expect(mockSendSplitGuestPaymentLinkEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ bookingReference: "child_1", priceCents: 9000 }),
+      expect.objectContaining({ bookingReference: "child_1", priceCents: 12000, amountDueCents: 9000 }),
       CLUB_FORMAT_TEST,
     );
   });

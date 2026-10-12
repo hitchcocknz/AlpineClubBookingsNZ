@@ -1031,9 +1031,9 @@ const GENERATED_CASES: EmailRenderCase[] = [
   { id: "groupJoinPaySelfTemplate:minimal", fn: "groupJoinPaySelfTemplate", render: () =>
     groupJoinPaySelfTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "bookingRequestApprovedTemplate:minimal", fn: "bookingRequestApprovedTemplate", render: () =>
-    bookingRequestApprovedTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, priceCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+    bookingRequestApprovedTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, amountDueCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "splitGuestPaymentLinkTemplate:minimal", fn: "splitGuestPaymentLinkTemplate", render: () =>
-    splitGuestPaymentLinkTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, priceCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+    splitGuestPaymentLinkTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, amountDueCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "bookingRequestQuoteTemplate:minimal", fn: "bookingRequestQuoteTemplate", render: () =>
     bookingRequestQuoteTemplate({ firstName: "firstName-1", respondUrl: "respondUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, options: [{ label: "label-6", totalCents: 107 }], expiresAt: new Date("2026-03-09T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "bookingRequestQuoteTemplate:full", fn: "bookingRequestQuoteTemplate", render: () =>

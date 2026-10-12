@@ -906,7 +906,7 @@ describe("reissuePaymentLinkForToken", () => {
 
     // 300.00 + 25.00 recorded fee = 325.00, never the bare 300.00.
     expect(sendBookingRequestApprovedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ priceCents: 32500 }),
+      expect.objectContaining({ priceCents: 30000, amountDueCents: 32500 }),
       CLUB_FORMAT_TEST,
     );
     // The page for the same booking asks the same figure.
@@ -932,7 +932,7 @@ describe("reissuePaymentLinkForToken", () => {
     await reissuePaymentLinkForToken(RAW_TOKEN);
 
     expect(sendBookingRequestApprovedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ priceCents: 27500 }),
+      expect.objectContaining({ priceCents: 30000, amountDueCents: 27500 }),
       CLUB_FORMAT_TEST,
     );
   });
@@ -954,7 +954,7 @@ describe("reissuePaymentLinkForToken", () => {
     await reissuePaymentLinkForToken(RAW_TOKEN);
 
     expect(sendSplitGuestPaymentLinkEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ priceCents: 32500 }),
+      expect.objectContaining({ priceCents: 30000, amountDueCents: 32500 }),
       CLUB_FORMAT_TEST,
     );
   });
@@ -2027,6 +2027,7 @@ describe("issueSplitGuestPaymentLink (#1967)", () => {
       expect.objectContaining({
         email: "tara@example.com",
         priceCents: 12000,
+        amountDueCents: 12000,
         guestCount: 2,
         bookingReference: "child-1",
       }), CLUB_FORMAT_TEST
@@ -2048,7 +2049,7 @@ describe("issueSplitGuestPaymentLink (#1967)", () => {
     await issueSplitGuestPaymentLink("child-1", CLUB_FORMAT_TEST);
 
     expect(sendSplitGuestPaymentLinkEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ priceCents: 32500 }),
+      expect.objectContaining({ priceCents: 30000, amountDueCents: 32500 }),
       CLUB_FORMAT_TEST,
     );
   });

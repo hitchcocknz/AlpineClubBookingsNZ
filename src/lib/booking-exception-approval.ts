@@ -10,8 +10,7 @@ import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import { resolveHostingCoverageIncidents } from "@/lib/adult-member-hosting-coverage-incidents";
 import { recordAdultMemberHostingReviewDecision } from "@/lib/adult-member-hosting-review";
 import { createConfirmedBooking } from "@/lib/booking-create";
-import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
-import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import {
   modifyBookingBatch,
   type BatchModificationPreTransaction,
@@ -698,16 +697,6 @@ export function buildPolicyExceptionApprovalHooks(
         booking.status === "PAID" ||
         booking.status === "CONFIRMED" ||
         booking.payment?.status === "SUCCEEDED";
-      const amountDueCents = settled
-        ? 0
-        : Math.max(
-            0,
-            bookingAmountOwedCents({
-              finalPriceCents: booking.finalPriceCents,
-              changeFeeCents: booking.payment?.changeFeeCents ?? null,
-              appliedCreditCents: await deriveBookingAppliedCreditCents(booking.id),
-            }),
-          );
       await sendBookingPolicyExceptionApprovedEmail(
         {
           bookingId: booking.id,
@@ -721,7 +710,7 @@ export function buildPolicyExceptionApprovalHooks(
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
           guestCount: booking.guests.length,
-          amountDueCents,
+          amountDueCents: settled ? 0 : (await readBookingAmountOwed(booking)).dueCents,
           adminNotes: context.adminNotes ?? null,
           lodgeId: booking.lodgeId,
         },
