@@ -4,6 +4,7 @@ import {
   fetchLivePrBody,
   gitDiffChangedFiles,
   parseNameStatus,
+  readEventPrBody,
   selectPrBody,
 } from "./pr-body.mjs";
 
@@ -211,7 +212,7 @@ if (invokedPath === import.meta.url) {
           ]
         : null;
     const fetchedBody = await fetchLivePrBody(GATE_LABEL);
-    const body = selectPrBody({ fetchedBody, eventBody: process.env.PR_BODY });
+    const body = selectPrBody({ fetchedBody, eventBody: readEventPrBody() });
     const { outcome } = validateConcurrencyDeclaration(body, changedFiles);
     console.log(`PR concurrency declaration check passed: ${OUTCOME_MESSAGES[outcome]}`);
   } catch (error) {

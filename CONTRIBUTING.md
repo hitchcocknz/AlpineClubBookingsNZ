@@ -375,6 +375,18 @@ the owner's checklist for rebuilding it.
 | `Image security gate (Trivy CRITICAL)` | applied | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
 | `Dependency audit` | applied | `ci.yml` → `dependency-audit` | `pnpm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `pnpm test` and the build on every branch (#2945) |
 
+**The PR-body gates read the description from a file, never an environment
+variable** (#4053). `verify` writes `.pull_request.body` from
+`$GITHUB_EVENT_PATH` to `$RUNNER_TEMP/pr-body.md` and the two gates open it
+through `PR_BODY_FILE` (`readEventPrBody` in `scripts/ci/pr-body.mjs`), as their
+fallback behind the live body fetched from the pulls API. Linux caps one
+environment string at 128 KiB, so a description past that size (PR #3924 reached
+173 KB) used to stop the runner starting the step's shell ("Argument list too
+long") and turn `verify` red with no finding. Do not put
+`github.event.pull_request.body` in any workflow `env:` or `run:`;
+`scripts/ci/pr-body-file.test.mjs` fails if it comes back. Keep a long
+description short anyway: link the review history rather than pasting it.
+
 **Adding a required context is a three-step sequence, and doing it out of
 order breaks every open pull request** — whenever a job producing a required
 context is added or renamed. A branch predating the merge produces none of the
