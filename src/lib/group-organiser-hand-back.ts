@@ -354,8 +354,8 @@ async function updateGroupHandBackAlertRecord(
  */
 export async function resendUnsentGroupOrganiserHandBackAlerts(cutoff: Date, format: ClubFormat): Promise<number> {
   const tasks = await prisma.manualRefundTask.findMany({
+    // The key prefix alone marks a group organiser's hand-back; no other writer sets it.
     where: {
-      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
       status: ManualRefundTaskStatus.OPEN,
       occurrenceKey: { startsWith: GROUP_ORGANISER_HAND_BACK_KEY_PREFIX },
       createdAt: { lt: cutoff },

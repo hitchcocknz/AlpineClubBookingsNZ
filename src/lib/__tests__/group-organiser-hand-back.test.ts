@@ -343,7 +343,6 @@ describe("resendUnsentGroupOrganiserHandBackAlerts (the reaper's task-keyed retr
 
     expect(mocks.prismaTaskFindMany.mock.calls[0]![0]).toEqual({
       where: {
-        kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
         status: ManualRefundTaskStatus.OPEN,
         occurrenceKey: { startsWith: "group-organiser-hand-back:" },
         createdAt: { lt: cutoff },
