@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import {
   findSchoolNightsShiftDoesNotCover,
@@ -27,6 +28,29 @@ export async function readHutLeaderSchoolNightsWarning(
     return `${one ? "One of these nights is" : `${nights.length} of these nights are`} a school group's (from ${nights[0]}), and this lodge does not accept this kind of hut leader for school bookings, so ${one ? "it stays" : "they stay"} without a hut leader who counts. Add a leader the lodge accepts for ${one ? "that night" : "those nights"}, or change who can be hut leader for school bookings on the lodge's settings.`;
   } catch (err) {
     logger.error({ err, assignmentId: shift.id }, "Failed to check school nights for a hut leader assignment");
+    return null;
+  }
+}
+
+/**
+ * The edit's form: re-read the assignment as it now stands, after the PUT's
+ * transaction commits, and ask {@link readHutLeaderSchoolNightsWarning} of it.
+ * An edit can move a row onto school nights or change its kind (the custodian
+ * tick, a held bed) as surely as a create. A failed read is no warning, never
+ * a failed save.
+ */
+export async function readSavedHutLeaderSchoolNightsWarning(
+  db: Pick<
+    Prisma.TransactionClient,
+    "hutLeaderAssignment" | "bookingGuest" | "booking" | "lodgeSettings"
+  >,
+  assignmentId: string,
+): Promise<string | null> {
+  try {
+    const saved = await db.hutLeaderAssignment.findUnique({ where: { id: assignmentId } });
+    return saved ? await readHutLeaderSchoolNightsWarning(db, saved) : null;
+  } catch (err) {
+    logger.error({ err, assignmentId }, "Failed to re-read an edited hut leader assignment");
     return null;
   }
 }

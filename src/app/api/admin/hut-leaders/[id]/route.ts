@@ -12,7 +12,7 @@ import {
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { isCustodianOccupancy } from "@/lib/custodian-occupancy";
-import { readHutLeaderSchoolNightsWarning } from "@/lib/hut-leader-school-nights-warning";
+import { readSavedHutLeaderSchoolNightsWarning } from "@/lib/hut-leader-school-nights-warning";
 
 const updateSchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -186,17 +186,8 @@ export async function PUT(
         { status: refusal.status },
       );
     }
-    // #3821: the create's school-nights advisory, asked of the row as it now
-    // stands, after the commit — an edit can move a row onto school nights or
-    // change its kind (the custodian tick, a held bed) as surely as a create.
-    // A failed read is no warning, never a failed save.
-    let schoolNightsWarning: string | null = null;
-    try {
-      const saved = await prisma.hutLeaderAssignment.findUnique({ where: { id } });
-      if (saved) schoolNightsWarning = await readHutLeaderSchoolNightsWarning(prisma, saved);
-    } catch (err) {
-      logger.error({ err, assignmentId: id }, "Failed to re-read an edited hut leader assignment");
-    }
+    // #3821: the create's school-nights advisory, of the row as saved.
+    const schoolNightsWarning = await readSavedHutLeaderSchoolNightsWarning(prisma, id);
     return NextResponse.json({ success: true, schoolNightsWarning });
   } catch (err) {
     const custodianResponse = custodianBedHoldErrorResponse(err);
