@@ -119,6 +119,12 @@ export const MEMBER_ROSTER_BOOKING_SELECT = {
       stayStart: true,
       stayEnd: true,
       nights: { select: { stayDate: true } },
+      // CONSULTED, NEVER DISCLOSED, like `wholeLodgeHold` above (#3821, owner
+      // decision on #3820, 13 Oct 2026, "Show once, as custodian"). It matches
+      // a custodian to their own guest row, so a custodian who also books is
+      // listed once, as custodian; the builder reads it only to drop those
+      // nights and never copies it into the payload.
+      memberId: true,
     },
   },
 } satisfies Prisma.BookingSelect;
@@ -377,6 +383,13 @@ function buildOneLodgeRoster(
   // in the payload cannot be rendered by a later edit that forgets why.
   const lodgeNightTotals = new Map<string, number>();
 
+  // A custodian who is also a guest is listed ONCE, as custodian, on the
+  // nights they are custodian (#3821, owner decision on #3820, 13 Oct 2026,
+  // "Show once, as custodian"): their own booking keeps the rest of the party.
+  const isCustodianOn = (memberId: string | null, night: string) =>
+    memberId !== null &&
+    custodianHolds.some((hold) => hold.memberId === memberId && holdCoversNight(hold, night));
+
   // PASS ONE: who is present, on which nights, and how many people the lodge
   // holds each night. Sole occupancy cannot be decided until every booking has
   // been counted, so nothing is reduced or labelled in this pass.
@@ -384,7 +397,9 @@ function buildOneLodgeRoster(
     const present = booking.guests
       .map((guest) => ({
         guest,
-        nights: nightsForGuest(guest, booking, windowNights),
+        nights: nightsForGuest(guest, booking, windowNights).filter(
+          (night) => !isCustodianOn(guest.memberId, night),
+        ),
       }))
       .filter((entry) => entry.nights.length > 0);
 
