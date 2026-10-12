@@ -28,8 +28,9 @@ import {
   enqueueAdditionalPaymentIntentRecovery,
   enqueueBookingModificationRefundRecovery,
   processPaymentRecoveryOperations,
-  runPaymentRecoveryOperationNow,
 } from "@/lib/payment-recovery";
+import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
+import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 import {
   buildAdditionalIntentRecoveryIdempotencyKey,
   buildBookingModificationRefundMetadata,
@@ -138,6 +139,17 @@ export async function drainSupersededPrimaryIntents({
   }
 }
 
+/**
+ * #4057: what an edit's after-commit refund came to. `refundDestination` is
+ * the one answer the "Booking Modified" email names (`bookingModifiedRefundSentence`):
+ * an organiser-card refund is `organiser_card` only when its debt says Stripe
+ * made it, otherwise `organiser_card_pending`.
+ */
+export type BookingModificationRefundOutcome = {
+  stripeRefundId: string | undefined;
+  refundDestination: BookingModifiedRefundDestination;
+};
+
 export async function executeBookingModificationRefund({
   format,
   bookingId,
@@ -154,9 +166,10 @@ export async function executeBookingModificationRefund({
   idempotencyKeyPrefix: string;
   failureMessage: string;
   recoveryFailureMessage: string;
-}): Promise<string | undefined> {
+}): Promise<BookingModificationRefundOutcome> {
   if (result.pendingRefundAmountCents <= 0 || !result.paymentId) {
-    return undefined;
+    // #4057: an organiser child's refund that was not run here is still owed.
+    return { stripeRefundId: undefined, refundDestination: result.organiserChildRefund ? "organiser_card_pending" : "own" };
   }
 
   // #3653: an organiser-settled child's edit wrote its refund debt before it
@@ -164,14 +177,22 @@ export async function executeBookingModificationRefund({
   // child has no transaction of its own for the path below to refund. A row
   // that is missing is logged, never replaced by the ordinary path, which would
   // find nothing to refund and close its own recovery as done.
+  // #4057: made only once the debt's own status, re-read after the run and
+  // outside any transaction, says so (`runOrganiserChildRefundDebtNow`).
   if (result.organiserChildRefund) {
-    const debt = await prisma.paymentRecoveryOperation.findUnique({
-      where: { idempotencyKey: buildOrganiserChildModificationRefundKey(result.bookingModificationId) },
-      select: { id: true },
-    });
-    if (debt) await runPaymentRecoveryOperationNow(debt.id, format);
-    else logger.error({ bookingId }, "Organiser child refund debt missing after the edit committed (#3653)");
-    return undefined;
+    // #4057: the edit has committed, so a failed read is logged, not thrown, and the debt stays owed.
+    const debt = await prisma.paymentRecoveryOperation
+      .findUnique({
+        where: { idempotencyKey: buildOrganiserChildModificationRefundKey(result.bookingModificationId) },
+        select: { id: true },
+      })
+      .catch((err: unknown) => {
+        logger.error({ err, bookingId }, "Could not read the organiser child refund debt after the edit committed (#4057)");
+        return undefined;
+      });
+    if (debt === null) logger.error({ bookingId }, "Organiser child refund debt missing after the edit committed (#3653)");
+    const made = debt ? await runOrganiserChildRefundDebtNow(debt.id, format) : false;
+    return { stripeRefundId: undefined, refundDestination: made ? "organiser_card" : "organiser_card_pending" };
   }
 
   try {
@@ -191,7 +212,7 @@ export async function executeBookingModificationRefund({
       // member while the ledger records a second refund that never happened.
       idempotencyKeyPrefix: `${idempotencyKeyPrefix}_${result.bookingModificationId}`,
     });
-    return refundResult.refunds[0]?.refundId;
+    return { stripeRefundId: refundResult.refunds[0]?.refundId, refundDestination: "own" };
   } catch (refundErr) {
     logger.error(
       { err: refundErr, bookingId, amount: result.pendingRefundAmountCents },
@@ -224,7 +245,7 @@ export async function executeBookingModificationRefund({
         ),
       );
     }
-    return undefined;
+    return { stripeRefundId: undefined, refundDestination: "own" };
   }
 }
 

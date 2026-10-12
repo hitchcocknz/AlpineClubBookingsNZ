@@ -135,27 +135,51 @@ function ownCardRefundSentence(amount: string): string {
 }
 
 /**
+ * #4057: where a "Booking Modified" refund went, as the edit's settlement
+ * answers it after commit (`executeBookingModificationRefund`), never
+ * recomputed. `own`: back to what the member paid with - their card, or by bank
+ * transfer when the club sends it by hand. `organiser_card`: a joiner's booking
+ * the group organiser paid for by card (#3653), and the refund's debt says
+ * Stripe made it. `organiser_card_pending`: that refund, not made yet - failed,
+ * not claimed in the run, or unreadable - and owed to the recovery runner.
+ */
+export type BookingModifiedRefundDestination =
+  | "own"
+  | Extract<OrganiserRefundMethod, "organiser_card" | "organiser_card_pending">;
+
+/**
  * #3827 (owner decision D-3813-6, `INV-PAY-117`): the refund half of a
  * "Booking Modified" email's money note, ONE wording for the HTML template and
  * the admin-editable body (`INV-SSOT`). A card refund has already been made by
  * the time the email goes; a bank-transfer refund is an officer task the club
- * has still to carry out, so it is promised rather than reported.
+ * has still to carry out, so it is promised rather than reported. #3916,
+ * #4057: an organiser-card refund is reported made only when its debt says so,
+ * otherwise it is on its way; such a refund is a Stripe one, so never by hand.
  */
 export function bookingModifiedRefundSentence(
   amount: string,
   refundByBankTransfer: boolean,
-  /**
-   * #3916: a joiner's booking the group organiser paid for by card refunds its
-   * reduction to the ORGANISER's card (#3653), not to anything the joiner paid
-   * with. The edit's own settlement answer (`organiserChildRefund !== null`),
-   * never recomputed here. Such a refund is a Stripe one, so never by hand.
-   */
-  refundReturnedToOrganiser: boolean,
+  refundDestination: BookingModifiedRefundDestination,
 ): string {
-  if (refundReturnedToOrganiser) return organiserCardRefundSentence(amount);
-  return refundByBankTransfer
-    ? `The club will refund ${amount} to you by bank transfer.`
-    : ownCardRefundSentence(amount);
+  switch (refundDestination) {
+    case "organiser_card":
+      return organiserCardRefundSentence(amount);
+    case "organiser_card_pending":
+      return organiserCardRefundPendingSentence(amount);
+    case "own":
+      return refundByBankTransfer
+        ? `The club will refund ${amount} to you by bank transfer.`
+        : ownCardRefundSentence(amount);
+  }
+}
+
+/**
+ * #4057: an organiser-card refund still on its way reads as information, the
+ * way "Booking Cancelled" boxes it (`bookingCancelledRefundMade`); every other
+ * edit refund keeps its success box.
+ */
+export function bookingModifiedRefundPending(refundDestination: BookingModifiedRefundDestination): boolean {
+  return refundDestination === "organiser_card_pending";
 }
 
 /**

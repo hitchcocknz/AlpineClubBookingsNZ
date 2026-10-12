@@ -119,10 +119,14 @@ payment method." A refund on a booking paid by internet banking or in cash reads
 "The club will refund $X to you by bank transfer." — it is promised, not
 reported, because a treasurer still has to send it from the **Money to settle**
 card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
-(#3827). A reduction that goes back partly to the card and partly as account
-credit names both. A reduction that cancels the member's unpaid additional
-payment outright adds "The additional payment we asked for has been
-cancelled, so you no longer need to pay it." (#3954).
+(#3827). On a group booking the organiser paid for by card, the refund goes to
+the group organiser's card, and the sentence says it has been processed there
+only once that card refund has gone through; until then it says the refund is
+on its way to the group organiser's card (#4057). A reduction that goes back
+partly to the card and partly as account credit names both. A reduction that
+cancels the member's unpaid additional payment outright adds "The additional
+payment we asked for has been cancelled, so you no longer need to pay it."
+(#3954).
 
 `{{refundSentence}}` on the **Refund Appeal Approved** message works the same
 way. A card refund reads "A refund of $X will be processed to your original
@@ -352,8 +356,9 @@ Two consequences worth knowing before you edit one:
   (#3954) — whichever apply, already worded and with the amount in them. A
   refund names where it went: the member's original payment method, a bank
   transfer the club will send, or, on a group booking the organiser paid for
-  by card, the group organiser's card. Keep it on a line of its own, with no
-  `$` or label in front.
+  by card, the group organiser's card: processed there, or on its way there
+  when the card refund has not gone through yet (#4057). Keep it on a line of
+  its own, with no `$` or label in front.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
   says where the refund went: the member's original payment method, account
   credit, or a refund the club will arrange directly. Otherwise it says no
