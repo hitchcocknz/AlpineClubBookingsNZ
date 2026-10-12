@@ -692,12 +692,8 @@ export function buildPolicyExceptionApprovalHooks(
       // the hand-written chain here used to spell for itself.
       const ownerEmail = booking ? bookingOwnerEmail(booking) : null;
       if (!booking || !ownerEmail) return;
-      // What is still owed (#4058, `INV-PAY-119`): zero if the create already
-      // settled it ($0 / fully credit-covered bookings reach PAID or CONFIRMED
-      // and send their own confirmation); otherwise what the pay step will ask
-      // for, through the one home — price plus any recorded change fee, less the
-      // account credit applied at create. The bare price would quote more than
-      // the member is asked to pay.
+      // What is still owed (#4058, `INV-PAY-119`): nothing once the create
+      // settled it; else what the pay step asks, through the one home.
       const settled =
         booking.status === "PAID" ||
         booking.status === "CONFIRMED" ||

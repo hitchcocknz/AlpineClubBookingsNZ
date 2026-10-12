@@ -103,9 +103,9 @@ vi.mock("@/lib/email", () => ({
     sendBookingPolicyExceptionApprovedEmail(...(args as [])),
 }));
 
-const deriveBookingAppliedCreditCents = vi.fn(async (..._args: unknown[]) => 0);
+const deriveBookingAppliedCreditCents = vi.fn<(id: string) => Promise<number>>(async () => 0);
 vi.mock("@/lib/member-credit", () => ({
-  deriveBookingAppliedCreditCents: (...a: unknown[]) => deriveBookingAppliedCreditCents(...a),
+  deriveBookingAppliedCreditCents: (id: string) => deriveBookingAppliedCreditCents(id),
 }));
 
 const bookingFindUnique = vi.fn();
