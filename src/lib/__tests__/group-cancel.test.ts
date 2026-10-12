@@ -74,7 +74,7 @@ vi.mock("@/lib/booking-ledger-group-settlement-sync", () => groupLedger);
 // WHERE the organiser cancel books each share and WHEN it alerts.
 const handBack = vi.hoisted(() => ({
   recordGroupOrganiserHandBackShare: vi.fn<(tx: unknown, input: unknown) => Promise<{ id: string; amountCents: number; created: boolean } | null>>(async () => null),
-  alertGroupOrganiserHandBack: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
+  alertUnsentGroupOrganiserHandBacks: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
 }));
 vi.mock("@/lib/group-organiser-hand-back", () => handBack);
 
@@ -1647,10 +1647,10 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     const [firstShare, secondShare] = handBack.recordGroupOrganiserHandBackShare.mock.invocationCallOrder;
     expect(mocks.paymentUpdate.mock.invocationCallOrder[0]).toBeLessThan(firstShare!);
     expect(mocks.enqueueXeroRefund.mock.invocationCallOrder[0]).toBeLessThan(firstShare!);
-    // One alert, for the task this run created, after every child - so it re-reads the final total.
-    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledTimes(1);
-    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledWith({ organiserBookingId: ORG_BOOKING, taskId: "task-1", format: CLUB_FORMAT_TEST });
-    const [alerted] = handBack.alertGroupOrganiserHandBack.mock.invocationCallOrder;
+    // The alert sweep runs once, after every child - it sends any unsent alert, re-reading the final total.
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledWith({ settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST });
+    const [alerted] = handBack.alertUnsentGroupOrganiserHandBacks.mock.invocationCallOrder;
     expect(alerted!).toBeGreaterThan(secondShare!);
     expect(alerted!).toBeGreaterThan(mocks.settleHostingCoverageAfterCommit.mock.invocationCallOrder.at(-1)!);
     const childAudits = mocks.logAudit.mock.calls.map(([entry]) => entry as { targetId: string; metadata: { organiserHandBackTaskId: string | null } });
@@ -1671,10 +1671,10 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
 
     expect(handBack.recordGroupOrganiserHandBackShare).toHaveBeenCalledTimes(1);
     expect(handBack.recordGroupOrganiserHandBackShare.mock.calls[0]![1]).toMatchObject({ claimedChildId: "child-1" });
-    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
   });
 
-  it("a claim that only grows the task, or whose share is already booked, sends no alert", async () => {
+  it("a run whose claim only grows the task still runs the sweep once; whether to send is the task's own record", async () => {
     ibGroup({ refundPlan: { "child-2": 3000 } });
     mocks.bookingFindMany.mockResolvedValue([paid("child-2", "pay-2")]);
     handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(GROWN);
@@ -1682,10 +1682,11 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
 
     expect(handBack.recordGroupOrganiserHandBackShare).toHaveBeenCalledTimes(1);
-    expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledWith({ settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST });
   });
 
-  it("a claim that rolls back after booking the share sends no alert", async () => {
+  it("a claim that rolls back still leaves the sweep to run once, after the loop and outside its transaction", async () => {
     ibGroup();
     mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
     handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED);
@@ -1694,7 +1695,9 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
 
     expect(handBack.recordGroupOrganiserHandBackShare).toHaveBeenCalledTimes(1);
-    expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
+    // The rolled-back claim's task does not exist, so the sweep finds nothing to send.
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks.mock.invocationCallOrder[0]!).toBeGreaterThan(mocks.reconcileHostingReviewForSystemCancellation.mock.invocationCallOrder[0]!);
   });
 
   it("an exception that escapes the loop after the task was created still sends its alert", async () => {
@@ -1705,8 +1708,8 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
 
     await expect(settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST)).rejects.toThrow("coverage drain crashed");
 
-    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledTimes(1);
-    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledWith({ organiserBookingId: ORG_BOOKING, taskId: "task-1", format: CLUB_FORMAT_TEST });
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledWith({ settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST });
   });
 
   it("books nothing for a card settlement, an unsettled group, or a child the policy refunds nothing", async () => {
@@ -1734,6 +1737,10 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
 
     expect(handBack.recordGroupOrganiserHandBackShare).not.toHaveBeenCalled();
-    expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
+    // Only the Internet Banking groups run the sweep; a card group never does.
+    expect(handBack.alertUnsentGroupOrganiserHandBacks.mock.calls.map(([input]) => input)).toEqual([
+      { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST },
+      { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST },
+    ]);
   });
 });

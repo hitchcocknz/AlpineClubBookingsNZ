@@ -33,6 +33,7 @@ import {
 } from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
+import { adminAlertSendOutcome, type AdminAlertSendOutcome } from "./admin-alert-send-result";
 import { applyXeroOrgShortCode } from "@/lib/xero-links";
 import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { stampXeroOrganisation } from "./admin-alert-xero-links";
@@ -420,12 +421,13 @@ export async function sendAdminManualRefundTaskAlert(data: {
   situation?: ManualRefundTaskAlertSituation;
 },
   format: ClubFormat,
-) {
+): Promise<AdminAlertSendOutcome> {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const reviewUrl = `${baseUrl}/admin/payments`;
   const situation = data.situation ?? "cash-cancellation";
 
-  await sendToAdmins({
+  // #4042: the outcome, so the group alert is recorded as sent only when it was.
+  const result = await sendToAdmins({
     subject: `Manual refund needed — ${manualRefundTaskAlertLabel(situation)}: ${data.memberName}`,
     html: await renderEmailHtml(() => adminManualRefundTaskTemplate({ ...data, reviewUrl }, format)),
     templateName: "admin-manual-refund-task",
@@ -445,6 +447,7 @@ export async function sendAdminManualRefundTaskAlert(data: {
     },
     preferenceKey: "adminPaymentFailure",
   });
+  return adminAlertSendOutcome(result);
 }
 
 // N-05: Admin alert - Xero sync error. Returns `sendToAdmins`' result so a

@@ -186,7 +186,7 @@ export async function voidCancelledGroupSettlementInvoice(params: {
  * the task holds the total, and the invoice's paid amount is not what is owed.
  */
 function groupHandBackVoidRefusal(invoiceId: string, money: string): string {
-  return `The group was cancelled, but its combined invoice ${invoiceId} has ${money}, so it was not voided. The organiser's repayment is tracked by the hand-back task on the payments board's Money to settle queue, which shows the total and grows as each joiner's cancellation completes: pay the organiser what the task shows (if no task appears once the joiners' places are cancelled, the cancellation policy repays the organiser nothing). In Xero, raise a credit note on this invoice for the amount you repaid and record the refund against that credit note.`;
+  return `The group was cancelled, but its combined invoice ${invoiceId} has ${money}, so it was not voided. The organiser's repayment is tracked by the hand-back task on the payments board's Money to settle queue, which shows the total and grows as each joiner's cancellation completes: pay the organiser what the task shows (if no hand-back task appears, check the joiners' cancelled bookings for refunds recorded to the organiser). In Xero, raise a credit note on this invoice for the amount you repaid and record the refund against that credit note.`;
 }
 
 /**

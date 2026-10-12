@@ -1250,6 +1250,9 @@ describe("the bound-invoice rule in the create worker (#3642)", () => {
     const [message] = messages;
     expect(message).toMatch(/tracked by the hand-back task on the payments board's Money to settle queue, which shows the total and grows as each joiner's cancellation completes: pay the organiser what the task shows/);
     expect(message).toMatch(/raise a credit note on this invoice for the amount you repaid and record the refund against that credit note/);
+    // A cancel from before #4042 raised no task: the treasurer is sent to the bookings, never told nothing is owed.
+    expect(message).toMatch(/if no hand-back task appears, check the joiners' cancelled bookings for refunds recorded to the organiser/);
+    expect(message).not.toMatch(/repays the organiser nothing/);
     expect(message).not.toMatch(/Refund or credit the organiser in Xero/);
     // No figure but the invoice's own paid amount.
     expect(message.match(/\$[\d,.]+/g)).toEqual(["$90.00"]);

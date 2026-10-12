@@ -3088,8 +3088,10 @@ site - it runs on the first cancel and on the reaper's resume, both through
 raises it (an Internet Banking plan is never replayed). Each step is a
 find-then-write made single by the claim's `lock(1)`, with the unique key as
 the backstop; it reads ledger lines and children under that lock and makes no
-provider call, and the run that created the task alerts once, after the
-children loop, outside every transaction. Its
+provider call. Its alert goes once the children loop ends, outside every
+transaction, and is recorded on the task after the send by an update fenced on
+the `reviewContext` it read - no key: a claim that grew the task meanwhile
+keeps the record under `lock(1)`, and the fence makes the sweep re-read. Its
 COMPLETION joins the cohort too: `resolveManualRefundTask` takes `lock(1)`
 first for this task (as for an edit review and a non-cancellation hand-back,
 `resolveManualRefundTask#1`), so a growth and a completion never interleave,

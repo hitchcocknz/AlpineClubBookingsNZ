@@ -293,7 +293,7 @@ export function manualRefundTaskAlertHeading(situation: ManualRefundTaskAlertSit
 
 /** The amount row's label, in the HTML and the text body (`{{handBackAmountLabel}}`). */
 export function manualRefundTaskAlertAmountLabel(situation: ManualRefundTaskAlertSituation): string {
-  return situation === "group-organiser-internet-banking" ? "Amount to repay" : "Amount to refund";
+  return situation === "group-organiser-internet-banking" ? "Owed when this alert was sent" : "Amount to refund";
 }
 
 /** Whom the money goes back to, as the text body's row label (`{{handBackRecipientLabel}}`). */

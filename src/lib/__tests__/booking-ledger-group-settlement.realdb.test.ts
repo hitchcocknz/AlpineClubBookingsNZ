@@ -511,6 +511,8 @@ let census: typeof import("@/lib/booking-ledger-projection-census-store");
           occurrenceKey: `group-organiser-hand-back:${BANK.settlement}`,
         }),
       ]);
+      // Its alert went once, and the task records it, so the re-run sent nothing more.
+      expect((tasks[0]!.reviewContext as { groupOrganiserHandBack: { alertSentAt?: string } }).groupOrganiserHandBack.alertSentAt).toEqual(expect.any(String));
       const payments = await prisma.payment.findMany({ where: { bookingId: { in: BANK.children } }, orderBy: { id: "asc" } });
       const lineTotal = await lineCount([BANK.organiser, ...BANK.children]);
       // The clock is frozen, so new rows are told apart by id, not by time.

@@ -240,7 +240,9 @@ its total is every joiner refund the ledger shows for the group, kept up to
 date as each joiner's place is cancelled; its reason lists the shares (a very
 large group lists the first ones and counts the rest: see each joiner's
 booking). Admins get the **Manual refund needed** email once, after the cancel
-has worked through the joiners, with the amount to repay. Mark the task paid
+has worked through the joiners, with the amount owed when it was sent (pay the
+total the task shows; if a run died before sending it, the next run of the
+cancel sends it). Mark the task paid
 back once the money has gone; that records only that the money went, because
 the refunds are already in the ledger, and sends nothing to Xero. If the total
 changed while you had the page open, you are told the new total: repay the

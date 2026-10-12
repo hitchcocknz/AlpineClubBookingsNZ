@@ -464,7 +464,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(group.body).toContain("recorded in the app's ledger as made");
     expect(group.body).toContain("Organiser: Alice Example");
     expect(group.body.startsWith("Manual Refund Needed - Internet Banking Group Cancelled\n")).toBe(true);
-    expect(group.body).toContain("Amount to repay: $75.00");
+    expect(group.body).toContain("Owed when this alert was sent: $75.00");
     expect(group.body).not.toContain("settled in cash");
     expect(group.body).not.toContain("no Xero invoice to credit");
     expect(group.body).not.toMatch(/in Xero/);

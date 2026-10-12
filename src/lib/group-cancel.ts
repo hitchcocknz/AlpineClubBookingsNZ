@@ -109,7 +109,7 @@ import {
 } from "@/lib/payment-recovery";
 import { deserializeRefundPlan, isMirrorRefundPlan, mirrorPlanRefundedCents, organiserCancelJoinerEmailRefund } from "@/lib/group-settlement-refund-plan";
 import { refundOrganiserCancelChildren } from "@/lib/organiser-child-refund-executor";
-import { alertGroupOrganiserHandBack, recordGroupOrganiserHandBackShare, type GroupOrganiserHandBack } from "@/lib/group-organiser-hand-back";
+import { alertUnsentGroupOrganiserHandBacks, recordGroupOrganiserHandBackShare, type GroupOrganiserHandBack } from "@/lib/group-organiser-hand-back";
 import { enqueueXeroGroupSettlementInvoiceVoidOperation } from "@/lib/xero-group-settlement-void-outbox";
 import logger from "@/lib/logger";
 import { clubToday } from "@/lib/club-time";
@@ -511,8 +511,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
   }
 
-  // #4042 (`INV-PAY-123`): organiser hand-backs this run created, alerted once each after the children.
-  const createdHandBackTaskIds: string[] = [];
+  // #4042 (`INV-PAY-123`): the organiser's hand-back is alerted once the loop ends (finally), at most once.
   try {
   for (const child of children) {
     const refundForChild = refundByChildId.get(child.id) ?? 0;
@@ -636,7 +635,6 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
 
     if (!childClaimed) continue;
-    if (raised.handBack?.created) createdHandBackTaskIds.push(raised.handBack.id);
 
     // Best-effort outbox worker kick, kept POST-commit (the outbox cron drains
     // the row regardless). Never inside the tx: that would put a Xero provider
@@ -740,8 +738,8 @@ export async function settleGroupBookingOnOrganiserCancel(
     await settleHostingCoverageAfterCommit({ bookingId: child.id });
   }
   } finally {
-    // Never from a rolled-back claim (only a committed one records its task), and never inside a transaction.
-    for (const taskId of createdHandBackTaskIds) await alertGroupOrganiserHandBack({ organiserBookingId, taskId, format });
+    // Outside every transaction; a task only a committed claim wrote; any unsent alert, so a crashed run's is retried.
+    if (settlement && !settlement.stripePaymentIntentId) await alertUnsentGroupOrganiserHandBacks({ settlementId: settlement.id, organiserBookingId, format });
   }
 
   // The group was fenced CANCELLED before provider calls and child cleanup.

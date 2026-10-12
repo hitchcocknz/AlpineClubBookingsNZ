@@ -77,6 +77,8 @@ export function groupOrganiserHandBackRefusal(
 export type GroupOrganiserHandBackShares = {
   settlementId: string;
   shares: Array<{ bookingId: string; name: string; cents: number }>;
+  /** When its "Manual refund needed" alert went out (ISO), so it is sent at most once and retried after a crash. */
+  alertSentAt?: string;
 };
 
 /** The shares a group organiser's hand-back recorded, or null for any other row. */
@@ -84,7 +86,7 @@ export function readGroupOrganiserHandBackShares(reviewContext: unknown): GroupO
   if (!reviewContext || typeof reviewContext !== "object" || Array.isArray(reviewContext)) return null;
   const value = (reviewContext as Record<string, unknown>).groupOrganiserHandBack;
   if (!value || typeof value !== "object") return null;
-  const { settlementId, shares } = value as Record<string, unknown>;
+  const { settlementId, shares, alertSentAt } = value as Record<string, unknown>;
   if (typeof settlementId !== "string" || !Array.isArray(shares)) return null;
   const parsed = shares.flatMap((share: unknown) => {
     const { bookingId, name, cents } = (share ?? {}) as Record<string, unknown>;
@@ -92,7 +94,7 @@ export function readGroupOrganiserHandBackShares(reviewContext: unknown): GroupO
       ? [{ bookingId, name, cents: cents as number }]
       : [];
   });
-  return { settlementId, shares: parsed };
+  return { settlementId, shares: parsed, ...(typeof alertSentAt === "string" ? { alertSentAt } : {}) };
 }
 
 /** #4042: is this task a group organiser's hand-back (`INV-PAY-123`)? */

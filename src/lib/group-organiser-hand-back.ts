@@ -132,7 +132,8 @@ export async function recordGroupOrganiserHandBackShare(
       amountCents,
       raisedAmountCents: amountCents,
       reason: composeGroupHandBackReason({ totalCents: amountCents, shares, supplementary: false, format: input.format }),
-      reviewContext: sharesContext(input.settlementId, shares),
+      // Growing keeps the alert's record: a sent alert is never sent again.
+      reviewContext: sharesContext(input.settlementId, shares, main ? readGroupOrganiserHandBackShares(main.reviewContext)?.alertSentAt : undefined),
     };
     if (!main) {
       const created = await tx.manualRefundTask.create({
@@ -213,48 +214,76 @@ async function joinersOwed(
   return new Map([...owed].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-function sharesContext(settlementId: string, shares: ReadonlyArray<Share>): Prisma.InputJsonValue {
-  const groupOrganiserHandBack: GroupOrganiserHandBackShares = { settlementId, shares: [...shares] };
+function sharesContext(settlementId: string, shares: ReadonlyArray<Share>, alertSentAt?: string): Prisma.InputJsonValue {
+  const groupOrganiserHandBack: GroupOrganiserHandBackShares = { settlementId, shares: [...shares], ...(alertSentAt ? { alertSentAt } : {}) };
   return { groupOrganiserHandBack } as unknown as Prisma.InputJsonValue;
 }
 
 /**
- * #4042: the finance alert for a hand-back this run CREATED, sent once after
- * the children loop - the cash cancel's "Manual refund needed" email in its
- * group wording - with the task's amount and reason re-read then, so it states
- * the total every claim of this run booked. Never inside a transaction, never
- * for a task this run did not create. Best-effort: the task is the record and
- * this is the nudge, so it never throws.
+ * #4042: the finance alert for every OPEN organiser hand-back of this
+ * settlement whose alert has not gone out - the cash cancel's "Manual refund
+ * needed" email in its group wording, with the task's amount and reason read
+ * now. Called once the children loop ends (the reaper's resumed run included),
+ * outside every transaction, so a run that died after its creating claim
+ * committed leaves the alert to the next run rather than losing it.
+ *
+ * AT MOST ONCE: the send is recorded on the task (`alertSentAt`) only after it
+ * returns, by an update fenced on the very `reviewContext` it read; a claim that
+ * grew the task meanwhile (it keeps `alertSentAt`, under `lock(1)`) makes the
+ * fence miss, and the record is re-read and written again. A send that reached
+ * nobody yet ("undelivered") or threw is not recorded, so a later run retries.
+ * Two organiser cancels of one group never run at once (#1160), so two sweeps
+ * do not race. Best-effort: the task is the record, so it never throws.
  */
-export async function alertGroupOrganiserHandBack(input: {
+export async function alertUnsentGroupOrganiserHandBacks(input: {
+  settlementId: string;
   organiserBookingId: string;
-  taskId: string;
   format: ClubFormat;
 }): Promise<void> {
   try {
-    const [organiserBooking, task] = await Promise.all([
-      prisma.booking.findUniqueOrThrow({
-        where: { id: input.organiserBookingId },
-        select: { checkIn: true, checkOut: true, ...OWNER_NAME_SELECT },
-      }),
-      prisma.manualRefundTask.findUniqueOrThrow({ where: { id: input.taskId }, select: { amountCents: true, reason: true } }),
-    ]);
-    await sendAdminManualRefundTaskAlert(
-      {
-        memberName: ownerName(organiserBooking),
-        checkIn: organiserBooking.checkIn,
-        checkOut: organiserBooking.checkOut,
-        refundAmountCents: task.amountCents ?? 0,
-        bookingId: input.organiserBookingId,
-        reason: task.reason,
-        situation: "group-organiser-internet-banking",
-      },
-      input.format,
-    );
+    const tasks = await prisma.manualRefundTask.findMany({
+      where: { ...groupOrganiserHandBackTasksWhere(input.settlementId), status: ManualRefundTaskStatus.OPEN },
+      select: { id: true, amountCents: true, reason: true, reviewContext: true },
+    });
+    const unsent = tasks.filter((task) => !readGroupOrganiserHandBackShares(task.reviewContext)?.alertSentAt);
+    if (unsent.length === 0) return;
+    const organiserBooking = await prisma.booking.findUniqueOrThrow({
+      where: { id: input.organiserBookingId },
+      select: { checkIn: true, checkOut: true, ...OWNER_NAME_SELECT },
+    });
+    for (const task of unsent) {
+      const outcome = await sendAdminManualRefundTaskAlert(
+        {
+          memberName: ownerName(organiserBooking),
+          checkIn: organiserBooking.checkIn,
+          checkOut: organiserBooking.checkOut,
+          refundAmountCents: task.amountCents ?? 0,
+          bookingId: input.organiserBookingId,
+          reason: task.reason,
+          situation: "group-organiser-internet-banking",
+        },
+        input.format,
+      );
+      if (outcome !== "undelivered") await recordAlertSent(task.id, new Date().toISOString());
+    }
   } catch (err) {
     logger.error(
-      { err, organiserBookingId: input.organiserBookingId, manualRefundTaskId: input.taskId },
-      "Failed to alert admins about a group organiser's hand-back task",
+      { err, organiserBookingId: input.organiserBookingId, settlementId: input.settlementId },
+      "Failed to alert admins about a group organiser's hand-back task; the next run of the cancel retries",
     );
   }
+}
+
+async function recordAlertSent(taskId: string, alertSentAt: string): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId }, select: { reviewContext: true } });
+    const shares = readGroupOrganiserHandBackShares(task.reviewContext);
+    if (!shares || shares.alertSentAt) return;
+    const written = await prisma.manualRefundTask.updateMany({
+      where: { id: taskId, reviewContext: { equals: task.reviewContext as Prisma.InputJsonValue } },
+      data: { reviewContext: sharesContext(shares.settlementId, shares.shares, alertSentAt) },
+    });
+    if (written.count === 1) return;
+  }
+  throw new Error(`Could not record the sent alert on hand-back task ${taskId}`);
 }
