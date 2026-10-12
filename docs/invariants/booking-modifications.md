@@ -78,28 +78,28 @@ second ask for the same money. Not recorded means not raised.
   and its recovery replay sends it** (#4036). Stripe refuses a key replayed with
   other parameters (`idempotency_error`), and a refused replay never asks the
   member. Both plan it with `planOrdinaryAskMint`: the door's key, or that key
-  naming the amount when the replay's re-derived figure moved; the amount; and
-  metadata whose reason is the door's own, named by the key frozen on the
-  recovery row (`ordinaryAskReasonForStripeKey`), so a row the previous
-  release's door wrote replays its request too. Each door's key and reason are
-  spelled once (`ordinaryAskDoorRequest`), derived together from the door the
-  minter is given, and never renamed. Both name the
-  customer one way (`resolveAskCustomerId`): the payment's stored customer,
-  else the booking owner's, an organisation included. Ledger rows keep their
+  naming a re-derived amount; the amount; and metadata whose reason is the
+  door's, named by the key frozen on the recovery row
+  (`ordinaryAskReasonForStripeKey`), so an old door's row replays too. Each
+  door's key and reason are spelled once (`ordinaryAskDoorRequest`), derived
+  together from the door, and never renamed. Both resolve the customer one way
+  (`resolveAskCustomerId`), an organisation included. Ledger rows keep their
   own reasons.
-- **A replay Stripe still refuses adopts an unrecorded, unpaid intent that
-  matches this ask** (`mintOrdinaryAskIntent`): created since five minutes
-  before the recovery row, for this booking, an additional ask by this door's
-  reason or the pre-#4036 runner's, at this amount and charge currency, and on
-  no ledger row. It fails closed, and the recovery retries and then alerts as
-  `INV-MOD-003` says, when none or several match, when the scan stopped at its
-  bound, or when another unfinished recovery of the booking could own the
-  match. A door-reason intent must predate its recovery row (60 seconds'
-  skew), which is written only after the door's create failed; an old-runner
-  intent need not. The runner re-checks under its claim that no row took the intent, and
-  leaves the payment's customer as it was. The door's own mint looks nothing up.
-- **Not** a review charge, whose replay re-enters the door with its own request
-  (`INV-PAY-112`), nor a re-issued ask (`INV-PAY-120`).
+- **A refused replay adopts an unrecorded, unpaid intent that matches this
+  ask** (`mintOrdinaryAskIntent`): this booking, an additional ask by this
+  door's reason or the pre-#4036 runner's, this amount and currency, on no
+  ledger row, created since five minutes before the recovery row. It fails
+  closed (retry, then alert, `INV-MOD-003`) when none or several match, the
+  scan stopped at its bound, or another in-flight recovery of the booking
+  (`isPaymentRecoveryOperationInFlight`) could own the match. A door-reason
+  intent must predate the row (60 seconds' skew), so a later door's is never
+  taken; the cost is that a drifted customer can exclude the runner's own
+  earlier intent, which then fails closed. Adoption leaves the payment's
+  customer as it was. The door's own mint looks nothing up.
+- **An edit's ask row is never written over another edit's**: the ask write
+  refuses, atomically, a row naming another `bookingModificationId`, and the
+  runner also refuses an adopted intent that any row holds.
+- **Not** a review charge (`INV-PAY-112`) or a re-issued ask (`INV-PAY-120`).
 
 ## INV-MOD-004
 

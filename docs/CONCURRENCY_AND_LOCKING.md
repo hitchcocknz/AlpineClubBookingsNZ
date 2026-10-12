@@ -3111,7 +3111,7 @@ replay share one request (`INV-MOD-060`, #4036), so in the window an old
 door's row replays byte for byte under this runner, a new door's row the old
 runner replays is refused and backs off until this runner replays it, and an
 intent the old runner minted under its own reason is adopted only as the one
-unrecorded match no other unfinished recovery of the booking could own.
+unrecorded match no other in-flight recovery of the booking could own.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`
