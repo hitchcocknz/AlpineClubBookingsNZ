@@ -99,9 +99,11 @@ export function resolveBookingDetailPayment({
   const handBackOwedAfterCancellationCents = retainedCash?.handBackOwedCents ?? 0;
   // #3924: the note that a refund is still being paid back by hand is for the
   // booker and officers, not a linked guest viewing the booking.
-  const showHandBackOwedNote =
-    handBackOwedAfterCancellationCents > 0 &&
-    (isBookingOwner || canManageBooking || nonOwnerAdminViewer);
+  const bookerOrOfficerViewer = isBookingOwner || canManageBooking || nonOwnerAdminViewer;
+  const showHandBackOwedNote = handBackOwedAfterCancellationCents > 0 && bookerOrOfficerViewer;
+  // #3991: so are the cancellation's account-credit lines — credit held for the
+  // owner and their previously applied credit restored are the owner's money.
+  const showCancellationCreditLines = bookerOrOfficerViewer;
   const latestRefundAppeal = booking.refundRequests[0] ?? null;
   // #3827 (`INV-PAY-118`): net of every hand-back still promised back by bank
   // transfer and of the credit minted from late cash - the figure the appeal
@@ -213,6 +215,7 @@ export function resolveBookingDetailPayment({
     retainedAfterCancellationCents,
     handBackOwedAfterCancellationCents,
     showHandBackOwedNote,
+    showCancellationCreditLines,
     latestRefundAppeal,
     maxRefundableCents,
     showGuestPaymentLinkStandalone,

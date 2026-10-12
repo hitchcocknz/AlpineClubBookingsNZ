@@ -28,6 +28,7 @@ export function BookingCancellationOutcome({
     retainedAfterCancellationCents,
     handBackOwedAfterCancellationCents,
     showHandBackOwedNote,
+    showCancellationCreditLines,
     latestRefundAppeal,
   } = payment;
   return (
@@ -73,10 +74,13 @@ export function BookingCancellationOutcome({
                     )}
                   </div>
 
-                  <div>
-                    <span className="text-muted-foreground">Held as account credit:</span>{" "}
-                    {money.cents(cancellationSettlement.accountCreditCents)}
-                  </div>
+                  {/* #3991: the owner's credit, not a linked guest's to read. */}
+                  {showCancellationCreditLines && (
+                    <div>
+                      <span className="text-muted-foreground">Held as account credit:</span>{" "}
+                      {money.cents(cancellationSettlement.accountCreditCents)}
+                    </div>
+                  )}
 
                   <div>
                     <span className="text-muted-foreground">
@@ -93,7 +97,8 @@ export function BookingCancellationOutcome({
                     )}
                   </div>
 
-                  {cancellationSettlement.restoredAppliedCreditCents > 0 && (
+                  {showCancellationCreditLines &&
+                    cancellationSettlement.restoredAppliedCreditCents > 0 && (
                     <div>
                       <span className="text-muted-foreground">
                         Previously applied credit restored (per the cancellation

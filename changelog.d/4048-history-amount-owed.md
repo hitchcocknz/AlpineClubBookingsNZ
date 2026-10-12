@@ -9,9 +9,11 @@
   and names no amount.
 
   A guest on someone else's booking is no longer shown the owner's account
-  credit in that summary, nor the "Saved account credit was not applied" entry
-  in the booking's history, matching the credit-choice notice they already did
-  not see.
+  credit: not in that summary, not the "Saved account credit was not applied"
+  entry in the booking's history, and not the "Held as account credit" and
+  "Previously applied credit restored" lines of a cancelled booking's outcome.
+  That matches the credit-choice notice and pay-card credit row they already
+  did not see. The price and payment figures they could see are unchanged.
 
   The page's pay card, and the `{amountDue}` wording in the club's booking
   messages, now take the applied credit from the same record as the payment

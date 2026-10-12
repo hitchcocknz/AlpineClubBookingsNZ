@@ -876,8 +876,10 @@ pay card and the `{amountDue}` token quote and the payment link charges. When th
 is nothing, the banner says *"Nothing to pay"*, replaces *"This amount does not yet
 reflect…"* with a sentence that needs no figure before it, and drops the
 nothing-to-pay next step's pointer to the bookings page. For a linked guest viewer
-the banner names no credit and the timeline omits the *"Saved account credit was
-not applied"* entry, as the page's credit-election notice already did.
+the banner names no credit, the timeline omits the *"Saved account credit was not
+applied"* entry, and the cancellation outcome omits its *"Held as account credit"*
+and *"Previously applied credit restored"* lines, as the page's credit-election
+notice already did; the price and the payment figures they could see stay.
 
 **And it does not displace a paid one (#3194).** #3033 replaced that narrative
 outright, which removed *"nothing more to do"* — the false reassurance the epic is

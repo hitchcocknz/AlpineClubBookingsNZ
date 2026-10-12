@@ -136,6 +136,52 @@ describe("the cancellation outcome's retained line (#3811)", () => {
     expect(project(booking, LINKED_GUEST).retainedAfterCancellationCents).toBe(3_000);
   });
 
+  // #3991: the cancellation's account-credit lines are the owner's money — the
+  // same booker-and-officers audience as the hand-back note above.
+  it("shows the account-credit lines to the booker and officers, never to a linked guest", () => {
+    const booking = {
+      ...cancelledMarkedPaid([]),
+      creditsFromCancellation: [
+        {
+          type: "CANCELLATION_REFUND",
+          amountCents: 2_000,
+          description: "Cancellation refund for booking b-cancelled",
+          restoredFromBookingId: null,
+        },
+        {
+          type: "CANCELLATION_REFUND",
+          amountCents: 1_500,
+          description: "Restored credit",
+          restoredFromBookingId: "b-cancelled",
+        },
+      ],
+    };
+    const render = (viewer: typeof OFFICER) =>
+      renderToStaticMarkup(
+        <BookingCancellationOutcome
+          booking={booking as unknown as BookingDetailRecord}
+          money={money}
+          payment={project(booking, viewer)}
+        />,
+      );
+    for (const viewer of [OWNER, OFFICER]) {
+      const html = render(viewer);
+      expect(html).toContain("Held as account credit:");
+      expect(html).toContain("$20.00");
+      expect(html).toContain("Previously applied credit restored");
+      expect(html).toContain("$15.00");
+    }
+    const guest = render(LINKED_GUEST);
+    expect(guest).not.toContain("Held as account credit:");
+    expect(guest).not.toContain("Previously applied credit restored");
+    expect(guest).not.toContain("$20.00");
+    expect(guest).not.toContain("$15.00");
+    // What they could already see stays: the original payment and its outcome.
+    expect(guest).toContain("Original payment:");
+    expect(guest).toContain("$100.00");
+    expect(guest).toContain("Non-refundable amount retained:");
+  });
+
   it("does not show a never-paid payment folded to PARTIALLY_REFUNDED as an original payment", () => {
     // An Internet Banking payment never paid: a Xero credit note folded into
     // its mirror marks it PARTIALLY_REFUNDED, but no captured ledger row exists.

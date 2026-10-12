@@ -121,11 +121,12 @@ export async function loadBookingDetailHistory({
     payment row's mirror column. At or below zero the narrative says there is
     nothing to pay.
 
-    A linked guest is not told about the owner's ELECTED or APPLIED credit: the
+    A linked guest is not told about the owner's account credit: the
     credit-election notice, the pay card's credit row (owner and booking
-    managers only) and the timeline's "credit was not applied" entry (the
-    `linked_guest` audience below) withhold it from them, so the narrative drops
-    its credit wording for them too. The amount itself is unchanged — only
+    managers only), the cancellation outcome's credit lines
+    (`showCancellationCreditLines`) and the timeline's "credit was not applied"
+    entry (the `linked_guest` audience below) withhold it from them, so the
+    narrative drops its credit wording for them too. The amount itself is unchanged — only
     `appliedCreditCents`, which the narrative reads for that wording alone, is
     withheld.
   */
