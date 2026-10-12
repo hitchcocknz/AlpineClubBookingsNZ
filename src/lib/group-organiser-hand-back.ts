@@ -4,6 +4,7 @@ import { groupSettlementRefundKey } from "@/lib/booking-ledger-posting-keys";
 import { bookingOwner } from "@/lib/booking-owner";
 import type { ClubFormat } from "@/lib/club-format";
 import {
+  GROUP_ORGANISER_HAND_BACK_KEY_PREFIX,
   groupOrganiserHandBackOccurrenceKey,
   groupOrganiserHandBackTasksWhere,
   readGroupOrganiserHandBackShares,
@@ -132,8 +133,8 @@ export async function recordGroupOrganiserHandBackShare(
       amountCents,
       raisedAmountCents: amountCents,
       reason: composeGroupHandBackReason({ totalCents: amountCents, shares, supplementary: false, format: input.format }),
-      // Growing keeps the alert's record: a sent alert is never sent again.
-      reviewContext: sharesContext(input.settlementId, shares, main ? readGroupOrganiserHandBackShares(main.reviewContext)?.alertSentAt : undefined),
+      // Growing keeps the alert's record and lease, read fresh under this claim's lock(1).
+      reviewContext: sharesContext(input.settlementId, shares, main ? alertRecordOf(main.reviewContext) : {}),
     };
     if (!main) {
       const created = await tx.manualRefundTask.create({
@@ -214,76 +215,161 @@ async function joinersOwed(
   return new Map([...owed].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-function sharesContext(settlementId: string, shares: ReadonlyArray<Share>, alertSentAt?: string): Prisma.InputJsonValue {
-  const groupOrganiserHandBack: GroupOrganiserHandBackShares = { settlementId, shares: [...shares], ...(alertSentAt ? { alertSentAt } : {}) };
+type AlertRecord = Pick<GroupOrganiserHandBackShares, "alertSentAt" | "alertClaimedAt">;
+
+function alertRecordOf(reviewContext: unknown): AlertRecord {
+  const { alertSentAt, alertClaimedAt } = readGroupOrganiserHandBackShares(reviewContext) ?? {};
+  return { ...(alertSentAt ? { alertSentAt } : {}), ...(alertClaimedAt ? { alertClaimedAt } : {}) };
+}
+
+function sharesContext(settlementId: string, shares: ReadonlyArray<Share>, alert: AlertRecord = {}): Prisma.InputJsonValue {
+  const groupOrganiserHandBack: GroupOrganiserHandBackShares = { settlementId, shares: [...shares], ...alert };
   return { groupOrganiserHandBack } as unknown as Prisma.InputJsonValue;
 }
+
+/** How long a run's claim on an alert stands before another run may send it (a run that died mid-send). */
+const ALERT_CLAIM_LEASE_MS = 10 * 60 * 1000;
 
 /**
  * #4042: the finance alert for every OPEN organiser hand-back of this
  * settlement whose alert has not gone out - the cash cancel's "Manual refund
  * needed" email in its group wording, with the task's amount and reason read
- * now. Called once the children loop ends (the reaper's resumed run included),
- * outside every transaction, so a run that died after its creating claim
- * committed leaves the alert to the next run rather than losing it.
+ * when it is claimed. Run once the children loop ends (the reaper's resumed
+ * run included), and by the reaper's own task-keyed sweep
+ * (`resendUnsentGroupOrganiserHandBackAlerts`), always outside a transaction.
  *
- * AT MOST ONCE: the send is recorded on the task (`alertSentAt`) only after it
- * returns, by an update fenced on the very `reviewContext` it read; a claim that
- * grew the task meanwhile (it keeps `alertSentAt`, under `lock(1)`) makes the
- * fence miss, and the record is re-read and written again. A send that reached
- * nobody yet ("undelivered") or threw is not recorded, so a later run retries.
- * Two organiser cancels of one group never run at once (#1160), so two sweeps
- * do not race. Best-effort: the task is the record, so it never throws.
+ * AT MOST ONCE, ACROSS RUNS AND REPLICAS. A run first CLAIMS the alert: under
+ * `lock(1)` it re-reads the task and writes a lease (`alertClaimedAt`), and
+ * only when the task is still OPEN, unsent and unleased (or its lease has
+ * expired). Only the run that won the claim sends, after its transaction
+ * commits. It then records the send (`alertSentAt`, lease cleared) under the
+ * same lock with a re-read; a send that reached nobody ("undelivered") gives
+ * the lease back, so a later sweep retries; one that threw keeps the lease
+ * until it expires. Every write to the record - this claim, its release, the
+ * send's record and a claim's growth of the task - runs under `lock(1)` and
+ * re-reads first, so none drops another's fields. Each task is handled on its
+ * own, so one failure never stops the rest. Best-effort: never throws.
  */
 export async function alertUnsentGroupOrganiserHandBacks(input: {
   settlementId: string;
   organiserBookingId: string;
   format: ClubFormat;
-}): Promise<void> {
+}): Promise<number> {
+  let sent = 0;
   try {
     const tasks = await prisma.manualRefundTask.findMany({
       where: { ...groupOrganiserHandBackTasksWhere(input.settlementId), status: ManualRefundTaskStatus.OPEN },
-      select: { id: true, amountCents: true, reason: true, reviewContext: true },
+      select: { id: true, reviewContext: true },
     });
-    const unsent = tasks.filter((task) => !readGroupOrganiserHandBackShares(task.reviewContext)?.alertSentAt);
-    if (unsent.length === 0) return;
+    const unsent = tasks.filter((task) => !alertRecordOf(task.reviewContext).alertSentAt);
+    if (unsent.length === 0) return 0;
     const organiserBooking = await prisma.booking.findUniqueOrThrow({
       where: { id: input.organiserBookingId },
       select: { checkIn: true, checkOut: true, ...OWNER_NAME_SELECT },
     });
-    for (const task of unsent) {
-      const outcome = await sendAdminManualRefundTaskAlert(
-        {
-          memberName: ownerName(organiserBooking),
-          checkIn: organiserBooking.checkIn,
-          checkOut: organiserBooking.checkOut,
-          refundAmountCents: task.amountCents ?? 0,
-          bookingId: input.organiserBookingId,
-          reason: task.reason,
-          situation: "group-organiser-internet-banking",
-        },
-        input.format,
-      );
-      if (outcome !== "undelivered") await recordAlertSent(task.id, new Date().toISOString());
+    for (const { id: taskId } of unsent) {
+      try {
+        const claimedAt = new Date().toISOString();
+        const claimed = await updateGroupHandBackAlertRecord(taskId, (record, task) => {
+          const leased = record.alertClaimedAt && Date.parse(record.alertClaimedAt) > Date.parse(claimedAt) - ALERT_CLAIM_LEASE_MS;
+          return task.status !== ManualRefundTaskStatus.OPEN || record.alertSentAt || leased ? null : { alertClaimedAt: claimedAt };
+        });
+        if (!claimed) continue;
+        const outcome = await sendAdminManualRefundTaskAlert(
+          {
+            memberName: ownerName(organiserBooking),
+            checkIn: organiserBooking.checkIn,
+            checkOut: organiserBooking.checkOut,
+            refundAmountCents: claimed.amountCents ?? 0,
+            bookingId: input.organiserBookingId,
+            reason: claimed.reason,
+            situation: "group-organiser-internet-banking",
+          },
+          input.format,
+        );
+        if (outcome === "undelivered") {
+          // Reached nobody: give the lease back (only if it is still ours), so a later sweep retries.
+          await updateGroupHandBackAlertRecord(taskId, (record) => (record.alertClaimedAt === claimedAt ? {} : null));
+          continue;
+        }
+        sent += 1;
+        try {
+          await updateGroupHandBackAlertRecord(taskId, () => ({ alertSentAt: new Date().toISOString() }));
+        } catch (err) {
+          logger.error({ err, manualRefundTaskId: taskId }, "Sent a group organiser's hand-back alert but could not record it; its lease holds it from being resent until it expires");
+        }
+      } catch (err) {
+        logger.error({ err, manualRefundTaskId: taskId, settlementId: input.settlementId }, "Failed to alert admins about a group organiser's hand-back task; a later sweep retries");
+      }
     }
   } catch (err) {
     logger.error(
       { err, organiserBookingId: input.organiserBookingId, settlementId: input.settlementId },
-      "Failed to alert admins about a group organiser's hand-back task; the next run of the cancel retries",
+      "Failed to alert admins about a group organiser's hand-back task; a later sweep retries",
     );
   }
+  return sent;
 }
 
-async function recordAlertSent(taskId: string, alertSentAt: string): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId }, select: { reviewContext: true } });
-    const shares = readGroupOrganiserHandBackShares(task.reviewContext);
-    if (!shares || shares.alertSentAt) return;
-    const written = await prisma.manualRefundTask.updateMany({
-      where: { id: taskId, reviewContext: { equals: task.reviewContext as Prisma.InputJsonValue } },
-      data: { reviewContext: sharesContext(shares.settlementId, shares.shares, alertSentAt) },
+/**
+ * THE one writer of a group hand-back's alert record outside the claim that
+ * grows the task: a short transaction that takes `lock(1)` first (the key every
+ * group-cancel claim holds when it rewrites `reviewContext`), re-reads the task,
+ * and writes `next(record)` over the fresh shares - the lease (`alertClaimedAt`)
+ * cleared whenever `next` does not set it. `next` returning null writes nothing
+ * and returns null; otherwise the task's amount and reason as they stood.
+ */
+async function updateGroupHandBackAlertRecord(
+  taskId: string,
+  next: (record: AlertRecord, task: { status: ManualRefundTaskStatus }) => AlertRecord | null,
+): Promise<{ amountCents: number | null; reason: string } | null> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const task = await tx.manualRefundTask.findUniqueOrThrow({
+      where: { id: taskId },
+      select: { status: true, amountCents: true, reason: true, reviewContext: true },
     });
-    if (written.count === 1) return;
+    const shares = readGroupOrganiserHandBackShares(task.reviewContext);
+    if (!shares) return null;
+    const current = alertRecordOf(task.reviewContext);
+    const record = next(current, task);
+    if (!record) return null;
+    // The send's record survives every write; the lease survives none but the claim that sets it.
+    const alertSentAt = record.alertSentAt ?? current.alertSentAt;
+    await tx.manualRefundTask.update({
+      where: { id: taskId },
+      data: { reviewContext: sharesContext(shares.settlementId, shares.shares, { ...(alertSentAt ? { alertSentAt } : {}), ...(record.alertClaimedAt ? { alertClaimedAt: record.alertClaimedAt } : {}) }) },
+    });
+    return { amountCents: task.amountCents, reason: task.reason };
+  });
+}
+
+/**
+ * #4042: the reaper's task-keyed retry. The cancel's own run (and the reaper's
+ * resume, which only re-drives a group with a joiner still active) is the
+ * ordinary sender; a run that died or reached nobody after the LAST claim has
+ * nothing to re-drive it. So every OPEN group hand-back older than the grace,
+ * with no alert sent, is swept here through the same claim. Returns how many
+ * alerts went out.
+ */
+export async function resendUnsentGroupOrganiserHandBackAlerts(cutoff: Date, format: ClubFormat): Promise<number> {
+  const tasks = await prisma.manualRefundTask.findMany({
+    where: {
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      status: ManualRefundTaskStatus.OPEN,
+      occurrenceKey: { startsWith: GROUP_ORGANISER_HAND_BACK_KEY_PREFIX },
+      createdAt: { lt: cutoff },
+    },
+    select: { bookingId: true, reviewContext: true },
+  });
+  const settlements = new Map<string, string>();
+  for (const task of tasks) {
+    const shares = readGroupOrganiserHandBackShares(task.reviewContext);
+    if (shares && !shares.alertSentAt) settlements.set(shares.settlementId, task.bookingId);
   }
-  throw new Error(`Could not record the sent alert on hand-back task ${taskId}`);
+  let sent = 0;
+  for (const [settlementId, organiserBookingId] of settlements) {
+    sent += await alertUnsentGroupOrganiserHandBacks({ settlementId, organiserBookingId, format });
+  }
+  return sent;
 }

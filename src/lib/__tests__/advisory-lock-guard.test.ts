@@ -963,6 +963,13 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
       "DISMISSED -> OPEN re-arms assertNoPendingEditFinancialReview RETROACTIVELY, against money-affecting edits already in flight - unlike the closure it mirrors, which only relaxes that fence. Unlocked, an edit that read the fence while the task was dismissed can settle a credit under its own modification while the reopen commits, leaving an OPEN task whose context still points at the earlier anchor and whose completion credits the member twice. It makes no provider call, so the bounded exception that keeps resolveManualRefundTask lock-free does not apply.",
     invariant: "INV-LOCK-001",
   },
+  {
+    site: "updateGroupHandBackAlertRecord#1",
+    tier: "GLOBAL",
+    reason:
+      "#4042: the one writer of a group organiser hand-back's alert record outside the claim that grows the task - the lease a run claims before it sends, its release after a send that reached nobody, and the record of a send. Every group-cancel claim rewrites the same reviewContext under this key when it grows the task, and two runs (the cancel and the reaper's sweep, or two replicas) can each try to send; taking the key and re-reading makes the lease single and stops any write dropping another's fields. Held only for a read and an update; the email is sent after the claim's transaction commits, never inside it.",
+    invariant: "INV-LOCK-001",
+  },
 ];
 
 const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {

@@ -101,6 +101,7 @@ import {
   sendGroupJoinCancelledEmail,
 } from "@/lib/email";
 import logger from "@/lib/logger";
+import { resendUnsentGroupOrganiserHandBackAlerts } from "@/lib/group-organiser-hand-back";
 import { clubFormatValues } from "@/lib/club-format-server";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -130,6 +131,8 @@ export interface GroupSettlementReapResult {
   scannedInterruptedCancels: number;
   /** Interrupted organiser-cancel cleanups this run re-drove to completion. */
   resumedInterruptedCancels: number;
+  /** #4042: group organiser hand-back alerts this run sent that an earlier run left unsent. */
+  resentHandBackAlerts: number;
   /**
    * #3642: Internet Banking settlements past their deadline NOT released
    * because their invoice has started being paid. Recorded with the cron run
@@ -219,6 +222,7 @@ export async function reapStaleGroupSettlements(
     cancelledChildBookings: 0,
     scannedInterruptedCancels: 0,
     resumedInterruptedCancels: 0,
+    resentHandBackAlerts: 0,
     heldForInvoicePayment: 0,
     heldForUnreadableInvoice: 0,
     heldForStartedStay: 0,
@@ -297,6 +301,8 @@ export async function reapStaleGroupSettlements(
   result.startedStayAlerts = leftBehind.startedStayAlerts;
 
   await resumeInterruptedOrganiserCancels(now, result, format);
+  // #4042 (`INV-PAY-123`): keyed on the TASK, so an alert left unsent after a group's last claim is still retried.
+  result.resentHandBackAlerts = await resendUnsentGroupOrganiserHandBackAlerts(new Date(now.getTime() - GROUP_CANCEL_RESUME_GRACE_MINUTES * 60 * 1000), format).catch((err: unknown) => { logger.error({ err }, "Failed to resend unsent group organiser hand-back alerts"); return 0; });
 
   return result;
 }

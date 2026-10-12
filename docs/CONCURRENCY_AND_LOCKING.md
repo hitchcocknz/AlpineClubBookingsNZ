@@ -3088,10 +3088,21 @@ site - it runs on the first cancel and on the reaper's resume, both through
 raises it (an Internet Banking plan is never replayed). Each step is a
 find-then-write made single by the claim's `lock(1)`, with the unique key as
 the backstop; it reads ledger lines and children under that lock and makes no
-provider call. Its alert goes once the children loop ends, outside every
-transaction, and is recorded on the task after the send by an update fenced on
-the `reviewContext` it read - no key: a claim that grew the task meanwhile
-keeps the record under `lock(1)`, and the fence makes the sweep re-read. Its
+provider call. **Its alert adds one `lock(1)` participant,
+`updateGroupHandBackAlertRecord`** (registered as
+`updateGroupHandBackAlertRecord#1`, `INV-LOCK-003`). Once the children loop
+ends - and from the reaper's own task-keyed sweep of OPEN group tasks older
+than the resume grace with no alert sent - a run CLAIMS each unsent alert: a
+short transaction takes `lock(1)` first, re-reads the task and writes a lease
+(`alertClaimedAt`), but only on an OPEN, unsent task with no unexpired lease.
+Only the winning run sends, after that commit; it then records the send
+(`alertSentAt`, lease cleared) through the same writer, or, when the send
+reached nobody, gives the lease back. Every write to `reviewContext` - the
+lease, its release, the record and a claim's growth of the task - takes
+`lock(1)` and re-reads first, so none drops another's fields; the growth's
+`updateMany` is fenced on status only, since a fence miss there would raise a
+supplementary task. It takes the key ALONE, holds it for a read and an
+update, and makes no provider call inside. Its
 COMPLETION joins the cohort too: `resolveManualRefundTask` takes `lock(1)`
 first for this task (as for an edit review and a non-cancellation hand-back,
 `resolveManualRefundTask#1`), so a growth and a completion never interleave,

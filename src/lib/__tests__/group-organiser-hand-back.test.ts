@@ -20,7 +20,9 @@ const mocks = vi.hoisted(() => ({
   organiserFindUniqueOrThrow: vi.fn(),
   taskFindUniqueOrThrow: vi.fn(),
   prismaTaskFindMany: vi.fn(),
-  prismaTaskUpdateMany: vi.fn(),
+  txExecuteRaw: vi.fn(),
+  txTaskFindUniqueOrThrow: vi.fn(),
+  txTaskUpdate: vi.fn(),
   sendAdminManualRefundTaskAlert: vi.fn(),
   loggerError: vi.fn(),
 }));
@@ -28,7 +30,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findUniqueOrThrow: mocks.organiserFindUniqueOrThrow },
-    manualRefundTask: { findUniqueOrThrow: mocks.taskFindUniqueOrThrow, findMany: mocks.prismaTaskFindMany, updateMany: mocks.prismaTaskUpdateMany },
+    manualRefundTask: { findUniqueOrThrow: mocks.taskFindUniqueOrThrow, findMany: mocks.prismaTaskFindMany },
+    // The alert record's one writer: lock(1) first, then a re-read and a write.
+    $transaction: async (cb: (tx: unknown) => unknown) =>
+      cb({ $executeRaw: mocks.txExecuteRaw, manualRefundTask: { findUniqueOrThrow: mocks.txTaskFindUniqueOrThrow, update: mocks.txTaskUpdate } }),
   },
 }));
 vi.mock("@/lib/email", () => ({ sendAdminManualRefundTaskAlert: mocks.sendAdminManualRefundTaskAlert }));
@@ -36,6 +41,7 @@ vi.mock("@/lib/logger", () => ({ default: { error: mocks.loggerError, info: vi.f
 
 import {
   alertUnsentGroupOrganiserHandBacks,
+  resendUnsentGroupOrganiserHandBackAlerts,
   composeGroupHandBackReason,
   recordGroupOrganiserHandBackShare,
 } from "@/lib/group-organiser-hand-back";
@@ -215,11 +221,19 @@ describe("the hand-back's marker", () => {
 });
 
 describe("alertUnsentGroupOrganiserHandBacks", () => {
-  const CONTEXT = { groupOrganiserHandBack: { settlementId: "settle-1", shares: [share("child-a", 4500), share("child-b", 3000)] } };
-  const SENT = { groupOrganiserHandBack: { ...CONTEXT.groupOrganiserHandBack, alertSentAt: "2026-07-01T00:00:00.000Z" } };
+  const SHARES = [share("child-a", 4500), share("child-b", 3000)];
   const INPUT_SWEEP = { settlementId: "settle-1", organiserBookingId: "org-booking", format: CLUB_FORMAT_TEST };
+  /** One task row, written only through the locked transaction, as the database would hold it. */
+  let row: { status: ManualRefundTaskStatus; amountCents: number; reason: string; reviewContext: unknown };
+  const record = () => readGroupOrganiserHandBackShares(row.reviewContext);
 
   beforeEach(() => {
+    row = { status: ManualRefundTaskStatus.OPEN, amountCents: 7500, reason: "final reason", reviewContext: { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES } } };
+    mocks.prismaTaskFindMany.mockImplementation(async () => [{ id: "task-1", reviewContext: row.reviewContext }]);
+    mocks.txTaskFindUniqueOrThrow.mockImplementation(async () => ({ ...row }));
+    mocks.txTaskUpdate.mockImplementation(async ({ data }: { data: { reviewContext: unknown } }) => {
+      row = { ...row, reviewContext: data.reviewContext };
+    });
     mocks.organiserFindUniqueOrThrow.mockResolvedValue({
       checkIn: new Date("2026-08-01T00:00:00.000Z"),
       checkOut: new Date("2026-08-03T00:00:00.000Z"),
@@ -227,14 +241,17 @@ describe("alertUnsentGroupOrganiserHandBacks", () => {
       organisation: null,
     });
     mocks.sendAdminManualRefundTaskAlert.mockResolvedValue("sent");
-    mocks.taskFindUniqueOrThrow.mockResolvedValue({ reviewContext: CONTEXT });
-    mocks.prismaTaskUpdateMany.mockResolvedValue({ count: 1 });
   });
 
-  it("sends an OPEN task's unsent alert in its group wording, with the amount and reason read now, then records it as sent fenced on what it read", async () => {
-    mocks.prismaTaskFindMany.mockResolvedValue([{ id: "task-1", amountCents: 7500, reason: "final reason", reviewContext: CONTEXT }]);
+  it("claims under lock(1), sends with the amount and reason read in the claim, then records the send and drops the lease", async () => {
+    mocks.sendAdminManualRefundTaskAlert.mockImplementationOnce(async () => {
+      // While sending, the lease is on the task.
+      expect(record()?.alertClaimedAt).toEqual(expect.any(String));
+      expect(record()?.alertSentAt).toBeUndefined();
+      return "sent";
+    });
 
-    await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP);
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
 
     expect(mocks.prismaTaskFindMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { OR: [{ occurrenceKey: KEY }, { occurrenceKey: { startsWith: `${KEY}:` } }], status: ManualRefundTaskStatus.OPEN },
@@ -251,65 +268,107 @@ describe("alertUnsentGroupOrganiserHandBacks", () => {
       },
       CLUB_FORMAT_TEST,
     );
-    const [[{ where, data }]] = mocks.prismaTaskUpdateMany.mock.calls as [[{ where: unknown; data: { reviewContext: unknown } }]];
-    expect(where).toEqual({ id: "task-1", reviewContext: { equals: CONTEXT } });
-    const recorded = readGroupOrganiserHandBackShares(data.reviewContext);
-    expect(recorded?.shares).toEqual(CONTEXT.groupOrganiserHandBack.shares);
-    expect(recorded?.alertSentAt).toEqual(expect.any(String));
+    // Every write took lock(1) first: the claim and the record.
+    expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(2);
+    expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txTaskFindUniqueOrThrow.mock.invocationCallOrder[0]!);
+    expect(record()).toEqual({ settlementId: "settle-1", shares: SHARES, alertSentAt: expect.any(String) });
   });
 
   it("RESUME: a task whose creating run died before its alert is sent by the next run - and once recorded, never again", async () => {
-    // The crashed run committed the task; nothing recorded an alert.
-    mocks.prismaTaskFindMany.mockResolvedValueOnce([{ id: "task-1", amountCents: 7500, reason: "r", reviewContext: CONTEXT }]);
-    await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP);
-    expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
-
-    // The run after that reads the recorded send and sends nothing.
-    mocks.prismaTaskFindMany.mockResolvedValueOnce([{ id: "task-1", amountCents: 7500, reason: "r", reviewContext: SENT }]);
-    await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP);
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
     expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
   });
 
-  it("does not record a send that reached nobody, so a later run retries it", async () => {
-    mocks.prismaTaskFindMany.mockResolvedValue([{ id: "task-1", amountCents: 7500, reason: "r", reviewContext: CONTEXT }]);
-    mocks.sendAdminManualRefundTaskAlert.mockResolvedValue("undelivered");
+  it("OVERLAP: a run that finds another run's unexpired lease does not send; an expired lease is taken over", async () => {
+    row.reviewContext = { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES, alertClaimedAt: new Date(Date.now() - 60 * 1000).toISOString() } };
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
+    expect(mocks.sendAdminManualRefundTaskAlert).not.toHaveBeenCalled();
 
-    await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP);
-
-    expect(mocks.prismaTaskUpdateMany).not.toHaveBeenCalled();
+    row.reviewContext = { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES, alertClaimedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString() } };
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
   });
 
-  it("re-reads and records again when a claim grew the task between the send and the record", async () => {
-    mocks.prismaTaskFindMany.mockResolvedValue([{ id: "task-1", amountCents: 7500, reason: "r", reviewContext: CONTEXT }]);
-    const grown = { groupOrganiserHandBack: { settlementId: "settle-1", shares: [...CONTEXT.groupOrganiserHandBack.shares, share("child-d", 1000)] } };
-    mocks.taskFindUniqueOrThrow.mockResolvedValueOnce({ reviewContext: CONTEXT }).mockResolvedValueOnce({ reviewContext: grown });
-    mocks.prismaTaskUpdateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+  it("a send that reached nobody gives the lease back and records nothing, so a later sweep retries", async () => {
+    mocks.sendAdminManualRefundTaskAlert.mockResolvedValueOnce("undelivered");
 
-    await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP);
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
+    expect(record()).toEqual({ settlementId: "settle-1", shares: SHARES });
 
-    expect(mocks.prismaTaskUpdateMany).toHaveBeenCalledTimes(2);
-    const second = (mocks.prismaTaskUpdateMany.mock.calls[1] as [{ where: unknown; data: { reviewContext: unknown } }])[0];
-    expect(second.where).toEqual({ id: "task-1", reviewContext: { equals: grown } });
-    expect(readGroupOrganiserHandBackShares(second.data.reviewContext)?.shares).toHaveLength(3);
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
+    expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(2);
+  });
+
+  it("a record that fails after the send is logged with its task id, and its lease holds a resend off", async () => {
+    mocks.txTaskUpdate.mockImplementationOnce(async ({ data }: { data: { reviewContext: unknown } }) => {
+      row = { ...row, reviewContext: data.reviewContext };
+    }).mockRejectedValueOnce(new Error("db down"));
+
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
+    expect(mocks.loggerError).toHaveBeenCalledWith(expect.objectContaining({ manualRefundTaskId: "task-1" }), expect.stringContaining("could not record it"));
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
+  });
+
+  it("one task's failure never stops the next", async () => {
+    mocks.prismaTaskFindMany.mockResolvedValue([{ id: "task-1", reviewContext: row.reviewContext }, { id: "task-2", reviewContext: row.reviewContext }]);
+    mocks.txTaskFindUniqueOrThrow.mockRejectedValueOnce(new Error("task-1 unreadable"));
+
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
+    expect(mocks.loggerError).toHaveBeenCalledWith(expect.objectContaining({ manualRefundTaskId: "task-1" }), expect.any(String));
   });
 
   it("never throws: the cancellation has committed, and the task is the record", async () => {
     mocks.prismaTaskFindMany.mockRejectedValue(new Error("db down"));
 
-    await expect(alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).resolves.toBeUndefined();
+    await expect(alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).resolves.toBe(0);
     expect(mocks.loggerError).toHaveBeenCalledTimes(1);
   });
 });
 
+describe("resendUnsentGroupOrganiserHandBackAlerts (the reaper's task-keyed retry)", () => {
+  it("sweeps each settlement with an OPEN group task older than the cutoff and no alert sent, once", async () => {
+    const cutoff = new Date("2026-07-01T00:00:00.000Z");
+    const unsent = { groupOrganiserHandBack: { settlementId: "settle-1", shares: [share("child-a", 4500)] } };
+    const sent = { groupOrganiserHandBack: { settlementId: "settle-2", shares: [share("child-a", 4500)], alertSentAt: "2026-06-30T00:00:00.000Z" } };
+    mocks.prismaTaskFindMany
+      .mockResolvedValueOnce([
+        { bookingId: "org-1", reviewContext: unsent },
+        { bookingId: "org-1", reviewContext: unsent },
+        { bookingId: "org-2", reviewContext: sent },
+      ])
+      // The sweep's own read for settle-1: nothing left to send (a parallel run sent it).
+      .mockResolvedValueOnce([]);
+
+    expect(await resendUnsentGroupOrganiserHandBackAlerts(cutoff, CLUB_FORMAT_TEST)).toBe(0);
+
+    expect(mocks.prismaTaskFindMany.mock.calls[0]![0]).toEqual({
+      where: {
+        kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+        status: ManualRefundTaskStatus.OPEN,
+        occurrenceKey: { startsWith: "group-organiser-hand-back:" },
+        createdAt: { lt: cutoff },
+      },
+      select: { bookingId: true, reviewContext: true },
+    });
+    // settle-1 swept once, settle-2 (already sent) not at all.
+    expect(mocks.prismaTaskFindMany).toHaveBeenCalledTimes(2);
+    expect((mocks.prismaTaskFindMany.mock.calls[1]![0] as { where: unknown }).where).toMatchObject({ OR: [{ occurrenceKey: KEY }, { occurrenceKey: { startsWith: `${KEY}:` } }] });
+  });
+});
+
 describe("a growing claim keeps the alert's record", () => {
-  it("rewrites the shares and keeps alertSentAt, so a sent alert is never sent again", async () => {
+  it("rewrites the shares and keeps alertSentAt and a live lease, read fresh under its lock(1)", async () => {
     mocks.taskFindMany.mockResolvedValue([
-      { ...openTask(4500, [share("child-a", 4500)]), reviewContext: { groupOrganiserHandBack: { settlementId: "settle-1", shares: [share("child-a", 4500)], alertSentAt: "2026-07-01T00:00:00.000Z" } } },
+      { ...openTask(4500, [share("child-a", 4500)]), reviewContext: { groupOrganiserHandBack: { settlementId: "settle-1", shares: [share("child-a", 4500)], alertSentAt: "2026-07-01T00:00:00.000Z", alertClaimedAt: "2026-07-01T00:00:00.000Z" } } },
     ]);
 
     await recordGroupOrganiserHandBackShare(tx, { ...INPUT, claimedChildId: "child-b" });
 
-    expect(readGroupOrganiserHandBackShares(updated().data.reviewContext)?.alertSentAt).toBe("2026-07-01T00:00:00.000Z");
+    const kept = readGroupOrganiserHandBackShares(updated().data.reviewContext);
+    expect(kept?.alertSentAt).toBe("2026-07-01T00:00:00.000Z");
+    expect(kept?.alertClaimedAt).toBe("2026-07-01T00:00:00.000Z");
+    // Not fenced on reviewContext: a fence miss would wrongly raise a supplementary task.
+    expect(updated().where).toEqual({ id: "task-1", status: ManualRefundTaskStatus.OPEN });
   });
 });
 

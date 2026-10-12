@@ -3063,9 +3063,8 @@ _Split from `INV-PAY-057` (#3220)._
   later ones set it while OPEN, by a status-guarded update. After it closes, a
   supplementary task keyed per joiner carries only what no task covers. The
   shares are data on the row.
-  - Its alert goes once the children loop ends, at most once: recorded on the
-    task (`alertSentAt`) after a send, so a run that died first leaves it to
-    the next run of the cancel.
+  - Its alert goes at most once: a run claims a lease under `lock(1)`, sends
+    after commit and records `alertSentAt`; the reaper retries unsent ones.
   - A cancel straddling the release folds in joiners old code refunded on the
     ledger; a cancel made entirely before it raises no task.
   - **No `paymentId`, so completion moves nothing**: no allocation, ledger
