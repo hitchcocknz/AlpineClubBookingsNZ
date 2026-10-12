@@ -27,8 +27,7 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCapturePaymentLabel,
-  GROUP_HAND_BACK_ALERT_BODY,
-  GROUP_HAND_BACK_ALERT_LEAD,
+  GROUP_HAND_BACK_ALERT_BODY, GROUP_HAND_BACK_ALERT_LEAD, manualRefundTaskAlertAmountLabel,
   secondInstrumentConflictOutcomeParagraph,
   type ManualRefundTaskAlertSituation,
 } from "@/lib/email-message-notes";
@@ -566,7 +565,7 @@ export function adminManualRefundTaskTemplate(data: {
       { label: "Check-in", value: emailCalendarDay(data.checkIn) },
       { label: "Check-out", value: emailCalendarDay(data.checkOut) },
       { label: "Booking", value: escapeHtml(data.bookingId) },
-      { label: group ? "Owed so far" : "Amount to refund", value: formatCents(data.refundAmountCents, format) },
+      { label: manualRefundTaskAlertAmountLabel(data.situation ?? "cash-cancellation"), value: formatCents(data.refundAmountCents, format) },
       { label: "Reason", value: escapeHtml(data.reason) },
     ])}
     ${button("View Payments", data.reviewUrl, { sameOrigin: true })}

@@ -1398,7 +1398,10 @@ export function ManualRefundTaskQueue() {
                     ? { handedBackInCash }
                     : {}),
                 }
-              : {}),
+              : target.resolution === "completed" && target.task.groupOrganiserHandBack === true
+                ? // #4042: the total this card showed; the server refuses it once another share has grown the task.
+                  { confirmedAmountCents: target.task.amountCents }
+                : {}),
             /*
               #3191: sent only when the officer filled every box and the figures
               reconcile. A partial answer is never posted - the button is
@@ -1593,7 +1596,9 @@ export function ManualRefundTaskQueue() {
                 recorded in the app&apos;s ledger, but the money has not gone:
                 the club repays the organiser by bank transfer. The row lists
                 each joiner&apos;s share. Mark it paid back once the money has
-                actually gone; it cannot be dismissed.
+                actually gone; it cannot be dismissed. If the club decides not
+                to repay them, take it to the treasurer. Marking it paid back
+                sends nothing to Xero.
               </p>
             ) : null}
             {hasReviewRows ? (

@@ -10,6 +10,8 @@ import {
   checkoutDayChoreNote,
   duplicateCaptureRefundOutcomeParagraph,
   internetBankingHoldKeptParagraph,
+  manualRefundTaskAlertAmountLabel,
+  manualRefundTaskAlertHeading,
   manualRefundTaskAlertLabel,
   manualRefundTaskAlertNote,
   manualRefundTaskAlertRecipientLabel,
@@ -1489,6 +1491,8 @@ export function sampleValue(token: string): string {
   if (token === "handBackNote") return manualRefundTaskAlertNote("cash-cancellation");
   if (token === "handBackLabel") return manualRefundTaskAlertLabel("cash-cancellation");
   if (token === "handBackRecipientLabel") return manualRefundTaskAlertRecipientLabel("cash-cancellation");
+  if (token === "handBackHeading") return manualRefundTaskAlertHeading("cash-cancellation");
+  if (token === "handBackAmountLabel") return manualRefundTaskAlertAmountLabel("cash-cancellation");
   if (token === "handBackConflictNote") {
     return lateCaptureHandBackConflictOutcomeParagraph(false);
   }
@@ -2032,6 +2036,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "handBackNote",
   "handBackLabel",
   "handBackRecipientLabel",
+  "handBackHeading",
+  "handBackAmountLabel",
   // #3638: the second-instrument alert's live-versus-cancelled sentence.
   "secondInstrumentConflictNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and

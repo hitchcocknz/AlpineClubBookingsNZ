@@ -1,9 +1,14 @@
-import { BookingStatus, ManualRefundTaskKind, ManualRefundTaskStatus, Prisma } from "@prisma/client";
+import { ManualRefundTaskKind, ManualRefundTaskStatus, Prisma } from "@prisma/client";
 
 import { groupSettlementRefundKey } from "@/lib/booking-ledger-posting-keys";
 import { bookingOwner } from "@/lib/booking-owner";
 import type { ClubFormat } from "@/lib/club-format";
-import { groupOrganiserHandBackOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
+import {
+  groupOrganiserHandBackOccurrenceKey,
+  groupOrganiserHandBackTasksWhere,
+  readGroupOrganiserHandBackShares,
+  type GroupOrganiserHandBackShares,
+} from "@/lib/manual-refund-task-settlement-rules";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
 import { sendAdminManualRefundTaskAlert } from "@/lib/email";
 import logger from "@/lib/logger";
@@ -23,18 +28,20 @@ import { formatCents } from "@/lib/utils";
  * organiser's booking.
  *
  * - **Where.** Inside each per-child claim transaction that books a joiner's
- *   share, after its `lock(1)`, so every refund the ledger records commits with
- *   the task that makes it real, and a rolled-back claim adds nothing.
- * - **One task, growing.** The first share creates it, keyed one per settlement;
- *   each later share adds itself to it while it is OPEN, by a status-guarded
- *   update under the same `lock(1)` (which the task's completion also takes),
- *   so the task is always exactly the shares booked. A share booked after the
- *   task was closed raises a SUPPLEMENTARY task keyed per joiner, never a second
- *   copy of the first.
- * - **A resumed cancel.** When the first share this release books is not the
- *   group's first - a cancel interrupted across the release that added this -
- *   the task also counts each earlier joiner the ledger shows this cancel
- *   refunded (its `groupSettlementRefundKey` line).
+ *   share, after its `lock(1)` (which the task's completion also takes), so
+ *   every refund the ledger records commits with the task that makes it real.
+ * - **What it holds is DERIVED, never incremented.** Each claim recomputes the
+ *   joiners owed: every planned joiner whose settlement refund line is on its
+ *   ledger (`groupSettlementRefundKey` - the proof, so a joiner since
+ *   soft-deleted, one a previous release claimed without growing the task, and
+ *   one a cancel interrupted across releases refunded all count), every joiner
+ *   a group task already records, and this claim's joiner. The open task holds
+ *   that total less what closed group tasks already repaid, written by a
+ *   status-guarded update; once the task is closed, a later share raises a
+ *   SUPPLEMENTARY task keyed per joiner for only what no task covers.
+ * - **Its shares are data** (`reviewContext.groupOrganiserHandBack`), and the
+ *   reason is written from them, so a name with a comma in it cannot skew
+ *   anything.
  * - **No `paymentId`.** The refund is already recorded on each joiner's own
  *   payment, so completing the task takes no settlement route: it writes no
  *   second allocation, ledger line, Xero note or booking event.
@@ -42,48 +49,36 @@ import { formatCents } from "@/lib/utils";
 export type GroupOrganiserHandBack = {
   id: string;
   amountCents: number;
-  reason: string;
-  /** True when this call created the task, so its run alerts once after commit. */
+  /** True when this call created the task, so its run alerts once, after the children. */
   created: boolean;
 };
 
-const REASON_LEAD = "Group cancelled by its organiser - paid by Internet Banking.";
-const SHARES_LABEL = " Joiners' shares: ";
-const MORE_PATTERN = / … and (\d+) more \(see each joiner's booking\)\.$/;
+type Share = GroupOrganiserHandBackShares["shares"][number];
 
 /**
  * The task's reason: the lead, what to repay, and each joiner's share, listed
- * while they fit the column and then counted (`… and N more`). Pure, and the
- * inverse of `readGroupHandBackReasonShares`, so a share added later appends.
+ * while they fit the column and then counted (`… and N more`). Pure, and built
+ * from the structured shares, so the count is the shares left unlisted.
  */
 export function composeGroupHandBackReason(input: {
   totalCents: number;
-  shares: readonly string[];
-  more: number;
+  shares: ReadonlyArray<Pick<Share, "name" | "cents">>;
   supplementary: boolean;
   format: ClubFormat;
 }): string {
   const total = formatCents(input.totalCents, input.format);
+  const lead = "Group cancelled by its organiser - paid by Internet Banking.";
   const head = input.supplementary
-    ? `${REASON_LEAD} A joiner's refund was recorded after the group's repayment task was closed: repay the organiser ${total} by bank transfer.${SHARES_LABEL}`
-    : `${REASON_LEAD} Repay the organiser ${total} by bank transfer.${SHARES_LABEL}`;
-  for (let listed = input.shares.length; listed >= 0; listed -= 1) {
-    const hidden = input.more + input.shares.length - listed;
+    ? `${lead} A joiner's refund was recorded after the group's repayment task was closed: repay the organiser ${total} by bank transfer. Joiners' shares: `
+    : `${lead} Repay the organiser ${total} by bank transfer. Joiners' shares: `;
+  const labels = input.shares.map((share) => `${share.name} ${formatCents(share.cents, input.format)}`);
+  for (let listed = labels.length; listed >= 0; listed -= 1) {
+    const hidden = labels.length - listed;
     const tail = hidden > 0 ? ` … and ${hidden} more (see each joiner's booking).` : ".";
-    const reason = `${head}${input.shares.slice(0, listed).join(", ")}${tail}`;
+    const reason = `${head}${labels.slice(0, listed).join(", ")}${tail}`;
     if (reason.length <= MANUAL_REFUND_TASK_REASON_MAX) return reason;
   }
   return head.slice(0, MANUAL_REFUND_TASK_REASON_MAX);
-}
-
-/** The listed shares and the counted remainder of a reason `composeGroupHandBackReason` wrote. */
-export function readGroupHandBackReasonShares(reason: string): { shares: string[]; more: number } {
-  const at = reason.indexOf(SHARES_LABEL);
-  if (at < 0) return { shares: [], more: 0 };
-  let list = reason.slice(at + SHARES_LABEL.length);
-  const more = MORE_PATTERN.exec(list);
-  list = more ? list.slice(0, more.index) : list.replace(/\.$/, "");
-  return { shares: list ? list.split(", ") : [], more: more ? Number(more[1]) : 0 };
 }
 
 const OWNER_NAME_SELECT = Prisma.validator<Prisma.BookingSelect>()({
@@ -91,19 +86,15 @@ const OWNER_NAME_SELECT = Prisma.validator<Prisma.BookingSelect>()({
   organisation: { select: { name: true, email: true } },
 });
 
-function shareLabel(
-  child: { member: { firstName: string; lastName: string } | null; organisation: { name: string; email: string | null } | null },
-  cents: number,
-  format: ClubFormat,
-): string {
-  const { firstName, lastName } = bookingOwner(child).member;
-  return `${[firstName, lastName].filter(Boolean).join(" ")} ${formatCents(cents, format)}`;
+function ownerName(booking: Prisma.BookingGetPayload<{ select: typeof OWNER_NAME_SELECT }>): string {
+  const { firstName, lastName } = bookingOwner(booking).member;
+  return [firstName, lastName].filter(Boolean).join(" ");
 }
 
 /**
  * Book one joiner's share on the organiser's hand-back, inside that joiner's
  * claim transaction and after its `lock(1)`. Returns the task it created or
- * grew, or null when the plan owes nothing for this joiner.
+ * updated, or null when nothing more is owed.
  */
 export async function recordGroupOrganiserHandBackShare(
   tx: Prisma.TransactionClient,
@@ -119,133 +110,150 @@ export async function recordGroupOrganiserHandBackShare(
 ): Promise<GroupOrganiserHandBack | null> {
   const shareCents = input.plan.get(input.claimedChildId) ?? 0;
   if (shareCents <= 0) return null;
-  const claimed = await tx.booking.findUniqueOrThrow({ where: { id: input.claimedChildId }, select: OWNER_NAME_SELECT });
-  const label = shareLabel(claimed, shareCents, input.format);
-  const occurrenceKey = groupOrganiserHandBackOccurrenceKey(input.settlementId);
-  const task = await tx.manualRefundTask.findUnique({
-    where: { occurrenceKey },
-    select: { id: true, status: true, amountCents: true, reason: true },
+
+  const tasks = await tx.manualRefundTask.findMany({
+    where: groupOrganiserHandBackTasksWhere(input.settlementId),
+    select: { id: true, occurrenceKey: true, status: true, amountCents: true, reviewContext: true },
   });
+  const owed = await joinersOwed(tx, input, tasks);
+  const owedCents = [...owed.values()].reduce((sum, share) => sum + share.cents, 0);
+  const mainKey = groupOrganiserHandBackOccurrenceKey(input.settlementId);
+  const main = tasks.find((task) => task.occurrenceKey === mainKey);
 
-  if (!task) {
-    const earlier = await sharesBookedBeforeThisRelease(tx, input);
-    const amountCents = earlier.reduce((sum, share) => sum + share.cents, 0) + shareCents;
-    const reason = composeGroupHandBackReason({
-      totalCents: amountCents,
-      shares: [...earlier.map((share) => share.label), label],
-      more: 0,
-      supplementary: false,
-      format: input.format,
+  if (!main || main.status === ManualRefundTaskStatus.OPEN) {
+    // The open task holds everything owed less what closed group tasks repaid.
+    const repaidCents = tasks
+      .filter((task) => task.status !== ManualRefundTaskStatus.OPEN)
+      .reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
+    const amountCents = owedCents - repaidCents;
+    if (amountCents <= 0) return null;
+    const shares = [...owed.values()];
+    const data = {
+      amountCents,
+      raisedAmountCents: amountCents,
+      reason: composeGroupHandBackReason({ totalCents: amountCents, shares, supplementary: false, format: input.format }),
+      reviewContext: sharesContext(input.settlementId, shares),
+    };
+    if (!main) {
+      const created = await tx.manualRefundTask.create({
+        data: { ...data, bookingId: input.organiserBookingId, kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK, occurrenceKey: mainKey },
+        select: { id: true },
+      });
+      return { id: created.id, amountCents, created: true };
+    }
+    const updated = await tx.manualRefundTask.updateMany({
+      where: { id: main.id, status: ManualRefundTaskStatus.OPEN },
+      data,
     });
-    const created = await createHandBack(tx, { bookingId: input.organiserBookingId, occurrenceKey, amountCents, reason });
-    return { ...created, amountCents, created: true };
+    if (updated.count === 1) return { id: main.id, amountCents, created: false };
   }
 
-  if (task.status === ManualRefundTaskStatus.OPEN) {
-    const amountCents = (task.amountCents ?? 0) + shareCents;
-    const listed = readGroupHandBackReasonShares(task.reason);
-    const reason = composeGroupHandBackReason({
-      totalCents: amountCents,
-      shares: [...listed.shares, label],
-      more: listed.more,
-      supplementary: false,
-      format: input.format,
-    });
-    const grown = await tx.manualRefundTask.updateMany({
-      where: { id: task.id, status: ManualRefundTaskStatus.OPEN },
-      data: { amountCents: { increment: shareCents }, raisedAmountCents: { increment: shareCents }, reason },
-    });
-    if (grown.count === 1) return { id: task.id, amountCents, reason, created: false };
-  }
-
-  // The settlement's task was closed before this share was booked: this share
-  // is still owed to the organiser, on a task of its own.
+  // The settlement's task was closed before this share was booked: what no
+  // group task covers yet goes on a task of its own, keyed by this joiner.
   const supplementaryKey = groupOrganiserHandBackOccurrenceKey(input.settlementId, input.claimedChildId);
-  const existing = await tx.manualRefundTask.findUnique({ where: { occurrenceKey: supplementaryKey }, select: { id: true } });
-  if (existing) return null;
-  const reason = composeGroupHandBackReason({ totalCents: shareCents, shares: [label], more: 0, supplementary: true, format: input.format });
-  const created = await createHandBack(tx, { bookingId: input.organiserBookingId, occurrenceKey: supplementaryKey, amountCents: shareCents, reason });
-  return { ...created, amountCents: shareCents, created: true };
+  if (tasks.some((task) => task.occurrenceKey === supplementaryKey)) return null;
+  const coveredCents = tasks.reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
+  const amountCents = owedCents - coveredCents;
+  if (amountCents <= 0) return null;
+  const recorded = new Set(tasks.flatMap((task) => readGroupOrganiserHandBackShares(task.reviewContext)?.shares.map((share) => share.bookingId) ?? []));
+  const shares = [...owed.values()].filter((share) => !recorded.has(share.bookingId));
+  const created = await tx.manualRefundTask.create({
+    data: {
+      bookingId: input.organiserBookingId,
+      amountCents,
+      raisedAmountCents: amountCents,
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      occurrenceKey: supplementaryKey,
+      reason: composeGroupHandBackReason({ totalCents: amountCents, shares, supplementary: true, format: input.format }),
+      reviewContext: sharesContext(input.settlementId, shares),
+    },
+    select: { id: true },
+  });
+  return { id: created.id, amountCents, created: true };
 }
 
 /**
- * The planned joiners (other than this claim's) a cancel interrupted across the
- * release that added this had already refunded: cancelled, not deleted (the
- * loop's own rule), with this settlement's refund line on their ledger.
+ * Every joiner the organiser is owed for, by booking: those the ledger proves
+ * this settlement refunded (its refund line; no `deletedAt` filter, because the
+ * line is the proof), those a group task already records, and this claim's.
  */
-async function sharesBookedBeforeThisRelease(
+async function joinersOwed(
   tx: Prisma.TransactionClient,
-  input: { settlementId: string; plan: ReadonlyMap<string, number>; claimedChildId: string; format: ClubFormat },
-): Promise<Array<{ label: string; cents: number }>> {
-  const plannedIds = [...input.plan].filter(([id, cents]) => cents > 0 && id !== input.claimedChildId).map(([id]) => id);
-  if (plannedIds.length === 0) return [];
+  input: { settlementId: string; plan: ReadonlyMap<string, number>; claimedChildId: string },
+  tasks: ReadonlyArray<{ reviewContext: unknown }>,
+): Promise<Map<string, Share>> {
+  const plannedIds = [...input.plan].filter(([, cents]) => cents > 0).map(([id]) => id);
   const lines = await tx.bookingLedgerLine.findMany({
     where: { postingKey: { in: plannedIds.map((id) => groupSettlementRefundKey(input.settlementId, id)) } },
-    select: { bookingId: true },
+    select: { bookingId: true, amountCents: true },
   });
-  if (lines.length === 0) return [];
-  const children = await tx.booking.findMany({
-    where: { id: { in: lines.map((line) => line.bookingId) }, deletedAt: null, status: BookingStatus.CANCELLED },
-    orderBy: { id: "asc" },
-    select: { id: true, ...OWNER_NAME_SELECT },
-  });
-  return children.map((child) => {
-    const cents = input.plan.get(child.id) ?? 0;
-    return { label: shareLabel(child, cents, input.format), cents };
-  });
+  const ledgerCents = new Map<string, number>();
+  for (const line of lines) ledgerCents.set(line.bookingId, (ledgerCents.get(line.bookingId) ?? 0) + Math.abs(line.amountCents));
+
+  const owed = new Map<string, Share>();
+  for (const task of tasks) {
+    for (const share of readGroupOrganiserHandBackShares(task.reviewContext)?.shares ?? []) owed.set(share.bookingId, share);
+  }
+  const unnamed = [...new Set([...ledgerCents.keys(), input.claimedChildId])].filter((id) => !owed.has(id));
+  const names = unnamed.length
+    ? await tx.booking.findMany({ where: { id: { in: unnamed } }, select: { id: true, ...OWNER_NAME_SELECT } })
+    : [];
+  const nameOf = new Map(names.map((booking) => [booking.id, ownerName(booking)]));
+  for (const [bookingId, cents] of ledgerCents) {
+    const known = owed.get(bookingId);
+    owed.set(bookingId, { bookingId, name: known?.name ?? nameOf.get(bookingId) ?? "a joiner", cents });
+  }
+  if (!owed.has(input.claimedChildId)) {
+    owed.set(input.claimedChildId, {
+      bookingId: input.claimedChildId,
+      name: nameOf.get(input.claimedChildId) ?? "a joiner",
+      cents: input.plan.get(input.claimedChildId) ?? 0,
+    });
+  }
+  return new Map([...owed].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-async function createHandBack(
-  tx: Prisma.TransactionClient,
-  data: { bookingId: string; occurrenceKey: string; amountCents: number; reason: string },
-): Promise<{ id: string; reason: string }> {
-  return tx.manualRefundTask.create({
-    data: {
-      bookingId: data.bookingId,
-      amountCents: data.amountCents,
-      raisedAmountCents: data.amountCents,
-      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
-      occurrenceKey: data.occurrenceKey,
-      reason: data.reason,
-    },
-    select: { id: true, reason: true },
-  });
+function sharesContext(settlementId: string, shares: ReadonlyArray<Share>): Prisma.InputJsonValue {
+  const groupOrganiserHandBack: GroupOrganiserHandBackShares = { settlementId, shares: [...shares] };
+  return { groupOrganiserHandBack } as unknown as Prisma.InputJsonValue;
 }
 
 /**
- * #4042: the finance alert for a hand-back this run's claim CREATED, sent
- * straight after that claim commits - the cash cancel's "Manual refund needed"
- * email in its group wording. Never from a claim that only grew the task, never
- * inside the transaction, never after a rollback (the caller only has the task
- * once the claim committed). Best-effort: the task is the record and this is
- * the nudge, so it never throws.
+ * #4042: the finance alert for a hand-back this run CREATED, sent once after
+ * the children loop - the cash cancel's "Manual refund needed" email in its
+ * group wording - with the task's amount and reason re-read then, so it states
+ * the total every claim of this run booked. Never inside a transaction, never
+ * for a task this run did not create. Best-effort: the task is the record and
+ * this is the nudge, so it never throws.
  */
 export async function alertGroupOrganiserHandBack(input: {
   organiserBookingId: string;
-  task: GroupOrganiserHandBack;
+  taskId: string;
   format: ClubFormat;
 }): Promise<void> {
   try {
-    const organiserBooking = await prisma.booking.findUniqueOrThrow({
-      where: { id: input.organiserBookingId },
-      select: { checkIn: true, checkOut: true, ...OWNER_NAME_SELECT },
-    });
-    const { firstName, lastName } = bookingOwner(organiserBooking).member;
+    const [organiserBooking, task] = await Promise.all([
+      prisma.booking.findUniqueOrThrow({
+        where: { id: input.organiserBookingId },
+        select: { checkIn: true, checkOut: true, ...OWNER_NAME_SELECT },
+      }),
+      prisma.manualRefundTask.findUniqueOrThrow({ where: { id: input.taskId }, select: { amountCents: true, reason: true } }),
+    ]);
     await sendAdminManualRefundTaskAlert(
       {
-        memberName: [firstName, lastName].filter(Boolean).join(" "),
+        memberName: ownerName(organiserBooking),
         checkIn: organiserBooking.checkIn,
         checkOut: organiserBooking.checkOut,
-        refundAmountCents: input.task.amountCents,
+        refundAmountCents: task.amountCents ?? 0,
         bookingId: input.organiserBookingId,
-        reason: input.task.reason,
+        reason: task.reason,
         situation: "group-organiser-internet-banking",
       },
       input.format,
     );
   } catch (err) {
     logger.error(
-      { err, organiserBookingId: input.organiserBookingId, manualRefundTaskId: input.task.id },
+      { err, organiserBookingId: input.organiserBookingId, manualRefundTaskId: input.taskId },
       "Failed to alert admins about a group organiser's hand-back task",
     );
   }

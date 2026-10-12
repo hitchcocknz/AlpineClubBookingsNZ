@@ -24,6 +24,8 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCaptureHandBackConflictSubjectLabel,
+  manualRefundTaskAlertAmountLabel,
+  manualRefundTaskAlertHeading,
   manualRefundTaskAlertLabel,
   manualRefundTaskAlertNote,
   manualRefundTaskAlertRecipientLabel,
@@ -429,6 +431,8 @@ export async function sendAdminManualRefundTaskAlert(data: {
     templateName: "admin-manual-refund-task",
     templateData: {
       handBackLabel: manualRefundTaskAlertLabel(situation),
+      handBackHeading: manualRefundTaskAlertHeading(situation),
+      handBackAmountLabel: manualRefundTaskAlertAmountLabel(situation),
       handBackNote: manualRefundTaskAlertNote(situation),
       handBackRecipientLabel: manualRefundTaskAlertRecipientLabel(situation),
       memberName: data.memberName,

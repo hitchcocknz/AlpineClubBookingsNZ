@@ -245,7 +245,9 @@ export function toOpenManualRefundTaskPayload(
   viewerMemberId: string | null | undefined,
   unpricedNights: readonly QueueRepairableStrand[],
 ): OpenManualRefundTaskPayload {
-  const reviewContext = parseEditFinancialReviewContext(task.reviewContext);
+  // #4042: a group organiser's hand-back keeps its joiners' shares there, not review evidence.
+  const groupHandBack = isGroupOrganiserHandBackTask(task);
+  const reviewContext = groupHandBack ? null : parseEditFinancialReviewContext(task.reviewContext);
 
   return {
     id: task.id,
@@ -257,7 +259,7 @@ export function toOpenManualRefundTaskPayload(
     partPaymentReview: isPartPaymentReviewTask(task),
     editRefundHandBack: isEditRefundHandBackTask(task),
     refundRequestHandBack: isRefundRequestHandBackTask(task),
-    groupOrganiserHandBack: isGroupOrganiserHandBackTask(task),
+    groupOrganiserHandBack: groupHandBack,
     partPaymentReviewXeroPaid:
       isPartPaymentReviewTask(task) &&
       task.partPaymentReviewXeroPaidAt &&
@@ -302,7 +304,7 @@ export function toOpenManualRefundTaskPayload(
       destroyed is unreadable, rather than silently see a task with no evidence
       section and assume none was ever taken.
     */
-    reviewEvidenceUnreadable: task.reviewContext !== null && !reviewContext,
+    reviewEvidenceUnreadable: !groupHandBack && task.reviewContext !== null && !reviewContext,
     unpricedNights,
   };
 }

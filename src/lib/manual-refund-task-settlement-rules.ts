@@ -5,6 +5,8 @@ import {
   type BookingPaymentState,
 } from "@/lib/booking-payment-state";
 import { sumInternetBankingLateCashCreditCents } from "@/lib/internet-banking-late-cash-credit";
+import type { ClubFormat } from "@/lib/club-format";
+import { formatCents } from "@/lib/utils";
 
 /**
  * #3213 (epic #2797): WHICH FINANCE-QUEUE ITEMS CAN BE SETTLED AT ALL, and the
@@ -166,6 +168,55 @@ export function groupOrganiserHandBackTasksWhere(settlementId: string) {
  */
 export const GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE =
   "This repays a group organiser for joiners' refunds the group's cancellation has already recorded as made, so it cannot be dismissed here. Repay the organiser and mark it paid back. If the club has decided not to repay them, that changes the cancelled bookings' own figures: take it to the treasurer to correct them.";
+
+/**
+ * #4042 (`INV-PAY-123`): why a group organiser's hand-back cannot be closed as
+ * asked, or null. It is never dismissed (above). Its total grows as each
+ * joiner's cancel completes, so a completion must name the total the screen
+ * showed, and is refused when that is no longer the total.
+ */
+export function groupOrganiserHandBackRefusal(
+  task: { kind: ManualRefundTaskKind | string | null; occurrenceKey: string | null; amountCents: number | null },
+  resolution: "completed" | "dismissed",
+  confirmedAmountCents: number | null,
+  format: ClubFormat,
+): string | null {
+  if (!isGroupOrganiserHandBackTask(task)) return null;
+  if (resolution === "dismissed") return GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE;
+  if (confirmedAmountCents === null) {
+    return "This repayment's total grows as each joiner's place is cancelled, so it is marked paid back at the total the screen shows. Refresh the page and try again.";
+  }
+  if (task.amountCents !== null && confirmedAmountCents !== task.amountCents) {
+    return `Another joiner's share was added; the organiser is now owed ${formatCents(task.amountCents, format)}. Repay the difference, then mark it paid back.`;
+  }
+  return null;
+}
+
+/**
+ * #4042 (`INV-PAY-123`): the joiners' shares a group organiser's hand-back
+ * holds, kept on the row (`reviewContext.groupOrganiserHandBack`) so its total
+ * and its reason are built from data, never parsed back out of prose.
+ */
+export type GroupOrganiserHandBackShares = {
+  settlementId: string;
+  shares: Array<{ bookingId: string; name: string; cents: number }>;
+};
+
+/** The shares a group organiser's hand-back recorded, or null for any other row. */
+export function readGroupOrganiserHandBackShares(reviewContext: unknown): GroupOrganiserHandBackShares | null {
+  if (!reviewContext || typeof reviewContext !== "object" || Array.isArray(reviewContext)) return null;
+  const value = (reviewContext as Record<string, unknown>).groupOrganiserHandBack;
+  if (!value || typeof value !== "object") return null;
+  const { settlementId, shares } = value as Record<string, unknown>;
+  if (typeof settlementId !== "string" || !Array.isArray(shares)) return null;
+  const parsed = shares.flatMap((share: unknown) => {
+    const { bookingId, name, cents } = (share ?? {}) as Record<string, unknown>;
+    return typeof bookingId === "string" && typeof name === "string" && Number.isInteger(cents) && (cents as number) > 0
+      ? [{ bookingId, name, cents: cents as number }]
+      : [];
+  });
+  return { settlementId, shares: parsed };
+}
 
 /** #4042: is this task a group organiser's hand-back (`INV-PAY-123`)? */
 export function isGroupOrganiserHandBackTask(task: {

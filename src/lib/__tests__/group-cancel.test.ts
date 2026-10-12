@@ -73,7 +73,7 @@ vi.mock("@/lib/booking-ledger-group-settlement-sync", () => groupLedger);
 // against PostgreSQL (booking-ledger-group-settlement.realdb.test.ts); here only
 // WHERE the organiser cancel books each share and WHEN it alerts.
 const handBack = vi.hoisted(() => ({
-  recordGroupOrganiserHandBackShare: vi.fn<(tx: unknown, input: unknown) => Promise<{ id: string; amountCents: number; reason: string; created: boolean } | null>>(async () => null),
+  recordGroupOrganiserHandBackShare: vi.fn<(tx: unknown, input: unknown) => Promise<{ id: string; amountCents: number; created: boolean } | null>>(async () => null),
   alertGroupOrganiserHandBack: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
 }));
 vi.mock("@/lib/group-organiser-hand-back", () => handBack);
@@ -1603,8 +1603,8 @@ describe("adult-member hosting on an organiser cancel (#3209)", () => {
 });
 
 describe("#4042: an organiser's Internet Banking group cancel books each share on the organiser's hand-back", () => {
-  const CREATED = { id: "task-1", amountCents: 4500, reason: "Group cancelled by its organiser", created: true };
-  const GROWN = { id: "task-1", amountCents: 7500, reason: "Group cancelled by its organiser", created: false };
+  const CREATED = { id: "task-1", amountCents: 4500, created: true };
+  const GROWN = { id: "task-1", amountCents: 7500, created: false };
 
   function ibGroup(overrides: Record<string, unknown> = {}) {
     mocks.groupBookingFindUnique.mockResolvedValue({
@@ -1630,7 +1630,7 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     });
   }
 
-  it("books each refunded child's share inside its own claim, after its mirror; the creating claim alerts as soon as it commits, before the next claim", async () => {
+  it("books each refunded child's share inside its own claim, after its mirror; the run that created the task alerts ONCE, after the children", async () => {
     ibGroup();
     mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1"), paid("child-2", "pay-2")]);
     mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 4500, refundPercentage: 100 }).mockReturnValueOnce({ refundAmountCents: 3000, refundPercentage: 66 });
@@ -1647,12 +1647,12 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     const [firstShare, secondShare] = handBack.recordGroupOrganiserHandBackShare.mock.invocationCallOrder;
     expect(mocks.paymentUpdate.mock.invocationCallOrder[0]).toBeLessThan(firstShare!);
     expect(mocks.enqueueXeroRefund.mock.invocationCallOrder[0]).toBeLessThan(firstShare!);
-    // One alert, from the creating claim, straight after it and before child 2's claim.
+    // One alert, for the task this run created, after every child - so it re-reads the final total.
     expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledTimes(1);
-    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledWith({ organiserBookingId: ORG_BOOKING, task: CREATED, format: CLUB_FORMAT_TEST });
+    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledWith({ organiserBookingId: ORG_BOOKING, taskId: "task-1", format: CLUB_FORMAT_TEST });
     const [alerted] = handBack.alertGroupOrganiserHandBack.mock.invocationCallOrder;
-    expect(alerted!).toBeGreaterThan(firstShare!);
-    expect(alerted!).toBeLessThan(secondShare!);
+    expect(alerted!).toBeGreaterThan(secondShare!);
+    expect(alerted!).toBeGreaterThan(mocks.settleHostingCoverageAfterCommit.mock.invocationCallOrder.at(-1)!);
     const childAudits = mocks.logAudit.mock.calls.map(([entry]) => entry as { targetId: string; metadata: { organiserHandBackTaskId: string | null } });
     expect(childAudits.map((entry) => [entry.targetId, entry.metadata.organiserHandBackTaskId])).toEqual([
       ["child-1", "task-1"],
@@ -1697,15 +1697,16 @@ describe("#4042: an organiser's Internet Banking group cancel books each share o
     expect(handBack.alertGroupOrganiserHandBack).not.toHaveBeenCalled();
   });
 
-  it("kicks the group invoice's VOID after the children, so its refusal can name the hand-back", async () => {
-    ibGroup({ xeroInvoiceId: "inv-ib" });
-    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
-    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED);
+  it("an exception that escapes the loop after the task was created still sends its alert", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1"), paid("child-2", "pay-2")]);
+    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED).mockResolvedValueOnce(GROWN);
+    mocks.settleHostingCoverageAfterCommit.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("coverage drain crashed"));
 
-    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+    await expect(settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST)).rejects.toThrow("coverage drain crashed");
 
-    expect(mocks.kickXero).toHaveBeenCalled();
-    expect(mocks.kickXero.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(handBack.recordGroupOrganiserHandBackShare.mock.invocationCallOrder[0]!);
+    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledTimes(1);
+    expect(handBack.alertGroupOrganiserHandBack).toHaveBeenCalledWith({ organiserBookingId: ORG_BOOKING, taskId: "task-1", format: CLUB_FORMAT_TEST });
   });
 
   it("books nothing for a card settlement, an unsettled group, or a child the policy refunds nothing", async () => {

@@ -224,6 +224,16 @@ export async function settleGroupBookingOnOrganiserCancel(
     };
   });
 
+  // The compensating row committed atomically with CANCELLED.  This kick is
+  // opportunistic only; the normal outbox cron owns durable retry.
+  if (cancellationFence.queuedVoidOperationId) {
+    void kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
+      logger.error(
+        { err, groupBookingId: group.id },
+        "Failed to kick queued Xero group-invoice VOID after cancellation"
+      )
+    );
+  }
 
   const children = await prisma.booking.findMany({
     where: {
@@ -501,6 +511,9 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
   }
 
+  // #4042 (`INV-PAY-123`): organiser hand-backs this run created, alerted once each after the children.
+  const createdHandBackTaskIds: string[] = [];
+  try {
   for (const child of children) {
     const refundForChild = refundByChildId.get(child.id) ?? 0;
     const owedForChild = owedByChildId.get(child.id) ?? 0;
@@ -623,8 +636,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
 
     if (!childClaimed) continue;
-    // #4042 (`INV-PAY-123`): the claim that created the organiser's hand-back alerts, once it has committed.
-    if (raised.handBack?.created) await alertGroupOrganiserHandBack({ organiserBookingId, task: raised.handBack, format });
+    if (raised.handBack?.created) createdHandBackTaskIds.push(raised.handBack.id);
 
     // Best-effort outbox worker kick, kept POST-commit (the outbox cron drains
     // the row regardless). Never inside the tx: that would put a Xero provider
@@ -727,20 +739,12 @@ export async function settleGroupBookingOnOrganiserCancel(
     // throws, and the cron sweep remains the authority on completion.
     await settleHostingCoverageAfterCommit({ bookingId: child.id });
   }
+  } finally {
+    // Never from a rolled-back claim (only a committed one records its task), and never inside a transaction.
+    for (const taskId of createdHandBackTaskIds) await alertGroupOrganiserHandBack({ organiserBookingId, taskId, format });
+  }
 
   // The group was fenced CANCELLED before provider calls and child cleanup.
-  // The compensating VOID row committed atomically with CANCELLED. This kick is
-  // opportunistic only; the normal outbox cron owns durable retry. #4042: kicked
-  // after the children, so a paid Internet Banking invoice's refusal alert can
-  // name the organiser's hand-back task their claims raised.
-  if (cancellationFence.queuedVoidOperationId) {
-    void kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
-      logger.error(
-        { err, groupBookingId: group.id },
-        "Failed to kick queued Xero group-invoice VOID after cancellation"
-      )
-    );
-  }
 
   logger.info(
     {

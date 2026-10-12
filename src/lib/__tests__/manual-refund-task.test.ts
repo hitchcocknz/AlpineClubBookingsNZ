@@ -2460,12 +2460,24 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       expect(mocks.recordBookingEvent).not.toHaveBeenCalled();
     });
 
-    it("a total that grew since the screen loaded is a stale screen, refused before the claim", async () => {
+    it("a total that grew since the screen loaded is refused before the claim, naming the new total", async () => {
       groupTask();
 
       await expect(
         resolveManualRefundTask({ taskId: "task-g", resolution: "completed", note: null, actingMemberId: "admin-1", confirmedAmountCents: 4500, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST),
-      ).rejects.toMatchObject({ status: 409 });
+      ).rejects.toMatchObject({
+        status: 409,
+        message: "Another joiner's share was added; the organiser is now owed $75.00. Repay the difference, then mark it paid back.",
+      });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a completion that does not say the total it was shown is refused before the claim", async () => {
+      groupTask();
+
+      await expect(
+        resolveManualRefundTask({ taskId: "task-g", resolution: "completed", note: null, actingMemberId: "admin-1", confirmedAmountCents: null, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST),
+      ).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Refresh the page and try again") });
       expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
     });
   });

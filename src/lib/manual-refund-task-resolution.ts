@@ -31,7 +31,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 // both read it (`INV-SSOT`).
 import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import {
-  EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE, isGroupOrganiserHandBackTask,
+  EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, groupOrganiserHandBackRefusal, isGroupOrganiserHandBackTask,
   isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
@@ -206,7 +206,7 @@ export async function resolveManualRefundTask(
     ) {
       throw new ManualBookingPaymentError(EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, 409);
     }
-    if (resolution === "dismissed" && isGroupOrganiserHandBackTask(task)) throw new ManualBookingPaymentError(GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE, 409); // #4042: paid, never dismissed
+    const groupRefusal = groupOrganiserHandBackRefusal(task, resolution, confirmedAmountCents, format); if (groupRefusal) throw new ManualBookingPaymentError(groupRefusal, 409); // #4042
 
     const isEditReview = task.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW;
 

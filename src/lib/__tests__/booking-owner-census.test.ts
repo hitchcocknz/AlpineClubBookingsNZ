@@ -499,7 +499,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1427",
   "src/lib/group-booking.ts:274",
   "src/lib/kiosk-access.ts:232",
-  "src/lib/manual-refund-task-queue-payload.ts:294",
+  "src/lib/manual-refund-task-queue-payload.ts:296",
   "src/lib/requested-room-write.ts:62",
   "src/lib/waitlist-cross-lodge.ts:343",
   "src/lib/waitlist-cross-lodge.ts:531",
@@ -791,7 +791,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `Prisma.validator<Prisma.BookingSelect>()` and spread into
   // `booking.findUniqueOrThrow`/`findMany` selects, and Booking declares
   // `organisation`.
-  "src/lib/group-organiser-hand-back.ts:91",
+  "src/lib/group-organiser-hand-back.ts:86",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
   // `Prisma.validator<Prisma.ManualRefundTaskSelect>()`, and `organisation` sits

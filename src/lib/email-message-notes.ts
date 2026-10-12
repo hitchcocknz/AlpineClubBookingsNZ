@@ -276,16 +276,29 @@ export function internetBankingHoldKeptParagraph(
  * refunds in the app's ledger, so the cash wording would be false of it.
  *
  * These feed the SENDER's subject and the editable text body's tokens
- * (`{{handBackLabel}}`, `{{handBackNote}}`, `{{handBackRecipientLabel}}`), and
- * the GROUP arm of the hand-built HTML. The CASH HTML keeps its own literal
+ * (`{{handBackLabel}}`, `{{handBackHeading}}`, `{{handBackNote}}`,
+ * `{{handBackRecipientLabel}}`, `{{handBackAmountLabel}}`), and the GROUP arm
+ * of the hand-built HTML (the amount label, both arms). The CASH HTML keeps its own literal
  * blocks, byte-for-byte as pinned; `manualRefundTaskAlertNote` for the cash arm
  * is those same three blocks, so its text default still says what its HTML says.
  */
 export type ManualRefundTaskAlertSituation = "cash-cancellation" | "group-organiser-internet-banking";
 
-/** The subject phrase, and the text body's heading (`{{handBackLabel}}`). */
+/** The subject phrase (`{{handBackLabel}}`). */
 export function manualRefundTaskAlertLabel(situation: ManualRefundTaskAlertSituation): string {
   return situation === "group-organiser-internet-banking" ? "Internet Banking group cancelled" : "cash booking cancelled";
+}
+
+/** The text body's heading (`{{handBackHeading}}`): the cash one exactly as it always read. */
+export function manualRefundTaskAlertHeading(situation: ManualRefundTaskAlertSituation): string {
+  return situation === "group-organiser-internet-banking"
+    ? "Manual Refund Needed - Internet Banking Group Cancelled"
+    : "Manual Refund Needed - Cash Booking Cancelled";
+}
+
+/** The amount row's label, in the HTML and the text body (`{{handBackAmountLabel}}`). */
+export function manualRefundTaskAlertAmountLabel(situation: ManualRefundTaskAlertSituation): string {
+  return situation === "group-organiser-internet-banking" ? "Amount to repay" : "Amount to refund";
 }
 
 /** Whom the money goes back to, as the text body's row label (`{{handBackRecipientLabel}}`). */

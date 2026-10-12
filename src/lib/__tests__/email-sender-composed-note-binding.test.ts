@@ -450,6 +450,11 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(cash.body).toContain("so the ledger records the refund");
     expect(cash.body).toContain("Member: Alice Example");
     expect(cash.body).toContain("Amount to refund: $75.00");
+    // The cash text default reads exactly as it did before #4042.
+    expect(cash.body).toBe(
+      "Manual Refund Needed - Cash Booking Cancelled\n\nA booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand - nothing was refunded automatically.\n\nThe member's cancellation refund has been worked out under the club's normal policy, but there is no card charge to reverse and no Xero invoice to credit, so the system has raised a hand-back task instead of pretending money moved. The member has been told the club will arrange the refund.\n\nPay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note.\n\nMember: Alice Example\nCheck-in: " + cash.body.split("Check-in: ")[1],
+    );
+    expect(cash.body.startsWith("Manual Refund Needed - Cash Booking Cancelled\n")).toBe(true);
 
     // An organiser's Internet Banking group cancel: the refunds are already booked.
     const group = await send("group-organiser-internet-banking");
@@ -458,6 +463,8 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(group.body).toContain("repay the organiser by bank transfer");
     expect(group.body).toContain("recorded in the app's ledger as made");
     expect(group.body).toContain("Organiser: Alice Example");
+    expect(group.body.startsWith("Manual Refund Needed - Internet Banking Group Cancelled\n")).toBe(true);
+    expect(group.body).toContain("Amount to repay: $75.00");
     expect(group.body).not.toContain("settled in cash");
     expect(group.body).not.toContain("no Xero invoice to credit");
     expect(group.body).not.toMatch(/in Xero/);
