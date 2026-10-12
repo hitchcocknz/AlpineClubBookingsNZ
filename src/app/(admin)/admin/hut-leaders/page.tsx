@@ -1336,7 +1336,12 @@ export default function HutLeadersPage() {
                           <span className="sr-only">Release bed</span>
                         </ViewOnlyActionButton>
                       ) : null}
-                      {bedAllocationOn ? <ViewOnlyActionButton
+                      {/*
+                        #3821: a school teacher's row never holds a bed — a held
+                        bed is a custodian occupancy, and the server refuses it.
+                        Release bed above stays, for an older row that has one.
+                      */}
+                      {bedAllocationOn && a.source !== "SCHOOL_BOOKING" ? <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}
                         variant="ghost"

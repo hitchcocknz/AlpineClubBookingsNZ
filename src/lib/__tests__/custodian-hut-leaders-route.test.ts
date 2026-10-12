@@ -1305,4 +1305,50 @@ describe("#3821 — school nights and teacher rows", () => {
     });
     expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
   });
+
+  describe("a school teacher's row cannot hold a bed (#3821: a held bed is a custodian occupancy)", () => {
+    const teacherRow = (bedId: string | null) => ({
+      id: "a1",
+      memberId: "teacher-1",
+      lodgeId: LODGE,
+      bedId,
+      isCustodian: false,
+      source: "SCHOOL_BOOKING",
+      startDate: day("2026-07-01"),
+      endDate: day("2026-07-05"),
+    });
+
+    it("PUT refuses Hold a bed on a teacher's row, writing nothing", async () => {
+      mocks.txAssignmentFindUnique.mockResolvedValue(teacherRow(null));
+
+      const res = await PUT(putRequest({ bedId: "bed-9" }), { params });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        error: expect.stringMatching(/school teacher's assignment cannot hold a bed/),
+      });
+      expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
+    });
+
+    it("PUT refuses an edit that keeps a bed an older teacher row already holds", async () => {
+      mocks.txAssignmentFindUnique.mockResolvedValue(teacherRow("bed-1"));
+
+      const res = await PUT(putRequest({ endDate: "2026-07-04" }), { params });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        error: expect.stringMatching(/Release the bed/),
+      });
+      expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
+    });
+
+    it("PUT still releases that bed", async () => {
+      mocks.txAssignmentFindUnique.mockResolvedValue(teacherRow("bed-1"));
+
+      const res = await PUT(putRequest({ bedId: null }), { params });
+
+      expect(res.status).toBe(200);
+      expect(mocks.txAssignmentUpdate.mock.calls[0][0].data).toMatchObject({ bedId: null });
+    });
+  });
 });

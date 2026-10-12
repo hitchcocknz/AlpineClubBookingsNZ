@@ -150,6 +150,19 @@ export async function applyHutLeaderAssignmentEditUnderLocks(input: {
       };
     }
     const nextBedId = input.bedIdProvided ? input.requestedBedId : locked.bedId;
+    // #3821: nor can a teacher row hold a bed. A held bed is a custodian
+    // occupancy (`isCustodianOccupancy`, `INV-LIFE-062`), so it would make the
+    // row the custodian by the back door. Judged on the row AS IT WILL BE, so
+    // an edit that keeps a bed an older teacher row already holds is refused
+    // too, and releasing that bed (null) is the way out. The page hides
+    // "Hold a bed" on these rows.
+    if (nextBedId && locked.source === HutLeaderAssignmentSource.SCHOOL_BOOKING) {
+      return {
+        status: 400,
+        error:
+          "A school teacher's assignment cannot hold a bed: a held bed makes the assignment the lodge custodian. Release the bed, or add the custodian as their own assignment instead.",
+      };
+    }
     const nightsOrLodgeMove =
       finalStart.getTime() !== locked.startDate.getTime() ||
       finalEnd.getTime() !== locked.endDate.getTime() ||
