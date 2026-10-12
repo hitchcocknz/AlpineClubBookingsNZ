@@ -345,9 +345,11 @@ The other three writers, and why the guarantee is worded the way it is:
 
 **The cron's coverage probes are a fifth decision point, and they are
 deliberately NOT the same rule** (#2926). `cron-hut-leader-auto-assign` asks two
-questions per (lodge, night): *is this night already covered?* — a `findFirst`
-over any assignment spanning the night, once cheaply and once again under the key
-— and *would this assignment overlap?*, which is the shared predicate. The
+questions per (lodge, night): *is this night already covered?* — since #3818
+`isHutLeaderNightCovered` from `hut-leader-night-cover.ts` (an assignment claims
+the night AND its leader is staying it, `INV-DATE-031`), asked once cheaply on
+`prisma` and once again on `tx` under the key; it is two reads and takes no lock
+of its own — and *would this assignment overlap?*, which is the shared predicate. The
 coverage probes stay **source-blind**: a school-teacher row counts as coverage,
 so the job does not auto-assign a leader for a night a school group already has
 teachers on site. The overlap predicate excludes those same rows **only for a
@@ -374,7 +376,9 @@ would make the two skips disagree.
 
 **COVERAGE is a whole class of reader, and every one of them stays
 source-blind.** The cron's two probes are the ones that can refuse an automatic
-write, which is why they are named above, but `hut-leader-coverage.ts`, the
+write, which is why they are named above, but `hut-leader-coverage.ts` (all of
+them now through the one `hut-leader-night-cover.ts` helper, where a teacher row
+is present on its school booking's nights), the
 admin page's uncovered-dates panel and the `eligible-members` suggester all ask
 the same "is somebody on site that night?" question, and all of them should keep
 counting a teacher. The consequence to know about is a conservatism, not a
@@ -384,6 +388,19 @@ accept one. An officer who wants a leader beside the teachers adds the
 assignment directly and is no longer refused. Anything NEW that refuses a write
 on the strength of an overlap belongs behind `findHutLeaderOverlapRefusal`
 rather than behind its own read.
+
+**The custodian exemption reads the cover under the same key (#3821).** When a
+clash pairs a custodian row with an ordinary one — either may be the existing
+row or the proposed row the caller passes as `candidate` — the predicate loads
+`hut-leader-night-cover.ts` on the client it was given and leaves out the
+school nights the custodian does not cover and the ordinary row does, then
+applies the one-night rule to each remaining run. Two custodians are never
+exempted from each other. These are reads on the transaction client after
+`acquireLodgeCapacityLock`, like the overlap read itself: no new key, no new
+order, and nothing is read unless a custodian clashes with an ordinary row.
+The cron passes its ordinary CRON row as `candidate` and writes no custodian;
+its span is cut to the nights the member may lead (`leadableNightRun`),
+re-read on `tx` under the key before the locked overlap ask.
 
 ### Composition: roster-date writers (#2586)
 

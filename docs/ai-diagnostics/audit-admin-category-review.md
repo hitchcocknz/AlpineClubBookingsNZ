@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  500
+row-producing sites:  501
 uncategorised:        0
-category values: admin 107, booking 108, xero 39, family 35, payment 54,
+category values: admin 108, booking 108, xero 39, family 35, payment 54,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -778,7 +778,10 @@ refund Stripe gave up on (`payment` 52 -> 53, 499 -> 500), and
 `booking-payment.card-refund.paid-twice-resolved`, the treasurer marking a
 refund paid back twice as sorted out with the member (`payment` 53 -> 54; 499 ->
 500 on the tree composed with #52's removals below and #3750's change-request
-approval, MEASURED).
+approval, MEASURED). #3819 added one, disjoint from all of these: the
+per-lodge "Who can be hut leader for school bookings" save,
+`LODGE_SETTINGS_UPDATED` beside its lodge-settings sibling (`admin` 109 -> 110,
+RE-MEASURED).
 
 #52 then REMOVED two (`admin` 109 -> 107, 497 -> 495 on the tree composed
 with all of the above; MEASURED with
@@ -789,6 +792,18 @@ the central server says it owns and never adds to or removes from the shared
 list. `OTHER_LODGE_UPDATED` stays, still `admin` under INV-PRIV-013's rule, so
 the lodge-gated keep shrinks from nineteen pinned sites to seventeen without
 anyone's readership changing.
+
+`main` then added #3750's executed approval of a change request on a finished
+stay (`booking` 107 -> 108, `booking-change-request.approve` with
+`executed: true`). The sync of `main` into epic #3789 composed #3819's addition
+with #52's two removals and #3750's addition, all disjoint: `admin` 108,
+`booking` 108, 499 row-producing sites, and the lodge-gated keep eighteen
+(RE-MEASURED with `pnpm run audit:census` on the composed tree, never added
+together). The later sync of `main` 0ff7e6d46 into the epic (#3821) composed
+#3372's two `payment` additions with that tree, also disjoint: `admin` 108,
+`payment` 54, 501 row-producing sites (RE-MEASURED the same way). The hand sync of `main`
+f3b6c008b (epic #3789) brought the same two `payment` additions in again from
+the other side and measured the same figures on the merged tree.
 
 #3498 then added one more (`payment` 45 -> 46, 483 -> 484, MEASURED with
 `npm run audit:census` on that branch rather than added to the literal):
