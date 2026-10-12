@@ -87,6 +87,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/alpine-server/other-lodges/download": "finance",
   "/api/admin/alpine-server/other-lodges/upload": "finance",
   "/api/admin/alpine-server/settings": "finance",
+  "/api/admin/alpine-server/version": "finance",
   "/api/admin/ai-assistant/settings": "support",
   "/api/admin/ai-assistant/usage": "support",
   // AI Diagnostics (AID-2, #2371): a separate admin-only paid capability. Its
@@ -139,6 +140,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bed-allocation/settings": "bookings",
   "/api/admin/booking-change-requests": "bookings",
   "/api/admin/booking-change-requests/[id]": "bookings",
+  "/api/admin/booking-change-requests/[id]/quote": "bookings",
   // Unified officer exception-request queue (#2524): same class of officer
   // surface as booking-change-requests above, so it shares the bookings area.
   "/api/admin/booking-exception-requests": "bookings",
@@ -423,6 +425,9 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // B5 (#2262): the open hand-back queue and the endpoint that closes a task.
   // The /api/admin/payments prefix already resolves to finance, so no
   // SPECIAL_ROUTE_AREA_PATTERNS entry is needed for this one.
+  "/api/admin/payments/card-refunds/[id]/paid-another-way": "finance",
+  // #3372 (owner, 9 Oct 2026): a paid-twice row marked Resolved, gated as the close is.
+  "/api/admin/payments/card-refunds/[id]/paid-twice-resolved": "finance",
   "/api/admin/payments/manual-refund-tasks": "finance",
   "/api/admin/payments/manual-refund-tasks/[id]": "finance",
   // #3498 (owner decision D2): putting a dismissed money task back on the queue

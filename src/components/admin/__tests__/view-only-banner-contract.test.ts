@@ -346,8 +346,29 @@ const FIGURES = {
    * 368 -> 370 (#3416): the School Teacher Hut-Leader Assignments card adds
    * Edit and Save. Cancel remains a plain Button because it only discards the
    * staged choice. MEASURED by re-running this census.
+   *
+   * 362 -> 364 (#50): the Other lodges panel's amenities editor adds two —
+   * **Add amenity** and the per-row **Remove amenity**. Both pass
+   * `describeReason={!ancestorRendersViewOnlyBanner}` like the panel's existing
+   * four, because the Lodges page renders the one banner and vouches for the
+   * panel at its render site. MEASURED by re-running this census.
+   *
+   * 364 -> 362 (#52): the same panel loses Add other lodge, the per-row Edit
+   * and the per-row Delete (three vouched opt-outs) and gains ONE per-row
+   * Edit my Lodge, vouched the same way. Net two fewer. MEASURED by re-running
+   * this census.
+   *
+   * 370 -> 371 (#3750): the change-request card's Confirm overbooking and
+   * apply, shown when an executed finished-stay approval needs the officer to
+   * confirm an over-capacity past night. MEASURED.
+   *
+   * 371 -> 372 (#3372): the stuck-states page's "Paid another way" close on a
+   * card refund Stripe gave up on, and 372 -> 373 (owner 9 Oct 2026) the same
+   * page's "Resolved" on a card refund paid back twice. Each dialog's confirm
+   * is a plain Button, reachable only once its gated row button opened it.
+   * MEASURED by re-running this census.
    */
-  callSites: 370,
+  callSites: 373,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -377,8 +398,18 @@ const FIGURES = {
    * 312 -> 313 (#3407): so does the setup wizard's Capacity Save and continue.
    * 313 -> 315 (#3416): the new school-teacher policy card heads itself under
    * the existing section banner, so its Edit and Save opt out.
+   *
+   * 308 -> 310 (#50): so do the Other lodges panel's two amenity controls,
+   * vouched rather than static (the banner is in the Lodges page, not the panel).
+   *
+   * 310 -> 308 (#52): three of the panel's vouched opt-outs go (Add, Edit,
+   * Delete) and one arrives (Edit my Lodge).
+   *
+   * 315 -> 316 (#3750): so does the change-request card's overbooking confirm.
+   * 316 -> 318 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" each opt out under their own banner.
    */
-  optOuts: 315,
+  optOuts: 318,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -441,8 +472,13 @@ const FIGURES = {
    *
    * 279 -> 281 (#3416): the school-teacher card's Edit and Save sit in the
    * same file as its section banner.
+   *
+   * 281 -> 282 (#3750): the overbooking confirm is rendered in the change-
+   * request panel itself, beside that panel's own banner.
+   * 282 -> 284 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" sit in the same file as their banners.
    */
-  staticOptOuts: 281,
+  staticOptOuts: 284,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -453,6 +489,15 @@ const FIGURES = {
    * banner IS in the same file — and this contract caught it: an opt-out with no
    * covering banner in its own file deletes the explanation outright for anyone
    * who later renders the card somewhere else.
+   *
+   * 34 -> 36 (#50): the Other lodges panel's Add amenity and Remove amenity
+   * controls take the same vouch as the panel's Add/Save/Edit/Delete — the
+   * Lodges page renders the lodge-area banner and passes
+   * `ancestorRendersViewOnlyBanner` at the panel's render site. Render-site
+   * vouched 29 -> 31 with them; the shell channel does not move.
+   *
+   * 36 -> 34 (#52): the Other lodges panel's Add/Edit/Delete go and Edit my
+   * Lodge arrives, all render-site vouched by the Lodges page; 31 -> 29 there.
    */
   vouchedOptOuts: 34,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -517,8 +562,11 @@ const FIGURES = {
    * 97 -> 98 (#3596): the club currency and locale panel, which #3563 built
    * without one because every visitor was a Full Admin. #3596 gave it a view
    * tier. Mounted in all three of its branches (load failed, loading, loaded).
+   *
+   * 98 -> 99 (#3372): the stuck-states page's dead card refunds panel, gated on
+   * finance inside a support page, so it states its own area's reason.
    */
-  bannerComponents: 98,
+  bannerComponents: 99,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older
@@ -1629,6 +1677,33 @@ describe("view-only section banner coverage (#2160)", () => {
                states. Re-measured with `npx vitest run view-only-banner-contract`,
                which reports 330 / 279 / 248. READ NOTHING FROM THIS COLUMN; run
                the suite.
+
+          364  +2  #50's Other lodges panel gains an amenities editor: **Add
+               amenity** and a per-row **Remove amenity**, both
+               `ViewOnlyActionButton`s passing
+               `describeReason={!ancestorRendersViewOnlyBanner}` exactly like the
+               panel's existing Add/Save/Edit/Delete, because the Lodges page
+               renders the lodge-area banner once and vouches for the panel at
+               its JSX render site. So callSites 362 -> 364, optOuts 308 -> 310
+               and vouchedOptOuts 34 -> 36 (renderSiteVouchedOptOuts 29 -> 31)
+               move together; staticOptOuts, the shell channel, the exceptions,
+               the leaf bucket and bannerComponents do not move — no new file,
+               no new banner, nothing keeping its own reason. Re-measured with
+               `npm run test:named -- src/components/admin/__tests__/view-only-banner-contract.test.ts`,
+               which reports 364 / 310 / 274.
+
+          362  -2  #52 makes the Other lodges panel edit only the site's own
+               lodge: **Add other lodge**, the per-row **Edit** and the per-row
+               **Delete** are removed and one per-row **Edit my Lodge** is added,
+               a `ViewOnlyActionButton` vouched exactly as the three it replaces
+               (the Lodges page renders the lodge-area banner and passes
+               `ancestorRendersViewOnlyBanner` at the panel's render site). So
+               callSites 364 -> 362, optOuts 310 -> 308 and vouchedOptOuts
+               36 -> 34 (renderSiteVouchedOptOuts 31 -> 29) move together;
+               staticOptOuts, the shell channel, the exceptions, the leaf bucket
+               and bannerComponents do not move. Re-measured with
+               `npm run test:named -- src/components/admin/__tests__/view-only-banner-contract.test.ts`,
+               which reports 362 / 308 / 274.
 
       */
       // #2259 adds the per-booking "No emails"

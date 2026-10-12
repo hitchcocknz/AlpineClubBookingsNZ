@@ -239,8 +239,9 @@ beforeEach(() => {
   mocks.planOrganiserCancelChildRefunds.mockResolvedValue(new Map());
   mocks.runPaymentRecoveryOperationNow.mockResolvedValue("succeeded");
   // A debt reads PENDING until the inline run has run it, then SUCCEEDED.
-  mocks.recoveryOperationFindUnique.mockImplementation(async ({ where }: { where: { idempotencyKey: string } }) => {
-    const id = `op-${where.idempotencyKey}`;
+  // Found by its key, then (#3973) re-read by its id after the run.
+  mocks.recoveryOperationFindUnique.mockImplementation(async ({ where }: { where: { idempotencyKey?: string; id?: string } }) => {
+    const id = where.id ?? `op-${where.idempotencyKey}`;
     const ran = mocks.runPaymentRecoveryOperationNow.mock.calls.some(([opId]) => opId === id);
     return { id, status: ran ? "SUCCEEDED" : "PENDING" };
   });
@@ -308,7 +309,9 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CLUB_FORMAT_TEST,
       "card",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      0
     );
     expect(mocks.groupBookingUpdate).toHaveBeenCalledWith({
       where: { id: GROUP_ID },
@@ -371,7 +374,8 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       expect.objectContaining({ mirrorPlan: false, settlement: expect.objectContaining({ stripePaymentIntentId: "pi_settle_1" }) }),
     );
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(2);
-    // Joiners are told what their refund actually returned.
+    // Joiners are told what their refund actually returned, and (#3973) that it
+    // went to the group organiser's card, not their own payment method.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
       { bookingId: "child-1", recipientMemberId: "joiner-member-1" },
       "joiner@example.com",
@@ -380,9 +384,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CHECK_OUT,
       3000,
       CLUB_FORMAT_TEST,
-      "card",
+      "organiser_card",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      3000
     );
     // The executor recorded the REFUNDED event; the cancel records CANCELLED.
     expect(mocks.recordBookingEvent).toHaveBeenCalledWith(
@@ -408,9 +414,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     expect(mocks.runPaymentRecoveryOperationNow).toHaveBeenCalledWith("op-1", CLUB_FORMAT_TEST);
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(1);
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    // #3973: the email says the organiser's refund is on its way, never "No refund
+    // was applicable"; `{{refundAmount}}` stays the 0 refunded, as before.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
       expect.anything(), expect.anything(), expect.anything(), CHECK_IN, CHECK_OUT, 0,
-      CLUB_FORMAT_TEST, "card", 0, undefined
+      CLUB_FORMAT_TEST, "organiser_card_pending", 0, undefined, "cancellation-policy", 4500
     );
     // #3653 fix round: the refund is OWED, not "no payment taken". The
     // recovery that later makes it writes `booking.payment.refund_recovered`
@@ -528,7 +536,9 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CLUB_FORMAT_TEST,
       "card",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      0
     );
   });
 
@@ -892,6 +902,22 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     });
     expect(mocks.processRefund).not.toHaveBeenCalled();
     expect(mocks.planOrganiserCancelChildRefunds).not.toHaveBeenCalled();
+    // #3973: no card to refund; the club repays the organiser by hand, and the
+    // joiner's email says so rather than "your original payment method".
+    expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "child-1", recipientMemberId: "joiner-member-1" },
+      "joiner@example.com",
+      "Jo",
+      CHECK_IN,
+      CHECK_OUT,
+      3000,
+      CLUB_FORMAT_TEST,
+      "organiser_by_hand",
+      0,
+      undefined,
+      "cancellation-policy",
+      3000
+    );
   });
 
   it("#3854 sync lens F2: an edit refund completed between the load and the claim is in the mirror and the kept figure, never overwritten", async () => {
@@ -1024,6 +1050,11 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
       where: { id: "pay-1" },
       data: { refundedAmountCents: 4500, status: PaymentStatus.REFUNDED },
     });
+    // #3973: a pre-#3653 plan's combined refund also went to the organiser's card.
+    expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), CHECK_IN, CHECK_OUT, 4500,
+      CLUB_FORMAT_TEST, "organiser_card", 0, undefined, "cancellation-policy", 4500
+    );
   });
 
   it("#3611/#3854: a paid child keeps its share less the plan's refund, which posts beside its mirror; an unpaid child keeps nothing", async () => {
@@ -1133,6 +1164,8 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
       txClient,
       expect.objectContaining({ refundForChild: 0, plannedRefundCents: 4500 }),
     );
+    // #3973: the frozen plan's share is on its way to the organiser's card, not
+    // "no refund"; `{{refundAmount}}` stays the 0 refunded, as before.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
       { bookingId: "child-1", recipientMemberId: "joiner-member-1" },
       "joiner@example.com",
@@ -1141,9 +1174,11 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
       CHECK_OUT,
       0,
       CLUB_FORMAT_TEST,
-      "card",
+      "organiser_card_pending",
       0,
-      undefined
+      undefined,
+      "cancellation-policy",
+      4500
     );
   });
 

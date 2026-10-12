@@ -102,9 +102,10 @@ function relWindow(
 }
 
 // The Monday on or after `minOffsetDays` from today, as a 2-night Mon–Wed
-// window. The capacity-filling / reserved fixtures (IB, waitlist) MUST stay
-// Monday-aligned: e2e/helpers/stay-dates.ts reserves their check-in Mondays so
-// the weekly-drifting stayWindow() booking windows never collide with them.
+// window. The capacity-filling fixtures (IB, waitlist) stay Monday-aligned so
+// each one blocks exactly one stayWindow() Monday. e2e/helpers/stay-dates.ts
+// reserves the nights of every SEEDED_BOOKING_WINDOWS entry, Monday-aligned or
+// not, so stayWindow() booking windows never collide with any of them.
 function relMondayWindow(minOffsetDays: number): {
   checkIn: string;
   checkOut: string;
@@ -293,8 +294,8 @@ export const WAITLISTER = {
 // --- Waitlist fixtures (e2e/waitlist.spec.ts) ----------------------------
 // Monday–Wednesday windows ~9–11 weeks out (issue #2117: relative so they never
 // expire), in the winter season, that no other spec touches. Monday-aligned so
-// stayWindow() reserves and dodges their check-ins (RESERVED_WINDOW_CHECKINS in
-// e2e/helpers/stay-dates.ts). Consecutive Mondays keep them mutually disjoint.
+// stayWindow() reserves and dodges their nights (SEEDED_BOOKING_WINDOWS, read
+// by e2e/helpers/stay-dates.ts). Consecutive Mondays keep them mutually disjoint.
 export const WAITLIST_FULL_WINDOW = relMondayWindow(63);
 // Guests on the fill booking. Lodge capacity is 20 (config/club.example.json);
 // 22 guarantees zero availability even against a modest capacity override.
@@ -460,3 +461,62 @@ export const CROSS_LODGE_OFFER_WINDOW = relWindow(104, 2);
 export const CROSS_LODGE_OFFER_MEMBER_GUEST_BOOKING_ID =
   "e2e-cross-lodge-offer-member-guest";
 export const CROSS_LODGE_OFFER_MEMBER_GUEST_WINDOW = relWindow(111, 2);
+
+// ---------------------------------------------------------------------------
+// Every seeded booking window, in one list (#4002). e2e/helpers/stay-dates.ts
+// reserves each of these NIGHTS, so a stayWindow() Monday is skipped whenever
+// either of its nights is already held by a seeded booking.
+//
+// Most of these windows are offset by DAYS, not aligned to a Monday, so they
+// slide one weekday per run date while stayWindow() Mondays stay put for a
+// week. Reserving only the Monday-aligned fixtures' check-ins was therefore not
+// enough: on two run dates in every seven, `rosterEdit` (a PAID booking with
+// Alice on it) sat on stayWindow(15)'s Monday or Tuesday, and
+// e2e/guest-promo-code-chips.spec.ts stalled on the member-night conflict.
+//
+// A new seeded booking window belongs here. Seed Booking writes finish with
+// seededBookingDates(), checked structurally by the fixture-night census.
+// Reserve these even when the optional demo lodge is disabled, so the same
+// date allocator works with either seed configuration.
+export const DEMO_SECOND_LODGE_BOOKING_WINDOWS = {
+  draft: relWindow(55, 2),
+  confirmed: relWindow(60, 3),
+  pending: relWindow(65, 2),
+};
+
+export const SEEDED_BOOKING_WINDOWS: ReadonlyArray<{
+  readonly checkIn: string;
+  readonly checkOut: string;
+  readonly nights: readonly string[];
+}> = [
+  ...Object.values(DEMO_BOOKING_WINDOWS),
+  ...Object.values(DEMO_SECOND_LODGE_BOOKING_WINDOWS),
+  WAITLIST_FULL_WINDOW,
+  WAITLIST_OFFER_WINDOW,
+  IB_WINDOW,
+  PAID_CANCEL_WINDOW,
+  ADDITIONAL_OWED_WINDOW,
+  UNRECONCILED_BOOKING_WINDOW,
+  ROSTER_ISOLATION_WINDOW,
+  CAPACITY_ISOLATION_WINDOW,
+  CROSS_LODGE_OFFER_WINDOW,
+  CROSS_LODGE_OFFER_MEMBER_GUEST_WINDOW,
+];
+
+// Keep this as the FINAL spread in seed Booking data: caller overrides cannot
+// replace these dates. Matching the actual pair, rather than an export name,
+// makes inline dates, aliases and divergent imported windows fail closed.
+export function seededBookingDates(checkIn: string, checkOut: string) {
+  const window = SEEDED_BOOKING_WINDOWS.find(
+    (candidate) => candidate.checkIn === checkIn && candidate.checkOut === checkOut,
+  );
+  if (!window) {
+    throw new Error(
+      `INV-SSOT-001: seeded booking ${checkIn}..${checkOut} is missing from SEEDED_BOOKING_WINDOWS`,
+    );
+  }
+  return {
+    checkIn: new Date(`${window.checkIn}T00:00:00.000Z`),
+    checkOut: new Date(`${window.checkOut}T00:00:00.000Z`),
+  };
+}

@@ -124,6 +124,11 @@ vi.mock("@/lib/xero-link-short-code", () => ({
 }));
 
 import { buildFinanceDashboardPageModel } from "@/lib/finance-dashboard-page";
+import {
+  CREDITS_OWED_LABEL,
+  REFUNDS_AND_CREDITS_OWED_NOTE,
+  REFUNDS_OWED_LABEL,
+} from "@/lib/refunds-and-credits-owed-shared";
 
 import type { FinanceDashboardView } from "@/lib/finance-dashboard-ranges";
 import { buildXeroReportsUrl } from "@/lib/xero-links";
@@ -801,14 +806,89 @@ describe("finance dashboard page model", () => {
     expect(
       model.warnings.some(
         (warning) =>
-          warning.includes("Net collected cash may understate by $21") &&
-          warning.includes("1 booking"),
+          // #3637: the one wording Reports and Payments show.
+          warning.includes("Net Collected may understate by $21") &&
+          warning.includes("1 booking in this range records an additional payment"),
       ),
     ).toBe(true);
     expect(
-      model.cards.find((entry) => entry.title === "Net collected cash")
+      model.cards.find((entry) => entry.title === "Net Collected")
         ?.footnote,
     ).toContain("May understate by $21");
+  });
+
+  /*
+    #3372 (owner, 7 Oct 2026): Refunds owed and Credits owed sit beside Net
+    Collected under the shared labels, with the shared note, read once per page
+    (the comparison window does not ask for them).
+  */
+  it("shows Refunds owed and Credits owed beside Net Collected, read for the primary window only", async () => {
+    const metrics = bookingMetrics();
+    Object.assign(metrics.paymentSummary, { refundsOwedCents: 16_500, creditsOwedCents: 8_500 });
+    mockGetFinanceBookingMetrics.mockResolvedValue(metrics);
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    const titles = model.cards.map((entry) => entry.title);
+    expect(titles.slice(titles.indexOf("Net Collected"), titles.indexOf("Net Collected") + 3)).toEqual([
+      "Net Collected",
+      REFUNDS_OWED_LABEL,
+      CREDITS_OWED_LABEL,
+    ]);
+    const refunds = model.cards.find((entry) => entry.title === REFUNDS_OWED_LABEL);
+    expect(refunds?.value).toBe("$165");
+    expect(refunds?.footnote).toBe(REFUNDS_AND_CREDITS_OWED_NOTE);
+    // Not "Net Collected already takes them off": only this range's bookings' do.
+    expect(refunds?.description).toContain("for its own booking");
+    expect(model.cards.find((entry) => entry.title === CREDITS_OWED_LABEL)?.value).toBe("$85");
+    // One request per page asks for them, however many windows it reads.
+    const asked = mockGetFinanceBookingMetrics.mock.calls.filter(
+      ([query]) => (query as { includeRefundsAndCreditsOwed?: boolean }).includeRefundsAndCreditsOwed === true,
+    );
+    expect(asked).toHaveLength(1);
+  });
+
+  it("prints a gap under a dollar in exact cents, not as $0 (#3637)", async () => {
+    const metrics = bookingMetrics();
+    metrics.paymentSummary.additionalLedgerGapCents = 50;
+    metrics.paymentSummary.additionalLedgerGapBookings = 1;
+    mockGetFinanceBookingMetrics.mockResolvedValue(metrics);
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    expect(
+      model.warnings.some((warning) =>
+        warning.includes("Net Collected may understate by $0.50: 1 booking"),
+      ),
+    ).toBe(true);
+    expect(
+      model.cards.find((entry) => entry.title === "Net Collected")
+        ?.footnote,
+    ).toContain("May understate by $0.50");
+  });
+
+  it("prints the warning's booking count in the club number format (#3637)", async () => {
+    const metrics = bookingMetrics();
+    metrics.paymentSummary.additionalLedgerGapCents = 2_100;
+    metrics.paymentSummary.additionalLedgerGapBookings = 1_234;
+    mockGetFinanceBookingMetrics.mockResolvedValue(metrics);
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    expect(
+      model.warnings.some((warning) =>
+        warning.includes("1,234 bookings in this range record an additional payment"),
+      ),
+    ).toBe(true);
   });
 
   it("leaves the cash figure uncaveated when the ledger backs every increase", async () => {
@@ -819,13 +899,13 @@ describe("finance dashboard page model", () => {
 
     expect(
       model.warnings.some((warning) =>
-        warning.includes("Net collected cash may understate"),
+        warning.includes("Net Collected may understate"),
       ),
     ).toBe(false);
     expect(
-      model.cards.find((entry) => entry.title === "Net collected cash")
+      model.cards.find((entry) => entry.title === "Net Collected")
         ?.footnote,
-    ).toBe("Cash is local payment-derived and separate from Xero revenue.");
+    ).toBe("Worked out from this app's own payment, account credit and refund records, not from Xero revenue.");
   });
 
   it("warns and exports primary reconciliation reason counts for pricing sensitivity", async () => {

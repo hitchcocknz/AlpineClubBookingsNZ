@@ -127,6 +127,8 @@ vi.mock("@/lib/late-capture-xero-receipt", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/late-capture-xero-receipt")),
   findLateCapturePaymentIntents: mocks.findLateCapturePaymentIntents,
   readLateCaptureXeroReceipt: mocks.readLateCaptureXeroReceipt,
+  // Round 11: the close's plan reads the paid-another-way verdict; one mock answers both.
+  readPaidAnotherWayLateCaptureXeroReceipt: mocks.readLateCaptureXeroReceipt,
 }));
 
 vi.mock("@/lib/club-time-zone-runtime", () => ({
@@ -456,6 +458,50 @@ describe("the cash refund note (createXeroCreditNote)", () => {
       expect.objectContaining({
         where: { id: "op_queued" },
         data: { requestPayload: expect.objectContaining({ refundMethod: "internet-banking" }) },
+      }),
+    );
+  });
+
+  it("MUTATION (#3935): a review's hand-back the officer says went back in cash reads 'Refunded in cash', settles exactly as a bank transfer, and records the wording for a retry", async () => {
+    mocks.paymentFindUnique.mockResolvedValue(paymentRow(PaymentSource.INTERNET_BANKING));
+
+    await createXeroCreditNote(PAYMENT_ID, 5000, {
+      refundMethod: "internet-banking",
+      noteWording: "cash",
+      syncOperationId: "op_queued",
+    });
+
+    const note = builtCreditNote();
+    expect(note.lineItems?.[0]?.description).toBe("Refunded in cash - Booking cmbookin (2026-08-16 - 2026-08-18)");
+    expect(note.reference).toBe("Refunded in cash - Booking cmbookin");
+    // `INV-PAY-116`: words only - the same account and payment line as a bank transfer.
+    expect(settlingPayment()).toMatchObject({
+      account: { code: "090" },
+      reference: expect.stringMatching(/^Refund requested via internet banking - /),
+    });
+    expect(mocks.xeroSyncOperationUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "op_queued" },
+        data: {
+          requestPayload: expect.objectContaining({ refundMethod: "internet-banking", noteWording: "cash" }),
+        },
+      }),
+    );
+  });
+
+  it("MUTATION (#3935): a card refund is never worded as cash, even when a payload asks", async () => {
+    mocks.paymentFindUnique.mockResolvedValue(paymentRow(PaymentSource.STRIPE));
+
+    await createXeroCreditNote(PAYMENT_ID, 5000, {
+      refundMethod: "card",
+      noteWording: "cash",
+      syncOperationId: "op_queued",
+    });
+
+    expect(builtCreditNote().reference).toBe("Refund against original credit card - Booking cmbookin");
+    expect(mocks.xeroSyncOperationUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { requestPayload: expect.not.objectContaining({ noteWording: expect.anything() }) },
       }),
     );
   });

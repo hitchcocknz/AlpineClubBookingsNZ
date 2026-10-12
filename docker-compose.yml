@@ -231,6 +231,21 @@ x-app-environment: &app-environment
   # src/lib/config-transfer/bootstrap-import.ts, which no-ops on an empty value.
   # A container path, so it also needs a mount; empty disables it.
   CONFIG_BUNDLE_IMPORT_PATH: ${CONFIG_BUNDLE_IMPORT_PATH:-}
+  # The #3413 pending-school-adult write gate, src/lib/pending-school-adults-gate.ts
+  # (#3964). Admissions open only when BOTH are exactly `1`; empty, `true` or
+  # anything else keeps the gate closed, so the empty defaults are the safe,
+  # disabled state. Before #3964 neither was named here, so the runbook step
+  # that sets them changed nothing inside the container and the feature could
+  # never be switched on. To switch the gate on, put BOTH lines, each exactly `1`,
+  # in the project `.env` and re-run the deploy, as
+  # docs/PRODUCTION_UPGRADE_RUNBOOK.md's #3413 section says. `.env` is the only
+  # source: the production deploy refuses a shell PENDING_SCHOOL_ADULTS_ENABLED
+  # that differs from `.env`, and never exports its shell
+  # BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED to Compose, because that shell value
+  # is the migration validator's acknowledgement for one deploy, not the app's
+  # (#4027).
+  PENDING_SCHOOL_ADULTS_ENABLED: ${PENDING_SCHOOL_ADULTS_ENABLED:-}
+  BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED: ${BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:-}
 
 x-app-service: &app-service
   image: ${APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tacbookings}-app:local}
@@ -278,7 +293,7 @@ x-app-service: &app-service
     # threaten the 1g limit.
     #
     # NOT the full-route (ISR) page cache, despite the path suggesting otherwise:
-    # Next stores those under `.next/server/app`, which is read-only here, so
+    # Next stores those under `.next/server/` (`route-cache/` since 16.3.8), read-only here, so
     # `next.config.ts` keeps them in a bounded in-memory LRU instead. That file
     # explains the whole decision — read it before changing either side.
     - /app/.next/cache:uid=1001,gid=1001,mode=0755,size=64m

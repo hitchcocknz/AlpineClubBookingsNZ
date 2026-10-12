@@ -15,6 +15,19 @@ detail, and drill through to the member or record it references, but you cannot
 edit or delete an entry. Retention and optional archival are governed by the
 [`AUDIT_RETENTION_ARCHIVE_RUNBOOK.md`](../AUDIT_RETENTION_ARCHIVE_RUNBOOK.md).
 
+An entry kept as evidence of an incident skips its normal retention period
+and is deleted **10 years after it was recorded**, from the audit log and from
+its archive alike (#3939). An entry whose normal retention is longer than that
+keeps it: preservation never shortens how long an entry is kept. The app marks
+these entries itself: today, the entry for an admin capacity hold or
+force-confirm that overbooked the lodge. Such an entry also keeps its IP address
+and browser details. A preserved entry of a kind that is normally archived still
+moves to the archive after 12 months, with those details; that relocates it, and
+the 10-year limit applies there too. The Audit Log screen does not mark which
+entries are preserved; the
+[runbook](../AUDIT_RETENTION_ARCHIVE_RUNBOOK.md#incident-preserved-rows-are-kept-for-ten-years-3939)
+explains the rule and has a read-only query to count them.
+
 ## When you'd use it
 
 - A member asks "who changed my booking / membership / family group, and when?"
@@ -492,7 +505,7 @@ and the data download rather than every page that happens to quote an entry.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-499 now record a category, measured on every build rather than estimated.
+500 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
 now refused three separate ways. Giving the 82 places a category and stopping the
@@ -514,7 +527,7 @@ that order and both landing in this release; this is the second:
    maintenance script outside the normal path.
 
 The practical effect for you: an entry recorded the ordinary way — through the
-platform’s own recording step, which is how every one of the 499 places does it —
+platform’s own recording step, which is how every one of the 500 places does it —
 cannot be born without a category any more. **It is not a mathematical
 guarantee**, and it is worth saying so rather than overclaiming: someone writing
 directly to the database table in a migration, or building a query by hand, is

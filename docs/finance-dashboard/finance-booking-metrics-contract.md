@@ -49,14 +49,31 @@ The booking metrics response includes:
   `additionalPaymentStatus` but a real uncollected `additionalAmountCents`
   counts as `PENDING`, not `NONE`, so the split cannot contradict
   `outstandingAdditionalCents` below it
+- `capturedGrossCents`, `refundedCents` and `netCollectedCents` are the three
+  fields of `summarizeCollectedCash` (`src/lib/payment-net-collected.ts`), the
+  one net-collected derivation every officer "Net Collected" figure reads
+  (#3637, epic #3372 owner decision A). They, and the two ledger-gap fields
+  that warn about them, count a different set of bookings from every other
+  field here: every booking whose stay falls in a requested window, **whatever
+  its status**. So a cancelled booking counts only what the club kept of what
+  was paid on it: money not refunded, credited or owed back on an open
+  hand-back task, plus applied account credit it kept. One cancelled before
+  anything was paid counts nothing (owner review on PR #3811; owner decision
+  on #3372, 3 Oct 2026). Every other field, `capturedAdditionalCents` included, counts the
+  contributing bookings above, which use the status lists
+- no field counts a soft-deleted booking (#3745): the booking read and the Net
+  Collected scope both leave it out, the same as Reports' default view
 - `capturedGrossCents` (#2408, renamed from `capturedPrimaryCents`): gross
   captured cash — `Payment.amountCents` summed over the payments whose status
-  says money was taken. `reconcilePaymentAggregates` sets that column to the sum
+  says money was taken (`isCapturedPaymentStatus`). `reconcilePaymentAggregates` sets that column to the sum
   of EVERY captured ledger row, PRIMARY and ADDITIONAL alike, so this figure
   already contains any collected price increase. The old name read as "the
   primary leg only" and invited the double count #2408 fixed
-- `capturedAdditionalCents`: how much of `capturedGrossCents` came from a later
-  price increase. A **breakdown** of that total, never an addend beside it
+- `capturedAdditionalCents`: how much captured money came from a later price
+  increase. A **breakdown**, never an addend beside `capturedGrossCents`. It
+  counts the **status-listed** contributing bookings, not the Net Collected
+  scope, so a cancelled booking's collected increase is in
+  `capturedGrossCents` but not here
 - `outstandingAdditionalCents` and `outstandingAdditionalBookings` (#2350): the
   money and booking count behind an upward change that was never collected -
   `additionalAmountCents > 0` where `additionalPaymentStatus` is anything other
@@ -71,18 +88,59 @@ The booking metrics response includes:
   guard): money on payments that CLAIM a collected price increase
   (`additionalPaymentStatus = "SUCCEEDED"` with a non-zero
   `additionalAmountCents`) and have no captured ADDITIONAL `PaymentTransaction`
-  behind it. That is the only shape in which `capturedGrossCents` does not
+  behind it, over the same payments as `netCollectedCents` (#3637). That is the
+  only shape in which `capturedGrossCents` does not
   contain the increase, and therefore the only shape in which
   `netCollectedCents` understates the cash — by up to this amount. Healthy data
   cannot produce it (`reconcilePaymentAggregates` derives both columns from the
   latest ADDITIONAL row, so a SUCCEEDED status implies a captured row), but an
   import, a repair pass or a future write path could. Non-zero raises a
   `logger.error` naming the bookings and a warning on the finance dashboard
-  beside the cash card; reconcile those payments' ledgers before trusting the
+  beside the cash card, in the one wording Reports and the Payments page also
+  use (`formatNetCollectedLedgerGapWarning`); reconcile those payments' ledgers before trusting the
   collected total. An UNCOLLECTED increase is not this shape — it is absent from
   the captured total by design and reported by `outstandingAdditionalCents`
-- `refundedCents`
-- `netCollectedCents`: `capturedGrossCents - refundedCents`, floored at zero.
+- `refundedCents`: how much of `capturedGrossCents` went back out — each
+  captured payment's `refundedAmountCents` (card refunds and account credits
+  alike), capped at what that payment took. A refund on a payment that never
+  took money is not counted
+- `handBackOwedCents`: on any booking, the refund still owed on an open
+  `CANCELLED_BOOKING_HAND_BACK` task (`openHandBackOwedCents`) - a
+  cancellation's, an edit's refund or an approved refund request's - taken off
+  before the task is completed, capped at what is left of the payment (owner
+  decisions on #3372, 3 Oct 2026 for cancelled bookings, 7 Oct 2026 for live
+  ones)
+- `cardRefundOwedCents`: card refunds started and not yet paid by Stripe (an
+  unclosed refund-type `PaymentRecoveryOperation`), net of the slices already
+  recorded on `PaymentRefund`, capped at what is left after the hand-back
+  (`openCardRefundOwedCents`; owner, #3372, 7 Oct 2026)
+- `lateCaptureOwedCents`: late card charges awaiting the treasurer's
+  refund-or-keep decision (`isLateCaptureAwaitingDecisionTask`), capped at what
+  is left; once kept they count as collected (owner, #3372, 7 Oct 2026)
+- `lateCashCreditedCents`: on cancelled bookings, bank-transfer cash that
+  arrived after the cancel and was credited to the member
+  (`sumInternetBankingLateCashCreditCents`), capped at what is left
+- `refundsOwedCents` / `creditsOwedCents`: shown beside Net Collected, **as at
+  the request and club-wide** - NOT narrowed by either window or the lodge
+  (`readRefundsAndCreditsOwed`). Refunds owed is every open hand-back task and
+  late card charge awaiting the treasurer (`openTaskOwedCents`) plus every card
+  refund Stripe has not yet paid (`openCardRefundOwedCents`), until each is
+  paid, dismissed or kept; Credits owed is the sum of every member's positive
+  credit-ledger balance (`sumOutstandingCreditCents`), until the credit is
+  used (owner, #3372, 7 Oct 2026). Null unless the request sets
+  `includeRefundsAndCreditsOwed`: they are the same for every window, so a
+  page reads them once
+- `keptCreditCents`: on cancelled bookings, applied account credit the
+  cancellation kept — the booking's `BOOKING_APPLIED` net less its restore row
+  (`cancelledBookingKeptCreditCents`). Never a live booking's credit
+- `netCollectedCents`: each payment in that scope adds what it took and still
+  holds (`getNetCollectedPaymentParts`): never below zero, nothing for a payment
+  that took no money, so a booking cancelled before it was paid adds nothing,
+  plus a cancelled booking's kept credit. A refunded status counts as money
+  taken only with capture evidence (`paymentShowsCaptureEvidence`: a captured
+  ledger row, or a STRIPE refund mirror), so a never-paid Internet Banking
+  payment the Xero reconcile marked `PARTIALLY_REFUNDED` adds nothing. It equals `capturedGrossCents -
+  refundedCents - handBackOwedCents + keptCreditCents` exactly.
   **Never** the sum of `capturedGrossCents` and `capturedAdditionalCents` — that
   was the #2408 double count, which reported a $121 booking with a collected $21
   increase as $142 collected
@@ -112,7 +170,12 @@ The booking metrics response includes:
 - Booking and guest inclusion rules come from `docs/finance-dashboard/data-contracts.md`.
 - Collected cash is counted once (#2408). `Payment.amountCents` is the gross
   capture — the sum of every captured ledger row — so
-  `netCollectedCents = capturedGrossCents - refundedCents`, and
+  `netCollectedCents = capturedGrossCents - refundedCents - handBackOwedCents
+  - cardRefundOwedCents - lateCaptureOwedCents - lateCashCreditedCents +
+  keptCreditCents` (the four owed parts are money still owed back, each taken
+  off its own payment at most once; `lateCashCreditedCents` and
+  `keptCreditCents` are zero except on a cancelled booking; epic #3372, owner
+  decisions of 3 and 7 Oct 2026), and
   `capturedAdditionalCents` is a part of `capturedGrossCents` rather than
   something to add to it. `additionalLedgerGapCents` measures exactly the
   population where that containment cannot be proved from the ledger, and is

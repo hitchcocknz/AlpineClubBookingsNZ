@@ -120,7 +120,9 @@ payment method." A refund on a booking paid by internet banking or in cash reads
 reported, because a treasurer still has to send it from the **Money to settle**
 card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
 (#3827). A reduction that goes back partly to the card and partly as account
-credit names both.
+credit names both. A reduction that cancels the member's unpaid additional
+payment outright adds "The additional payment we asked for has been
+cancelled, so you no longer need to pay it." (#3954).
 
 `{{refundSentence}}` on the **Refund Appeal Approved** message works the same
 way. A card refund reads "A refund of $X will be processed to your original
@@ -314,6 +316,19 @@ Two consequences worth knowing before you edit one:
 - **Leave a block token on a line of its own.** Do not put a label of your own in
   front of it. When there is nothing to say the token comes through empty, and a
   label you added would be left stranded above nothing.
+- **The Daily digest's `{{serverVersionNote}}` is empty on an ordinary day.** It
+  carries the whole "syncing with the Alpine Central Server is paused" sentence
+  only while the server is on a different software version from this site, and
+  nothing at all otherwise — so it is optional in a digest override: leave it
+  out and the digest simply never mentions the server. The two numbers behind
+  it are also available on their own as `{{serverVersionExpected}}` and
+  `{{serverVersionActual}}`, empty on the same days.
+- **The version-only notice is a separate message, *Admin Server Version
+  Paused*.** A Lodge Operations editor who does not receive the Daily digest is
+  sent this template instead, carrying only the three tokens above and no alert
+  counts. It has its own subject and wording, which the club edits (and can
+  mute under Delivery Rules) on its own: nothing done to the Daily digest's
+  wording changes it, and nothing done to it changes the digest.
 - **The party listing on the member-guest emails is one block, heading included.**
   `{{partyListNote}}` produces the "Everyone on this booking" heading and the list
   of names together. You can move that block or leave it out; you cannot change
@@ -323,11 +338,26 @@ Two consequences worth knowing before you edit one:
 - **`{{paymentNote}}` on Booking Modified carries every money sentence for the
   change.** A refund, account credit added, account credit the booking had used
   being returned to the member (a reduction on a booking paid with credit), an
-  amount still to pay — whichever apply, already worded and with the amount in
-  them. A refund names where it went: the member's original payment method, a
-  bank transfer the club will send, or, on a group booking the organiser paid
-  for by card, the group organiser's card.
-  Keep it on a line of its own, with no `$` or label in front.
+  amount still to pay, an unpaid additional payment cancelled by the change
+  (#3954) — whichever apply, already worded and with the amount in them. A
+  refund names where it went: the member's original payment method, a bank
+  transfer the club will send, or, on a group booking the organiser paid for
+  by card, the group organiser's card. Keep it on a line of its own, with no
+  `$` or label in front.
+- **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
+  says where the refund went: the member's original payment method, account
+  credit, or a refund the club will arrange directly. Otherwise it says no
+  refund applied. On a group booking the organiser paid for by card, it names
+  the organiser instead: the refund has been processed to the group organiser's
+  card, or is on its way there when the card refund has not gone through yet.
+  If the organiser had already cancelled the whole group, it says that
+  cancellation is refunding, or has refunded, the booking to the organiser's
+  card. When the organiser cancels a group they paid for by Internet Banking,
+  it says the club will repay the organiser directly. A joiner cancelling their
+  own place on a group the organiser paid for by Internet Banking gets account
+  credit, worded as above. `{{refundAmount}}` is always this booking's own
+  refund, so it can read $0.00 while the sentence names the organiser's refund.
+  Keep it on a line of its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

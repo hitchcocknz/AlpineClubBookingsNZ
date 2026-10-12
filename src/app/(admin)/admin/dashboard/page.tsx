@@ -2,6 +2,14 @@ import Link from "next/link";
 import { bookingOwner } from "@/lib/booking-owner";
 import { prisma } from "@/lib/prisma";
 import {
+  netCollectedBookingSelect,
+  netCollectedCaptureEvidenceSelect,
+  netCollectedCardRefundSelect,
+} from "@/lib/additional-ledger-gap";
+import { formatNetCollectedBreakdown, summarizeCollectedCash } from "@/lib/payment-net-collected";
+import { readRefundsAndCreditsOwed } from "@/lib/refunds-and-credits-owed";
+import { RefundsAndCreditsOwedList } from "@/components/admin/refunds-and-credits-owed";
+import {
   MemberLifecycleAction,
   MemberLifecycleActionRequestStatus,
 } from "@prisma/client";
@@ -114,7 +122,8 @@ async function getStats() {
     inactiveMembers,
     totalBookings,
     activeBookings,
-    revenueResult,
+    netCollectedResult,
+    refundsAndCreditsOwed,
     upcomingCheckIns,
     unpaidFinishedStays,
     unsettledAdditionalFinishedStays,
@@ -139,13 +148,34 @@ async function getStats() {
     prisma.booking.count({
       where: { deletedAt: null, status: { in: [...ACTIVE_BOOKING_STATUSES] } },
     }),
-    prisma.payment.aggregate({
-      _sum: { amountCents: true },
-      where: {
-        status: "SUCCEEDED",
-        createdAt: { gte: startOfMonth, lte: endOfMonth },
+    // #3372: every payment recorded this month, whatever its status, so the
+    // net-collected-cash derivation (`summarizeCollectedCash`) decides which
+    // statuses count as captured AND which bookings count (the one Net
+    // Collected booking scope, owner decision A: every booking not
+    // soft-deleted; a cancelled booking adds only what it kept of what was paid,
+    // nil if never paid). The shared booking select loads what the rule reads.
+    // This used to sum `SUCCEEDED` alone: a partly-refunded payment left the
+    // figure entirely, and nothing subtracted a refund on the ones that stayed.
+    //
+    // By `createdAt`, the moment the payment RECORD was made - not when money
+    // arrived. A bank-transfer row is created PENDING with the booking and paid
+    // later, so it counts in the month it was recorded once it is paid.
+    prisma.payment.findMany({
+      where: { createdAt: { gte: startOfMonth, lte: endOfMonth } },
+      select: {
+        status: true,
+        amountCents: true,
+        refundedAmountCents: true,
+        // #3372: a refunded status counts only with capture evidence.
+        ...netCollectedCaptureEvidenceSelect,
+        // #3372 (7 Oct 2026): card refunds not yet paid come off straight away.
+        ...netCollectedCardRefundSelect,
+        booking: { select: netCollectedBookingSelect },
       },
     }),
+    // #3372 (owner, 7 Oct 2026): beside Net Collected, what is still owed back
+    // as at today - club-wide, not this month's.
+    readRefundsAndCreditsOwed(),
     // Bookings officer card headline (#2091): check-ins in the next 7 days.
     // Uses UPCOMING_CHECK_IN_BOOKING_STATUSES (not the wider
     // ACTIVE_BOOKING_STATUSES) so the count equals the list the card deep links
@@ -266,7 +296,11 @@ async function getStats() {
       : Promise.resolve(0),
   ]);
 
-  const revenueThisMonth = revenueResult._sum.amountCents ?? 0;
+  // Payments RECORDED this month, less every refund and credit on them -
+  // whenever it was made. A cohort, not a cash-flow statement: a refund this
+  // month on last month's payment does not reduce it, and the card's subline
+  // says what it covers.
+  const netCollectedThisMonth = summarizeCollectedCash(netCollectedResult);
   const unassignedNamesLodges = coverageNeedsLodgeContext({
     activeLodgeCount,
     rows: unassignedHutLeaderDates,
@@ -279,7 +313,8 @@ async function getStats() {
     inactiveMembers,
     totalBookings,
     activeBookings,
-    revenueThisMonth,
+    netCollectedThisMonth,
+    refundsAndCreditsOwed,
     upcomingCheckIns,
     unpaidFinishedStays,
     unsettledAdditionalFinishedStays,
@@ -340,6 +375,12 @@ export default async function AdminDashboardPage() {
     getPermissionMatrix(),
     clubFormat(),
   ]);
+  // #3372: exact cents, never `money.dollars`, here and on the headline - a
+  // rounded figure can disagree with the line beneath it by a dollar.
+  const netCollectedBreakdown = formatNetCollectedBreakdown(
+    stats.netCollectedThisMonth,
+    money.cents,
+  );
 
   const canViewBookings = canViewAdminHrefWithMatrix(
     permissionMatrix,
@@ -695,18 +736,37 @@ export default async function AdminDashboardPage() {
           {canViewPayments && (
             <Link href="/admin/payments" className="group">
               <Card className="border-border bg-card hover:shadow-sm transition-shadow cursor-pointer">
-                <CardContent className="flex items-center justify-between gap-3 py-4">
+                {/* #3372: on a narrow screen the figures stack under the
+                    title rather than squeezing beside it. */}
+                <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                     <DollarSign className="h-4 w-4 text-muted-foreground" />
-                    Revenue This Month
+                    Net Collected This Month
                   </div>
-                  <div className="text-right">
+                  {/* #3372: NET of refunds and credits, the shape #3364 gave
+                      the payments board - headline, gross and refunded all in
+                      exact cents, so the arithmetic on the card adds up. The subline
+                      makes no claim about when money arrived: the month is the
+                      one each payment record was created in. */}
+                  <div className="sm:text-right">
                     <div className="text-xl font-semibold text-foreground">
-                      {money.dollars(stats.revenueThisMonth)}
+                      {money.cents(stats.netCollectedThisMonth.netCollectedCents)}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      from succeeded payments
+                      payments recorded this month, less refunds and credits on them
                     </p>
+                    {netCollectedBreakdown && (
+                      <p className="text-xs text-muted-foreground">
+                        {netCollectedBreakdown}
+                      </p>
+                    )}
+                    {/* #3372 (owner, 7 Oct 2026): still owed back, as at today. */}
+                    <RefundsAndCreditsOwedList
+                      owed={stats.refundsAndCreditsOwed}
+                      formatCents={money.cents}
+                      className="mt-1 flex flex-col sm:items-end"
+                      stacked
+                    />
                   </div>
                 </CardContent>
               </Card>

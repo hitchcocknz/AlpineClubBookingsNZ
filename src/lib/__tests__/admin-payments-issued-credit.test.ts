@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   xeroSyncOperationFindMany: vi.fn(),
   xeroObjectLinkFindMany: vi.fn(),
   clubTimeSettingsFindUnique: vi.fn(),
+  // #3372: the list reads Refunds owed / Credits owed beside its other reads.
+  manualRefundTaskFindMany: vi.fn(),
+  paymentRecoveryOperationFindMany: vi.fn(),
+  memberCreditGroupBy: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -20,6 +24,9 @@ vi.mock("@/lib/prisma", () => ({
     xeroSyncOperation: { findMany: mocks.xeroSyncOperationFindMany },
     xeroObjectLink: { findMany: mocks.xeroObjectLinkFindMany },
     clubTimeSettings: { findUnique: mocks.clubTimeSettingsFindUnique },
+    manualRefundTask: { findMany: mocks.manualRefundTaskFindMany },
+    paymentRecoveryOperation: { findMany: mocks.paymentRecoveryOperationFindMany },
+    memberCredit: { groupBy: mocks.memberCreditGroupBy },
   },
 }));
 vi.mock("@/lib/logger", () => ({
@@ -43,6 +50,7 @@ const row = {
   updatedAt: new Date("2026-06-15T00:00:00.000Z"),
   transactions: [],
   refunds: [],
+  recoveryOperations: [],
   booking: {
     id: "booking-1",
     status: "CONFIRMED",
@@ -55,6 +63,9 @@ const row = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.manualRefundTaskFindMany.mockResolvedValue([]);
+  mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
+  mocks.memberCreditGroupBy.mockResolvedValue([]);
   mocks.paymentFindMany.mockImplementation(async (args: { where?: { id?: { in?: string[] } } }) =>
     args?.where?.id?.in === undefined ? [row] : [row].filter((r) => args.where!.id!.in!.includes(r.id)),
   );
@@ -68,10 +79,17 @@ describe("the payments list reads credit issued from a booking, not credit given
     await listAdminPayments(adminPaymentsQuerySchema.parse({ sort: "settlement" }));
 
     expect(mocks.paymentFindMany).toHaveBeenCalledTimes(2);
-    for (const [args] of mocks.paymentFindMany.mock.calls) {
-      expect(JSON.stringify(args)).toContain(
-        JSON.stringify({ where: { type: { in: [...BOOKING_ISSUED_CREDIT_TYPES] } }, select: { amountCents: true, description: true } }),
-      );
+    // The relation's `where`, wherever the query hangs the booking (`select` on
+    // the candidate read, `include` on the page read). Its `select` is not
+    // pinned: #3372 widened it for the Net Collected kept-credit reader, which
+    // the filter costs nothing - a restore is always a `CANCELLATION_REFUND`.
+    type BookingRelation = { select?: { creditsFromCancellation?: { where?: unknown } } };
+    type FindManyArgs = { select?: { booking?: BookingRelation }; include?: { booking?: BookingRelation } };
+    for (const [args] of mocks.paymentFindMany.mock.calls as Array<[FindManyArgs]>) {
+      const booking = args.select?.booking ?? args.include?.booking;
+      expect(booking?.select?.creditsFromCancellation?.where).toEqual({
+        type: { in: [...BOOKING_ISSUED_CREDIT_TYPES] },
+      });
     }
   });
 });

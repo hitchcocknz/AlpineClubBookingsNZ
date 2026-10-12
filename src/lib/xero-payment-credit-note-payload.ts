@@ -9,8 +9,8 @@ import {
   XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
 } from "@/lib/xero-operation-outbox-payload";
-import { parseRefundMethod } from "@/lib/xero-refund-method";
-import type { CashRefundMethod } from "@/lib/xero-refund-method";
+import { parseRefundMethod, readRefundNoteWording } from "@/lib/xero-refund-method";
+import type { CashRefundMethod, RefundNoteWording } from "@/lib/xero-refund-method";
 
 /**
  * `INV-PAY-101`: the refund method a stored payload carries, as the cash-refund
@@ -22,6 +22,19 @@ import type { CashRefundMethod } from "@/lib/xero-refund-method";
 export function readCashRefundMethod(payload: Record<string, unknown> | null): CashRefundMethod | undefined {
   const method = parseRefundMethod(payload?.refundMethod);
   return method && method !== "account-credit" ? method : undefined;
+}
+
+/**
+ * #3924 round 14 (`INV-PAY-122`): DID THIS REFUND NOTE ROW ATTEMPT
+ * `createCreditNotes`? `createXeroCreditNote` overwrites the queued payload
+ * with the executed one (`creditNotes`, beside the allocation) before it calls
+ * Xero, so a row carrying it but no credit note id may be in Xero - a lost
+ * reply, or an error that was not Xero refusing it (round 15,
+ * `xeroRefusedOperation`). The one spelling of that test.
+ */
+export function refundCreditNoteCreateAttempted(requestPayload: unknown): boolean {
+  const payload = asRecord(requestPayload);
+  return payload !== null && Array.isArray(payload.creditNotes);
 }
 
 export function parsePaymentCreditNoteRetryInput(
@@ -48,6 +61,11 @@ export function parsePaymentCreditNoteRetryInput(
   documentDate?: string;
   /** #3827 (D-3813-8): a refund request's own note, keyed by the request. */
   refundRequestId?: string;
+  /** #3935 (`INV-PAY-116`): the officer's cash answer, carried on both shapes. */
+  noteWording?: RefundNoteWording;
+  /** #3924 round 7 (`INV-PAY-122`): the paid-another-way close a note answers, and the invoice it named. */
+  paidAnotherWayTaskId?: string;
+  creditsInvoiceId?: string;
 } | null {
   const payload = asRecord(operation.requestPayload);
   if (!payload) {
@@ -63,6 +81,11 @@ export function parsePaymentCreditNoteRetryInput(
     ...(readString(payload.paymentIntentId) ? { paymentIntentId: readString(payload.paymentIntentId)! } : {}),
     ...(readString(payload.documentDate) ? { documentDate: readString(payload.documentDate)! } : {}),
     ...(readString(payload.refundRequestId) ? { refundRequestId: readString(payload.refundRequestId)! } : {}),
+    ...(readRefundNoteWording(payload) ? { noteWording: readRefundNoteWording(payload)! } : {}),
+    ...(readString(payload.paidAnotherWayTaskId)
+      ? { paidAnotherWayTaskId: readString(payload.paidAnotherWayTaskId)! }
+      : {}),
+    ...(readString(payload.creditsInvoiceId) ? { creditsInvoiceId: readString(payload.creditsInvoiceId)! } : {}),
   };
   const queuedRefundAmount = readNumber(payload.refundAmountCents);
   if (queueType === XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE && queuedRefundAmount !== null) {

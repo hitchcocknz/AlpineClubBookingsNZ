@@ -54,13 +54,14 @@ import {
   enqueuePaymentIntentCancellationRecovery,
   markBookingCancellationRefundRecoverySucceeded,
   recordBookingCancellationRefundRecoveryInlineError,
-  runPaymentRecoveryOperationNow,
 } from "@/lib/payment-recovery";
 import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
 import {
   findGroupCancellationChildDebt,
   groupCancellationRefundNote,
   organiserChildCancelBasis,
+  organiserChildRefundMade,
   reserveOrganiserChildRefund,
 } from "@/lib/organiser-child-refund";
 import { buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
@@ -89,7 +90,7 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
-import { stripeRefundMirrorShowsCapture } from "@/lib/booking-payment-state";
+import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
 // module the member-facing doors also read — one home, no copy.
@@ -101,6 +102,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
+import type { OrganiserRefundMethod } from "@/lib/booking-modified-email-copy";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -135,6 +137,8 @@ interface CancelBookingResult {
   creditRestoredCents?: number;
   stripeRefundId?: string;
   manualRefundTaskId?: string;
+  /** #3973: a refund that is the group organiser's (`refundMethod` stays "card"), as its email words it, for the confirmation screen. */
+  organiserRefund?: { method: OrganiserRefundMethod; amountCents: number };
   message: string;
 }
 
@@ -1806,7 +1810,7 @@ async function performBookingCancellation(
     // already nets that debt out) and reports the group's refund as the
     // group's.
     let organiserChildDebtId: string | null = null;
-    let groupCancellationRefundCents = 0;
+    let groupCancellationDebt: { amountCents: number; status: string } | null = null;
     let retainedAmountCents = money.retainedAmountCents;
     if (organiserCard) {
       const key = organiserCard.settlement
@@ -1816,7 +1820,7 @@ async function performBookingCancellation(
         ? await findGroupCancellationChildDebt(tx, organiserCard.settlement.id, bookingId)
         : null;
       if (groupDebt) {
-        groupCancellationRefundCents = groupDebt.amountCents;
+        groupCancellationDebt = groupDebt;
         refundAmountCents = 0;
       } else if (key && organiserCard.settlement && refundAmountCents > 0) {
         const debt = await reserveOrganiserChildRefund(tx, {
@@ -2009,7 +2013,7 @@ async function performBookingCancellation(
       clearingOperationId,
       branch,
       organiserChildDebtId,
-      groupCancellationRefundCents,
+      groupCancellationDebt,
     };
   }).catch((err: unknown) => {
     if (err instanceof PartPaymentChangedError) return { claimed: false as const };
@@ -2041,7 +2045,7 @@ async function performBookingCancellation(
     clearingOperationId,
     branch,
     organiserChildDebtId,
-    groupCancellationRefundCents,
+    groupCancellationDebt,
   } = claim;
   const paymentId = payment.id;
 
@@ -2253,7 +2257,9 @@ async function performBookingCancellation(
   // event - only once Stripe has answered. A failure leaves it owed for the
   // recovery runner, which alerts on exhaustion.
   if (branch === "card" && organiserChildDebtId) {
-    await runPaymentRecoveryOperationNow(organiserChildDebtId, format);
+    // #3973: made only once its debt says so; a failed or unclaimed run leaves it on its way.
+    const made = await runOrganiserChildRefundDebtNow(organiserChildDebtId, format);
+    const organiserRefund = { method: made ? "organiser_card" : "organiser_card_pending", amountCents: refundAmountCents } as const;
     await cleanupPromoRedemption(bookingId);
     logBookingCancellationAudit({
       booking: fresh,
@@ -2281,7 +2287,7 @@ async function performBookingCancellation(
         fresh.checkOut,
         refundAmountCents,
         format,
-        "card",
+        organiserRefund.method, // #3973: the email's wording only; the audit and result still say "card"
         creditRestoredCents,
         fresh.lodgeId
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
@@ -2295,6 +2301,7 @@ async function performBookingCancellation(
         refundAmountCents,
         refundPercentage,
         refundMethod: "card",
+        organiserRefund,
         creditRestoredCents: creditRestoredCents || undefined,
         message: `Booking cancelled. The group organiser paid for this booking, so ${formatCents(refundAmountCents, format)} (${refundPercentage}%) is being refunded to the organiser's card.`,
       },
@@ -2471,8 +2478,10 @@ async function performBookingCancellation(
 
   // #3653 (F4): the group's cancellation already owes this child's refund to
   // the organiser's card; this cancel adds none of its own, and says whose it is.
-  const groupRefundNote =
-    groupCancellationRefundCents > 0 ? groupCancellationRefundNote(groupCancellationRefundCents, format) : null;
+  const groupRefundNote = groupCancellationDebt ? groupCancellationRefundNote(groupCancellationDebt, format) : null;
+  const organiserRefund = groupCancellationDebt
+    ? ({ method: organiserChildRefundMade(groupCancellationDebt) ? "group_cancel_refunded" : "group_cancel_refunding", amountCents: groupCancellationDebt.amountCents } as const)
+    : undefined;
   logBookingCancellationAudit({
     booking: fresh,
     bookingId,
@@ -2486,7 +2495,7 @@ async function performBookingCancellation(
       refundPercentage,
       refundMethod: "card",
       ...(groupRefundNote
-        ? { refundTo: "organiser", groupCancellationRefundCents }
+        ? { refundTo: "organiser", groupCancellationRefundCents: groupCancellationDebt?.amountCents }
         : {}),
       creditRestoredCents,
       failedOutstandingAdditionalPayment: shouldFailAdditionalPayment,
@@ -2503,9 +2512,11 @@ async function performBookingCancellation(
       fresh.checkOut,
       0,
       format,
-      "card",
+      organiserRefund?.method ?? "card",
       creditRestoredCents,
-      fresh.lodgeId
+      fresh.lodgeId,
+      "cancellation-policy",
+      organiserRefund?.amountCents ?? 0, // #3973: the group's refund names its own amount; `{{refundAmount}}` stays 0
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
   }
 
@@ -2520,6 +2531,7 @@ async function performBookingCancellation(
       refundAmountCents: 0,
       refundPercentage: 0,
       refundMethod: "card",
+      organiserRefund,
       creditRestoredCents: creditRestoredCents || undefined,
       message: groupRefundNote
         ? `Booking cancelled. ${groupRefundNote}`
@@ -2684,8 +2696,8 @@ export async function paymentEligibleForPaidCancelPath(
 // first — any transaction row that holds/held money — because the aggregate
 // mirror lies in both directions (the invoice-side fold on never-captured IB
 // payments, and the pre-#1473 cancel flow flattening captured statuses to
-// FAILED); then the pre-ledger STRIPE mirror, whose one home is
-// `stripeRefundMirrorShowsCapture`.
+// FAILED); then the pre-ledger STRIPE mirror. The combination's one home is
+// `paymentShowsCaptureEvidence`.
 export async function paymentHasCaptureEvidence(
   payment: {
     id: string;
@@ -2704,7 +2716,7 @@ export async function paymentHasCaptureEvidence(
     },
     select: { id: true },
   });
-  return Boolean(capturedTransaction) || stripeRefundMirrorShowsCapture(payment);
+  return paymentShowsCaptureEvidence(payment, Boolean(capturedTransaction));
 }
 
 // #1547: every cancel branch that restores applied credit appends this line to

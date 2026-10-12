@@ -3,9 +3,18 @@ import {
   getCancellationSettlementBreakdown,
   getPaymentDisplayStatus,
 } from "@/lib/payment-status-display";
-import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import {
+  bookingAmountOwedCents,
+  bookingWorthCents,
+  hasCapturedPayment,
+  recordedChangeFeeCents,
+} from "@/lib/booking-payment-state";
 import { refundAppealCeiling } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
+import {
+  getNetCollectedCashParts,
+  netCollectedPaymentTookMoney,
+} from "@/lib/payment-net-collected";
 import { savedPaymentMethodForBooking } from "@/lib/saved-payment-method";
 import type { BookingDetailRecord } from "./load-booking-detail";
 import type { BookingDetailViewer } from "./booking-detail-viewer";
@@ -67,13 +76,29 @@ export function resolveBookingDetailPayment({
     booking.status === "PAYMENT_PENDING" &&
     !booking.organiserSettled &&
     booking.finalPriceCents > 0;
-  const originalPaymentCaptured = hasCapturedPayment(booking.payment);
-  const retainedAfterCancellationCents = booking.payment
-    ? Math.max(
-        booking.payment.amountCents - booking.payment.refundedAmountCents,
-        0
-      )
-    : 0;
+  // #3924: a payment of money (`hasCapturedPayment`) that Net Collected's
+  // capture rule also says took it (`netCollectedPaymentTookMoney`), the rule
+  // the retained line below reads - not the status alone. A never-paid
+  // Internet Banking payment a Xero credit note folded to PARTIALLY_REFUNDED
+  // has no captured ledger row and took no money.
+  const originalPaymentCaptured =
+    booking.payment !== null &&
+    hasCapturedPayment(booking.payment) &&
+    netCollectedPaymentTookMoney(booking.payment);
+  // #3811: what the club kept of what was paid is this booking's cash part of
+  // Net Collected (`getNetCollectedCashParts`), so it can never read higher
+  // than Net Collected counts: an open hand-back refund is taken off straight
+  // away (owner decision on #3372, 3 Oct 2026), and shown beside the line.
+  const retainedCash = booking.payment
+    ? getNetCollectedCashParts({ ...booking.payment, booking })
+    : null;
+  const retainedAfterCancellationCents = retainedCash?.heldCashCents ?? 0;
+  const handBackOwedAfterCancellationCents = retainedCash?.handBackOwedCents ?? 0;
+  // #3924: the note that a refund is still being paid back by hand is for the
+  // booker and officers, not a linked guest viewing the booking.
+  const showHandBackOwedNote =
+    handBackOwedAfterCancellationCents > 0 &&
+    (isBookingOwner || canManageBooking || nonOwnerAdminViewer);
   const latestRefundAppeal = booking.refundRequests[0] ?? null;
   // #3827 (`INV-PAY-118`): net of every hand-back still promised back by bank
   // transfer and of the credit minted from late cash - the figure the appeal
@@ -155,10 +180,31 @@ export function resolveBookingDetailPayment({
     creditAppliedCents > 0 &&
     isPaymentOwedBookingStatus(booking.status) &&
     booking.payment?.status !== "SUCCEEDED";
+  // #3750: through the one home, so a change fee recorded on the payment is
+  // part of what the page says is due.
   const amountDueAfterCreditCents = Math.max(
-    booking.finalPriceCents - creditAppliedCents,
+    bookingAmountOwedCents({
+      finalPriceCents: booking.finalPriceCents,
+      changeFeeCents: booking.payment?.changeFeeCents ?? null,
+      appliedCreditCents: creditAppliedCents,
+    }),
     0
   );
+  // #3955 review F8: a change fee recorded on an unpaid booking's payment is
+  // owed with the price, so the card shows it as its own row and the
+  // breakdown adds up to the amount due.
+  const changeFeeOwedCents =
+    isPaymentOwedBookingStatus(booking.status) && booking.payment?.status !== "SUCCEEDED"
+      ? recordedChangeFeeCents(booking.payment)
+      : 0;
+  const showAmountBreakdown = showCreditApplied || changeFeeOwedCents > 0;
+  // What the pay card charges: net of credit only where the card says so.
+  const cardAmountDueCents = showCreditApplied
+    ? amountDueAfterCreditCents
+    : bookingWorthCents({
+        finalPriceCents: booking.finalPriceCents,
+        changeFeeCents: booking.payment?.changeFeeCents ?? null,
+      });
 
   return {
     cancellationSettlement,
@@ -167,6 +213,8 @@ export function resolveBookingDetailPayment({
     canSwitchToInternetBanking,
     originalPaymentCaptured,
     retainedAfterCancellationCents,
+    handBackOwedAfterCancellationCents,
+    showHandBackOwedNote,
     latestRefundAppeal,
     maxRefundableCents,
     showGuestPaymentLinkStandalone,
@@ -176,7 +224,10 @@ export function resolveBookingDetailPayment({
     showCompletePaymentCard,
     creditAppliedCents,
     showCreditApplied,
+    changeFeeOwedCents,
+    showAmountBreakdown,
     amountDueAfterCreditCents,
+    cardAmountDueCents,
   };
 }
 

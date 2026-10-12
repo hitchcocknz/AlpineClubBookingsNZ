@@ -721,19 +721,29 @@ derivation).
   `AWAITING_REVIEW`, and `COMPLETED`, with the same lodge/deleted scope. Count
   bookings once per overlapped bucket. Count guest rows once when their own
   half-open `[stayStart, stayEnd)` envelope overlaps the selected range; sparse
-  explicit guest-night rows do not override that envelope for this metric.
+  guest-night rows do not override it.
   Allocate all integer cents of `finalPriceCents` across the
   booking's complete stay before slicing the report range (100/3 = 34/33/33).
-  This is **Booked revenue**, not cash. Net collected cash stays payment-derived
-  (`Payment.amountCents` less refunds, with a captured addition already inside
-  that amount; #2408), and outstanding additions remain separate (#2350). The
+  This is **Booked revenue**, not cash. Net Collected is money kept: captured
+  cash (a captured addition already inside it; #2408) less refunds and money
+  still owed back, plus account credit a cancellation kept. Outstanding
+  additions remain separate (#2350). The
   #2408 guard is binding here too: a collected-addition claim without captured
   `ADDITIONAL` transaction evidence must not change cash arithmetic or leak
   transaction rows, but must log and expose an aggregate possible-understatement
-  warning in the page, CSV, and PDF. All Reports money presentation preserves
-  exact integer cents.
-  Occupancy is the deliberate exception within the page: it stays limited to
-  PAID/COMPLETED and continues to exclude custodian occupancy (#2286).
+  warning in the page, CSV, and PDF. Reports money keeps exact integer cents.
+  Occupancy is the deliberate exception: PAID/COMPLETED only, custodian
+  occupancy excluded (#2286). Net
+  Collected is the second: it counts bookings of any status and never a
+  deleted one, through `isInNetCollectedBookingScope` (#3372 decision A). Each
+  payment adds only money it took and still holds, so a cancelled booking never
+  paid adds nil. Any booking loses at once an open hand-back, an unpaid card
+  refund and a late charge awaiting the treasurer; a cancelled one loses late
+  bank cash credited back and adds credit it kept
+  (`getNetCollectedPaymentParts`; owner, #3811 and #3372). "Refunds owed" and
+  "Credits owed" beside it are club-wide, as at today. A refunded status is
+  money taken only with capture evidence (`paymentShowsCaptureEvidence`),
+  never a Xero-folded mirror alone.
 
 ## Capacity and allocation
 
@@ -914,19 +924,16 @@ derivation).
   booking-request hut fees now reach the finance revenue reconciliation's booking
   side, and a member an officer linked to a converted booking's guest is credited
   with the nights they really stayed by `countMemberStayNights`.
-- **It is a DATA write taken before cutover**, at step 13 of
-  `docs/PRODUCTION_UPGRADE_RUNBOOK.md` while the old colour still serves, and it
-  is not `windowed`. So: (1) every approval and quote hold taken between
-  `migrate` and cutover is written by pre-#2739 code and gets no night rows —
-  **re-run the statement verbatim after cutover**, which inserts nothing where
-  the first pass already ran; (2) aborting the cutover un-does the code but NOT
-  the inserted rows, the only irreversible part of the release; (3) in that
-  window the old colour's in-place hold reassignment updates
-  `stayStart`/`stayEnd`/`priceCents` without rewriting night rows, so a quote
-  accepted at a different option than the hold can leave backfilled rows
-  describing the hold's dates and total — and invoicing prefers stored rows over
-  the guest's flat `priceCents`. Remedy: re-raise or refresh the invoice for any
-  request approved in the window, or take the deploy with quoting paused.
+- **It is a DATA write, ledgered `windowed` by #3933** (its own header predates
+  that and says otherwise). The previous colour's in-place hold reassignment
+  rewrites a guest's `priceCents` without rewriting night rows, so a quote
+  accepted while it serves leaves backfilled nights at the hold's per-night
+  prices, and invoicing prefers stored rows over the flat `priceCents`; a
+  re-run cannot correct that. Under the windowed sequence no old colour serves
+  between migrate and cutover, so no post-cutover re-run is needed. Aborting
+  un-does the code but NOT the inserted rows. If the old colour ever serves with
+  them, repair the nights its `rollback.sql` query lists (#3214) before
+  refreshing the invoice.
 
 ### INV-CAP-007
 
@@ -1270,8 +1277,11 @@ capacity or double-booking violation.
   nights a refusal names, and in the payload shape those reach the member
   through (#2930) — while a member may join the waitlist over held nights and
   is never promoted while the hold applies; only admin surfaces are told a hold
-  is in effect. Full scenario table in `docs/CAPACITY_MODEL.md`,
-  "Exclusive whole-lodge hold — a non-bypassable block".
+  is in effect — with ONE exception: where the member lodge roster runs, it
+  states the held nights without naming or counting the party (`INV-PRIV-017`,
+  owner decision 6 Oct 2026, #3474). Full scenario table in
+  `docs/CAPACITY_MODEL.md`, "Exclusive whole-lodge hold — a non-bypassable
+  block".
 
 ### INV-CAP-022
 

@@ -43,6 +43,7 @@ beforeEach(() => {
 });
 
 import ReportsPage from "@/app/(admin)/admin/reports/page";
+import { CREDITS_OWED_LABEL, REFUNDS_OWED_LABEL } from "@/lib/refunds-and-credits-owed-shared";
 import type { ReactNode } from "react";
 import { ClubTimeProvider } from "@/components/club-time-provider";
 import { ENVIRONMENT_CLUB_ZONE } from "@/lib/__tests__/helpers/environment-club-zone";
@@ -67,6 +68,8 @@ const EMPTY_REPORT = {
     },
     totalRevenueCents: 0,
     netCollectedCents: 0,
+    refundsOwedCents: 0,
+    creditsOwedCents: 0,
     additionalLedgerGapCents: 0,
     additionalLedgerGapBookings: 0,
     outstandingAdditionalCents: 0,
@@ -273,7 +276,7 @@ describe("ReportsPage quick ranges", () => {
       ".reports-print-card",
     );
     const collectedCashCard = screen
-      .getByText("Net Collected Cash")
+      .getByText("Net Collected")
       .closest(".reports-print-card");
     const outstandingAdditionsCard = screen
       .getByText("Outstanding Additions")
@@ -283,6 +286,32 @@ describe("ReportsPage quick ranges", () => {
     expect(outstandingAdditionsCard).toHaveTextContent("$135.00");
     expect(screen.getByText("Booked Revenue by Month")).toBeVisible();
     expect(screen.getByText(/Price allocated to selected stay nights/)).toBeVisible();
+  });
+
+  it("prints the ledger-gap warning's booking count in the club number format (#3637)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ...EMPTY_REPORT,
+            summary: {
+              ...EMPTY_REPORT.summary,
+              netCollectedCents: 7_500,
+              additionalLedgerGapCents: 2_100,
+              additionalLedgerGapBookings: 1_234,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    render(<ReportsPage />);
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(
+      "Net Collected may understate by $21.00: 1,234 overlapping bookings record an additional payment",
+    );
   });
 
   it("exports stay-night booked revenue and collected cash with unambiguous CSV labels", async () => {
@@ -296,6 +325,8 @@ describe("ReportsPage quick ranges", () => {
               ...EMPTY_REPORT.summary,
               totalRevenueCents: 10_000,
               netCollectedCents: 7_500,
+              refundsOwedCents: 16_500,
+              creditsOwedCents: 8_500,
               additionalLedgerGapCents: 2_100,
               additionalLedgerGapBookings: 1,
               outstandingAdditionalCents: 2_500,
@@ -324,7 +355,7 @@ describe("ReportsPage quick ranges", () => {
     render(<ReportsPage />);
     const warning = await screen.findByRole("alert");
     expect(warning).toHaveTextContent(
-      "Net Collected Cash may understate by $21.00",
+      "Net Collected may understate by $21.00",
     );
     expect(warning).toHaveTextContent(
       "Ask a developer to reconcile that payment's ledger before trusting this figure.",
@@ -337,9 +368,13 @@ describe("ReportsPage quick ranges", () => {
     const blob = createObjectUrl.mock.calls[0][0] as Blob;
     const csv = await blob.text();
     expect(csv).toContain("Booked Revenue,100.00");
-    expect(csv).toContain("Net Collected Cash,75.00");
+    expect(csv).toContain("Net Collected,75.00");
+    // #3372 (owner, 7 Oct 2026): the shared labels, marked as at today.
+    expect(csv).toContain(`${REFUNDS_OWED_LABEL} (as at today),165.00`);
+    expect(csv).toContain(`${CREDITS_OWED_LABEL} (as at today),85.00`);
+    expect(csv).toContain("Refunds owed (as at today),165.00");
     expect(csv).toContain(
-      "Net Collected Cash Warning,Net Collected Cash may understate by $21.00",
+      "Net Collected Warning,Net Collected may understate by $21.00",
     );
     expect(csv).toContain("Possible Additional Ledger Gap,21.00");
     expect(csv).toContain("Bookings With An Additional Ledger Gap,1");
