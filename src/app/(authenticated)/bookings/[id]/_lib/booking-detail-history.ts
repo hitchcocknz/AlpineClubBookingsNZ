@@ -121,11 +121,13 @@ export async function loadBookingDetailHistory({
     payment row's mirror column. At or below zero the narrative says there is
     nothing to pay.
 
-    A linked guest is not told about the owner's credit: the credit-election
-    notice and every other money surface on this page withhold it from them, so
-    the narrative drops its credit wording for them too. The amount itself is
-    unchanged — only `appliedCreditCents`, which the narrative reads for that
-    wording alone, is withheld.
+    A linked guest is not told about the owner's ELECTED or APPLIED credit: the
+    credit-election notice, the pay card's credit row (owner and booking
+    managers only) and the timeline's "credit was not applied" entry (the
+    `linked_guest` audience below) withhold it from them, so the narrative drops
+    its credit wording for them too. The amount itself is unchanged — only
+    `appliedCreditCents`, which the narrative reads for that wording alone, is
+    withheld.
   */
   const amountOwed = await readBookingAmountOwed(booking);
   const narrativeAmountOwed = isLinkedGuestViewer
@@ -199,7 +201,8 @@ export async function loadBookingDetailHistory({
     // readable by anyone with booking-edit access, and by nobody else. The audit
     // query above already withholds the rows; this says the same thing to the
     // builder, so a future edit to either one cannot open the door on its own.
-    audience: canSeeAdminTools ? "staff" : "member",
+    // #3991: a linked guest is its own audience, kept from the owner's credit.
+    audience: canSeeAdminTools ? "staff" : isLinkedGuestViewer ? "linked_guest" : "member",
     payment: booking.payment
       ? {
           status: booking.payment.status,

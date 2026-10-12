@@ -64,11 +64,11 @@ const booking = {
   moneyReconciliation: null,
 } as never;
 
-async function feedFor(canSeeAdminTools: boolean) {
+async function feedFor(canSeeAdminTools: boolean, isLinkedGuestViewer = false) {
   await loadBookingDetailHistory({
     booking,
     club: {} as never,
-    viewer: { canSeeAdminTools } as never,
+    viewer: { canSeeAdminTools, isLinkedGuestViewer } as never,
     format: CLUB_FORMAT_TEST,
   });
   expect(mocks.buildBookingHistoryItems).toHaveBeenCalledTimes(1);
@@ -113,5 +113,17 @@ describe("booking detail feed: settlement markers are staff-only at the data fee
         title: "May have been paid twice (card and Xero)",
       }),
     ]);
+  });
+});
+
+// #3991: a linked guest is its own timeline audience, so the builder can keep
+// the owner's account credit (the "credit was not applied" entry) from them.
+describe("booking detail feed: the timeline audience of a linked guest (#3991)", () => {
+  it("hands a linked guest's timeline the linked_guest audience", async () => {
+    expect((await feedFor(false, true)).audience).toBe("linked_guest");
+  });
+
+  it("CONTROL: the owner's timeline is the member audience", async () => {
+    expect((await feedFor(false, false)).audience).toBe("member");
   });
 });

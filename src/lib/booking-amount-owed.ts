@@ -9,9 +9,20 @@ import { prisma } from "@/lib/prisma";
  * The credit comes from the ledger (`deriveBookingAppliedCreditCents`, the sum
  * of the booking's `BOOKING_APPLIED` rows), which is what the card intent is
  * minted against — never from `Payment.creditAppliedCents`, which only mirrors
- * it and is absent before a payment row exists. The payment-link page, its
- * intent and the booking page each read it here, so the figure they quote and
- * the figure they charge cannot come from two different sources.
+ * it and is absent before a payment row exists. It is the one read for the
+ * booking page, the payment-link page, the payment link's card intent and the
+ * member's card intent (`create-payment-intent`, both reads, the second under
+ * its transaction): what those quote and what they charge come from here.
+ *
+ * NOT YET EVERY READER. These still call `bookingAmountOwedCents` with credit
+ * they read or are handed themselves, and are known (#3991, to be raised on
+ * their own): `confirm-payment/route.ts`, `switch-to-internet-banking/route.ts`,
+ * `stripe-webhook-service.ts`, `manual-booking-payment-state.ts`,
+ * `payment-reconciliation.ts`, `booking-modify-settlement.ts`,
+ * `booking-date-modification-service.ts`, `booking-credit-election.ts`,
+ * `edit-financial-review-account-credit.ts` and
+ * `policies/booking-route-decisions.ts`. `amount-owed-one-home.test.ts` pins
+ * that list, so a new composer is a deliberate addition.
  *
  * Not `server-only`: `payment-link-context.ts` is reachable from
  * `src/instrumentation.node.ts`, where that import throws.

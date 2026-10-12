@@ -190,6 +190,8 @@ export default async function BookingDetailPage({
     viewer,
     consent,
     access,
+    // #3991: the ledger credit the history loader already read for this page.
+    appliedCreditCents: history.amountOwed.appliedCreditCents,
   });
   const backHref = resolveInternalReturnPath(
     query.returnTo,

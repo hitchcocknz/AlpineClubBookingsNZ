@@ -64,6 +64,27 @@ const PAY_STEPS = [
   "src/lib/booking-amount-owed.ts",
 ];
 const ONE_HOME_READ = "src/lib/booking-amount-owed.ts";
+// #3991: the surfaces that read what is owed ONLY through the one read — what
+// they quote and what they charge cannot part.
+const ONE_READ_USERS = [
+  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
+  "src/lib/payment-link-context.ts",
+  "src/lib/payment-link-intent.ts",
+  "src/app/api/payments/create-payment-intent/route.ts",
+];
+// The files that still compose it themselves, named in `booking-amount-owed.ts`.
+const KNOWN_COMPOSERS = [
+  "src/app/api/bookings/[id]/confirm-payment/route.ts",
+  "src/app/api/payments/switch-to-internet-banking/route.ts",
+  "src/lib/stripe-webhook-service.ts",
+  "src/lib/manual-booking-payment-state.ts",
+  "src/lib/payment-reconciliation.ts",
+  "src/lib/booking-modify-settlement.ts",
+  "src/lib/booking-date-modification-service.ts",
+  "src/lib/booking-credit-election.ts",
+  "src/lib/edit-financial-review-account-credit.ts",
+  "src/lib/policies/booking-route-decisions.ts",
+];
 // Reading the one home: the two helpers, or the one read built on them (#3991).
 const READS_ONE_HOME = /\b(?:booking(?:AmountOwed|Worth)Cents|readBookingAmountOwed)\(/;
 // A final price, then a minus, then — within the same expression — anything
@@ -146,6 +167,31 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     // The one read is itself built on the one home, with the ledger credit.
     expect(read(ONE_HOME_READ)).toMatch(/\bbookingAmountOwedCents\(/);
     expect(read(ONE_HOME_READ)).toMatch(/\bderiveBookingAppliedCreditCents\(/);
+  });
+
+  it("the one read's users take credit and the owed figure from it alone (#3991)", () => {
+    for (const file of ONE_READ_USERS) {
+      const text = read(file);
+      expect(text, file).toMatch(/\breadBookingAmountOwed\(/);
+      expect(text, `${file} composes its own figure`).not.toMatch(
+        /\b(?:bookingAmountOwedCents|deriveBookingAppliedCreditCents)\(/,
+      );
+    }
+  });
+
+  it("every other composer of the owed figure is a known one (#3991)", () => {
+    const composers = sourceFiles(path.join(REPO, "src"))
+      .filter((file) => /\bbookingAmountOwedCents\(/.test(read(file)))
+      .filter((file) => file !== ONE_HOME_READ && file !== "src/lib/booking-payment-state.ts");
+    expect(composers.sort(), "INV-PAY-119: read it through readBookingAmountOwed, or list it in booking-amount-owed.ts").toEqual(
+      [...KNOWN_COMPOSERS].sort(),
+    );
+    // Its docblock names each one (read raw: the list lives in a comment).
+    const docblock = fs.readFileSync(path.join(REPO, ONE_HOME_READ), "utf8");
+    for (const file of KNOWN_COMPOSERS) {
+      const named = file.split("/").slice(-2).join("/").replace(/^lib\//, "");
+      expect(docblock, `booking-amount-owed.ts names ${named}`).toContain(`\`${named}\``);
+    }
   });
 
   it("no pay step sizes an amount at the bare price", () => {

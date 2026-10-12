@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBookingHistoryItems } from "@/lib/booking-history";
+import { buildBookingHistoryItems, type BookingHistoryAudience } from "@/lib/booking-history";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 describe("buildBookingHistoryItems", () => {
@@ -501,9 +501,9 @@ describe("buildBookingHistoryItems", () => {
  * never moves money — and this note is where they read that.
  */
 describe("buildBookingHistoryItems — unapplied credit election (#2265)", () => {
-  function build(details: string | null) {
+  function build(details: string | null, audience: BookingHistoryAudience = "member") {
     return buildBookingHistoryItems({
-      audience: "member",
+      audience,
       createdAt: new Date("2026-04-01T09:00:00Z"),
       payment: null,
       modifications: [],
@@ -563,6 +563,23 @@ describe("buildBookingHistoryItems — unapplied credit election (#2265)", () =>
 
     expect(item?.detail).toContain("$0.00 of account credit available");
     expect(item?.detail).toContain("balance was not reduced");
+  });
+
+  // #3991: the owner's elected credit and balance are not a linked guest's to
+  // read — the page's credit-election notice and narrative withhold them too.
+  it("is withheld from a linked guest, and shown to the member and staff", () => {
+    const details = JSON.stringify({
+      source: "manual-mark-paid",
+      creditElectionCents: 45000,
+      paidAmountCents: 12000,
+      availableCreditCents: 5000,
+    });
+    const find = (audience: BookingHistoryAudience) =>
+      build(details, audience).find((entry) => entry.id === "audit-audit-election");
+
+    expect(find("linked_guest")).toBeUndefined();
+    expect(find("member")?.detail).toContain("$50.00 of account credit available");
+    expect(find("staff")?.detail).toContain("$50.00 of account credit available");
   });
 
   it("says credit spent and then returned was RETURNED, not 'not reduced' (#3864)", () => {

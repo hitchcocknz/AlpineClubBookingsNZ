@@ -6,8 +6,12 @@
   what is actually owed: the price plus any recorded change fee, less applied
   credit. That is the same figure the card payment and the emailed payment link
   charge. When credit covers everything, it says there is nothing left to pay
-  and names no amount. A guest on someone else's booking is not told about the
-  owner's credit.
+  and names no amount.
+
+  A guest on someone else's booking is no longer shown the owner's account
+  credit in that summary, nor the "Saved account credit was not applied" entry
+  in the booking's history, matching the credit-choice notice they already did
+  not see.
 
   The page's pay card, and the `{amountDue}` wording in the club's booking
   messages, now take the applied credit from the same record as the payment
