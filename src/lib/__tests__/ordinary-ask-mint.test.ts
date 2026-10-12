@@ -5,13 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
   replay that Stripe refuses (`idempotency_error`) adopts the intent the key
   already minted, only when exactly one unrecorded intent matches, and
   otherwise throws the refusal as it came. The door's own first mint never
-  looks anything up.
+  looks anything up. Review round: a scan that stopped at its bound, or another
+  edit's unfinished recovery that could own the match, also fails closed.
 */
 
 const mocks = vi.hoisted(() => ({
   createPaymentIntent: vi.fn(),
   listRecentPaymentIntentsMatching: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
+  recoveryFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -19,7 +21,10 @@ vi.mock("@/lib/stripe", () => ({
   listRecentPaymentIntentsMatching: mocks.listRecentPaymentIntentsMatching,
 }));
 vi.mock("@/lib/prisma", () => ({
-  prisma: { paymentTransaction: { findMany: mocks.paymentTransactionFindMany } },
+  prisma: {
+    paymentTransaction: { findMany: mocks.paymentTransactionFindMany },
+    paymentRecoveryOperation: { findMany: mocks.recoveryFindMany },
+  },
 }));
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -41,7 +46,7 @@ const plan = planOrdinaryAskMint({
   frozenAmountCents: 6_000,
   amountCents: 6_000,
 });
-const RECOVERY = { createdAt: new Date("2026-06-30T00:00:00.000Z") };
+const RECOVERY = { id: "op_4036", createdAt: new Date("2026-06-30T00:00:00.000Z") };
 const CURRENCY = stripeChargeCurrency(CLUB_FORMAT_TEST);
 
 function intent(id: string, overrides: Record<string, unknown> = {}) {
@@ -59,7 +64,10 @@ function intent(id: string, overrides: Record<string, unknown> = {}) {
 /** Stripe's list, as the real helper reads it: every intent `matches` accepts. */
 function stripeHolds(...intents: ReturnType<typeof intent>[]) {
   mocks.listRecentPaymentIntentsMatching.mockImplementation(
-    async ({ matches }: { matches: (pi: unknown) => boolean }) => intents.filter((pi) => matches(pi)),
+    async ({ matches }: { matches: (pi: unknown) => boolean }) => ({
+      intents: intents.filter((pi) => matches(pi)),
+      complete: true,
+    }),
   );
 }
 
@@ -69,6 +77,7 @@ const refusal = () =>
 beforeEach(() => {
   for (const mock of Object.values(mocks)) mock.mockReset();
   mocks.paymentTransactionFindMany.mockResolvedValue([]);
+  mocks.recoveryFindMany.mockResolvedValue([]);
 });
 
 describe("mintOrdinaryAskIntent (#4036)", () => {
@@ -77,7 +86,7 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
 
     await expect(
       mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
-    ).resolves.toEqual({ id: "pi_new" });
+    ).resolves.toEqual({ intent: { id: "pi_new" }, adopted: false });
     expect(mocks.createPaymentIntent).toHaveBeenCalledWith({
       format: CLUB_FORMAT_TEST,
       amountCents: 6_000,
@@ -120,7 +129,7 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
       recovery: RECOVERY,
     });
 
-    expect(adopted.id).toBe("pi_door");
+    expect(adopted).toEqual({ intent: expect.objectContaining({ id: "pi_door" }), adopted: true });
     expect(mocks.listRecentPaymentIntentsMatching).toHaveBeenCalledWith(
       expect.objectContaining({
         customerId: "cus_moved",
@@ -131,6 +140,66 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
       where: { stripePaymentIntentId: { in: ["pi_door"] } },
       select: { stripePaymentIntentId: true },
     });
+    // Only the booking's OTHER unfinished additional-ask recoveries are rivals.
+    expect(mocks.recoveryFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          bookingId: BOOKING,
+          type: "CREATE_ADDITIONAL_PAYMENT_INTENT",
+          status: { in: ["PENDING", "PROCESSING"] },
+          id: { not: RECOVERY.id },
+        },
+      }),
+    );
+  });
+
+  it("fails closed when the scan stopped at its bound - a second match may be among the intents it never read", async () => {
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    mocks.listRecentPaymentIntentsMatching.mockResolvedValue({ intents: [intent("pi_door")], complete: false });
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when another edit's unfinished recovery could own the one match - two edits never record one intent", async () => {
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    stripeHolds(intent("pi_door"));
+    const other = ordinaryAskDoorRequest("guestAdd", BOOKING, "mod_other");
+    mocks.recoveryFindMany.mockResolvedValue([
+      {
+        id: "op_other",
+        bookingId: BOOKING,
+        idempotencyKey: "payment_recovery_additional_intent_mod_other",
+        paymentIntentId: other.idempotencyKey,
+        amountCents: 6_000,
+      },
+    ]);
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+  });
+
+  it("adopts when the booking's other unfinished recovery could not have minted the match (another amount)", async () => {
+    mocks.createPaymentIntent.mockRejectedValue(refusal());
+    stripeHolds(intent("pi_door"));
+    mocks.recoveryFindMany.mockResolvedValue([
+      {
+        id: "op_other",
+        bookingId: BOOKING,
+        idempotencyKey: "payment_recovery_additional_intent_mod_other",
+        paymentIntentId: ordinaryAskDoorRequest("guestAdd", BOOKING, "mod_other").idempotencyKey,
+        amountCents: 4_000,
+      },
+    ]);
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
+    ).resolves.toEqual({ intent: expect.objectContaining({ id: "pi_door" }), adopted: true });
   });
 
   it("never adopts an intent already on the ledger - it is another ask's", async () => {

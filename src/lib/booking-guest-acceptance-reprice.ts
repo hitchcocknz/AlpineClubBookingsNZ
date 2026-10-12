@@ -22,7 +22,6 @@ import {
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
 } from "@/lib/booking-modification-settlement";
-import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 import {
   applyLifecycleTransitions,
   applyPaymentAdjustments,
@@ -602,7 +601,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
   // #3954: the retired asks die at Stripe and the smaller one is minted - the
   // only ask a re-price can mint, since it never raises a settled price.
   const additionalMint = await createModificationAdditionalPaymentIntent({
-    format, bookingId, result: paymentContext, ...ordinaryAskDoorRequest("guestAcceptanceReprice", bookingId, bookingModificationId),
+    format, bookingId, result: paymentContext, door: "guestAcceptanceReprice",
     failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a guest-acceptance re-price",
   });
   try {

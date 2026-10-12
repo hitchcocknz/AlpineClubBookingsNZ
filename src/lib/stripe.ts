@@ -349,6 +349,10 @@ export async function findRecentPaymentIntentByMetadata({
  * customer's own intents (reliable however busy the account) and the
  * account's (where an intent minted for another customer is), so a match under
  * this customer never hides a second one under another.
+ *
+ * `complete` is false when either scan stopped at `maxScanned` with intents it
+ * never read: the list may then be missing a second match, and a caller that
+ * must know there is exactly one cannot rely on it (#4036 review).
  */
 export async function listRecentPaymentIntentsMatching({
   matches,
@@ -361,43 +365,43 @@ export async function listRecentPaymentIntentsMatching({
   /** The customer this caller would mint for: scanned as well as the account. */
   customerId?: string;
   maxScanned?: number;
-}): Promise<Stripe.PaymentIntent[]> {
+}): Promise<{ intents: Stripe.PaymentIntent[]; complete: boolean }> {
   const stripe = await getStripe();
-  const scan = async (customer: string | undefined): Promise<Stripe.PaymentIntent[]> => {
-    const found: Stripe.PaymentIntent[] = [];
-    await scanRecentPaymentIntents(stripe, { customer, createdSince, maxScanned }, (intent) => {
-      if (matches(intent)) found.push(intent);
+  const found = new Map<string, Stripe.PaymentIntent>();
+  let complete = true;
+  for (const customer of customerId ? [customerId, undefined] : [undefined]) {
+    const scan = await scanRecentPaymentIntents(stripe, { customer, createdSince, maxScanned }, (intent) => {
+      if (matches(intent)) found.set(intent.id, intent);
       return false;
     });
-    return found;
-  };
-  const found = new Map<string, Stripe.PaymentIntent>();
-  for (const intent of [...(customerId ? await scan(customerId) : []), ...(await scan(undefined))]) {
-    found.set(intent.id, intent);
+    if (scan.truncated) complete = false;
   }
-  return [...found.values()];
+  return { intents: [...found.values()], complete };
 }
 
 /**
  * The one bounded scan of recent intents both finders read: newest first, those
  * created since `createdSince`, at most `maxScanned` that `visit` did not stop
- * on. `visit` returns true to stop.
+ * on. `visit` returns true to stop. `truncated` says the scan gave up at
+ * `maxScanned` - older matching intents may exist unread - rather than reading
+ * every intent in the window or being stopped by `visit`.
  */
 async function scanRecentPaymentIntents(
   stripe: Stripe,
   { customer, createdSince, maxScanned }: { customer: string | undefined; createdSince: Date; maxScanned: number },
   visit: (intent: Stripe.PaymentIntent) => boolean,
-): Promise<void> {
+): Promise<{ truncated: boolean }> {
   let scanned = 0;
   for await (const intent of stripe.paymentIntents.list({
     ...(customer ? { customer } : {}),
     created: { gte: Math.floor(createdSince.getTime() / 1000) },
     limit: 100,
   })) {
-    if (visit(intent)) return;
+    if (visit(intent)) return { truncated: false };
     scanned += 1;
-    if (scanned >= maxScanned) return;
+    if (scanned >= maxScanned) return { truncated: true };
   }
+  return { truncated: false };
 }
 
 /**

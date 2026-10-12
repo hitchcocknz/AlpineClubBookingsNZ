@@ -46,7 +46,6 @@ import {
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
 } from "@/lib/booking-modification-settlement";
-import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 import {
   handleMemberGuestAddRefusal,
   startMemberGuestRefusalClock,
@@ -258,7 +257,7 @@ export async function DELETE(
       format,
       bookingId,
       result,
-      ...ordinaryAskDoorRequest("guestRemoval", bookingId, result.bookingModificationId),
+      door: "guestRemoval",
       failureMessage:
         "Failed to create additional PaymentIntent for guest removal",
     });

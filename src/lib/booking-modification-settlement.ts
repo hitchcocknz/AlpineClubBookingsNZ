@@ -19,7 +19,12 @@ import {
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
 import { mintOrdinaryAskIntent } from "@/lib/ordinary-ask-mint";
-import { ADDITIONAL_ASK_INTENT_TYPE, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
+import {
+  ADDITIONAL_ASK_INTENT_TYPE,
+  ordinaryAskDoorRequest,
+  planOrdinaryAskMint,
+  type OrdinaryAskDoor,
+} from "@/lib/ordinary-ask-request";
 import {
   cancelSupersededAdditionalIntentsNow,
   queueSupersededAdditionalIntentCancellationRows,
@@ -345,36 +350,44 @@ export function additionalAmountToName(
  * replay is the one such caller) has to test `additionalPaymentIntentId` rather
  * than wait for an exception that never comes.
  */
-export async function createModificationAdditionalPaymentIntent({
-  bookingId,
-  result,
-  reason,
-  idempotencyKey,
-  recoveryIdempotencyKey,
-  failureMessage,
-  format,
-}: {
-  bookingId: string;
-  result: BookingModificationPaymentContext;
-  reason: string;
-  idempotencyKey: string;
-  /**
-   * #3170: the dedup key for the durable retry, when it must not be the
-   * modification-scoped default.
-   *
-   * The review-charge caller passes
-   * `buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey`, which is
-   * EDIT-scoped - a different namespace from the ordinary edit's key over the
-   * same `BookingModification`, so the two paths' debts stay separate rows, but
-   * deliberately the SAME row for both review tasks of one edit, because they
-   * are two shares of one debt. Omitted by the ordinary edit paths, which are
-   * one-per-modification by construction.
-   */
-  recoveryIdempotencyKey?: string;
-  failureMessage: string;
-  /** The club's format (#3565), resolved before any transaction by the caller. */
-  format: ClubFormat;
-}): Promise<ModificationAdditionalAskMint> {
+export async function createModificationAdditionalPaymentIntent(
+  params: {
+    bookingId: string;
+    result: BookingModificationPaymentContext;
+    failureMessage: string;
+    /** The club's format (#3565), resolved before any transaction by the caller. */
+    format: ClubFormat;
+  } & (
+    | {
+        /**
+         * #4036 review: an ordinary edit's door. Its Stripe key and its reason
+         * are both derived from it here (`ordinaryAskDoorRequest`), so a key and
+         * a reason from different doors cannot be written.
+         */
+        door: OrdinaryAskDoor;
+        reviewCharge?: never;
+      }
+    | {
+        door?: never;
+        /**
+         * #3170: a review charge's request, its key and reason built by its
+         * own sync. `recoveryIdempotencyKey` is the dedup key for the durable
+         * retry: `buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey`,
+         * EDIT-scoped - a different namespace from the ordinary edit's key over
+         * the same `BookingModification`, so the two paths' debts stay separate
+         * rows, but deliberately the SAME row for both review tasks of one edit,
+         * because they are two shares of one debt. The ordinary doors use the
+         * modification-scoped default, one per modification by construction.
+         */
+        reviewCharge: { reason: string; idempotencyKey: string; recoveryIdempotencyKey: string };
+      }
+  ),
+): Promise<ModificationAdditionalAskMint> {
+  const { bookingId, result, failureMessage, format } = params;
+  const recoveryIdempotencyKey = params.reviewCharge?.recoveryIdempotencyKey;
+  const { reason, idempotencyKey } = params.reviewCharge
+    ? params.reviewCharge
+    : ordinaryAskDoorRequest(params.door, bookingId, result.bookingModificationId);
   // #3954: the asks this edit's reduction retired are cancelled at Stripe
   // first, whether or not it owes a smaller one: their rows were retired, and
   // their cancellations queued, inside the edit's transaction.
@@ -548,7 +561,7 @@ export async function createModificationAdditionalPaymentIntent({
       // read it; the owner is read only when there is none.
       customerId =
         result.paymentCustomerId ?? (await resolveAskCustomerId(await readAskMintPayment(paymentId)));
-      pi = await mintOrdinaryAskIntent({
+      ({ intent: pi } = await mintOrdinaryAskIntent({
         format,
         plan: planOrdinaryAskMint({
           bookingId,
@@ -559,7 +572,7 @@ export async function createModificationAdditionalPaymentIntent({
         }),
         customerId,
         recovery: null,
-      });
+      }));
     }
 
     // THE NEW INTENT'S OWN ROW IS WRITTEN FIRST, AND THE ORDER IS LOAD-BEARING

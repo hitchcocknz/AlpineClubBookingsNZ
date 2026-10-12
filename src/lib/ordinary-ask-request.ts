@@ -34,7 +34,13 @@
  * A refusal that still comes back is answered in `ordinary-ask-mint.ts`. The
  * rule is `INV-MOD-003`.
  */
-import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
+import {
+  bookingModificationIdForAdditionalIntentRecoveryKey,
+  buildReissuedAskStripeIdempotencyKey,
+  isEditFinancialReviewAdditionalIntentRecoveryKey,
+  stripeIdempotencyKeyForAskAmount,
+} from "@/lib/payment-recovery-keys";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 
 /** The Stripe metadata `type` every additional ask's intent carries. */
 export const ADDITIONAL_ASK_INTENT_TYPE = "modification_additional";
@@ -67,7 +73,11 @@ function ordinaryAskStripeKey(door: OrdinaryAskDoor, bookingId: string, bookingM
   return `${ORDINARY_ASK_DOORS[door].keyPrefix}_${bookingId}_${bookingModificationId}`;
 }
 
-/** What a door passes the minter: its reason and its edit-scoped Stripe key. */
+/**
+ * The door's request, derived from the door alone: its reason and its
+ * edit-scoped Stripe key. The minter takes the door, never the two strings, so
+ * a key and a reason from different doors cannot be written (#4036 review).
+ */
 export function ordinaryAskDoorRequest(
   door: OrdinaryAskDoor,
   bookingId: string,
@@ -80,23 +90,32 @@ export function ordinaryAskDoorRequest(
 }
 
 /**
+ * The door whose key `stripeKey` is, matched by rebuilding each door's key for
+ * this booking and edit - exact equality, never a prefix slice - else null.
+ */
+function ordinaryAskDoorForStripeKey(
+  stripeKey: string,
+  bookingId: string,
+  bookingModificationId: string | null,
+): OrdinaryAskDoor | null {
+  if (!bookingModificationId) return null;
+  for (const door of Object.keys(ORDINARY_ASK_DOORS) as OrdinaryAskDoor[]) {
+    if (ordinaryAskStripeKey(door, bookingId, bookingModificationId) === stripeKey) return door;
+  }
+  return null;
+}
+
+/**
  * The reason a request under `stripeKey` carries: the door whose key it is,
- * matched by rebuilding each door's key for this booking and edit - exact
- * equality, never a prefix slice - else `ORDINARY_ASK_RECOVERY_REASON`.
+ * else `ORDINARY_ASK_RECOVERY_REASON`.
  */
 export function ordinaryAskReasonForStripeKey(
   stripeKey: string,
   bookingId: string,
   bookingModificationId: string | null,
 ): string {
-  if (bookingModificationId) {
-    for (const door of Object.keys(ORDINARY_ASK_DOORS) as OrdinaryAskDoor[]) {
-      if (ordinaryAskStripeKey(door, bookingId, bookingModificationId) === stripeKey) {
-        return ORDINARY_ASK_DOORS[door].reason;
-      }
-    }
-  }
-  return ORDINARY_ASK_RECOVERY_REASON;
+  const door = ordinaryAskDoorForStripeKey(stripeKey, bookingId, bookingModificationId);
+  return door ? ORDINARY_ASK_DOORS[door].reason : ORDINARY_ASK_RECOVERY_REASON;
 }
 
 export type OrdinaryAskMintPlan = {
@@ -140,20 +159,14 @@ export function planOrdinaryAskMint({
   };
 }
 
-/** The intent states of an ask nobody has paid or retired: the only ones a recovery may adopt. */
-const UNPAID_INTENT_STATUSES: ReadonlySet<string> = new Set([
-  "requires_payment_method",
-  "requires_confirmation",
-  "requires_action",
-]);
-
 /**
  * Whether `intent` is the ask `plan` describes, minted by an earlier request
  * under its key with other parameters: this booking, an additional ask, this
  * door's reason (or the pre-#4036 runner's), this amount in this currency, and
- * still unpaid. The customer is deliberately not compared - a different one is
- * one way the earlier request differed. Whether the intent is already on the
- * ledger, and whether it is the only one, is `mintOrdinaryAskIntent`'s to ask.
+ * still unpaid (`staleIntentAction`'s `reissue`, the one unpaid reading). The
+ * customer is deliberately not compared - a different one is one way the
+ * earlier request differed. Whether the intent is already on the ledger, and
+ * whether it is the only one, is `mintOrdinaryAskIntent`'s to ask.
  */
 export function isIntentForOrdinaryAskPlan(
   intent: { amount: number; currency: string; status: string; metadata?: Record<string, string> | null },
@@ -167,6 +180,35 @@ export function isIntentForOrdinaryAskPlan(
     (metadata.reason === plan.metadata.reason || metadata.reason === ORDINARY_ASK_RECOVERY_REASON) &&
     intent.amount === plan.amountCents &&
     intent.currency === currency &&
-    UNPAID_INTENT_STATUSES.has(intent.status)
+    staleIntentAction(intent) === "reissue"
   );
+}
+
+/**
+ * #4036 review: whether ANOTHER unfinished additional-ask recovery row of the
+ * same booking could be the one that minted `intent` - so adopting it here
+ * could hand one edit's intent to two. Its own intent, named on the row; or an
+ * ordinary ask's request for the same amount whose reason the intent carries:
+ * the row's door's, or the pre-#4036 runner's, which any ordinary row's replay
+ * may have sent. A row whose key names no door (rewritten to an intent id, say)
+ * could have sent any reason. A review charge's and a re-issue's requests carry
+ * reasons of their own (`INV-PAY-120`), so their rows never match.
+ */
+export function couldRecoveryRowOwnIntent(
+  row: { bookingId: string; idempotencyKey: string; paymentIntentId: string; amountCents: number },
+  intent: { id: string; amount: number; metadata?: Record<string, string> | null },
+): boolean {
+  if (row.paymentIntentId === intent.id) return true;
+  const bookingModificationId = bookingModificationIdForAdditionalIntentRecoveryKey(row.idempotencyKey);
+  if (
+    isEditFinancialReviewAdditionalIntentRecoveryKey(row.idempotencyKey) ||
+    (bookingModificationId && row.paymentIntentId === buildReissuedAskStripeIdempotencyKey(bookingModificationId))
+  ) {
+    return false;
+  }
+  if (intent.amount !== row.amountCents) return false;
+  const reason = intent.metadata?.reason;
+  if (reason === ORDINARY_ASK_RECOVERY_REASON) return true;
+  const door = ordinaryAskDoorForStripeKey(row.paymentIntentId, row.bookingId, bookingModificationId);
+  return door === null || ORDINARY_ASK_DOORS[door].reason === reason;
 }

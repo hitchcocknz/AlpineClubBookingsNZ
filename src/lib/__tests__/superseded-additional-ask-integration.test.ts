@@ -305,8 +305,7 @@ async function editUp(modificationId: string, priceDiffCents: number, changeFeeC
     format: CLUB_FORMAT_TEST,
     bookingId: BOOKING_ID,
     result: context,
-    reason: "modification_price_increase",
-    idempotencyKey: `mod_${BOOKING_ID}_${modificationId}`,
+    door: "dateChange",
     failureMessage: "mint failed",
   });
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ADDITIONAL_ASK_INTENT_TYPE,
   ORDINARY_ASK_RECOVERY_REASON,
+  couldRecoveryRowOwnIntent,
   isIntentForOrdinaryAskPlan,
   ordinaryAskDoorRequest,
   ordinaryAskReasonForStripeKey,
@@ -146,5 +147,45 @@ describe("isIntentForOrdinaryAskPlan (#4036)", () => {
     ["no metadata", { metadata: null }],
   ])("refuses %s", (_label, change) => {
     expect(isIntentForOrdinaryAskPlan({ ...minted, ...change }, plan, "nzd")).toBe(false);
+  });
+});
+
+/*
+  #4036 review: an adoption is refused while another unfinished additional-ask
+  recovery of the booking could be the request that minted the match, so two
+  edits never record one intent.
+*/
+describe("couldRecoveryRowOwnIntent (#4036 review)", () => {
+  const OTHER = "mod_other";
+  const otherRow = (overrides: Record<string, unknown> = {}) => ({
+    bookingId: BOOKING,
+    idempotencyKey: `payment_recovery_additional_intent_${OTHER}`,
+    paymentIntentId: ordinaryAskDoorRequest("guestAdd", BOOKING, OTHER).idempotencyKey,
+    amountCents: 6_000,
+    ...overrides,
+  });
+  const match = (reason: string, overrides: Record<string, unknown> = {}) => ({
+    id: "pi_match",
+    amount: 6_000,
+    metadata: { bookingId: BOOKING, type: ADDITIONAL_ASK_INTENT_TYPE, reason },
+    ...overrides,
+  });
+
+  it.each([
+    ["the same door's reason and amount", otherRow(), match("guest_add_price_increase")],
+    ["the old runner's reason, from any door", otherRow({ paymentIntentId: ordinaryAskDoorRequest("dateChange", BOOKING, OTHER).idempotencyKey }), match(ORDINARY_ASK_RECOVERY_REASON)],
+    ["a row naming the intent itself", otherRow({ amountCents: 1 }), match("guest_add_price_increase", { id: otherRow().paymentIntentId })],
+    ["a row whose key names no door (any reason)", otherRow({ paymentIntentId: "pi_written_earlier" }), match("date_change_price_increase")],
+  ])("a rival: %s", (_label, row, intent) => {
+    expect(couldRecoveryRowOwnIntent(row, intent)).toBe(true);
+  });
+
+  it.each([
+    ["another amount", otherRow({ amountCents: 4_000 }), match("guest_add_price_increase")],
+    ["another door's reason", otherRow({ paymentIntentId: ordinaryAskDoorRequest("dateChange", BOOKING, OTHER).idempotencyKey }), match("guest_add_price_increase")],
+    ["a review charge's row", otherRow({ idempotencyKey: `edit_financial_review_additional_intent_recovery_${OTHER}` }), match(ORDINARY_ASK_RECOVERY_REASON)],
+    ["a re-issue's row", otherRow({ paymentIntentId: `mod_reissued_ask_${OTHER}` }), match(ORDINARY_ASK_RECOVERY_REASON)],
+  ])("not a rival: %s", (_label, row, intent) => {
+    expect(couldRecoveryRowOwnIntent(row, intent)).toBe(false);
   });
 });

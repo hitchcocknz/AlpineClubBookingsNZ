@@ -87,7 +87,7 @@ function mint(overrides: Record<string, unknown> = {}) {
     format: CLUB_FORMAT_TEST,
     bookingId: BOOKING,
     result: context(overrides) as never,
-    ...ordinaryAskDoorRequest("guestAdd", BOOKING, EDIT),
+    door: "guestAdd",
     failureMessage: "door 4036",
   });
 }

@@ -1056,8 +1056,8 @@ let webhookClient: PrismaClient;
     async function mintAtDoor(result: Awaited<ReturnType<typeof removeLeavingGuest>>) {
       const { createModificationAdditionalPaymentIntent } = await import("@/lib/booking-modification-settlement");
       return createModificationAdditionalPaymentIntent({
-        format: CLUB_FORMAT_TEST, bookingId: BOOKING_ID, result: result as never, reason: "guest_removal_price_increase",
-        idempotencyKey: `mod_guest_remove_${BOOKING_ID}_${result.bookingModificationId}`, failureMessage: "race 3954 door mint",
+        format: CLUB_FORMAT_TEST, bookingId: BOOKING_ID, result: result as never, door: "guestRemoval",
+        failureMessage: "race 3954 door mint",
       });
     }
 
@@ -1404,10 +1404,7 @@ let webhookClient: PrismaClient;
 
     /** The guest-add door's after-commit mint of `increase`, through the real minter. */
     async function mintIncreaseAtDoor(increase: Awaited<ReturnType<typeof ordinaryIncrease>>) {
-      const [{ createModificationAdditionalPaymentIntent }, { ordinaryAskDoorRequest }] = await Promise.all([
-        import("@/lib/booking-modification-settlement"),
-        import("@/lib/ordinary-ask-request"),
-      ]);
+      const { createModificationAdditionalPaymentIntent } = await import("@/lib/booking-modification-settlement");
       return createModificationAdditionalPaymentIntent({
         format: CLUB_FORMAT_TEST, bookingId: BOOKING_ID,
         result: {
@@ -1416,7 +1413,7 @@ let webhookClient: PrismaClient;
           hasIssuedXeroInvoice: false, paymentCustomerId: "cus_race_3954", memberEmail: "race-3954@example.invalid",
           memberName: "Ask Payer", memberFirstName: "Ask", memberId: MEMBER_ID, bookingModificationId: increase.id, priceLines: null,
         },
-        ...ordinaryAskDoorRequest("guestAdd", BOOKING_ID, increase.id),
+        door: "guestAdd",
         failureMessage: "race 4036 door mint",
       });
     }

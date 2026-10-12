@@ -14,17 +14,42 @@
  * ledger row (`isIntentForOrdinaryAskPlan`). None, or more than one, and the
  * refusal is thrown as it was: the recovery backs off and retries, and on
  * exhaustion alerts an officer. It never guesses which of two intents is owed.
+ *
+ * #4036 review: matching by what an ask asks for can find an intent some other
+ * request minted - a lost-claim runner's, a currency re-issue's, an old
+ * runner's under the old reason - so adoption also fails closed when it cannot
+ * be sure the match is this ask's alone:
+ *
+ * - the scan stopped at its bound with intents unread (`complete` false), so a
+ *   second match may be among them;
+ * - another unfinished additional-ask recovery row of the booking could own the
+ *   match (`couldRecoveryRowOwnIntent`) - two edits must never record one intent.
+ *
+ * And the caller is told it adopted (`adopted`), so the runner confirms, under
+ * its claim, that no ledger row took the intent meanwhile before writing its own.
  */
+import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType } from "@prisma/client";
 import type Stripe from "stripe";
 
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
-import { isIntentForOrdinaryAskPlan, type OrdinaryAskMintPlan } from "@/lib/ordinary-ask-request";
+import {
+  couldRecoveryRowOwnIntent,
+  isIntentForOrdinaryAskPlan,
+  type OrdinaryAskMintPlan,
+} from "@/lib/ordinary-ask-request";
 import { prisma } from "@/lib/prisma";
 import { MINTED_INTENT_LOOKBACK_MS } from "@/lib/reissued-ask-mint";
 import { createPaymentIntent, listRecentPaymentIntentsMatching } from "@/lib/stripe";
 import { stripeChargeCurrency } from "@/lib/stripe-charge-currency";
 import { stripeErrorApiType } from "@/lib/stripe-errors";
+
+/**
+ * The intent an ordinary ask's mint answers with. `adopted` is true only when
+ * Stripe refused the key and the intent was found by what the ask asks for -
+ * never for the key's own intent.
+ */
+export type OrdinaryAskMint = { intent: Stripe.PaymentIntent; adopted: boolean };
 
 export async function mintOrdinaryAskIntent({
   format,
@@ -40,50 +65,61 @@ export async function mintOrdinaryAskIntent({
    * which no earlier request can have preceded: its refusal is thrown, and the
    * door keeps the debt on a recovery row as it does for any failure.
    */
-  recovery: { createdAt: Date } | null;
-}): Promise<Stripe.PaymentIntent> {
+  recovery: { id: string; createdAt: Date } | null;
+}): Promise<OrdinaryAskMint> {
   try {
-    return await createPaymentIntent({
-      format,
-      amountCents: plan.amountCents,
-      customerId,
-      metadata: { ...plan.metadata },
-      idempotencyKey: plan.idempotencyKey,
-    });
+    return {
+      intent: await createPaymentIntent({
+        format,
+        amountCents: plan.amountCents,
+        customerId,
+        metadata: { ...plan.metadata },
+        idempotencyKey: plan.idempotencyKey,
+      }),
+      adopted: false,
+    };
   } catch (err) {
     if (!recovery || stripeErrorApiType(err) !== "idempotency_error") throw err;
-    const minted = await findIntentMintedForOrdinaryAsk({
-      format,
-      plan,
-      customerId,
-      createdSince: new Date(recovery.createdAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
-    });
+    const minted = await findIntentMintedForOrdinaryAsk({ format, plan, customerId, recovery });
     if (!minted) throw err;
     logger.warn(
       { paymentIntentId: minted.id, idempotencyKey: plan.idempotencyKey, bookingId: plan.bookingId },
       "An ordinary additional ask's key had already minted an intent under other parameters; using that intent (#4036)",
     );
-    return minted;
+    return { intent: minted, adopted: true };
   }
+}
+
+function failClosed(plan: OrdinaryAskMintPlan, detail: Record<string, unknown>, message: string): null {
+  logger.error({ bookingId: plan.bookingId, idempotencyKey: plan.idempotencyKey, ...detail }, message);
+  return null;
 }
 
 async function findIntentMintedForOrdinaryAsk({
   format,
   plan,
   customerId,
-  createdSince,
+  recovery,
 }: {
   format: ClubFormat;
   plan: OrdinaryAskMintPlan;
   customerId: string | undefined;
-  createdSince: Date;
+  recovery: { id: string; createdAt: Date };
 }): Promise<Stripe.PaymentIntent | null> {
   const currency = stripeChargeCurrency(format);
-  const candidates = await listRecentPaymentIntentsMatching({
+  const scan = await listRecentPaymentIntentsMatching({
     matches: (intent) => isIntentForOrdinaryAskPlan(intent, plan, currency),
-    createdSince,
+    createdSince: new Date(recovery.createdAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
     customerId,
   });
+  if (!scan.complete) {
+    return failClosed(
+      plan,
+      { candidateIntentIds: scan.intents.map((intent) => intent.id) },
+      "An ordinary additional ask's key was refused and the scan for its intent stopped before reading every recent intent; failing closed rather than guess (#4036)",
+    );
+  }
+  const candidates = scan.intents;
   if (candidates.length === 0) return null;
   // An intent already on the ledger is some other ask's, never this one: the
   // replay runs only because this ask's mint wrote no row.
@@ -93,16 +129,34 @@ async function findIntentMintedForOrdinaryAsk({
   });
   const recordedIds = new Set(recorded.map((row) => row.stripePaymentIntentId));
   const unrecorded = candidates.filter((intent) => !recordedIds.has(intent.id));
-  if (unrecorded.length === 1) return unrecorded[0]!;
-  logger.error(
-    {
+  if (unrecorded.length !== 1) {
+    return failClosed(
+      plan,
+      { candidateIntentIds: unrecorded.map((intent) => intent.id) },
+      unrecorded.length === 0
+        ? "An ordinary additional ask's key was refused and every matching intent is already another ask's; failing closed (#4036)"
+        : "An ordinary additional ask's key was refused and more than one unrecorded intent matches it; failing closed rather than guess (#4036)",
+    );
+  }
+  const match = unrecorded[0]!;
+  // Another edit's unfinished recovery could be the one that minted it: two
+  // edits must never record one intent, so neither adopts it.
+  const others = await prisma.paymentRecoveryOperation.findMany({
+    where: {
       bookingId: plan.bookingId,
-      idempotencyKey: plan.idempotencyKey,
-      candidateIntentIds: unrecorded.map((intent) => intent.id),
+      type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+      status: { in: [PaymentRecoveryOperationStatus.PENDING, PaymentRecoveryOperationStatus.PROCESSING] },
+      id: { not: recovery.id },
     },
-    unrecorded.length === 0
-      ? "An ordinary additional ask's key was refused and every matching intent is already another ask's; failing closed (#4036)"
-      : "An ordinary additional ask's key was refused and more than one unrecorded intent matches it; failing closed rather than guess (#4036)",
-  );
-  return null;
+    select: { id: true, bookingId: true, idempotencyKey: true, paymentIntentId: true, amountCents: true },
+  });
+  const rivals = others.filter((row) => couldRecoveryRowOwnIntent(row, match));
+  if (rivals.length > 0) {
+    return failClosed(
+      plan,
+      { paymentIntentId: match.id, rivalOperationIds: rivals.map((row) => row.id) },
+      "An ordinary additional ask's key was refused and its one matching intent could be another edit's unfinished ask; failing closed rather than guess (#4036)",
+    );
+  }
+  return match;
 }
