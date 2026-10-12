@@ -20,7 +20,3 @@
   assignment, so a custodian who holds a bed can be ticked and then have the
   bed released; releasing the bed of an unticked member who is not staying is
   refused.
-- **Correcting a school request now counts its unnamed adults when it says
-  whether the lodge has room.** The availability shown after an officer's
-  correction left out the adults still to be named; it now counts them, as
-  holding the beds already did.
