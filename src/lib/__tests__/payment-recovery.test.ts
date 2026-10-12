@@ -2355,6 +2355,30 @@ describe("payment recovery worker", () => {
       );
     });
 
+    /**
+     * #4036: the replay sends the request the DOOR sent under that key - the
+     * door's own reason, named by the key frozen on the row - so Stripe answers
+     * it with the intent a lost reply minted rather than an `idempotency_error`.
+     * The ledger row it writes keeps the runner's own reason.
+     */
+    it("replays the door's request: the door's reason, named by the frozen key", async () => {
+      primeQueue(additionalIntentOperation({ paymentIntentId: "mod_dates_booking-1_mod-9" }));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockCreatePaymentIntent).toHaveBeenCalledWith({
+        format: expect.anything(),
+        amountCents: 3000,
+        customerId: "cus_123",
+        metadata: { bookingId: "booking-1", type: "modification_additional", reason: "date_change_price_increase" },
+        idempotencyKey: "mod_dates_booking-1_mod-9",
+      });
+      expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_recovered", reason: "modification_additional_recovery" }),
+      );
+    });
+
     it("re-creates the intent with the stored modification-scoped Stripe key", async () => {
       primeQueue(additionalIntentOperation());
 
