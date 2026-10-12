@@ -21,8 +21,7 @@ import { attachMintedCardIntent } from "@/lib/card-intent-attach";
 import { isRefundedPaymentIntentHistory } from "@/lib/card-intent-retirement";
 import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { queueSupersededPrimaryIntentCancellations } from "@/lib/booking-payment-cleanup";
-import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
-import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import {
   NOT_PAYABLE_MESSAGE,
   PAYMENT_LINK_PAYABLE_BOOKING_STATUSES,
@@ -149,11 +148,7 @@ export async function createPaymentIntentForPaymentLink(
   // booking owes — its price plus a change fee recorded on its payment, less
   // applied credit — read from the one home, never the bare price. Every
   // intent comparison, mint and row below uses this one figure.
-  const owedCents = bookingAmountOwedCents({
-    finalPriceCents: booking.finalPriceCents,
-    changeFeeCents: booking.payment?.changeFeeCents ?? null,
-    appliedCreditCents: await deriveBookingAppliedCreditCents(booking.id),
-  });
+  const { owedCents } = await readBookingAmountOwed(booking);
 
   // Reuse or reconcile an existing PaymentIntent before creating a new one
   // (same behaviour as the session payment-intent route).

@@ -23,6 +23,7 @@ import { sendSplitGuestPaymentLinkEmail } from "@/lib/email";
 import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
 import type { EmailAuditTemplateName } from "@/lib/email-message-audit-defaults";
 import logger from "@/lib/logger";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { revokePaymentLinkById } from "@/lib/payment-link";
 import { prisma } from "@/lib/prisma";
 import { savedPaymentMethodForBooking } from "@/lib/saved-payment-method";
@@ -322,6 +323,7 @@ export async function issueSplitGuestPaymentLink(
       checkOut: booking.checkOut,
       guestCount: booking.guests.length,
       priceCents: booking.finalPriceCents,
+      amountDueCents: (await readBookingAmountOwed(booking)).dueCents,
       bookingReference: booking.id,
       expiresAt: minted.expiresAt, // the row's own instant, not a re-derivation
       lodgeId: booking.lodgeId ?? null,
