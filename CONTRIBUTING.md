@@ -382,8 +382,8 @@ through `PR_BODY_FILE` (`readEventPrBody` in `scripts/ci/pr-body.mjs`), as their
 fallback behind the live body fetched from the pulls API. Linux caps one
 environment string at 128 KiB, so a description past that size (PR #3924 reached
 173 KB) used to stop the runner starting the step's shell ("Argument list too
-long") and turn `verify` red with no finding. Do not put
-`github.event.pull_request.body` in any workflow `env:` or `run:`;
+long") and turn `verify` red with no finding. Do not reference
+`github.event.pull_request.body` on any non-comment line of a workflow or action;
 `scripts/ci/pr-body-file.test.mjs` fails if it comes back. Keep a long
 description short anyway: link the review history rather than pasting it.
 

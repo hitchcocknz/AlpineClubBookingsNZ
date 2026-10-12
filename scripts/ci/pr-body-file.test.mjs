@@ -10,8 +10,9 @@
  * (2) the workflow's own `jq` step round-trips such a body byte for byte; (3) no
  * workflow puts `pull_request.body` back into an `env:` or `run:`.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, execFileSync, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -189,16 +190,26 @@ describe("PR body file (#4053)", () => {
     expect(readFileSync(out, "utf8")).toBe("");
   });
 
-  it("no workflow passes pull_request.body through env or a run script", () => {
+  it("no workflow or action references the PR description in an expression", () => {
     const offenders = [];
-    for (const name of readdirSync(workflowsDir).filter((f) =>
-      /\.ya?ml$/.test(f),
-    )) {
-      readFileSync(join(workflowsDir, name), "utf8")
+    const actionsDir = join(workflowsDir, "..", "actions");
+    const yamlFiles = (dir) =>
+      existsSync(dir)
+        ? readdirSync(dir, { recursive: true })
+            .map(String)
+            .filter((f) => /\.ya?ml$/.test(f))
+            .map((f) => join(dir, f))
+        : [];
+    // Best-effort guard: the literal, the bracket form, and a whole-event or
+    // whole-pull_request toJSON that would carry the body with it.
+    const bodyExpression =
+      /github\.event\.pull_request(\.body|\[['"]body['"]\])|toJSON\(\s*github\.event(\.pull_request)?\s*\)/;
+    for (const name of [...yamlFiles(workflowsDir), ...yamlFiles(actionsDir)]) {
+      readFileSync(name, "utf8")
         .split("\n")
         .forEach((line, i) => {
           if (/^\s*#/.test(line)) return;
-          if (/github\.event\.pull_request\.body/.test(line)) {
+          if (bodyExpression.test(line)) {
             offenders.push(`${name}:${i + 1}: ${line.trim()}`);
           }
         });
