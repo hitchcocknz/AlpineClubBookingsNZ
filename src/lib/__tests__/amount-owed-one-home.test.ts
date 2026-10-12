@@ -49,6 +49,9 @@ const PAY_STEPS = [
   "src/lib/group-settlement-invoice-binding.ts",
   // #3955 round 3: the public pay page's amount, which its intent charges.
   "src/lib/payment-link-context.ts",
+  // #4058: not a pay step, but the email that tells a member what to pay once an
+  // exception is approved - it must quote what the pay step will ask for.
+  "src/lib/booking-exception-approval.ts",
 ];
 // A final price, then a minus, then — within the same expression — anything
 // named for credit or for what is already applied (#3955 round 3:
@@ -164,6 +167,15 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     for (const [file, allowed] of Object.entries(ALLOWED_COMPARISONS)) {
       expect(comparisonsIn(read(file)).sort(), file).toEqual([...allowed].sort());
     }
+  });
+
+  it("no email quotes the bare price as the amount due (#4058)", () => {
+    const offenders = sourceFiles(path.join(REPO, "src")).flatMap((file) =>
+      [...read(file).matchAll(/\bamountDueCents:\s*[^,;}]*[Ff]inalPriceCents\b/g)].map(
+        (match) => `${file}: ${match[0].replace(/\s+/g, " ")}`,
+      ),
+    );
+    expect(offenders, "INV-PAY-119: quote it through bookingAmountOwedCents").toEqual([]);
   });
 
   it("catches a credit-against-bare-price comparison in either order and any strictness", () => {

@@ -10,6 +10,8 @@ import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import { resolveHostingCoverageIncidents } from "@/lib/adult-member-hosting-coverage-incidents";
 import { recordAdultMemberHostingReviewDecision } from "@/lib/adult-member-hosting-review";
 import { createConfirmedBooking } from "@/lib/booking-create";
+import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
+import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import {
   modifyBookingBatch,
   type BatchModificationPreTransaction,
@@ -681,7 +683,7 @@ export function buildPolicyExceptionApprovalHooks(
           // #3369: the owner may be an Organisation; bookingOwner() reads both.
           organisation: { select: { name: true, email: true } },
           guests: { select: { id: true } },
-          payment: { select: { status: true } },
+          payment: { select: { status: true, changeFeeCents: true } },
         },
       });
       // #3369: ONE home for "is there an address to send to?".
@@ -690,13 +692,26 @@ export function buildPolicyExceptionApprovalHooks(
       // the hand-written chain here used to spell for itself.
       const ownerEmail = booking ? bookingOwnerEmail(booking) : null;
       if (!booking || !ownerEmail) return;
-      // What is still owed: the whole price unless the create already settled it
-      // ($0 / fully credit-covered bookings reach PAID or CONFIRMED and send
-      // their own confirmation).
+      // What is still owed (#4058, `INV-PAY-119`): zero if the create already
+      // settled it ($0 / fully credit-covered bookings reach PAID or CONFIRMED
+      // and send their own confirmation); otherwise what the pay step will ask
+      // for, through the one home — price plus any recorded change fee, less the
+      // account credit applied at create. The bare price would quote more than
+      // the member is asked to pay.
       const settled =
         booking.status === "PAID" ||
         booking.status === "CONFIRMED" ||
         booking.payment?.status === "SUCCEEDED";
+      const amountDueCents = settled
+        ? 0
+        : Math.max(
+            0,
+            bookingAmountOwedCents({
+              finalPriceCents: booking.finalPriceCents,
+              changeFeeCents: booking.payment?.changeFeeCents ?? null,
+              appliedCreditCents: await deriveBookingAppliedCreditCents(booking.id),
+            }),
+          );
       await sendBookingPolicyExceptionApprovedEmail(
         {
           bookingId: booking.id,
@@ -710,7 +725,7 @@ export function buildPolicyExceptionApprovalHooks(
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
           guestCount: booking.guests.length,
-          amountDueCents: settled ? 0 : booking.finalPriceCents,
+          amountDueCents,
           adminNotes: context.adminNotes ?? null,
           lodgeId: booking.lodgeId,
         },
