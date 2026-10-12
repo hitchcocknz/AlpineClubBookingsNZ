@@ -124,7 +124,7 @@ function ownCardRefundSentence(amount: string): string {
   return `A refund of ${amount} has been processed to your original payment method.`;
 }
 
-/** #4070: that card refund, not made yet - Stripe failed or refused it, and what is owed is queued for retry. */
+/** #4070: that card refund, not made yet - the Stripe call failed and what is owed was queued for retry, or Stripe made none. */
 function ownCardRefundPendingSentence(amount: string): string {
   return `A refund of ${amount} is on its way to your original payment method.`;
 }
