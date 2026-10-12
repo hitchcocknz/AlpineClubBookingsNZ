@@ -926,6 +926,8 @@ export async function upsertPaymentIntentTransaction({
   paymentMethodId,
   reason,
   stripeCustomerId,
+  hadIssuedXeroInvoice,
+  bookingModificationId,
   store = prisma,
 }: {
   paymentId: string;
@@ -945,8 +947,13 @@ export async function upsertPaymentIntentTransaction({
   paymentMethodId?: string | null;
   reason?: string;
   stripeCustomerId?: string | null;
+  /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
+  hadIssuedXeroInvoice?: boolean;
+  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. */
+  bookingModificationId?: string;
   store?: PaymentStore;
 }) {
+  const provenance = { ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}), ...(bookingModificationId !== undefined ? { bookingModificationId } : {}) };
   await store.paymentTransaction.upsert({
     where: { stripePaymentIntentId: paymentIntentId },
     create: {
@@ -959,6 +966,7 @@ export async function upsertPaymentIntentTransaction({
       paymentMethodId: paymentMethodId ?? undefined,
       reason,
       ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+      ...provenance,
     },
     update: {
       paymentId,
@@ -971,6 +979,7 @@ export async function upsertPaymentIntentTransaction({
         : {}),
       ...(reason !== undefined ? { reason } : {}),
       ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+      ...provenance,
     },
   });
 
@@ -1425,13 +1434,29 @@ export async function refundPaymentTransactions({
       });
     }
 
-    await recordStripeRefundsAgainstTransaction({
-      paymentId,
-      paymentTransactionId: transaction.id,
-      refunds: [refund],
-      fallbackPaymentIntentId: transaction.stripePaymentIntentId,
-      store,
-    });
+    try {
+      await recordStripeRefundsAgainstTransaction({
+        paymentId,
+        paymentTransactionId: transaction.id,
+        refunds: [refund],
+        fallbackPaymentIntentId: transaction.stripePaymentIntentId,
+        store,
+      });
+    } catch (err) {
+      // #3924 round 4 (C2): Stripe refunded this slice but it could not be
+      // recorded. It is reported as a partial failure like a Stripe one, carrying
+      // only the slices BEFORE it - the ones refunded AND recorded - so every
+      // caller's recovery replays this slice under its same key (Stripe answers
+      // with the original refund and the ledger records it then) and never
+      // re-asks for a slice already recorded. A raw error here made the refund
+      // request's route enqueue the whole plan and the edit's the whole amount.
+      throw new PartialRefundError({
+        completedRefundCents,
+        refunds,
+        cause: err,
+        format,
+      });
+    }
 
     refunds.push({
       paymentIntentId: transaction.stripePaymentIntentId,
@@ -1466,6 +1491,19 @@ export class RefundAllocationRacedError extends Error {
 }
 
 /**
+ * Raised when an allocation asks for more than the payment's captured
+ * transactions still hold, before anything is written. The message is the one
+ * callers already read (`settlementWriteRefusal`); the class lets a caller tell
+ * this refusal from a fault without matching it (#3924 round 4, C3).
+ */
+export class RefundAllocationExceedsCapturedError extends Error {
+  constructor() {
+    super("Refund amount exceeds captured payments");
+    this.name = "RefundAllocationExceedsCapturedError";
+  }
+}
+
+/**
  * Mirror a refund the club made by hand - or value it held as account credit -
  * into the payment ledger.
  *
@@ -1494,10 +1532,13 @@ export class RefundAllocationRacedError extends Error {
 export async function applyLocalRefundAllocation({
   paymentId,
   amountCents,
+  preferTransactionIds = [],
   store = prisma,
 }: {
   paymentId: string;
   amountCents: number;
+  /** #3372 ("Paid another way"): placed FIRST, in order - the charges an unsent card refund was for. */
+  preferTransactionIds?: readonly string[];
   store?: PaymentStore;
 }) {
   await withStoreTransaction(store, async (db) => {
@@ -1507,9 +1548,15 @@ export async function applyLocalRefundAllocation({
       throw new Error("Payment not found");
     }
 
+    const preferredRank = (id: string) =>
+      preferTransactionIds.includes(id) ? preferTransactionIds.indexOf(id) : preferTransactionIds.length;
     const capturedTransactions = [...payment.transactions]
       .filter((transaction) => isCapturedTransactionStatus(transaction.status))
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      .sort(
+        (a, b) =>
+          preferredRank(a.id) - preferredRank(b.id) ||
+          b.createdAt.getTime() - a.createdAt.getTime()
+      );
 
     const totalRefundableCents = capturedTransactions.reduce(
       (sum, transaction) =>
@@ -1517,7 +1564,7 @@ export async function applyLocalRefundAllocation({
       0
     );
     if (amountCents > totalRefundableCents) {
-      throw new Error("Refund amount exceeds captured payments");
+      throw new RefundAllocationExceedsCapturedError();
     }
 
     let remainingAmountCents = amountCents;
