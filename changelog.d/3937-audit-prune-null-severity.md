@@ -7,7 +7,7 @@
 
   The first nightly run after upgrading deletes, once, every such entry already
   past its expiry. They are not archived first, so the deletion is permanent.
-  Before upgrading, count them on a restored copy of your database with the
+  Before upgrading, we recommend counting them on a restored copy of your database with the
   read-only query in `docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` ("Unclassified
   rows with no severity"). Entries recorded with no expiry date are not
   affected and are still kept.

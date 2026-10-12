@@ -126,7 +126,7 @@ severity was never set once its expiry date passes. The previous release kept
 those entries indefinitely by accident. No migration runs; this is a change to
 the prune's predicate only.
 
-**Before deployment.** Run the read-only count in
+**Before deployment (recommended).** Run the read-only count in
 [`AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` → "Unclassified rows with no severity"](AUDIT_RETENTION_ARCHIVE_RUNBOOK.md#unclassified-rows-with-no-severity-3524)
 on a restored copy of your database, not on production. The first nightly run
 after cutover deletes exactly that population (plus anything whose expiry falls

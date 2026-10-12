@@ -356,7 +356,10 @@ export function getAuditLogRetentionCutoffs(now = new Date()) {
   };
 }
 
-// test seam
+// test seam. It answers the WRITER's question (how classifyAuditRetention would
+// file this event today), not the prune's: an unclassified legacy row with no
+// severity reads as critical here but is pruned at its explicit expiry (#3524).
+// Do not use it to predict what pruneExpiredAuditLogs keeps.
 export function isAuditLogRetentionCritical(input: {
   action: string;
   category?: string | null;
