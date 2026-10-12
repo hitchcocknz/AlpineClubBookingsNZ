@@ -64,6 +64,7 @@ import { prisma } from "@/lib/prisma";
 import { organiserChildCommittedRefundFrom, readPerChildRefundPlan } from "@/lib/group-settlement-refund-plan";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
+import { groupCancellationRefundSentence } from "@/lib/booking-modified-email-copy";
 
 type Db = Prisma.TransactionClient;
 
@@ -274,16 +275,26 @@ export async function findGroupCancellationChildDebt(
   db: Db,
   settlementId: string,
   childBookingId: string,
-): Promise<{ id: string; amountCents: number } | null> {
+): Promise<{ id: string; amountCents: number; status: PaymentRecoveryOperationStatus } | null> {
   return db.paymentRecoveryOperation.findUnique({
     where: { idempotencyKey: buildOrganiserChildCancellationRefundKey(settlementId, childBookingId) },
-    select: { id: true, amountCents: true },
+    select: { id: true, amountCents: true, status: true },
   });
 }
 
-/** What a joiner's cancel behind the group's says about the group's refund, for the cancel and its preview alike. */
-export function groupCancellationRefundNote(amountCents: number, format: ClubFormat): string {
-  return `The group organiser's cancellation is already refunding ${formatCents(amountCents, format)} for this booking to the organiser's card.`;
+/**
+ * What a joiner's cancel behind the group's says about the group's refund, for
+ * the cancel, its preview and its email alike: made once the debt has
+ * SUCCEEDED, otherwise still running. The wording's one home is
+ * `groupCancellationRefundSentence` (#3973).
+ */
+export function groupCancellationRefundNote(debt: { amountCents: number; status: string }, format: ClubFormat): string {
+  return groupCancellationRefundSentence(formatCents(debt.amountCents, format), organiserChildRefundMade(debt));
+}
+
+/** #3973: an organiser child refund debt Stripe has made, by its own status (`SUCCEEDED`), never the run's answer. */
+export function organiserChildRefundMade(debt: { status: string } | null): boolean {
+  return debt?.status === PaymentRecoveryOperationStatus.SUCCEEDED;
 }
 
 /**

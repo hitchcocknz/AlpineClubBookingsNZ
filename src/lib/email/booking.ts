@@ -1,5 +1,9 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
-import { bookingModifiedRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  bookingCancelledRefundSentence,
+  type BookingCancelledRefundMethod,
+  bookingModifiedRefundSentence,
+} from "@/lib/booking-modified-email-copy";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
 import {
   type BookingCalendarLinks,
@@ -829,13 +833,15 @@ export async function sendBookingCancelledEmail(
   refundCents: number,
   /** The club's format (#3565); see sendBookingConfirmedEmail. */
   format: ClubFormat,
-  // B5 (#2262): "manual" — a cash / off-Xero settlement handed back by a person.
-  refundMethod: "card" | "credit" | "manual" = "card",
+  // B5 (#2262) "manual", #3973 the organiser's refunds: see `BookingCancelledRefundMethod`.
+  refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
   // #3792: "in-full" for a cancel the member did not choose (capacity, hold expiry).
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
+  // #3973: the amount the refund line names when the refund is the group's; `{{refundAmount}}` stays this booking's.
+  refundSentenceCents: number = refundCents,
 ) {
   await sendEmail({
     to: email,
@@ -849,6 +855,7 @@ export async function sendBookingCancelledEmail(
       refundMethod,
       creditRestoredCents,
       creditRestoredBasis,
+      refundSentenceCents,
     )),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-cancelled",
@@ -857,14 +864,7 @@ export async function sendBookingCancelledEmail(
       checkIn: emailCalendarDay(checkIn),
       checkOut: emailCalendarDay(checkOut),
       refundAmount: formatMoneyCents(refundCents, format),
-      refundMessage:
-        refundCents > 0 && refundMethod === "manual"
-          ? `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${formatMoneyCents(refundCents, format)} directly and will be in touch.`
-          : refundCents > 0 && refundMethod === "credit"
-            ? `A credit of ${formatMoneyCents(refundCents, format)} has been added to your account for future bookings.`
-            : refundCents > 0
-              ? `A refund of ${formatMoneyCents(refundCents, format)} has been processed to your original payment method.`
-              : "No refund was applicable based on the cancellation policy.",
+      refundMessage: bookingCancelledRefundSentence(refundSentenceCents, formatMoneyCents(refundSentenceCents, format), refundMethod),
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).
