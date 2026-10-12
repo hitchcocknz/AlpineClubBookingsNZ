@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireCalendarDate } from "@/lib/club-time";
 import { raisedEditFinancialReviewStrands as raisedStrands } from "@/lib/__tests__/helpers/raised-edit-financial-review-strands";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
 
 // #3123 (`INV-LOCK-004`) — the CLUB's day, resolved by the caller BEFORE it opens
 // its transaction and threaded in. Pinned to the frozen clock's club day, so
@@ -3706,7 +3707,8 @@ describe("PUT /api/bookings/[id]/modify", () => {
   // refund credit note once Stripe has, so the joiner's invoice was credited
   // twice. The executor's note is the only one now; its single note per refund
   // is proved against PostgreSQL in `organiser-child-refund.realdb.test.ts`.
-  it("an organiser child's reduction writes its refund debt and queues no modification credit note (#3653)", async () => {
+  /** A joiner's booking the organiser paid for by card, reduced by removing Bob: $50 back to the organiser's card. */
+  async function reduceOrganiserChild() {
     const booking = makeBooking({ organiserSettled: true, parentBookingId: "organiser_bk" });
     const tx = makeTx(booking) as ReturnType<typeof makeTx> & Record<string, unknown>;
     const debtCreate = vi.fn().mockResolvedValue({ id: "op_child", amountCents: 5000 });
@@ -3728,7 +3730,6 @@ describe("PUT /api/bookings/[id]/modify", () => {
       },
     });
     mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
-    mockRecoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_child" });
 
     booking.guests = reconcilingNightRows(booking, [
       ...booking.guests,
@@ -3762,6 +3763,12 @@ describe("PUT /api/bookings/[id]/modify", () => {
       }),
       { params: Promise.resolve({ id: "bk1" }) },
     );
+    return { response, debtCreate };
+  }
+
+  it("an organiser child's reduction writes its refund debt and queues no modification credit note (#3653)", async () => {
+    mockRecoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_child" });
+    const { response, debtCreate } = await reduceOrganiserChild();
 
     expect(response.status).toBe(200);
     expect(debtCreate).toHaveBeenCalledWith({
@@ -3777,6 +3784,26 @@ describe("PUT /api/bookings/[id]/modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockEnqueueXeroModificationCreditNoteOperation).not.toHaveBeenCalled();
     expect(mockEnqueueXeroModificationAccountCreditNoteOperation).not.toHaveBeenCalled();
+  });
+
+  // #4057: the real refund helper runs the debt and re-reads it after commit;
+  // the email says the refund was made only when the debt says so.
+  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's email refund destination: debt $label -> $destination (#4057)", async ({ reread, destination }) => {
+    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod_1", debtId: "op_child", reread });
+    try {
+      const { response } = await reduceOrganiserChild();
+      expect(response.status).toBe(200);
+      expect(mockRunPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const { sendBookingModifiedEmail } = await import("@/lib/email");
+      expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ refundAmountCents: 5000, refundDestination: destination }),
+        expect.anything(),
+      );
+    } finally {
+      mockRecoveryOperationFindUnique.mockReset();
+      mockRecoveryOperationFindUnique.mockResolvedValue(null);
+    }
   });
 
   it("refuses a price increase on an organiser child before the edit commits (#3653)", async () => {

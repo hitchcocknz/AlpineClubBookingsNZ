@@ -588,7 +588,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
     memberFirstName: reprice.owner.firstName,
     memberId: reprice.owner.memberId,
   };
-  const stripeRefundId = await executeBookingModificationRefund({
+  const refund = await executeBookingModificationRefund({
     format,
     bookingId,
     result: paymentContext,
@@ -641,7 +641,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
     accountCreditAmountCents: reprice.accountCreditAmountCents,
     settlementMethod: reprice.settlementMethod,
     zeroDollarAutoPaid: reprice.zeroDollarAutoPaid,
-    stripeRefundId: stripeRefundId ?? null,
+    stripeRefundId: refund.stripeRefundId ?? null,
     ...(await loadModificationLinesAuditFields(prisma, reprice.priceLines, logger, format)),
   };
   logAudit({
@@ -687,7 +687,8 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       financialReviewPending: false,
       // D-3813-6: an internet-banking refund is the club's to send.
       refundByBankTransfer: editRefundGoesBackByHand(reprice),
-      refundReturnedToOrganiser: reprice.organiserChildRefund !== null,
+      // #4057: the refund's own answer after it ran - an organiser-card one made or still on its way.
+      refundDestination: refund.refundDestination,
       lodgeId: reprice.lodgeId,
       // #3954 round 9: not named once a later reduction retired the re-issue.
       additionalAmountCents: additionalAmountToName(reprice.additionalAsk.amountCents, additionalMint),

@@ -161,6 +161,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
+import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 
 export type ModifyBookingDatesInput = {
   checkIn?: string;
@@ -1510,7 +1511,7 @@ export async function modifyBookingDates({
     } satisfies DateModificationTransactionResult;
   });
 
-  const stripeRefundId = await executeBookingModificationRefund({
+  const refund = await executeBookingModificationRefund({
     format,
     bookingId,
     result,
@@ -1553,6 +1554,7 @@ export async function modifyBookingDates({
     ipAddress,
     result,
     additionalMint,
+    refundDestination: refund.refundDestination,
     linkedChangeRequestId,
     format,
   });
@@ -1568,7 +1570,7 @@ export async function modifyBookingDates({
     policyRetainedAmountCents: result.policyRetainedAmountCents,
     additionalAmountCents: result.additionalAmountCents,
     additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
-    stripeRefundId: stripeRefundId ?? null,
+    stripeRefundId: refund.stripeRefundId ?? null,
     promoRemoved: result.promoRemoved,
     promoCoverage: result.promoCoverage,
     choreWarnings: result.choreWarnings,
@@ -1582,6 +1584,7 @@ async function dispatchDatePostTransactionSideEffects({
   ipAddress,
   result,
   additionalMint,
+  refundDestination,
   linkedChangeRequestId,
   format,
 }: {
@@ -1590,6 +1593,8 @@ async function dispatchDatePostTransactionSideEffects({
   ipAddress: string;
   result: DateModificationTransactionResult;
   additionalMint: ModificationAdditionalAskMint;
+  /** #4057: the refund's own answer after it ran (`executeBookingModificationRefund`). */
+  refundDestination: BookingModifiedRefundDestination;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -1771,7 +1776,7 @@ async function dispatchDatePostTransactionSideEffects({
       // #2390: same words as the edit preview and the booking history.
       promoCoverageNote: result.promoCoverage?.message ?? null,
       financialReviewPending,
-      refundReturnedToOrganiser: result.organiserChildRefund !== null,
+      refundDestination,
       refundByBankTransfer: editRefundGoesBackByHand(result),
       lodgeId: result.booking.lodgeId,
     }, format).catch((err) =>
@@ -2337,7 +2342,7 @@ export async function adminShiftBookingDates({
       paymentReference: result.paymentReference,
       xeroInvoiceNumber: result.xeroInvoiceNumber,
       financialReviewPending,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
       // A shift keeps the price, so nothing is refunded.
       refundByBankTransfer: false,
       lodgeId: result.lodgeId,

@@ -156,6 +156,7 @@ import {
   type BookingGuestDietarySeeding,
 } from "@/lib/member-dietary-booking-writes";
 import type { ClubFormat } from "@/lib/club-format";
+import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
 import {
   assertFinishedStayCorrectionCall,
@@ -2544,7 +2545,7 @@ export async function modifyBookingBatch({
       supersededPrimaryPaymentIntents: result.supersededPrimaryPaymentIntents,
     });
 
-    const stripeRefundId = await executeBookingModificationRefund({
+    const refund = await executeBookingModificationRefund({
       format,
       bookingId,
       result,
@@ -2581,6 +2582,7 @@ export async function modifyBookingBatch({
       ipAddress,
       result,
       additionalMint,
+      refundDestination: refund.refundDestination,
       linkedChangeRequestId,
       format,
     });
@@ -2597,7 +2599,7 @@ export async function modifyBookingBatch({
       settlementMethod: result.settlementMethod,
       requiresSettlementMethod: result.requiresSettlementMethod,
       additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
-      stripeRefundId: stripeRefundId ?? null,
+      stripeRefundId: refund.stripeRefundId ?? null,
       promoRemoved: result.promoRemoved,
       promoChanged: result.promoChanged,
       promoCoverage: result.promoCoverage,
@@ -2666,6 +2668,7 @@ async function dispatchBatchPostTransactionSideEffects({
   ipAddress,
   result,
   additionalMint,
+  refundDestination,
   linkedChangeRequestId,
   format,
 }: {
@@ -2674,6 +2677,8 @@ async function dispatchBatchPostTransactionSideEffects({
   ipAddress: string;
   result: BatchModificationTransactionResult;
   additionalMint: ModificationAdditionalAskMint;
+  /** #4057: the refund's own answer after it ran (`executeBookingModificationRefund`). */
+  refundDestination: BookingModifiedRefundDestination;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -2907,7 +2912,7 @@ async function dispatchBatchPostTransactionSideEffects({
     // who closed the panel without reading the banner still has this.
     promoChangeNotAppliedNote: result.promoChangeNotApplied?.message ?? null,
     financialReviewPending,
-    refundReturnedToOrganiser: result.organiserChildRefund !== null,
+    refundDestination,
     refundByBankTransfer: editRefundGoesBackByHand(result),
     lodgeId: result.booking.lodgeId,
   }, format).catch((err) =>
