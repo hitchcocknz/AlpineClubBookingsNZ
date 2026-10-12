@@ -697,12 +697,14 @@ export async function buildDisplayState(
         (key) => !isCustodianOnNight(custodianNights, guest.memberId, key),
       );
       nightKeysByGuest.set(guest.id, kept);
+      const firstKept = kept[0];
+      const lastKept = kept[kept.length - 1];
       spanByGuest.set(
         guest.id,
-        kept.length < allNights.length && kept.length > 0
+        kept.length < allNights.length && firstKept && lastKept
           ? {
-              start: parseDateOnly(kept[0]),
-              end: addDaysDateOnly(parseDateOnly(kept[kept.length - 1]), 1),
+              start: parseDateOnly(firstKept),
+              end: addDaysDateOnly(parseDateOnly(lastKept), 1),
             }
           : { start: getGuestStayStart(guest, booking), end: getGuestStayEnd(guest, booking) },
       );
