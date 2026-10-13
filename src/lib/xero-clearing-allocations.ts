@@ -20,6 +20,7 @@
  * repair re-allocates exactly what was planned instead of re-deriving it from
  * invoices the first attempt already changed.
  */
+import type { Prisma } from "@prisma/client";
 import type { XeroClient } from "xero-node";
 import { prisma } from "@/lib/prisma";
 import { callXeroApi } from "@/lib/xero-api-client";
@@ -93,17 +94,19 @@ export function planClearingAllocations(input: {
 /**
  * The booking changes' own supplementary invoices, oldest first. A review
  * task's second ask (anchored on the task, #3193) bills money outside the
- * booking's stored price, so the clearing note is not sized for it.
+ * booking's stored price, so the clearing note is not sized for it. `db` lets
+ * the inbound settle (#3979) read them inside its own transaction.
  */
 export async function findBookingSupplementaryInvoiceIds(
-  bookingId: string
+  bookingId: string,
+  db: Pick<Prisma.TransactionClient, "bookingModification" | "xeroObjectLink"> = prisma
 ): Promise<string[]> {
-  const modifications = await prisma.bookingModification.findMany({
+  const modifications = await db.bookingModification.findMany({
     where: { bookingId },
     select: { id: true },
   });
   if (modifications.length === 0) return [];
-  const links = await prisma.xeroObjectLink.findMany({
+  const links = await db.xeroObjectLink.findMany({
     where: {
       localModel: "BookingModification",
       localId: { in: modifications.map((modification) => modification.id) },

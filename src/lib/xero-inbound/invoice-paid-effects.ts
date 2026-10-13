@@ -53,6 +53,12 @@ import {
   hasInvoiceClearingNote,
   retirePendingClearingNote,
 } from "@/lib/invoice-clearing-note-evidence";
+import {
+  cashSettlementNoticeMessage,
+  planInternetBankingCashSettlement,
+  readCashSettlementNotice,
+  type CashSettlementNotice,
+} from "@/lib/xero-inbound/settle-from-cash";
 
 function isPaidXeroInvoice(invoice: Invoice): boolean {
   const status = String(invoice.status ?? "").toUpperCase();
@@ -429,7 +435,11 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
   );
 
   for (const payment of payments) {
+    // #3979: written inside the transaction, sent only after it commits.
+    // Declared through `as` so the read after the await is not narrowed to null.
+    let cashSettlementNotice = null as CashSettlementNotice | null;
     const outcome = await prisma.$transaction(async (tx) => {
+      cashSettlementNotice = null;
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
       // Pre-lock read: only the lodge key, which is immutable. The booking's
@@ -518,6 +528,50 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         includeCancelled: true,
       });
 
+      // #3979 (`INV-PAY-124`): the receipt is the cash this invoice collected.
+      // Decided once, at the transition (no captured PRIMARY row yet), from the
+      // rows read here under the locks above and after both fences, and only
+      // when the cash belongs to this payment alone; otherwise the stored
+      // figure stays and the operators are told after the commit.
+      const settlementRows = await tx.paymentTransaction.findMany({
+        where: { paymentId: fresh.id },
+        select: { kind: true, source: true, status: true, amountCents: true },
+      });
+      const cashPlan = planInternetBankingCashSettlement({
+        paymentStatus: fresh.status,
+        refundedAmountCents: fresh.refundedAmountCents,
+        transactions: settlementRows,
+        cash: invoiceCash,
+        matchedPayments: payments.length,
+        secondInstrument: secondInstrument !== null,
+      });
+      cashSettlementNotice = await readCashSettlementNotice(tx, {
+        plan: cashPlan,
+        storedAmountCents: fresh.amountCents,
+        cash: invoiceCash,
+        matchedPayments: payments.length,
+        booking: {
+          id: fresh.bookingId,
+          finalPriceCents: fresh.booking.finalPriceCents,
+          cancelled: fresh.booking.status === BookingStatus.CANCELLED,
+        },
+        changeFeeCents: fresh.changeFeeCents,
+      });
+      const settledAmountCents =
+        cashPlan.kind === "rewrite" ? cashPlan.amountCents : fresh.amountCents;
+      // The one uncaptured PRIMARY row takes the cash only where it differs, so
+      // an unchanged figure writes nothing new.
+      const primaryAmountRewrite =
+        cashPlan.kind === "rewrite" &&
+        settlementRows.some(
+          (row) =>
+            row.kind === PaymentTransactionKind.PRIMARY &&
+            row.source === PaymentSource.INTERNET_BANKING &&
+            row.amountCents !== cashPlan.amountCents,
+        )
+          ? { amountCents: cashPlan.amountCents }
+          : {};
+
       const transactionUpdate = await tx.paymentTransaction.updateMany({
         where: {
           paymentId: fresh.id,
@@ -532,6 +586,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           status: PaymentStatus.SUCCEEDED,
           xeroInvoiceId: invoiceId,
           xeroInvoiceNumber: invoiceNumber,
+          ...primaryAmountRewrite,
         },
       });
 
@@ -556,12 +611,24 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               xeroInvoiceId: invoiceId,
               xeroInvoiceNumber: invoiceNumber,
               reference: fresh.reference ?? undefined,
-              amountCents: fresh.amountCents,
+              amountCents: settledAmountCents,
               status: PaymentStatus.SUCCEEDED,
               reason: "xero_invoice_paid_reconciliation",
             },
           });
         }
+      }
+
+      // #3979: the payment's own figure follows its receipt, as the officer
+      // cash settle writes both (`payment-reconciliation.ts`), and the
+      // in-memory row says what was written, so the cancel arms below size
+      // their credit from it and every return carries it.
+      if (settledAmountCents !== fresh.amountCents) {
+        await tx.payment.update({
+          where: { id: fresh.id },
+          data: { amountCents: settledAmountCents },
+        });
+        fresh.amountCents = settledAmountCents;
       }
 
       // #3581: the one Internet Banking receipt writer that does NOT end in
@@ -1295,6 +1362,40 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     await settleHostingCoverageAfterCommit({
       bookingId: outcome.payment.bookingId,
     });
+
+    // #3979 (`INV-PAY-124`): a kept figure, or cash that disagrees with what
+    // the booking owes, is never silent on a booking the settle leaves live.
+    // The two cancel arms turn the cash into credit and alert about it
+    // themselves, with the figures, so they are not told twice.
+    const notice = cashSettlementNotice;
+    if (notice && (outcome.type === "paid" || outcome.type === "alreadyPaid")) {
+      logger.warn(
+        {
+          bookingId: outcome.payment.bookingId,
+          paymentId: outcome.payment.id,
+          invoiceId,
+          refusal: notice.refusal,
+          storedAmountCents: notice.storedAmountCents,
+          xeroCashCents: notice.cash.knownCents,
+          xeroCashComplete: notice.cash.complete,
+          owedCents: notice.owedCents,
+        },
+        "Internet Banking settlement: the recorded figure needs an operator's check (#3979)"
+      );
+      await sendAdminPaymentFailureAlert({
+        memberName: `${bookingOwner(outcome.payment.booking).member.firstName} ${bookingOwner(outcome.payment.booking).member.lastName}`.trim(),
+        checkIn: outcome.payment.booking.checkIn,
+        checkOut: outcome.payment.booking.checkOut,
+        amountCents: notice.cash.knownCents,
+        errorMessage: cashSettlementNoticeMessage(notice, format),
+        paymentIntentId: invoiceId,
+      }, format).catch((err) =>
+        logger.error(
+          { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },
+          "Failed to alert admins about an Internet Banking settlement figure (#3979)"
+        )
+      );
+    }
 
     if (outcome.type === "manualSettlementConflict") {
       // B5 (#2262). Loud on every axis: a counter in the returned result, an
