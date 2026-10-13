@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  501
+row-producing sites:  502
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 54,
+category values: admin 108, booking 108, xero 39, family 35, payment 55,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -804,6 +804,10 @@ together). The later sync of `main` 0ff7e6d46 into the epic (#3821) composed
 `payment` 54, 501 row-producing sites (RE-MEASURED the same way). The hand sync of `main`
 f3b6c008b (epic #3789) brought the same two `payment` additions in again from
 the other side and measured the same figures on the merged tree.
+#4098 then added one more (`payment` 54 -> 55, 501 -> 502, MEASURED with
+`pnpm run audit:census`): `membership-subscription-billing.close-already-paid`,
+an officer closing a subscription charge whose members had already paid, filed
+`payment` beside the other subscription-billing actions the same people read.
 
 #3498 then added one more (`payment` 45 -> 46, 483 -> 484, MEASURED with
 `npm run audit:census` on that branch rather than added to the literal):

@@ -7,7 +7,7 @@
   Admins with finance edit access now get **Close: already paid** on such a
   charge. It asks for a short reason, checks that every member the charge covers
   is still paid, and then marks the charge **Not required**: no invoice is
-  raised for it, and the close is recorded in the audit log with who did it and
-  why. Closing twice does nothing more. If a payment was recorded by mistake,
+  raised for it, and the close is recorded in the audit log, under the payment
+  category, with who did it and why. Closing twice does nothing more. If a payment was recorded by mistake,
   use **Mark as unpaid** and then **Retry** instead. The conflict message now
   names those two choices rather than an action that did not exist.
