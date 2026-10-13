@@ -55,10 +55,12 @@ function cancelledMarkedPaid(
   };
 }
 
-const OFFICER = { canManageBooking: true, isBookingOwner: false, nonOwnerAdminViewer: true };
-const OWNER = { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false };
+// #3991: `canSeeOwnerCredit` is the viewer module's one answer to who sees the
+// owner's money beyond its price (`booking-detail-viewer.ts`).
+const OFFICER = { canManageBooking: true, isBookingOwner: false, nonOwnerAdminViewer: true, canSeeOwnerCredit: true };
+const OWNER = { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false, canSeeOwnerCredit: true };
 // A guest on the booking viewing it read-only (`isLinkedGuestViewer`).
-const LINKED_GUEST = { canManageBooking: false, isBookingOwner: false, nonOwnerAdminViewer: false };
+const LINKED_GUEST = { canManageBooking: false, isBookingOwner: false, nonOwnerAdminViewer: false, canSeeOwnerCredit: false };
 
 function project(booking: ReturnType<typeof cancelledMarkedPaid>, viewer = OFFICER) {
   return resolveBookingDetailPayment({
@@ -67,6 +69,9 @@ function project(booking: ReturnType<typeof cancelledMarkedPaid>, viewer = OFFIC
     viewer: viewer as never,
     access: { isDeleted: false } as never,
     party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
+    // #3991: the page's one read of what is owed. No credit or fee is applied
+    // to these bookings, so it is the price; the retained line does not read it.
+    amountOwed: { owedCents: booking.finalPriceCents, dueCents: booking.finalPriceCents, appliedCreditCents: 0 },
   });
 }
 
@@ -131,6 +136,55 @@ describe("the cancellation outcome's retained line (#3811)", () => {
     expect(guest).not.toContain("still being paid back by hand");
     // The figure itself is the same for everyone.
     expect(project(booking, LINKED_GUEST).retainedAfterCancellationCents).toBe(3_000);
+  });
+
+  // #3991: the cancellation's account-credit lines are the owner's money — the
+  // same booker-and-officers audience as the hand-back note above.
+  it("shows the account-credit lines to the booker and officers, never to a linked guest", () => {
+    const booking = {
+      ...cancelledMarkedPaid([]),
+      creditsFromCancellation: [
+        {
+          type: "CANCELLATION_REFUND",
+          amountCents: 2_000,
+          description: "Cancellation refund for booking b-cancelled",
+          restoredFromBookingId: null,
+        },
+        {
+          type: "CANCELLATION_REFUND",
+          amountCents: 1_500,
+          description: "Restored credit",
+          restoredFromBookingId: "b-cancelled",
+        },
+      ],
+    };
+    const render = (viewer: typeof OFFICER) =>
+      renderToStaticMarkup(
+        <BookingCancellationOutcome
+          booking={booking as unknown as BookingDetailRecord}
+          money={money}
+          payment={project(booking as unknown as ReturnType<typeof cancelledMarkedPaid>, viewer)}
+        />,
+      );
+    for (const viewer of [OWNER, OFFICER]) {
+      const html = render(viewer);
+      expect(html).toContain("Held as account credit:");
+      expect(html).toContain("$20.00");
+      expect(html).toContain("Previously applied credit restored");
+      expect(html).toContain("$15.00");
+    }
+    const guest = render(LINKED_GUEST);
+    expect(guest).not.toContain("Held as account credit:");
+    expect(guest).not.toContain("Previously applied credit restored");
+    expect(guest).not.toContain("$20.00");
+    expect(guest).not.toContain("$15.00");
+    // #3991: nor the "Credit Issued" badge or its sentence.
+    expect(guest).not.toMatch(/credit/i);
+    expect(render(OWNER)).toMatch(/Credit/);
+    // What they could already see stays: the original payment and its outcome.
+    expect(guest).toContain("Original payment:");
+    expect(guest).toContain("$100.00");
+    expect(guest).toContain("Non-refundable amount retained:");
   });
 
   it("does not show a never-paid payment folded to PARTIALLY_REFUNDED as an original payment", () => {
