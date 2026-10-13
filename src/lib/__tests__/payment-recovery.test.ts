@@ -1253,12 +1253,14 @@ describe("payment recovery worker", () => {
     ]);
   });
 
-  // #4101: one row per Stripe key prefix a refund recovery stores, with the
-  // reason its INLINE sender stamps, spelled here as the sender spells it rather
-  // than read from the map under test. The replay must send that reason under
-  // that prefix, or Stripe refuses the reused key with idempotency_error and the
-  // refund never recovers. The four booking-edit senders are found and checked
-  // against the map by modification-refund-replay-reason.test.ts.
+  // #4101: one row per Stripe key prefix a refund recovery stores, pinning the
+  // request the REPLAY sends under it to a literal reason rather than to the map
+  // under test. This proves the replay side only. That the inline sender stamps
+  // the same literal is proved elsewhere: for the four booking-edit callers by
+  // modification-refund-replay-reason.test.ts (INV-MOD-061), and for the other
+  // four by their own senders' tests (payment-reconciliation, manual-refund-task
+  // and the late-capture tests above). A prefix added to the map is not listed
+  // here until someone adds its row.
   it.each([
     ["mod_dates_refund_booking-1_mod-1", "date_change_price_decrease"],
     ["mod_batch_refund_booking-1_mod-1", "batch_modification"],
@@ -1421,11 +1423,10 @@ describe("payment recovery worker", () => {
   });
 
   it("derives every inline modification-refund reason from its stored key prefix (#1507 freeze)", () => {
-    // Freezes the derivation against the exact (idempotencyKeyPrefix, reason)
-    // pairs the four inline callers pass to executeBookingModificationRefund. A
-    // new modification refund path (or a renamed prefix/reason) breaks this until
-    // its prefix is added to bookingModificationRefundReasonForKeyPrefix, keeping
-    // the recovery replay byte-identical to the inline refund.
+    // Freezes the map's answer for the four executeBookingModificationRefund
+    // callers' prefixes, and a few others, against fixed literals: a changed
+    // reason for one of these prefixes breaks it. It cannot see a NEW caller;
+    // modification-refund-replay-reason.test.ts finds every caller (INV-MOD-061).
     expect(
       bookingModificationRefundReasonForKeyPrefix("mod_dates_refund_bk_mod"),
     ).toBe("date_change_price_decrease");

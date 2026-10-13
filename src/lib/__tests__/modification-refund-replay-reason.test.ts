@@ -1,21 +1,22 @@
 /**
- * #4101 (the #1507 rule, per caller): A BOOKING EDIT'S CARD REFUND AND ITS
+ * `INV-MOD-061` (#4101, the #1507 rule): A BOOKING EDIT'S CARD REFUND AND ITS
  * RECOVERY REPLAY SEND ONE STRIPE REQUEST.
  *
- * `executeBookingModificationRefund` stamps the caller's `metadataReason` on the
- * Stripe refund and, when the refund throws, stores the caller's key prefix on
- * the recovery row. The replay rebuilds the reason from that stored prefix alone
- * (`bookingModificationRefundReasonForKeyPrefix`). Stripe refuses a reused
- * idempotency key whose parameters differ (`idempotency_error`), so a caller
- * whose prefix the map does not know replays a different body and its refund -
- * made on Stripe, lost locally - never recovers. The guest-acceptance re-price
- * was exactly that caller until #4101.
+ * Stripe refuses a reused idempotency key whose parameters differ
+ * (`idempotency_error`), so a refund made on Stripe but lost locally recovers
+ * only if the replay sends the original body. `executeBookingModificationRefund`
+ * takes no reason of its own: it stamps the one
+ * `bookingModificationRefundReasonForKeyPrefix` gives its caller's key prefix,
+ * and the replay rebuilds the reason from that same prefix stored on the row.
+ * Before #4101 each caller passed its reason by hand, and the guest-acceptance
+ * re-price's prefix was missing from the map, so its replay never converged.
  *
- * The census finds EVERY call in the tree by AST, so a new caller is asked here
- * whether the map knows it. The behavioural half drives the real helper per
- * caller and compares its inline request with the body the replay builds from
- * the prefix it stored; `payment-recovery.test.ts` pins that the replay
- * processor builds exactly that body per prefix.
+ * The census finds EVERY caller by AST and pins each one's reason to the
+ * literal it sent before the reason was derived, so the change of source is
+ * byte-identical on Stripe and a new caller is asked here whether the map knows
+ * its prefix. The behavioural half drives the real helper per caller;
+ * `payment-recovery.test.ts` pins that the replay processor builds the same
+ * body per stored prefix.
  */
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -54,7 +55,7 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const HELPER = "executeBookingModificationRefund";
 
-type Caller = { file: string; keyPrefix: string; metadataReason: string };
+type Caller = { file: string; keyPrefix: string };
 
 /** The literal head of `idempotencyKeyPrefix`: `guest_accept_refund_${id}` -> `guest_accept_refund_`. */
 function literalKeyPrefix(node: ts.Expression): string | undefined {
@@ -95,15 +96,10 @@ function scanCallers(): { callers: Caller[]; unreadable: string[] } {
                   p.name.text === name,
               )?.initializer
             : undefined;
-        const reason = property("metadataReason");
         const prefix = property("idempotencyKeyPrefix");
         const keyPrefix = prefix ? literalKeyPrefix(prefix) : undefined;
-        if (reason && ts.isStringLiteral(reason) && keyPrefix) {
-          callers.push({
-            file: relativeSource(file),
-            keyPrefix,
-            metadataReason: reason.text,
-          });
+        if (keyPrefix) {
+          callers.push({ file: relativeSource(file), keyPrefix });
         } else {
           unreadable.push(where);
         }
@@ -117,7 +113,19 @@ function scanCallers(): { callers: Caller[]; unreadable: string[] } {
 
 const { callers: CALLERS, unreadable: UNREADABLE } = scanCallers();
 
-describe("booking-edit card refund: the replay sends the inline request (#4101, #1507)", () => {
+/**
+ * The reason each caller passed by hand before #4101 derived it from the
+ * prefix. Spelled here, never read from the map under test: Stripe already
+ * holds refunds with these exact bodies, so a replay of one must send the same.
+ */
+const REASON_SENT_BEFORE_4101: Record<string, string> = {
+  mod_dates_refund_: "date_change_price_decrease",
+  mod_batch_refund_: "batch_modification",
+  guest_remove_refund_: "guest_removed_price_decrease",
+  guest_accept_refund_: "guest_accepted_promo_reprice",
+};
+
+describe("INV-MOD-061: a booking edit's card refund and its replay send one request (#4101)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The inline refund fails after Stripe may have made it (a timeout): the
@@ -126,27 +134,31 @@ describe("booking-edit card refund: the replay sends the inline request (#4101, 
     h.enqueueBookingModificationRefundRecovery.mockResolvedValue({});
   });
 
-  it("reads every caller's reason and key prefix as literals, so none escapes the check", () => {
-    // A caller passing a computed reason or prefix cannot be checked here: spell
-    // both as literals at the call site, or extend this census to read the new
-    // shape - never exempt it.
-    expect(UNREADABLE).toEqual([]);
+  it("reads every caller's key prefix as a literal, so none escapes the check", () => {
+    // INV-MOD-061: a caller passing a computed prefix cannot be checked here.
+    // Spell its head as a literal at the call site, or extend this census to
+    // read the new shape - never exempt it.
+    expect(UNREADABLE, "INV-MOD-061: unreadable executeBookingModificationRefund prefix").toEqual([]);
   });
 
-  it("finds the four booking-edit refund callers", () => {
-    expect(
-      CALLERS.map(({ file, keyPrefix, metadataReason }) => `${file} ${keyPrefix} ${metadataReason}`).sort(),
-    ).toEqual([
-      "src/app/api/bookings/[id]/guests/[guestId]/route.ts guest_remove_refund_ guest_removed_price_decrease",
-      "src/lib/booking-batch-modification-service.ts mod_batch_refund_ batch_modification",
-      "src/lib/booking-date-modification-service.ts mod_dates_refund_ date_change_price_decrease",
-      "src/lib/booking-guest-acceptance-reprice.ts guest_accept_refund_ guest_accepted_promo_reprice",
+  it("finds the four booking-edit refund callers, each with a prefix the reason map knows", () => {
+    expect(CALLERS.map(({ file, keyPrefix }) => `${file} ${keyPrefix}`).sort()).toEqual([
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts guest_remove_refund_",
+      "src/lib/booking-batch-modification-service.ts mod_batch_refund_",
+      "src/lib/booking-date-modification-service.ts mod_dates_refund_",
+      "src/lib/booking-guest-acceptance-reprice.ts guest_accept_refund_",
     ]);
+    for (const { file, keyPrefix } of CALLERS) {
+      expect(
+        bookingModificationRefundReasonForKeyPrefix(`${keyPrefix}booking-1_mod-1`),
+        `INV-MOD-061: ${file} passes ${keyPrefix}, which bookingModificationRefundReasonForKeyPrefix does not know - add its reason there`,
+      ).not.toBe("booking_modification_refund_recovery");
+    }
   });
 
   it.each(CALLERS)(
-    "$file ($keyPrefix): the replay rebuilds the inline reason from the stored prefix",
-    async ({ keyPrefix, metadataReason }) => {
+    "$file ($keyPrefix): sends its pre-#4101 reason, and the replay rebuilds it from the stored prefix",
+    async ({ keyPrefix }) => {
       const bookingId = "booking-1";
       await executeBookingModificationRefund({
         format: CLUB_FORMAT_TEST,
@@ -157,7 +169,6 @@ describe("booking-edit card refund: the replay sends the inline request (#4101, 
           bookingModificationId: "mod-1",
           organiserChildRefund: null,
         } as never,
-        metadataReason,
         idempotencyKeyPrefix: `${keyPrefix}${bookingId}`,
         failureMessage: "inline refund failed",
         recoveryFailureMessage: "enqueue failed",
@@ -165,21 +176,24 @@ describe("booking-edit card refund: the replay sends the inline request (#4101, 
 
       const [inline] = h.refundPaymentTransactions.mock.calls[0];
       const [enqueued] = h.enqueueBookingModificationRefundRecovery.mock.calls[0];
+      // Byte-identical to what this caller sent while it passed the reason by
+      // hand, so refunds Stripe already holds replay too.
+      expect(inline.metadata, `INV-MOD-061: ${keyPrefix} changed its Stripe reason`).toEqual({
+        bookingId,
+        reason: REASON_SENT_BEFORE_4101[keyPrefix],
+      });
       // The replay sends under the prefix the row stored, so it must be the
       // inline call's own.
       expect(enqueued.stripeKeyPrefix).toBe(inline.idempotencyKeyPrefix);
-      // The body the replay builds from that stored prefix alone (the
-      // processor's modification branch, pinned per prefix in
-      // payment-recovery.test.ts) is the inline body, byte for byte. A failure
-      // here means bookingModificationRefundReasonForKeyPrefix lacks this
-      // caller's prefix: Stripe would refuse the replay with idempotency_error.
+      // The body the replay's modification branch builds from that stored
+      // prefix alone (pinned per prefix in payment-recovery.test.ts).
       expect(
         buildBookingModificationRefundMetadata(
           bookingId,
           bookingModificationRefundReasonForKeyPrefix(enqueued.stripeKeyPrefix),
         ),
+        "INV-MOD-061: the replay would send another body under the same key",
       ).toEqual(inline.metadata);
-      expect(inline.metadata).toEqual({ bookingId, reason: metadataReason });
     },
   );
 });

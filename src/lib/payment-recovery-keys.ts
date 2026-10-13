@@ -441,15 +441,13 @@ export function buildRefundRequestRefundMetadata(
 }
 
 // #1507: the Stripe refund `metadata` for a booking-modification card refund
-// (date change / batch edit / guest removal). The inline settlement helper
-// (executeBookingModificationRefund) stamps a per-path `reason`; the recovery
-// cron replays under the modification's stored Stripe key prefix (#1152) and
-// must send the SAME body so Stripe replays the original refund instead of
-// rejecting the reused key with `idempotency_error` (the #1494 failure mode).
-// The shape is shared through this builder; the recovery reconstructs the
-// per-path `reason` from the persisted key prefix via
-// bookingModificationRefundReasonForKeyPrefix, so the inline shape is UNCHANGED
-// for stored-prefix rows (no pre-deploy sliver). Nothing downstream reads this
+// (date change / batch edit / guest removal / guest-acceptance re-price). The
+// recovery cron replays under the modification's stored Stripe key prefix
+// (#1152) and must send the SAME body so Stripe replays the original refund
+// instead of rejecting the reused key with `idempotency_error` (the #1494
+// failure mode). Since #4101 both sides take the `reason` from that one prefix
+// via bookingModificationRefundReasonForKeyPrefix (`INV-MOD-061`), so the
+// inline refund and its replay cannot disagree. Nothing downstream reads this
 // off the Stripe refund; it is dashboard-only.
 export function buildBookingModificationRefundMetadata(
   bookingId: string,
@@ -458,19 +456,19 @@ export function buildBookingModificationRefundMetadata(
   return { bookingId, reason };
 }
 
-// #1507: map a modification refund's persisted Stripe idempotency-key prefix
-// (`stripeKeyPrefix`, #1152) back to the `reason` the inline settlement helper
-// stamped, so a recovery replay reconstructs the inline Stripe body
-// byte-for-byte. The first four prefixes mirror the `idempotencyKeyPrefix` each
-// modification caller passes to executeBookingModificationRefund
+// #1507: map a modification refund's Stripe idempotency-key prefix to the
+// Stripe metadata `reason`. THE ONE SPELLING (`INV-MOD-061`, #4101): the inline
+// settlement helper (executeBookingModificationRefund) stamps the reason this
+// returns for the prefix its caller passes, and the recovery replay rebuilds it
+// from the same prefix stored on the row (`stripeKeyPrefix`, #1152), so the two
+// send one request. The first four rows are the helper's callers
 // (booking-date/-batch modification services, the guest-removal route and the
-// guest-acceptance re-price). A NEW modification refund path MUST add its prefix
-// here, or its recovery replay diverges (safe-fails to idempotency_error, never
-// double-refunds); `modification-refund-replay-reason.test.ts` finds every
-// caller and fails until it does (#4101). Legacy rows
-// enqueued before #1152 carry no stored prefix; they keep the historical
-// recovery reason and their operation-scoped key (they were never shared-key
-// with the inline refund, so convergence does not apply to them).
+// guest-acceptance re-price); a new caller adds its prefix here or its refunds
+// carry the generic recovery reason, which
+// `modification-refund-replay-reason.test.ts` refuses. Legacy rows enqueued
+// before #1152 carry no stored prefix; they keep the historical recovery reason
+// and their operation-scoped key (they were never shared-key with the inline
+// refund, so convergence does not apply to them).
 export function bookingModificationRefundReasonForKeyPrefix(
   keyPrefix: string | null | undefined,
 ): string {
@@ -484,8 +482,8 @@ export function bookingModificationRefundReasonForKeyPrefix(
     return "guest_removed_price_decrease";
   }
   // #4101: a guest's acceptance that re-prices a paid booking down
-  // (`settleGuestAcceptanceRepriceAfterCommit`). Missing, its replay sent the
-  // default reason below and Stripe refused the reused key for ever.
+  // (`settleGuestAcceptanceRepriceAfterCommit`). Missing before #4101, its
+  // replay sent the default reason below and Stripe refused the reused key.
   if (keyPrefix?.startsWith("guest_accept_refund_")) {
     return "guest_accepted_promo_reprice";
   }
