@@ -11,6 +11,12 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { expectToHoldFocus } from "@/lib/__tests__/helpers/focus";
 import {
   ForbiddenSaveError,
@@ -75,10 +81,12 @@ function StagedSection({
     successMessage: "Saved",
     allowPristineSave: true,
   });
+  // The real card primitives: `CardTitle` renders a `div`, not a heading, so
+  // the region's name has to come from `titleProps`, not a heading lookup.
   return (
-    <div {...section.sectionRegionProps}>
-      <div>
-        <h2>{title}</h2>
+    <Card {...section.sectionRegionProps}>
+      <CardHeader>
+        <CardTitle {...section.titleProps}>{title}</CardTitle>
         {!section.editing && showEdit ? (
           <button
             type="button"
@@ -89,7 +97,11 @@ function StagedSection({
             Edit {title}
           </button>
         ) : null}
-      </div>
+      </CardHeader>
+      <CardContent>
+        {/* A row heading the name must NOT be taken from. */}
+        <h4>Row one</h4>
+      </CardContent>
       {section.error ? <p role="alert">{section.error}</p> : null}
       {section.editing ? (
         <div>
@@ -105,7 +117,7 @@ function StagedSection({
           </button>
         </div>
       ) : null}
-    </div>
+    </Card>
   );
 }
 
@@ -483,6 +495,34 @@ describe("useSectionEditState", () => {
       activate(button("Cancel Discount"));
 
       await expectToHoldFocus(screen.getByRole("region", { name: "Discount" }));
+    });
+
+    it("names the card a region by its own title, declaratively, from the first render", () => {
+      render(<StagedSection title="Discount" />);
+
+      const region = screen.getByRole("region", { name: "Discount" });
+      // Named by the CardTitle (a div), not by the row's h4, and before any
+      // return has run — nothing is written into the DOM later.
+      expect(region.getAttribute("aria-labelledby")).toBe(
+        screen.getByText("Discount").id,
+      );
+      expect(screen.queryByRole("region", { name: "Row one" })).toBeNull();
+    });
+
+    it("names a card with no visible title by its regionLabel", () => {
+      function Untitled() {
+        const section = useSectionEditState<Draft>({
+          initial: INITIAL,
+          save: async (draft) => draft,
+          successMessage: "Saved",
+          regionLabel: "Club identity",
+        });
+        return <div {...section.sectionRegionProps} />;
+      }
+      render(<Untitled />);
+
+      const region = screen.getByRole("region", { name: "Club identity" });
+      expect(region.hasAttribute("aria-labelledby")).toBe(false);
     });
 
     it("falls back to the section when it no longer renders Edit", async () => {

@@ -278,7 +278,7 @@ export function AnalyticsIntegrationCard() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <BarChart3 className="h-5 w-5 shrink-0 text-foreground" />
-            <CardTitle>Google Analytics</CardTitle>
+            <CardTitle {...section.titleProps}>Google Analytics</CardTitle>
           </div>
           <CardDescription>
             Configure your GA4 measurement ID, the visitor consent banner and the

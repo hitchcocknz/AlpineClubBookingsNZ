@@ -178,7 +178,7 @@ export default function AdminMemberFieldsPage() {
         <BackLink href="/admin/membership-setup" label="Membership & Members" />
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Member fields</h1>
+            <h1 {...section.titleProps} className="text-2xl font-bold text-foreground">Member fields</h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               Choose which optional member fields the club collects and displays.
               Turn a field off to avoid collecting data the club does not need.

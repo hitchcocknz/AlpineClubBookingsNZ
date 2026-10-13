@@ -318,7 +318,8 @@ export const RETURN_FOCUS_REGION_ATTRIBUTE = "data-return-focus-region";
  * landmark, or the page's main region. Shared with the bed-allocation dialogs,
  * which fall back to the same places when their trigger chip has gone.
  */
-export const RETURN_FOCUS_REGION_SELECTOR = `[${RETURN_FOCUS_REGION_ATTRIBUTE}], section, [role="region"], main, [role="main"]`;
+export const MAIN_REGION_SELECTOR = 'main, [role="main"]';
+export const RETURN_FOCUS_REGION_SELECTOR = `[${RETURN_FOCUS_REGION_ATTRIBUTE}], section, [role="region"], ${MAIN_REGION_SELECTOR}`;
 
 /** What {@link captureFocusReturn} recorded when an editor was opened. */
 export interface FocusReturnAnchor {
@@ -364,37 +365,11 @@ export function focusConnectedTarget(
 ): boolean {
   if (!target?.isConnected) return false;
   const hadTabIndex = target.hasAttribute("tabindex");
-  if (!hadTabIndex && target.tabIndex < 0) target.setAttribute("tabindex", "-1");
+  ensureFocusable(target);
   target.focus({ preventScroll: true });
   if (!hadTabIndex && !keepTabIndex) target.removeAttribute("tabindex");
   return document.activeElement === target;
 }
-
-/**
- * A focused region announces its name, and an unnamed container announces
- * "group" and nothing else (#2934). Name it after the heading it holds when it
- * has no name of its own, and — since a name on a plain `div` is not announced
- * at all — make a plain container a region so the name is heard.
- */
-function nameRegionFromHeading(region: HTMLElement) {
-  if (
-    region.hasAttribute("aria-label") ||
-    region.hasAttribute("aria-labelledby")
-  ) {
-    return;
-  }
-  const heading = region.querySelector("h1, h2, h3, h4, h5, h6");
-  if (!isHTMLElement(heading)) return;
-  if (!heading.id) {
-    returnFocusHeadingCount += 1;
-    heading.id = `return-focus-heading-${returnFocusHeadingCount}`;
-  }
-  region.setAttribute("aria-labelledby", heading.id);
-  if (!region.hasAttribute("role") && region.tagName === "DIV") {
-    region.setAttribute("role", "region");
-  }
-}
-let returnFocusHeadingCount = 0;
 
 /**
  * Record the focused element, and the markers to find its replacement and its
@@ -439,7 +414,9 @@ function focusAndKeepInView(target: HTMLElement | null) {
  * that actually TAKES focus wins: the original trigger if it is still mounted,
  * its marked replacement, the marked section, then the section around the
  * trigger at capture. A disabled Edit (a view-only admin) refuses focus, so the
- * section takes it, named after its heading.
+ * section takes it — a region named by its own title, which the section
+ * declares through `regionProps` / `titleProps` rather than this module
+ * writing names into the DOM.
  *
  * It moves nothing while focus is anywhere else — a failure or success
  * position another primitive already took, or a control the admin moved to
@@ -462,7 +439,6 @@ export function returnFocus(anchor: FocusReturnAnchor | null) {
     anchor.region,
   ]) {
     if (!region?.isConnected || isPageRoot(region)) continue;
-    nameRegionFromHeading(region);
     if (focusAndKeepInView(region)) return;
   }
 }
@@ -624,16 +600,22 @@ export function useReturnAttention(
  *
  *  - `capture(key)` from the action that opens the editor;
  *  - `close()` from every user action that closes it (Cancel, a successful
- *    save) — never from a scope change or a refresh, which are not the admin
- *    leaving the editor;
+ *    save, a save conflict that closes the stale editor) — never from a scope
+ *    change or a background refresh, which are not the admin leaving it;
  *  - `triggerProps(key)` on an opening control that is NOT mounted while the
  *    editor is open (Edit, Add), so its replacement can be found; a control
  *    that stays mounted (a per-row Edit) is returned to directly;
  *  - `regionProps` on the section's card, the fallback when the trigger is
- *    gone or disabled.
+ *    gone or disabled. It makes the card a `region` named by `titleProps`,
+ *    which goes on the card's visible title, so a keyboard user who lands on
+ *    the card hears its name rather than "group" (#2934) — or, for a card with
+ *    no visible title of its own, by `regionLabel`.
  */
-export function useEditorFocusReturn() {
+export function useEditorFocusReturn({
+  regionLabel,
+}: { regionLabel?: string } = {}) {
   const id = useId();
+  const titleId = `${id}title`;
   const anchorRef = useRef<FocusReturnAnchor | null>(null);
   const [closeKey, setCloseKey] = useState(0);
   useReturnAttention(anchorRef, closeKey);
@@ -653,11 +635,18 @@ export function useEditorFocusReturn() {
     [id],
   );
   const regionProps = useMemo(
-    () => ({ [RETURN_FOCUS_REGION_ATTRIBUTE]: id }),
-    [id],
+    () => ({
+      [RETURN_FOCUS_REGION_ATTRIBUTE]: id,
+      role: "region" as const,
+      ...(regionLabel
+        ? { "aria-label": regionLabel }
+        : { "aria-labelledby": titleId }),
+    }),
+    [id, regionLabel, titleId],
   );
+  const titleProps = useMemo(() => ({ id: titleId }), [titleId]);
   return useMemo(
-    () => ({ capture, close, triggerProps, regionProps }),
-    [capture, close, triggerProps, regionProps],
+    () => ({ capture, close, triggerProps, regionProps, titleProps }),
+    [capture, close, triggerProps, regionProps, titleProps],
   );
 }

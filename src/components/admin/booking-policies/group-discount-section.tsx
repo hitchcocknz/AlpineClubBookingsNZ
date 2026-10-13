@@ -198,7 +198,7 @@ export function GroupDiscountSection() {
         <Card {...section.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>Group Discount</CardTitle>
+              <CardTitle {...section.titleProps}>Group Discount</CardTitle>
               <CardDescription>
                 When a booking has enough guests, all guests are charged at member rates.
               </CardDescription>

@@ -409,7 +409,7 @@ export function AdultMemberHostingSection() {
           <Card {...section.sectionRegionProps}>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
-                <CardTitle>
+                <CardTitle {...section.titleProps}>
                   {scopeLodgeName
                     ? `Adult Member Hosting — ${scopeLodgeName}`
                     : "Adult Member Hosting"}

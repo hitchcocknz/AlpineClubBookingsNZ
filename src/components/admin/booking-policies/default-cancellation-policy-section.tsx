@@ -514,7 +514,7 @@ export function DefaultCancellationPolicySection() {
           <Card {...section.sectionRegionProps}>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
-                <CardTitle>
+                <CardTitle {...section.titleProps}>
                   {scopeIsLodge
                     ? `${scopeLodgeName ?? "Lodge"} Override`
                     : "Default Policy"}

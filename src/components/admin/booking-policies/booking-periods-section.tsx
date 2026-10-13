@@ -550,7 +550,7 @@ export function BookingPeriodsSection() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>
+                  <CardTitle {...editorFocus.titleProps}>
                     {scopeLodgeName
                       ? `Date-Specific Periods — ${scopeLodgeName}`
                       : "Date-Specific Periods"}

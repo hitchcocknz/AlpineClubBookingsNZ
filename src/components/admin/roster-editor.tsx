@@ -422,7 +422,7 @@ export function RosterEditor({
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle headingLevel={2}>Roster assignments</CardTitle>
+              <CardTitle {...section.titleProps} headingLevel={2}>Roster assignments</CardTitle>
               <CardDescription>
                 {roster.guestCount} guest{roster.guestCount === 1 ? "" : "s"} staying ·{" "}
                 {draftAssignments.length} assignment{draftAssignments.length === 1 ? "" : "s"}

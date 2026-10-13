@@ -118,7 +118,7 @@ export function ClubPostRetentionSection({
   return (
     <Card {...section.sectionRegionProps}>
       <CardHeader>
-        <CardTitle className="text-lg">Retention</CardTitle>
+        <CardTitle {...section.titleProps} className="text-lg">Retention</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <AdminViewOnlySectionBanner canEdit={canEdit}>

@@ -544,7 +544,7 @@ export function PublicBookingRequestsSection() {
         <Card {...pricing.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>Indicative Pricing</CardTitle>
+              <CardTitle {...pricing.titleProps}>Indicative Pricing</CardTitle>
               <CardDescription>
                 Control whether the public booking request form shows indicative pricing to non-members.
               </CardDescription>
@@ -628,7 +628,7 @@ export function PublicBookingRequestsSection() {
         <Card {...quoteTiming.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>Quote Response Window &amp; Reminders</CardTitle>
+              <CardTitle {...quoteTiming.titleProps}>Quote Response Window &amp; Reminders</CardTitle>
               <CardDescription>
                 Set how long a quote link stays valid after you send it, and when the requester is reminded
                 before it expires.
@@ -734,7 +734,7 @@ export function PublicBookingRequestsSection() {
         <Card {...attendeeTiming.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>School Attendee Confirmation</CardTitle>
+              <CardTitle {...attendeeTiming.titleProps}>School Attendee Confirmation</CardTitle>
               <CardDescription>
                 Before a school group arrives, the school contact is emailed a secure link to replace the
                 placeholder attendee names and confirm who is coming. The chore roster uses the confirmed

@@ -246,7 +246,7 @@ export function LocalBackupCard({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle>Local backup</CardTitle>
+            <CardTitle {...section.titleProps}>Local backup</CardTitle>
             <CardDescription>
               Keep a copy of each backup in a directory on the server. Uses the
               same retention as above; older files are deleted automatically.

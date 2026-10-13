@@ -116,6 +116,8 @@ export function ClubIdentityPanel() {
 
   const cardRef = useRef<HTMLDivElement>(null);
   const section = useSectionEditState<Draft>({
+    // The page renders this panel's title outside it, so it names itself.
+    regionLabel: CLUB_IDENTITY_TITLE,
     load: async (signal) => {
       const response = await fetch(ENDPOINT, { signal });
       if (!response.ok) throw new Error(LOAD_ERROR);
@@ -208,8 +210,6 @@ export function ClubIdentityPanel() {
     <div
       {...section.sectionRegionProps}
       ref={cardRef}
-      role="region"
-      aria-label={CLUB_IDENTITY_TITLE}
       tabIndex={-1}
       className="focus:outline-none"
     >

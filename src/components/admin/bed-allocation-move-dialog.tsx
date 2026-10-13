@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   focusConnectedTarget,
+  MAIN_REGION_SELECTOR,
   RETURN_FOCUS_REGION_SELECTOR,
 } from "@/hooks/use-scroll-to-feedback";
 import { Alert } from "@/components/ui/alert";
@@ -112,7 +113,7 @@ export function useBedAllocationMoveDialog(
       focusAllocationIdRef.current = nextAnchor.allocationId;
       fallbackFocusRef.current =
         returnTarget?.closest<HTMLElement>(RETURN_FOCUS_REGION_SELECTOR) ??
-        document.querySelector<HTMLElement>("main, [role='main']");
+        document.querySelector<HTMLElement>(MAIN_REGION_SELECTOR);
       setAssertiveAnnouncement("");
       setPoliteAnnouncement(
         `Move options opened for ${nextTarget.guestName} to ${nextTarget.destinationLabel}.`,

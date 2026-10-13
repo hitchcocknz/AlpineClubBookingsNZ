@@ -192,7 +192,7 @@ export function MagicLinkSecurityCard({
     <Card {...section.sectionRegionProps}>
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <CardTitle>Email sign-in link</CardTitle>
+          <CardTitle {...section.titleProps}>Email sign-in link</CardTitle>
           <CardDescription>
             Let members request a single-use email link to sign in without typing
             their password. This is additive to password login — it never replaces

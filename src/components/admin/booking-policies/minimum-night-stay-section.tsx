@@ -506,6 +506,7 @@ export function MinimumNightStaySection() {
               ? message
               : `${message} The latest policies could not be loaded; try again.`,
           )
+          editorFocus.close()
           return draft
         }
         throw new Error(message)
@@ -725,7 +726,7 @@ export function MinimumNightStaySection() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>
+                  <CardTitle {...editorFocus.titleProps}>
                     {scopeLodgeName
                       ? `Minimum Night Stay — ${scopeLodgeName}`
                       : "Minimum Night Stay"}

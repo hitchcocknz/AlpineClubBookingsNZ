@@ -87,6 +87,17 @@ afterEach(() => {
 });
 
 describe("BookingPeriodsSection returns focus from its editor (#4087)", () => {
+  it("names the list card by its title, not by a row's heading", async () => {
+    stubList([PERIOD]);
+    render(<BookingPeriodsSection />);
+    await screen.findByRole("button", { name: "Edit" });
+
+    expect(
+      screen.getByRole("region", { name: "Date-Specific Periods" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "School Holidays" })).toBeNull();
+  });
+
   it("returns to Add Period after Cancel", async () => {
     stubList([]);
     render(<BookingPeriodsSection />);
@@ -163,5 +174,32 @@ describe("MinimumNightStaySection returns focus from its editor (#4087)", () => 
     const edit = await screen.findByRole("button", { name: "Edit" });
     expect(edit).not.toBe(originalEdit);
     await expectToHoldFocus(edit);
+  });
+
+  it("returns to the row's Edit when a 409 closes the stale editor", async () => {
+    // A conflict is not a thrown save error: the list refreshes, closes the
+    // editor itself and reports the conflict above the list, which takes no
+    // focus — so without the return a keyboard user is left on the page.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method
+          ? new Response(
+              JSON.stringify({ error: "Someone else changed this policy." }),
+              { status: 409 },
+            )
+          : new Response(JSON.stringify([POLICY]), { status: 200 }),
+      ),
+    );
+    render(<MinimumNightStaySection />);
+    press(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Policy Name"), {
+      target: { value: "Winter weekends" },
+    });
+    press(button("Update Policy"));
+
+    await screen.findByText("Someone else changed this policy.");
+    expect(screen.queryByRole("button", { name: "Update Policy" })).toBeNull();
+    await expectToHoldFocus(await screen.findByRole("button", { name: "Edit" }));
   });
 });

@@ -511,7 +511,7 @@ function S3BackupCard({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle>AWS S3 Backup</CardTitle>
+            <CardTitle {...section.titleProps}>AWS S3 Backup</CardTitle>
             <CardDescription>
               The enabled switch and retention are operational settings; the S3
               destination and credentials are Full-Admin only.

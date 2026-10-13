@@ -40,7 +40,8 @@ import {
  * `<body>`. The hook records the focused element when `startEditing` runs and,
  * after Cancel or a successful save, hands focus back to it — or to the Edit
  * rendered in its place, found by `editTriggerProps`, or to the card marked
- * with `sectionRegionProps` — through `useEditorFocusReturn`. That is where
+ * with `sectionRegionProps` and named by the title carrying `titleProps` —
+ * through `useEditorFocusReturn`. That is where
  * focus ends after Cancel. After a successful save it is where focus ends
  * UNLESS the card also positions its success (`useActionAttention` with a
  * `successTarget`, as member fields does): that runs in the same commit, after
@@ -118,6 +119,12 @@ export interface UseSectionEditStateOptions<T extends object> {
    * busts caches for a change that never happened (#2143).
    */
   allowPristineSave?: boolean;
+  /**
+   * The section's name, for a card with no visible title of its own to point
+   * `titleProps` at (#4087). Omit it everywhere else: the card is then named
+   * by its title, so the two cannot drift.
+   */
+  regionLabel?: string;
 }
 
 export interface SectionEditState<T extends object> {
@@ -160,9 +167,18 @@ export interface SectionEditState<T extends object> {
   editTriggerProps: Record<"data-return-focus-trigger", string>;
   /**
    * Spread on the section's card: where focus returns when Edit is missing or
-   * disabled for a view-only admin.
+   * disabled for a view-only admin. It makes the card a `region` named by the
+   * element carrying `titleProps` (or by `regionLabel`), so a keyboard user who
+   * lands on it hears the section's name.
    */
-  sectionRegionProps: Record<"data-return-focus-region", string>;
+  sectionRegionProps: {
+    "data-return-focus-region": string;
+    role: "region";
+    "aria-label"?: string;
+    "aria-labelledby"?: string;
+  };
+  /** Spread on the card's visible title: the name `sectionRegionProps` points at. */
+  titleProps: { id: string };
   save: () => Promise<void>;
   /** Re-run `load`, clearing both messages first. No-op without a `load`. */
   reload: () => Promise<void>;
@@ -191,7 +207,7 @@ export function useSectionEditState<T extends object>(
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editRequestKey, setEditRequestKey] = useState(0);
-  const editorFocus = useEditorFocusReturn();
+  const editorFocus = useEditorFocusReturn({ regionLabel: options.regionLabel });
   // Where a FAILED save hands focus back to, recorded as the save starts.
   const saveFocusReturn = useRef<FocusReturnAnchor | null>(null);
   const [saveFailureKey, setSaveFailureKey] = useState(0);
@@ -337,6 +353,7 @@ export function useSectionEditState<T extends object>(
     cancelEditing,
     editTriggerProps: editorFocus.triggerProps(),
     sectionRegionProps: editorFocus.regionProps,
+    titleProps: editorFocus.titleProps,
     save,
     reload,
   };

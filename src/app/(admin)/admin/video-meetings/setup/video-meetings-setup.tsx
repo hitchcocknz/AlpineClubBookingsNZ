@@ -335,7 +335,7 @@ export function VideoMeetingsSetup({
     <div className="space-y-6">
       <Card {...section.sectionRegionProps}>
         <CardHeader>
-          <CardTitle>Meeting server</CardTitle>
+          <CardTitle {...section.titleProps}>Meeting server</CardTitle>
           <CardDescription>
             Where your club&apos;s MiroTalk meetings are hosted, and how the join
             links behave. Leave a box empty to keep using whatever the server

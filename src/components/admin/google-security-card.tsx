@@ -140,7 +140,7 @@ export function GoogleSecurityCard({
       <Card {...section.sectionRegionProps}>
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <CardTitle>Google sign-in</CardTitle>
+          <CardTitle {...section.titleProps}>Google sign-in</CardTitle>
           <CardDescription>
             Let members sign in with a Google account they have linked from their
             profile. This is additive to password login — it never replaces it — and

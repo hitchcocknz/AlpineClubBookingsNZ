@@ -292,7 +292,7 @@ describe("use-scroll-to-feedback", () => {
       expect(replacement.style.scrollMarginTop).toBe("5rem");
     });
 
-    it("falls through to the marked region, named after its heading, when focus does not land", () => {
+    it("falls through to the marked region when focus does not land, writing no name into the DOM", () => {
       const { region, edit } = mountEditButton();
       edit.focus();
       const anchor = captureFocusReturn({ triggerId: "r1edit", regionId: "r1" });
@@ -303,11 +303,10 @@ describe("use-scroll-to-feedback", () => {
       returnFocus(anchor);
 
       expect(document.activeElement).toBe(region);
-      expect(region.getAttribute("role")).toBe("region");
-      const labelledBy = region.getAttribute("aria-labelledby");
-      expect(labelledBy && document.getElementById(labelledBy)?.textContent).toBe(
-        "Group discount",
-      );
+      // Naming is the section's job (`regionProps` / `titleProps`), not the
+      // primitive's.
+      expect(region.hasAttribute("role")).toBe(false);
+      expect(region.hasAttribute("aria-labelledby")).toBe(false);
     });
 
     it("moves nothing while focus is anywhere but the page", () => {
