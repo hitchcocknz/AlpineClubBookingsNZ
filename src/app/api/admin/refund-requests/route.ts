@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT } from "@/lib/manual-refund-task-settlement-rules";
 import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
+import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("PENDING"),
@@ -89,12 +90,16 @@ export async function GET(req: NextRequest) {
     prisma.refundRequest.count({ where }),
   ]);
 
+  // #4117: what each approved appeal has still to give back (`readApprovedAppealOutcomes`).
+  const outcomes = await readApprovedAppealOutcomes(prisma, requests);
+
   // #3956 (`INV-PAY-123`): a pending appeal on a booking the group organiser
   // paid for by card is capped at what the organiser's combined payment can
   // still return - the approve route's own cap, read here unlocked as advice -
   // so the screen offers the figure the approval will accept.
   const data = await Promise.all(
-    requests.map(async (request) => {
+    requests.map(async (listed) => {
+      const request = { ...listed, ...outcomes.get(listed.id) };
       const payment = request.booking.payment;
       if (request.status !== "PENDING" || !payment) return request;
       const organiserCard = await organiserCardAppealCeilingFor(prisma, request.booking, payment);

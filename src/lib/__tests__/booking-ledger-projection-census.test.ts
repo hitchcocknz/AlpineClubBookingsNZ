@@ -1489,6 +1489,27 @@ describe("every named class lands in its class; a cent either way, or its eviden
     expect(v5(lowered)).toBe(5_500);
   });
 
+  // #4117: a slice its plan marks made (`madeRefundId`) is not in flight - its
+  // refund is on the ledger - though the row's amount keeps it.
+  it("IN_FLIGHT_REFUND counts only a card refund's unmade slices, never one its plan marks made (#4117)", () => {
+    const inFlight = (subject: BookingLedgerCensusRow) =>
+      cancelledOwedComponents(subject)[0]!.find((component) => component.name === "IN_FLIGHT_REFUND")!.cents;
+    const subject = cardCancelled(9_500, false);
+    const amountCents = subject.recoveryOperations[0]!.amountCents;
+    const marked = {
+      ...subject,
+      recoveryOperations: subject.recoveryOperations.map((op) => ({
+        ...op,
+        allocationPlan: [
+          { paymentTransactionId: "txn-made", amountCents: 3_000, madeRefundId: "re_made" },
+          { paymentTransactionId: "txn-owed", amountCents: amountCents - 3_000, stripeKeySuffix: "refused1" },
+        ],
+      })),
+    };
+    expect(inFlight(subject)).toBe(amountCents);
+    expect(inFlight(marked)).toBe(amountCents - 3_000);
+  });
+
   it("RETAINED_COLLECTED is information: once the share is collected every identity agrees and owed reads −share", () => {
     const evaluation = evaluateBookingLedgerIdentities(retainedShare(true));
     expect(evaluation.identities.filter((result) => result.status !== "AGREE" && result.status !== "NOT_APPLICABLE")).toEqual([]);

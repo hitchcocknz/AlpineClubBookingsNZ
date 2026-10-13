@@ -375,7 +375,11 @@ describe("approving a refund appeal on a booking the group organiser paid for by
       slices: [{ paymentTransactionId: "txn_1", amountCents: 2_500 }],
       plannedAmountCents: 2_500,
     });
-    mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [] });
+    // One answer per planned slice, as `refundPaymentTransactions` returns: made, so nothing is still owed (#4102).
+    const slice = { paymentTransactionId: "txn_1", amountCents: 2_500 };
+    mocks.refundPaymentTransactions.mockResolvedValue({
+      refunds: [{ paymentIntentId: "pi_child", refundId: "re_1", amountCents: 2_500, status: "succeeded", slice }],
+    });
     mocks.enqueueXeroRefundCreditNoteOperation.mockResolvedValue({ queueOperationId: "note_1" });
 
     const response = await approve(2_500);
@@ -383,6 +387,7 @@ describe("approving a refund appeal on a booking the group organiser paid for by
     expect(response.status).toBe(200);
     expect(mocks.reserveOrganiserChildAppealRefund).not.toHaveBeenCalled();
     expect(mocks.refundPaymentTransactions).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueRefundRequestRefundRecovery).not.toHaveBeenCalled();
     expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment_child", 2_500, {
       createdByMemberId: "admin_1",
     });
