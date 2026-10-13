@@ -3049,19 +3049,19 @@ _Split from `INV-PAY-057` (#3220)._
 
 ## INV-PAY-119
 
-- **What a booking owes has one home: its worth less applied credit** (#3750). Worth is
-  `finalPriceCents` plus the change fee recorded on the payment
+- **What a booking owes has one home: its worth less applied credit** (#3750).
+  Worth is `finalPriceCents` plus the payment's recorded change fee
   (`bookingWorthCents`, `recordedChangeFeeCents`). Every pay step reads
-  `bookingAmountOwedCents` or worth: the payment page, card intent, payment
-  link and its page (nothing to pay at or below zero), saved-card charge,
-  internet-banking switch, confirm-payment and webhook checks, settle,
-  officer's manual payment, a stored credit election's cap, a review share's
-  covered test and invoice reduction, and each joiner's group share and
-  invoice; confirmation emails quote worth. Emails quoting what is owed
-  (exception-approved, pay-link) read `readBookingAmountOwed` (#4058). An edit's credit clamp,
-  zero-dollar decision and stale-intent comparison read worth; a guest's
-  acceptance nets credit to the price, as its return route admits only credit
-  and cash that sum to the price.
+  `bookingAmountOwedCents` or worth: saved-card charge, internet-banking
+  switch, confirm-payment and webhook checks, settle, officer's manual
+  payment, a stored credit election's cap, a review share's covered test and
+  invoice reduction, and each joiner's group share and invoice; confirmation
+  emails quote worth. Both card intents, the pay-link and booking pages
+  (nothing to pay at or below zero) and emails quoting what is owed
+  (exception-approved, pay-link) read `readBookingAmountOwed` (#4058, #3991).
+  An edit's credit clamp, zero-dollar decision and stale-intent comparison
+  read worth; a guest's acceptance nets credit to the price, its return route
+  admitting only credit and cash summing to it.
 - A fee a finished-stay correction keeps on a stay with nothing captured is
   recorded on the payment, claimed against the invoice link the edit read, and
   posts its `CHANGE_FEE` line under its modification's key at the settle,
@@ -3078,5 +3078,6 @@ _Split from `INV-PAY-057` (#3220)._
   billed; an invoice linked without stored figures is unchecked, warning when
   a fee is recorded.
 - Pinned by `amount-owed-one-home.test.ts`,
+  `booking-detail-history-amount-owed.test.ts`,
   `booking-change-request-execution.realdb.test.ts` and
   `xero-primary-invoice-fee-gap.test.ts`.

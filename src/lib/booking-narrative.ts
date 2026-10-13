@@ -43,10 +43,7 @@ import {
   type BoundClubTime,
   formatStayDate,
 } from "@/lib/club-time";
-import type {
-  CancellationEventSnapshot,
-  BumpEventSnapshot,
-} from "@/lib/booking-events";
+import type { BumpEventSnapshot } from "@/lib/booking-events";
 import { isRefundOutsideBookingSettlement } from "@/lib/refund-event-outside-settlement";
 import { isManualSettlementMarkerEvent } from "@/lib/manual-settlement-reversal-event";
 import {
@@ -59,7 +56,9 @@ import {
   FINANCIAL_REVIEW_WORKING_IT_OUT,
 } from "@/lib/booking-financial-review-copy";
 import type { ClubFormat } from "@/lib/club-format";
-import { nothingToPayNarrative } from "@/lib/booking-narrative-nothing-to-pay";
+import { nothingToPayNarrative, nothingToPayWithFinancialReviewNarrative } from "@/lib/booking-narrative-nothing-to-pay";
+import type { BookingAmountOwed } from "@/lib/booking-payment-state";
+import { buildCancelledPostPaymentNarrative } from "@/lib/booking-narrative-cancelled-post-payment";
 
 export type BookingNarrativeState =
   | "payable"
@@ -104,8 +103,8 @@ export interface NarrativeEvent {
 export interface NarrativeBooking {
   status: string;
   finalPriceCents: number;
-  /** #3955 (`INV-PAY-119`): what its pay step charges (`bookingAmountOwedCents`) and the credit applied, where read. */
-  amountOwed?: { dueCents: number; appliedCreditCents: number };
+  /** `INV-PAY-119` (#3955, #3991, #4058): `readBookingAmountOwed`'s reading — `owedCents` decides whether anything is owed, `dueCents` is quoted. Required: no bare-price fallback. */
+  amountOwed: BookingAmountOwed;
   checkIn: Date;
   checkOut: Date;
   firstName: string;
@@ -149,6 +148,15 @@ export interface ResolveBookingNarrativeInput {
    * checked.
    */
   financialReviewPending?: boolean;
+  /**
+   * #3991: the viewer cannot see the booking OWNER's account credit (the
+   * booking page's `canSeeOwnerCredit` is false — a linked guest). The
+   * narrative then names no credit: a credit-covered booking says only that
+   * nothing is left to pay, and a cancellation settled as credit drops the
+   * "added to your account credit" figure. Amounts the viewer already sees
+   * stay. Defaults to false: the payment-link page's reader is the payer.
+   */
+  ownerCreditHidden?: boolean;
 }
 
 const PAID_EVENT_TYPES: BookingEventType[] = [
@@ -194,15 +202,6 @@ function dateRange(booking: NarrativeBooking, format: ClubFormat): string {
   return `${storedNight(booking.checkIn, format)} to ${storedNight(booking.checkOut, format)}`;
 }
 
-function asCancellationSnapshot(
-  value: unknown
-): CancellationEventSnapshot | null {
-  if (value && typeof value === "object") {
-    return value as CancellationEventSnapshot;
-  }
-  return null;
-}
-
 function asBumpSnapshot(value: unknown): BumpEventSnapshot | null {
   if (value && typeof value === "object") {
     return value as BumpEventSnapshot;
@@ -241,63 +240,10 @@ function buildPaidNarrative(
   };
 }
 
-function buildCancelledPostPaymentNarrative(
-  paidEvent: NarrativeEvent,
-  cancelEvent: NarrativeEvent | undefined,
-  settlementEvent: NarrativeEvent | undefined,
-  club: BoundClubTime, format: ClubFormat
-): BookingNarrative {
-  const snapshot = asCancellationSnapshot(cancelEvent?.snapshot);
-  const paidAmountCents = paidEvent.amountCents ?? snapshot?.paidAmountCents ?? 0;
-  const settledAmountCents =
-    settlementEvent?.amountCents ?? snapshot?.settledAmountCents ?? 0;
-  const retainedAmountCents =
-    snapshot?.retainedAmountCents ??
-    Math.max(paidAmountCents - settledAmountCents, 0);
-
-  const paidOn = club.instantDate(paidEvent.occurredAt);
-  const cancelOn = cancelEvent
-    ? club.instantDate(cancelEvent.occurredAt)
-    : paidOn;
-  const opening = `You cancelled this booking on ${cancelOn} after paying ${formatCents(paidAmountCents, format)} on ${paidOn}.`;
-
-  let settlementClause: string;
-  if (settledAmountCents > 0 && settlementEvent) {
-    const settledOn = club.instantDate(settlementEvent.occurredAt);
-    const verb =
-      settlementEvent.type === BookingEventType.CREDITED
-        ? "added to your account credit"
-        : "refunded";
-    settlementClause =
-      retainedAmountCents > 0
-        ? `${formatCents(settledAmountCents, format)} was ${verb} on ${settledOn} and ${formatCents(retainedAmountCents, format)} was retained`
-        : `${formatCents(settledAmountCents, format)} was ${verb} on ${settledOn}`;
-  } else if (snapshot?.refundMethod === "manual" && settledAmountCents > 0) {
-    // B5 (#2262): a cash / off-Xero settlement is handed back by a person, so
-    // there is no settlement event YET — one is written when the club marks the
-    // hand-back complete. Saying "no refund was due" here would be a lie about
-    // the member's money.
-    settlementClause =
-      retainedAmountCents > 0
-        ? `${formatCents(settledAmountCents, format)} is being refunded to you by the club directly (you paid in cash or by bank transfer, so there is no card payment to reverse) and ${formatCents(retainedAmountCents, format)} was retained`
-        : `${formatCents(settledAmountCents, format)} is being refunded to you by the club directly — you paid in cash or by bank transfer, so there is no card payment to reverse`;
-  } else {
-    settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents, format)} was retained`;
-  }
-
-  return {
-    state: "cancelled_post_payment",
-    headline: "Booking cancelled",
-    message: `${opening} Under the cancellation policy in effect at the time, ${settlementClause}. No further payment is required.`,
-    nextStep:
-      "If you'd like to stay another time, you can book again from the bookings page whenever you're ready.",
-  };
-}
-
 function buildCancelledNarrative(
   booking: NarrativeBooking,
   events: NarrativeEvent[],
-  club: BoundClubTime, format: ClubFormat
+  club: BoundClubTime, format: ClubFormat, ownerCreditHidden: boolean,
 ): BookingNarrative {
   // A booking held for admin review that was rejected is cancelled via the
   // shared cancel flow; surface it as "declined" with the admin's reason.
@@ -366,7 +312,7 @@ function buildCancelledNarrative(
     );
     return buildCancelledPostPaymentNarrative(
       paidEvent,
-      cancelEvent, settlementEvent, club, format
+      cancelEvent, settlementEvent, club, format, ownerCreditHidden,
     );
   }
 
@@ -387,12 +333,11 @@ function buildCancelledNarrative(
 function buildPayableNarrative(
   booking: NarrativeBooking,
   link: NarrativeLinkState | null | undefined,
-  now: Date, format: ClubFormat
+  now: Date, format: ClubFormat, ownerCreditHidden: boolean,
 ): BookingNarrative {
   const range = dateRange(booking, format);
-  const due = booking.amountOwed?.dueCents ?? booking.finalPriceCents;
-  if (booking.amountOwed && due <= 0) return nothingToPayNarrative(range, booking.amountOwed.appliedCreditCents > 0);
-  const amountDue = formatCents(due, format);
+  if (booking.amountOwed.owedCents <= 0) return nothingToPayNarrative(range, !ownerCreditHidden && booking.amountOwed.appliedCreditCents > 0);
+  const amountDue = formatCents(booking.amountOwed.dueCents, format);
 
   const linkUnusable =
     link != null &&
@@ -579,9 +524,10 @@ function buildPaidWithFinancialReviewNarrative(
 function buildPayableWithFinancialReviewNarrative(
   booking: NarrativeBooking,
   link: NarrativeLinkState | null | undefined,
-  now: Date, format: ClubFormat,
+  now: Date, format: ClubFormat, ownerCreditHidden: boolean,
 ): BookingNarrative {
-  const payable = buildPayableNarrative(booking, link, now, format);
+  const payable = buildPayableNarrative(booking, link, now, format, ownerCreditHidden);
+  if (payable.state === "nothing_to_pay") return nothingToPayWithFinancialReviewNarrative(payable); // #3991: no figure to qualify
 
   return {
     state: "financial_review_pending",
@@ -590,7 +536,7 @@ function buildPayableWithFinancialReviewNarrative(
     // a screen asking for payment would bury it.
     headline: payable.headline,
     // #3194 fix round: the STALE-amount sentence, not "not part of that figure".
-    // `payable.message` has just said "$120.00 is due", and that is
+    // `payable.message` has just said "$120.00 is due", the amount owed built on
     // `booking.finalPriceCents` — which a parked edit writes back UNCHANGED while
     // saving the new dates. So the amount above this clause is the price from
     // before the member's change, and saying only that the change's amount sits
@@ -612,6 +558,7 @@ export function resolveBookingNarrative({
   link,
   now = new Date(),
   financialReviewPending = false,
+  ownerCreditHidden = false,
 }: ResolveBookingNarrativeInput, format: ClubFormat): BookingNarrative {
   const ordered = sortedByOccurredAt(events);
   const status = booking.status;
@@ -638,12 +585,12 @@ export function resolveBookingNarrative({
     argument for its own shape.
   */
   if (status === "CANCELLED" || status === "BUMPED") {
-    return buildCancelledNarrative(booking, ordered, club, format);
+    return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden);
   }
 
   if (status === "AWAITING_REVIEW") {
     if (booking.adminReviewStatus === "REJECTED") {
-      return buildCancelledNarrative(booking, ordered, club, format);
+      return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden);
     }
     return {
       state: "under_review",
@@ -663,7 +610,7 @@ export function resolveBookingNarrative({
       to pay.
     */
     if (PAYABLE_STATUSES.has(status)) {
-      return buildPayableWithFinancialReviewNarrative(booking, link, now, format);
+      return buildPayableWithFinancialReviewNarrative(booking, link, now, format, ownerCreditHidden);
     }
     /*
       And a PAID booking keeps its payment facts and gains the review ones, for
@@ -682,7 +629,7 @@ export function resolveBookingNarrative({
   }
 
   if (PAYABLE_STATUSES.has(status)) {
-    return buildPayableNarrative(booking, link, now, format);
+    return buildPayableNarrative(booking, link, now, format, ownerCreditHidden);
   }
 
   // DRAFT / WAITLISTED / WAITLIST_OFFERED and any unexpected state: a clear,

@@ -886,6 +886,13 @@ const GENERATED_CASES: EmailRenderCase[] = [
   */
   { id: "bookingModifiedTemplate:refundToOrganiserPending", fn: "bookingModifiedTemplate", render: () =>
     bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "organiser_card_pending" }, CLUB_FORMAT_TEST) },
+  /*
+    #4070: a refund to the member's own card that Stripe did not make, queued
+    for the recovery runner, is on its way, in an info box. Its own pin, so the
+    made case (`:minimal`) stays byte-identical.
+  */
+  { id: "bookingModifiedTemplate:refundToOwnCardPending", fn: "bookingModifiedTemplate", render: () =>
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own_card_pending" }, CLUB_FORMAT_TEST) },
   { id: "accountDeletionApprovedTemplate:minimal", fn: "accountDeletionApprovedTemplate", render: () =>
     accountDeletionApprovedTemplate("firstName-1") },
   { id: "familyGroupInvitationTemplate:minimal", fn: "familyGroupInvitationTemplate", render: () =>

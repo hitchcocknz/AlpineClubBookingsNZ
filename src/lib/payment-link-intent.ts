@@ -147,7 +147,10 @@ export async function createPaymentIntentForPaymentLink(
   // #3750 (#3955 review F2, `INV-PAY-119`): what the link charges is what the
   // booking owes — its price plus a change fee recorded on its payment, less
   // applied credit — read from the one home, never the bare price. Every
-  // intent comparison, mint and row below uses this one figure.
+  // intent comparison, mint and row below uses this one figure, `owedCents`,
+  // the decision field by convention (#3991: the same read as the link's
+  // page). It differs from the floored `dueCents` only below zero, where the
+  // `<= 0` refusal below has already stopped.
   const { owedCents } = await readBookingAmountOwed(booking);
 
   // Reuse or reconcile an existing PaymentIntent before creating a new one

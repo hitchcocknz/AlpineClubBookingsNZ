@@ -191,6 +191,8 @@ export default async function BookingDetailPage({
     viewer,
     consent,
     access,
+    // #3991: the ledger credit the history loader already read for this page.
+    appliedCreditCents: history.amountOwed.appliedCreditCents,
   });
   const backHref = resolveInternalReturnPath(
     query.returnTo,
@@ -238,6 +240,8 @@ export default async function BookingDetailPage({
     viewer,
     access,
     party,
+    // #3991: the same read the narrative quoted, so the two cannot disagree.
+    amountOwed: history.amountOwed,
   });
   // #3956 (`INV-PAY-123`): an appeal on a booking the organiser paid for by card
   // is capped at what the organiser's combined payment can still return.
