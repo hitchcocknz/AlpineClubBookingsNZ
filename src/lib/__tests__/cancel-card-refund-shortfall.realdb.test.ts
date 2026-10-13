@@ -17,6 +17,10 @@
  *   amount, keyed on the task, which a replay does not repeat and no card note
  *   (the self-heal's gap) may answer - with Stripe refund rows on the payment,
  *   and (a third case) with none.
+ * - The card part still being refunded: the cancel's card refund refused
+ *   inline, the shortfall's completion is refused until the retry makes it,
+ *   and the final figures match the order where the card refund was made
+ *   inline.
  * - A zero plan (the payment's ledger reads the card refunded, its record does
  *   not): no Stripe call, the whole refund raised as owed. It cannot be marked
  *   paid back against a ledger with nothing left on it, so the treasurer
@@ -53,6 +57,7 @@ const PRICE_CENTS = 20_000;
 const CARD_CENTS = 14_000;
 const BANK_CENTS = 6_000;
 const TASK_KEY = `cancel-card-shortfall:${BOOKING_ID}`;
+const CHECK_KEY = `${TASK_KEY}:check`;
 const XERO_INVOICE_ID = "race-4097-invoice";
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
@@ -276,6 +281,9 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(handBackLines).toEqual([{ kind: "BANK_REFUND", amountCents: -BANK_CENTS, settlementMethod: "INTERNET_BANKING" }]);
       expect(await handBackOwedNow()).toBe(0);
       expect(await refundsOwedNow()).toBe(owedBefore);
+      // The booking page reads the part's status for its narrative.
+      const { readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall");
+      expect(await readCardShortfallTaskStatuses(BOOKING_ID)).toEqual({ bank: "COMPLETED" });
 
       // Xero: the card's own note from the cancel, and ONE bank-transfer note
       // for exactly the task's amount, keyed on the task - nothing payment-wide.
@@ -337,19 +345,101 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const result = await cancel();
 
       expect(result.status).toBe(200);
-      expect(result).toMatchObject({ data: { ownCardRefund: { method: "card", amountCents: 0, byHandCents: PRICE_CENTS } } });
+      expect(result).toMatchObject({ data: { ownCardRefund: { method: "card", amountCents: 0 } } });
       expect(asked).toBe(0);
-      const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: TASK_KEY } });
+      // Nothing holds it: a part to check, never a bank transfer promised.
+      expect(result).toMatchObject({ data: { ownCardRefund: { toCheckCents: PRICE_CENTS }, message: expect.stringContaining("The club will be in touch about the $200.00 refund.") } });
+      const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: CHECK_KEY } });
       expect(task).toMatchObject({ status: "OPEN", amountCents: PRICE_CENTS });
       expect((await refundsOwedNow()) - owedBefore).toBe(PRICE_CENTS);
 
-      // Nothing on the ledger to record it against: refused, still OPEN.
-      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 400 });
+      // Nothing on the ledger to record it against: refused, still OPEN, and told to dismiss it.
+      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/dismiss this task with a note/) });
       expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: task.id }, select: { status: true } })).toEqual({ status: "OPEN" });
 
       await resolve("dismissed", task.id, "Refunded in the Stripe dashboard on 2 July.");
       expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: task.id }, select: { status: true } })).toEqual({ status: "DISMISSED" });
       expect(await refundsOwedNow()).toBe(owedBefore);
+    });
+
+    // #4097 (coordinator decision 2 on PR #4122): a shortfall's completion
+    // waits for the card part. Whichever order the card refund and the
+    // treasurer's completion run in, the figures end the same.
+    describe("the card part still being refunded", () => {
+      /** Stripe's answer: refused on the first ask when `refuseFirst`, made after. */
+      function stripeAnswers(refuseFirst: boolean) {
+        let asked = 0;
+        stripeRaceHooks.refund = async (args) => {
+          asked += 1;
+          return {
+            id: `re_race_4097_${asked}`,
+            object: "refund",
+            amount: args.amountCents,
+            currency: "nzd",
+            status: refuseFirst && asked === 1 ? "failed" : "succeeded",
+            reason: "requested_by_customer",
+            created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+            charge: "ch_race_4097",
+            payment_intent: args.paymentIntentId,
+            metadata: args.metadata ?? {},
+          };
+        };
+      }
+
+      async function finalFigures() {
+        const payment = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } });
+        const txns = await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } });
+        const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: TASK_KEY }, select: { status: true, amountCents: true } });
+        const cardRefunds = await prisma.paymentRefund.findMany({ where: { paymentId: PAYMENT_ID, status: "succeeded" }, select: { amountCents: true } });
+        const bankLine = await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" }, select: { amountCents: true } });
+        const notes = (await refundNotes()).filter((note) => note.taskId !== null).map((note) => note.cents);
+        return { payment, txns, task, cardRefunds, bankLine, notes };
+      }
+
+      it.each([
+        ["the card refund is refused inline, completion waits, the retry makes it, then completion", true],
+        ["the card refund is made inline, then completion", false],
+      ])("%s: the same final figures", async (_label, refuseFirst) => {
+        await prisma.paymentTransaction.createMany({
+          data: [
+            { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, status: "SUCCEEDED", createdAt: new Date("2026-05-01T00:00:00.000Z") },
+            { id: BANK_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "INTERNET_BANKING", amountCents: BANK_CENTS, status: "SUCCEEDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+          ],
+        });
+        stripeAnswers(refuseFirst);
+        expect((await cancel()).status).toBe(200);
+        const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: TASK_KEY } });
+        const cardRefund = () =>
+          prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: `booking_cancel_refund_recovery_${BOOKING_ID}` } });
+
+        if (refuseFirst) {
+          expect(await cardRefund()).toMatchObject({ status: "PENDING" });
+          // The card part is still owed: the shortfall cannot be marked yet, and nothing moved.
+          await expect(resolve("completed", task.id)).rejects.toMatchObject({
+            status: 409,
+            message: "The card part of this cancellation's refund is still being refunded; mark this once it settles.",
+          });
+          expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: task.id }, select: { status: true } })).toEqual({ status: "OPEN" });
+          // The card retry makes it.
+          const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+          expect(await runPaymentRecoveryOperationNow((await cardRefund()).id, CLUB_FORMAT_TEST)).toBe("succeeded");
+        }
+        expect(await cardRefund()).toMatchObject({ status: "SUCCEEDED" });
+
+        await resolve("completed", task.id);
+
+        expect(await finalFigures()).toEqual({
+          payment: { refundedAmountCents: PRICE_CENTS },
+          txns: [
+            { id: BANK_TXN, refundedAmountCents: BANK_CENTS },
+            { id: CARD_TXN, refundedAmountCents: CARD_CENTS },
+          ],
+          task: { status: "COMPLETED", amountCents: BANK_CENTS },
+          cardRefunds: [{ amountCents: CARD_CENTS }],
+          bankLine: [{ amountCents: -BANK_CENTS }],
+          notes: [BANK_CENTS],
+        });
+      });
     });
   },
 );

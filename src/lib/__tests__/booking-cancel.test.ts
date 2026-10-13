@@ -2896,6 +2896,23 @@ describe("cancelBooking credit refunds", () => {
         expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
       });
 
+      it("MUTATION: raises nothing off the card branch - a hand-settled payment's cancel raises only its own hand-back", async () => {
+        const base = (await mocks.txBookingFindUnique()) as { payment: Record<string, unknown> };
+        const manual = { ...base, payment: { ...base.payment, manuallyMarkedPaidAt: new Date("2026-06-01T00:00:00.000Z") } };
+        mocks.bookingFindUnique.mockResolvedValue(manual);
+        mocks.txBookingFindUnique.mockResolvedValue(manual);
+        mocks.txManualRefundTaskCreate.mockResolvedValue({ id: "task_cash" });
+        prime(0);
+
+        const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+        expect(result).toMatchObject({ status: 200, data: { refundMethod: "manual" } });
+        expect(mocks.txManualRefundTaskCreate).toHaveBeenCalledTimes(1);
+        expect(mocks.txManualRefundTaskCreateMany).not.toHaveBeenCalled();
+        expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
+        expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].situation).toBeUndefined();
+      });
+
       it("a refund the plan carries in full raises no task and no alert", async () => {
         const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
