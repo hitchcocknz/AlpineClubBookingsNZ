@@ -392,7 +392,9 @@ Two consequences worth knowing before you edit one:
   no refund applied. A refund to the member's own card reads "has been
   processed" only once the card refund has gone through; until then — when it
   failed, timed out or was not made — it reads "A refund of $X is on its way to
-  your original payment method.", shown as information (#4084). On a group
+  your original payment method.", shown as information (#4084). A cancel with
+  nothing left to refund to the card (already returned) reads "has been
+  processed". On a group
   booking the organiser paid for by card, it names the organiser instead: the
   refund has been processed to the group organiser's card, or is on its way
   there when the card refund has not gone through yet.
