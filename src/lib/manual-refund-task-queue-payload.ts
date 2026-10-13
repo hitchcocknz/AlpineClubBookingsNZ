@@ -6,6 +6,7 @@ import {
 import { bookingOwner } from "@/lib/booking-owner";
 import { editReviewRefundIsPaidBackByHand } from "@/lib/booking-payment-state";
 import {
+  isCancelCardShortfallTask,
   isEditRefundHandBackTask,
   isPartPaymentReviewTask,
   isRefundRequestHandBackTask,
@@ -174,6 +175,12 @@ export type OpenManualRefundTaskPayload = {
    */
   groupOrganiserHandBack: boolean;
   /**
+   * #4097 (`INV-PAY-129`): a card cancellation whose card refund carried less
+   * than the refund due; the club refunds the rest by bank transfer. The
+   * booking was paid by card, so the cash sentence does not fit it.
+   */
+  cardShortfallHandBack: boolean;
+  /**
    * #3643 (`INV-PAY-108`, ORCHESTRATOR DECISION 3): on a review, when the inbound
    * Xero sync learned the invoice was reported PAID and the invoice's cash then.
    * Nothing was credited or handed back for it; the treasurer decides. The
@@ -260,6 +267,7 @@ export function toOpenManualRefundTaskPayload(
     editRefundHandBack: isEditRefundHandBackTask(task),
     refundRequestHandBack: isRefundRequestHandBackTask(task),
     groupOrganiserHandBack: groupHandBack,
+    cardShortfallHandBack: isCancelCardShortfallTask(task),
     partPaymentReviewXeroPaid:
       isPartPaymentReviewTask(task) &&
       task.partPaymentReviewXeroPaidAt &&

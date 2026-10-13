@@ -334,6 +334,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-104` | Waiting invoice retired only when the pay door closes; captures never silent |
 | `INV-PAY-030` | External provider side effects require clear retry and idempotency behaviour |
 | `INV-PAY-128` | Edit and cancellation card refunds Stripe refuses stay owed, on fresh keys |
+| `INV-PAY-129` | A cancel's card refund shortfall is a hand-back task, owed until settled |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |

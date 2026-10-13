@@ -260,6 +260,22 @@ the task shows, not the invoice's paid total, then raise a credit note on the
 invoice in Xero for the amount you repaid and record the refund against that
 credit note.
 
+**The same task for a card refund that falls short (#4097).** A card
+cancellation refunds to the card only what the payment's card charges can
+still give back. When that is less than the refund the cancellation policy
+gives, usually because the payment's records disagree, the cancel raises one
+of these tasks for the difference, and admins get the **Manual refund
+needed** email once ("card refund short on a cancelled booking"). The member
+is told what went to their card and that the club will refund the rest by
+bank transfer. Check the payment in Stripe and its history in the app: if
+the member has not had that money back, pay it by bank transfer and mark the
+task paid back, which records the refund on the payment and the booking
+ledger. If it was already refunded another way (for example from the Stripe
+dashboard), dismiss it with a note saying how; the app also refuses to mark it
+paid back when the payment's records show nothing left to refund. The app
+does not raise a Xero refund credit note for this bank transfer: record that
+refund in Xero by hand.
+
 A club that has customised the **Manual refund needed** message keeps its own
 wording for this email too. Add `{{handBackNote}}` to the body (and keep
 `{{handBackLabel}}` in the subject, which is now required) so the group
@@ -272,7 +288,7 @@ The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
 ("Decide a booking change the system would not price"), an amount the club may
 not have asked for ("Check an amount the club may not have asked for"), a
-late card payment held for approval, and a group organiser's repayment (above). Each kind's explaining paragraph appears
+late card payment held for approval, a group organiser's repayment and a card refund that fell short (above). Each kind's explaining paragraph appears
 only when a row of that kind is waiting, and none of them speaks for the others.
 
 ### Settle a part payment an officer cancelled as unpaid

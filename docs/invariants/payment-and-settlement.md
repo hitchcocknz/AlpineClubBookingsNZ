@@ -1254,6 +1254,42 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
     `refunds-and-credits-owed.test.ts` and
     `refused-card-refund-retry.realdb.test.ts`.
 
+## INV-PAY-129
+
+**Related: `INV-PAY-101`** (a hand-back's wording and Xero note) and
+**`INV-PAY-128`** (a card refund Stripe refuses).
+
+- **What an own-card cancel's card refund plan cannot carry is owed by hand**
+  (#4097). The plan covers what the payment's captured Stripe charges can
+  still refund; the policy's refund comes from the payment record. Where they
+  disagree, the rest is not only logged.
+  - **The claim raises one `CANCELLED_BOOKING_HAND_BACK`** for the
+    difference, beside the plan's recovery row and under the claim's locks,
+    keyed `cancel-card-shortfall:<bookingId>` and inserted on no conflict
+    (`raiseCancelCardShortfallHandBack`). Its amount is fixed at creation. A
+    zero plan raises the whole refund.
+  - **While OPEN it is owed**: "Refunds owed", off Net Collected, the
+    money-to-settle queue. Officers are alerted once after the commit
+    (`card-refund-shortfall`).
+  - **The member is told both parts** from the one wording home: what went to
+    the card, made or on its way, and the remainder by bank transfer. The
+    cancel screen says the same. `{{refundAmount}}` stays the refund due.
+  - **The card's own records are sized at what the card carries**: the
+    REFUNDED event (none on a zero plan) and the card refund's Xero note.
+  - **Marked paid back**, it completes as a cancellation's hand-back, and its
+    `BANK_REFUND` posts on the card payment, which no refund row will post
+    (`INV-MONEY-035`). Where the ledger has nothing left to allocate, the
+    completion is refused; the treasurer dismisses it with a note.
+  - **Stated limit**: on a card payment the completion's Xero note is sized by
+    Stripe's cash evidence, so a bank-transfer remainder usually gets none and
+    is recorded in Xero by hand.
+  - Proven by `booking-cancel.test.ts`,
+    `booking-cancelled-card-shortfall-email.test.ts`,
+    `cancel-booking-button.test.tsx`, `refunds-and-credits-owed.test.ts`,
+    `booking-ledger-hand-back.test.ts`, `manual-refund-task.test.ts`,
+    `booking-ledger-projection-census.test.ts` and
+    `cancel-card-refund-shortfall.realdb.test.ts`.
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the

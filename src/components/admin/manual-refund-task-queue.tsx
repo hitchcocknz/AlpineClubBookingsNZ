@@ -107,6 +107,8 @@ interface ManualRefundTask {
   refundRequestHandBack?: boolean;
   /** #4042: an organiser's Internet Banking group cancel, repaid to the organiser. Optional, as above. */
   groupOrganiserHandBack?: boolean;
+  /** #4097: what a card cancellation's card refund could not carry, by bank transfer. Optional, as above. */
+  cardShortfallHandBack?: boolean;
   /**
    * #3643 (`INV-PAY-108`): Xero reported the review's invoice paid after the
    * cancel, and the invoice's cash then. Optional, as above.
@@ -1497,6 +1499,7 @@ export function ManualRefundTaskQueue() {
   const hasEditRefundRows = openTasks.some(isEditRefundHandBack);
   const hasRefundRequestRows = openTasks.some(isRefundRequestHandBack);
   const hasGroupOrganiserRows = openTasks.some((task) => task.groupOrganiserHandBack === true);
+  const hasCardShortfallRows = openTasks.some((task) => task.cardShortfallHandBack === true);
   const hasHandBackRows = openTasks.some(
     (task) =>
       !isFinancialReview(task) &&
@@ -1505,7 +1508,8 @@ export function ManualRefundTaskQueue() {
       !isPartPaymentReview(task) &&
       !isEditRefundHandBack(task) &&
       !isRefundRequestHandBack(task) &&
-      task.groupOrganiserHandBack !== true,
+      task.groupOrganiserHandBack !== true &&
+      task.cardShortfallHandBack !== true,
   );
   if (
     !showQueue &&
@@ -1584,6 +1588,21 @@ export function ManualRefundTaskQueue() {
                 club sends the approved amount by bank transfer; the member has
                 been told it is coming. Mark a refund as paid back once the
                 money has actually gone.
+              </p>
+            ) : null}
+            {hasCardShortfallRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-card-shortfall-intro"
+              >
+                Some of these are card bookings that were cancelled when the
+                card refund could carry only part of the refund due, usually
+                because the payment&apos;s records disagree. The member has been
+                told the club will refund the rest by bank transfer. Check the
+                payment in Stripe first: if the member has not had the money,
+                pay it and mark it paid back; if it was refunded another way,
+                dismiss it with a note saying how. Record the bank transfer in
+                Xero by hand.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (
