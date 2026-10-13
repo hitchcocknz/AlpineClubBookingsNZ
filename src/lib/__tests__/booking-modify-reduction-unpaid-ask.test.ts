@@ -654,8 +654,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
         bookingModificationId: "mod_reduction",
         priceLines: null,
       },
-      reason: "guest_removal_price_increase",
-      idempotencyKey: "mod_guest_remove_booking_3954_mod_reduction",
+      door: "guestRemoval",
       failureMessage: "test",
     });
     return { minted, order };
@@ -1268,8 +1267,7 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
         bookingModificationId: "mod_reduction",
         priceLines: null,
       },
-      reason: "guest_removal_price_increase",
-      idempotencyKey: "mod_guest_remove_booking_3954_mod_reduction",
+      door: "guestRemoval",
       failureMessage: "test",
     });
     expect(mocks.runNow).not.toHaveBeenCalled();

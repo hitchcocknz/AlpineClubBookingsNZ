@@ -288,6 +288,12 @@ import "./booking-ledger-group-settlement.realdb.test";
 // another attempt for the charge is live. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3971-` fixtures.
 import "./xero-subscription-invoice-retry.realdb.test";
+// #4046 reuses it to prove a Xero void of the refund credit note a payment's
+// pointer names moves that pointer in the same write that deactivates the
+// mirror - never onto a #3880 per-refund note - and rolls back with it.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4046-` fixtures.
+import "./xero-refund-note-void-pointer.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

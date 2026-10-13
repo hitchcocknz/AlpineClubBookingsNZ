@@ -22,7 +22,6 @@ import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
 import { prisma } from "@/lib/prisma";
 import {
   cancelPaymentIntentIfCancellableWithResult,
-  createPaymentIntent,
   processRefund,
 } from "@/lib/stripe";
 import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
@@ -49,6 +48,8 @@ import {
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
+import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
+import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
@@ -556,7 +557,6 @@ import {
   groupSettlementIdForRefundRecoveryKey,
   isGroupSettlementRefundRecoveryKey,
   isOrganiserChildRefundKey,
-  stripeIdempotencyKeyForAskAmount,
 } from "./payment-recovery-keys";
 export {
   buildBookingCancellationRefundMetadata,
@@ -2896,7 +2896,7 @@ async function processCreateAdditionalPaymentIntentOperation(
    * suffix a second time. Here the base key is the ORIGINAL inline attempt's,
    * frozen on the row, so an unmoved amount must keep it bare to converge on
    * that attempt; the review path builds its base fresh at every attempt and has
-   * no bare form to preserve.
+   * no bare form to preserve. #4036: `planOrdinaryAskMint` applies the rule.
    */
   // #3954 round 6: a RE-ISSUED ask sends the one request its door's mint sends
   // under the same key (`planReissuedAskMint`), so whichever of the two runs
@@ -2908,27 +2908,21 @@ async function processCreateAdditionalPaymentIntentOperation(
         payment,
       })
     : null;
-  const rowReason = reissuePlan?.reason ?? "modification_additional_recovery";
-  const pi = reissuePlan
-    ? await mintReissuedAskIntent({
+  const rowReason = reissuePlan?.reason ?? ORDINARY_ASK_RECOVERY_REASON;
+  const { intent: pi, adopted } = reissuePlan
+    ? { intent: await mintReissuedAskIntent({ format, plan: reissuePlan, customerId, recoveryCreatedAt: operation.createdAt }), adopted: false }
+    : // #4036: the one request its door sent (`planOrdinaryAskMint`, `INV-MOD-060`).
+      await mintOrdinaryAskIntent({
         format,
-        plan: reissuePlan,
-        customerId,
-        recoveryCreatedAt: operation.createdAt,
-      })
-    : await createPaymentIntent({
-        format,
-        amountCents: askCents,
-        customerId,
-        metadata: {
+        plan: planOrdinaryAskMint({
           bookingId: operation.bookingId,
-          type: "modification_additional",
-          reason: "modification_additional_recovery",
-        },
-        idempotencyKey:
-          askCents === operation.amountCents
-            ? operation.paymentIntentId
-            : stripeIdempotencyKeyForAskAmount(operation.paymentIntentId, askCents),
+          bookingModificationId,
+          stripeKey: operation.paymentIntentId,
+          frozenAmountCents: operation.amountCents,
+          amountCents: askCents,
+        }),
+        customerId,
+        recovery: { id: operation.id, createdAt: operation.createdAt },
       });
 
   // The new intent's row FIRST, then the supersede - see the same ordering and
@@ -2948,6 +2942,8 @@ async function processCreateAdditionalPaymentIntentOperation(
   const { queueSupersededAdditionalIntentCancellationRows, cancelSupersededAdditionalIntentsNow } =
     await import("@/lib/booking-payment-cleanup");
   const held = await holdAdditionalIntentRecoveryClaim(operation, async (store) => {
+    // #4036 review: an adopted intent another ask recorded meanwhile is never written over.
+    await refuseAdoptedIntentOnLedger(store, { intent: pi, adopted });
     await upsertPaymentIntentTransaction({
       paymentId: operation.paymentId,
       kind: PaymentTransactionKind.ADDITIONAL,
@@ -2960,7 +2956,9 @@ async function processCreateAdditionalPaymentIntentOperation(
       reason: rowReason,
       // #3954 round 7: the customer the intent was minted for, which an intent
       // the re-issue's metadata lookup recovered need not share with this run.
-      stripeCustomerId: mintedIntentCustomerId(pi, customerId),
+      // #4036 review: never an ADOPTED intent's, whose customer is not known to be this
+      // payment's - writing it would split the saved-card pair (`saved-payment-method.ts`).
+      ...(adopted ? {} : { stripeCustomerId: mintedIntentCustomerId(pi, customerId) }),
       // #3954 round 7: the edit's frozen invoice answer rides onto its row.
       ...(operation.hadIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice } : {}),
       // Round 8: and the edit whose ask it is, for a reduction that retires it.

@@ -448,6 +448,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-057` | Cancellable statuses have one home; member doors read a named subset |
 | `INV-MOD-058` | An edit stores its delta as lines; every reader reads those rows |
 | `INV-MOD-059` | A guest's dietary value is seeded once, then carried by identity |
+| `INV-MOD-060` | An ordinary price ask's door and replay send one Stripe request |
 
 ### Adult-member hosting
 
@@ -531,6 +532,7 @@ File:
 | `INV-REQ-008` | A correction re-opens the request; an accepted quote refuses it outright |
 | `INV-REQ-009` | A corrected school name is stored only against the confirmed record |
 | `INV-REQ-010` | A corrected request never keeps beds held for its old shape |
+| `INV-REQ-011` | A request names a structured change; officers enter guests atomically |
 
 ### Subscription-lockout pricing, admin date overrides and member-facing email
 

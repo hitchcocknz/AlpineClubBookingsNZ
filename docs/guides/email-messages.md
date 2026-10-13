@@ -372,6 +372,13 @@ Two consequences worth knowing before you edit one:
   processed there, or on its way there when the card refund has not gone
   through yet (#4057, #4070) — or a bank transfer the club will send. Keep it
   on a line of its own, with no `$` or label in front.
+- **`{{changeSummary}}` on Booking Modified lists what changed, one line each.**
+  Dates, guest count and total appear as a Previous/New pair only when they
+  changed. When the change added people, a **Guests Added** line names each of
+  them, with their own nights in brackets for anyone not staying the whole stay
+  (#4030), and "(waiting for them to accept)" after a member from outside the
+  family who has not yet accepted their place — the same line the built-in email
+  shows. Keep the token on a line of its own.
 - **`{{settlementFigureNote}}` on *Bank transfer amount needs checking* is what
   needs a person (#3979).** It says whether the app kept the amount it had
   recorded instead of the cash Xero shows (and why), whether the member paid more

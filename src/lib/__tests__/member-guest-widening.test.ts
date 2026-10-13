@@ -1013,6 +1013,11 @@ describe("consent columns have exactly one writer", () => {
     // guest is present enough to hold a bed at all (`GUEST_NOT_PRESENT`) —
     // the same rule the placement paths already apply. It composes no consent
     // shape; every write it makes is to `BedAllocation`.
+    // #4030 review S8: a READER. The booking-modified email's Guests Added line
+    // marks a guest whose stored consentStatus is still PENDING as waiting to
+    // accept. It composes no consent shape and writes nothing.
+    "src/lib/booking-money-lines.ts":
+      "the change email's Guests Added line reads each added guest's stored consent state to say who has not yet accepted",
     "src/lib/bed-allocation-move.ts":
       "the reviewed move digest reads each guest's stored consent state, and the conflict pass refuses a guest who is not operationally present",
     // #2376's AI-diagnostics booking pack. Three files, all READERS, none of

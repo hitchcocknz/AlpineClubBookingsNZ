@@ -5500,6 +5500,153 @@ describe("processStoredXeroInboundEvents", () => {
     );
   });
 
+  it("reconciles a CREDITNOTE webhook, including a VOIDED note, and ignores a redelivery", async () => {
+    // Xero's webhook category is CREDITNOTE (no underscore). The recorded
+    // status comes from the credit-note read, the same path a CREDIT_NOTE row
+    // already used. A second delivery of the same correlation key is a no-op.
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_cn_void",
+        source: "webhook",
+        eventCategory: "CREDITNOTE",
+        eventType: "UPDATE",
+        resourceId: "cn_void_1",
+        correlationKey: "corr_cn_void",
+        payload: {
+          eventCategory: "CREDITNOTE",
+          eventType: "UPDATE",
+          resourceId: "cn_void_1",
+          data: { Type: "ACCRECCREDIT", Status: "VOIDED" },
+        },
+      },
+    ]);
+    mocks.processedCreate
+      .mockResolvedValueOnce({ id: "processed_cn_void" })
+      .mockRejectedValueOnce(Object.assign(new Error("unique"), { code: "P2002" }));
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        localModel: "Payment",
+        localId: "pay_void_1",
+        xeroObjectType: "CREDIT_NOTE",
+        role: "REFUND_CREDIT_NOTE",
+      },
+    ]);
+    mocks.paymentFindMany.mockResolvedValue([
+      {
+        id: "pay_void_1",
+        xeroRefundCreditNoteId: "cn_void_1",
+        amountCents: 5000,
+        refundedAmountCents: 0,
+        status: "SUCCEEDED",
+      },
+    ]);
+    const accountingApi = {
+      getCreditNote: vi.fn().mockResolvedValue({
+        body: {
+          creditNotes: [
+            {
+              creditNoteID: "cn_void_1",
+              creditNoteNumber: "CN-VOID-1",
+              status: "VOIDED",
+              total: 50,
+              appliedAmount: 0,
+              remainingCredit: 0,
+              allocations: [],
+              payments: [],
+            },
+          ],
+        },
+      }),
+    };
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi },
+      tenantId: "tenant_1",
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    expect(accountingApi.getCreditNote).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        localModel: "Payment",
+        localId: "pay_void_1",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_void_1",
+        role: "REFUND_CREDIT_NOTE",
+        metadata: expect.objectContaining({ status: "VOIDED" }),
+        mergeMetadata: true,
+      }),
+    );
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        responsePayload: expect.objectContaining({
+          handled: true,
+          kind: "CREDIT_NOTE",
+          resourceId: "cn_void_1",
+        }),
+      }),
+    );
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 0,
+      failed: 0,
+      skipped: 1,
+    });
+    expect(accountingApi.getCreditNote).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs a webhook category that has no reconciler instead of treating it as handled work", async () => {
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_prepay",
+        source: "webhook",
+        eventCategory: "PREPAYMENT",
+        eventType: "UPDATE",
+        resourceId: "prepay_1",
+        correlationKey: "corr_prepay",
+        payload: { resourceId: "prepay_1" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_prepay" });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    expect(mocks.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inboundEventId: "evt_prepay",
+        eventCategory: "PREPAYMENT",
+        eventType: "UPDATE",
+        resourceId: "prepay_1",
+      }),
+      "No inbound reconciliation handler for Xero webhook category",
+    );
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        responsePayload: expect.objectContaining({
+          handled: false,
+          kind: "PREPAYMENT",
+        }),
+      }),
+    );
+  });
+
   it("MUTATION (#3880 F1): inbound reconcile of a per-refund note never makes it the payment's canonical note", async () => {
     mocks.inboundFindMany.mockResolvedValue([
       {
