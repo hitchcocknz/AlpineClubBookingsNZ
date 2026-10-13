@@ -1192,34 +1192,38 @@ one, check the other.
 
 ## INV-PAY-127
 
-**Related: `INV-PAY-030`** (provider retry and idempotency), **`INV-PAY-114`**
-(an organiser child's refund, which reopens one Stripe fails later) and
-**`INV-PAY-122`** (closing a dead card refund).
+**Related: `INV-PAY-114`** (an organiser child's refund, which reopens one
+Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
 
-- **A card refund Stripe answers `failed` or `canceled` is still owed** (#4083).
-  Stripe can refuse a refund without throwing; `refundPaymentTransactions`
-  records it, uncounted (`isRecordedRefundStatus`), and returns.
-  - **Never counted as made**: a refused slice is not in
-    `PartialRefundError.completedRefundCents`, and each refund comes back with
-    the slice as sent (`refusedRefundSlices`).
-  - **An edit queues it**: every door (`executeBookingModificationRefund`)
-    queues exactly the refused slices as its recovery row's plan, one row per
-    edit, so "Refunds owed" counts them (`openCardRefundOwedByOperation`).
-  - **A cancellation leaves its pre-persisted row open.**
-  - **The runner never closes a row on a refusal.** Stripe answers a repeated
-    key with the original refusal for 24 hours, so each slice the runner read
-    refused moves to its next key generation (`refused1`, `refused2`, ...;
-    `refundSliceStripeIdempotencyKey`), written only on the attempt it holds
-    (PROCESSING and its own `processingStartedAt`), and the attempt fails, so
-    the backoff retries under a key never sent. Only a slice read refused
-    moves: a made slice keeps its key, so a refund made but not recorded is
-    still answered with the original, never made twice.
-  - **Retries spent**: the row dies owed and alerted, for "Paid another way".
-  - **Stated limit**: a refund Stripe accepted (`pending`) and failed later is
-    not re-owed here; only an organiser child's is (`INV-PAY-114`).
-  - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`
-    ("#4083"), the four doors' `own-card-refund-outcome` states,
-    `booking-cancel.test.ts`, `refunds-and-credits-owed.test.ts` and
+- **A card refund Stripe answers `failed` or `canceled` on a booking edit or a
+  cancellation is still owed** (#4083, #4096). `refundPaymentTransactions`
+  records it uncounted and returns; it is never counted as made
+  (`completedRefundCents`).
+  - **Whoever reads a refusal moves that slice to a fresh key**
+    (`refused1`, `refused2`, ...; `refundSliceStripeIdempotencyKey`): Stripe
+    replays a key's refusal for 24 hours. A slice never read refused keeps its
+    key, so a refund made but not recorded is answered with the original.
+  - **The four edit doors** (`executeBookingModificationRefund`) queue exactly
+    the refused slices, when Stripe answered every slice; on a partial
+    failure, the remainder, planned by the runner.
+  - **A cancellation** re-plans its pre-persisted row so, only while PENDING
+    with no attempt.
+  - **The runner never closes a row on a refusal**: it re-plans on the attempt
+    it holds and fails it. Where Stripe answered every slice, made ones leave
+    the plan.
+  - **Officers are alerted once per row**, by the write moving it off its
+    first keys; spent retries die owed, for "Paid another way".
+  - **Deploy window**: an older release closes a refused row as paid, and
+    replays a moved slice's first key, reading the cached refusal - nothing is
+    refunded twice within 24 hours. Check rows it closed against Stripe.
+  - **Stated limits**: the late-capture approval and webhook, the edit
+    financial-review settlement, duplicate-capture reconciliation, the
+    superseded-payment runner and the group-settlement replay still close on a
+    refusal (#4103); a refund request drops a refused slice (#4102); a refund
+    accepted (`pending`) and failed later is not re-owed.
+  - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
+    the doors' `own-card-refund-outcome` states, `booking-cancel.test.ts`,
+    `refunds-and-credits-owed.test.ts` and
     `refused-card-refund-retry.realdb.test.ts`.
 
 ## INV-PAY-031

@@ -17,11 +17,15 @@ reason: `refundPaymentTransactions` is the only code that sends each slice and
   refund slices across two modules.
 
 file: src/lib/payment-recovery.ts
-lines: 3427
+lines: 3433
 reason: the runner's refund call is wrapped in `refundPlanOrRetryRefusals`
   (one import, three lines of call), and `enqueueBookingModificationRefundRecovery`
   passes an optional frozen plan through to the existing ledger enqueue (three
-  lines). Both are the existing functions every caller already uses.
+  lines). Review round (#4105): the ledger enqueue inserts if absent and
+  refreshes only a PENDING row, and the one failure writer is fenced on the
+  attempt it holds - both changes to functions this file owns; the exhaustion
+  alert's booking read moved out to `payment-recovery-alert.ts`, which pays for
+  part of it.
 
 file: src/lib/booking-cancel.ts
 lines: 2829

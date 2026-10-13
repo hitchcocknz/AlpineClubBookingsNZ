@@ -3434,8 +3434,8 @@ close it is money paid twice, listed on the stuck-states page.
 ```text
 PENDING -> PROCESSING (worker claim, attempts < MAX) -> SUCCEEDED (Stripe refunded every slice)
 PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
-PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: that slice's key moves
-                       to its next generation on the attempt held, then retried; INV-PAY-127)
+PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
+                       held, each refused slice on its next key, then retried; INV-PAY-127)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
@@ -3449,14 +3449,18 @@ DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        it; audited under `payment`)
 ```
 
-A refund Stripe answers `failed` or `canceled` never closes a row (#4083,
-`INV-PAY-127`). A booking edit that meets one queues a row whose plan is
-exactly the refused slices; a cancellation leaves its pre-persisted row open;
-and the runner, before failing the attempt, moves each slice it read refused to
-a fresh Stripe idempotency key (`refused1`, `refused2`, ...), because Stripe
-answers a repeated key with the original refusal for 24 hours. The move is
-written only while the row is still `PROCESSING` under that attempt's own
-`processingStartedAt`; a slice Stripe made keeps its key.
+A refund Stripe answers `failed` or `canceled` on a booking edit or a
+cancellation never closes its row (#4083, #4096, `INV-PAY-127`). Stripe answers
+a repeated key with the original refusal for 24 hours, so whoever reads a
+refusal moves that slice to a fresh idempotency key (`refused1`, `refused2`,
+...). An edit queues a row whose plan is exactly the refused slices, when Stripe
+answered every slice; on a partial failure, the remainder, planned by the
+runner. A cancellation re-plans its pre-persisted row the same way while it is
+still `PENDING` with no attempt. The runner re-plans only on the attempt it
+holds (`PROCESSING` under its own `processingStartedAt`) and then fails it;
+where Stripe answered every slice, the slices it made leave the plan. The
+officers are alerted once per row, by the write that moves it off its first
+keys. Other card refund doors still close on a refusal (#4103, #4102).
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

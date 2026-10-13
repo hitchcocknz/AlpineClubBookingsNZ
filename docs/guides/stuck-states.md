@@ -43,10 +43,7 @@ by watching **data** — see [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 ### Close a card refund Stripe gave up on
 
 When the club refunds a card and Stripe fails, the app retries the refund
-automatically. That includes a refund Stripe answers straight away as failed or
-cancelled: each retry of it is sent as a new request, because Stripe would
-otherwise repeat its first answer (#4083). After the last retry it stops, and
-the refund becomes stuck. It
+automatically. After the last retry it stops, and the refund becomes stuck. It
 still counts in **Refunds owed** and still comes off **Net Collected** (owner
 decision on #3372, 7 Oct 2026), because the club still owes the member that
 money. Stuck card refunds are also counted in the **Exhausted recovery
@@ -66,6 +63,15 @@ drops, and once nothing is left owed the refund leaves this list on its own. A
 close always records money paid back, so it can never be for $0.00. A refund
 with nothing left owed still shows in the **Exhausted recovery operations**
 count: ask a developer to reconcile it.
+
+**A refund Stripe refused** (#4083, #4096). When a booking change or a
+cancellation refunds a card and Stripe answers straight away that the refund
+failed or was cancelled, Stripe sent nothing back. The officers are emailed
+once, saying how much Stripe refused, and the app asks again as a new request
+each time, because Stripe would otherwise repeat its refusal. If the retries
+run out, the row carries no **Stripe may have refunded** warning: Stripe sent
+nothing. Once the Stripe dashboard shows that refund as failed or cancelled,
+you can pay the member another way and close it here.
 
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
