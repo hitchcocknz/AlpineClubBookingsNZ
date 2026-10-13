@@ -1757,11 +1757,23 @@ copy all stay local — and throws the hook's `ForbiddenSaveError` for a 403 so 
 maps to the shared `ADMIN_FORBIDDEN_SAVE_REASON` copy. Feedback rendering stays
 in the component, because booking-policy sections use `PolicyFeedback` while the
 security cards use `Alert`. Where the admin's attention goes is not per-card
-either: the hook counts explicit Edit clicks in `editRequestKey`, and a section
-hands that to `useRevealAttention` (`src/hooks/use-scroll-to-feedback.ts`, the
-one home for failure / reveal / success positioning — #2934) so the card takes
-focus and comes into view when Edit unmounts the button that held focus, and
-never merely because it re-rendered. The way back out: Save and Cancel unmount
+either, and the section wires nothing for the way in: Edit unmounts the button
+that held focus, so `startEditing` moves focus — once the editor has rendered,
+and never merely because the section re-rendered — to the first control the
+edit made editable (mounted or enabled by it, inside the card marked by
+`sectionRegionProps`), or to that card when it made none (#4115, through
+`useEditorFocusReturn` in `src/hooks/use-editor-focus-return.ts`, which
+positions through `src/hooks/use-scroll-to-feedback.ts`, the one home for
+failure / reveal / success positioning — #2934). A control the admin could
+already change, such as a scope select, is not what Edit opened and is skipped,
+as is an unchecked radio whose group has a checked one (Tab's own rule). The
+reveal moves nothing when focus has moved off the control that opened the
+editor — an opening that awaited a fetch first ("Create override", which
+carries Edit's `editTriggerProps` so the reveal knows it opened) — or when
+the card is hidden behind a modal, as the analytics card is while its dialog
+holds Edit. The hook's `revealTarget` option instead reveals a given element at
+the top; it exists only for the two sections whose card reveal predates #4115 —
+allocation preferences and club identity — and a new section omits it. The way back out: Save and Cancel unmount
 the button that held focus too, so the hook records the focused element when
 `startEditing` runs and, after Cancel or a successful save, returns focus to it,
 to the Edit re-rendered in its place, or — when Edit is missing or disabled for
@@ -1772,8 +1784,8 @@ be found again by a per-instance marker, and `titleProps` on the card's title:
 card a keyboard user lands on is named by the words they can see. `CardTitle`
 renders a `div`, not a heading, so the name is declared rather than looked up;
 a card with no visible title of its own passes `regionLabel` instead.
-`section-edit-focus-return-census.test.ts` pins the adopters and checks each is
-wired.
+`section-edit-focus-return-census.test.ts` pins the adopters, checks each is
+wired, and fails an adopter that reveals its own editor or a new `revealTarget`.
 The return acts only while focus is on the page, so a success or failure
 position the card takes in the same commit still wins: after Save, a card with
 a `useActionAttention` success target (member fields) ends on that target, not
@@ -1795,7 +1807,14 @@ the reference for that shape (#2142). Because the open editor unmounts on close,
 the LIST owns the focus return there: it calls `useEditorFocusReturn`'s
 `capture` from Add and each row's Edit, and `close` from Cancel, a successful
 save and a save conflict that closes the stale editor, so focus goes back to the
-control that opened the editor (#4087). Wherever the read endpoint SYNTHESISES
+control that opened the editor (#4087). The same `capture` moves focus into the
+editor it opened, on its first field, even when the row's Edit stays mounted
+(#4115). A row's direct write (Activate/Deactivate,
+Delete) unmounts or disables the button pressed, so it returns focus through
+`useRowActionFocusReturn` — the row's toggle after a toggle, an Edit after a
+delete (never a button that writes by itself), or the card. Each action keeps its
+own anchor, so neither an overlapping write nor an open editor loses its return
+(#4116). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
 carry the first-save exception: count the draft as dirty so committing the
 defaults stays reachable, but

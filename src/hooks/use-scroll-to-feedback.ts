@@ -3,10 +3,8 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
-  useState,
   type RefObject,
 } from "react";
 
@@ -19,7 +17,12 @@ import {
  *    takes focus and comes into view. Failure always wins over success.
  *  - **reveal** → `revealEditor`: an editor the admin explicitly opened (Edit,
  *    New, a per-row pencil) takes focus and comes into view — never because the
- *    content merely re-rendered.
+ *    content merely re-rendered. A staged section or list editor gets it without
+ *    wiring (#4115): `useEditorFocusReturn`'s `capture`
+ *    (`use-editor-focus-return.ts`, which builds on the primitives here, and
+ *    which `useSectionEditState`'s `startEditing` calls) sends focus to the
+ *    first control the opening made editable, or to the section when it made
+ *    none.
  *  - **success / step transition** → `scrollToTop`: the resulting page, card or
  *    step is positioned at its top and takes focus, so the confirmation and the
  *    new state are what a keyboard or screen-reader user lands on.
@@ -35,8 +38,10 @@ import {
  * only when a message ARRIVES and refuses the success position while a failure
  * is showing; `useRevealAttention` fires only when its explicit-action key
  * changes; `useReturnAttention` (and `useEditorFocusReturn`, which wraps it for
- * a surface that opens and closes its own editor) fires only when its close
- * key changes, and consumes what it was given.
+ * a surface that opens and closes its own editor, in
+ * `use-editor-focus-return.ts`) fires only when its close key changes, and
+ * consumes what it was given; that hook's reveal fires only when its `capture`
+ * runs, and consumes its record the same way.
  *
  * Every scroll in this module honours `prefers-reduced-motion` through
  * `resolveScrollBehavior`, and every focus is applied with `preventScroll` first
@@ -98,7 +103,7 @@ export const DIRECT_SCROLL_EXCLUSIONS: ReadonlyArray<{
 
 const FEEDBACK_SCROLL_MARGIN_TOP = "5rem";
 
-function isHTMLElement(value: unknown): value is HTMLElement {
+export function isHTMLElement(value: unknown): value is HTMLElement {
   return typeof HTMLElement !== "undefined" && value instanceof HTMLElement;
 }
 
@@ -333,7 +338,8 @@ export interface FocusReturnAnchor {
   region: HTMLElement | null;
 }
 
-function isPageRoot(element: Element | null) {
+/** `document.body` / `<html>`, or nothing: focus has fallen to the page. */
+export function isPageRoot(element: Element | null) {
   return (
     !element ||
     element === document.body ||
@@ -341,7 +347,8 @@ function isPageRoot(element: Element | null) {
   );
 }
 
-function byMarker(attribute: string, id: string | undefined) {
+/** The mounted element carrying `attribute="id"`, found again after a re-render. */
+export function elementByMarker(attribute: string, id: string | undefined) {
   if (!id) return null;
   const match = Array.from(document.querySelectorAll(`[${attribute}]`)).find(
     (element) => element.getAttribute(attribute) === id,
@@ -398,7 +405,13 @@ export function captureFocusReturn(
   };
 }
 
-function focusAndKeepInView(target: HTMLElement | null) {
+/**
+ * Focus `target` where it already is, keeping it — and its `tabindex="-1"`,
+ * for a region — and scroll only as far as it must to be on screen
+ * (`block: "nearest"`, under the sticky header). Reports whether focus LANDED.
+ * The return and the reveal into an opened editor both position this way.
+ */
+export function focusAndKeepInView(target: HTMLElement | null) {
   if (!target?.isConnected) return false;
   applyStickyHeaderClearance(target, "nearest");
   if (!focusConnectedTarget(target, { keepTabIndex: true })) return false;
@@ -430,12 +443,12 @@ export function returnFocus(anchor: FocusReturnAnchor | null) {
   if (!isPageRoot(document.activeElement)) return;
   if (focusAndKeepInView(anchor.trigger)) return;
   if (
-    focusAndKeepInView(byMarker(RETURN_FOCUS_TRIGGER_ATTRIBUTE, anchor.triggerId))
+    focusAndKeepInView(elementByMarker(RETURN_FOCUS_TRIGGER_ATTRIBUTE, anchor.triggerId))
   ) {
     return;
   }
   for (const region of [
-    byMarker(RETURN_FOCUS_REGION_ATTRIBUTE, anchor.regionId),
+    elementByMarker(RETURN_FOCUS_REGION_ATTRIBUTE, anchor.regionId),
     anchor.region,
   ]) {
     if (!region?.isConnected || isPageRoot(region)) continue;
@@ -557,8 +570,9 @@ export function useActionAttention({
 /**
  * Reveal an editor when — and only when — an explicit action opened it.
  *
- * `revealKey` is the caller's count of explicit opens: `formOpenNonce`,
- * `section.editRequestKey`, or any integer that changes once per user action.
+ * `revealKey` is the caller's count of explicit opens: `formOpenNonce`, or any
+ * integer that changes once per user action. A staged section does not need
+ * it: `useSectionEditState`'s Edit reveals through `useEditorFocusReturn`.
  * `0` / `null` means "no action yet" and moves nothing, and a re-render with the
  * same key moves nothing either — which is the whole reason the key is a
  * required argument rather than a boolean.
@@ -591,62 +605,4 @@ export function useReturnAttention(
     anchorRef.current = null;
     returnFocus(recorded);
   }, [anchorRef, returnKey]);
-}
-
-/**
- * Everything a surface needs to return focus from an editor it opens and
- * closes itself — `useSectionEditState` uses it for Edit, and a list section
- * whose per-row editor is its own component uses it directly.
- *
- *  - `capture(key)` from the action that opens the editor;
- *  - `close()` from every user action that closes it (Cancel, a successful
- *    save, a save conflict that closes the stale editor) — never from a scope
- *    change or a background refresh, which are not the admin leaving it;
- *  - `triggerProps(key)` on an opening control that is NOT mounted while the
- *    editor is open (Edit, Add), so its replacement can be found; a control
- *    that stays mounted (a per-row Edit) is returned to directly;
- *  - `regionProps` on the section's card, the fallback when the trigger is
- *    gone or disabled. It makes the card a `region` named by `titleProps`,
- *    which goes on the card's visible title, so a keyboard user who lands on
- *    the card hears its name rather than "group" (#2934) — or, for a card with
- *    no visible title of its own, by `regionLabel`.
- */
-export function useEditorFocusReturn({
-  regionLabel,
-}: { regionLabel?: string } = {}) {
-  const id = useId();
-  const titleId = `${id}title`;
-  const anchorRef = useRef<FocusReturnAnchor | null>(null);
-  const [closeKey, setCloseKey] = useState(0);
-  useReturnAttention(anchorRef, closeKey);
-
-  const capture = useCallback(
-    (key = "edit") => {
-      anchorRef.current = captureFocusReturn({
-        triggerId: `${id}${key}`,
-        regionId: id,
-      });
-    },
-    [id],
-  );
-  const close = useCallback(() => setCloseKey((count) => count + 1), []);
-  const triggerProps = useCallback(
-    (key = "edit") => ({ [RETURN_FOCUS_TRIGGER_ATTRIBUTE]: `${id}${key}` }),
-    [id],
-  );
-  const regionProps = useMemo(
-    () => ({
-      [RETURN_FOCUS_REGION_ATTRIBUTE]: id,
-      role: "region" as const,
-      ...(regionLabel
-        ? { "aria-label": regionLabel }
-        : { "aria-labelledby": titleId }),
-    }),
-    [id, regionLabel, titleId],
-  );
-  const titleProps = useMemo(() => ({ id: titleId }), [titleId]);
-  return useMemo(
-    () => ({ capture, close, triggerProps, regionProps, titleProps }),
-    [capture, close, triggerProps, regionProps, titleProps],
-  );
 }

@@ -123,6 +123,46 @@ describe("BookingPeriodsSection returns focus from its editor (#4087)", () => {
   });
 });
 
+describe("the list editors move focus INTO the editor they open (#4115)", () => {
+  it("Add Period focuses the new period's first field", async () => {
+    stubList([PERIOD]);
+    render(<BookingPeriodsSection />);
+    press(await screen.findByRole("button", { name: "Add Period" }));
+
+    await expectToHoldFocus(screen.getByLabelText("Period Name"));
+    expect((screen.getByLabelText("Period Name") as HTMLInputElement).value).toBe("");
+  });
+
+  it("a row's Edit focuses that row's editor, though the Edit stays mounted", async () => {
+    stubList([PERIOD]);
+    render(<BookingPeriodsSection />);
+    const edit = await screen.findByRole("button", { name: "Edit" });
+    press(edit);
+
+    const name = screen.getByLabelText("Period Name") as HTMLInputElement;
+    expect(name.value).toBe("School Holidays");
+    await expectToHoldFocus(name);
+  });
+
+  it("Add Policy focuses the new policy's first field", async () => {
+    stubList([]);
+    render(<MinimumNightStaySection />);
+    press(await screen.findByRole("button", { name: "Add Policy" }));
+
+    await expectToHoldFocus(screen.getByLabelText("Policy Name"));
+  });
+
+  it("a policy row's Edit focuses that row's editor", async () => {
+    stubList([POLICY]);
+    render(<MinimumNightStaySection />);
+    press(await screen.findByRole("button", { name: "Edit" }));
+
+    const name = screen.getByLabelText("Policy Name") as HTMLInputElement;
+    expect(name.value).toBe("Winter Saturdays");
+    await expectToHoldFocus(name);
+  });
+});
+
 describe("MinimumNightStaySection returns focus from its editor (#4087)", () => {
   it("returns to Add Policy after Cancel", async () => {
     stubList([]);

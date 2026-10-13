@@ -500,7 +500,7 @@ export function DefaultCancellationPolicySection() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={() => void handleCreateOverride()}>
+              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...section.editTriggerProps} onClick={() => void handleCreateOverride()}>
                 Create override for this lodge
               </ViewOnlyActionButton>
             </CardContent>

@@ -1,7 +1,9 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useEditorFocusReturn } from "@/hooks/use-editor-focus-return"
+import { useRowActionFocusReturn } from "@/hooks/use-row-action-focus-return"
+import { rowKey, toggleKey, useRowHeadings } from "./list-row-focus"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
@@ -331,6 +333,8 @@ export function MinimumNightStaySection() {
   const [editorInstance, setEditorInstance] = useState(0)
   // The editor unmounts on close, so the list returns focus to its opener (#4087).
   const editorFocus = useEditorFocusReturn()
+  const rowFocus = useRowActionFocusReturn(editorFocus)
+  const rowHeadings = useRowHeadings()
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -429,7 +433,7 @@ export function MinimumNightStaySection() {
 
   function startEditMinStay(policy: MinStayPolicy) {
     if (!policyScopeReady) return
-    editorFocus.capture(`row-${policy.id}`)
+    editorFocus.capture(rowKey(policy.id))
     setEditingMinStayId(policy.id)
     setEditingDraft(toDraft(policy))
     setEditorInstance((n) => n + 1)
@@ -534,7 +538,8 @@ export function MinimumNightStaySection() {
 
   // The synchronous ref is the real guard for every direct row write. A
   // state-only disabled button cannot stop two events dispatched before React
-  // commits the first state update.
+  // commits the first state update. The refresh unmounts the pressed button, so
+  // `rowFocus` returns to the row's toggle, its Edit after a delete, or the card.
   const rowActionRef = useRef(false)
   const [rowActionId, setRowActionId] = useState<string | null>(null)
 
@@ -547,6 +552,7 @@ export function MinimumNightStaySection() {
     ) {
       return
     }
+    const focusAnchor = rowFocus.capture(rowKey(policy.id))
     rowActionRef.current = true
     setRowActionId(policy.id)
     try {
@@ -585,6 +591,7 @@ export function MinimumNightStaySection() {
     } finally {
       rowActionRef.current = false
       setRowActionId(null)
+      rowFocus.close(focusAnchor)
     }
   }
 
@@ -605,6 +612,7 @@ export function MinimumNightStaySection() {
    */
   async function handleToggleMinStay(policy: MinStayPolicy) {
     if (!policyScopeReady || rowActionRef.current) return
+    const focusAnchor = rowFocus.capture(toggleKey(policy.id))
     rowActionRef.current = true
     setRowActionId(policy.id)
     try {
@@ -637,6 +645,7 @@ export function MinimumNightStaySection() {
     } finally {
       rowActionRef.current = false
       setRowActionId(null)
+      rowFocus.close(focusAnchor)
     }
   }
 
@@ -699,9 +708,9 @@ export function MinimumNightStaySection() {
         ) : null}
 
         {policyScopeReady && !loadingMinStay && !scopeKnown ? (
-          <Card>
+          <Card {...editorFocus.regionProps}>
             <CardHeader>
-              <CardTitle>
+              <CardTitle {...editorFocus.titleProps}>
                 Could not load the minimum-stay policies for{" "}
                 {scopeLodgeName ?? "the club"}
               </CardTitle>
@@ -777,7 +786,7 @@ export function MinimumNightStaySection() {
                         <div className="flex items-start justify-between mb-2">
                           <div>
                             <div className="flex items-center gap-2">
-                              <h4 className="font-semibold">{policy.name}</h4>
+                              <h4 className="font-semibold" {...rowHeadings.headingProps(policy.id)}>{policy.name}</h4>
                               <Badge variant={policy.active ? "default" : "outline"}>
                                 {policy.active ? "Active" : "Inactive"}
                               </Badge>
@@ -794,11 +803,13 @@ export function MinimumNightStaySection() {
                               variant="outline"
                               size="sm"
                               disabled={rowActionId === policy.id}
+                              {...editorFocus.triggerProps(toggleKey(policy.id))}
+                              {...rowHeadings.describedBy(policy.id)}
                               onClick={() => void handleToggleMinStay(policy)}
                             >
                               {policy.active ? "Deactivate" : "Activate"}
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" disabled={rowActionId === policy.id} {...editorFocus.triggerProps(`row-${policy.id}`)} onClick={() => startEditMinStay(policy)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" disabled={rowActionId === policy.id} {...editorFocus.triggerProps(rowKey(policy.id))} {...rowHeadings.describedBy(policy.id)} onClick={() => startEditMinStay(policy)}>
                               Edit
                             </ViewOnlyActionButton>
                             {/*
@@ -815,7 +826,7 @@ export function MinimumNightStaySection() {
                               say what a soft delete actually leaves behind.
                             */}
                             {policy.active && (
-                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" disabled={rowActionId === policy.id} onClick={() => void handleDeleteMinStay(policy)}>
+                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" disabled={rowActionId === policy.id} {...rowHeadings.describedBy(policy.id)} onClick={() => void handleDeleteMinStay(policy)}>
                                 Delete
                               </ViewOnlyActionButton>
                             )}

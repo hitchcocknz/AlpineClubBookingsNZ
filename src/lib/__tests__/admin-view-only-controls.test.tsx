@@ -1542,6 +1542,20 @@ describe("AdminMemberFieldsPage view-only gating (#1940, membership)", () => {
     expect(screen.getAllByRole("checkbox")[0]).toBeDisabled();
   });
 
+  it("moves focus to the first field toggle on Edit (#2934, #4115)", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<AdminMemberFieldsPage />);
+    const edit = await screen.findByRole("button", { name: /Edit member fields/i });
+
+    // A keyboard user: Edit holds focus, and pressing it unmounts it. The
+    // shared reveal lands on the first toggle Edit enabled — a named control —
+    // and scrolls only as far as it must, so Save stays clear of the header.
+    edit.focus();
+    fireEvent.click(edit);
+
+    await expectToHoldFocus(screen.getAllByRole("checkbox")[0]);
+  });
+
   it("focuses the failure when a save is rejected with 403 (#2934)", async () => {
     sessionMatrix = matrix("view", { membership: "edit" });
     render(<AdminMemberFieldsPage />);
