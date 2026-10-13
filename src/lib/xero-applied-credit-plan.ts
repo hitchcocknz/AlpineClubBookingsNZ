@@ -137,5 +137,61 @@ export function planAppliedCreditAllocation(
 }
 
 // ---------------------------------------------------------------------------
+// A retry keeps the slices it committed (INV-PAY-127, #4013)
+// ---------------------------------------------------------------------------
+
+/** A slice this booking already committed: one lot, its note, its cents. */
+export interface CommittedAppliedCreditSlice {
+  memberCreditId: string;
+  xeroCreditNoteId: string;
+  amountCents: number;
+}
+
+/** The re-plan would move money a committed slice already holds. */
+export class AppliedCreditReplanDivergedError extends Error {
+  readonly name = "AppliedCreditReplanDivergedError";
+}
+
+/**
+ * Refuse a plan that does not keep every slice this booking already committed.
+ *
+ * The engine commits its join rows, then calls Xero outside the transaction; a
+ * retry re-plans the WHOLE applied amount (its own rows excluded) and upserts
+ * on `(lot, booking)` with nothing to update. That is idempotent only if the
+ * re-plan reproduces the committed slices. Under `CREDIT_LOT_USE_ORDER` it
+ * does; a slice committed under another order — `createdAt` alone, before
+ * #4013, across the deploy — may not, and upserting the new plan would then
+ * leave the old row orphaned or credit the invoice twice. So a committed slice
+ * whose lot is missing from the plan, or planned at another figure or on
+ * another note, stops the run before anything is written: the operation fails
+ * where an officer sees it, and nothing is allocated twice.
+ *
+ * A slice on a minted remainder note is compared by lot and amount only: the
+ * plan does not know the minted note's id.
+ */
+export function assertPlanKeepsCommittedSlices(
+  bookingId: string,
+  committed: readonly CommittedAppliedCreditSlice[],
+  plan: AppliedCreditPlan,
+  format: ClubFormat,
+): void {
+  const planned = new Map<string, { amountCents: number; xeroCreditNoteId: string | null }>();
+  for (const na of plan.noteAllocations) planned.set(na.memberCreditId, na);
+  for (const ms of plan.mintSlices) planned.set(ms.memberCreditId, { amountCents: ms.amountCents, xeroCreditNoteId: null });
+  const diverged = committed.filter((slice) => {
+    const match = planned.get(slice.memberCreditId);
+    return !match || match.amountCents !== slice.amountCents ||
+      (match.xeroCreditNoteId !== null && match.xeroCreditNoteId !== slice.xeroCreditNoteId);
+  });
+  if (diverged.length === 0) return;
+  const described = diverged
+    .map((slice) => `${formatCents(slice.amountCents, format)} on credit ${slice.memberCreditId}`)
+    .join(", ");
+  throw new AppliedCreditReplanDivergedError(
+    `Booking ${bookingId}'s applied-credit allocation stopped: its retry would not keep the slice(s) already committed (${described}), so nothing was allocated or recorded. Check the booking's credit notes in Xero against its allocation rows before retrying (INV-PAY-127).`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Ledger reads
 // ---------------------------------------------------------------------------

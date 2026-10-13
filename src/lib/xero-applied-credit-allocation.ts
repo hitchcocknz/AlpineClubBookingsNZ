@@ -66,7 +66,7 @@ export {
   type PlannedMintSlice,
   type PlannedNoteAllocation,
 } from "./xero-applied-credit-plan";
-import { CREDIT_LOT_USE_ORDER, planAppliedCreditAllocation, type AppliedCreditLot } from "./xero-applied-credit-plan";
+import { assertPlanKeepsCommittedSlices, CREDIT_LOT_USE_ORDER, planAppliedCreditAllocation, type AppliedCreditLot } from "./xero-applied-credit-plan";
 
 /**
  * Gather the member's positive credit lots in `CREDIT_LOT_USE_ORDER` (oldest
@@ -433,6 +433,9 @@ export async function allocateAppliedCreditForBooking(
     }
     const lots = await gatherAppliedCreditLots(creditOwnerMemberId, bookingId, tx);
     const planned = planAppliedCreditAllocation(lots, lockedApplied, format);
+    // #4013: a retry must keep what an earlier attempt committed; refuse before any write.
+    const committed = await tx.memberCreditNoteAllocation.findMany({ where: { appliedToBookingId: bookingId }, select: { memberCreditId: true, xeroCreditNoteId: true, amountCents: true } });
+    assertPlanKeepsCommittedSlices(bookingId, committed, planned, format);
     for (const na of planned.noteAllocations) {
       await tx.memberCreditNoteAllocation.upsert({
         where: {

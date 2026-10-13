@@ -292,8 +292,9 @@ let harnessRole: SuiteEnvironmentRoleDeclaration | undefined;
      * member's Xero contact, and nothing else in the engine asks for one. This
      * turns that step into a refusal naming the path, so a run that reaches
      * `mintAppliedCreditRemainderNote` fails saying so - not in the contact
-     * guard's environment check, which is where H1 used to fail - and the spy
-     * records that it did. Restore it in a `finally`.
+     * guard's environment check, which is where H1 used to fail. Read the
+     * spy's call count BEFORE restoring it in a `finally`: `mockRestore()`
+     * clears `mock.calls`, so an assertion after it could never fail.
      */
     async function refuseRemainderMint() {
       const contacts = await import("@/lib/xero-contacts");
@@ -715,12 +716,14 @@ let harnessRole: SuiteEnvironmentRoleDeclaration | undefined;
       const remainderMint = await refuseRemainderMint();
       await prisma.xeroSyncOperation.update({ where: { id: queued.queueOperationId! }, data: { status: "RUNNING" } });
       const { allocateAppliedCreditForBooking } = await import("@/lib/xero-applied-credit-allocation");
+      let remainderMintCalls = -1;
       try {
         await allocateAppliedCreditForBooking(BOOKING_ID, { syncOperationId: queued.queueOperationId! });
       } finally {
+        remainderMintCalls = remainderMint.mock.calls.length;
         remainderMint.mockRestore();
       }
-      expect(remainderMint, "the remainder-note path (mintAppliedCreditRemainderNote) was not entered").not.toHaveBeenCalled();
+      expect(remainderMintCalls, "the remainder-note path (mintAppliedCreditRemainderNote) was not entered").toBe(0);
       expect(await remainderNoteRecords(), "no remainder note was minted or attempted").toBe(0);
       const slices = await prisma.memberCreditNoteAllocation.findMany({ where: { appliedToBookingId: BOOKING_ID }, select: { memberCreditId: true, xeroCreditNoteId: true, amountCents: true } });
       expect(slices).toEqual([{ memberCreditId: ORIGINAL_LOT_ID, xeroCreditNoteId: CREDIT_NOTE_ID, amountCents: 5_000 }]);
@@ -730,25 +733,67 @@ let harnessRole: SuiteEnvironmentRoleDeclaration | undefined;
       expect(PRICE_CENTS - 15_000 - allocatedCents()).toBe(0);
     });
 
+    const TIED_NOTE_ID = "race-3836-credit-note-tied";
+    /**
+     * #4013: the fixture, plus a second noted $200 lot stamped with the same
+     * instant as the fixture's and written after it. Either lot could fund the
+     * $200 alone, so which one a slice draws from is the use order and nothing
+     * else.
+     */
+    async function creditOnlyCardBookingWithTiedLot(tiedLotId: string) {
+      await creditOnlyCardBooking({ originalLotAt: TODAY });
+      await prisma.memberCredit.create({
+        data: { id: tiedLotId, memberId: MEMBER_ID, amountCents: PRICE_CENTS, type: "CANCELLATION_REFUND", description: "race 3836 tied cancellation", xeroCreditNoteId: TIED_NOTE_ID, createdAt: TODAY },
+      });
+      fakeXero.state.notes.set(TIED_NOTE_ID, { totalCents: PRICE_CENTS, allocations: [] });
+    }
+    const committedSlices = () =>
+      prisma.memberCreditNoteAllocation.findMany({ where: { appliedToBookingId: BOOKING_ID }, select: { memberCreditId: true, xeroCreditNoteId: true, amountCents: true } });
+
     it.each([
       { shape: "the lower id written second", tiedLotId: "race-3836-lot-0-tied", usedLotId: "race-3836-lot-0-tied" },
       { shape: "the lower id written first", tiedLotId: "race-3836-lot-z-tied", usedLotId: ORIGINAL_LOT_ID },
     ])("#4013 (`INV-PAY-127`): of two noted lots stamped with the same instant, the engine uses the lower id first, $shape", async ({ tiedLotId, usedLotId }) => {
-      // Both lots hold the whole $200 and carry a floating note, so either could
-      // fund it alone: which one the slice draws from is the use order and
-      // nothing else. The fixture's lot is written first; this one second.
-      await creditOnlyCardBooking({ originalLotAt: TODAY });
-      const tiedNoteId = "race-3836-credit-note-tied";
-      await prisma.memberCredit.create({
-        data: { id: tiedLotId, memberId: MEMBER_ID, amountCents: PRICE_CENTS, type: "CANCELLATION_REFUND", description: "race 3836 tied cancellation", xeroCreditNoteId: tiedNoteId, createdAt: TODAY },
-      });
-      fakeXero.state.notes.set(tiedNoteId, { totalCents: PRICE_CENTS, allocations: [] });
+      await creditOnlyCardBookingWithTiedLot(tiedLotId);
 
       await raiseReplay();
 
       const slices = await prisma.memberCreditNoteAllocation.findMany({ where: { appliedToBookingId: BOOKING_ID }, select: { memberCreditId: true, amountCents: true } });
       expect(slices).toEqual([{ memberCreditId: usedLotId, amountCents: PRICE_CENTS }]);
       expect(allocatedCents()).toBe(PRICE_CENTS);
+    });
+
+    it("#4013 (`INV-PAY-127`): a retry after Xero refused the first allocation re-plans onto the slice it committed - one slice, allocated once", async () => {
+      await creditOnlyCardBookingWithTiedLot("race-3836-lot-0-tied");
+      const { allocateAppliedCreditForBooking } = await import("@/lib/xero-applied-credit-allocation");
+      fakeXero.state.refuseNextAllocation = true;
+      await expect(allocateAppliedCreditForBooking(BOOKING_ID)).rejects.toThrow(/fake Xero/);
+      const committed = [{ memberCreditId: "race-3836-lot-0-tied", xeroCreditNoteId: TIED_NOTE_ID, amountCents: PRICE_CENTS }];
+      expect(await committedSlices()).toEqual(committed);
+
+      await allocateAppliedCreditForBooking(BOOKING_ID);
+
+      expect(await committedSlices(), "the retry kept the committed slice and added none").toEqual(committed);
+      expect(fakeXero.state.notes.get(TIED_NOTE_ID)!.allocations).toHaveLength(1);
+      expect(allocatedCents()).toBe(PRICE_CENTS);
+    });
+
+    it("#4013 (`INV-PAY-127`): a slice committed under another order (before the tie-break, across a deploy) is refused, never re-planned beside: nothing is written and Xero is not called", async () => {
+      await creditOnlyCardBookingWithTiedLot("race-3836-lot-0-tied");
+      // What `createdAt`-only code could have committed when the database
+      // returned the fixture's lot first; Xero then refused, and the retry runs
+      // under CREDIT_LOT_USE_ORDER, which picks the lower id.
+      const committed = [{ memberCreditId: ORIGINAL_LOT_ID, xeroCreditNoteId: CREDIT_NOTE_ID, amountCents: PRICE_CENTS }];
+      await prisma.memberCreditNoteAllocation.create({ data: { ...committed[0]!, appliedToBookingId: BOOKING_ID } });
+      const { allocateAppliedCreditForBooking } = await import("@/lib/xero-applied-credit-allocation");
+
+      await expect(allocateAppliedCreditForBooking(BOOKING_ID)).rejects.toThrow(/would not keep the slice\(s\) already committed.*INV-PAY-127/);
+
+      expect(await committedSlices(), "no second slice beside the committed one").toEqual(committed);
+      expect(fakeXero.state.providerWrites, "Xero was not called").toBe(0);
+      expect(allocatedCents()).toBe(0);
+      const { unallocatedAppliedCents } = await import("@/lib/xero-applied-credit-ledger-state");
+      expect(await unallocatedAppliedCents(BOOKING_ID), "nothing was stamped").toBe(PRICE_CENTS);
     });
 
     it("FORCES the lock order and keeps the provider outside it: the engine queues on the member's credit-ledger key holding no row lock, and no ledger key is held during a Xero write", async () => {
