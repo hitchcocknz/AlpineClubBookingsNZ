@@ -1,0 +1,141 @@
+// @vitest-environment jsdom
+
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/lib/__tests__/support/club-time-render";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/use-admin-area-edit-access", () => ({
+  useAdminAreaEditAccess: () => true,
+  ADMIN_VIEW_ONLY_ACTION_REASON: "View-only reason",
+}));
+// Single-lodge club: the scope select renders nothing, so the club-wide list.
+vi.mock("@/components/lodge-select", () => ({
+  useLodgeOptions: () => ({ lodges: [], loading: false }),
+}));
+
+import { expectToHoldFocus } from "@/lib/__tests__/helpers/focus";
+import { BookingPeriodsSection } from "../booking-periods-section";
+import { MinimumNightStaySection } from "../minimum-night-stay-section";
+
+// #4087: these two sections open a per-row editor that is its own component,
+// unmounted on close, so `useSectionEditState`'s own return never runs. The list
+// owns the return instead (`useEditorFocusReturn`): Cancel and a successful
+// save hand focus back to the Add or row Edit that opened the editor.
+
+const PERIOD = {
+  id: "p1",
+  name: "School Holidays",
+  startDate: "2026-07-01T00:00:00.000Z",
+  endDate: "2026-07-14T00:00:00.000Z",
+  nonMemberHoldEnabled: true,
+  nonMemberHoldDays: 5,
+  cancellationRules: [
+    {
+      daysBeforeStay: 21,
+      refundPercentage: 100,
+      creditRefundPercentage: 100,
+      fixedFeeCents: 0,
+      creditFixedFeeCents: 0,
+    },
+  ],
+  active: true,
+};
+
+const POLICY = {
+  id: "m1",
+  name: "Winter Saturdays",
+  startDate: "2026-07-01T00:00:00.000Z",
+  endDate: "2026-09-30T00:00:00.000Z",
+  triggerDays: [6],
+  minimumNights: 2,
+  capacityMode: "HOLD",
+  version: 4,
+  active: true,
+};
+
+/** GETs answer the list; a write answers `written`. */
+function stubList(list: unknown[], written?: unknown) {
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+    new Response(JSON.stringify(init?.method ? written : list), {
+      status: 200,
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Operate a control the way a keyboard user does: it holds focus first. */
+function press(control: HTMLElement) {
+  control.focus();
+  fireEvent.click(control);
+}
+
+const button = (name: string) => screen.getByRole("button", { name });
+
+beforeEach(() => {
+  vi.unstubAllGlobals();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe("BookingPeriodsSection returns focus from its editor (#4087)", () => {
+  it("returns to Add Period after Cancel", async () => {
+    stubList([]);
+    render(<BookingPeriodsSection />);
+    press(await screen.findByRole("button", { name: "Add Period" }));
+    press(button("Cancel"));
+
+    await expectToHoldFocus(button("Add Period"));
+  });
+
+  it("returns to the row's Edit after a successful update", async () => {
+    stubList([PERIOD], { ...PERIOD, name: "School Holidays (revised)" });
+    render(<BookingPeriodsSection />);
+    press(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Period Name"), {
+      target: { value: "School Holidays (revised)" },
+    });
+    press(button("Update Period"));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Update Period" })).toBeNull(),
+    );
+    await expectToHoldFocus(button("Edit"));
+  });
+});
+
+describe("MinimumNightStaySection returns focus from its editor (#4087)", () => {
+  it("returns to Add Policy after Cancel", async () => {
+    stubList([]);
+    render(<MinimumNightStaySection />);
+    press(await screen.findByRole("button", { name: "Add Policy" }));
+    press(button("Cancel"));
+
+    await expectToHoldFocus(button("Add Policy"));
+  });
+
+  it("returns to the row's re-rendered Edit after a successful update", async () => {
+    // The save refreshes the list through its loading state, so the row's
+    // Edit is a NEW element by the time focus returns: found by its marker.
+    stubList([POLICY], { ...POLICY, name: "Winter weekends", version: 5 });
+    render(<MinimumNightStaySection />);
+    press(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Policy Name"), {
+      target: { value: "Winter weekends" },
+    });
+    press(button("Update Policy"));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Update Policy" })).toBeNull(),
+    );
+    await expectToHoldFocus(await screen.findByRole("button", { name: "Edit" }));
+  });
+});

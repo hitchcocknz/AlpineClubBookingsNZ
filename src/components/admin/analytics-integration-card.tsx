@@ -274,7 +274,7 @@ export function AnalyticsIntegrationCard() {
 
   return (
     <>
-      <Card className="h-full text-left transition-colors hover:border-brand-gold/70">
+      <Card {...section.sectionRegionProps} className="h-full text-left transition-colors hover:border-brand-gold/70">
         <CardHeader>
           <div className="flex items-center gap-2">
             <BarChart3 className="h-5 w-5 shrink-0 text-foreground" />
@@ -614,6 +614,7 @@ export function AnalyticsIntegrationCard() {
                     canEdit={canEdit}
                     describeReason={false}
                     onClick={() => section.startEditing()}
+                    {...section.editTriggerProps}
                   >
                     Edit
                   </ViewOnlyActionButton>

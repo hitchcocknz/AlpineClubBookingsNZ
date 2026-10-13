@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  focusConnectedTarget,
+  RETURN_FOCUS_REGION_SELECTOR,
+} from "@/hooks/use-scroll-to-feedback";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -95,15 +99,6 @@ function currentReturnFocusTarget() {
   return active;
 }
 
-function focusConnectedTarget(target: HTMLElement | null) {
-  if (!target?.isConnected) return false;
-  const hadTabIndex = target.hasAttribute("tabindex");
-  if (!hadTabIndex && target.tabIndex < 0) target.setAttribute("tabindex", "-1");
-  target.focus({ preventScroll: true });
-  if (!hadTabIndex) target.removeAttribute("tabindex");
-  return document.activeElement === target;
-}
-
 /**
  * Stable integration seam for the board, booking panel, and follow-on entry
  * points: every trigger calls the same `openRemovalDialog(anchor)` function.
@@ -123,9 +118,8 @@ export function useBedAllocationRemovalDialog(
       const returnTarget = currentReturnFocusTarget();
       returnFocusRef.current = returnTarget;
       fallbackFocusRef.current =
-        returnTarget?.closest<HTMLElement>(
-          "section, [role='region'], main, [role='main']",
-        ) ?? document.querySelector<HTMLElement>("main, [role='main']");
+        returnTarget?.closest<HTMLElement>(RETURN_FOCUS_REGION_SELECTOR) ??
+        document.querySelector<HTMLElement>("main, [role='main']");
       setAnchor(nextAnchor);
       setOpen(true);
     },

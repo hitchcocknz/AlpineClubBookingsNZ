@@ -126,7 +126,7 @@ export function MaintenanceSettingsSection({
     <div>
       {viewOnlyBanner}
       {feedback}
-      <Card>
+      <Card {...section.sectionRegionProps}>
         <CardHeader className="flex flex-row items-start justify-between gap-3">
           <div>
             <CardTitle>How maintenance reports work</CardTitle>
@@ -142,6 +142,7 @@ export function MaintenanceSettingsSection({
               variant="outline"
               size="sm"
               onClick={section.startEditing}
+              {...section.editTriggerProps}
             >
               Edit
             </ViewOnlyActionButton>

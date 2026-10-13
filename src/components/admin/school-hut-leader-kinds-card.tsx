@@ -103,7 +103,7 @@ export function SchoolHutLeaderKindsCard({
   const noneTicked = draft !== null && SCHOOL_HUT_LEADER_KINDS.every((kind) => !draft[kind]);
 
   return (
-    <Card>
+    <Card {...section.sectionRegionProps}>
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -124,6 +124,7 @@ export function SchoolHutLeaderKindsCard({
             size="sm"
             aria-label="Edit who can be hut leader for school bookings"
             onClick={section.startEditing}
+            {...section.editTriggerProps}
             disabled={busy || draft === null}
           >
             Edit

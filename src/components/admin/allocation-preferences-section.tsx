@@ -336,6 +336,7 @@ export function AllocationPreferencesSection({
           definition of it. Declare one only to OVERRIDE the default, as the
           taller Xero section cards do. */}
       <Card
+        {...section.sectionRegionProps}
         ref={cardRef}
         role="region"
         aria-labelledby="allocation-preferences-title"
@@ -353,6 +354,7 @@ export function AllocationPreferencesSection({
               variant="outline"
               size="sm"
               onClick={section.startEditing}
+              {...section.editTriggerProps}
             >
               Edit
             </ViewOnlyActionButton>

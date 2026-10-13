@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
+import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
@@ -328,6 +329,9 @@ export function MinimumNightStaySection() {
   // clicking Edit again on a row you were already editing silently keeps the
   // unsaved draft instead of resetting the form (#2142 review).
   const [editorInstance, setEditorInstance] = useState(0)
+  // The open editor is its own component, unmounted on close, so the list owns
+  // where focus goes when it closes: back to Add or the row's Edit (#4087).
+  const editorFocus = useEditorFocusReturn()
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -412,10 +416,12 @@ export function MinimumNightStaySection() {
   function cancelMinStayForm() {
     setError("")
     resetMinStayForm()
+    editorFocus.close()
   }
 
   function startAddMinStay() {
     if (!policyScopeReady) return
+    editorFocus.capture("add")
     setEditingMinStayId(null)
     setEditingDraft(NEW_MIN_STAY_DRAFT)
     setEditorInstance((n) => n + 1)
@@ -424,6 +430,7 @@ export function MinimumNightStaySection() {
 
   function startEditMinStay(policy: MinStayPolicy) {
     if (!policyScopeReady) return
+    editorFocus.capture(`row-${policy.id}`)
     setEditingMinStayId(policy.id)
     setEditingDraft(toDraft(policy))
     setEditorInstance((n) => n + 1)
@@ -513,6 +520,9 @@ export function MinimumNightStaySection() {
           wasEditing ? "Minimum stay policy updated" : "Minimum stay policy created",
         )
       }
+      // The refresh closed the editor and re-rendered the list; focus goes back
+      // to the Add or row Edit that opened it, now the list is there again.
+      editorFocus.close()
       return saved ? toDraft(saved) : draft
     },
     [
@@ -521,6 +531,7 @@ export function MinimumNightStaySection() {
       applyServerPolicy,
       policyScopeReady,
       refreshAfterMutation,
+      editorFocus,
     ],
   )
 
@@ -714,7 +725,7 @@ export function MinimumNightStaySection() {
         ) : null}
 
         {policyScopeReady && !loadingMinStay && scopeKnown ? (
-          <Card>
+          <Card {...editorFocus.regionProps}>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
@@ -738,7 +749,7 @@ export function MinimumNightStaySection() {
                   </CardDescription>
                 </div>
                 {!showMinStayForm && (
-                  <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddMinStay}>Add Policy</ViewOnlyActionButton>
+                  <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...editorFocus.triggerProps("add")} onClick={startAddMinStay}>Add Policy</ViewOnlyActionButton>
                 )}
               </div>
             </CardHeader>
@@ -790,7 +801,7 @@ export function MinimumNightStaySection() {
                             >
                               {policy.active ? "Deactivate" : "Activate"}
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" disabled={rowActionId === policy.id} onClick={() => startEditMinStay(policy)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" disabled={rowActionId === policy.id} {...editorFocus.triggerProps(`row-${policy.id}`)} onClick={() => startEditMinStay(policy)}>
                               Edit
                             </ViewOnlyActionButton>
                             {/*

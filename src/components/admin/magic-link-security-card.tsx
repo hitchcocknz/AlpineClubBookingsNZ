@@ -189,7 +189,7 @@ export function MagicLinkSecurityCard({
   return (
     <div>
       {viewOnlyBanner}
-    <Card>
+    <Card {...section.sectionRegionProps}>
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <CardTitle>Email sign-in link</CardTitle>
@@ -207,6 +207,7 @@ export function MagicLinkSecurityCard({
             variant="outline"
             size="sm"
             onClick={startEditing}
+            {...section.editTriggerProps}
           >
             Edit
           </ViewOnlyActionButton>

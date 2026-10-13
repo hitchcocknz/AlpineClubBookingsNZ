@@ -61,7 +61,7 @@ interface StagedSectionProps {
 /**
  * The canonical staged section's shape: Edit renders only while read-only, and
  * Save/Cancel only while editing, so every transition unmounts the button that
- * was just pressed.
+ * was just pressed. Save is disabled while saving, as every adopter's is.
  */
 function StagedSection({
   title,
@@ -76,7 +76,7 @@ function StagedSection({
     allowPristineSave: true,
   });
   return (
-    <div role="region" aria-label={title}>
+    <div {...section.sectionRegionProps}>
       <div>
         <h2>{title}</h2>
         {!section.editing && showEdit ? (
@@ -84,43 +84,28 @@ function StagedSection({
             type="button"
             disabled={editDisabled}
             onClick={section.startEditing}
+            {...section.editTriggerProps}
           >
-            Edit
+            Edit {title}
           </button>
         ) : null}
       </div>
       {section.error ? <p role="alert">{section.error}</p> : null}
       {section.editing ? (
         <div>
-          <button type="button" onClick={() => void section.save()}>
-            Save
+          <button
+            type="button"
+            disabled={section.saving}
+            onClick={() => void section.save()}
+          >
+            Save {title}
           </button>
           <button type="button" onClick={section.cancelEditing}>
-            Cancel
+            Cancel {title}
           </button>
         </div>
       ) : null}
     </div>
-  );
-}
-
-/** A section with no wrapper of its own: its Edit sits beside a sibling's. */
-function BareSection({ name }: { name: string }) {
-  const section = useSectionEditState<Draft>({
-    initial: INITIAL,
-    save: async (draft) => draft,
-    successMessage: "Saved",
-  });
-  return section.editing ? (
-    <span>
-      <button type="button" onClick={section.cancelEditing}>
-        Cancel {name}
-      </button>
-    </span>
-  ) : (
-    <button type="button" onClick={section.startEditing}>
-      Edit
-    </button>
   );
 }
 
@@ -423,115 +408,174 @@ describe("useSectionEditState", () => {
   });
 
   describe("returning focus when the editor closes (#4087)", () => {
-    it("hands focus back to the re-rendered Edit button after Cancel", async () => {
-      render(<StagedSection title="Group discount" />);
+    const button = (name: string) => screen.getByRole("button", { name });
 
-      activate(screen.getByRole("button", { name: "Edit" }));
-      activate(screen.getByRole("button", { name: "Cancel" }));
+    it("hands focus back to the re-rendered Edit button after Cancel", async () => {
+      render(<StagedSection title="Discount" />);
+
+      activate(button("Edit Discount"));
+      activate(button("Cancel Discount"));
 
       // Cancel unmounted the button that held focus; without the return a
       // keyboard user is left on <body>.
-      await expectToHoldFocus(screen.getByRole("button", { name: "Edit" }));
+      await expectToHoldFocus(button("Edit Discount"));
     });
 
     it("hands focus back to the Edit button after a successful Save", async () => {
-      render(<StagedSection title="Group discount" />);
+      render(<StagedSection title="Discount" />);
 
-      activate(screen.getByRole("button", { name: "Edit" }));
-      activate(screen.getByRole("button", { name: "Save" }));
+      activate(button("Edit Discount"));
+      activate(button("Save Discount"));
 
       await expectToHoldFocus(
-        await screen.findByRole("button", { name: "Edit" }),
+        await screen.findByRole("button", { name: "Edit Discount" }),
       );
-      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Save Discount" })).toBeNull();
     });
 
-    it("moves nothing on a failed Save, and still returns on the Cancel after it", async () => {
+    it("gives focus back to the re-enabled Save when a failed save dropped it", async () => {
+      // A browser drops focus from a control that becomes disabled; jsdom does
+      // not, so the save does what the browser would while it is in flight.
+      const save = vi.fn(async () => {
+        (document.activeElement as HTMLElement | null)?.blur();
+        throw new Error("Rejected");
+      });
+      render(<StagedSection title="Discount" save={save} />);
+
+      activate(button("Edit Discount"));
+      const saveButton = button("Save Discount");
+      activate(saveButton);
+
+      await waitFor(() =>
+        expect(screen.getByRole("alert").textContent).toBe("Rejected"),
+      );
+      // Edit mode stays open and the control the admin pressed has it back.
+      await expectToHoldFocus(saveButton);
+      expect(screen.queryByRole("button", { name: "Edit Discount" })).toBeNull();
+
+      // The edit anchor survived the failure: Cancel still returns to Edit.
+      activate(button("Cancel Discount"));
+      await expectToHoldFocus(button("Edit Discount"));
+    });
+
+    it("leaves a failed save's focus alone when it was never dropped", async () => {
       const save = vi.fn(async () => {
         throw new Error("Rejected");
       });
-      render(<StagedSection title="Group discount" save={save} />);
+      render(<StagedSection title="Discount" save={save} />);
 
-      activate(screen.getByRole("button", { name: "Edit" }));
-      const saveButton = screen.getByRole("button", { name: "Save" });
+      activate(button("Edit Discount"));
+      const saveButton = button("Save Discount");
       activate(saveButton);
+      const elsewhere = button("Cancel Discount");
+      elsewhere.focus();
 
-      await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Rejected"));
-      // Edit mode stays open, so the control the admin pressed is still there
-      // and keeps focus; the card's own failure position is not overridden.
-      await expectToHoldFocus(saveButton);
-      expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
-
-      activate(screen.getByRole("button", { name: "Cancel" }));
-      await expectToHoldFocus(screen.getByRole("button", { name: "Edit" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      await expectToHoldFocus(elsewhere);
     });
 
-    it("falls back to the section region when Edit comes back disabled (view-only)", async () => {
-      const view = render(<StagedSection title="Group discount" />);
+    it("falls back to the section, named after its heading, when Edit comes back disabled (view-only)", async () => {
+      const view = render(<StagedSection title="Discount" />);
 
-      activate(screen.getByRole("button", { name: "Edit" }));
+      activate(button("Edit Discount"));
       // Permissions narrowed while the editor was open.
-      view.rerender(<StagedSection title="Group discount" editDisabled />);
-      activate(screen.getByRole("button", { name: "Cancel" }));
+      view.rerender(<StagedSection title="Discount" editDisabled />);
+      activate(button("Cancel Discount"));
 
-      await expectToHoldFocus(
-        screen.getByRole("region", { name: "Group discount" }),
-      );
+      await expectToHoldFocus(screen.getByRole("region", { name: "Discount" }));
     });
 
-    it("falls back to the section region when the section no longer renders Edit", async () => {
-      const view = render(<StagedSection title="Group discount" />);
+    it("falls back to the section when it no longer renders Edit", async () => {
+      const view = render(<StagedSection title="Discount" />);
 
-      activate(screen.getByRole("button", { name: "Edit" }));
-      view.rerender(<StagedSection title="Group discount" showEdit={false} />);
-      activate(screen.getByRole("button", { name: "Cancel" }));
+      activate(button("Edit Discount"));
+      view.rerender(<StagedSection title="Discount" showEdit={false} />);
+      activate(button("Cancel Discount"));
 
-      await expectToHoldFocus(
-        screen.getByRole("region", { name: "Group discount" }),
-      );
+      await expectToHoldFocus(screen.getByRole("region", { name: "Discount" }));
     });
 
-    it("finds THIS section's Edit among namesakes in a shared parent", async () => {
+    it("returns each of two sections open at once to its OWN Edit", async () => {
+      render(
+        <>
+          <StagedSection title="First" />
+          <StagedSection title="Second" />
+        </>,
+      );
+
+      activate(button("Edit First"));
+      activate(button("Edit Second"));
+
+      activate(button("Cancel Second"));
+      await expectToHoldFocus(button("Edit Second"));
+
+      activate(button("Cancel First"));
+      await expectToHoldFocus(button("Edit First"));
+    });
+
+    it("finds this section's Edit by its marker, not by its name", async () => {
+      // Two Edit controls with IDENTICAL names: only the per-instance marker
+      // tells them apart.
+      function SameName({ marker }: { marker: string }) {
+        const section = useSectionEditState<Draft>({
+          initial: INITIAL,
+          save: async (draft) => draft,
+          successMessage: "Saved",
+        });
+        return section.editing ? (
+          <button type="button" onClick={section.cancelEditing}>
+            Cancel {marker}
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-testid={marker}
+            onClick={section.startEditing}
+            {...section.editTriggerProps}
+          >
+            Edit
+          </button>
+        );
+      }
       render(
         <div>
-          <BareSection name="first" />
-          <BareSection name="second" />
+          <SameName marker="first" />
+          <SameName marker="second" />
         </div>,
       );
 
-      activate(screen.getAllByRole("button", { name: "Edit" })[1]);
-      activate(screen.getByRole("button", { name: "Cancel second" }));
+      activate(screen.getByTestId("second"));
+      activate(button("Cancel second"));
 
-      // Both Edit buttons are named "Edit" and share a parent; the return
-      // must land on the second section's, not the first match.
-      await expectToHoldFocus(screen.getAllByRole("button", { name: "Edit" })[1]);
+      await expectToHoldFocus(screen.getByTestId("second"));
     });
 
     it("leaves focus alone when the admin has already moved it", async () => {
       render(
         <>
-          <StagedSection title="Group discount" />
+          <StagedSection title="Discount" />
           <input aria-label="Elsewhere" />
         </>,
       );
 
-      activate(screen.getByRole("button", { name: "Edit" }));
+      activate(button("Edit Discount"));
       const elsewhere = screen.getByRole("textbox", { name: "Elsewhere" });
       elsewhere.focus();
       // A pointer press on Cancel that never moved focus.
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.click(button("Cancel Discount"));
 
       await expectToHoldFocus(elsewhere);
     });
 
-    it("moves nothing when Edit was opened with nothing focused", async () => {
-      render(<StagedSection title="Group discount" />);
+    it("still returns to Edit when it was opened with nothing focused", async () => {
+      render(<StagedSection title="Discount" />);
 
-      // A mouse click in a browser that does not focus buttons.
-      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      // Mouse clicks in a browser that does not focus buttons; then the close
+      // drops focus to the page all the same.
+      fireEvent.click(button("Edit Discount"));
+      fireEvent.click(button("Cancel Discount"));
 
-      await expectToHoldFocus(document.body);
+      await expectToHoldFocus(button("Edit Discount"));
     });
   });
 });

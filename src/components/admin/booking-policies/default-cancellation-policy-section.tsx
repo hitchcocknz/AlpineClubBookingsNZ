@@ -511,7 +511,7 @@ export function DefaultCancellationPolicySection() {
             derived from `draft !== null`); it is what narrows the type now that
             the loading early return no longer does. */}
         {policyScopeReady && showEditor && draft ? (
-          <Card>
+          <Card {...section.sectionRegionProps}>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
                 <CardTitle>
@@ -526,7 +526,7 @@ export function DefaultCancellationPolicySection() {
                 </CardDescription>
               </div>
               {!editing && (
-                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={section.startEditing}>
+                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" {...section.editTriggerProps} onClick={section.startEditing}>
                   Edit
                 </ViewOnlyActionButton>
               )}

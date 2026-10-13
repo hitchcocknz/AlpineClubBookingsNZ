@@ -418,7 +418,7 @@ export function RosterEditor({
 
   return (
     <div className="space-y-6">
-      <Card>
+      <Card {...section.sectionRegionProps}>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -444,6 +444,7 @@ export function RosterEditor({
                   canEdit={canEdit}
                   describeReason={!ancestorRendersViewOnlyBanner}
                   onClick={startEditing}
+                  {...section.editTriggerProps}
                 >
                   Edit roster
                 </ViewOnlyActionButton>

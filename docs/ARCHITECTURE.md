@@ -1761,14 +1761,19 @@ either: the hook counts explicit Edit clicks in `editRequestKey`, and a section
 hands that to `useRevealAttention` (`src/hooks/use-scroll-to-feedback.ts`, the
 one home for failure / reveal / success positioning — #2934) so the card takes
 focus and comes into view when Edit unmounts the button that held focus, and
-never merely because it re-rendered. The way back out needs no wiring: Save and
-Cancel unmount the button that held focus too, so the hook records the focused
-element when `startEditing` runs and, after Cancel or a successful save, returns
-focus to it — or to the Edit button re-rendered in its place, or, when that is
-missing or disabled for a view-only admin, to the enclosing section, region or
-form — through the same module's `useReturnAttention` (#4087). It moves focus
-only when the close dropped it to the page, and a failed save moves nothing, so
-the card's own failure position stands. A section whose snapshot is a LIST with per-row
+never merely because it re-rendered. The way back out: Save and Cancel unmount
+the button that held focus too, so the hook records the focused element when
+`startEditing` runs and, after Cancel or a successful save, returns focus to it,
+to the Edit re-rendered in its place, or — when Edit is missing or disabled for
+a view-only admin — to the section's card, named after its heading (#4087). A
+section spreads the hook's `editTriggerProps` on its Edit and
+`sectionRegionProps` on its card so both can be found again by a per-instance
+marker; `section-edit-focus-return-census.test.ts` checks every adopter does.
+The return acts only while focus is on the page, so a success or failure
+position the card takes in the same commit still wins: after Save, a card with
+a `useActionAttention` success target (member fields) ends on that target, not
+on Edit. A failed save keeps the editor open, and if the disabled-while-saving
+Save dropped focus, hands it back to that Save. A section whose snapshot is a LIST with per-row
 edits is not out of scope, but the hook belongs one level down: the OPEN EDITOR
 gets its own instance, keyed on the row being edited AND on an instance counter
 bumped every time an editor is opened
@@ -1781,7 +1786,10 @@ actions that WRITE also need an in-flight guard held in a ref rather than only a
 disabled button, because a double-click dispatched inside one tick gives both
 handlers the same pre-update row and the second write becomes a no-op audit
 entry of the #2143 kind. The booking-periods and minimum-night-stay sections are
-the reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
+the reference for that shape (#2142). Because the open editor unmounts on close,
+the LIST owns the focus return there: it calls `useEditorFocusReturn`'s
+`capture` from Add and each row's Edit and `close` from Cancel and a successful
+save, so focus goes back to the control that opened the editor (#4087). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
 carry the first-save exception: count the draft as dirty so committing the
 defaults stays reachable, but

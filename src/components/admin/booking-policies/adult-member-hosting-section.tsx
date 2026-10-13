@@ -406,7 +406,7 @@ export function AdultMemberHostingSection() {
         ) : null}
 
         {policyScopeReady && !section.loading && scopeKnown && draft ? (
-          <Card>
+          <Card {...section.sectionRegionProps}>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
                 <CardTitle>
@@ -436,6 +436,7 @@ export function AdultMemberHostingSection() {
                   variant="outline"
                   size="sm"
                   onClick={section.startEditing}
+                  {...section.editTriggerProps}
                 >
                   Edit
                 </ViewOnlyActionButton>

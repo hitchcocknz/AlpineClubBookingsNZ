@@ -206,6 +206,7 @@ export function ClubIdentityPanel() {
 
   return (
     <div
+      {...section.sectionRegionProps}
       ref={cardRef}
       role="region"
       aria-label={CLUB_IDENTITY_TITLE}
@@ -279,6 +280,7 @@ export function ClubIdentityPanel() {
             canEdit={canEdit}
             describeReason={false}
             variant="outline"
+            {...section.editTriggerProps}
             onClick={() => {
               section.setSuccess("");
               section.setError("");

@@ -1636,8 +1636,9 @@ establishes:
   invalid control into view and beats any success positioning, an editor the
   admin explicitly opened is revealed and focused, a save or step transition
   that changed the screen positions at the top of the resulting page or card,
-  closing a staged section (Save, Cancel) hands focus back to its Edit button
-  or the section (#4087), and a passive update moves nothing. The rule, its
+  closing a staged section (Save, Cancel) that dropped focus hands it back to
+  its Edit button or the section, unless a success position took it first
+  (#4087), and a passive update moves nothing. The rule, its
   three hooks and what the
   census does and does not hold are written out ONCE, in that module's docblock;
   do not restate them here. `admin-attention-primitive-contract.test.ts` fails a

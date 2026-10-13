@@ -413,9 +413,11 @@ export function PublicBookingRequestsSection() {
     property the module-toggle cards on `/admin/security` have. Be precise about
     what does and does not follow from it:
 
-      - `startEditing` is `setEditing(true)` and NOTHING else. Opening a card
-        does not re-fetch, so clicking Edit does not resolve the staleness. The
-        boxes an admin starts typing into can already be out of date.
+      - `startEditing` opens the card (and records where focus was, so Save
+        or Cancel can hand it back, #4087) and does nothing else. Opening a
+        card does not re-fetch, so clicking Edit does not resolve the
+        staleness. The boxes an admin starts typing into can already be out of
+        date.
       - What keeps that from becoming a WRITE is the per-field patch: a stale
         box the admin never touched is not in the PUT body at all, so it cannot
         revert anyone. Only a field they actually changed is written, and that
@@ -541,7 +543,7 @@ export function PublicBookingRequestsSection() {
         <div className="text-center py-8">Loading...</div>
       ) : (
       <div className="space-y-6">
-        <Card>
+        <Card {...pricing.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>Indicative Pricing</CardTitle>
@@ -570,6 +572,7 @@ export function PublicBookingRequestsSection() {
                 size="sm"
                 aria-label="Edit indicative pricing"
                 onClick={pricing.startEditing}
+                {...pricing.editTriggerProps}
                 disabled={busy}
               >
                 Edit
@@ -625,7 +628,7 @@ export function PublicBookingRequestsSection() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card {...quoteTiming.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>Quote Response Window &amp; Reminders</CardTitle>
@@ -643,6 +646,7 @@ export function PublicBookingRequestsSection() {
                 size="sm"
                 aria-label="Edit quote timing"
                 onClick={quoteTiming.startEditing}
+                {...quoteTiming.editTriggerProps}
                 disabled={busy}
               >
                 Edit
@@ -731,7 +735,7 @@ export function PublicBookingRequestsSection() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card {...attendeeTiming.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>School Attendee Confirmation</CardTitle>
@@ -750,6 +754,7 @@ export function PublicBookingRequestsSection() {
                 size="sm"
                 aria-label="Edit attendee prompts"
                 onClick={attendeeTiming.startEditing}
+                {...attendeeTiming.editTriggerProps}
                 disabled={busy}
               >
                 Edit

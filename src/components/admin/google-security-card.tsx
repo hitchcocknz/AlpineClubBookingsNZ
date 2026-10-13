@@ -137,7 +137,7 @@ export function GoogleSecurityCard({
   return (
     <div>
       {viewOnlyBanner}
-      <Card>
+      <Card {...section.sectionRegionProps}>
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <CardTitle>Google sign-in</CardTitle>
@@ -155,6 +155,7 @@ export function GoogleSecurityCard({
             variant="outline"
             size="sm"
             onClick={startEditing}
+            {...section.editTriggerProps}
           >
             Edit
           </ViewOnlyActionButton>

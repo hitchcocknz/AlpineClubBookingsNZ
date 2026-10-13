@@ -1056,11 +1056,15 @@ discriminated by a named test in the tree already:
   page wrapper (`use-scroll-to-feedback.test.ts`). A surface whose success closes
   a Radix dialog cannot assert focus at all — the dialog's focus release wins, by
   design, and the scroll still happens — so assert the scroll there.
-- **Return**: operate Save or Cancel as a keyboard user does — `focus()` the
-  control, then click it — and `expectToHoldFocus(editButton)` from the same
-  helper file, finding the re-rendered Edit by role and name
-  (`use-section-edit-state.test.tsx`, `allocation-preferences-section.test.tsx`).
-  A bare click with nothing focused tests the no-op path, not the return (#4087).
+- **Return** (applies to staged sections — `useSectionEditState`, or
+  `useEditorFocusReturn` for a list whose row editor is its own component):
+  operate Save or Cancel as a keyboard user does — `focus()` the control, then
+  click it — and `expectToHoldFocus(editButton)` from the same helper file,
+  finding the re-rendered Edit by role and name
+  (`use-section-edit-state.test.tsx`, `allocation-preferences-section.test.tsx`,
+  `list-editor-focus-return.test.tsx`). jsdom never drops focus from a control
+  that becomes disabled, so a failed-save return is tested by blurring to the
+  page inside the save, as a browser would (#4087).
 
 `admin-attention-primitive-contract.test.ts` is the census that keeps the admin
 tree routed through the module: a direct `scrollIntoView` / `scrollTo`, or a

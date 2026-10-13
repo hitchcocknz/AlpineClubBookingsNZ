@@ -242,7 +242,7 @@ export function LocalBackupCard({
   const editingDisabled = !section.editing || section.saving;
 
   return (
-    <Card>
+    <Card {...section.sectionRegionProps}>
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
@@ -259,6 +259,7 @@ export function LocalBackupCard({
               variant="outline"
               size="sm"
               onClick={section.startEditing}
+              {...section.editTriggerProps}
             >
               Edit
             </ViewOnlyActionButton>

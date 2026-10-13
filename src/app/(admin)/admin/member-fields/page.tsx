@@ -174,7 +174,7 @@ export default function AdminMemberFieldsPage() {
   return (
     <div>
       {viewOnlyBanner}
-      <div ref={pageRef} className="space-y-8">
+      <div {...section.sectionRegionProps} ref={pageRef} className="space-y-8">
         <BackLink href="/admin/membership-setup" label="Membership & Members" />
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
@@ -203,6 +203,7 @@ export default function AdminMemberFieldsPage() {
                 variant="outline"
                 aria-label="Edit member fields"
                 onClick={section.startEditing}
+                {...section.editTriggerProps}
                 disabled={draft === null}
               >
                 <Pencil className="mr-2 h-4 w-4" />

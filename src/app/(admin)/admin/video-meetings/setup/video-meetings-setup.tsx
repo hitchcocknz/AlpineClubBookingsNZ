@@ -333,7 +333,7 @@ export function VideoMeetingsSetup({
 
   return (
     <div className="space-y-6">
-      <Card>
+      <Card {...section.sectionRegionProps}>
         <CardHeader>
           <CardTitle>Meeting server</CardTitle>
           <CardDescription>
@@ -491,6 +491,7 @@ export function VideoMeetingsSetup({
                 describeReason={false}
                 readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
                 onClick={section.startEditing}
+                {...section.editTriggerProps}
               >
                 Edit
               </ViewOnlyActionButton>

@@ -146,7 +146,7 @@ export function PasswordPolicyCard() {
   );
 
   return (
-    <Card>
+    <Card {...section.sectionRegionProps}>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
@@ -170,6 +170,7 @@ export function PasswordPolicyCard() {
               size="sm"
               type="button"
               onClick={section.startEditing}
+              {...section.editTriggerProps}
             >
               Edit
             </ViewOnlyActionButton>
