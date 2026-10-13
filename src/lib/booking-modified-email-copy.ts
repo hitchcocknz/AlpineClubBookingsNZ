@@ -5,9 +5,10 @@
  * the refund sentence of the "Booking Modified", "Booking Cancelled" and
  * "Refund Appeal Approved" emails - HTML template and admin-editable body alike -
  * and for the cancel dialog's on-screen confirmation of an organiser-paid
- * refund (#3973) or an own-card refund not made yet (#4084). Pure, with no imports, so a client component can read it.
- * Every function takes the settlement's own answer of where the money went or
- * is going; nothing here decides it.
+ * refund (#3973) or an own-card refund not made yet (#4084). Pure, with no
+ * imports, so a client component can read it. Every function takes the
+ * settlement's own answer of where the money went or is going; nothing here
+ * decides it.
  */
 
 /**
@@ -136,8 +137,8 @@ export function bookingCancelledRefundSentence(
 
 /**
  * #3973: a refund already made reads as a success; a hand-back, a refund still
- * on its way (#4084: `card_pending` too), or no refund at all reads as information. The email's box and the
- * confirmation screen both ask here.
+ * on its way (#4084: `card_pending` too), or no refund at all reads as
+ * information. The email's box and the confirmation screen both ask here.
  */
 export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod): boolean {
   if (refundCents <= 0) return false;
@@ -150,9 +151,10 @@ function ownCardRefundSentence(amount: string): string {
 }
 
 /**
- * #4070: that card refund, not made yet (`ownCardRefundMade`) - it failed, timed out or was not made.
- * Booking Modified and (#4084) Booking Cancelled alike, and the cancel dialog's confirmation, where
- * an officer cancelling on the member's behalf reads "the member's" (`whose`).
+ * #4070: that card refund, not made yet (`ownCardRefundMade`) - it failed,
+ * timed out or was not made. Booking Modified and (#4084) Booking Cancelled
+ * alike, and the cancel dialog's confirmation, where an officer cancelling on
+ * the member's behalf reads "the member's" (`whose`).
  */
 export function ownCardRefundPendingSentence(amount: string, whose: "your" | "the member's" = "your"): string {
   return `A refund of ${amount} is on its way to ${whose} original payment method.`;
