@@ -405,10 +405,13 @@ export async function sendAdminManualSettlementConflictAlert(data: {
 /**
  * B5 (#2262): a cash-settled booking was cancelled, so the refund has to be
  * paid back by hand - or (#4042, `situation`) an organiser cancelled a group
- * paid by Internet Banking, and the club repays the organiser. Admin audience
- * (exempt from the #2258 switch); the durable ManualRefundTask row is the
- * record, this is the nudge. A customised text body without {{handBackNote}}
- * sends its own wording for both situations (stated in docs/guides/payments.md).
+ * paid by Internet Banking, and the club repays the organiser - or (#4097) a
+ * card booking was cancelled and its card refund could not carry all of the
+ * refund due, so the rest is to refund by bank transfer or to check first.
+ * Admin audience (exempt from the #2258 switch); the durable ManualRefundTask
+ * rows are the record, this is the nudge. A customised text body without
+ * {{handBackNote}} sends its own wording for all three situations (stated in
+ * docs/guides/payments.md).
  */
 export async function sendAdminManualRefundTaskAlert(data: {
   memberName: string;

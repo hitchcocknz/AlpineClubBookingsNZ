@@ -533,9 +533,9 @@ export function adminSecondInstrumentSettlementConflictTemplate(data: {
 
 // ---- B5 (#2262): Admin Alert — manual refund task raised ----
 //
-// A cash-settled booking was cancelled (or, #4042, an organiser cancelled a
-// group paid by Internet Banking): no card refund backs it, so a person hands
-// the money back. The task is durable; this alert is the nudge, not the record.
+// A cash-settled booking was cancelled (or #4042 a group paid by Internet
+// Banking, or #4097 a card booking whose card refund fell short): a person
+// pays it back or checks it. The task is durable; this alert is the nudge.
 export function adminManualRefundTaskTemplate(data: {
   memberName: string;
   checkIn: Date;

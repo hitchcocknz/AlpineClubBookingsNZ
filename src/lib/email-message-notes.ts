@@ -14,8 +14,9 @@
  * HTML templates and the flat `{{...Note}}` tokens the senders supply are built
  * from the same function, so the two paths cannot drift apart.
  *
- * This module deliberately imports nothing - the email template layer, the
- * senders and the template registry all depend on it.
+ * This module deliberately imports only pure copy modules (no imports of their
+ * own) - the email template layer, the senders and the template registry all
+ * depend on it.
  */
 import { CARD_REFUND_SHORTFALL_ALERT_BODY, CARD_REFUND_SHORTFALL_ALERT_LEAD } from "@/lib/cancel-card-refund-shortfall-copy";
 

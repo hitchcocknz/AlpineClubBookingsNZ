@@ -598,8 +598,9 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // B5 (#2262): memberName identifies the affected member and reviewUrl is the
   // admin action link (the payments board), mirroring the other admin alerts.
   "admin-manual-settlement-conflict": ["memberName", "reviewUrl"],
-  // #4042: {{handBackNote}} says which hand-back it is - the cash cancel's, or
-  // an organiser's Internet Banking group cancel, whose refunds are booked.
+  // #4042, #4097: {{handBackNote}} says which hand-back it is - the cash cancel's,
+  // an organiser's Internet Banking group cancel (refunds booked), or a card
+  // cancel whose card refund could not carry all of the refund due.
   "admin-manual-refund-task": ["memberName", "reviewUrl", "handBackNote"],
   // #3643: {{holdKeptNote}} is the instruction - part-paid, paid in full,
   // unreadable and released-while-unreadable need different next steps.
@@ -926,8 +927,8 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "admin-manual-refund-task": {
     triggerSummary:
-      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, or an organiser cancelled a group they paid for by Internet Banking, so a hand-back task was raised for an admin to pay the member or organiser back",
-    frequency: "On cancellation of a cash-settled booking with a non-zero refund, and once per Internet Banking group an organiser cancels with a refund owed",
+      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, an organiser cancelled a group they paid for by Internet Banking, or a card booking was cancelled and its card refund could not carry all of the refund due, so a hand-back task was raised for an admin to pay back or check",
+    frequency: "On cancellation of a cash-settled booking with a non-zero refund, once per Internet Banking group an organiser cancels with a refund owed, and once per card cancellation whose card refund falls short",
   },
   "admin-late-capture-auto-refund": {
     // #2773: BOTH handlers send this now, so the summary may not say

@@ -2126,14 +2126,16 @@ See
 [`INV-PAY-124`](invariants/payment-and-settlement.md#inv-pay-124).
 
 **#4097: so does a card cancellation's refund shortfall.** An own-card cancel
-whose frozen card refund plan carries less than the refund due raises the task
-OPEN for the difference inside its claim, keyed one per booking. It is a
-cancellation's own hand-back: completed or dismissed as the cash cancel's, with
-no `lock(1)`, except that its completion posts its `BANK_REFUND` line on the
-card payment, which no refund row will post, and queues one Xero refund note
-of its own, keyed on the task, instead of the payment-wide one. A zero plan raises the whole
-refund; where the payment's ledger has nothing left to allocate, COMPLETED is
-refused and the treasurer dismisses it with a note. See
+whose frozen card refund plan carries less than the refund due raises up to two
+tasks OPEN inside its claim, keyed per booking: the part the payment's non-card
+charges hold (owed by bank transfer) and the rest (checked before paying). Each
+is a cancellation's own hand-back: completed or dismissed as the cash cancel's,
+with no `lock(1)`, except that COMPLETED is refused (409) while the cancel's
+card refund recovery is not SUCCEEDED, settles on the non-card charges first,
+posts its `BANK_REFUND` line on the card payment, which no refund row will
+post, and queues one Xero refund note of its own, keyed on the task. Where the
+payment's ledger has nothing left to allocate, COMPLETED is refused with a
+message naming DISMISSED, which the treasurer then uses. See
 [`INV-PAY-129`](invariants/payment-and-settlement.md#inv-pay-129).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED

@@ -1257,39 +1257,34 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
 ## INV-PAY-129
 
 **Related: `INV-PAY-101`** (a hand-back's wording and Xero note) and
-**`INV-PAY-128`** (a card refund Stripe refuses).
+**`INV-PAY-122`** (a card refund paid another way).
 
-- **What an own-card cancel's card refund plan cannot carry is owed by hand**
-  (#4097). The plan covers what the captured Stripe charges can still
-  refund; the policy's refund comes from the payment record.
-  - **The claim raises one `CANCELLED_BOOKING_HAND_BACK`** for the
-    difference, beside the plan's recovery row and under the claim's locks,
-    keyed `cancel-card-shortfall:<bookingId>` and inserted on no conflict
-    (`raiseCancelCardShortfallHandBack`), its amount fixed. A zero plan raises
-    the whole refund.
-  - **While OPEN it is owed**: "Refunds owed", off Net Collected, the
-    money-to-settle queue. Officers are alerted once after the commit
-    (`card-refund-shortfall`).
-  - **The member is told both parts** from the one wording home: what went to
-    the card, made or on its way, and the remainder by bank transfer. The
-    cancel screen says the same. `{{refundAmount}}` stays the refund due.
-  - **The card's own records are sized at what the card carries**: the
-    REFUNDED event (none on a zero plan) and the card refund's Xero note.
-  - **Marked paid back**, it completes as a cancellation's hand-back, and its
-    `BANK_REFUND` posts on the card payment, which no refund row will post
-    (`INV-MONEY-035`). Where the ledger has nothing left to allocate, the
-    completion is refused; the treasurer dismisses it with a note.
-  - **Its Xero note is its own**: one bank-transfer refund note for exactly
-    the task's amount, keyed on the task as a "Paid another way" close's
-    (`INV-PAY-122`), never the payment-wide one; none without an invoice. The
-    note pipeline reads it as that close's bank cash, so no card note answers
-    it.
-  - Proven by `booking-cancel.test.ts`,
+- **What an own-card cancel's card refund plan cannot carry is recorded, split
+  by what can hold it** (#4097). The plan covers what the captured Stripe
+  charges can still refund; the policy's refund comes from the payment record.
+  - **On the card branch only, the claim raises up to two
+    `CANCELLED_BOOKING_HAND_BACK`s**, under its locks, inserted on no conflict
+    (a replay must find the same OPEN row and amount, or the claim throws):
+    `bank`, up to what the captured non-card charges hold, and `check`, the
+    rest - already refunded on the records, or held by nothing.
+  - **While OPEN both are owed** ("Refunds owed", Net Collected, the queue).
+    Admins are emailed once, straight after the commit.
+  - **The member is promised a bank transfer only for `bank`**; for `check`,
+    that the club will be in touch. The cancel confirmation says the same,
+    from the one wording home's card and bank clauses.
+  - **The card's records are what the card refund carries**: its REFUNDED
+    event says so, and its Xero note.
+  - **Marked paid back**, a part settles on the non-card charges first, never
+    while the card refund recovery is unsettled (409, under the `Payment` row
+    lock). Its `BANK_REFUND` posts on the card payment (`INV-MONEY-035`) and
+    it takes ONE Xero note of its own, keyed on the task. Where the ledger
+    holds nothing for it, the refusal says to dismiss it.
+  - **The booking page names each part** - owed, refunded or checked - from
+    the CANCELLED snapshot and the tasks' status.
+  - Proven by `booking-cancel.test.ts`, `cancel-card-refund-shortfall.test.ts`,
     `booking-cancelled-card-shortfall-email.test.ts`,
-    `cancel-booking-button.test.tsx`, `refunds-and-credits-owed.test.ts`,
-    `booking-ledger-hand-back.test.ts`, `manual-refund-task.test.ts`,
-    `booking-ledger-projection-census.test.ts`,
-    `stripe-cash-refund-evidence.test.ts` and
+    `manual-refund-task.test.ts`, `stripe-cash-refund-evidence.test.ts`,
+    `booking-narrative-card-shortfall.test.ts` and
     `cancel-card-refund-shortfall.realdb.test.ts`.
 
 ## INV-PAY-031
