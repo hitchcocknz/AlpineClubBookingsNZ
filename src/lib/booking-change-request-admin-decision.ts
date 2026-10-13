@@ -144,7 +144,7 @@ export const finishedStayApprovalFields = {
 
 /** #4030 review C4: an applying approval sent without the figures it was shown. */
 export const EXPECTED_FIGURES_MISSING_MESSAGE =
-  "Check the figures before approving: this approval applies the change and does not say what it was shown. Nothing has been changed.";
+  "Check the figures before approving, so the change applies at the amounts you saw. Nothing has been changed.";
 
 /** The quote route's body (P2 on #3955), with the officer's entry (#4030). */
 export const finishedStayQuoteSchema = z.object({

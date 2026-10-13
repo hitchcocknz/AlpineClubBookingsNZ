@@ -208,7 +208,12 @@ describe("PATCH — the figures the approval was shown (#4030 review C4)", () =>
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     const response = await patch({ status: "APPROVED", execute: true, adminNotes: "ok" });
     expect(response.status).toBe(400);
-    expect((await response.json()).code).toBe("EXPECTED_FIGURES_REQUIRED");
+    const body = await response.json();
+    expect(body.code).toBe("EXPECTED_FIGURES_REQUIRED");
+    // Round 7 (F4): said in the officer's terms, not the protocol's.
+    expect(body.error).toBe(
+      "Check the figures before approving, so the change applies at the amounts you saw. Nothing has been changed.",
+    );
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
