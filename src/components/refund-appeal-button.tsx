@@ -13,11 +13,14 @@ import { useClubTime } from "@/components/club-time-provider";
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents } from "@/lib/utils"
 import { useClubFormat } from "@/components/club-format-provider"
+import { ORGANISER_CARD_APPEAL_CEILING_NOTE } from "@/lib/group-organiser-paid"
 
 interface RefundAppealButtonProps {
   bookingId: string
   maxRefundableCents: number
   description?: string
+  /** #3956: the ceiling is what the group organiser's card payment can still return. */
+  organiserCardRefund?: boolean
 }
 
 interface RefundRequestData {
@@ -48,6 +51,7 @@ function useAppealStampFormatter() {
 export function RefundAppealButton({
   bookingId,
   maxRefundableCents,
+  organiserCardRefund = false,
   description = "If you believe you are entitled to a larger refund, you can submit an appeal for review.",
 }: RefundAppealButtonProps) {
   const format = useClubFormat()
@@ -237,6 +241,9 @@ export function RefundAppealButton({
               <FieldHint {...amountHint.hintProps}>
                 Example: 0.00 — maximum {formatCents(maxRefundableCents, format)}
               </FieldHint>
+              {organiserCardRefund && (
+                <p className="text-xs text-muted-foreground">{ORGANISER_CARD_APPEAL_CEILING_NOTE}</p>
+              )}
             </div>
 
             <div className="flex gap-2">

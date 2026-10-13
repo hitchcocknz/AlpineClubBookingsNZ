@@ -417,7 +417,7 @@ describe("getStuckStateDashboard", () => {
       title: "Unassigned hut leader lodge dates",
       count: 3,
       summary:
-        "3 upcoming lodge dates in the next 21 days with bookings have no hut leader assigned.",
+        "3 upcoming lodge dates in the next 21 days with guests have no hut leader who counts.",
     });
   });
 
@@ -449,7 +449,7 @@ describe("getStuckStateDashboard", () => {
       title: "Unassigned hut leader lodge-nights",
       count: 4,
       summary:
-        "4 upcoming lodge-nights in the next 21 days with bookings have no hut leader assigned.",
+        "4 upcoming lodge-nights in the next 21 days with guests have no hut leader who counts.",
     });
   });
 
@@ -480,7 +480,7 @@ describe("getStuckStateDashboard", () => {
       title: "Unassigned hut leader lodge-nights",
       count: 2,
       summary:
-        "2 upcoming lodge-nights in the next 21 days with bookings have no hut leader assigned.",
+        "2 upcoming lodge-nights in the next 21 days with guests have no hut leader who counts.",
     });
   });
 

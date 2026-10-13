@@ -1988,7 +1988,8 @@ describe("POST /api/bookings/[id]/guests", () => {
       booking.checkOut,
       [
         ...booking.guests,
-        { stayStart: booking.checkIn, stayEnd: booking.checkOut },
+        // A typed guest is no member, said so (#3817: the party's members).
+        { stayStart: booking.checkIn, stayEnd: booking.checkOut, memberId: null },
       ],
       "bk1",
       tx
@@ -3270,7 +3271,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Booking Modified");
     expect(html).toContain("Alice");
@@ -3301,7 +3302,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Guests Added");
     expect(html).toContain("Previous Guests");
@@ -3331,7 +3332,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Guest Removed");
     expect(html).toContain("refund");
@@ -3360,7 +3361,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Change Fee");
     expect(html).toContain("$50.00");
@@ -3392,7 +3393,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     expect(html).toContain("additional Internet Banking payment");
@@ -3423,7 +3424,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");

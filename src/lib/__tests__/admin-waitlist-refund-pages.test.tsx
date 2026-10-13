@@ -953,4 +953,73 @@ describe("Admin refund and credit review page", () => {
     expect(screen.getByText("Remaining refundable:").parentElement).toHaveTextContent("Remaining refundable: $75.00");
     expect(screen.getByText("Gross paid:").parentElement).toHaveTextContent("Gross paid: $200.00");
   });
+
+  /*
+    #3956 round 3: while the group cancellation's own refund to the organiser's
+    card is still being made, the ceiling is zero only for now. The screen says
+    so, rather than "Max refundable $0.00", which an officer would decline on.
+  */
+  it("says a group joiner's appeal waits on the group refund, not that nothing is left", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    const waitingRequest = (pending: boolean) => ({
+      id: "joiner",
+      bookingId: "booking-joiner",
+      memberId: "member-joiner",
+      reason: "Weather closure",
+      requestedAmountCents: null,
+      status: "PENDING",
+      adminNotes: null,
+      approvedAmountCents: null,
+      reviewedAt: null,
+      createdAt: "2026-07-01T00:00:00.000Z",
+      booking: {
+        id: "booking-joiner",
+        checkIn: "2026-08-01T00:00:00.000Z",
+        checkOut: "2026-08-03T00:00:00.000Z",
+        finalPriceCents: 15000,
+        status: "CANCELLED",
+        noEmails: false,
+        creditsFromCancellation: [],
+        payment: { status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, stripePaymentIntentId: null },
+        organiserCardMaxRefundableCents: pending ? 0 : 4_000,
+        organiserCardCombinedRefundPending: pending,
+      },
+      member: { id: "member-joiner", firstName: "Jo", lastName: "Joiner", email: "j@example.com" },
+    });
+    for (const pending of [true, false]) {
+      fetchMock.mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/admin/refund-requests?status=PENDING") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ data: [waitingRequest(pending)], page: 1, pageSize: 25, total: 1 }),
+          });
+        }
+        if (url === "/api/admin/credit-approvals?status=PENDING") {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      });
+
+      const view = render(<RefundRequestsPage />);
+      fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+      if (pending) {
+        expect(
+          screen.getByText(
+            "The group cancellation's refund to the organiser's card is still being made or reconciled. Approve this once it is made.",
+          ),
+        ).toBeTruthy();
+        expect(screen.queryByText(/Max refundable/)).toBeNull();
+        expect(screen.getByText("Remaining refundable:").parentElement).toHaveTextContent(
+          "Remaining refundable: Waiting for the group refund",
+        );
+      } else {
+        expect(screen.getByText("Max refundable: $40.00")).toBeTruthy();
+        expect(screen.queryByText(/still being made or reconciled/)).toBeNull();
+      }
+      view.unmount();
+    }
+  });
 });
