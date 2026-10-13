@@ -2,7 +2,8 @@
  * Real-PostgreSQL proof that a bank transfer settles at the cash its invoice
  * collected (#3979, `INV-PAY-124`), end to end through the REAL inbound settle
  * (`syncInternetBankingPaymentsForPaidInvoice`), the booking ledger's receipt
- * sync, the REAL cancel and the REAL inbound credit-note sync.
+ * sync, the REAL cancel and the REAL refunded-total repair of the inbound
+ * credit-note sync.
  *
  * The booking is written the way `booking-create.ts` writes an Internet
  * Banking booking: a PENDING payment and its PENDING PRIMARY row at the price
@@ -21,14 +22,22 @@
  * correction, so the payment records the cash and nothing refunded, and a
  * recount from the ledger keeps it.
  *
+ * Nothing is mocked: the race harness imports this file beside suites that
+ * mock the email and Xero client modules, and a second mock of either here
+ * would replace theirs. So the operator alerts are pinned by the unit suites
+ * (`xero-inbound-reconciliation.test.ts`), and the credit-note sync is entered
+ * after its Xero read, through the two calls it makes with what it read
+ * (`resolveModificationRefundAmountsByPaymentId`, then
+ * `repairRefundedPaymentBusinessState`).
+ *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
  * (#1881), which imports this file so CI reaches it; it cleans its own
  * uniquely-namespaced `race-3979-` fixtures.
  */
 import type { PrismaClient } from "@prisma/client";
-import type { CreditNote, Invoice } from "xero-node";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { CreditNote, type Invoice } from "xero-node";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 
@@ -76,45 +85,9 @@ export function assertSafeIbSettleFromCashRaceDbUrl(url: string): void {
   }
 }
 
-// The admin alert, observed rather than mailed while this suite runs; every
-// other suite the race harness imports beside it gets the real sender.
-const adminAlert = vi.hoisted(() => ({ capturing: false, mock: null as unknown as import("vitest").Mock }));
-vi.mock("@/lib/email", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import("@/lib/email");
-  adminAlert.mock = vi.fn().mockResolvedValue(undefined);
-  return {
-    ...actual,
-    sendAdminPaymentFailureAlert: ((...args: Parameters<typeof actual.sendAdminPaymentFailureAlert>) =>
-      adminAlert.capturing
-        ? adminAlert.mock(...args)
-        : actual.sendAdminPaymentFailureAlert(...args)) as typeof actual.sendAdminPaymentFailureAlert,
-  };
-});
-
-// The inbound credit-note sync reads the note from Xero: a fake at the client
-// seam, switched on only by the cases that need it.
-const fakeXero = vi.hoisted(() => ({ on: false, note: null as unknown }));
-vi.mock("@/lib/xero-api-client", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import("@/lib/xero-api-client");
-  const client = {
-    accountingApi: {
-      getCreditNote: async () => ({ body: { creditNotes: [fakeXero.note] } }),
-    },
-  };
-  return {
-    ...actual,
-    getAuthenticatedXeroClient: ((...args: Parameters<typeof actual.getAuthenticatedXeroClient>) =>
-      fakeXero.on
-        ? Promise.resolve({ xero: client, tenantId: "race-3979-tenant" })
-        : actual.getAuthenticatedXeroClient(...args)) as typeof actual.getAuthenticatedXeroClient,
-    callXeroApi: ((fn: () => unknown, options: Parameters<typeof actual.callXeroApi>[1]) =>
-      fakeXero.on ? fn() : actual.callXeroApi(fn as never, options)) as typeof actual.callXeroApi,
-  };
-});
-
 let prisma: PrismaClient;
 let paidEffects: typeof import("@/lib/xero-inbound/invoice-paid-effects");
-let creditNoteSync: typeof import("@/lib/xero-inbound/credit-note");
+let creditNoteRepairs: typeof import("@/lib/xero-inbound/credit-note-repairs");
 let paymentTransactions: typeof import("@/lib/payment-transactions");
 let memberCredit: typeof import("@/lib/member-credit");
 
@@ -245,7 +218,7 @@ async function figures() {
 /**
  * The edit's invoice-correction note on the never-paid invoice (#3536,
  * `INV-PAY-116`), in the rows its builder leaves: the outbound operation that
- * recorded the wording, the note's link to the edit, and the allocation.
+ * recorded the wording, and the note's link to the edit.
  */
 async function queueModificationNote(noteCents: number, wording: Record<string, unknown>): Promise<void> {
   await prisma.bookingModification.create({
@@ -278,24 +251,26 @@ async function queueModificationNote(noteCents: number, wording: Record<string, 
   await prisma.xeroObjectLink.create({
     data: { localModel: "BookingModification", localId: MODIFICATION_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_ID, role: "MODIFICATION_CREDIT_NOTE", active: true },
   });
-  fakeXero.note = {
-    creditNoteID: NOTE_ID,
-    creditNoteNumber: "CN-3979",
-    status: "AUTHORISED",
-    total: noteCents / 100,
-    appliedAmount: noteCents / 100,
-    remainingCredit: 0,
-    allocations: [{ invoice: { invoiceID: INVOICE_ID }, amount: noteCents / 100 }],
-  } satisfies CreditNote;
 }
 
-async function syncNote(): Promise<void> {
-  fakeXero.on = true;
-  try {
-    await creditNoteSync.reconcileXeroCreditNote(NOTE_ID);
-  } finally {
-    fakeXero.on = false;
-  }
+/**
+ * The inbound credit-note sync, after its Xero read of the AUTHORISED note,
+ * fully allocated to the invoice: the current note's contribution, then the
+ * payment's refunded total recomputed (`reconcileXeroCreditNote`).
+ */
+async function syncNote(noteCents: number): Promise<void> {
+  const allocationTargets = [{ invoiceId: INVOICE_ID, amountCents: noteCents }];
+  const modificationRefundAmountsByPaymentId = await creditNoteRepairs.resolveModificationRefundAmountsByPaymentId({
+    creditNoteId: NOTE_ID,
+    isModificationNote: true,
+    allocationTargets,
+  });
+  await creditNoteRepairs.repairRefundedPaymentBusinessState({
+    creditNoteId: NOTE_ID,
+    creditNote: { status: CreditNote.StatusEnum.AUTHORISED, total: noteCents / 100, appliedAmount: noteCents / 100, remainingCredit: 0 },
+    directPaymentIds: [],
+    modificationRefundAmountsByPaymentId,
+  });
 }
 
 async function cancellationCreditCents(): Promise<number> {
@@ -312,7 +287,7 @@ async function cancellationCreditCents(): Promise<number> {
     process.env.DATABASE_URL = RACE_DB_URL;
     ({ prisma } = await import("@/lib/prisma"));
     paidEffects = await import("@/lib/xero-inbound/invoice-paid-effects");
-    creditNoteSync = await import("@/lib/xero-inbound/credit-note");
+    creditNoteRepairs = await import("@/lib/xero-inbound/credit-note-repairs");
     paymentTransactions = await import("@/lib/payment-transactions");
     memberCredit = await import("@/lib/member-credit");
 
@@ -330,13 +305,9 @@ async function cancellationCreditCents(): Promise<number> {
 
   beforeEach(async () => {
     await clean();
-    adminAlert.capturing = true;
-    adminAlert.mock?.mockClear();
-    fakeXero.on = false;
   });
 
   afterAll(async () => {
-    adminAlert.capturing = false;
     if (!prisma) return;
     await clean();
     await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
@@ -357,7 +328,6 @@ async function cancellationCreditCents(): Promise<number> {
       receipts: [20_000],
     });
     expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { status: true } })).status).toBe("PAID");
-    expect(adminAlert.mock).not.toHaveBeenCalled();
 
     // A replay of the same PAID invoice decides nothing again.
     await settle(20_000);
@@ -402,7 +372,6 @@ async function cancellationCreditCents(): Promise<number> {
       receipts: [22_500],
     });
     // The cash is exactly what the booking owes (worth = price + fee).
-    expect(adminAlert.mock).not.toHaveBeenCalled();
     expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { status: true } })).status).toBe("COMPLETED");
   }, 60_000);
 
@@ -421,12 +390,9 @@ async function cancellationCreditCents(): Promise<number> {
     });
     expect(await memberCredit.getMemberCreditBalance(MEMBER_ID)).toBe(30_000);
     // The cancel arm's own alert, for the whole cash; never a "partial" one.
-    expect(adminAlert.mock).toHaveBeenCalledTimes(1);
-    expect(adminAlert.mock.mock.calls[0][0]).toMatchObject({ amountCents: 30_000 });
-    expect(adminAlert.mock.mock.calls[0][0].errorMessage).not.toContain("mixed invoice");
   }, 60_000);
 
-  it("CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200 and nothing alerts", async () => {
+  it("CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200", async () => {
     await bookAt(20_000);
     await raiseInvoice();
     await editPriceTo(30_000);
@@ -445,7 +411,6 @@ async function cancellationCreditCents(): Promise<number> {
       primary: { amountCents: 20_000, status: "SUCCEEDED" },
       receipts: [20_000],
     });
-    expect(adminAlert.mock).not.toHaveBeenCalled();
     await prisma.xeroObjectLink.deleteMany({ where: { xeroObjectId: "race-3979-supplementary" } });
   }, 60_000);
 
@@ -457,7 +422,7 @@ async function cancellationCreditCents(): Promise<number> {
 
     // The note reaches the inbound sync before the bank transfer: a correction
     // folds nothing into the never-paid payment.
-    await syncNote();
+    await syncNote(10_000);
     expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 0, status: "PENDING" });
 
     await settle(20_000);
@@ -466,10 +431,9 @@ async function cancellationCreditCents(): Promise<number> {
       primary: { amountCents: 20_000, status: "SUCCEEDED" },
       receipts: [20_000],
     });
-    expect(adminAlert.mock).not.toHaveBeenCalled();
 
     // The same note read again AFTER the capture is still a correction.
-    await syncNote();
+    await syncNote(10_000);
     // And a recount from the ledger rows keeps it.
     await paymentTransactions.reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
     expect(await figures()).toMatchObject({
@@ -479,14 +443,14 @@ async function cancellationCreditCents(): Promise<number> {
     });
   }, 60_000);
 
-  it("A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure and alerts rather than count the reduction twice", async () => {
+  it("A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure rather than count the reduction twice", async () => {
     await bookAt(30_000);
     await raiseInvoice();
     await editPriceTo(20_000);
     // An older note raised before #3536's wording existed: a bank-transfer refund.
     await queueModificationNote(10_000, { refundMethod: "internet-banking" });
 
-    await syncNote();
+    await syncNote(10_000);
     expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 10_000 });
 
     await settle(20_000);
@@ -494,7 +458,5 @@ async function cancellationCreditCents(): Promise<number> {
       payment: { amountCents: 30_000, refundedAmountCents: 10_000 },
       primary: { amountCents: 30_000, status: "SUCCEEDED" },
     });
-    expect(adminAlert.mock).toHaveBeenCalledTimes(1);
-    expect(adminAlert.mock.mock.calls[0][0].errorMessage).toContain("kept the $300.00 it had recorded");
   }, 60_000);
 });

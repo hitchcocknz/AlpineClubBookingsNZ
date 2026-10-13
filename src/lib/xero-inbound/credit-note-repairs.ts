@@ -120,7 +120,7 @@ async function includeDeletedAppliedCreditAllocationTargets(
   return [...targetsByInvoiceId.values()];
 }
 
-export async function resolvePaymentIdsByInvoiceTargets(
+async function resolvePaymentIdsByInvoiceTargets(
   creditNoteId: string,
   allocationTargets: AccountCreditAllocationTarget[]
 ) {
@@ -208,6 +208,34 @@ export async function resolvePaymentIdsByInvoiceTargets(
   }
 
   return resolvedPaymentIds;
+}
+
+/**
+ * What a modification credit note being synced adds to each matched payment's
+ * refunded total: its allocations, by the payment each allocated invoice
+ * resolves to. Nothing for a note that moved no cash (`noCashModificationNoteIds`:
+ * #3809's give-back, #3954's billed offset, and #3979's invoice correction,
+ * `INV-PAY-124`). The current note's half of what `repairRefundedPaymentBusinessState`
+ * counts; the notes already on the payment are filtered by the same rule there.
+ */
+export async function resolveModificationRefundAmountsByPaymentId(input: {
+  creditNoteId: string;
+  isModificationNote: boolean;
+  allocationTargets: AccountCreditAllocationTarget[];
+}): Promise<Map<string, number>> {
+  const amounts = new Map<string, number>();
+  if (!input.isModificationNote) return amounts;
+  if ((await noCashModificationNoteIds([input.creditNoteId])).has(input.creditNoteId)) return amounts;
+  const paymentIdsByInvoiceId = await resolvePaymentIdsByInvoiceTargets(
+    input.creditNoteId,
+    input.allocationTargets
+  );
+  for (const target of input.allocationTargets) {
+    const paymentId = paymentIdsByInvoiceId.get(target.invoiceId);
+    if (!paymentId) continue;
+    amounts.set(paymentId, (amounts.get(paymentId) ?? 0) + target.amountCents);
+  }
+  return amounts;
 }
 
 export async function repairRefundedPaymentBusinessState(input: {

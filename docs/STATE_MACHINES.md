@@ -1533,10 +1533,12 @@ REFUNDED/PARTIALLY_REFUNDED -> (repay, #1765) fresh PRIMARY transaction on the
 Booking cancellation honors these transitions (#1473): only a never-captured
 payment flips to FAILED at cancel, decided on transaction-ledger capture
 evidence — the aggregate mirror alone can lie, because inbound reconciliation
-folds modification credit notes into `refundedAmountCents` /
+folds modification credit notes worded as refunds into `refundedAmountCents` /
 `PARTIALLY_REFUNDED` on never-captured Internet Banking payments (see
-`docs/DOMAIN_INVARIANTS.md`). Genuinely captured payments survive the cancel
-unchanged — no *transaction* ever leaves the refunded states.
+`docs/DOMAIN_INVARIANTS.md`). Since #3979 a note worded as an *invoice
+correction* never folds: it lowered an invoice nobody had paid, so it is a price
+correction, not a refund (`INV-PAY-124`). Genuinely captured payments survive
+the cancel unchanged — no *transaction* ever leaves the refunded states.
 
 Repay-after-refund (#1765): a booking that was paid, then deliberately
 refunded, then left (or re-put) in a payable status legitimately owes a fresh
@@ -1771,6 +1773,33 @@ retire path own it — so a late `payment_intent.canceled` for an old intent can
 no longer null a card the member has just re-saved; without a SetupIntent the
 ledger row's pm is followed, except that a Stripe row recording no pm never
 nulls a card that is set; an Internet Banking latest PRIMARY still yields null.
+
+### Internet Banking settle from the invoice's cash (#3979)
+
+When Xero reports a booking's PRIMARY invoice paid in cash, the inbound settle
+moves the payment `PENDING/FAILED -> SUCCEEDED` and records the receipt at the
+cash that invoice collected, not the figure the payment was born with
+(`INV-PAY-124`, `settle-from-cash.ts`):
+
+```text
+no captured IB PRIMARY row, cash complete, one matched payment, no refund
+  history, no other capture, one uncaptured IB PRIMARY row, no second instrument
+  -> PRIMARY row and Payment.amountCents := invoice cash -> ledger BANK_RECEIPT
+any of those not true
+  -> stored figure kept -> receipt at it -> admin alert (booking left live)
+PRIMARY row already captured (a replay)
+  -> no amount decided again
+cash != bookingAmountOwedCents (INV-PAY-119)
+  -> figure still written -> admin alert, unless a supplementary invoice
+     explains a shortfall (INV-PAY-047)
+```
+
+The cancel arms (a cancelled booking's late cash, the late capacity cancel) size
+their credit from the settled figure and alert on their own. An
+invoice-correction note on the never-paid invoice refunds nothing, so a $300
+invoice corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
+`reconcilePaymentAggregates` keeps it. Settles before #3979 are listed by
+`pnpm run payments:audit-ib-settled-cash`, never rewritten.
 
 ### Manual mark-paid (cash / off-Xero bank transfer), B5 #2262
 

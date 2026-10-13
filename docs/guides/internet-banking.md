@@ -74,6 +74,16 @@ settle** on the admin payments page. Once you have settled the payment in Xero
 and cleared what the invoice still owes, close the item with a note saying what
 you did; the Xero repair tool then stops listing the booking for review.
 
+**The booking records what the invoice collected** (#3979). When Xero shows a
+booking's invoice paid, the app records the money the invoice actually took, so
+a booking whose price changed before its invoice was raised is settled at the
+new price, and its refunds and credits are sized from it. If the app cannot be
+sure the figure belongs to this booking alone, it keeps the figure it had and
+emails the admins; it also emails them when what was paid is not what the
+booking owes. A credit note that lowers an invoice nobody has paid yet
+(*Invoice correction — nothing refunded*) is a price correction: a $300 invoice
+cut by $100 and paid $200 shows $200 paid and nothing refunded.
+
 If Xero shows the invoice **paid in full** but the app has not caught up, the
 email says so; the next Xero sync marks the booking paid. If the invoice
 **cannot be read** (Xero disconnected, down, or the invoice missing there), the
@@ -107,6 +117,7 @@ example) is tried again a day later, not every run.
 | The page shows **Xero off** / **Module Not Ready** | The Xero integration or Internet Banking module is off | Enable Xero and the Internet Banking module — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | An expired hold was not cancelled and an **Internet banking hold needs attention** email arrived | Xero shows part (or all) of the invoice paid, or the invoice could not be read | Follow the email: wait for the rest, or cancel the booking in the app (the part payment is credited under the policy); reconnect Xero if it could not be read |
 | A member is told a payment "the club needs to settle by hand" stops them cancelling online | The booking has a payment recorded that the app cannot credit (an organisation's booking, or Xero could not give the amount exactly) | An officer cancels it; the treasurer is emailed to settle the payment in Xero |
+| A **Payment Failed** email says the app "kept" the amount it had recorded for a bank-transfer invoice, or that the cash Xero shows is not what the booking owes | The invoice's payment could not be tied to this booking alone, or the member paid more or less than the booking's price (#3979) | Check the invoice in Xero. Correct the recorded payment by hand if it is wrong; refund or credit an overpayment, or collect a shortfall |
 | Cancelling says the booking's payment changed while it was being cancelled | A further payment reached Xero after the cancel checked it | Cancel again; it re-reads Xero |
 | Members aren't offered Internet Banking at checkout | The module is off, or the booking is inside the minimum lead time | Turn the module on and check the **Minimum lead time** value |
 | An admin alert says "Booking may have been paid twice — card and Xero" | A card payment had already settled the booking, and Xero then reported its Internet Banking invoice paid too (#3638). The bank payment is recorded; nothing was refunded | Check the invoice's payment in Xero: if it is separate money from the member, agree with them which payment to refund; if it is the card money matched to the invoice by hand, correct the match in Xero |

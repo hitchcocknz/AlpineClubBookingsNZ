@@ -253,9 +253,9 @@ describe("the ledger idempotency proof stays wired into CI (#3595)", () => {
       "RAISED before its invoice: booked at $200, raised to $300, paid $300: everything is $300, and the cancel credits $300 back where the stale $200 used to cap it",
       "A FINISHED-STAY FEE recorded before the invoice: the invoice bills price and fee, and the settle records both",
       "THE LATE CAPACITY CANCEL: raised to $300 before its invoice, paid $300 after the beds went: the member's credit is the $300 the invoice collected",
-      "CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200 and nothing alerts",
+      "CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200",
       "DECISION 2: invoice $300, an invoice-correction note of $100, paid $200: $200 paid and $0 refunded, and a recount keeps it",
-      "A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure and alerts rather than count the reduction twice",
+      "A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure rather than count the reduction twice",
     ]) {
       expect(suite).toContain(caseName);
     }

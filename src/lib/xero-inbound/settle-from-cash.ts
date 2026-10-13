@@ -15,9 +15,9 @@
  * owes. A price raised after the invoice is billed on a supplementary invoice,
  * which this invoice never collected, so the amount owed would overstate it.
  *
- * This module decides, from the rows the settle already holds under its locks,
- * whether that figure may be written, and words the operator alert when it may
- * not. It moves no money and takes no lock of its own.
+ * This module decides, from the rows the settle reads under its locks, whether
+ * that figure may be written, and alerts the operators when it may not. The
+ * settle writes the figure; this module writes nothing and takes no lock.
  */
 import {
   PaymentSource,
@@ -27,6 +27,8 @@ import {
 } from "@prisma/client";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import type { ClubFormat } from "@/lib/club-format";
+import { sendAdminPaymentFailureAlert } from "@/lib/email";
+import logger from "@/lib/logger";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { formatCents } from "@/lib/utils";
 import { findBookingSupplementaryInvoiceIds } from "@/lib/xero-clearing-allocations";
@@ -223,4 +225,110 @@ export function cashSettlementNoticeMessage(notice: CashSettlementNotice, format
     );
   }
   return parts.join(" ");
+}
+
+/**
+ * The settle's one call, inside its locked transaction after both fences
+ * (`INV-PAY-124`): the payment's rows, the plan, the figure to record, the
+ * PRIMARY row's amount write (only where it differs), and the notice to send
+ * after the commit.
+ */
+export async function decideInternetBankingReceiptFigure(
+  tx: Prisma.TransactionClient,
+  input: {
+    payment: {
+      id: string;
+      bookingId: string;
+      status: PaymentStatus;
+      amountCents: number;
+      refundedAmountCents: number;
+      changeFeeCents: number | null;
+      booking: { finalPriceCents: number; status: string };
+    };
+    cash: InvoiceCash;
+    matchedPayments: number;
+    secondInstrument: boolean;
+  },
+): Promise<{
+  settledAmountCents: number;
+  primaryAmountRewrite: { amountCents?: number };
+  notice: CashSettlementNotice | null;
+}> {
+  const { payment } = input;
+  const rows = await tx.paymentTransaction.findMany({
+    where: { paymentId: payment.id },
+    select: { kind: true, source: true, status: true, amountCents: true },
+  });
+  const plan = planInternetBankingCashSettlement({
+    paymentStatus: payment.status,
+    refundedAmountCents: payment.refundedAmountCents,
+    transactions: rows,
+    cash: input.cash,
+    matchedPayments: input.matchedPayments,
+    secondInstrument: input.secondInstrument,
+  });
+  const notice = await readCashSettlementNotice(tx, {
+    plan,
+    storedAmountCents: payment.amountCents,
+    cash: input.cash,
+    matchedPayments: input.matchedPayments,
+    booking: {
+      id: payment.bookingId,
+      finalPriceCents: payment.booking.finalPriceCents,
+      cancelled: payment.booking.status === "CANCELLED",
+    },
+    changeFeeCents: payment.changeFeeCents,
+  });
+  if (plan.kind !== "rewrite") {
+    return { settledAmountCents: payment.amountCents, primaryAmountRewrite: {}, notice };
+  }
+  const primaryDiffers = rows.some(
+    (row) => isInternetBankingPrimary(row) && row.amountCents !== plan.amountCents,
+  );
+  return {
+    settledAmountCents: plan.amountCents,
+    primaryAmountRewrite: primaryDiffers ? { amountCents: plan.amountCents } : {},
+    notice,
+  };
+}
+
+/** The operator alert, after the commit; best-effort, as the settle's other alerts are. */
+export async function alertCashSettlementNotice(input: {
+  payment: { id: string; bookingId: string; booking: { checkIn: Date; checkOut: Date } };
+  /** The booking owner's name, as the settle's other alerts write it. */
+  memberName: string;
+  notice: CashSettlementNotice;
+  invoiceId: string | null;
+  format: ClubFormat;
+}): Promise<void> {
+  const { payment, notice } = input;
+  logger.warn(
+    {
+      bookingId: payment.bookingId,
+      paymentId: payment.id,
+      invoiceId: input.invoiceId,
+      refusal: notice.refusal,
+      storedAmountCents: notice.storedAmountCents,
+      xeroCashCents: notice.cash.knownCents,
+      xeroCashComplete: notice.cash.complete,
+      owedCents: notice.owedCents,
+    },
+    "Internet Banking settlement: the recorded figure needs an operator's check (#3979)",
+  );
+  await sendAdminPaymentFailureAlert(
+    {
+      memberName: input.memberName,
+      checkIn: payment.booking.checkIn,
+      checkOut: payment.booking.checkOut,
+      amountCents: notice.cash.knownCents,
+      errorMessage: cashSettlementNoticeMessage(notice, input.format),
+      paymentIntentId: input.invoiceId ?? "",
+    },
+    input.format,
+  ).catch((err) =>
+    logger.error(
+      { err, bookingId: payment.bookingId, paymentId: payment.id },
+      "Failed to alert admins about an Internet Banking settlement figure (#3979)",
+    ),
+  );
 }

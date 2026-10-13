@@ -747,8 +747,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   is decided on LEDGER evidence — a payment transaction row in a captured status
   (SUCCEEDED / (PARTIALLY_)REFUNDED), or, for STRIPE rows with no ledger rows,
   the refund mirror — never on the aggregate mirror alone, which the inbound
-  reconcile folds invoice-applied modification credit notes into on
-  never-captured IB payments. A never-captured payment flips to FAILED at cancel
+  reconcile folds refund-worded modification credit notes into on
+  never-captured IB payments ([INV-PAY-124]). A never-captured payment flips to FAILED at cancel
   and its open invoice gets the finalPrice+changeFee invoice-clearing credit note
   (the #1015 outstanding-balance rule). A genuinely captured PARTIALLY_REFUNDED
   payment takes the PAID cancellation path (#1491, owner decision): the member
@@ -1053,8 +1053,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   (`amountPaid`, falling back to actual payment records), a payment that never
   settled (PENDING/FAILED), and no credit already minted by this pipeline (matched by its own credit descriptions — never by amount, which collides with unrelated cancellation-flow rows). Both
   credit-minting arms (already-cancelled and late-capacity-failure) size the mint
-  by the invoice's QUANTIFIED cash (#1459), clamped per payment to the payment's
-  own amount — `amountPaid` plus overpayment/prepayment allocations, falling back
+  by the invoice's QUANTIFIED cash (#1459), clamped per payment to its
+  settled figure ([INV-PAY-124]) — `amountPaid` plus overpayment/prepayment allocations, falling back
   to the invoice's non-DELETED payment records only when `amountPaid` is unusable
   — never by the payment's face amount alone.
   Partially quantifiable evidence floors the mint at the verified cash and the
@@ -3080,3 +3080,39 @@ _Split from `INV-PAY-057` (#3220)._
 - Pinned by `amount-owed-one-home.test.ts`,
   `booking-change-request-execution.realdb.test.ts` and
   `xero-primary-invoice-fee-gap.test.ts`.
+
+## INV-PAY-124
+
+**Related: `INV-PAY-119`** (what is owed), **`INV-PAY-116`** (the wording).
+
+- **A bank transfer settles at the cash its invoice collected** (#3979; owner
+  decision 13 Oct 2026,
+  [#3979](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3979#issuecomment-6140655880)).
+  When Xero reports a booking's PRIMARY invoice paid, the inbound settle writes
+  the invoice's quantified cash (`quantifyXeroInvoiceCashCents`) to the PRIMARY
+  `PaymentTransaction` and `Payment.amountCents`, in its locked transaction,
+  after the [INV-PAY-042] and [INV-PAY-102] fences and before the ledger's
+  receipt sync; the cancel arms' credit cap ([INV-PAY-025]) reads it. Never the
+  amount owed: a later rise sits on a supplementary invoice this one never
+  collected ([INV-PAY-047]).
+- **Only at the transition, only when the cash is this payment's alone**
+  (`planInternetBankingCashSettlement`, `settle-from-cash.ts`): no captured
+  Internet Banking PRIMARY row yet, complete positive cash, one matched payment,
+  no refund history, no other captured row, one uncaptured PRIMARY row, no
+  second instrument. Otherwise the stored figure stays and a booking left live
+  alerts the operators (the cancel arms alert themselves); a replay decides
+  nothing. `bookingAmountOwedCents` is a cross-check only: cash disagreeing
+  alerts, unless a supplementary invoice explains a shortfall.
+- **An invoice correction is not a refund.** A note worded *Invoice correction*
+  ([INV-PAY-116]), raised only while the payment was uncaptured, never folds into
+  `refundedAmountCents` (`noCashModificationNoteIds`). The wording is recorded
+  when the note is raised, so syncing it before or after the transfer counts the
+  same; a refund raised after capture never carries it. $300 invoiced, $100
+  corrected, $200 paid: $200 paid, $0 refunded, kept by
+  `reconcilePaymentAggregates`. An older refund-worded note still folds, and the
+  settle then keeps its figure and alerts.
+- No backfill: `pnpm run payments:audit-ib-settled-cash` lists settled receipts
+  differing from the cash Xero recorded.
+- Pinned by `settle-from-cash.test.ts`, `xero-inbound-reconciliation.test.ts`,
+  `account-credit-modification-notes.test.ts`, `ib-settled-cash-audit.test.ts`
+  and `ib-settle-from-cash.realdb.test.ts`.

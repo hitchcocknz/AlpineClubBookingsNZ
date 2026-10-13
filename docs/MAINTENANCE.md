@@ -2206,6 +2206,28 @@ internet-banking cash that became credit on an already-cancelled booking. Only
 the first is the #3640 repair question. The arithmetic and its caveats are in
 `src/lib/refunded-total-shortfall-audit.ts`.
 
+### Audit bank-transfer receipts settled at a stale figure (#3979)
+
+Before #3979 the inbound Xero settle kept the figure an Internet Banking payment
+was born with, so a booking re-priced (or charged a recorded fee) before its
+invoice was raised was settled at its old price: its ledger bank receipt and
+`Payment.amountCents`, which refund and credit caps read, were wrong
+(`INV-PAY-124` stops new cases). `scripts/audit-ib-settled-cash.ts` lists each
+captured bank-transfer receipt whose figure differs from the payments Xero
+recorded against its invoice, as the inbound invoice sync stored them. It is
+READ-ONLY and repairs nothing: correct each row by hand.
+
+```bash
+DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash
+DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash --json
+```
+
+A receipt with no recorded payment (an invoice paid by an applied overpayment or
+prepayment, which Xero records as an allocation, or one settled before payments
+were linked) or one whose amount cannot be read is listed apart, never as a
+difference: check its invoice in Xero. Officer-settled payments (`INV-PAY-001`)
+are left out. The rules are in `src/lib/ib-settled-cash-audit.ts`.
+
 ### Audit organiser-settled children's refunded mirrors (#3653)
 
 Before #3653 a joiner's reduction of a booking the group organiser paid for could
