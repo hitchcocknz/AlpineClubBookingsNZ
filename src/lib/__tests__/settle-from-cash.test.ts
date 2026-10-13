@@ -1,18 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Pure units: no database. The modules' Prisma import is stubbed so this file
+// loads without a DATABASE_URL.
+vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import {
-  cashSettlementNoticeMessage,
+  paidInvoiceFacts,
   planInternetBankingCashSettlement,
-  readCashSettlementNotice,
+  receiptCountsInvoiceCorrections,
   type CashSettlementTransaction,
 } from "@/lib/xero-inbound/settle-from-cash";
+import { readCashSettlementNotice } from "@/lib/xero-inbound/settle-from-cash-notice";
+import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
+import { adminBankTransferSettlementFigureTemplate } from "@/lib/email-templates/admin-bank-transfer-settlement";
 
 /**
- * #3979 (`INV-PAY-124`): the one decision on whether a bank transfer's
- * settle records the cash its invoice collected. The reconcile's own suite
+ * #3979 (`INV-PAY-124`): the one decision on whether a bank transfer's settle
+ * records the cash its invoice collected. The reconcile's own suite
  * (`xero-inbound-reconciliation.test.ts`) drives it through the settle; this
- * pins every refusal on its own.
+ * pins every arm on its own.
  */
 const primary = (overrides: Partial<CashSettlementTransaction> = {}): CashSettlementTransaction => ({
   kind: "PRIMARY",
@@ -29,15 +36,18 @@ const base = {
   cash: { knownCents: 20_000, complete: true },
   matchedPayments: 1,
   secondInstrument: false,
+  appliedNotes: { refundWordedCents: 0, noCashCents: 0 },
 };
 
-describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
-  const rewrite = (receiptCents: number, paymentAmountCents = receiptCents) => ({
-    kind: "rewrite",
-    receiptCents,
-    paymentAmountCents,
-  });
+const rewrite = (receiptCents: number, paymentAmountCents = receiptCents, refundedAmountCents = 0, status = "SUCCEEDED") => ({
+  kind: "rewrite",
+  receiptCents,
+  paymentAmountCents,
+  refundedAmountCents,
+  status,
+});
 
+describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
   it("rewrites to the cash at the transition", () => {
     expect(planInternetBankingCashSettlement(base)).toEqual(rewrite(20_000));
   });
@@ -47,9 +57,9 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
   });
 
   it("rewrites a FAILED PRIMARY row (a cancelled booking's never-captured payment)", () => {
-    expect(
-      planInternetBankingCashSettlement({ ...base, transactions: [primary({ status: "FAILED" })] }),
-    ).toEqual(rewrite(20_000));
+    expect(planInternetBankingCashSettlement({ ...base, transactions: [primary({ status: "FAILED" })] })).toEqual(
+      rewrite(20_000),
+    );
   });
 
   it.each(["SUCCEEDED", "PARTIALLY_REFUNDED", "REFUNDED"] as const)(
@@ -59,7 +69,7 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
     },
   );
 
-  it("a card capture refunded before the switch (#1765) stays on the payment: the receipt is the cash, the payment the cash plus the card", () => {
+  it("a card capture refunded before the switch (#1765): the receipt is the cash, the payment the cash plus the card, part refunded", () => {
     const card: CashSettlementTransaction = {
       kind: "PRIMARY",
       source: "STRIPE",
@@ -69,7 +79,7 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
     };
     expect(
       planInternetBankingCashSettlement({ ...base, refundedAmountCents: 30_000, transactions: [card, primary()] }),
-    ).toEqual(rewrite(20_000, 50_000));
+    ).toEqual(rewrite(20_000, 50_000, 30_000, "PARTIALLY_REFUNDED"));
   });
 
   it("a captured addition counts towards the payment's figure, never the receipt", () => {
@@ -90,10 +100,38 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
     ["cash-incomplete", { cash: { knownCents: 20_000, complete: false } }],
     ["cash-zero", { cash: { knownCents: 0, complete: true } }],
     ["several-payments", { matchedPayments: 2 }],
+    ["refund-note-applied", { appliedNotes: { refundWordedCents: 1, noCashCents: 0 } }],
     ["folded-refund", { refundedAmountCents: 1 }],
     ["several-primary-rows", { transactions: [primary(), primary()] }],
   ] as const)("keeps the stored figure: %s", (reason, overrides) => {
     expect(planInternetBankingCashSettlement({ ...base, ...overrides })).toEqual({ kind: "keep", reason });
+  });
+
+  it("a refund-worded note applied to the invoice keeps the figure even with its fold already in (review D)", () => {
+    expect(
+      planInternetBankingCashSettlement({
+        ...base,
+        refundedAmountCents: 10_000,
+        appliedNotes: { refundWordedCents: 10_000, noCashCents: 0 },
+      }),
+    ).toEqual({ kind: "keep", reason: "refund-note-applied" });
+  });
+
+  it("clears a fold the invoice's no-cash notes exactly explain, and only then (review A)", () => {
+    expect(
+      planInternetBankingCashSettlement({
+        ...base,
+        refundedAmountCents: 10_000,
+        appliedNotes: { refundWordedCents: 0, noCashCents: 10_000 },
+      }),
+    ).toEqual(rewrite(20_000));
+    expect(
+      planInternetBankingCashSettlement({
+        ...base,
+        refundedAmountCents: 10_000,
+        appliedNotes: { refundWordedCents: 0, noCashCents: 9_999 },
+      }),
+    ).toEqual({ kind: "keep", reason: "folded-refund" });
   });
 
   it("a refunded total a row records is not a fold", () => {
@@ -109,7 +147,7 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
     ).toEqual({ kind: "keep", reason: "folded-refund" });
     expect(
       planInternetBankingCashSettlement({ ...base, refundedAmountCents: 10_000, transactions: [card, primary()] }),
-    ).toEqual(rewrite(20_000, 50_000));
+    ).toEqual(rewrite(20_000, 50_000, 10_000, "PARTIALLY_REFUNDED"));
   });
 
   it("an uncaptured card row does not refuse the rewrite", () => {
@@ -121,51 +159,39 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
   });
 });
 
-describe("cashSettlementNoticeMessage (#3979)", () => {
-  it("names the kept figure, the cash and the reason", () => {
-    const message = cashSettlementNoticeMessage(
-      {
-        storedAmountCents: 30_000,
-        cash: { knownCents: 20_000, complete: true },
-        refusal: "several-payments",
-        owedCents: null,
-        hasSupplementaryInvoice: false,
-      },
-      CLUB_FORMAT_TEST,
-    );
-    expect(message).toContain("paid with $200.00");
-    expect(message).toContain("kept the $300.00 it had recorded");
-    expect(message).toContain("matched more than one payment");
+describe("receiptCountsInvoiceCorrections (#3979 review A)", () => {
+  const receipt = (status: CashSettlementTransaction["status"], reason: string | null) => ({
+    kind: "PRIMARY" as const,
+    source: "INTERNET_BANKING" as const,
+    status,
+    reason,
   });
 
-  it("says when the cash disagrees with what is owed", () => {
-    const message = cashSettlementNoticeMessage(
-      {
-        storedAmountCents: 20_000,
-        cash: { knownCents: 20_000, complete: true },
-        refusal: null,
-        owedCents: 25_000,
-        hasSupplementaryInvoice: true,
-      },
-      CLUB_FORMAT_TEST,
-    );
-    expect(message).toBe(
-      "The cash Xero shows, $200.00, is not what the booking owes ($250.00). The booking also has a supplementary invoice for a later change. If the member paid too much, refund or credit the difference; if too little, collect the rest.",
-    );
+  it("counts a correction against a receipt recorded at the stored figure", () => {
+    expect(receiptCountsInvoiceCorrections([receipt("SUCCEEDED", "xero_invoice_paid_reconciliation")])).toBe(true);
+    expect(receiptCountsInvoiceCorrections([receipt("SUCCEEDED", null)])).toBe(true);
   });
 
-  it("never states an unreadable figure as exact", () => {
-    const message = cashSettlementNoticeMessage(
-      {
-        storedAmountCents: 30_000,
-        cash: { knownCents: 20_000, complete: false },
-        refusal: "cash-incomplete",
-        owedCents: null,
-        hasSupplementaryInvoice: false,
-      },
-      CLUB_FORMAT_TEST,
-    );
-    expect(message).toContain("an amount it could not read exactly (its figures come to $200.00)");
+  it("never against a receipt recorded from cash, or one not captured", () => {
+    expect(receiptCountsInvoiceCorrections([receipt("SUCCEEDED", "xero_invoice_paid_cash")])).toBe(false);
+    expect(receiptCountsInvoiceCorrections([receipt("PENDING", null)])).toBe(false);
+    expect(receiptCountsInvoiceCorrections([])).toBe(false);
+  });
+});
+
+describe("paidInvoiceFacts (#3979)", () => {
+  it("reads the total and the applied notes in cents, dropping unreadable or empty ones", () => {
+    expect(
+      paidInvoiceFacts({
+        total: 123.45,
+        creditNotes: [
+          { creditNoteID: "cn-1", appliedAmount: 20 },
+          { creditNoteID: "cn-2", appliedAmount: 0 },
+          { appliedAmount: 5 },
+        ],
+      }),
+    ).toEqual({ totalCents: 12_345, appliedCreditNotes: [{ id: "cn-1", appliedCents: 2_000 }] });
+    expect(paidInvoiceFacts({})).toEqual({ totalCents: null, appliedCreditNotes: [] });
   });
 });
 
@@ -177,7 +203,7 @@ describe("readCashSettlementNotice (#3979)", () => {
     },
   }) as never;
   const input = {
-    storedAmountCents: 30_000,
+    recordedCents: 30_000,
     cash: { knownCents: 20_000, complete: true },
     matchedPayments: 1,
     booking: { id: "b-1", finalPriceCents: 25_000, cancelled: false },
@@ -195,9 +221,52 @@ describe("readCashSettlementNotice (#3979)", () => {
     expect(
       await readCashSettlementNotice(untouchable, {
         ...input,
-        plan: { kind: "rewrite", receiptCents: 20_000, paymentAmountCents: 20_000 },
+        plan: rewrite(20_000) as never,
         booking: { ...input.booking, cancelled: true },
       }),
     ).toBeNull();
+  });
+});
+
+describe("the alert's words (#3979)", () => {
+  it("names the kept figure's reason and who corrects it", () => {
+    const text = ibSettlementFigureParagraph({ keptReason: "several-payments", owed: null, hasSupplementaryInvoice: false });
+    expect(text).toContain("kept the amount it had recorded instead of the cash, because the invoice matched more than one payment");
+    expect(text).toContain("the owner or a developer");
+    expect(text).toContain("recorded and refunded amounts together");
+  });
+
+  it("says which way the member is out when the cash disagrees with what is owed", () => {
+    expect(ibSettlementFigureParagraph({ keptReason: null, owed: "overpaid", hasSupplementaryInvoice: false })).toBe(
+      "The member paid more than the booking owes: refund or credit the difference.",
+    );
+    expect(ibSettlementFigureParagraph({ keptReason: null, owed: "underpaid", hasSupplementaryInvoice: true })).toBe(
+      "The member paid less than the booking owes, by more than its supplementary invoice bills: collect the rest.",
+    );
+  });
+
+  it("renders the figures through the club's format", () => {
+    const html = adminBankTransferSettlementFigureTemplate(
+      {
+        memberName: "Ada",
+        checkIn: new Date("2026-08-01T00:00:00.000Z"),
+        checkOut: new Date("2026-08-02T00:00:00.000Z"),
+        bookingId: "b-1",
+        keptReason: "folded-refund",
+        owed: null,
+        hasSupplementaryInvoice: false,
+        recordedCents: 30_000,
+        cashCents: 20_000,
+        owedCents: null,
+        xeroInvoiceNumber: "INV-1",
+        xeroInvoiceUrl: null,
+        bookingUrl: "https://club.test/bookings/b-1",
+        reviewUrl: "https://club.test/admin/payments",
+      },
+      CLUB_FORMAT_TEST,
+    );
+    expect(html).toContain("Bank Transfer Amount Needs Checking");
+    expect(html).toContain("$300.00");
+    expect(html).toContain("$200.00");
   });
 });

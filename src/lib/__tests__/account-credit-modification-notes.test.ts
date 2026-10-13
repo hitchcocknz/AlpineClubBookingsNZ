@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const findMany = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/prisma", () => ({ prisma: { xeroSyncOperation: { findMany } } }));
 
-import { noCashModificationNoteIds } from "@/lib/xero-inbound/account-credit-modification-notes";
+import {
+  invoiceCorrectionNoteIds,
+  noCashModificationNoteIds,
+  readModificationNoteCash,
+} from "@/lib/xero-inbound/account-credit-modification-notes";
 import { UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE } from "@/lib/xero-review-task-key";
 
 /**
@@ -13,8 +17,8 @@ import { UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE } from "@/lib/xero-review-task-key"
  * billed-offset scope. Read from the wording the note's operation recorded
  * when it was raised.
  */
-function operation(xeroObjectId: string, requestPayload: Record<string, unknown>) {
-  return { xeroObjectId, requestPayload };
+function operation(xeroObjectId: string, requestPayload: Record<string, unknown>, localModel = "BookingModification") {
+  return { xeroObjectId, localModel, requestPayload };
 }
 
 describe("noCashModificationNoteIds (#3809, #3954, #3979)", () => {
@@ -57,5 +61,39 @@ describe("noCashModificationNoteIds (#3809, #3954, #3979)", () => {
   it("asks nothing for no notes", async () => {
     expect(await noCashModificationNoteIds([])).toEqual(new Set());
     expect(findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("readModificationNoteCash and invoiceCorrectionNoteIds (#3979)", () => {
+  beforeEach(() => findMany.mockReset());
+
+  it("classifies the modification notes among applied ones; another kind of note is absent", async () => {
+    findMany.mockResolvedValue([
+      operation("cn-refund", { refundMethod: "internet-banking" }),
+      operation("cn-correction", { noteWording: "invoice-correction" }),
+      operation("cn-offset", { noteWording: "invoice-correction", reviewTaskId: UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE }),
+      operation("cn-clearing", { clearsUnpaidInvoice: true }, "Booking"),
+      operation("cn-account-credit", { refundAmountCents: 1 }, "Payment"),
+    ]);
+
+    expect(
+      await readModificationNoteCash(["cn-refund", "cn-correction", "cn-offset", "cn-clearing", "cn-account-credit"]),
+    ).toEqual(
+      new Map([
+        ["cn-refund", "refund"],
+        ["cn-correction", "correction"],
+        ["cn-offset", "no-cash"],
+        ["cn-clearing", "refund"],
+      ]),
+    );
+  });
+
+  it("names the invoice corrections whose count depends on the payment - never #3954's billed offset", async () => {
+    findMany.mockResolvedValue([
+      operation("cn-correction", { noteWording: "invoice-correction" }),
+      operation("cn-offset", { noteWording: "invoice-correction", reviewTaskId: UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE }),
+    ]);
+
+    expect(await invoiceCorrectionNoteIds(["cn-correction", "cn-offset"])).toEqual(new Set(["cn-correction"]));
   });
 });

@@ -622,8 +622,18 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       // same rows. The in-memory figure says what was written, so every return
       // carries it; the cancel arms size their credit from the receipt.
       const { paymentColumns } = receiptFigure;
-      if (paymentColumns) {
-        await tx.payment.update({ where: { id: fresh.id }, data: paymentColumns });
+      if (
+        paymentColumns &&
+        (paymentColumns.amountCents !== fresh.amountCents ||
+          paymentColumns.refundedAmountCents !== fresh.refundedAmountCents)
+      ) {
+        await tx.payment.update({
+          where: { id: fresh.id },
+          data: {
+            amountCents: paymentColumns.amountCents,
+            refundedAmountCents: paymentColumns.refundedAmountCents,
+          },
+        });
         fresh.amountCents = paymentColumns.amountCents;
       }
 
@@ -643,12 +653,23 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       const paymentInRefundedState =
         fresh.status === PaymentStatus.REFUNDED ||
         fresh.status === PaymentStatus.PARTIALLY_REFUNDED;
-      if (paymentWasPending || !fresh.xeroInvoiceId || fresh.xeroInvoiceNumber !== invoiceNumber) {
+      // #3979: a rewrite's status is the one its rows project (a #1765 card
+      // refund leaves it part refunded), never a blanket SUCCEEDED.
+      const settledStatus = paymentColumns
+        ? paymentColumns.status
+        : paymentInRefundedState
+          ? null
+          : PaymentStatus.SUCCEEDED;
+      if (
+        paymentWasPending ||
+        !fresh.xeroInvoiceId ||
+        fresh.xeroInvoiceNumber !== invoiceNumber ||
+        (settledStatus !== null && settledStatus !== fresh.status)
+      ) {
         await tx.payment.update({
           where: { id: fresh.id },
           data: {
-            // #3979: a rewrite already wrote the projected status.
-            ...(paymentInRefundedState || paymentColumns ? {} : { status: PaymentStatus.SUCCEEDED }),
+            ...(settledStatus === null ? {} : { status: settledStatus }),
             xeroInvoiceId: invoiceId,
             xeroInvoiceNumber: invoiceNumber,
           },

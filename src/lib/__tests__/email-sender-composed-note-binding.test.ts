@@ -55,7 +55,10 @@ import {
   sendAdminLateCaptureHandBackConflictAlert,
 } from "@/lib/email/admin-alerts-finance";
 import { sendAdminInternetBankingHoldKeptAlert } from "@/lib/email/admin-alerts-internet-banking";
-import { sendAdminSecondInstrumentSettlementConflictAlert } from "@/lib/email/admin-alerts-settlement";
+import {
+  sendAdminBankTransferSettlementFigureAlert,
+  sendAdminSecondInstrumentSettlementConflictAlert,
+} from "@/lib/email/admin-alerts-settlement";
 import {
   sendBookingBumpedEmail,
   sendSplitGuestPortionCancelledEmail,
@@ -418,6 +421,48 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     const cancelled = await rendered("cancelled-payment-recorded");
     expect(cancelled).toContain("cancelled as unpaid");
     expect(cancelled).toContain("Hold deadline: none");
+  });
+
+  it("admin-bank-transfer-settlement-figure: {{settlementFigureNote}} says what needs a person (#3979)", async () => {
+    const alert = {
+      memberName: "Alice Example",
+      checkIn: new Date("2026-08-01"),
+      checkOut: new Date("2026-08-03"),
+      bookingId: "booking-9",
+      keptReason: "folded-refund" as const,
+      owed: null,
+      hasSupplementaryInvoice: false,
+      recordedCents: 30000,
+      cashCents: 20000,
+      owedCents: null,
+      xeroInvoiceNumber: "INV-9",
+      // No link, so the send-time organisation stamp is not exercised here.
+      xeroInvoiceUrl: null,
+    };
+    await sendAdminBankTransferSettlementFigureAlert(alert, CLUB_FORMAT_TEST);
+
+    const keptRendered = renderDefaultBody("admin-bank-transfer-settlement-figure", capturedUnmuteableTemplateData());
+    expect(keptRendered).toContain("kept the amount it had recorded instead of the cash");
+    expect(keptRendered).toContain("the owner or a developer");
+    expect(keptRendered).toContain("Amount recorded: $300.00");
+    expect(keptRendered).toContain("Cash Xero shows: $200.00");
+    // Unmuteable and named for the event, never the payment-failure mail.
+    const [keptArgs] = mocks.sendUnmuteableAdminAlert.mock.calls[0] as [
+      { subject: string; templateName: string },
+    ];
+    expect(keptArgs.subject).toBe("Bank transfer amount needs checking: Alice Example");
+    expect(keptArgs.templateName).toBe("admin-bank-transfer-settlement-figure");
+    expect(mocks.sendToAdmins).not.toHaveBeenCalled();
+
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminBankTransferSettlementFigureAlert(
+      { ...alert, keptReason: null, owed: "overpaid", owedCents: 15000 },
+      CLUB_FORMAT_TEST,
+    );
+    const owedRendered = renderDefaultBody("admin-bank-transfer-settlement-figure", capturedUnmuteableTemplateData());
+    expect(owedRendered).toContain("The member paid more than the booking owes");
+    expect(owedRendered).not.toContain("kept the amount");
+    expect(owedRendered).toContain("Booking owes: $150.00");
   });
 
   it("admin-second-instrument-settlement-conflict: {{secondInstrumentConflictNote}} says what the card money already did (#3638)", async () => {

@@ -256,7 +256,10 @@ export async function decideInternetBankingReceiptFigure(
 
   const expectedCents =
     input.invoice.totalCents !== null ? input.invoice.totalCents - memberCreditCents : storedReceiptCents;
-  const mixedInvoiceExpectedCents = input.cash.knownCents < expectedCents ? expectedCents : null;
+  // Only cash that quantified to something can be "part" of the invoice; a
+  // figure that read as nothing is the unquantifiable fallback, not a mix.
+  const mixedInvoiceExpectedCents =
+    input.cash.knownCents > 0 && input.cash.knownCents < expectedCents ? expectedCents : null;
 
   if (plan.kind !== "rewrite") {
     return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents };
