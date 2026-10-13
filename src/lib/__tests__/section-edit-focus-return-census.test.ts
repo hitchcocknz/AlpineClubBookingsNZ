@@ -14,9 +14,12 @@
 //
 // The way IN is the hook's too (#4115): `startEditing` (and a list editor's
 // `capture`) moves focus to the first control the edit opened, or to the
-// section. So an adopter never reveals its own editor, and the `revealTarget`
-// escape hatch — kept for the three sections whose card reveal predates the
-// shared one — is pinned to those three.
+// section. So an adopter never reveals its own editor — no attention reveal,
+// no direct `.focus()`, `autoFocus` or `focusAndKeepInView` (a pinned,
+// counted exclusion names any `.focus()` that is a FAILURE position instead) —
+// and the `revealTarget` escape hatch, kept for the two sections whose card
+// reveal predates the shared one, is pinned to those two, however it is
+// spelled: `revealTarget: x`, the shorthand, or inside a spread.
 //
 // The adopter lists are PINNED: a new adopter fails here until it is added,
 // which is the moment to check its wiring by eye as well as by this scan.
@@ -61,17 +64,43 @@ const LIST_EDITOR_ADOPTERS = [
 ];
 
 const REVEAL_TARGET_ADOPTERS = [
-  "src/app/(admin)/admin/member-fields/page.tsx",
   "src/components/admin/allocation-preferences-section.tsx",
   "src/components/admin/club-identity-panel.tsx",
 ];
+
+/**
+ * Adopters allowed a direct `.focus()` call, with how many and why. Each is a
+ * position the reveal does not cover; a new one is a decision to record here.
+ */
+const DIRECT_FOCUS_EXCLUSIONS: ReadonlyArray<{
+  file: string;
+  count: number;
+  reason: string;
+}> = [
+  {
+    file: "src/components/admin/roster-editor.tsx",
+    count: 1,
+    reason:
+      "a row-level save FAILURE focuses that row's own invalid select — a failure position, not the reveal on Edit",
+  },
+];
+
+/**
+ * The shared implementation: the hooks themselves, which define the reveal
+ * and the props the census looks for rather than adopting them.
+ */
+const IMPLEMENTATION = new Set([
+  "src/hooks/use-editor-focus-return.ts",
+  "src/hooks/use-scroll-to-feedback.ts",
+  "src/hooks/use-section-edit-state.ts",
+]);
 
 const REVEAL_FAILURE =
   "INV-SSOT-001 / #4115: Edit's reveal lives in `useEditorFocusReturn` " +
   "(`src/hooks/use-editor-focus-return.ts`), which `startEditing` and a list " +
   "editor's `capture` already run: focus goes to the first control the edit " +
   "opened, or to the section. Do not reveal the editor again in the section, " +
-  "and leave `revealTarget` to the three sections pinned here.";
+  "and leave `revealTarget` to the two sections pinned here.";
 
 const FAILURE =
   "INV-SSOT-001 / #4087: focus after Save or Cancel goes through the one " +
@@ -90,8 +119,9 @@ function trackedSources(): string[] {
   return listing
     .split("\0")
     .filter(Boolean)
-    .filter((file) => file.endsWith(".tsx"))
-    .filter((file) => !file.includes("__tests__/") && !/\.test\.tsx$/.test(file))
+    .filter((file) => /\.tsx?$/.test(file))
+    .filter((file) => !file.includes("__tests__/") && !/\.test\.tsx?$/.test(file))
+    .filter((file) => !IMPLEMENTATION.has(file))
     .sort();
 }
 
@@ -127,8 +157,8 @@ describe("staged sections wire their focus return (#4087)", () => {
   const sectionAdopters = sources.filter(
     ({ source }) => editableInstances(source).length > 0,
   );
-  // `.tsx` only: the hook's own use of it (`use-section-edit-state.ts`) is the
-  // shared implementation, not an adopter.
+  // The hook's own use of it (`use-section-edit-state.ts`) is the shared
+  // implementation, not an adopter, and is left out of `sources`.
   const listAdopters = sources.filter(
     ({ source }) => listEditorInstances(source).length > 0,
   );
@@ -163,16 +193,35 @@ describe("staged sections wire their focus return (#4087)", () => {
   });
 
   it("leaves the reveal on Edit to the hook in every adopter", () => {
-    const handRolled = [...sectionAdopters, ...listAdopters]
-      .filter(({ source }) => /\b(useRevealAttention|revealEditor)\b/.test(source))
-      .map(({ file }) => file);
+    const adopters = [...sectionAdopters, ...listAdopters];
+    const handRolled = adopters.flatMap(({ file, source }) => {
+      const found = [
+        /\b(useRevealAttention|revealEditor|focusAndKeepInView)\b/.test(source)
+          ? "an attention reveal"
+          : null,
+        /\bautoFocus\b/.test(source) ? "autoFocus" : null,
+      ].filter(Boolean);
+      const direct = (source.match(/\.focus\s*\(/g) ?? []).length;
+      const allowed =
+        DIRECT_FOCUS_EXCLUSIONS.find((entry) => entry.file === file)?.count ?? 0;
+      if (direct > allowed) found.push(`${direct} direct .focus() (allowed ${allowed})`);
+      return found.map((what) => `${file}: reveals its own editor (${what})`);
+    });
     expect(handRolled, REVEAL_FAILURE).toEqual([]);
+    // An exclusion that no longer matches is stale, not slack.
+    for (const entry of DIRECT_FOCUS_EXCLUSIONS) {
+      const adopter = adopters.find(({ file }) => file === entry.file);
+      expect(
+        (adopter?.source.match(/\.focus\s*\(/g) ?? []).length,
+        `${entry.file} is listed in DIRECT_FOCUS_EXCLUSIONS for ${entry.count} .focus() call(s)`,
+      ).toBe(entry.count);
+    }
   });
 
-  it("keeps `revealTarget` to the three sections whose card reveal predates the shared one", () => {
+  it("keeps `revealTarget` to the two sections whose card reveal predates the shared one", () => {
     expect(
       sources
-        .filter(({ source }) => /\brevealTarget\s*:/.test(source))
+        .filter(({ source }) => /\brevealTarget\b/.test(source))
         .map(({ file }) => file),
       REVEAL_FAILURE,
     ).toEqual(REVEAL_TARGET_ADOPTERS);

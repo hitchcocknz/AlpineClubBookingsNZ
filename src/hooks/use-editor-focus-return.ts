@@ -14,6 +14,7 @@ import {
   elementByMarker,
   focusAndKeepInView,
   isHTMLElement,
+  isPageRoot,
   RETURN_FOCUS_REGION_ATTRIBUTE,
   RETURN_FOCUS_TRIGGER_ATTRIBUTE,
   revealEditor,
@@ -56,15 +57,38 @@ const EDITABLE_CONTROL_SELECTOR = [
 ].join(", ");
 
 /**
+ * An unchecked native radio whose group already has a checked one: Tab lands
+ * on the checked radio of a group and skips the rest, so the reveal does too.
+ * The group is every radio sharing its `name` and its form owner.
+ */
+function isRadioTabSkips(element: HTMLElement) {
+  if (!(element instanceof HTMLInputElement)) return false;
+  if (element.type !== "radio" || !element.name || element.checked) return false;
+  return Array.from(
+    element.ownerDocument.querySelectorAll('input[type="radio"]'),
+  ).some(
+    (other) =>
+      other instanceof HTMLInputElement &&
+      other !== element &&
+      other.checked &&
+      other.name === element.name &&
+      other.form === element.form,
+  );
+}
+
+/**
  * Whether a keyboard user could Tab to `element` and change it. `tabIndex < 0`
- * drops what Tab skips: the hidden native input a Radix checkbox or select
- * keeps for form submission, and the unchecked radios of a roving group, whose
- * checked radio is the one Tab lands on.
+ * drops what Tab skips among the ARIA widgets: the hidden native input a Radix
+ * checkbox or select keeps for form submission, and the unchecked radios of a
+ * roving ARIA radio group. A native radio group gets Tab's own rule instead
+ * ({@link isRadioTabSkips}), since every native radio has `tabIndex` 0.
  */
 function isEditableControl(element: Element): element is HTMLElement {
   if (!isHTMLElement(element)) return false;
+  if (!element.matches(EDITABLE_CONTROL_SELECTOR)) return false;
   if (element.matches(":disabled")) return false;
   if (element.tabIndex < 0) return false;
+  if (isRadioTabSkips(element)) return false;
   if (
     element.getAttribute("aria-disabled") === "true" ||
     element.getAttribute("aria-readonly") === "true" ||
@@ -88,21 +112,74 @@ export interface EditorOpening {
   regionId: string;
   /** The controls that were ALREADY editable before it opened. */
   editableBefore: ReadonlySet<Element>;
+  /**
+   * Where focus was when the opening ran, if that is where the admin opened
+   * the editor from: `null` for the page, or the opening control itself. A
+   * focus anywhere else — the admin moved on while a delayed opening awaited
+   * a fetch — is recorded as `false`, and the reveal moves nothing.
+   */
+  openedFrom: HTMLElement | null | false;
 }
 
 /**
- * Record which of the marked section's controls are already editable, from
- * the explicit action that opens its editor — before the render that opens it.
- * A scope select, a row's toggle or anything else the admin could already
- * change is then not mistaken for what the opening made editable.
+ * Record which of the marked section's controls are already editable, and
+ * where focus is, from the explicit action that opens its editor — before the
+ * render that opens it. A scope select, a row's toggle or anything else the
+ * admin could already change is then not mistaken for what the opening made
+ * editable.
+ *
+ * Focus counts as still on the opening control when it is on the page (the
+ * pressed control is gone, or nothing was focused), on the control carrying
+ * this opening's trigger marker, or on a control inside the section that is
+ * not itself editable. Anything else means the admin has moved on — an
+ * opening that ran after an `await` ("Create override" seeds the editor from
+ * a fetch first) found them typing elsewhere — and the reveal leaves them be.
  */
 // test seam
-export function captureEditorOpening(regionId: string): EditorOpening {
-  const region =
-    typeof document === "undefined"
-      ? null
-      : elementByMarker(RETURN_FOCUS_REGION_ATTRIBUTE, regionId);
-  return { regionId, editableBefore: new Set(editableControlsIn(region)) };
+export function captureEditorOpening(
+  regionId: string,
+  triggerId?: string,
+): EditorOpening {
+  if (typeof document === "undefined") {
+    return { regionId, editableBefore: new Set(), openedFrom: false };
+  }
+  const region = elementByMarker(RETURN_FOCUS_REGION_ATTRIBUTE, regionId);
+  const active = document.activeElement;
+  let openedFrom: EditorOpening["openedFrom"] = false;
+  if (isPageRoot(active)) {
+    openedFrom = null;
+  } else if (
+    isHTMLElement(active) &&
+    ((triggerId !== undefined &&
+      active.getAttribute(RETURN_FOCUS_TRIGGER_ATTRIBUTE) === triggerId) ||
+      (region?.contains(active) && !isEditableControl(active)))
+  ) {
+    openedFrom = active;
+  }
+  return {
+    regionId,
+    editableBefore: new Set(editableControlsIn(region)),
+    openedFrom,
+  };
+}
+
+/**
+ * Whether the reveal may move focus now: the opening started where the admin
+ * was, focus has not moved off it since (it is still there, or the render
+ * dropped it to the page), and the section is not hidden behind a modal. A
+ * section whose Edit lives in a dialog rendered outside it is `aria-hidden`
+ * while the dialog is open; the dialog's own focus scope keeps control there.
+ */
+// test seam
+export function mayRevealOpenedEditor(
+  opening: EditorOpening | null,
+  region: HTMLElement | null,
+): boolean {
+  if (!opening || opening.openedFrom === false) return false;
+  if (typeof document === "undefined") return false;
+  if (region?.closest('[aria-hidden="true"], [inert]')) return false;
+  const active = document.activeElement;
+  return isPageRoot(active) || active === opening.openedFrom;
 }
 
 /**
@@ -115,15 +192,15 @@ export function captureEditorOpening(regionId: string): EditorOpening {
  * The scroll is `block: "nearest"`, unlike `revealEditor`'s `"start"`: the
  * admin pressed Edit (or Add, or a row's Edit) inside this section, so it is
  * already where they are looking, and the control moves only as far as it must
- * to be on screen. It moves focus whatever holds it — the pressed control is
- * usually gone, and a row's Edit that stays mounted is not where the admin is
- * going next.
+ * to be on screen. It moves focus off the opening control even when that
+ * stays mounted — a row's Edit is not where the admin is going next — but off
+ * nothing else ({@link mayRevealOpenedEditor}).
  */
 // test seam
 export function revealOpenedEditor(opening: EditorOpening | null) {
   if (!opening || typeof document === "undefined") return;
   const region = elementByMarker(RETURN_FOCUS_REGION_ATTRIBUTE, opening.regionId);
-  if (!region) return;
+  if (!region || !mayRevealOpenedEditor(opening, region)) return;
   for (const control of editableControlsIn(region)) {
     if (opening.editableBefore.has(control)) continue;
     if (focusAndKeepInView(control)) return;
@@ -140,8 +217,10 @@ export function revealOpenedEditor(opening: EditorOpening | null) {
  *    return to and, once the editor has rendered, REVEALS it (#4115): focus
  *    goes to the first control the opening made editable, or to the section
  *    (`revealOpenedEditor`). `revealTarget` replaces that with a
- *    `revealEditor` of the given element; it exists for the three sections
- *    whose card reveal predates #4115, and a new section omits it;
+ *    `revealEditor` of the given element; it exists for the two sections
+ *    whose card reveal predates #4115, and a new section omits it. Neither
+ *    moves focus the admin has moved elsewhere, nor into a section hidden
+ *    behind a modal (`mayRevealOpenedEditor`);
  *  - `close()` from every user action that closes it (Cancel, a successful
  *    save, a save conflict that closes the stale editor) — never from a scope
  *    change or a background refresh, which are not the admin leaving it;
@@ -180,7 +259,10 @@ export function useEditorFocusReturn({
     openingRef.current = null;
     const target = revealTargetRef.current;
     if (target) {
-      revealEditor(target);
+      const region = opening
+        ? elementByMarker(RETURN_FOCUS_REGION_ATTRIBUTE, opening.regionId)
+        : null;
+      if (mayRevealOpenedEditor(opening, region)) revealEditor(target);
       return;
     }
     revealOpenedEditor(opening);
@@ -192,7 +274,7 @@ export function useEditorFocusReturn({
         triggerId: `${id}${key}`,
         regionId: id,
       });
-      openingRef.current = captureEditorOpening(id);
+      openingRef.current = captureEditorOpening(id, `${id}${key}`);
       setOpenKey((count) => count + 1);
     },
     [id],

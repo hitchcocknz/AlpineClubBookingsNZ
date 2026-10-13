@@ -413,8 +413,9 @@ export function PublicBookingRequestsSection() {
     property the module-toggle cards on `/admin/security` have. Be precise about
     what does and does not follow from it:
 
-      - `startEditing` opens the card (and notes focus for #4087) and NOTHING
-        else. Opening a card does not re-fetch, so clicking Edit does not
+      - `startEditing` opens the card, notes focus for the return (#4087) and
+        moves it to the card's first field (#4115), and does NOTHING else.
+        Opening a card does not re-fetch, so clicking Edit does not
         resolve the staleness. The boxes an admin types into may be stale.
       - What keeps that from becoming a WRITE is the per-field patch: a stale
         box the admin never touched is not in the PUT body at all, so it cannot

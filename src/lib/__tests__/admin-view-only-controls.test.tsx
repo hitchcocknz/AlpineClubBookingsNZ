@@ -13,10 +13,7 @@ import {
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import {
   expectRecoveryAlertToHoldFocus,
-  expectRevealed,
   expectToHoldFocus,
-  installScrollIntoViewSpy,
-  removeScrollIntoViewSpy,
 } from "@/lib/__tests__/helpers/focus";
 
 // useAdminAreaEditAccess reads the merged matrix off the session user; drive it
@@ -1545,33 +1542,18 @@ describe("AdminMemberFieldsPage view-only gating (#1940, membership)", () => {
     expect(screen.getAllByRole("checkbox")[0]).toBeDisabled();
   });
 
-  it("reveals the field grid on Edit, as it did before the shared reveal (#2934, #4115)", async () => {
+  it("moves focus to the first field toggle on Edit (#2934, #4115)", async () => {
     sessionMatrix = matrix("view", { membership: "edit" });
     render(<AdminMemberFieldsPage />);
     const edit = await screen.findByRole("button", { name: /Edit member fields/i });
-    const scrollIntoView = installScrollIntoViewSpy();
-    try {
-      edit.focus();
-      fireEvent.click(edit);
 
-      // The page's own `revealTarget`: the grid holding every field toggle —
-      // not the first toggle, which is where a section without one lands.
-      const grid = await waitFor(() => {
-        const active = document.activeElement as HTMLElement;
-        expect(active.contains(screen.getAllByRole("checkbox")[0])).toBe(true);
-        return active;
-      });
-      expect(grid.getAttribute("role")).toBeNull();
-      for (const checkbox of screen.getAllByRole("checkbox")) {
-        expect(grid.contains(checkbox)).toBe(true);
-      }
-      expect(
-        grid.contains(screen.getByRole("button", { name: /^Cancel$/i })),
-      ).toBe(false);
-      expectRevealed(scrollIntoView, grid);
-    } finally {
-      removeScrollIntoViewSpy();
-    }
+    // A keyboard user: Edit holds focus, and pressing it unmounts it. The
+    // shared reveal lands on the first toggle Edit enabled — a named control —
+    // and scrolls only as far as it must, so Save stays clear of the header.
+    edit.focus();
+    fireEvent.click(edit);
+
+    await expectToHoldFocus(screen.getAllByRole("checkbox")[0]);
   });
 
   it("focuses the failure when a save is rejected with 403 (#2934)", async () => {

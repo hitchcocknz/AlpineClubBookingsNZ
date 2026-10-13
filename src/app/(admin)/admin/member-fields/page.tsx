@@ -75,15 +75,11 @@ function toDraft(settings: Partial<MemberFieldsSettingsValues> | undefined) {
 export default function AdminMemberFieldsPage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
-  const sectionRef = useRef<HTMLDivElement>(null);
   // Member fields live under the membership area (the write route enforces
   // membership:edit), so gate the editor on that area (#1940).
   const canEdit = useAdminAreaEditAccess("membership");
 
   const section = useSectionEditState<MemberFieldsSettingsValues>({
-    // Edit unmounts the button that held focus; the hook brings the field
-    // grid into view, only when the admin asked to edit (#2934, #4115).
-    revealTarget: sectionRef,
     load: async (signal) => {
       const response = await fetch(ENDPOINT, {
         credentials: "same-origin",
@@ -266,7 +262,7 @@ export default function AdminMemberFieldsPage() {
           </div>
         </div>
 
-        <div ref={sectionRef} className="grid gap-4 xl:grid-cols-2">
+        <div className="grid gap-4 xl:grid-cols-2">
           {fields.map((field) => {
             const checkboxId = `member-field-${field.key}`;
             const enabled = draft?.[field.key] ?? false;

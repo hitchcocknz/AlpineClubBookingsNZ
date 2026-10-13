@@ -139,10 +139,10 @@ export interface UseSectionEditStateOptions<T extends object> {
   regionLabel?: string;
   /**
    * Reveal this element on Edit instead of the first control the edit made
-   * editable (#4115). It exists ONLY for the three sections whose card reveal
-   * predates #4115 — allocation preferences, club identity and member fields,
-   * pinned by `section-edit-focus-return-census.test.ts` — which focus and
-   * scroll to a container, as they did before. A new section omits it.
+   * editable (#4115). It exists ONLY for the two sections whose card reveal
+   * predates #4115 — allocation preferences and club identity, pinned by
+   * `section-edit-focus-return-census.test.ts` — which focus and scroll to
+   * their named card, as they did before. A new section omits it.
    */
   revealTarget?: RefObject<HTMLElement | null>;
 }

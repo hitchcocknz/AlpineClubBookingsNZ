@@ -116,6 +116,88 @@ describe("revealing an opened editor (#4115)", () => {
     expect(document.activeElement).toBe(mine);
   });
 
+  it("takes the checked radio of a native group, as Tab does", () => {
+    const region = markedRegion();
+    const first = control(region, "input", { type: "radio", name: "approval", disabled: "" });
+    const second = control(region, "input", { type: "radio", name: "approval", disabled: "" });
+    second.checked = true;
+    const opening = captureEditorOpening("section");
+    first.disabled = false;
+    second.disabled = false;
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(second);
+  });
+
+  it("takes the first radio of a native group with none checked", () => {
+    const region = markedRegion();
+    const opening = captureEditorOpening("section");
+    const first = control(region, "input", { type: "radio", name: "approval" });
+    control(region, "input", { type: "radio", name: "approval" });
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(first);
+  });
+
+  it("moves nothing when focus left the opening control before the opening ran", () => {
+    const region = markedRegion();
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    const opening = captureEditorOpening("section", "trigger");
+    control(region, "input");
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it("moves nothing when focus moved off the opening control after it ran", () => {
+    const region = markedRegion();
+    const opener = control(region, "button", {
+      "data-return-focus-trigger": "trigger",
+    });
+    opener.focus();
+    const opening = captureEditorOpening("section", "trigger");
+    control(region, "input");
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it("moves off a marked opening control that is still mounted", () => {
+    const region = markedRegion();
+    const opener = control(region, "button", {
+      "data-return-focus-trigger": "trigger",
+    });
+    opener.focus();
+    const opening = captureEditorOpening("section", "trigger");
+    const field = control(region, "input");
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(field);
+  });
+
+  it("moves nothing into a section hidden behind a modal", () => {
+    const region = markedRegion();
+    region.setAttribute("aria-hidden", "true");
+    const opening = captureEditorOpening("section");
+    control(region, "input");
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(document.body);
+
+    region.removeAttribute("aria-hidden");
+    const wrapper = document.createElement("div");
+    wrapper.setAttribute("inert", "");
+    document.body.append(wrapper);
+    wrapper.append(region);
+    revealOpenedEditor(captureEditorOpening("section"));
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("moves nothing when there is no record or no marked section", () => {
     const outside = document.createElement("input");
     document.body.append(outside);

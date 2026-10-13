@@ -1765,11 +1765,14 @@ edit made editable (mounted or enabled by it, inside the card marked by
 `useEditorFocusReturn` in `src/hooks/use-editor-focus-return.ts`, which
 positions through `src/hooks/use-scroll-to-feedback.ts`, the one home for
 failure / reveal / success positioning — #2934). A control the admin could
-already change, such as a scope select, is not what Edit opened and is skipped.
-The hook's `revealTarget` option instead reveals a given element at the top;
-it exists only for the three sections whose card reveal predates #4115 —
-allocation preferences, club identity and member fields — and a new section
-omits it. The way back out: Save and Cancel unmount
+already change, such as a scope select, is not what Edit opened and is skipped,
+as is an unchecked radio whose group has a checked one (Tab's own rule). The
+reveal moves nothing when focus has moved off the control that opened the
+editor — an opening that awaited a fetch first ("Create override") — or when
+the card is hidden behind a modal, as the analytics card is while its dialog
+holds Edit. The hook's `revealTarget` option instead reveals a given element at
+the top; it exists only for the two sections whose card reveal predates #4115 —
+allocation preferences and club identity — and a new section omits it. The way back out: Save and Cancel unmount
 the button that held focus too, so the hook records the focused element when
 `startEditing` runs and, after Cancel or a successful save, returns focus to it,
 to the Edit re-rendered in its place, or — when Edit is missing or disabled for

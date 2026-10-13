@@ -338,7 +338,8 @@ export interface FocusReturnAnchor {
   region: HTMLElement | null;
 }
 
-function isPageRoot(element: Element | null) {
+/** `document.body` / `<html>`, or nothing: focus has fallen to the page. */
+export function isPageRoot(element: Element | null) {
   return (
     !element ||
     element === document.body ||
