@@ -324,6 +324,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-022` | Unpaid confirmation with applied credit states the netting, from the ledger |
 | `INV-PAY-059` | Netted figure is not the allocation gate; pay the smaller |
 | `INV-PAY-023` | Applied credit reduces Internet Banking invoices by allocating existing floating credit notes |
+| `INV-PAY-127` | Credit lots are used oldest first, ties by lower id |
 | `INV-PAY-024` | Applied credit also reduces the card charge; intent mints effective amount |
 | `INV-PAY-025` | Payment on a cancelled booking's stale invoice needs cash evidence before crediting |
 | `INV-PAY-026` | The same cash-evidence rule gates Internet Banking settlement on both inbound surfaces |
