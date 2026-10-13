@@ -669,6 +669,21 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
         "organiser_by_hand",
       ),
   },
+  {
+    // #4084: a refund to the member's own card Stripe did not make is on its
+    // way, in an info box. Its own pin, so the made case (`:minimal`) stays byte-identical.
+    id: "bookingCancelledTemplate:refund-own-card-pending",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        12000,
+        CLUB_FORMAT_TEST,
+        "card_pending",
+      ),
+  },
 ];
 
 /** Generated from the exported signatures; see the module docblock. */

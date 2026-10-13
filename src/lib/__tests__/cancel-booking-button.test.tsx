@@ -801,6 +801,70 @@ describe("CancelBookingButton — a refund the group organiser receives (#3973)"
   });
 });
 
+// #4084: a cancel whose refund to the member's own card Stripe did not make
+// (thrown and queued, or answered failed or canceled) says it is on its way, in
+// the "Booking Cancelled" email's own words, as information; keyed off the
+// cancel's `ownCardRefund` answer, never `refundMethod: "card"`.
+describe("CancelBookingButton — an own-card refund not made yet (#4084)", () => {
+  function stubOwnCardFetch(result: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () => (String(url).endsWith("/cancel-preview") ? previewBody : result),
+      })),
+    );
+  }
+
+  async function confirmCancel(buttonName: string) {
+    fireEvent.click(screen.getByRole("button", { name: buttonName }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Confirm Cancellation" })).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
+    });
+  }
+
+  it.each([
+    [
+      "the member",
+      false,
+      "Cancel Booking",
+      "A refund of $45.00 is on its way to your original payment method. You will receive a confirmation email shortly.",
+    ],
+    [
+      "an officer on the member's behalf",
+      true,
+      "Cancel on behalf of member",
+      "A refund of $45.00 is on its way to the member's original payment method. They will receive a confirmation email shortly.",
+    ],
+  ] as const)("tells %s the refund is on its way, as information", async (_label, onBehalfOfMember, buttonName, sentence) => {
+    stubOwnCardFetch({ refundAmountCents: 4500, refundMethod: "card", ownCardRefund: { method: "card_pending", amountCents: 4500 } });
+    render(<CancelBookingButton bookingId="bk_own" onBehalfOfMember={onBehalfOfMember} />);
+    await confirmCancel(buttonName);
+
+    await waitFor(() => {
+      expect(screen.getByText(sentence)).toBeTruthy();
+    });
+    expect(screen.getByText(sentence).className).toContain("text-info-11");
+    expect(screen.queryByText(/has been processed/i)).toBeNull();
+  });
+
+  it("keeps the made wording, byte-identical, when Stripe made the refund", async () => {
+    stubOwnCardFetch({ refundAmountCents: 4500, refundMethod: "card", ownCardRefund: { method: "card", amountCents: 4500 } });
+    render(<CancelBookingButton bookingId="bk_own" />);
+    await confirmCancel("Cancel Booking");
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Your refund of $45.00 has been processed to your original payment method. You will receive a confirmation email shortly."),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/on its way/i)).toBeNull();
+  });
+});
+
 // #3643 DECISION 2: a payment the app cannot credit is settled by hand.
 describe("CancelBookingButton — a recorded payment settled by hand", () => {
   it("says the cancel treats the booking as unpaid and the treasurer settles the payment", async () => {

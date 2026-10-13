@@ -2,7 +2,9 @@
  * #4070: the answers an own-card edit refund can get from
  * `refundPaymentTransactions` after the edit commits, and what the "Booking
  * Modified" email must then say. Shared by the four edit doors' tests so each
- * door is driven through the same states. `queued` is whether what is still
+ * door is driven through the same states, and (#4084) by the cancel's, whose
+ * "Booking Cancelled" email says `card` for `own` and `card_pending` for
+ * `own_card_pending`. `queued` is whether what is still
  * owed goes to the recovery runner (`enqueueBookingModificationRefundRecovery`):
  * only a call that throws queues anything.
  *
@@ -31,6 +33,8 @@ export const OWN_CARD_REFUND_STATES: ReadonlyArray<{
   { label: "Stripe answered no status", answer: made(null), queued: false, destination: "own" },
   { label: "the Stripe call throws", answer: new Error("stripe down"), queued: true, destination: "own_card_pending" },
   { label: "Stripe answered failed", answer: made("failed"), queued: false, destination: "own_card_pending" },
+  // #4084: Stripe's other refusal, which the ledger excludes too (`isRecordedRefundStatus`).
+  { label: "Stripe answered canceled", answer: made("canceled"), queued: false, destination: "own_card_pending" },
   { label: "no refund came back", answer: { refunds: [] }, queued: false, destination: "own_card_pending" },
 ];
 
