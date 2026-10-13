@@ -3295,7 +3295,7 @@ export async function runPaymentRecoveryOperationNow(
 export async function processPaymentRecoveryOperations(options?: {
   limit?: number;
   /**
-   * #3653: also read pending organiser child refunds back from Stripe. The
+   * #3653, #4104: also read pending card refunds (organiser children's too) back from Stripe. The
    * payments cron passes it; the inline drain after an edit does not, so a
    * member's request never waits on those provider reads.
    */
@@ -3373,6 +3373,10 @@ export async function processPaymentRecoveryOperations(options?: {
     } catch (err) {
       logger.error({ err }, "Could not re-read pending organiser child refunds (#3653)");
     }
+    // #4104: and every other pending card refund, so one that failed later is owed again.
+    await import("@/lib/card-refund-status-sync")
+      .then(({ reconcilePendingCardRefunds }) => reconcilePendingCardRefunds())
+      .catch((err: unknown) => logger.error({ err }, "Could not re-read pending card refunds (#4104)"));
   }
 
   return result;

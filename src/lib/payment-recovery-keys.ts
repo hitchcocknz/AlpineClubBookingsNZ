@@ -29,6 +29,17 @@ export const SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX = "payment_recovery_refun
 /** A booking edit's card refund (`enqueueBookingModificationRefundRecovery`). */
 export const BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX =
   "payment_recovery_modification_refund_";
+/**
+ * #4104 (`INV-PAY-128`): a card refund Stripe accepted (`pending`) and failed
+ * later, owed again. One row per failed Stripe refund; the key doubles as the
+ * Stripe key prefix, so its retry is a request Stripe has never seen.
+ */
+export const CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX = "card_refund_failed_later_";
+export function buildCardRefundFailedLaterRecoveryKey(stripeRefundId: string) {
+  return `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}${stripeRefundId}`;
+}
+/** The Stripe `reason` metadata of that retry; a failed refund carrying it was itself a retry. */
+export const CARD_REFUND_FAILED_LATER_REASON = "card_refund_failed_later";
 
 export function buildBookingCancellationRefundIdempotencyKey(bookingId: string) {
   return `${BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX}${bookingId}`;
@@ -545,6 +556,10 @@ export function bookingModificationRefundReasonForKeyPrefix(
   // own prefix and body (`buildLateCaptureRefundMetadata`).
   if (isLateCaptureRefundStripeKeyPrefix(keyPrefix)) {
     return LATE_CAPTURE_REFUND_METADATA_REASON;
+  }
+  // #4104: a refund Stripe accepted and failed later, asked for again.
+  if (keyPrefix?.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX)) {
+    return CARD_REFUND_FAILED_LATER_REASON;
   }
   return "booking_modification_refund_recovery";
 }

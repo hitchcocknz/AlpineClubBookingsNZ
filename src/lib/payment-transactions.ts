@@ -11,7 +11,8 @@ import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references
 import Stripe from "stripe";
 import { formatCents } from "@/lib/utils";
 import { compareOrdinal } from "@/lib/ordinal-order";
-import { withStoreTransaction } from "@/lib/db-transaction";
+import { isRootPrismaClient, withStoreTransaction } from "@/lib/db-transaction";
+import { alertFailedLaterCardRefunds, keepFailedLaterCardRefundOwed, type FailedLaterCardRefundDebt } from "@/lib/card-refund-failed-later";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
 import logger from "@/lib/logger";
 import { writeEditAttributedTransaction } from "@/lib/edit-attributed-ask-write";
@@ -48,6 +49,7 @@ type StripeRefundLedgerInput = {
   created?: number | null;
   charge?: StripeReference;
   payment_intent?: StripeReference;
+  metadata?: Record<string, string> | null; // #4104: whose refund it is
 };
 
 function stripeCreatedAtToDate(created: number | null | undefined) {
@@ -476,6 +478,7 @@ export async function recordStripeRefundLedgerEntry({
     skipDuplicates: true,
   });
   let reversedCents = 0;
+  let failedLater = false;
   if (inserted.count === 0) {
     // The refresh is guarded on the row still being COUNTED, for two reasons:
     //
@@ -497,10 +500,13 @@ export async function recordStripeRefundLedgerEntry({
     if (refreshed.count === 1 && !isRecordedRefundStatus(data.status)) {
       reversedCents = refund.amount;
     }
+    // #4104: seen failed after it counted - that write, or a caller told it counts (a replayed key) that the row holds refused.
+    failedLater = reversedCents > 0 || (refreshed.count === 0 && isRecordedRefundStatus(data.status));
   }
 
   return {
     created: inserted.count > 0,
+    failedLater,
     reversedCents,
     amountCents: refund.amount,
     status: data.status,
@@ -783,9 +789,10 @@ export async function recordStripeRefundsAgainstTransaction({
   stripeRefundedAmountCents?: number;
   store?: PaymentStore;
 }) {
-  return withStoreTransaction(store, async (db) => {
+  const recorded = await withStoreTransaction(store, async (db) => {
     await lockPaymentForRefundedTotal(db, paymentId);
     const ledgerStartSeconds = await refundLedgerStartSeconds(db);
+    const failedLater: StripeRefundLedgerInput[] = [];
     let createdRefundsCount = 0;
     let createdRefundAmountCents = 0;
     let newlyCountedCents = 0;
@@ -801,6 +808,7 @@ export async function recordStripeRefundsAgainstTransaction({
         store: db,
       });
       reversedCents += recorded.reversedCents;
+      if (recorded.failedLater) failedLater.push(refund);
       if (!recorded.created) {
         continue;
       }
@@ -847,6 +855,14 @@ export async function recordStripeRefundsAgainstTransaction({
 
     const payment = await reconcilePaymentAggregates({ paymentId, store: db });
 
+    // #4104 (`INV-PAY-128`): a refund seen failing after it counted is owed again, in this transaction.
+    const failedLaterDebts: FailedLaterCardRefundDebt[] = [];
+    for (const refund of failedLater) {
+      const paymentIntentId = stripeReferenceId(refund.payment_intent) ?? fallbackPaymentIntentId ?? null;
+      const debt = await keepFailedLaterCardRefundOwed(db, { paymentId, paymentTransactionId, refund, paymentIntentId });
+      if (debt) failedLaterDebts.push(debt);
+    }
+
     return {
       payment,
       createdRefundsCount,
@@ -854,8 +870,12 @@ export async function recordStripeRefundsAgainstTransaction({
       ledgerRefundedAmountCents,
       refundedAmountCents: nextCents,
       appliedCents: nextCents - previousCents,
+      failedLaterDebts,
     };
   });
+  // Alerted once its commit is ours; joined to a caller's transaction, the caller owns it.
+  if (isRootPrismaClient(store)) await alertFailedLaterCardRefunds(recorded.failedLaterDebts);
+  return recorded;
 }
 
 /**
