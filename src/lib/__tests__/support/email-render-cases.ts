@@ -93,6 +93,7 @@ import {
   adminXeroSyncErrorTemplate,
 } from "@/lib/email-templates/admin-finance";
 import { adminInternetBankingHoldKeptTemplate } from "@/lib/email-templates/admin-internet-banking";
+import { adminBankTransferSettlementFigureTemplate } from "@/lib/email-templates/admin-bank-transfer-settlement";
 import {
   adminAccountDeletionRequestedTemplate,
   adminFamilyGroupRequestTemplate,
@@ -805,6 +806,10 @@ const GENERATED_CASES: EmailRenderCase[] = [
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "settled", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: null, xeroInvoiceNumber: null, xeroInvoiceUrl: null, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminSecondInstrumentSettlementConflictTemplate:full", fn: "adminSecondInstrumentSettlementConflictTemplate", render: () =>
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "cancelledAfterCard", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: "cardPaymentIntentId-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  { id: "adminBankTransferSettlementFigureTemplate:kept", fn: "adminBankTransferSettlementFigureTemplate", render: () =>
+    adminBankTransferSettlementFigureTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", keptReason: "folded-refund", owed: null, hasSupplementaryInvoice: false, recordedCents: 105, cashCents: 106, owedCents: null, xeroInvoiceNumber: null, xeroInvoiceUrl: null, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  { id: "adminBankTransferSettlementFigureTemplate:owed", fn: "adminBankTransferSettlementFigureTemplate", render: () =>
+    adminBankTransferSettlementFigureTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", keptReason: null, owed: "underpaid", hasSupplementaryInvoice: true, recordedCents: 105, cashCents: 106, owedCents: 107, xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminSecondInstrumentSettlementConflictTemplate:refund-history", fn: "adminSecondInstrumentSettlementConflictTemplate", render: () =>
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "cancelledAfterRefund", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: "cardPaymentIntentId-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminManualRefundTaskTemplate:minimal", fn: "adminManualRefundTaskTemplate", render: () =>

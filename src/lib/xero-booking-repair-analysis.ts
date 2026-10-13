@@ -3,6 +3,9 @@
 // Extracted verbatim from xero-booking-repair.ts (#1208 item 2).
 import { reductionLeftAfterUnpaidAskCents } from "@/lib/additional-payment-ask";
 import { recordedUnpaidAskOffsetCents } from "@/lib/unpaid-ask-offset-marker";
+import { isOwnModificationNoteOperation } from "@/lib/unpaid-ask-billed-offset-order";
+import { modificationNoteCashOf } from "@/lib/xero-inbound/account-credit-modification-notes";
+import { receiptCountsInvoiceCorrections } from "@/lib/xero-inbound/settle-from-cash";
 import type {
   BookingModificationRecord,
   BookingRepairRecord,
@@ -172,8 +175,19 @@ export function hasSuccessfulPrimaryInvoiceCreateAfter(
   );
 }
 
-export function getKnownModificationRefundTotalCents(booking: BookingRepairRecord) {
+export function getKnownModificationRefundTotalCents(
+  booking: BookingRepairRecord,
+  modificationOperationsById: ReadonlyMap<string, readonly XeroOperationRecord[]>,
+) {
+  // #3979 (`INV-PAY-124`): an edit whose own note moved no cash refunded
+  // nothing, so its reduction is not part of the refunded total - an invoice
+  // correction only where the payment's receipt still counts one. Left in, it
+  // would hide a missing refund note behind money never refunded.
+  const countsCorrections = receiptCountsInvoiceCorrections(booking.payment?.transactions ?? []);
   return booking.modifications.reduce((sum, modification) => {
+    const ownNote = (modificationOperationsById.get(modification.id) ?? []).find(isOwnModificationNoteOperation);
+    const noteCash = ownNote ? modificationNoteCashOf(ownNote) : "refund";
+    if (noteCash === "no-cash" || (noteCash === "correction" && !countsCorrections)) return sum;
     const netAmount = getModificationNetAmountCents(modification);
     // #3954 (`INV-PAY-120`): what an unpaid ask took of a reduction cancelled
     // money nobody paid, so none of it was refunded - the same figure the
@@ -261,7 +275,8 @@ function getRefundRequestNotesTotalCents(
 export function getCashCancellationRefundCandidateCents(
   booking: BookingRepairRecord,
   paymentOperations: XeroOperationRecord[],
-  paymentLinks: XeroObjectLinkRecord[]
+  paymentLinks: XeroObjectLinkRecord[],
+  modificationOperationsById: ReadonlyMap<string, readonly XeroOperationRecord[]>,
 ) {
   if (!booking.payment) {
     return null;
@@ -275,7 +290,7 @@ export function getCashCancellationRefundCandidateCents(
   if (refundRequestNotesCents === null) {
     return null;
   }
-  const knownModificationRefundCents = getKnownModificationRefundTotalCents(booking);
+  const knownModificationRefundCents = getKnownModificationRefundTotalCents(booking, modificationOperationsById);
   const candidate =
     booking.payment.refundedAmountCents - knownModificationRefundCents - refundRequestNotesCents;
   if (candidate <= 0) {

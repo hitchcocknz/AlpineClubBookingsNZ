@@ -54,10 +54,15 @@ import {
   retirePendingClearingNote,
 } from "@/lib/invoice-clearing-note-evidence";
 import {
-  alertCashSettlementNotice,
   decideInternetBankingReceiptFigure,
-  type CashSettlementNotice,
+  paidInvoiceFacts,
 } from "@/lib/xero-inbound/settle-from-cash";
+import {
+  cashSettlementMarkerInTransaction,
+  raiseCashSettlementAlert,
+  readCashSettlementNotice,
+  type CashSettlementMarker,
+} from "@/lib/xero-inbound/settle-from-cash-notice";
 
 function isPaidXeroInvoice(invoice: Invoice): boolean {
   const status = String(invoice.status ?? "").toUpperCase();
@@ -400,6 +405,8 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
   // cash is not apportioned across multiple matched payments, a shape no app
   // flow produces (group settlements ride their own settlement path).
   const invoiceCash = quantifyXeroInvoiceCashCents(invoice);
+  // #3979: the invoice's total and the credit notes Xero lists as applied to it.
+  const invoiceFacts = paidInvoiceFacts(invoice);
 
   const payments = await prisma.payment.findMany({
     where: paymentFilter,
@@ -434,11 +441,11 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
   );
 
   for (const payment of payments) {
-    // #3979: written inside the transaction, sent only after it commits.
+    // #3979: written inside the transaction, alerted only after it commits.
     // Declared through `as` so the read after the await is not narrowed to null.
-    let cashSettlementNotice = null as CashSettlementNotice | null;
+    let cashSettlementMarker = null as CashSettlementMarker | null;
     const outcome = await prisma.$transaction(async (tx) => {
-      cashSettlementNotice = null;
+      cashSettlementMarker = null;
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
       // Pre-lock read: only the lodge key, which is immutable. The booking's
@@ -537,9 +544,30 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         cash: invoiceCash,
         matchedPayments: payments.length,
         secondInstrument: secondInstrument !== null,
+        invoice: invoiceFacts,
       });
-      cashSettlementNotice = receiptFigure.notice;
-      const settledAmountCents = receiptFigure.settledAmountCents;
+      const cashSettlementNotice = await readCashSettlementNotice(tx, {
+        plan: receiptFigure.plan,
+        recordedCents: receiptFigure.receiptCents,
+        cash: invoiceCash,
+        matchedPayments: payments.length,
+        booking: {
+          id: fresh.bookingId,
+          finalPriceCents: fresh.booking.finalPriceCents,
+          cancelled: fresh.booking.status === BookingStatus.CANCELLED,
+        },
+        changeFeeCents: fresh.changeFeeCents,
+      });
+      // For a booking the settle leaves live: the notice's durable marker, in
+      // this transaction, or one an earlier delivery wrote but never sent.
+      const markLiveBooking = async () => {
+        cashSettlementMarker = await cashSettlementMarkerInTransaction(tx, {
+          bookingId: fresh.bookingId,
+          invoiceId,
+          invoiceNumber,
+          notice: cashSettlementNotice,
+        });
+      };
 
       const transactionUpdate = await tx.paymentTransaction.updateMany({
         where: {
@@ -555,7 +583,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           status: PaymentStatus.SUCCEEDED,
           xeroInvoiceId: invoiceId,
           xeroInvoiceNumber: invoiceNumber,
-          ...receiptFigure.primaryAmountRewrite,
+          ...receiptFigure.primaryRowWrite,
         },
       });
 
@@ -582,22 +610,21 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               reference: fresh.reference ?? undefined,
               amountCents: receiptFigure.receiptCents,
               status: PaymentStatus.SUCCEEDED,
-              reason: "xero_invoice_paid_reconciliation",
+              reason: receiptFigure.primaryRowWrite.reason ?? "xero_invoice_paid_reconciliation",
             },
           });
         }
       }
 
-      // #3979: the payment's own figure follows its receipt, as the officer
-      // cash settle writes both (`payment-reconciliation.ts`), and the
-      // in-memory row says what was written, so the cancel arms below size
-      // their credit from it and every return carries it.
-      if (settledAmountCents !== fresh.amountCents) {
-        await tx.payment.update({
-          where: { id: fresh.id },
-          data: { amountCents: settledAmountCents },
-        });
-        fresh.amountCents = settledAmountCents;
+      // #3979: the payment's columns follow its receipt, as the officer cash
+      // settle writes both (`payment-reconciliation.ts`): its figure, its
+      // refunded total and its status, as the ledger projects them from the
+      // same rows. The in-memory figure says what was written, so every return
+      // carries it; the cancel arms size their credit from the receipt.
+      const { paymentColumns } = receiptFigure;
+      if (paymentColumns) {
+        await tx.payment.update({ where: { id: fresh.id }, data: paymentColumns });
+        fresh.amountCents = paymentColumns.amountCents;
       }
 
       // #3581: the one Internet Banking receipt writer that does NOT end in
@@ -620,7 +647,8 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         await tx.payment.update({
           where: { id: fresh.id },
           data: {
-            ...(paymentInRefundedState ? {} : { status: PaymentStatus.SUCCEEDED }),
+            // #3979: a rewrite already wrote the projected status.
+            ...(paymentInRefundedState || paymentColumns ? {} : { status: PaymentStatus.SUCCEEDED }),
             xeroInvoiceId: invoiceId,
             xeroInvoiceNumber: invoiceNumber,
           },
@@ -661,6 +689,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       if (
         isPaidLikeBookingStatus(fresh.booking.status)
       ) {
+        await markLiveBooking();
         return {
           type: "alreadyPaid" as const,
           payment: fresh,
@@ -726,13 +755,18 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         // face amount — the same figure the member arm would have credited.
         const creditMemberId = bookingOwner(settlementPayment.booking).memberId;
 
-        // #1459: size the mint by the invoice's quantified CASH, never by the
-        // payment's face amount alone. On a mixed invoice — the member
-        // part-pays in cash and the remainder is cleared by credit allocation
-        // (the app's own invoice-clearing note, an operator write-off, or an
-        // operator-allocated member credit note) — `amountPaid` is only the
-        // cash portion, and minting the full payment amount would credit
-        // money that never arrived.
+        // #1459: size the mint by the invoice's quantified CASH, never by a
+        // face amount alone. On a mixed invoice — the member part-pays in cash
+        // and the remainder is cleared by credit allocation (the app's own
+        // invoice-clearing note, an operator write-off, or an operator-allocated
+        // member credit note) — `amountPaid` is only the cash portion, and
+        // minting the whole would credit money that never arrived.
+        // #3979: the face is the RECEIPT's figure - the cash when the settle
+        // recorded it, else the stored receipt - never the payment's total,
+        // which also counts other captures (#1765). So a mixed invoice is told
+        // apart from the invoice side instead (`mixedInvoiceExpectedCents`: the
+        // cash the invoice expected, its total less the member's own applied
+        // credit), and the alert still names the part cleared some other way.
         // #1505: further cap the mint at the invoice's cash NOT already minted
         // for the other payments matched to it, so two never-settled payments
         // on one invoice can never in aggregate mint more than its cash. The
@@ -742,12 +776,13 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           tx,
           matchedBookingIds.filter((id) => id !== settlementPayment.bookingId)
         );
-        const { mintableCents, mintPartial, cashUnverified, aggregateCapped } =
+        const { mintableCents, mintPartial: belowFace, cashUnverified, aggregateCapped } =
           resolveMintableCents(
-            settlementPayment.amountCents,
+            receiptFigure.receiptCents,
             invoiceCash,
             otherMintedCents,
           );
+        const mintPartial = belowFace || receiptFigure.mixedInvoiceExpectedCents !== null;
 
         // #3643 (`INV-PAY-108`, ORCHESTRATOR DECISION 3): while a part-payment
         // review names this payment, open or closed, neither arm below sizes
@@ -837,6 +872,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
             credited: false,
             creditedCents: 0,
             creditedPartial: false,
+            invoiceExpectedCents: receiptFigure.mixedInvoiceExpectedCents ?? receiptFigure.receiptCents,
             cashUnverified,
             aggregateCapped,
             laterCashCents: 0,
@@ -979,6 +1015,9 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           credited,
           creditedCents: actionableCents,
           creditedPartial: mintPartial,
+          // #3979: what the invoice expected in cash, the figure a mixed
+          // invoice's alert names beside the cash that arrived.
+          invoiceExpectedCents: receiptFigure.mixedInvoiceExpectedCents ?? receiptFigure.receiptCents,
           cashUnverified,
           aggregateCapped,
           laterCashCents,
@@ -1054,6 +1093,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       if (
         isPaidLikeBookingStatus(locked.booking.status)
       ) {
+        await markLiveBooking();
         return {
           type: "alreadyPaid" as const,
           payment: fresh,
@@ -1183,8 +1223,11 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               tx,
               matchedBookingIds.filter((id) => id !== fresh.bookingId)
             );
-          const { mintableCents, mintPartial, cashUnverified, aggregateCapped } =
-            resolveMintableCents(fresh.amountCents, invoiceCash, otherMintedCents);
+          // #3979: the receipt's figure as the face, and the invoice side for a
+          // mixed invoice, as the already-cancelled arm above.
+          const { mintableCents, mintPartial: belowFace, cashUnverified, aggregateCapped } =
+            resolveMintableCents(receiptFigure.receiptCents, invoiceCash, otherMintedCents);
+          const mintPartial = belowFace || receiptFigure.mixedInvoiceExpectedCents !== null;
           if (aggregateCapped) {
             logger.warn(
               { invoiceId, paymentId: fresh.id, bookingId: fresh.bookingId, mintableCents, otherMintedCents, invoiceCashCents: invoiceCash.knownCents },
@@ -1251,6 +1294,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
             credited: !existingCredit && mintableCents > 0,
             creditedCents: mintableCents,
             creditedPartial: mintPartial,
+            invoiceExpectedCents: receiptFigure.mixedInvoiceExpectedCents ?? receiptFigure.receiptCents,
             cashUnverified,
             aggregateCapped,
             creditRestoredCents,
@@ -1313,6 +1357,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         { bestEffort: true },
       );
 
+      await markLiveBooking();
       return {
         type: "paid" as const,
         payment: fresh,
@@ -1333,15 +1378,16 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     });
 
     // #3979 (`INV-PAY-124`): a kept figure, or cash that disagrees with what
-    // the booking owes, is never silent on a booking the settle leaves live.
-    // The two cancel arms turn the cash into credit and alert about it
-    // themselves, with the figures, so they are not told twice.
-    const notice = cashSettlementNotice;
-    if (notice && (outcome.type === "paid" || outcome.type === "alreadyPaid")) {
-      await alertCashSettlementNotice({
+    // the booking owes, is never silent on a booking the settle leaves live:
+    // its marker committed with the receipt, and the alert goes out now. The
+    // two cancel arms turn the cash into credit and alert about it themselves,
+    // with the figures, so they write no marker.
+    const marker = cashSettlementMarker;
+    if (marker) {
+      await raiseCashSettlementAlert({
         payment: outcome.payment,
         memberName: `${bookingOwner(outcome.payment.booking).member.firstName} ${bookingOwner(outcome.payment.booking).member.lastName}`.trim(),
-        notice,
+        marker,
         invoiceId,
         format,
       });
@@ -1461,9 +1507,9 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           checkOut: outcome.payment.booking.checkOut,
           amountCents: outcome.creditedCents,
           errorMessage: outcome.aggregateCapped
-            ? `Internet Banking cash of ${formatCents(outcome.creditedCents, format)} was credited for an already-cancelled booking, but this invoice's cash was already partly credited to other Internet Banking payment(s) matched to the same invoice. This payment's face amount is ${formatCents(outcome.payment.amountCents, format)}; only the invoice's remaining cash is held as the member's account credit, because the aggregate credit across all payments on one invoice can never exceed the invoice's cash. Verify the invoice's payments in Xero. If more cash arrives for this invoice later it will NOT credit automatically — top up the member's account credit manually.${outcome.clearingNoteAlreadyIssued ? " An invoice-clearing credit note was ALREADY issued for this invoice, so also check Xero for duplicate settlement artifacts." : ""}${unverifiedSuffix}`
+            ? `Internet Banking cash of ${formatCents(outcome.creditedCents, format)} was credited for an already-cancelled booking, but this invoice's cash was already partly credited to other Internet Banking payment(s) matched to the same invoice. This payment's face amount is ${formatCents(outcome.invoiceExpectedCents, format)}; only the invoice's remaining cash is held as the member's account credit, because the aggregate credit across all payments on one invoice can never exceed the invoice's cash. Verify the invoice's payments in Xero. If more cash arrives for this invoice later it will NOT credit automatically — top up the member's account credit manually.${outcome.clearingNoteAlreadyIssued ? " An invoice-clearing credit note was ALREADY issued for this invoice, so also check Xero for duplicate settlement artifacts." : ""}${unverifiedSuffix}`
             : outcome.creditedPartial
-            ? `Internet Banking cash of ${formatCents(outcome.creditedCents, format)} was received for an already-cancelled booking whose ${formatCents(outcome.payment.amountCents, format)} payment was otherwise settled by credit allocation in Xero (mixed invoice). Only the cash portion is held as the member's account credit — verify the allocation source on the invoice (the app's own invoice-clearing credit note is routine; a manual write-off or an operator-allocated member credit note needs its own follow-up). If more cash arrives for this invoice later it will NOT credit automatically — top up the member's account credit manually.${outcome.clearingNoteAlreadyIssued ? " An invoice-clearing credit note was ALREADY issued for this invoice, so also check Xero for duplicate settlement artifacts." : ""}${unverifiedSuffix}`
+            ? `Internet Banking cash of ${formatCents(outcome.creditedCents, format)} was received for an already-cancelled booking whose ${formatCents(outcome.invoiceExpectedCents, format)} payment was otherwise settled by credit allocation in Xero (mixed invoice). Only the cash portion is held as the member's account credit — verify the allocation source on the invoice (the app's own invoice-clearing credit note is routine; a manual write-off or an operator-allocated member credit note needs its own follow-up). If more cash arrives for this invoice later it will NOT credit automatically — top up the member's account credit manually.${outcome.clearingNoteAlreadyIssued ? " An invoice-clearing credit note was ALREADY issued for this invoice, so also check Xero for duplicate settlement artifacts." : ""}${unverifiedSuffix}`
             : outcome.clearingNoteAlreadyIssued
               ? `Internet Banking payment was received for an already-cancelled booking. The amount is held as the member's account credit — and an invoice-clearing credit note was ALREADY issued for this invoice, so Xero needs manual reconciliation (remove the clearing note's allocation or void the clearing note — or, for an older refund note, its refund payment — or the duplicate artifact).${unverifiedSuffix}`
               : `Internet Banking payment was received for an already-cancelled booking. The amount is held as the member's account credit; follow up with the member if a bank refund is more appropriate.${unverifiedSuffix}`,
@@ -1588,7 +1634,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         checkIn: outcome.payment.booking.checkIn,
         checkOut: outcome.payment.booking.checkOut,
         amountCents: outcome.credited ? outcome.creditedCents : outcome.payment.amountCents,
-        errorMessage: `Internet Banking payment reconciled, but the lodge no longer had capacity. The booking was cancelled and member account credit was created.${outcome.creditRestoredCents > 0 ? ` The ${formatCents(outcome.creditRestoredCents, format)} of account credit the booking had applied was restored to the member in full.` : ""}${outcome.creditedPartial && !outcome.aggregateCapped ? ` Only ${formatCents(outcome.creditedCents, format)} of the ${formatCents(outcome.payment.amountCents, format)} payment arrived as cash (mixed invoice) — the credit was sized at the cash portion; verify the allocation source on the invoice in Xero.` : ""}${outcome.aggregateCapped ? ` This invoice's cash was already partly credited to other Internet Banking payment(s) matched to the same invoice, so this booking's credit was capped at the invoice's remaining cash${outcome.credited ? ` (${formatCents(outcome.creditedCents, format)}, from a ${formatCents(outcome.payment.amountCents, format)} payment)` : " (nothing remained, so no credit was created)"}; the aggregate credit across all payments on one invoice can never exceed the invoice's cash. Verify the invoice's payments in Xero.` : ""}${outcome.cashUnverified ? " Cash amounts could not be fully verified from the Xero payload — confirm the figures against the invoice in Xero." : ""}`,
+        errorMessage: `Internet Banking payment reconciled, but the lodge no longer had capacity. The booking was cancelled and member account credit was created.${outcome.creditRestoredCents > 0 ? ` The ${formatCents(outcome.creditRestoredCents, format)} of account credit the booking had applied was restored to the member in full.` : ""}${outcome.creditedPartial && !outcome.aggregateCapped ? ` Only ${formatCents(outcome.creditedCents, format)} of the ${formatCents(outcome.invoiceExpectedCents, format)} payment arrived as cash (mixed invoice) — the credit was sized at the cash portion; verify the allocation source on the invoice in Xero.` : ""}${outcome.aggregateCapped ? ` This invoice's cash was already partly credited to other Internet Banking payment(s) matched to the same invoice, so this booking's credit was capped at the invoice's remaining cash${outcome.credited ? ` (${formatCents(outcome.creditedCents, format)}, from a ${formatCents(outcome.invoiceExpectedCents, format)} payment)` : " (nothing remained, so no credit was created)"}; the aggregate credit across all payments on one invoice can never exceed the invoice's cash. Verify the invoice's payments in Xero.` : ""}${outcome.cashUnverified ? " Cash amounts could not be fully verified from the Xero payload — confirm the figures against the invoice in Xero." : ""}`,
         paymentIntentId: invoiceId,
       }, format).catch((err) =>
         logger.error(

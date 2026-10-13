@@ -15,9 +15,10 @@
  * owes. A price raised after the invoice is billed on a supplementary invoice,
  * which this invoice never collected, so the amount owed would overstate it.
  *
- * This module decides, from the rows the settle reads under its locks, whether
- * that figure may be written, and alerts the operators when it may not. The
- * settle writes the figure; this module writes nothing and takes no lock.
+ * This module decides, from the rows the settle reads under its locks and the
+ * paid invoice it already holds, whether that figure may be written. The settle
+ * writes it; this module writes nothing and takes no lock. What the operators
+ * are told lives in `settle-from-cash-notice.ts`.
  */
 import {
   PaymentSource,
@@ -25,45 +26,76 @@ import {
   PaymentTransactionKind,
   type Prisma,
 } from "@prisma/client";
-import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
-import type { ClubFormat } from "@/lib/club-format";
-import { sendAdminPaymentFailureAlert } from "@/lib/email";
-import logger from "@/lib/logger";
-import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
-import { formatCents } from "@/lib/utils";
-import { findBookingSupplementaryInvoiceIds } from "@/lib/xero-clearing-allocations";
+import type { Invoice } from "xero-node";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
+import {
+  deriveAggregatePaymentStatus,
+  grossCapturedCents,
+  isCapturedTransactionStatus,
+} from "@/lib/payment-transaction-status";
+import { readModificationNoteCash } from "@/lib/xero-inbound/account-credit-modification-notes";
+import type { IbSettlementKeptReason } from "@/lib/ib-settlement-figure-note";
 
 /** The paid invoice's cash, as `quantifyXeroInvoiceCashCents` measures it. */
 export type InvoiceCash = { knownCents: number; complete: boolean };
 
-/** Why a settle kept the stored figure instead of the invoice's cash. */
-export type CashSettlementRefusal =
-  /** The payload's cash could not be read exactly. */
-  | "cash-incomplete"
-  /** Cash evidence that quantified to nothing (the classifier and quantifier disagree). */
-  | "cash-zero"
-  /** The invoice matched more than one payment: its cash is not this payment's alone. */
-  | "several-payments"
-  /**
-   * The payment's refunded total holds money no row records: an older credit
-   * note folded into it before it was paid. Writing the cash too would count
-   * that reduction twice.
-   */
-  | "folded-refund"
-  /** More than one uncaptured Internet Banking PRIMARY row: which one the cash belongs to is not known. */
-  | "several-primary-rows"
-  /** A second instrument (#3638) already settled the booking: its own alert speaks for it. */
-  | "second-instrument";
+/**
+ * The `reason` on a bank-transfer PRIMARY receipt the settle recorded at the
+ * invoice's cash. The refunded-total repair reads it (`INV-PAY-124`): an invoice
+ * correction counts as refunded only against a receipt recorded at the stored
+ * figure (before #3979, or kept), never against one recorded from cash.
+ */
+export const IB_RECEIPT_FROM_CASH_REASON = "xero_invoice_paid_cash";
+
+/**
+ * #3979 (`INV-PAY-124`): whether an invoice correction still counts as refunded
+ * against this payment - a bank-transfer PRIMARY receipt is captured, and none
+ * was recorded at the invoice's cash. Such a receipt is the figure the payment
+ * was born with (settled before #3979, or kept by the settle), so it still
+ * includes the corrected amount, and counting the correction keeps the
+ * payment's net at the cash. A payment never captured, or settled from cash,
+ * never counts one. Pure, over the payment's rows: the refunded-total repair
+ * and the Xero repair tool both read it.
+ */
+export function receiptCountsInvoiceCorrections(
+  rows: ReadonlyArray<{ kind: PaymentTransactionKind; source: PaymentSource; status: PaymentStatus; reason: string | null }>,
+): boolean {
+  const receipts = rows.filter((row) => isInternetBankingPrimary(row) && isCapturedTransactionStatus(row.status));
+  return receipts.length > 0 && !receipts.some((row) => row.reason === IB_RECEIPT_FROM_CASH_REASON);
+}
+
+/**
+ * Why a settle kept the stored figure instead of the invoice's cash: the
+ * reasons its alert words (`IbSettlementKeptReason`, with that wording), and a
+ * second instrument (#3638), whose own alert speaks for it.
+ *
+ * - `refund-note-applied`: a modification credit note worded as a refund is
+ *   applied to the invoice; the note sync counts it as refunded whenever it
+ *   runs, so writing the cash (which already leaves it out) would count the
+ *   reduction twice.
+ * - `folded-refund`: the refunded total holds money no row records (an older
+ *   note folded into it) that the invoice's no-cash notes do not exactly explain.
+ */
+export type CashSettlementRefusal = IbSettlementKeptReason | "second-instrument";
 
 export type CashSettlementPlan =
   /** The PRIMARY receipt was already captured: a replay, which decides no amount again. */
   | { kind: "replay" }
   /**
-   * The receipt is the cash; the payment's figure is the cash plus whatever
-   * else is captured on it (a card capture refunded before the switch, #1765),
-   * the figure `reconcilePaymentAggregates` derives from the same rows.
+   * The receipt is the cash. The payment's columns are what
+   * `reconcilePaymentAggregates` projects from the same rows with the receipt
+   * captured at the cash: its figure the cash plus whatever else is captured on
+   * it (a card capture refunded before the switch, #1765), its refunded total
+   * the rows' own (an older correction folded into it, exactly explained by the
+   * invoice's no-cash notes, comes off), and its status from both.
    */
-  | { kind: "rewrite"; receiptCents: number; paymentAmountCents: number }
+  | {
+      kind: "rewrite";
+      receiptCents: number;
+      paymentAmountCents: number;
+      refundedAmountCents: number;
+      status: PaymentStatus;
+    }
   | { kind: "keep"; reason: CashSettlementRefusal };
 
 export type CashSettlementTransaction = {
@@ -83,8 +115,9 @@ function isInternetBankingPrimary(row: Pick<CashSettlementTransaction, "kind" | 
  * no Internet Banking PRIMARY row of the payment is captured; a replay keeps
  * whatever the first settle wrote. The cash is written only when it is a
  * complete, positive figure that belongs to this payment alone: exactly one
- * matched payment, no folded refund, at most one uncaptured Internet Banking
- * PRIMARY row, and no second instrument.
+ * matched payment, no refund-worded modification note applied to the invoice,
+ * no folded refund the invoice's no-cash notes do not exactly explain, at most
+ * one uncaptured Internet Banking PRIMARY row, and no second instrument.
  */
 export function planInternetBankingCashSettlement(input: {
   refundedAmountCents: number;
@@ -92,6 +125,8 @@ export function planInternetBankingCashSettlement(input: {
   cash: InvoiceCash;
   matchedPayments: number;
   secondInstrument: boolean;
+  /** Modification notes applied to the invoice: worded as refunds, and moving no cash. */
+  appliedNotes: { refundWordedCents: number; noCashCents: number };
 }): CashSettlementPlan {
   const primaryRows = input.transactions.filter(isInternetBankingPrimary);
   if (primaryRows.some((row) => isCapturedTransactionStatus(row.status))) {
@@ -101,237 +136,144 @@ export function planInternetBankingCashSettlement(input: {
   if (!input.cash.complete) return { kind: "keep", reason: "cash-incomplete" };
   if (input.cash.knownCents <= 0) return { kind: "keep", reason: "cash-zero" };
   if (input.matchedPayments !== 1) return { kind: "keep", reason: "several-payments" };
+  if (input.appliedNotes.refundWordedCents > 0) return { kind: "keep", reason: "refund-note-applied" };
   const ledgerRefundedCents = input.transactions.reduce((sum, row) => sum + row.refundedAmountCents, 0);
-  if (input.refundedAmountCents > ledgerRefundedCents) return { kind: "keep", reason: "folded-refund" };
+  const foldedCents = input.refundedAmountCents - ledgerRefundedCents;
+  if (foldedCents > 0 && foldedCents !== input.appliedNotes.noCashCents) {
+    return { kind: "keep", reason: "folded-refund" };
+  }
   if (primaryRows.length > 1) return { kind: "keep", reason: "several-primary-rows" };
-  const otherCapturedCents = input.transactions
-    .filter((row) => !isInternetBankingPrimary(row) && isCapturedTransactionStatus(row.status))
-    .reduce((sum, row) => sum + row.amountCents, 0);
+  const paymentAmountCents =
+    input.cash.knownCents + grossCapturedCents(input.transactions.filter((row) => !isInternetBankingPrimary(row)));
   return {
     kind: "rewrite",
     receiptCents: input.cash.knownCents,
-    paymentAmountCents: input.cash.knownCents + otherCapturedCents,
+    paymentAmountCents,
+    refundedAmountCents: ledgerRefundedCents,
+    status: deriveAggregatePaymentStatus(
+      PaymentStatus.SUCCEEDED,
+      paymentAmountCents,
+      ledgerRefundedCents,
+      PaymentStatus.SUCCEEDED,
+    ),
   };
 }
 
-/** What the settle tells the operators about the figure it recorded, after it commits. */
-export type CashSettlementNotice = {
-  storedAmountCents: number;
-  cash: InvoiceCash;
-  /** Set when the settle kept the stored figure although the cash says otherwise. */
-  refusal: CashSettlementRefusal | null;
-  /** Set when the cash disagrees with what the booking owes (`INV-PAY-119`). */
-  owedCents: number | null;
-  /** Whether the booking has a supplementary invoice of its own. */
-  hasSupplementaryInvoice: boolean;
+/** A credit note Xero lists as applied to the paid invoice. */
+export type AppliedCreditNote = { id: string; appliedCents: number };
+
+/** What the paid invoice says, beyond its cash. */
+export type PaidInvoiceFacts = {
+  /** The invoice's total, or null when the payload carries none. */
+  totalCents: number | null;
+  appliedCreditNotes: readonly AppliedCreditNote[];
 };
 
-/**
- * Whether a kept figure is worth an alert. Nothing was refused when the stored
- * figure already IS the complete cash of the one payment the invoice matched.
- */
-function keptFigureNeedsAlert(
-  storedAmountCents: number,
-  cash: InvoiceCash,
-  matchedPayments: number,
-): boolean {
-  return !(cash.complete && matchedPayments === 1 && cash.knownCents === storedAmountCents);
-}
-
-/**
- * The cross-check, and the notice it and a refusal produce, read inside the
- * settle's transaction at the transition. `bookingAmountOwedCents`
- * (`INV-PAY-119`) never sets the figure; it only says when the cash disagrees
- * with it. A cancelled booking is not asked: its applied credit has gone back,
- * and its late-cash arm alerts on its own. A shortfall on a booking with a
- * supplementary invoice is the expected shape of a price raised after the
- * invoice (`INV-PAY-047`), so it alone does not alert.
- */
-export async function readCashSettlementNotice(
-  tx: Prisma.TransactionClient,
-  input: {
-    plan: CashSettlementPlan;
-    storedAmountCents: number;
-    cash: InvoiceCash;
-    matchedPayments: number;
-    booking: { id: string; finalPriceCents: number; cancelled: boolean };
-    changeFeeCents: number | null;
-  },
-): Promise<CashSettlementNotice | null> {
-  // A replay decides nothing; a second instrument (#3638) raises its own alert
-  // and the settle writes nothing further, so neither is asked anything here.
-  if (input.plan.kind === "replay") return null;
-  if (input.plan.kind === "keep" && input.plan.reason === "second-instrument") return null;
-  const refusal =
-    input.plan.kind === "keep" &&
-    keptFigureNeedsAlert(input.storedAmountCents, input.cash, input.matchedPayments)
-      ? input.plan.reason
-      : null;
-
-  let owedCents: number | null = null;
-  let hasSupplementaryInvoice = false;
-  if (!input.booking.cancelled && input.cash.complete && input.matchedPayments === 1) {
-    const owed = (
-      await readBookingAmountOwed(
-        {
-          id: input.booking.id,
-          finalPriceCents: input.booking.finalPriceCents,
-          payment: { changeFeeCents: input.changeFeeCents },
-        },
-        tx,
-      )
-    ).owedCents;
-    if (owed !== input.cash.knownCents) {
-      hasSupplementaryInvoice =
-        (await findBookingSupplementaryInvoiceIds(input.booking.id, tx)).length > 0;
-      const expectedShortfall = hasSupplementaryInvoice && input.cash.knownCents < owed;
-      if (!expectedShortfall) owedCents = owed;
-    }
-  }
-
-  if (refusal === null && owedCents === null) return null;
+/** The paid invoice's total and the credit notes it lists as applied, in cents. */
+export function paidInvoiceFacts(invoice: Pick<Invoice, "total" | "creditNotes">): PaidInvoiceFacts {
   return {
-    storedAmountCents: input.storedAmountCents,
-    cash: input.cash,
-    refusal,
-    owedCents,
-    hasSupplementaryInvoice,
+    totalCents: providerAmountToCents(invoice.total),
+    appliedCreditNotes: (invoice.creditNotes ?? []).flatMap((note) => {
+      const appliedCents = providerAmountToCents(note.appliedAmount);
+      return note.creditNoteID && appliedCents !== null && appliedCents > 0
+        ? [{ id: note.creditNoteID, appliedCents }]
+        : [];
+    }),
   };
-}
-
-const REFUSAL_WORDING: Record<CashSettlementRefusal, string> = {
-  "cash-incomplete": "the amount paid could not be read exactly from Xero",
-  "cash-zero": "Xero reported the invoice paid in cash but the amount paid came to nothing",
-  "several-payments": "the invoice matched more than one payment in the app",
-  "folded-refund":
-    "the payment already records money refunded before it was paid (an older credit note on the invoice)",
-  "several-primary-rows": "the payment carries more than one unpaid bank-transfer record",
-  "second-instrument": "a card payment had already settled the booking",
-};
-
-/** The operator alert's body. Plain English; every figure through the club's format. */
-export function cashSettlementNoticeMessage(notice: CashSettlementNotice, format: ClubFormat): string {
-  const cash = notice.cash.complete
-    ? formatCents(notice.cash.knownCents, format)
-    : `an amount it could not read exactly (its figures come to ${formatCents(notice.cash.knownCents, format)})`;
-  const parts: string[] = [];
-  if (notice.refusal) {
-    parts.push(
-      `Xero shows this booking's bank-transfer invoice paid with ${cash}, but the app kept the ${formatCents(notice.storedAmountCents, format)} it had recorded because ${REFUSAL_WORDING[notice.refusal]}. Check the invoice in Xero and correct the payment by hand if the recorded figure is wrong.`,
-    );
-  }
-  if (notice.owedCents !== null) {
-    parts.push(
-      `The cash Xero shows, ${cash}, is not what the booking owes (${formatCents(notice.owedCents, format)}).${notice.hasSupplementaryInvoice ? " The booking also has a supplementary invoice for a later change." : ""} If the member paid too much, refund or credit the difference; if too little, collect the rest.`,
-    );
-  }
-  return parts.join(" ");
 }
 
 /**
  * The settle's one call, inside its locked transaction after both fences
- * (`INV-PAY-124`): the payment's rows, the plan, the figure to record, the
- * PRIMARY row's amount write (only where it differs), and the notice to send
- * after the commit.
+ * (`INV-PAY-124`): the payment's rows, the plan, the receipt and the payment's
+ * columns to write, and the invoice-side figure the cancel arms report a mixed
+ * invoice against.
  */
 export async function decideInternetBankingReceiptFigure(
   tx: Prisma.TransactionClient,
   input: {
-    payment: {
-      id: string;
-      bookingId: string;
-      amountCents: number;
-      refundedAmountCents: number;
-      changeFeeCents: number | null;
-      booking: { finalPriceCents: number; status: string };
-    };
+    payment: { id: string; amountCents: number; refundedAmountCents: number };
     cash: InvoiceCash;
     matchedPayments: number;
     secondInstrument: boolean;
+    invoice: PaidInvoiceFacts;
   },
 ): Promise<{
-  /** The PRIMARY receipt's figure: the cash, or the stored figure when kept. */
+  plan: CashSettlementPlan;
+  /** The receipt's figure: the cash, or the stored receipt's when kept. */
   receiptCents: number;
-  /** `Payment.amountCents` after the settle. */
-  settledAmountCents: number;
-  primaryAmountRewrite: { amountCents?: number };
-  notice: CashSettlementNotice | null;
+  /** What the PRIMARY row update adds: the cash marker, and the amount where it differs. */
+  primaryRowWrite: { amountCents?: number; reason?: string };
+  /** The payment's columns when the plan rewrote them, else null. */
+  paymentColumns: { amountCents: number; refundedAmountCents: number; status: PaymentStatus } | null;
+  /**
+   * The cash the invoice expected - its total less the member's own account
+   * credit applied to it - when the cash came short of it: the rest was cleared
+   * some other way (a write-off, a clearing note) and an operator should know
+   * (#1459). Null when the cash covers it.
+   */
+  mixedInvoiceExpectedCents: number | null;
 }> {
   const { payment } = input;
   const rows = await tx.paymentTransaction.findMany({
     where: { paymentId: payment.id },
     select: { kind: true, source: true, status: true, amountCents: true, refundedAmountCents: true },
   });
+  const noteIds = input.invoice.appliedCreditNotes.map((note) => note.id);
+  const [noteCash, memberCreditNotes] =
+    noteIds.length === 0
+      ? [new Map(), new Set<string>()]
+      : await Promise.all([
+          readModificationNoteCash(noteIds, tx),
+          tx.memberCredit
+            .findMany({ where: { xeroCreditNoteId: { in: noteIds } }, select: { xeroCreditNoteId: true } })
+            .then((credits) => new Set(credits.map((credit) => credit.xeroCreditNoteId))),
+        ]);
+  let refundWordedCents = 0;
+  let noCashCents = 0;
+  let memberCreditCents = 0;
+  for (const note of input.invoice.appliedCreditNotes) {
+    const kind = noteCash.get(note.id);
+    if (kind === "refund") refundWordedCents += note.appliedCents;
+    else if (kind) noCashCents += note.appliedCents;
+    else if (memberCreditNotes.has(note.id)) memberCreditCents += note.appliedCents;
+  }
+
   const plan = planInternetBankingCashSettlement({
     refundedAmountCents: payment.refundedAmountCents,
     transactions: rows,
     cash: input.cash,
     matchedPayments: input.matchedPayments,
     secondInstrument: input.secondInstrument,
+    appliedNotes: { refundWordedCents, noCashCents },
   });
-  const notice = await readCashSettlementNotice(tx, {
-    plan,
-    storedAmountCents: payment.amountCents,
-    cash: input.cash,
-    matchedPayments: input.matchedPayments,
-    booking: {
-      id: payment.bookingId,
-      finalPriceCents: payment.booking.finalPriceCents,
-      cancelled: payment.booking.status === "CANCELLED",
-    },
-    changeFeeCents: payment.changeFeeCents,
-  });
-  if (plan.kind !== "rewrite") {
-    return { receiptCents: payment.amountCents, settledAmountCents: payment.amountCents, primaryAmountRewrite: {}, notice };
-  }
-  const primaryDiffers = rows.some(
-    (row) => isInternetBankingPrimary(row) && row.amountCents !== plan.receiptCents,
+  const uncapturedPrimary = rows.filter(
+    (row) => isInternetBankingPrimary(row) && !isCapturedTransactionStatus(row.status),
   );
-  return {
-    receiptCents: plan.receiptCents,
-    settledAmountCents: plan.paymentAmountCents,
-    primaryAmountRewrite: primaryDiffers ? { amountCents: plan.receiptCents } : {},
-    notice,
-  };
-}
+  const [onlyUncapturedPrimary, ...moreUncapturedPrimary] = uncapturedPrimary;
+  const storedReceiptCents =
+    onlyUncapturedPrimary && moreUncapturedPrimary.length === 0 ? onlyUncapturedPrimary.amountCents : payment.amountCents;
+  const receiptCents = plan.kind === "rewrite" ? plan.receiptCents : storedReceiptCents;
 
-/** The operator alert, after the commit; best-effort, as the settle's other alerts are. */
-export async function alertCashSettlementNotice(input: {
-  payment: { id: string; bookingId: string; booking: { checkIn: Date; checkOut: Date } };
-  /** The booking owner's name, as the settle's other alerts write it. */
-  memberName: string;
-  notice: CashSettlementNotice;
-  invoiceId: string | null;
-  format: ClubFormat;
-}): Promise<void> {
-  const { payment, notice } = input;
-  logger.warn(
-    {
-      bookingId: payment.bookingId,
-      paymentId: payment.id,
-      invoiceId: input.invoiceId,
-      refusal: notice.refusal,
-      storedAmountCents: notice.storedAmountCents,
-      xeroCashCents: notice.cash.knownCents,
-      xeroCashComplete: notice.cash.complete,
-      owedCents: notice.owedCents,
+  const expectedCents =
+    input.invoice.totalCents !== null ? input.invoice.totalCents - memberCreditCents : storedReceiptCents;
+  const mixedInvoiceExpectedCents = input.cash.knownCents < expectedCents ? expectedCents : null;
+
+  if (plan.kind !== "rewrite") {
+    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents };
+  }
+  const primaryDiffers = uncapturedPrimary.some((row) => row.amountCents !== plan.receiptCents);
+  return {
+    plan,
+    receiptCents,
+    primaryRowWrite: {
+      reason: IB_RECEIPT_FROM_CASH_REASON,
+      ...(primaryDiffers ? { amountCents: plan.receiptCents } : {}),
     },
-    "Internet Banking settlement: the recorded figure needs an operator's check (#3979)",
-  );
-  await sendAdminPaymentFailureAlert(
-    {
-      memberName: input.memberName,
-      checkIn: payment.booking.checkIn,
-      checkOut: payment.booking.checkOut,
-      amountCents: notice.cash.knownCents,
-      errorMessage: cashSettlementNoticeMessage(notice, input.format),
-      paymentIntentId: input.invoiceId ?? "",
+    paymentColumns: {
+      amountCents: plan.paymentAmountCents,
+      refundedAmountCents: plan.refundedAmountCents,
+      status: plan.status,
     },
-    input.format,
-  ).catch((err) =>
-    logger.error(
-      { err, bookingId: payment.bookingId, paymentId: payment.id },
-      "Failed to alert admins about an Internet Banking settlement figure (#3979)",
-    ),
-  );
+    mixedInvoiceExpectedCents,
+  };
 }

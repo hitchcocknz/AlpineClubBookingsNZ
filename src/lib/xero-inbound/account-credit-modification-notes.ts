@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { readModificationNoteWording, type ModificationNoteWording } from "@/lib/xero-refund-method";
 import { isUnpaidAskBilledOffsetNoteScope, queuedReviewTaskId } from "@/lib/xero-review-task-key";
@@ -22,27 +23,95 @@ import { getJsonRecord } from "./amounts";
  *   the answer does not depend on whether the payment was captured by the time
  *   the inbound sync reads it: a note raised before the bank transfer still
  *   refunds nothing once the transfer settles, and a refund raised after it
- *   never carries this wording.
+ *   never carries this wording. One exception, decided per payment by the
+ *   refunded-total repair (`invoiceCorrectionNoteIds`): against a bank receipt
+ *   recorded at the stored figure the correction is still counted.
  */
-export async function noCashModificationNoteIds(creditNoteIds: string[]): Promise<Set<string>> {
-  if (creditNoteIds.length === 0) return new Set();
-  const operations = await prisma.xeroSyncOperation.findMany({
-    where: { direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", xeroObjectId: { in: creditNoteIds } },
-    select: { xeroObjectId: true, requestPayload: true },
-  });
+export async function noCashModificationNoteIds(
+  creditNoteIds: string[],
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation"> = prisma,
+): Promise<Set<string>> {
+  const operations = await readNoteOperations(creditNoteIds, db);
   return new Set(
     operations
-      .filter(
-        (operation) =>
-          isNoCashModificationNoteWording(readModificationNoteWording(getJsonRecord(operation.requestPayload))) ||
-          isUnpaidAskBilledOffsetNoteScope(queuedReviewTaskId(operation)),
-      )
+      .filter((operation) => noteCashOf(operation) !== "refund")
       .map((operation) => operation.xeroObjectId)
       .filter((id): id is string => id !== null),
   );
 }
 
-/** A wording that says no cash went back: account credit kept, or an invoice correction. */
-function isNoCashModificationNoteWording(wording: ModificationNoteWording): boolean {
-  return wording.refundMethod === "account-credit" || wording.noteWording === "invoice-correction";
+/**
+ * #3979: of these notes, the invoice corrections (`INV-PAY-116` wording) - the
+ * one no-cash class whose count depends on the payment: against a bank receipt
+ * recorded at the stored figure (before #3979, or kept by the settle) the
+ * receipt still includes the corrected amount, so the correction is counted as
+ * refunded there to keep the payment's net at the cash (`INV-PAY-124`).
+ * #3954's billed-offset corrections are not in it: they have never counted.
+ */
+export async function invoiceCorrectionNoteIds(
+  creditNoteIds: string[],
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation"> = prisma,
+): Promise<Set<string>> {
+  const operations = await readNoteOperations(creditNoteIds, db);
+  return new Set(
+    operations
+      .filter((operation) => noteCashOf(operation) === "correction")
+      .map((operation) => operation.xeroObjectId)
+      .filter((id): id is string => id !== null),
+  );
+}
+
+/** What a modification credit note did with cash: refunded it, corrected a price, or neither. */
+export type ModificationNoteCash = "refund" | "correction" | "no-cash";
+
+/**
+ * #3979: the booking modification credit notes among these (an edit's note, or
+ * the booking-anchored clearing note), and what each did with cash. A note the
+ * app did not raise as a modification note is absent. The inbound settle reads
+ * it for the notes Xero lists as applied to a paid invoice (`INV-PAY-124`).
+ */
+export async function readModificationNoteCash(
+  creditNoteIds: string[],
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation"> = prisma,
+): Promise<Map<string, ModificationNoteCash>> {
+  const operations = await readNoteOperations(creditNoteIds, db);
+  const notes = new Map<string, ModificationNoteCash>();
+  for (const operation of operations) {
+    if (!operation.xeroObjectId || !MODIFICATION_NOTE_MODELS.has(operation.localModel ?? "")) continue;
+    notes.set(operation.xeroObjectId, noteCashOf(operation));
+  }
+  return notes;
+}
+
+/** Where a modification credit note's operation is anchored: an edit, or the booking (a clearing note). */
+const MODIFICATION_NOTE_MODELS = new Set(["BookingModification", "Booking"]);
+
+type NoteOperation = { xeroObjectId: string | null; localModel: string | null; requestPayload: unknown };
+
+async function readNoteOperations(
+  creditNoteIds: string[],
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+): Promise<NoteOperation[]> {
+  if (creditNoteIds.length === 0) return [];
+  return db.xeroSyncOperation.findMany({
+    where: { direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", xeroObjectId: { in: creditNoteIds } },
+    select: { xeroObjectId: true, localModel: true, requestPayload: true },
+  });
+}
+
+/** What one note's own operation says it did with cash. Pure: the Xero repair tool reads it over loaded rows. */
+export function modificationNoteCashOf(operation: { requestPayload: unknown }): ModificationNoteCash {
+  return noteCashOf(operation);
+}
+
+function noteCashOf(operation: { requestPayload: unknown }): ModificationNoteCash {
+  if (isUnpaidAskBilledOffsetNoteScope(queuedReviewTaskId(operation))) return "no-cash";
+  const wording = readModificationNoteWording(getJsonRecord(operation.requestPayload));
+  if (wording.refundMethod === "account-credit") return "no-cash";
+  return isInvoiceCorrectionWording(wording) ? "correction" : "refund";
+}
+
+/** The #3536 wording that says the note lowered an unpaid invoice and refunded nothing. */
+function isInvoiceCorrectionWording(wording: ModificationNoteWording): boolean {
+  return wording.noteWording === "invoice-correction";
 }

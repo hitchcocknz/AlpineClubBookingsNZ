@@ -1,6 +1,7 @@
 import { type CreditNote as XeroCreditNote } from "xero-node";
 import { CreditType, PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 import { isCapturedTransactionStatus, latestTransactionOfKind } from "@/lib/payment-transaction-status";
+import { receiptCountsInvoiceCorrections } from "./settle-from-cash";
 import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
@@ -16,7 +17,7 @@ import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-a
 import { assertNoAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import { getClubFormat } from "@/lib/club-format-settings";
 import { formatCents } from "@/lib/utils";
-import { noCashModificationNoteIds } from "./account-credit-modification-notes";
+import { invoiceCorrectionNoteIds, noCashModificationNoteIds } from "./account-credit-modification-notes";
 import { capOrganiserChildMirrorAtStripeRefunds } from "@/lib/organiser-child-refund";
 
 /** #3792: the operator alert, and the audit action, for a refused change. */
@@ -216,8 +217,11 @@ async function resolvePaymentIdsByInvoiceTargets(
  * refunded total: its allocations, by the payment each allocated invoice
  * resolves to. Nothing for a note that moved no cash (`noCashModificationNoteIds`:
  * #3809's give-back, #3954's billed offset, and #3979's invoice correction,
- * `INV-PAY-124`). The current note's half of what `repairRefundedPaymentBusinessState`
- * counts; the notes already on the payment are filtered by the same rule there.
+ * `INV-PAY-124`), except that an invoice correction still counts against a
+ * payment whose bank receipt was recorded at the stored figure
+ * (`paymentsCountingInvoiceCorrections`). The current note's half of what
+ * `repairRefundedPaymentBusinessState` counts; the notes already on the payment
+ * are filtered by the same rule there.
  */
 export async function resolveModificationRefundAmountsByPaymentId(input: {
   creditNoteId: string;
@@ -226,27 +230,57 @@ export async function resolveModificationRefundAmountsByPaymentId(input: {
 }): Promise<Map<string, number>> {
   const amounts = new Map<string, number>();
   if (!input.isModificationNote) return amounts;
-  if ((await noCashModificationNoteIds([input.creditNoteId])).has(input.creditNoteId)) return amounts;
+  const [noCash, corrections] = await Promise.all([
+    noCashModificationNoteIds([input.creditNoteId]),
+    invoiceCorrectionNoteIds([input.creditNoteId]),
+  ]);
+  const isCorrection = corrections.has(input.creditNoteId);
+  if (noCash.has(input.creditNoteId) && !isCorrection) return amounts;
   const paymentIdsByInvoiceId = await resolvePaymentIdsByInvoiceTargets(
     input.creditNoteId,
     input.allocationTargets
   );
+  const counting = isCorrection
+    ? await paymentsCountingInvoiceCorrections([...paymentIdsByInvoiceId.values()])
+    : null;
   for (const target of input.allocationTargets) {
     const paymentId = paymentIdsByInvoiceId.get(target.invoiceId);
-    if (!paymentId) continue;
+    if (!paymentId || (counting && !counting.has(paymentId))) continue;
     amounts.set(paymentId, (amounts.get(paymentId) ?? 0) + target.amountCents);
   }
   return amounts;
 }
 
-/** A payment's latest PRIMARY row status when no row of it was ever captured; null once any was. */
+/**
+ * #3979 (`INV-PAY-124`): of these payments, those an invoice correction still
+ * counts against (`receiptCountsInvoiceCorrections`).
+ */
+async function paymentsCountingInvoiceCorrections(paymentIds: string[]): Promise<Set<string>> {
+  if (paymentIds.length === 0) return new Set();
+  const rows = await prisma.paymentTransaction.findMany({
+    where: { paymentId: { in: paymentIds }, kind: PaymentTransactionKind.PRIMARY },
+    select: { paymentId: true, kind: true, source: true, status: true, reason: true },
+  });
+  return new Set(
+    paymentIds.filter((paymentId) =>
+      receiptCountsInvoiceCorrections(rows.filter((row) => row.paymentId === paymentId)),
+    ),
+  );
+}
+
+/**
+ * A payment's latest PRIMARY row status when it has PRIMARY rows and none of
+ * its rows was ever captured; null otherwise - when something was captured, or
+ * when there are no rows at all (a legacy payment, or an organiser-settled
+ * child, whose mirror keeps today's answer).
+ */
 async function uncapturedPrimaryStatus(paymentId: string): Promise<PaymentStatus | null> {
   const rows = await prisma.paymentTransaction.findMany({
     where: { paymentId },
     select: { kind: true, status: true, createdAt: true },
   });
   if (rows.some((row) => isCapturedTransactionStatus(row.status))) return null;
-  return latestTransactionOfKind(rows, PaymentTransactionKind.PRIMARY)?.status ?? PaymentStatus.PENDING;
+  return latestTransactionOfKind(rows, PaymentTransactionKind.PRIMARY)?.status ?? null;
 }
 
 export async function repairRefundedPaymentBusinessState(input: {
@@ -346,6 +380,7 @@ export async function repairRefundedPaymentBusinessState(input: {
     )
   );
   const validModificationCreditNoteIds = new Set<string>();
+  const validCorrectionNoteIds = new Set<string>();
 
   if (existingModificationCreditNoteIds.length > 0) {
     const modificationCreditNotes = await prisma.xeroObjectLink.findMany({
@@ -364,16 +399,23 @@ export async function repairRefundedPaymentBusinessState(input: {
     });
 
     // #3809 (review M2), #3954: a give-back or billed-offset note moved no cash.
-    const noCashNoteIds = await noCashModificationNoteIds(existingModificationCreditNoteIds);
+    // #3979: nor did an invoice correction, but it is counted against a payment
+    // whose bank receipt was recorded at the stored figure.
+    const [noCashNoteIds, correctionNoteIds] = await Promise.all([
+      noCashModificationNoteIds(existingModificationCreditNoteIds),
+      invoiceCorrectionNoteIds(existingModificationCreditNoteIds),
+    ]);
     for (const link of modificationCreditNotes) {
-      if (
-        isIncludedRefundCreditNoteStatus(getJsonRecord(link.metadata)?.status) &&
-        !noCashNoteIds.has(link.xeroObjectId)
-      ) {
+      if (!isIncludedRefundCreditNoteStatus(getJsonRecord(link.metadata)?.status)) continue;
+      if (!noCashNoteIds.has(link.xeroObjectId)) {
         validModificationCreditNoteIds.add(link.xeroObjectId);
+      } else if (correctionNoteIds.has(link.xeroObjectId)) {
+        validCorrectionNoteIds.add(link.xeroObjectId);
       }
     }
   }
+  const paymentsCountingCorrections =
+    validCorrectionNoteIds.size > 0 ? await paymentsCountingInvoiceCorrections(paymentIds) : new Set<string>();
 
   const directRefundCentsByPaymentId = new Map<string, Map<string, number>>();
   for (const link of directRefundLinks) {
@@ -400,7 +442,10 @@ export async function repairRefundedPaymentBusinessState(input: {
     if (!creditNoteId || creditNoteId === input.creditNoteId) {
       continue;
     }
-    if (!validModificationCreditNoteIds.has(creditNoteId)) {
+    if (
+      !validModificationCreditNoteIds.has(creditNoteId) &&
+      !(validCorrectionNoteIds.has(creditNoteId) && paymentsCountingCorrections.has(link.localId))
+    ) {
       continue;
     }
 
@@ -442,7 +487,8 @@ export async function repairRefundedPaymentBusinessState(input: {
   // loop or a write transaction (the operator message may name several rows).
   const format = await getClubFormat();
 
-  for (const payment of payments) {
+  type RepairedPayment = (typeof payments)[number];
+  const repairOne = async (payment: RepairedPayment): Promise<"updated" | "unchanged" | "lost"> => {
     const directRefundTotalCents = Array.from(
       directRefundCentsByPaymentId.get(payment.id)?.values() ?? []
     ).reduce((sum, amountCents) => sum + amountCents, 0);
@@ -544,8 +590,11 @@ export async function repairRefundedPaymentBusinessState(input: {
       // #3979 (`INV-PAY-124`): a refunded total falling to nothing on a payment
       // nothing was ever captured on undoes an older fold (an invoice correction
       // counted as a refund), never a refund given back: the payment returns to
-      // its uncaptured state, never to SUCCEEDED.
-      nextStatus = (await uncapturedPrimaryStatus(payment.id)) ?? nextStatus;
+      // its uncaptured state, never to SUCCEEDED. An organiser-settled child is
+      // the #3653 mirror's, and a payment with no rows keeps today's answer.
+      if (!payment.booking.organiserSettled) {
+        nextStatus = (await uncapturedPrimaryStatus(payment.id)) ?? nextStatus;
+      }
     }
     const updates: {
       refundedAmountCents?: number;
@@ -560,16 +609,47 @@ export async function repairRefundedPaymentBusinessState(input: {
     }
 
     if (Object.keys(updates).length === 0) {
-      continue;
+      return "unchanged";
     }
 
-    await prisma.payment.update({
+    // #3979: a claim on what was read, so a concurrent writer (the inbound
+    // settle recording the bank receipt) is never overwritten with a figure
+    // derived from the row before it wrote.
+    const written = await prisma.payment.updateMany({
       where: {
         id: payment.id,
+        status: payment.status,
+        refundedAmountCents: payment.refundedAmountCents,
       },
       data: updates,
     });
-    updatedPayments += 1;
+    return written.count === 1 ? "updated" : "lost";
+  };
+
+  for (const read of payments) {
+    let outcome = await repairOne(read);
+    if (outcome === "lost") {
+      // Re-read and decide once more from what the other writer left.
+      const reread = await prisma.payment.findUnique({
+        where: { id: read.id },
+        select: {
+          id: true,
+          amountCents: true,
+          refundedAmountCents: true,
+          status: true,
+          source: true,
+          booking: { select: { organiserSettled: true } },
+        },
+      });
+      outcome = reread ? await repairOne(reread) : "unchanged";
+      if (outcome === "lost") {
+        logger.warn(
+          { creditNoteId: input.creditNoteId, paymentId: read.id },
+          "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"
+        );
+      }
+    }
+    if (outcome === "updated") updatedPayments += 1;
   }
 
   return {

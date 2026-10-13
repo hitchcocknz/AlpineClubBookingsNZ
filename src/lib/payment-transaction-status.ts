@@ -52,6 +52,45 @@ export function isCapturedTransactionStatus(status: PaymentStatus): boolean {
 }
 
 /**
+ * #3979 (`INV-SSOT`): what a payment has captured, gross of refunds - the sum of
+ * its captured rows. The `Payment.amountCents` projection
+ * (`reconcilePaymentAggregates`) and the Internet Banking settle that writes
+ * the same figure (`settle-from-cash.ts`) both read it here.
+ */
+export function grossCapturedCents(
+  rows: ReadonlyArray<{ status: PaymentStatus; amountCents: number }>,
+): number {
+  return rows.reduce((sum, row) => sum + (isCapturedTransactionStatus(row.status) ? row.amountCents : 0), 0);
+}
+
+/**
+ * The `Payment.status` its rows project: refunded, part refunded or settled
+ * once anything is captured, else the latest PRIMARY row's status (or the
+ * fallback). One home for `reconcilePaymentAggregates` and the Internet
+ * Banking settle (#3979), which writes the same columns itself.
+ */
+export function deriveAggregatePaymentStatus(
+  fallbackStatus: PaymentStatus,
+  grossCapturedAmountCents: number,
+  refundedAmountCents: number,
+  latestPrimaryStatus: PaymentStatus | null
+): PaymentStatus {
+  if (grossCapturedAmountCents > 0) {
+    if (refundedAmountCents >= grossCapturedAmountCents) {
+      return PaymentStatus.REFUNDED;
+    }
+
+    if (refundedAmountCents > 0) {
+      return PaymentStatus.PARTIALLY_REFUNDED;
+    }
+
+    return PaymentStatus.SUCCEEDED;
+  }
+
+  return latestPrimaryStatus ?? fallbackStatus;
+}
+
+/**
  * The newest transaction of one kind on a payment, by `createdAt` (the first
  * of a tie wins) — the row the `Payment` mirror's summary columns are derived
  * from (`reconcilePaymentAggregates`). One home, so the booking-ledger census
