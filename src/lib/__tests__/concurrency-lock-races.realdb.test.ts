@@ -294,6 +294,12 @@ import "./xero-subscription-invoice-retry.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4046-` fixtures.
 import "./xero-refund-note-void-pointer.realdb.test";
+// #4098 reuses it to prove closing a subscription charge as already paid: two
+// closes at once close it once (one audit row, each voidGeneration bumped
+// once), and a manual reversal committing while the close waits for the
+// subscription row rolls the close back whole. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4098-` fixtures.
+import "./membership-subscription-charge-close.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

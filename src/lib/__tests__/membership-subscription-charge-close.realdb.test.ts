@@ -1,0 +1,262 @@
+/**
+ * Real-PostgreSQL proof of closing a membership subscription charge as already
+ * paid (#4098).
+ *
+ * `closeAlreadyPaidSubscriptionCharge` takes no advisory lock. It rests on two
+ * guarded writes inside one transaction, and only a real server can show they
+ * hold:
+ *
+ *   - the charge claim is a status-guarded `UPDATE`, so two closes at once (a
+ *     double click, two officers) close the charge once: one audit row, and each
+ *     subscription's `voidGeneration` bumped once, not twice;
+ *   - the PAID re-check is the `WHERE` of the subscription write, so a manual
+ *     reversal that commits while the close waits for the row makes the close
+ *     roll back whole — the charge stays in CONFLICT with its claims active.
+ *
+ * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
+ * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
+ * (#1881), which imports this file so CI reaches it; it owns and cleans its own
+ * `race-4098-` fixtures.
+ *
+ * To run directly against a throwaway scratch database:
+ *   RUN_CONCURRENCY_RACE_TESTS=1 \
+ *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
+ *   pnpm exec vitest run src/lib/__tests__/membership-subscription-charge-close.realdb.test.ts
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
+const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
+const RACE_TEST_TIMEOUT_MS = 30_000;
+const LOCK_POLL_TIMEOUT_MS = 5_000;
+
+const MEMBER_IDS = ["race-4098-member-a", "race-4098-member-b"] as const;
+const OFFICER_ID = "race-4098-officer";
+const SUBSCRIPTION_IDS = ["race-4098-sub-a", "race-4098-sub-b"] as const;
+const CHARGE_ID = "race-4098-charge";
+const SEASON_YEAR = 2026;
+const REASON = "Paid in cash at the AGM";
+
+/** Standalone fail-closed copy: importing this file must not register another suite. */
+function assertSafeRaceDbUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Close-already-paid race proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
+  }
+  const port = Number.parseInt(parsed.port, 10);
+  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
+    throw new Error(
+      `Refusing to run close-already-paid race proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
+    );
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+    throw new Error("Close-already-paid race proof DB must be loopback-only.");
+  }
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+  if (!databaseName.includes("concurrency_race_1881")) {
+    throw new Error("Close-already-paid race proof DB name must contain 'concurrency_race_1881'.");
+  }
+}
+
+let prisma: (typeof import("@/lib/prisma"))["prisma"];
+let closeAlreadyPaidSubscriptionCharge: (typeof import("@/lib/membership-subscription-charge-close"))["closeAlreadyPaidSubscriptionCharge"];
+let realElapsedMs: (typeof import("@/lib/__tests__/helpers/clock"))["realElapsedMs"];
+let lockHolderClient: import("@prisma/client").PrismaClient;
+let observerClient: import("@prisma/client").PrismaClient;
+
+(RUN ? describe : describe.skip)(
+  "a subscription charge closes as already paid exactly once — real PostgreSQL (#4098)",
+  { timeout: RACE_TEST_TIMEOUT_MS },
+  () => {
+    async function deleteFixtures() {
+      await prisma.auditLog.deleteMany({ where: { entityId: CHARGE_ID } });
+      await prisma.membershipSubscriptionChargeCoverage.deleteMany({ where: { chargeId: CHARGE_ID } });
+      await prisma.membershipSubscriptionCharge.deleteMany({ where: { id: CHARGE_ID } });
+      await prisma.memberSubscription.deleteMany({ where: { id: { in: [...SUBSCRIPTION_IDS] } } });
+      await prisma.member.deleteMany({ where: { id: { in: [...MEMBER_IDS, OFFICER_ID] } } });
+    }
+
+    async function seedFixtures() {
+      for (const id of [...MEMBER_IDS, OFFICER_ID]) {
+        await prisma.member.create({
+          data: {
+            id,
+            email: `${id}@example.invalid`,
+            passwordHash: "not-a-real-password",
+            firstName: "Close",
+            lastName: id.slice(-1).toUpperCase(),
+            ageTier: "ADULT",
+          },
+        });
+      }
+      for (const [index, id] of SUBSCRIPTION_IDS.entries()) {
+        await prisma.memberSubscription.create({
+          data: {
+            id,
+            memberId: MEMBER_IDS[index],
+            seasonYear: SEASON_YEAR,
+            status: "PAID",
+            manuallyMarkedPaidAt: new Date("2026-06-15T00:00:00.000Z"),
+            manuallyMarkedPaidByMemberId: OFFICER_ID,
+          },
+        });
+      }
+      await prisma.membershipSubscriptionCharge.create({
+        data: {
+          id: CHARGE_ID,
+          idempotencyKey: "race-4098-charge-key",
+          seasonYear: SEASON_YEAR,
+          source: "ANNUAL_BATCH",
+          status: "CONFLICT",
+          membershipTypeId: "race-4098-type",
+          membershipTypeKey: "race-4098-type",
+          membershipTypeName: "Race 4098",
+          billingBasis: "PER_FAMILY",
+          prorationRule: "NONE",
+          annualAmountCents: 30_000,
+          chargedAmountCents: 30_000,
+          coveredMonths: 12,
+          decisionDate: new Date("2026-06-01T00:00:00.000Z"),
+          coverageStart: new Date("2026-04-01T00:00:00.000Z"),
+          coverageEnd: new Date("2027-03-31T00:00:00.000Z"),
+          recipientMemberId: MEMBER_IDS[0],
+          recipientName: "Close A",
+          recipientEmail: `${MEMBER_IDS[0]}@example.invalid`,
+          dueDays: 30,
+          xeroAccountCode: "203",
+          invoiceReference: "MEMSUB-RACE-4098",
+          lastErrorCode: "SUBSCRIPTION_ALREADY_PAID",
+          lastErrorMessage: "Covered subscriptions are already PAID (Close A, Close B); no Xero invoice was created.",
+          coverage: {
+            create: SUBSCRIPTION_IDS.map((subscriptionId, index) => ({
+              subscriptionId,
+              memberId: MEMBER_IDS[index],
+              memberName: `Close ${index === 0 ? "A" : "B"}`,
+            })),
+          },
+        },
+      });
+    }
+
+    const close = () =>
+      closeAlreadyPaidSubscriptionCharge({ chargeId: CHARGE_ID, reason: REASON, actorMemberId: OFFICER_ID });
+
+    async function waitForBlockedBy(blockerPid: number) {
+      const startedAt = process.hrtime.bigint();
+      while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
+        const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+          SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+          WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
+        `;
+        if ((rows[0]?.count ?? 0) >= 1) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`Timed out waiting for the close to queue behind the subscription row held by pid ${blockerPid}.`);
+    }
+
+    beforeAll(async () => {
+      assertSafeRaceDbUrl(RACE_DB_URL);
+      process.env.DATABASE_URL = RACE_DB_URL;
+      ({ prisma } = await import("@/lib/prisma"));
+      ({ closeAlreadyPaidSubscriptionCharge } = await import("@/lib/membership-subscription-charge-close"));
+      ({ realElapsedMs } = await import("@/lib/__tests__/helpers/clock"));
+      const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
+        import("@prisma/client"),
+        import("@/lib/prisma-adapter"),
+      ]);
+      const separate = (applicationName: string) => {
+        const url = new URL(RACE_DB_URL);
+        url.searchParams.set("connection_limit", "1");
+        url.searchParams.set("application_name", applicationName);
+        return new SeparatePrismaClient({ adapter: createPrismaPgAdapter(url.toString()) });
+      };
+      lockHolderClient = separate("race-4098-reversal");
+      observerClient = separate("race-4098-observer");
+      await Promise.all([lockHolderClient.$connect(), observerClient.$connect()]);
+    });
+
+    beforeEach(async () => {
+      await deleteFixtures();
+      await seedFixtures();
+    });
+
+    afterAll(async () => {
+      await Promise.all(
+        [lockHolderClient, observerClient].map((client) => (client ? client.$disconnect().catch(() => {}) : Promise.resolve())),
+      );
+      if (prisma) await deleteFixtures();
+    });
+
+    it("closes once when two closes race: one audit row, every generation bumped once, the claims released", async () => {
+      const outcomes = await Promise.all([close(), close()]);
+
+      expect(outcomes.map((outcome) => outcome.closed).sort()).toEqual([false, true]);
+      const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
+      expect(charge).toMatchObject({ status: "NOT_REQUIRED", lastErrorCode: null, lastErrorMessage: null, xeroInvoiceId: null });
+      const subscriptions = await prisma.memberSubscription.findMany({
+        where: { id: { in: [...SUBSCRIPTION_IDS] } },
+        select: { status: true, voidGeneration: true },
+      });
+      expect(subscriptions).toEqual([
+        { status: "PAID", voidGeneration: 1 },
+        { status: "PAID", voidGeneration: 1 },
+      ]);
+      expect(await prisma.membershipSubscriptionChargeCoverage.count({ where: { chargeId: CHARGE_ID, releasedAt: null } })).toBe(0);
+      expect(await prisma.membershipSubscriptionChargeCoverage.count({ where: { chargeId: CHARGE_ID } })).toBe(2);
+      const audits = await prisma.auditLog.findMany({ where: { entityId: CHARGE_ID } });
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ action: "membership-subscription-billing.close-already-paid", memberId: OFFICER_ID });
+      expect(JSON.parse(audits[0]!.details ?? "{}")).toMatchObject({ reason: REASON, subscriptionIds: [...SUBSCRIPTION_IDS] });
+    });
+
+    it("rolls back whole when a reversal commits while the close waits for the subscription row", async () => {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reversed!: () => void;
+      const reversedInHolder = new Promise<void>((resolve) => {
+        reversed = resolve;
+      });
+      let holderPid = 0;
+      // The manual reversal's status-fenced write: it holds the row until released.
+      const reversal = lockHolderClient.$transaction(
+        async (tx) => {
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+          holderPid = pid;
+          await tx.memberSubscription.updateMany({
+            where: { id: SUBSCRIPTION_IDS[1], status: "PAID", manuallyMarkedPaidAt: { not: null } },
+            data: { status: "NOT_INVOICED", manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+          });
+          reversed();
+          await released;
+        },
+        { timeout: 15_000 },
+      );
+      await reversedInHolder;
+
+      const closing = close();
+      await waitForBlockedBy(holderPid);
+      release();
+      await reversal;
+
+      await expect(closing).rejects.toMatchObject({ status: 409, message: expect.stringContaining("no longer paid") });
+      const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
+      expect(charge).toMatchObject({ status: "CONFLICT", lastErrorCode: "SUBSCRIPTION_ALREADY_PAID" });
+      const subscriptions = await prisma.memberSubscription.findMany({
+        where: { id: { in: [...SUBSCRIPTION_IDS] } },
+        orderBy: { id: "asc" },
+        select: { status: true, voidGeneration: true },
+      });
+      expect(subscriptions).toEqual([
+        { status: "PAID", voidGeneration: 0 },
+        { status: "NOT_INVOICED", voidGeneration: 0 },
+      ]);
+      expect(await prisma.membershipSubscriptionChargeCoverage.count({ where: { chargeId: CHARGE_ID, releasedAt: null } })).toBe(2);
+      expect(await prisma.auditLog.count({ where: { entityId: CHARGE_ID } })).toBe(0);
+    });
+  },
+);
