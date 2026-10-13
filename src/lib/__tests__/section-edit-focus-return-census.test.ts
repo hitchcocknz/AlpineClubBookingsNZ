@@ -12,6 +12,12 @@
 // owns the return through `useEditorFocusReturn` instead, and is held to the
 // same wiring.
 //
+// The way IN is the hook's too (#4115): `startEditing` (and a list editor's
+// `capture`) moves focus to the first control the edit opened, or to the
+// section. So an adopter never reveals its own editor, and the `revealTarget`
+// escape hatch — kept for the three sections whose card reveal predates the
+// shared one — is pinned to those three.
+//
 // The adopter lists are PINNED: a new adopter fails here until it is added,
 // which is the moment to check its wiring by eye as well as by this scan.
 //
@@ -53,6 +59,19 @@ const LIST_EDITOR_ADOPTERS = [
   "src/components/admin/booking-policies/booking-periods-section.tsx",
   "src/components/admin/booking-policies/minimum-night-stay-section.tsx",
 ];
+
+const REVEAL_TARGET_ADOPTERS = [
+  "src/app/(admin)/admin/member-fields/page.tsx",
+  "src/components/admin/allocation-preferences-section.tsx",
+  "src/components/admin/club-identity-panel.tsx",
+];
+
+const REVEAL_FAILURE =
+  "INV-SSOT-001 / #4115: Edit's reveal lives in `useEditorFocusReturn` " +
+  "(`src/hooks/use-scroll-to-feedback.ts`), which `startEditing` and a list " +
+  "editor's `capture` already run: focus goes to the first control the edit " +
+  "opened, or to the section. Do not reveal the editor again in the section, " +
+  "and leave `revealTarget` to the three sections pinned here.";
 
 const FAILURE =
   "INV-SSOT-001 / #4087: focus after Save or Cancel goes through the one " +
@@ -141,6 +160,22 @@ describe("staged sections wire their focus return (#4087)", () => {
       }),
     );
     expect(missing, FAILURE).toEqual([]);
+  });
+
+  it("leaves the reveal on Edit to the hook in every adopter", () => {
+    const handRolled = [...sectionAdopters, ...listAdopters]
+      .filter(({ source }) => /\b(useRevealAttention|revealEditor)\b/.test(source))
+      .map(({ file }) => file);
+    expect(handRolled, REVEAL_FAILURE).toEqual([]);
+  });
+
+  it("keeps `revealTarget` to the three sections whose card reveal predates the shared one", () => {
+    expect(
+      sources
+        .filter(({ source }) => /\brevealTarget\s*:/.test(source))
+        .map(({ file }) => file),
+      REVEAL_FAILURE,
+    ).toEqual(REVEAL_TARGET_ADOPTERS);
   });
 
   it("wires capture, close and every prop for each list editor", () => {
