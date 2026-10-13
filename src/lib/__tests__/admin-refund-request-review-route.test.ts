@@ -994,8 +994,12 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
         }),
         CLUB_FORMAT_TEST,
       );
-      expect(body).toMatchObject({ cardRefundOwedCents: 2500, cardRefundQueued: true });
+      expect(body).toMatchObject({ cardRefundOwedCents: 2500, cardRefundQueued: true, cardRefundRefusedCents: 2500, cardRefundUnansweredCents: 0 });
       expect(mocks.refundRequestUpdateMany).toHaveBeenCalledTimes(1);
+      // #4117: the approval's audit row records what was queued.
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ cardRefundOwedCents: 2500, cardRefundQueued: true }) }),
+      );
       // The refund will still be made, so its credit note queues as before.
       expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment_1", 2500, expect.anything());
     });
@@ -1050,28 +1054,87 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
     // #4117 (money F2): releasing the claim once Stripe was asked would let a
     // second approval plan the refund afresh over what was already made, under
-    // new keys, and send it again.
+    // new keys, and send it again. The approval stands; what was not made is
+    // told apart - refused (certainly not made) from unanswered (Stripe may have
+    // made it: a bank transfer for it unchecked could pay the member twice) -
+    // on the alert, the request's notes, the audit row and the response, and
+    // the Xero credit note covers only what went back.
+    const refusedPart = (cents: number) =>
+      `$${(cents / 100).toFixed(2)} was refused by Stripe, so it certainly did not go back: refund it another way.`;
+    const unansweredPart = (cents: number) =>
+      `$${(cents / 100).toFixed(2)} got no answer from Stripe and may have been made: check the payment in Stripe before refunding it another way.`;
+    const s1 = { paymentTransactionId: "txn_new", amountCents: 1500 };
+    const s2 = { paymentTransactionId: "txn_old", amountCents: 1000 };
     it.each([
-      ["a refusal", () => mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer({ paymentTransactionId: "txn_1", amountCents: 2500 }, "failed")] })],
-      ["a throw after Stripe was asked", () => mocks.refundPaymentTransactions.mockRejectedValue(new PartialRefundError({ completedRefundCents: 0, refunds: [], cause: new Error("timed out"), format: CLUB_FORMAT_TEST }))],
-    ])("no row could be written after %s: the approval stands, the officers hear of the whole unmade amount once, and the response says it was not queued", async (_label, arrange) => {
+      {
+        label: "every slice refused",
+        arrange: () => mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer(s1, "failed"), answer(s2, "failed")] }),
+        refused: 2500, unanswered: 0, note: 0,
+      },
+      {
+        // Stripe made slice 1, then the app could not record it (the database
+        // failing), so it comes back unanswered, as does the slice never sent.
+        label: "a database fault after Stripe made the first slice",
+        arrange: () =>
+          mocks.refundPaymentTransactions.mockRejectedValue(
+            new PartialRefundError({ completedRefundCents: 0, refunds: [], cause: new Error("connection terminated"), format: CLUB_FORMAT_TEST }),
+          ),
+        refused: 0, unanswered: 2500, note: 0,
+      },
+      {
+        label: "a refusal, then a throw",
+        arrange: () =>
+          mocks.refundPaymentTransactions.mockRejectedValue(
+            new PartialRefundError({ completedRefundCents: 0, refunds: [answer(s1, "canceled")], refusedSlices: [s1], cause: new Error("timed out"), format: CLUB_FORMAT_TEST }),
+          ),
+        refused: 1500, unanswered: 1000, note: 0,
+      },
+      {
+        label: "one slice made, one refused",
+        arrange: () => mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer(s1, "succeeded"), answer(s2, "failed")] }),
+        refused: 1000, unanswered: 0, note: 1500,
+      },
+    ])("no row could be written after $label: the approval stands, and what was not made is told apart everywhere", async ({ arrange, refused, unanswered, note }) => {
       arrange();
       mocks.enqueueRefundRequestRefundRecovery.mockRejectedValue(new Error("db unavailable"));
+      const parts = [refused > 0 ? refusedPart(refused) : null, unanswered > 0 ? unansweredPart(unanswered) : null].filter(Boolean).join(" ");
+      const message = `This card refund could not be queued for retry. ${parts}`;
 
-      const { status, body } = await approveOver([{ paymentTransactionId: "txn_1", amountCents: 2500 }]);
+      const { status, body } = await approveOver([s1, s2]);
 
       expect(status).toBe(200);
-      expect(body).toMatchObject({ cardRefundOwedCents: 2500, cardRefundQueued: false });
-      // Only the claim's write: never released back to PENDING.
-      expect(mocks.refundRequestUpdateMany).toHaveBeenCalledTimes(1);
+      expect(body).toMatchObject({
+        cardRefundOwedCents: refused + unanswered,
+        cardRefundQueued: false,
+        cardRefundRefusedCents: refused,
+        cardRefundUnansweredCents: unanswered,
+      });
+      // Never released back to PENDING; the request's notes carry the split.
+      const writes = mocks.refundRequestUpdateMany.mock.calls.map(([args]) => args as { where: unknown; data: Record<string, unknown> });
+      expect(writes.some((write) => write.data.status === "PENDING")).toBe(false);
+      expect(writes).toContainEqual({ where: { id: "refund_1", status: "APPROVED" }, data: { adminNotes: message } });
       expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
       expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
-        expect.objectContaining({
-          amountCents: 2500,
-          errorMessage: "$25.00 of this card refund was not made and could not be queued for retry, so it is still owed: refund it another way.",
-        }),
+        expect.objectContaining({ amountCents: refused + unanswered, errorMessage: message }),
         CLUB_FORMAT_TEST,
       );
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "refund-request.approve",
+          metadata: expect.objectContaining({
+            cardRefundOwedCents: refused + unanswered,
+            cardRefundQueued: false,
+            cardRefundRefusedCents: refused,
+            cardRefundUnansweredCents: unanswered,
+          }),
+        }),
+      );
+      // The credit note is for what went back by card, and nothing else.
+      if (note > 0) {
+        expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment_1", note, expect.anything());
+      } else {
+        expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+      }
     });
 
     it("no row could be written and Stripe was never asked: the claim is released and nobody is alerted", async () => {

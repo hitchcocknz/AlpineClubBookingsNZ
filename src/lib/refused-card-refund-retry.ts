@@ -77,11 +77,6 @@ export function refusedRefundAlertMessage(cents: number, format: ClubFormat): st
   return `${refusedRefundMessage(cents, format).slice(0, -1)}; it will be retried automatically.`;
 }
 
-/** #4117: what the officers read when a card refund Stripe was asked for could not be queued for retry. */
-export function cardRefundNotQueuedMessage(cents: number, format: ClubFormat): string {
-  return `${formatCents(cents, format)} of this card refund was not made and could not be queued for retry, so it is still owed: refund it another way.`;
-}
-
 /** One Stripe request: the same slice under the same key (`refundSliceStripeIdempotencyKey`). */
 function sameRequest(left: RefundAllocationSlice, right: RefundAllocationSlice): boolean {
   return (
@@ -129,7 +124,15 @@ export function planAfterAttempt(
 type RefusedAnswer = { slice: RefundAllocationSlice; paymentIntentId: string };
 
 /** An inline attempt, read (`inlineRefundAfterAttempt`). */
-export type InlineRefundRead = { plan: RefundAllocationSlice[]; refused: RefusedAnswer[]; unmadeCents: number; reachedStripe: boolean };
+export type InlineRefundRead = {
+  plan: RefundAllocationSlice[];
+  refused: RefusedAnswer[];
+  /** What is still owed: `refusedCents` (certainly not made) plus `unansweredCents` (it threw or was never sent: may have been made). */
+  unmadeCents: number;
+  refusedCents: number;
+  unansweredCents: number;
+  reachedStripe: boolean;
+};
 
 /**
  * #4102, #4117: an inline attempt over a frozen plan, read, for a door that
@@ -146,7 +149,9 @@ export type InlineRefundRead = { plan: RefundAllocationSlice[]; refused: Refused
  * - each with no answer (it threw, or was never sent) keeps its key: it may
  *   have been made at Stripe, and must be replayed under it.
  *
- * `unmadeCents` is what is still owed: the refused and unanswered slices.
+ * `unmadeCents` is what is still owed, split into the refused slices
+ * (`refusedCents`: certainly not made) and the unanswered ones
+ * (`unansweredCents`: Stripe may have made them, unrecorded).
  * `reachedStripe` is false only for a throw that is not a `PartialRefundError`,
  * which came before any Stripe call: then nothing was asked, and the plan is
  * returned as frozen.
@@ -155,10 +160,9 @@ export function inlineRefundAfterAttempt(
   plan: RefundAllocationSlice[],
   attempt: { refunds: ReadonlyArray<{ status: string | null; refundId: string; paymentIntentId: string }> } | { error: unknown },
 ): InlineRefundRead {
-  const unmade = (slices: ReadonlyArray<RefundAllocationSlice>) =>
-    slices.reduce((sum, slice) => sum + (slice.madeRefundId ? 0 : slice.amountCents), 0);
+  const cents = (slices: ReadonlyArray<RefundAllocationSlice>) => slices.reduce((sum, slice) => sum + slice.amountCents, 0);
   if ("error" in attempt && !(attempt.error instanceof PartialRefundError)) {
-    return { plan, refused: [], unmadeCents: unmade(plan), reachedStripe: false };
+    return { plan, refused: [], unmadeCents: cents(plan), refusedCents: 0, unansweredCents: cents(plan), reachedStripe: false };
   }
   const answers =
     "error" in attempt
@@ -175,7 +179,9 @@ export function inlineRefundAfterAttempt(
     refused.push({ slice, paymentIntentId: answer.paymentIntentId });
     return { ...slice, stripeKeySuffix: nextRefusedRefundKeySuffix(slice.stripeKeySuffix) };
   });
-  return { plan: after, refused, unmadeCents: unmade(after), reachedStripe: true };
+  const refusedCents = cents(refused.map((answer) => answer.slice));
+  const unansweredCents = cents(plan.slice(answers.length));
+  return { plan: after, refused, unmadeCents: refusedCents + unansweredCents, refusedCents, unansweredCents, reachedStripe: true };
 }
 
 /**

@@ -102,6 +102,20 @@ export function parseRefundAllocationPlan(
   return slices;
 }
 
+/**
+ * #4117: what a card refund operation still has to send, by its own record:
+ * its amount less the slices its plan marks made (`madeRefundId`). A marked
+ * slice was made by Stripe and is never sent again, though the amount keeps
+ * it (the cancellation's, the runner's and a refund request's rows). A row
+ * with no marked slice reads its amount, exactly as before. Not the owed
+ * figure: that also nets the refunds recorded since (`openCardRefundOwedByOperation`).
+ */
+export function cardRefundOperationUnmadeCents(operation: { amountCents: number; allocationPlan?: unknown }): number {
+  const plan = parseRefundAllocationPlan(operation.allocationPlan);
+  const madeCents = (plan ?? []).reduce((sum, slice) => sum + (slice.madeRefundId ? slice.amountCents : 0), 0);
+  return Math.max(0, operation.amountCents - madeCents);
+}
+
 /** A card refund operation, as the owed figure reads it. */
 export interface CardRefundOperationRow {
   id: string;

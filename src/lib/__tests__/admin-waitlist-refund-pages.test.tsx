@@ -1086,13 +1086,32 @@ describe("an approved appeal whose card refund is still partly owed (#4117)", ()
   it("shows Refunded as what was made, and the part still queued for retry", async () => {
     mocks.currentSearch = "status=APPROVED";
     serve("APPROVED", [
-      appeal({ status: "APPROVED", approvedAmountCents: 2500, reviewedAt: "2026-07-02T00:00:00.000Z", cardRefundOwedCents: 1000 }),
+      appeal({ status: "APPROVED", approvedAmountCents: 2500, reviewedAt: "2026-07-02T00:00:00.000Z", cardRefundState: "retrying", cardRefundOwedCents: 1000 }),
     ]);
 
     render(<RefundRequestsPage />);
 
     expect((await screen.findByText("Refunded:")).parentElement).toHaveTextContent("Refunded: $15.00");
     expect(screen.getByText("$10.00 of the card refund is queued for retry.")).toBeTruthy();
+  });
+
+  it.each([
+    [{ cardRefundState: "dead", cardRefundOwedCents: 1000 }, "$15.00", "$10.00 of the card refund is still owed: its retries ran out."],
+    [
+      { cardRefundState: "not_queued", cardRefundOwedCents: 2500, cardRefundRefusedCents: 1500, cardRefundUnansweredCents: 1000 },
+      "$0.00",
+      "This card refund could not be queued for retry. $15.00 was refused by Stripe, so it certainly did not go back: refund it another way. $10.00 got no answer from Stripe and may have been made: check the payment in Stripe before refunding it another way.",
+    ],
+    [{ cardRefundState: "made", cardRefundOwedCents: 0, handBackOwedCents: 500 }, "$20.00", "$5.00 is still to be refunded by bank transfer."],
+  ])("an appeal %o: Refunded %s, and says what is still owed", async (outcome, refunded, line) => {
+    mocks.currentSearch = "status=APPROVED";
+    serve("APPROVED", [appeal({ status: "APPROVED", approvedAmountCents: 2500, reviewedAt: "2026-07-02T00:00:00.000Z", ...outcome })]);
+
+    render(<RefundRequestsPage />);
+
+    expect((await screen.findByText("Refunded:")).parentElement).toHaveTextContent(`Refunded: ${refunded}`);
+    expect(screen.getByText(line)).toBeTruthy();
+    expect(screen.queryByText(/queued for retry\.$/)).toBeNull();
   });
 
   it("an appeal refunded in full shows the whole amount and no retry line", async () => {
@@ -1109,8 +1128,8 @@ describe("an approved appeal whose card refund is still partly owed (#4117)", ()
     [{ cardRefundOwedCents: 1000, cardRefundQueued: true }, "Refund approved; $10.00 is queued for retry"],
     [{ cardRefundOwedCents: 0, cardRefundQueued: true }, "Refund approved and processed"],
     [
-      { cardRefundOwedCents: 2500, cardRefundQueued: false },
-      "Refund approved; $25.00 could not be queued for retry - the officers have been alerted to refund it another way",
+      { cardRefundOwedCents: 2500, cardRefundQueued: false, cardRefundRefusedCents: 1500, cardRefundUnansweredCents: 1000 },
+      "Refund approved, but its card refund could not be queued for retry. $15.00 was refused by Stripe, so it certainly did not go back: refund it another way. $10.00 got no answer from Stripe and may have been made: check the payment in Stripe before refunding it another way.",
     ],
   ])("after approving, the toast reads the route's answer %o", async (answer, toast) => {
     mocks.currentSearch = "";

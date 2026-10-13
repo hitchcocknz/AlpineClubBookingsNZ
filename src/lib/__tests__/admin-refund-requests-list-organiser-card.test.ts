@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   findMany: vi.fn(),
   count: vi.fn(),
   paymentFindMany: vi.fn(),
+  auditFindMany: vi.fn(async () => []),
+  taskFindMany: vi.fn(async () => []),
   organiserCardAppealCeilingFor: vi.fn(),
 }));
 
@@ -21,6 +23,8 @@ vi.mock("@/lib/prisma", () => ({
       count: (...args: unknown[]) => mocks.count(...args),
     },
     payment: { findMany: (...args: unknown[]) => mocks.paymentFindMany(...args) },
+    auditLog: { findMany: () => mocks.auditFindMany() },
+    manualRefundTask: { findMany: () => mocks.taskFindMany() },
   },
 }));
 vi.mock("@/lib/organiser-child-refund", () => ({
@@ -91,6 +95,8 @@ describe("GET /api/admin/refund-requests, an approved appeal's card refund still
             id: "op-1",
             type: "REFUND_BOOKING_MODIFICATION",
             status: "PENDING",
+            attempts: 0,
+            nextRetryAt: new Date("2026-06-20T00:10:00.000Z"),
             idempotencyKey: "refund_request_refund_rq-1",
             amountCents: 2_500,
             allocationPlan: [
@@ -111,11 +117,11 @@ describe("GET /api/admin/refund-requests, an approved appeal's card refund still
     mocks.findMany.mockResolvedValue([approved, request("rq-other", "APPROVED")]);
 
     const response = await GET(new NextRequest("http://localhost/api/admin/refund-requests?status=APPROVED"));
-    const { data } = (await response.json()) as { data: Array<{ id: string; cardRefundOwedCents: number }> };
+    const { data } = (await response.json()) as { data: Array<{ id: string; cardRefundOwedCents: number; cardRefundState: string }> };
     const byId = Object.fromEntries(data.map((row) => [row.id, row]));
 
-    expect(byId["rq-1"]?.cardRefundOwedCents).toBe(1_000);
-    expect(byId["rq-other"]?.cardRefundOwedCents).toBe(0);
+    expect(byId["rq-1"]).toMatchObject({ cardRefundOwedCents: 1_000, cardRefundState: "retrying" });
+    expect(byId["rq-other"]).toMatchObject({ cardRefundOwedCents: 0, cardRefundState: "made" });
     // One read of the approved appeals' payments, none for a pending one.
     expect(mocks.paymentFindMany).toHaveBeenCalledTimes(1);
     expect(mocks.paymentFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ["p-rq-1", "p-rq-other"] } } }));

@@ -138,6 +138,8 @@ describe("an inline attempt, read", () => {
       plan: [{ ...a, madeRefundId: "re_txn_a" }, { ...b, stripeKeySuffix: "refused1" }, { ...c, madeRefundId: "re_txn_c" }],
       refused: [{ slice: b, paymentIntentId: "pi_txn_b" }],
       unmadeCents: 500,
+      refusedCents: 500,
+      unansweredCents: 0,
       reachedStripe: true,
     });
   });
@@ -147,6 +149,9 @@ describe("an inline attempt, read", () => {
       plan: [{ ...a, stripeKeySuffix: "refused1" }, b, c],
       refused: [{ slice: a, paymentIntentId: "pi_txn_a" }],
       unmadeCents: 1750,
+      // Certainly not made, and perhaps made at Stripe: told apart (#4117).
+      refusedCents: 1000,
+      unansweredCents: 750,
       reachedStripe: true,
     });
   });
@@ -155,6 +160,8 @@ describe("an inline attempt, read", () => {
     expect(inlineRefundAfterAttempt([a, b, c], { error: partial([answer(a, "succeeded")], []) })).toMatchObject({
       plan: [{ ...a, madeRefundId: "re_txn_a" }, b, c],
       unmadeCents: 750,
+      refusedCents: 0,
+      unansweredCents: 750,
       reachedStripe: true,
     });
   });
@@ -166,7 +173,7 @@ describe("an inline attempt, read", () => {
   it("a throw before any Stripe call: the whole plan, as frozen, is unsent and Stripe was never reached", () => {
     const plan = [a, b];
     const read = inlineRefundAfterAttempt(plan, { error: new Error("payment not found") });
-    expect(read).toEqual({ plan, refused: [], unmadeCents: 1500, reachedStripe: false });
+    expect(read).toEqual({ plan, refused: [], unmadeCents: 1500, refusedCents: 0, unansweredCents: 1500, reachedStripe: false });
     expect(read.plan).toBe(plan);
   });
 });

@@ -30,7 +30,11 @@ import {
   refundPaymentTransactions,
 } from "@/lib/payment-transactions";
 import { inlineRefundAfterAttempt } from "@/lib/refused-card-refund-retry";
-import { queueUnmadeRefundRequestCardRefund } from "@/lib/refund-request-card-refund";
+import {
+  NO_CARD_REFUND_OWED,
+  queueUnmadeRefundRequestCardRefund,
+  refundRequestCardRefundAnswer,
+} from "@/lib/refund-request-card-refund";
 import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatStayDate } from "@/lib/club-time";
@@ -106,9 +110,8 @@ export async function PUT(
   const booking = refundRequest.booking;
   const payment = booking.payment;
 
-  // #4117: what the approval's card refund still owes, and whether it is queued for retry.
-  let cardRefundOwedCents = 0;
-  let cardRefundQueued = true;
+  // #4117: what the approval's card refund still owes, whether it is queued for retry, and why.
+  let cardRefund = NO_CARD_REFUND_OWED;
   if (status === "APPROVED") {
     if (!approvedAmountCents || approvedAmountCents <= 0) {
       return NextResponse.json(
@@ -418,16 +421,16 @@ export async function PUT(
       // (`INV-PAY-128`): a slice Stripe refused is among them on its next key;
       // one that threw or was never sent keeps its key; a made one is marked.
       const read = inlineRefundAfterAttempt(refundPlan, attempt);
-      cardRefundOwedCents = read.unmadeCents;
       const outcome = await queueUnmadeRefundRequestCardRefund({
         bookingId: booking.id,
         paymentId: payment.id,
         refundRequestId: id,
         read,
         paymentIntentIdFallback: payment.stripePaymentIntentId ?? "",
+        adminNotes,
         format: money.format,
       });
-      cardRefundQueued = outcome !== "not_queued";
+      cardRefund = refundRequestCardRefundAnswer(read, outcome);
       if (outcome === "release_claim") {
         // No durable row could be written and Stripe was never asked: fall
         // back to the pre-#1039 behaviour and release the claim so an admin
@@ -477,7 +480,9 @@ export async function PUT(
     // (`enqueueXeroRefundRequestCreditNoteOperation`). Nor does an
     // organiser-card refund (#3956): the executor queues its note with the
     // refund row, once Stripe has answered.
-    const cardNoteCents = organiserChildDebtId ? 0 : approvedAmountCents - bankTransferCents;
+    // #4117: a card part no retry was queued for is not refunded, so not noted.
+    const unqueuedCents = cardRefund.cardRefundQueued ? 0 : cardRefund.cardRefundOwedCents;
+    const cardNoteCents = organiserChildDebtId ? 0 : approvedAmountCents - bankTransferCents - unqueuedCents;
     try {
       const queuedCreditNote =
         cardNoteCents > 0
@@ -536,6 +541,9 @@ export async function PUT(
         ...(organiserChildDebtId
           ? { organiserCardRefundOperationId: organiserChildDebtId, organiserCardRefundMade: organiserCardRefundMade }
           : {}),
+        // #4117: the card refund not made - queued, or not and why - the
+        // durable record the list reads when no retry row could be written.
+        ...cardRefund,
         ...notifyAuditFields,
       },
       ipAddress: req.headers.get("x-forwarded-for") ?? "unknown",
@@ -727,5 +735,5 @@ export async function PUT(
     },
   });
 
-  return NextResponse.json({ ...updated, cardRefundOwedCents, cardRefundQueued });
+  return NextResponse.json({ ...updated, ...cardRefund });
 }
