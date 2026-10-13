@@ -3,9 +3,35 @@
  * `xero-applied-credit-allocation.ts` (#3836) so the engine stays within its
  * size budget. Unit-tested; the engine re-exports it.
  */
-import type { CreditType } from "@prisma/client";
+import type { CreditType, Prisma } from "@prisma/client";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
+
+// ---------------------------------------------------------------------------
+// Credit-lot use order (INV-PAY-127, #4013)
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE order in which a member's positive credit lots are used: oldest
+ * first, and between two lots stamped with the same instant, the lower `id`
+ * first. Every read that hands lots to {@link planAppliedCreditAllocation}
+ * orders by this and by nothing else (`INV-PAY-127`), and
+ * `credit-lot-use-order-census.test.ts` fails a `memberCredit` read that orders
+ * by `createdAt` any other way.
+ *
+ * `createdAt` alone is not an order. Two lots written in one transaction, or
+ * under the frozen test clock, carry the same instant, and PostgreSQL returns
+ * tied rows in whatever order its plan meets them: a noted lot one run and a
+ * noteless one the next, which decides whether the engine allocates an existing
+ * note or mints a remainder (#4013). The `id` tie-break changes no amount and no
+ * lot's eligibility; it only makes the tie the same every time. Spread it into
+ * the query (`orderBy: [...CREDIT_LOT_USE_ORDER]`) — Prisma takes a mutable
+ * array and this one stays frozen.
+ */
+export const CREDIT_LOT_USE_ORDER = [
+  { createdAt: "asc" },
+  { id: "asc" },
+] as const satisfies readonly Prisma.MemberCreditOrderByWithRelationInput[];
 
 // ---------------------------------------------------------------------------
 // Pure allocation planner (unit-tested)
@@ -55,9 +81,10 @@ export interface AppliedCreditPlan {
 }
 
 /**
- * Decide which credit lots fund `appliedCents`, oldest-first. Conservation is
- * independent of lot order (owner/advisor: lot order is neutral); oldest-first is
- * a deterministic default. Throws if the lots cannot cover the applied amount —
+ * Decide which credit lots fund `appliedCents`, in the order given — which the
+ * loader makes {@link CREDIT_LOT_USE_ORDER}. Conservation is independent of lot
+ * order (owner/advisor: lot order is neutral); oldest-first, ties by `id`, is
+ * the deterministic default. Throws if the lots cannot cover the applied amount —
  * that can only happen on a corrupted ledger, since applied credit never exceeds
  * the balance at apply-time and allocations never exceed prior applications.
  */

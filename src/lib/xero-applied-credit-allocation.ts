@@ -66,10 +66,11 @@ export {
   type PlannedMintSlice,
   type PlannedNoteAllocation,
 } from "./xero-applied-credit-plan";
-import { planAppliedCreditAllocation, type AppliedCreditLot } from "./xero-applied-credit-plan";
+import { CREDIT_LOT_USE_ORDER, planAppliedCreditAllocation, type AppliedCreditLot } from "./xero-applied-credit-plan";
 
 /**
- * Gather the member's positive credit lots (oldest-first) with each lot's
+ * Gather the member's positive credit lots in `CREDIT_LOT_USE_ORDER` (oldest
+ * first, ties by `id` — `INV-PAY-127`) with each lot's
  * remaining unallocated balance. Read within the caller's ledger-locked tx.
  *
  * CRITICAL — the remaining balance EXCLUDES `forBookingId`'s own prior allocation
@@ -98,7 +99,7 @@ async function gatherAppliedCreditLots(
       type: true,
       xeroCreditNoteId: true,
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [...CREDIT_LOT_USE_ORDER],
   });
 
   const allocated = await tx.memberCreditNoteAllocation.groupBy({
