@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { bookingOwner } from "@/lib/booking-owner";
 import { ChangeRequestPaymentLine } from "@/components/admin/booking-requests/change-request-payment-line";
@@ -169,6 +169,13 @@ export function BookingChangeRequestsPanel({
   // finder's reach as the list route answered it.
   const ageTierOptions = useAgeTierOptions();
   const [memberGuestFind, setMemberGuestFind] = useState<{ openSearchEnabled: boolean } | null>(null);
+  /** #4030 review S6: the officer entry's buttons, this section's view-only button. */
+  const OfficerEntryButton = useCallback(
+    (props: ButtonProps) => (
+      <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...props} />
+    ),
+    [canEdit],
+  );
   /** This row's officer-entered guests as sent, or null (#4030). */
   const officerGuestsFor = (request: BookingChangeRequestData) =>
     request.acceptsOfficerGuests
@@ -559,6 +566,7 @@ export function BookingChangeRequestsPanel({
                             guest.memberId ? [guest.memberId] : [],
                           )}
                           canEdit={canEdit}
+                          ActionButton={OfficerEntryButton}
                         />
                       ) : null}
                       {request.executesOnApproval ? (

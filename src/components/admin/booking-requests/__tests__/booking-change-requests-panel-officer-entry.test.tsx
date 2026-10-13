@@ -284,8 +284,9 @@ describe("change-request panel — the officer enters the guests (#4030)", () =>
     const firstName = await screen.findByLabelText("First name");
     expect(firstName).toBeDisabled();
     expect(firstName).toHaveAttribute("title", expect.stringMatching(/.+/));
-    const add = screen.getByRole("button", { name: "Add guest" });
-    expect(add).toBeDisabled();
-    expect(add).toHaveAttribute("title", firstName.getAttribute("title"));
+    // The buttons are the section's view-only button: disabled, explained once
+    // by the banner at the top of the section.
+    expect(screen.getByRole("button", { name: "Add guest" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/cannot approve or reject/);
   });
 });
