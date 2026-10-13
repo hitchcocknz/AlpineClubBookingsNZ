@@ -467,49 +467,6 @@ export function useScrollToFeedback() {
   );
 }
 
-/**
- * RETURN after a list row's direct write (Activate/Deactivate, Delete) whose
- * refresh unmounted or disabled the button holding focus (#4116). Targets are
- * found by the list's {@link useEditorFocusReturn} markers: `triggerProps(key)`
- * on row buttons, `regionProps` on the card.
- *
- * The anchor is the ACTION'S: `capture(key)` returns it and `close(anchor)`
- * returns through that one, so an overlapping write or an open row editor never
- * consumes it. `close(anchor, nextKey)` re-aims a write that removed its row at
- * another row's button, or with `null` at the card. After a delete, aim at an
- * Edit, never a toggle or Delete, so a stray Enter cannot undo or repeat it.
- */
-export function useRowActionFocusReturn({
-  triggerProps,
-  regionProps,
-}: {
-  triggerProps: (key: string) => Record<string, string>;
-  regionProps: { [RETURN_FOCUS_REGION_ATTRIBUTE]: string };
-}) {
-  const anchorRef = useRef<FocusReturnAnchor | null>(null);
-  const [returnKey, setReturnKey] = useState(0);
-  useReturnAttention(anchorRef, returnKey);
-  const regionId = regionProps[RETURN_FOCUS_REGION_ATTRIBUTE];
-  const markerFor = useCallback(
-    (key: string) => triggerProps(key)[RETURN_FOCUS_TRIGGER_ATTRIBUTE],
-    [triggerProps],
-  );
-  const capture = useCallback(
-    (key: string) => captureFocusReturn({ triggerId: markerFor(key), regionId }),
-    [markerFor, regionId],
-  );
-  const close = useCallback(
-    (anchor: FocusReturnAnchor | null, nextKey?: string | null) => {
-      anchorRef.current = anchor && nextKey !== undefined
-        ? { ...anchor, trigger: null, triggerId: nextKey ? markerFor(nextKey) : undefined }
-        : anchor;
-      setReturnKey((count) => count + 1);
-    },
-    [markerFor],
-  );
-  return useMemo(() => ({ capture, close }), [capture, close]);
-}
-
 export interface UseActionAttentionOptions {
   /** The failure message; empty or nullish means no failure is showing. */
   error: string | null | undefined;

@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { useEditorFocusReturn, useRowActionFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useRowActionFocusReturn } from "@/hooks/use-row-action-focus-return"
 import { rowKey, toggleKey, useRowHeadings } from "./list-row-focus"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
