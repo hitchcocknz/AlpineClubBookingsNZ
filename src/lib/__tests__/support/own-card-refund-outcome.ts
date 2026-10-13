@@ -8,7 +8,7 @@
  * (`enqueueBookingModificationRefundRecovery`): a call that throws queues the
  * unpaid remainder, and (#4083, `INV-PAY-127`) a refund Stripe answered
  * `failed` or `canceled` queues exactly the slices it refused, as their plan,
- * so the runner asks for them again under a fresh key. The cancel queues
+ * already moved to their next key. The cancel queues
  * nothing new for either: its pre-persisted debt is left open.
  *
  * `primeOwnCardRefund` answers a `refundPaymentTransactions` double with the
@@ -87,8 +87,13 @@ export function expectQueuedOnce(enqueue: Mock, queued: Queued, pendingCents: nu
     expect(enqueue.mock.calls[0]?.[0]).not.toHaveProperty("allocationPlan", expect.anything());
     return;
   }
+  // #4083 review: each was read refused at the door, so it is queued already on
+  // its next key (`refused1`) - the runner's first attempt asks Stripe afresh.
   const refusedCents = queued.refused.reduce((sum, slice) => sum + slice.amountCents, 0);
   expect(enqueue).toHaveBeenCalledWith(
-    expect.objectContaining({ amountCents: refusedCents, allocationPlan: queued.refused }),
+    expect.objectContaining({
+      amountCents: refusedCents,
+      allocationPlan: queued.refused.map((slice) => ({ ...slice, stripeKeySuffix: "refused1" })),
+    }),
   );
 }

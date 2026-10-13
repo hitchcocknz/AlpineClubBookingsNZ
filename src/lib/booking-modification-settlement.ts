@@ -57,7 +57,12 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
 import { ownCardRefundMade } from "@/lib/payment-transaction-status";
-import { refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import {
+  alertRefusedCardRefund,
+  planAfterRefusals,
+  refusedRefundCents,
+  refusedRefundSlices,
+} from "@/lib/refused-card-refund-retry";
 
 export type BookingModificationPaymentContext = {
   pendingRefundAmountCents: number;
@@ -239,12 +244,14 @@ export async function executeBookingModificationRefund({
       idempotencyKeyPrefix: stripeKeyPrefix,
     });
     // #4083 (`INV-PAY-127`): Stripe answered a slice `failed` or `canceled`
-    // without throwing. It is still owed: queued as exactly those slices, which
-    // the recovery runner asks for again under a fresh key.
+    // without throwing. It is still owed: queued as exactly those slices,
+    // already moved to their next key, since each was read refused here.
     const refused = refusedRefundSlices(refundResult.refunds);
     if (refused.length > 0) {
-      logger.error({ bookingId, refusedCents: refusedRefundCents(refused) }, failureMessage);
-      await keepOwed(refusedRefundCents(refused), refused);
+      const refusedCents = refusedRefundCents(refused);
+      logger.error({ bookingId, refusedCents }, failureMessage);
+      const queued = await keepOwed(refusedCents, planAfterRefusals(refused, refused));
+      if (queued?.created) await alertRefusedCardRefund({ bookingId, paymentIntentId: queued.paymentIntentId, refusedCents }, format);
     }
     return {
       stripeRefundId: refundResult.refunds[0]?.refundId,

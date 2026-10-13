@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   queueXeroBookingEditSettlement: vi.fn(),
   recoveryFindUnique: vi.fn(),
   runPaymentRecoveryOperationNow: vi.fn(),
+  alertPaymentRecoveryOfficers: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -58,6 +59,7 @@ vi.mock("@/lib/payment-recovery", () => ({
   runPaymentRecoveryOperationNow: mocks.runPaymentRecoveryOperationNow,
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
+vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: mocks.alertPaymentRecoveryOfficers }));
 vi.mock("@/lib/email", () => ({ sendBookingModifiedEmail: mocks.sendBookingModifiedEmail }));
 vi.mock("@/lib/xero-booking-edit-settlement", () => ({
   queueXeroBookingEditSettlement: mocks.queueXeroBookingEditSettlement,
@@ -289,6 +291,34 @@ describe("DELETE guest removal on the member's own card: the email's refund dest
       expect.objectContaining({ refundAmountCents: 2000, refundDestination: destination, refundByBankTransfer: false }),
       expect.anything(),
     );
+  });
+
+  // #4083 review: the officers hear of a refusal once, when the edit's row is
+  // first written - not when a repeat enqueue finds it already there.
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])("a refused refund alerts the officers when its row is created (%s -> %i alert)", async (created, alerts) => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(makeResult());
+    const slice = { paymentTransactionId: "txn_primary", amountCents: 2000 };
+    mocks.refundPaymentTransactions.mockResolvedValue({
+      refunds: [{ refundId: "re_refused", paymentIntentId: "pi_original", amountCents: 2000, status: "failed", slice }],
+    });
+    mocks.enqueueBookingModificationRefundRecovery.mockResolvedValue({ created, paymentIntentId: "pi_original" });
+
+    await DELETE(makeRequest(), { params });
+
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(alerts);
+    if (alerts) {
+      expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: 2000,
+          paymentIntentId: "pi_original",
+          errorMessage: "Stripe refused $20.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+        }),
+        expect.anything(),
+      );
+    }
   });
 
   it("a bank-transfer refund runs no Stripe refund and keeps the member's own wording", async () => {

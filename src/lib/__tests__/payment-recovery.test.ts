@@ -13,6 +13,7 @@ const {
   mockPaymentRecoveryUpdateMany,
   mockPaymentRecoveryUpdate,
   mockPaymentRecoveryUpsert,
+  mockPaymentRecoveryCreateMany,
   mockAlertCooldownUpdateMany,
   mockAlertCooldownCreate,
   mockPaymentTransactionUpdateMany,
@@ -52,6 +53,7 @@ const {
   mockPaymentRecoveryUpdateMany: vi.fn(),
   mockPaymentRecoveryUpdate: vi.fn(),
   mockPaymentRecoveryUpsert: vi.fn(),
+  mockPaymentRecoveryCreateMany: vi.fn(),
   mockAlertCooldownUpdateMany: vi.fn(),
   mockAlertCooldownCreate: vi.fn(),
   mockPaymentTransactionUpdateMany: vi.fn(),
@@ -136,6 +138,7 @@ vi.mock("@/lib/prisma", () => {
       updateMany: (...args: unknown[]) => mockPaymentRecoveryUpdateMany(...args),
       update: (...args: unknown[]) => mockPaymentRecoveryUpdate(...args),
       upsert: (...args: unknown[]) => mockPaymentRecoveryUpsert(...args),
+      createMany: (...args: unknown[]) => mockPaymentRecoveryCreateMany(...args),
     },
     alertCooldown: {
       updateMany: (...args: unknown[]) => mockAlertCooldownUpdateMany(...args),
@@ -442,6 +445,7 @@ describe("payment recovery worker", () => {
     );
     mockPaymentRecoveryUpdate.mockResolvedValue({});
     mockPaymentRecoveryUpsert.mockResolvedValue({});
+    mockPaymentRecoveryCreateMany.mockResolvedValue({ count: 1 });
     // Default: no cooldown row exists yet, so the conditional claim matches
     // nothing and the create path wins (first alert ever).
     mockAlertCooldownUpdateMany.mockResolvedValue({ count: 0 });
@@ -591,6 +595,9 @@ describe("payment recovery worker", () => {
             PaymentRecoveryOperationStatus.FAILED,
           ],
         },
+        // #4083: only the attempt the worker holds.
+        attempts: 1,
+        processingStartedAt: { not: null },
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -628,6 +635,9 @@ describe("payment recovery worker", () => {
             PaymentRecoveryOperationStatus.FAILED,
           ],
         },
+        // #4083: only the attempt the worker holds.
+        attempts: 5,
+        processingStartedAt: { not: null },
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -1587,21 +1597,18 @@ describe("payment recovery worker", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { idempotencyKey: "refund_request_refund_refund-1" },
-        create: expect.objectContaining({
+        skipDuplicates: true,
+        data: [expect.objectContaining({
+          idempotencyKey: "refund_request_refund_refund-1",
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
           paymentId: "payment-1",
           amountCents: 4000,
           allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
-        update: expect.objectContaining({
-          amountCents: 4000,
-          allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
+        })],
       }),
     );
   });
@@ -1773,21 +1780,18 @@ describe("payment recovery worker", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
-        create: expect.objectContaining({
+        skipDuplicates: true,
+        data: [expect.objectContaining({
+          idempotencyKey: "booking_cancel_refund_recovery_booking-1",
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
           paymentId: "payment-1",
           amountCents: 4000,
           allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
-        update: expect.objectContaining({
-          amountCents: 4000,
-          allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
+        })],
       }),
     );
   });
@@ -1801,13 +1805,11 @@ describe("payment recovery worker", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 10000 }],
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          idempotencyKey:
-            "capacity_claim_failed_refund_recovery_booking-1_pi_original",
-        },
-        create: expect.objectContaining({
+        skipDuplicates: true,
+        data: [expect.objectContaining({
+          idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_original",
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
@@ -1817,14 +1819,7 @@ describe("payment recovery worker", () => {
           allocationPlan: [
             { paymentTransactionId: "txn-1", amountCents: 10000 },
           ],
-        }),
-        update: expect.objectContaining({
-          amountCents: 10000,
-          stripeKeyPrefix: "capacity_claim_failed_booking-1_pi_original",
-          allocationPlan: [
-            { paymentTransactionId: "txn-1", amountCents: 10000 },
-          ],
-        }),
+        })],
       }),
     );
   });
@@ -2169,9 +2164,18 @@ describe("payment recovery worker", () => {
       expect(planWrites()).toEqual([
         {
           where: { id: operation.id, status: PaymentRecoveryOperationStatus.PROCESSING, processingStartedAt: operation.processingStartedAt },
-          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }] },
+          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }], amountCents: 1500 },
         },
       ]);
+      // The officers hear of it once, from the write that moved the row off its first keys.
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: 1500,
+          errorMessage: "Stripe refused $15.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+        }),
+        CLUB_FORMAT_TEST,
+      );
       expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -2211,10 +2215,12 @@ describe("payment recovery worker", () => {
 
       await processPaymentRecoveryOperations({ limit: 1 });
 
-      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...moved, stripeKeySuffix: "refused2" }] });
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...moved, stripeKeySuffix: "refused2" }], amountCents: 1500 });
+      // Once per row: it was already off its first keys, so no second alert.
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
-    it("one slice made, one refused: only the refused slice moves; the made one keeps its key, so a replay never makes it twice", async () => {
+    it("one slice made, one refused: the plan keeps only the refused slice, on its next key, so the made one is never sent again", async () => {
       const made = { paymentTransactionId: "txn-2", amountCents: 1000 };
       const refused = { paymentTransactionId: "txn-1", amountCents: 500 };
       queueOperation({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", amountCents: 1500, allocationPlan: [made, refused] });
@@ -2226,11 +2232,11 @@ describe("payment recovery worker", () => {
       const result = await processPaymentRecoveryOperations({ limit: 1 });
 
       expect(result).toMatchObject({ succeeded: 0, retried: 1 });
-      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [made, { ...refused, stripeKeySuffix: "refused1" }] });
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...refused, stripeKeySuffix: "refused1" }], amountCents: 500 });
       expect(closed()).toBe(false);
     });
 
-    it("a slice refused before a later slice threw moves on too, and the attempt fails with the thrown error", async () => {
+    it("a slice refused before a later slice threw moves on in place; the rest keep their keys, and the attempt fails with the thrown error", async () => {
       const refused = { paymentTransactionId: "txn-2", amountCents: 1000 };
       const unsent = { paymentTransactionId: "txn-1", amountCents: 500 };
       queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [refused, unsent] });
@@ -2260,6 +2266,33 @@ describe("payment recovery worker", () => {
         expect.objectContaining({ amountCents: 1500, errorMessage: expect.stringContaining("still owed") }),
         CLUB_FORMAT_TEST,
       );
+    });
+  });
+
+  // #4083 review: a repeat enqueue refreshes only a row no worker has picked up.
+  // One claimed, failed or closed keeps its plan, amount and prefix - its slices
+  // may already have been sent under their keys.
+  it("a repeat ledger refund enqueue updates only a PENDING row, never one a worker holds (#4083)", async () => {
+    mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await enqueueBookingModificationRefundRecovery({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      bookingModificationId: "mod-7",
+      amountCents: 4000,
+      stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
+      allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, stripeKeySuffix: "refused1" }],
+    });
+
+    expect(result).toMatchObject({ created: false });
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith({
+      where: { idempotencyKey: "payment_recovery_modification_refund_mod-7", status: PaymentRecoveryOperationStatus.PENDING },
+      data: expect.objectContaining({
+        amountCents: 4000,
+        stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, stripeKeySuffix: "refused1" }],
+      }),
     });
   });
 
@@ -2295,12 +2328,11 @@ describe("payment recovery worker", () => {
       stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
+        skipDuplicates: true,
+        data: [expect.objectContaining({
           idempotencyKey: "payment_recovery_modification_refund_mod-7",
-        },
-        create: expect.objectContaining({
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
@@ -2308,7 +2340,7 @@ describe("payment recovery worker", () => {
           paymentIntentId: "pi_additional",
           amountCents: 4000,
           stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
-        }),
+        })],
       }),
     );
   });
@@ -3693,6 +3725,9 @@ describe("#2262 L3 — the recovery dispatcher is exhaustive", () => {
             PaymentRecoveryOperationStatus.FAILED,
           ],
         },
+        // #4083: only the attempt the worker holds.
+        attempts: 1,
+        processingStartedAt: { not: null },
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,

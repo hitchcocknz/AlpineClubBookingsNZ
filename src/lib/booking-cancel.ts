@@ -90,7 +90,7 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
-import { refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import { keepRefusedCancellationRefundOwed, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -2350,11 +2350,11 @@ async function performBookingCancellation(
         });
         stripeRefundId = refundResult.refunds[0]?.refundId;
         refundMade = ownCardRefundMade(refundResult.refunds);
-        // #4083 (`INV-PAY-127`): a slice Stripe refused (failed/canceled) is
-        // still owed, so the pre-persisted debt is left open for the runner,
-        // which asks for it again under a fresh key.
+        // #4083/#4096 (`INV-PAY-127`): a slice Stripe refused (failed/canceled)
+        // is still owed: the pre-persisted debt stays open, re-planned to the
+        // refused slices on fresh keys, and the catch records why.
         const refused = refusedRefundSlices(refundResult.refunds);
-        if (refused.length > 0) throw new Error(`Stripe refused ${formatCents(refusedRefundCents(refused), format)} of the refund (failed or canceled)`);
+        if (refused.length > 0) throw await keepRefusedCancellationRefundOwed({ bookingId, refused, format });
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation

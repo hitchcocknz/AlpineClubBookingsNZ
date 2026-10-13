@@ -35,6 +35,7 @@ import {
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
+import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
   findWaitingSupplementaryInvoiceOperationForPaymentIntent,
   // Type-only, so it adds nothing to this module's runtime import graph.
@@ -261,34 +262,41 @@ async function enqueueLedgerRefundRecovery({
       ? (allocationPlan as unknown as Prisma.InputJsonValue)
       : undefined;
 
-  return store.paymentRecoveryOperation.upsert({
-    where: { idempotencyKey },
-    create: {
-      type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
-      status: PaymentRecoveryOperationStatus.PENDING,
-      bookingId,
-      paymentId,
-      paymentIntentId: representativePaymentIntentId,
-      amountCents,
-      idempotencyKey,
-      stripeKeyPrefix: stripeKeyPrefix ?? null,
-      allocationPlan: allocationPlanJson,
-      nextRetryAt: new Date(),
-    },
-    update: {
-      bookingId,
-      paymentId,
-      paymentIntentId: representativePaymentIntentId,
-      amountCents,
-      stripeKeyPrefix: stripeKeyPrefix ?? null,
-      // Only overwrite a frozen plan when the caller supplies a fresh one; an
-      // update without a plan must not clobber slices a previous processing
-      // pass already replayed against Stripe.
-      ...(allocationPlanJson !== undefined
-        ? { allocationPlan: allocationPlanJson }
-        : {}),
-    },
+  const inserted = await store.paymentRecoveryOperation.createMany({
+    data: [
+      {
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        bookingId,
+        paymentId,
+        paymentIntentId: representativePaymentIntentId,
+        amountCents,
+        idempotencyKey,
+        stripeKeyPrefix: stripeKeyPrefix ?? null,
+        allocationPlan: allocationPlanJson,
+        nextRetryAt: new Date(),
+      },
+    ],
+    skipDuplicates: true,
   });
+  if (inserted.count === 0) {
+    // #4083: a repeat enqueue refreshes only a row no worker has picked up
+    // (PENDING). One a worker has claimed, failed or closed keeps its amount,
+    // prefix and plan: those slices may already have been sent under their keys.
+    await store.paymentRecoveryOperation.updateMany({
+      where: { idempotencyKey, status: PaymentRecoveryOperationStatus.PENDING },
+      data: {
+        bookingId,
+        paymentId,
+        paymentIntentId: representativePaymentIntentId,
+        amountCents,
+        stripeKeyPrefix: stripeKeyPrefix ?? null,
+        // Only overwrite a frozen plan when the caller supplies a fresh one.
+        ...(allocationPlanJson !== undefined ? { allocationPlan: allocationPlanJson } : {}),
+      },
+    });
+  }
+  return { created: inserted.count > 0, paymentIntentId: representativePaymentIntentId };
 }
 
 export async function enqueueBookingModificationRefundRecovery({
@@ -1211,24 +1219,9 @@ async function alertPaymentRecoveryFailure(
   message: string,
   format: ClubFormat,
 ) {
-  const booking = await prisma.booking.findUnique({
-    where: { id: operation.bookingId },
-    // #3369: the owner may be an Organisation; bookingOwner() reads both.
-    include: { member: true, organisation: { select: { name: true, email: true } } },
-  });
-
-  if (!booking) {
-    logger.warn(
-      { bookingId: operation.bookingId, operationId: operation.id },
-      "Payment recovery failure alert skipped because booking no longer exists"
-    );
-    return;
-  }
-
-  await sendAdminPaymentFailureAlert({
-    memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
+  await alertPaymentRecoveryOfficers({
+    bookingId: operation.bookingId,
+    operationId: operation.id,
     amountCents: operation.amountCents,
     errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempts: ${message}`,
     paymentIntentId: operation.paymentIntentId,
@@ -1274,6 +1267,7 @@ async function markPaymentRecoveryOperationFailed({
   nextRetryAt,
   fromStatuses,
   fromProcessingStartedAt,
+  fromAttempts,
   format,
 }: {
   operation: PaymentRecoveryOperation;
@@ -1304,6 +1298,15 @@ async function markPaymentRecoveryOperationFailed({
    * `processingStartedAt`.
    */
   fromProcessingStartedAt?: Date | null;
+  /**
+   * #4083: when supplied, the transition ALSO requires this attempt's count and
+   * a live claim (`processingStartedAt` set), so a worker the reaper gave up on
+   * cannot write FAILED over the row once it is reaped (`processingStartedAt`
+   * null) or claimed again (`attempts` moved on). Not the claim time itself: an
+   * attempt may re-stamp that on its own row (`holdAdditionalIntentRecoveryClaim`,
+   * the superseded hand-off), and its own failure must still land.
+   */
+  fromAttempts?: number;
   /** The club's format (#3565), resolved before any transaction by the caller. */
   format: ClubFormat;
 }): Promise<PaymentRecoveryFailureOutcome> {
@@ -1314,6 +1317,7 @@ async function markPaymentRecoveryOperationFailed({
       ...(fromProcessingStartedAt === undefined
         ? {}
         : { processingStartedAt: fromProcessingStartedAt }),
+      ...(fromAttempts === undefined ? {} : { attempts: fromAttempts, processingStartedAt: { not: null } }),
     },
     data: {
       status: PaymentRecoveryOperationStatus.FAILED,
@@ -1624,6 +1628,8 @@ async function failPaymentRecoveryOperation(
     // webhook-side closers can move it underneath us and a finished operation
     // must never be reopened as a failure.
     fromStatuses: NON_TERMINAL_PAYMENT_RECOVERY_STATUSES,
+    // #4083: only the attempt this worker holds.
+    fromAttempts: operation.attempts,
   });
 
   /**

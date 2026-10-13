@@ -122,7 +122,7 @@ describe("the attempt's failure", () => {
   it("names the refused amount and reads as a definite refusal on the stuck list, never as 'Stripe may have refunded'", async () => {
     const slice = { paymentTransactionId: "txn_a", amountCents: 50_000 };
     const failure = (await refundPlanOrRetryRefusals({
-      operation: { id: "op_1", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") },
+      operation: { id: "op_1", bookingId: "b1", paymentIntentId: "pi_1", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") },
       plan: [slice],
       format: CLUB_FORMAT_TEST,
       refund: async () => ({ refunds: [{ status: "failed", slice }] }),
