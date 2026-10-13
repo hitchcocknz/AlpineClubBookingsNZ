@@ -459,7 +459,7 @@ describe("#3368: the three families stage 4 (#3369) has to answer for", () => {
 const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-editor-data.ts:234",
   "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-viewer.ts:38",
-  "src/app/(authenticated)/bookings/[id]/page.tsx:201",
+  "src/app/(authenticated)/bookings/[id]/page.tsx:202",
   "src/app/(authenticated)/bookings/page.tsx:183",
   "src/app/api/bookings/[id]/additional-payment-secret/route.ts:80",
   "src/app/api/bookings/[id]/arrival-time/route.ts:140",
@@ -477,8 +477,8 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/guests/route.ts:342",
   "src/app/api/bookings/[id]/modify-quote/route.ts:363",
   "src/app/api/bookings/[id]/notes/route.ts:48",
-  "src/app/api/bookings/[id]/refund-request/route.ts:250",
-  "src/app/api/bookings/[id]/refund-request/route.ts:47",
+  "src/app/api/bookings/[id]/refund-request/route.ts:271",
+  "src/app/api/bookings/[id]/refund-request/route.ts:49",
   "src/app/api/bookings/[id]/requested-room/options/route.ts:85",
   "src/app/api/bookings/[id]/send-guest-payment-link/route.ts:67",
   "src/app/api/payments/create-payment-intent/route.ts:165",
@@ -520,8 +520,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1337",
-  "src/lib/payment-recovery.ts:2656",
-  "src/lib/payment-recovery.ts:2708",
+  "src/lib/payment-recovery.ts:2643",
+  "src/lib/payment-recovery.ts:2695",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -784,7 +784,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:79",
   "src/lib/cron-additional-payment-reminders.ts:437",
-  "src/lib/cron-confirm-pending.ts:208",
+  "src/lib/cron-confirm-pending.ts:209",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through

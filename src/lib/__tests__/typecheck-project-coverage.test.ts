@@ -62,6 +62,8 @@ const JAVASCRIPT_VITEST_TESTS = [
   "scripts/ci/dependency-mitigation.test.mjs",
   "scripts/ci/check-doc-index-integrity.test.mjs",
   "scripts/ci/check-pr-body.test.mjs",
+  // #4053 tests the PR-body gates' file input (`pr-body.mjs`), a `.mjs` tool.
+  "scripts/ci/pr-body-file.test.mjs",
   "scripts/ci/check-pr-changelog-fragment.test.mjs",
   "scripts/ci/check-pr-concurrency-declaration.test.mjs",
   "scripts/ci/check-prerendered-script-nonces.test.mjs",

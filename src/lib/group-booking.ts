@@ -1934,6 +1934,9 @@ export async function verifyAndCreateNonMemberJoin(
       checkOut,
       guestCount: guests.length,
       priceCents,
+      // A booking created a moment ago: no recorded fee, and no credit election
+      // has reached it, so what is owed is the price (#4058).
+      amountDueCents: priceCents,
       bookingReference: created.bookingId,
       expiresAt: paymentLinkExpiresAt,
     }, format);

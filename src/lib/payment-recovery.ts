@@ -136,26 +136,6 @@ export interface PaymentRecoveryProcessResult {
   skipped: number;
 }
 
-function buildCancelIdempotencyKey(
-  paymentTransactionId: string,
-  paymentIntentId: string
-) {
-  return `payment_recovery_cancel_${paymentTransactionId}_${paymentIntentId}`;
-}
-
-function buildRefundIdempotencyKey(
-  paymentTransactionId: string,
-  paymentIntentId: string
-) {
-  return `payment_recovery_refund_${paymentTransactionId}_${paymentIntentId}`;
-}
-
-function buildBookingModificationRefundIdempotencyKey(
-  bookingModificationId: string,
-) {
-  return `payment_recovery_modification_refund_${bookingModificationId}`;
-}
-
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -195,7 +175,7 @@ export async function enqueuePaymentIntentCancellationRecovery({
   amountCents: number;
   store?: PaymentRecoveryStore;
 }) {
-  const idempotencyKey = buildCancelIdempotencyKey(
+  const idempotencyKey = buildPaymentIntentCancelRecoveryIdempotencyKey(
     paymentTransactionId,
     paymentIntentId
   );
@@ -334,7 +314,7 @@ export async function enqueueBookingModificationRefundRecovery({
     paymentId,
     amountCents,
     idempotencyKey:
-      buildBookingModificationRefundIdempotencyKey(bookingModificationId),
+      buildBookingModificationRefundRecoveryIdempotencyKey(bookingModificationId),
     stripeKeyPrefix,
     store,
   });
@@ -539,16 +519,18 @@ export async function enqueueRefundRequestRefundRecovery({
     bookingId,
     paymentId,
     amountCents,
-    idempotencyKey: `refund_request_refund_${refundRequestId}`,
+    idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId),
     allocationPlan,
     store,
   });
 }
 
 import {
+  BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   buildBookingCancellationRefundIdempotencyKey,
   buildBookingCancellationRefundMetadata,
   buildBookingModificationRefundMetadata,
+  buildBookingModificationRefundRecoveryIdempotencyKey,
   buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
   buildCapacityClaimFailedRefundStripeKeyPrefix,
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
@@ -561,7 +543,12 @@ import {
   buildGroupSettlementRefundRecoveryIdempotencyKey,
   buildLateCaptureApprovalRefundRecoveryIdempotencyKey,
   buildLateCaptureRefundStripeKeyPrefix,
+  buildPaymentIntentCancelRecoveryIdempotencyKey,
   buildRefundRequestRefundMetadata,
+  buildRefundRequestRefundRecoveryIdempotencyKey,
+  buildSupersededPaymentRefundRecoveryIdempotencyKey,
+  buildLegacyModificationRefundStripeKeyPrefix,
+  REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
   isLateCaptureRefundStripeKeyPrefix,
   bookingModificationIdForAdditionalIntentRecoveryKey,
   bookingModificationRefundReasonForKeyPrefix,
@@ -1145,7 +1132,7 @@ async function enqueueSupersededPaymentRefundRecovery({
   amountCents: number;
   store?: PaymentRecoveryStore;
 }) {
-  const idempotencyKey = buildRefundIdempotencyKey(
+  const idempotencyKey = buildSupersededPaymentRefundRecoveryIdempotencyKey(
     paymentTransactionId,
     paymentIntentId
   );
@@ -2128,12 +2115,12 @@ async function processBookingModificationRefundOperation(
   // read the prefix stored at enqueue time (#1152). Legacy modification rows
   // without a stored prefix keep their operation-scoped prefix.
   const refundRequestId = operation.idempotencyKey.startsWith(
-    "refund_request_refund_",
+    REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
   )
-    ? operation.idempotencyKey.slice("refund_request_refund_".length)
+    ? operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length)
     : null;
   const isBookingCancellationRecovery = operation.idempotencyKey.startsWith(
-    "booking_cancel_refund_recovery_",
+    BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   );
 
   let metadata: Record<string, string>;
@@ -2181,7 +2168,7 @@ async function processBookingModificationRefundOperation(
     // shared-key with the inline refund).
     idempotencyKeyPrefix =
       operation.stripeKeyPrefix ??
-      `payment_recovery_modification_refund_${operation.id}`;
+      buildLegacyModificationRefundStripeKeyPrefix(operation.id);
     metadata = buildBookingModificationRefundMetadata(
       operation.bookingId,
       bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),
