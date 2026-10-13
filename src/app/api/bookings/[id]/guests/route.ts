@@ -70,7 +70,9 @@ import {
   sizeAdditionalAsk,
   type AdditionalAsk,
 } from "@/lib/additional-payment-ask";
-import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
+import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
+import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
+import { additionalAmountToName, createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
 import { z } from "zod";
@@ -118,9 +120,8 @@ import {
   getBookingEditPolicy,
 } from "@/lib/booking-edit-policy";
 import {
+  canAskCardForIncrease,
   hasIssuedPrimaryXeroInvoice,
-  isCapturedPaymentStatus,
-  isSettledBookingStatus,
 } from "@/lib/booking-payment-state";
 import { clubTime } from "@/lib/club-time/server";
 import { dateOnlyInstantOf } from "@/lib/club-time";
@@ -577,9 +578,9 @@ export async function POST(
         booking.checkOut,
         [
           ...booking.guests,
-          ...normalizedNewGuests.map(() => ({
-            stayStart: booking.checkIn,
-            stayEnd: booking.checkOut,
+          ...normalizedNewGuests.map((guest) => ({
+            stayStart: booking.checkIn, stayEnd: booking.checkOut,
+            memberId: guest.memberId ?? null,
           })),
         ],
         bookingId,
@@ -998,6 +999,7 @@ export async function POST(
       // minting it will absorb. Zero here never mints, so the Xero-only and
       // nothing-owed endings below are safe without remembering to say so.
       let additionalAsk: AdditionalAsk = NO_ADDITIONAL_ASK;
+      let foldedReissuedAsks: FoldedReissuedAsks = NO_FOLDED_REISSUED_ASKS;
       /**
        * #3200: "has the main Xero invoice already been raised?" is asked at four
        * edit doors and DEFINED in one — `hasIssuedPrimaryXeroInvoice`
@@ -1020,28 +1022,16 @@ export async function POST(
        * count as paid, so the difference is charged instead of collected from
        * nobody — the reachable defect this issue was filed for.
        *
-       * It asks `isCapturedPaymentStatus`, the STATUS half, rather than the
-       * full `hasCapturedPayment` the other three doors use. That is deliberate
-       * and it is the one place this door differs from them. The full predicate
-       * also requires `amountCents > 0`, and a ZERO-DOLLAR booking — a stay
-       * fully covered by credit or a 100% promo — carries
-       * `{ amountCents: 0, status: SUCCEEDED }`. Using it here would have made
-       * this door stop asking that member for the added guest's price, because
-       * the Xero arm below cannot cover them at a club with the integration off.
-       * That is a NEW under-collection, at the very door this issue exists to
-       * stop under-collecting at, and it was never put to the owner.
-       *
-       * The money IS collectable: the additional-payment mint creates a FRESH
-       * intent and only reuses the Stripe customer (`findOrCreateCustomer` when
-       * there is none), so a null `stripePaymentIntentId` on the zero-dollar row
-       * is no obstacle. The other three doors share that hole; converging onto
-       * it would have been converging onto a defect. Filed separately.
+       * A guest add only ever raises the price, so this door asks the
+       * INCREASE question, `canAskCardForIncrease` — the status half of
+       * `hasCapturedPayment`, without its `amountCents > 0` clause, so a
+       * ZERO-DOLLAR booking (a stay fully covered by credit or a 100% promo,
+       * `{ amountCents: 0, status: SUCCEEDED }`) is still asked for the added
+       * guest's price whether or not Xero is connected. #3502 (owner decision,
+       * 6 Oct 2026) moved the other three doors onto the same answer through
+       * `applyPaymentAdjustments`; this door used to hold its own copy of it.
        */
-      const hasSettledPayment =
-        isSettledBookingStatus(booking.status) &&
-        isCapturedPaymentStatus(booking.payment?.status ?? "");
-      const hasSucceededPayment =
-        hasSettledPayment && booking.payment?.source === PaymentSource.STRIPE;
+      const hasSucceededPayment = canAskCardForIncrease(booking);
       const hasIssuedXeroInvoice = hasIssuedPrimaryXeroInvoice(booking);
 
       /**
@@ -1078,12 +1068,16 @@ export async function POST(
         // exactly as `applyPaymentAdjustments` refuses the other doors' asks.
         throw new ApiError(ORGANISER_CHILD_CHARGE_REFUSAL, 409);
       } else if (hasSucceededPayment && priceDiffCents > 0) {
+        // #3954: a waiting re-issue joins this ask, its recovery closed and the
+        // fold recorded on this edit's history so its replay asks again.
+        foldedReissuedAsks = await foldWaitingReissuedAsks(tx, booking);
         additionalAsk = sizeAdditionalAsk({
           priceDiffCents,
           // A guest add never charges one; the route passes 0 to the Xero
           // settlement and to the member's email for the same reason.
           changeFeeCents: 0,
           payment: booking.payment,
+          waitingReissuedAskCents: foldedReissuedAsks.cents,
         });
         additionalAmountCents = additionalAsk.amountCents;
       } else if (hasIssuedXeroInvoice && priceDiffCents > 0) {
@@ -1228,6 +1222,8 @@ export async function POST(
             // #2390: the same sentence the member was shown, kept on the
             // booking's own history so the split has an answer later.
             ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
+            // #3954 round 6: the waiting re-issues this add folded into its ask.
+            ...unpaidAskOffsetHistory({ ...NO_UNPAID_ASK_SETTLEMENT, foldedReissuedAsks }),
           },
           priceDiffCents,
           changeFeeCents: 0,
@@ -1285,6 +1281,8 @@ export async function POST(
         priceDiffCents,
         additionalAmountCents,
         additionalAsk,
+        // An add never lowers the price (#3954 retires asks only on a reduction).
+        retiredAdditionalAsks: [],
         promoRemoved,
         promoCoverage,
         oldGuestCount: booking.guests.length,
@@ -1380,18 +1378,17 @@ export async function POST(
     // to avoid holding the advisory lock). Shared settlement helper (#1096):
     // a transient Stripe failure enqueues a durable recovery operation keyed
     // to this modification instead of only logging.
-    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-      await createModificationAdditionalPaymentIntent({
-        format,
-        bookingId,
-        // Guest adds never decrease the price, so the shared settlement
-        // context's refund side is always zero here.
-        result: { ...result, pendingRefundAmountCents: 0, organiserChildRefund: null },
-        reason: "guest_add_price_increase",
-        idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
-        failureMessage:
-          "Failed to create additional PaymentIntent for guest addition",
-      });
+    const additionalMint = await createModificationAdditionalPaymentIntent({
+      format,
+      bookingId,
+      // Guest adds never decrease the price, so the shared settlement
+      // context's refund side is always zero here.
+      result: { ...result, pendingRefundAmountCents: 0, organiserChildRefund: null },
+      reason: "guest_add_price_increase",
+      idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
+      failureMessage:
+        "Failed to create additional PaymentIntent for guest addition",
+    });
 
     // Audit log. #3530: what the figure is made of, line by line and in dollars.
     const linesAudit = await loadModificationLinesAuditFields(prisma, result.priceLines, logger, format);
@@ -1436,7 +1433,7 @@ export async function POST(
       datesChanged: false,
       requiresAdditionalStripePayment:
         result.hasIssuedXeroInvoice && result.priceDiffCents > 0 && result.hasSucceededPayment,
-      additionalPaymentIntentId,
+      additionalPaymentIntentId: additionalMint.additionalPaymentIntentId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to queue Xero settlement for guest addition")
     );
@@ -1475,6 +1472,7 @@ export async function POST(
         result.booking.id,
       );
 
+      const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint); // #3954 round 9: never a retired ask
       sendBookingModifiedEmail({
         bookingId: result.booking.id,
         recipientMemberId: result.memberId,
@@ -1494,12 +1492,14 @@ export async function POST(
         // Guest adds never decrease the price, so nothing is refunded.
         refundByBankTransfer: false,
         appliedCreditGivenBackCents: 0,
-        additionalAmountCents: result.additionalAmountCents,
+        additionalAmountCents: namedAdditionalCents,
+        // A guest add only raises a price.
+        unpaidAskCancelled: false,
         additionalPaymentMethod:
-          result.additionalAmountCents > 0 &&
+          namedAdditionalCents > 0 &&
           result.paymentSource === PaymentSource.INTERNET_BANKING
             ? "INTERNET_BANKING"
-            : result.additionalAmountCents > 0 && result.hasSucceededPayment
+            : namedAdditionalCents > 0 && result.hasSucceededPayment
               ? "STRIPE"
               : undefined,
         paymentReference: result.paymentReference,
@@ -1507,7 +1507,7 @@ export async function POST(
         // #2390: same words as the edit preview and the booking history.
         promoCoverageNote: result.promoCoverage?.message ?? null,
         financialReviewPending,
-        refundReturnedToOrganiser: false,
+        refundDestination: "own",
         lodgeId: result.booking.lodgeId,
       }, format).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
@@ -1519,7 +1519,7 @@ export async function POST(
       addedGuests: result.addedGuests,
       priceDiffCents: result.priceDiffCents,
       additionalAmountCents: result.additionalAmountCents,
-      additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+      additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
       promoRemoved: result.promoRemoved,
       // #2390: who the promotion still covers, and who it does not. Null unless
       // a usage cap left somebody out.

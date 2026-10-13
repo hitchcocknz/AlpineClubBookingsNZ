@@ -459,7 +459,7 @@ describe("#3368: the three families stage 4 (#3369) has to answer for", () => {
 const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-editor-data.ts:234",
   "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-viewer.ts:38",
-  "src/app/(authenticated)/bookings/[id]/page.tsx:201",
+  "src/app/(authenticated)/bookings/[id]/page.tsx:204",
   "src/app/(authenticated)/bookings/page.tsx:183",
   "src/app/api/bookings/[id]/additional-payment-secret/route.ts:80",
   "src/app/api/bookings/[id]/arrival-time/route.ts:140",
@@ -474,31 +474,31 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/confirm-modification-payment/route.ts:70",
   "src/app/api/bookings/[id]/confirm-payment/route.ts:86",
   "src/app/api/bookings/[id]/exception-requests/route.ts:142",
-  "src/app/api/bookings/[id]/guests/route.ts:341",
-  "src/app/api/bookings/[id]/modify-quote/route.ts:362",
+  "src/app/api/bookings/[id]/guests/route.ts:342",
+  "src/app/api/bookings/[id]/modify-quote/route.ts:363",
   "src/app/api/bookings/[id]/notes/route.ts:48",
-  "src/app/api/bookings/[id]/refund-request/route.ts:250",
-  "src/app/api/bookings/[id]/refund-request/route.ts:47",
+  "src/app/api/bookings/[id]/refund-request/route.ts:271",
+  "src/app/api/bookings/[id]/refund-request/route.ts:49",
   "src/app/api/bookings/[id]/requested-room/options/route.ts:85",
   "src/app/api/bookings/[id]/send-guest-payment-link/route.ts:67",
-  "src/app/api/payments/create-payment-intent/route.ts:165",
+  "src/app/api/payments/create-payment-intent/route.ts:164",
   "src/app/api/payments/create-setup-intent/route.ts:59",
   "src/app/api/payments/switch-to-internet-banking/route.ts:118",
   "src/lib/adult-member-hosting-review.ts:3256",
-  "src/lib/booking-batch-modification-service.ts:1068",
-  "src/lib/booking-cancel.ts:528",
-  "src/lib/booking-date-modification-service.ts:397",
+  "src/lib/booking-batch-modification-service.ts:1076",
+  "src/lib/booking-cancel.ts:532",
+  "src/lib/booking-date-modification-service.ts:405",
   "src/lib/booking-delete.ts:120",
   "src/lib/booking-delete.ts:69",
   "src/lib/booking-email-authority.ts:115",
-  "src/lib/booking-guest-removal-service.ts:449",
-  "src/lib/booking-guest-removal-service.ts:785",
+  "src/lib/booking-guest-removal-service.ts:459",
+  "src/lib/booking-guest-removal-service.ts:795",
   "src/lib/booking-linked-date-move-service.ts:240",
   "src/lib/booking-member-night-conflicts.ts:369",
   "src/lib/booking-modify-validation.ts:618",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1427",
   "src/lib/group-booking.ts:274",
-  "src/lib/kiosk-access.ts:232",
+  "src/lib/kiosk-access.ts:230",
   "src/lib/manual-refund-task-queue-payload.ts:286",
   "src/lib/requested-room-write.ts:62",
   "src/lib/waitlist-cross-lodge.ts:343",
@@ -519,10 +519,10 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // records that store the owner's member id (null for a school), and one
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
-  "src/lib/member-guest-consent-service.ts:1297",
-  "src/lib/payment-recovery.ts:2623",
-  "src/lib/payment-recovery.ts:2675",
-  "src/lib/xero-admin-health.ts:372",
+  "src/lib/member-guest-consent-service.ts:1337",
+  "src/lib/payment-recovery.ts:2643",
+  "src/lib/payment-recovery.ts:2695",
+  "src/lib/xero-admin-health.ts:394",
 ];
 
 /** Measured, not counted by hand. Re-measure by running this test. */
@@ -784,7 +784,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:79",
   "src/lib/cron-additional-payment-reminders.ts:437",
-  "src/lib/cron-confirm-pending.ts:208",
+  "src/lib/cron-confirm-pending.ts:209",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
@@ -798,10 +798,10 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `Prisma.BookingGetPayload<{ select: typeof … }>`, so the model IS
   // compile-checked and a relation this model did not declare would fail to
   // build. The walk cannot root it only because the literal names no delegate.
-  "src/lib/member-lodge-roster.ts:115",
+  "src/lib/member-lodge-roster.ts:112",
   "src/lib/payment-link.ts:81",
   "src/lib/payment-reconciliation.ts:98",
   "src/lib/stuck-state-dashboard.ts:616",
-  "src/lib/xero-booking-repair-types.ts:195",
+  "src/lib/xero-booking-repair-types.ts:218",
   "src/lib/xero-inbound/settlement-conflicts.ts:153",
 ];

@@ -1,8 +1,26 @@
 import type { ModificationLine } from "@/lib/booking-modification-lines";
-import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
+import { PaymentRecoveryOperationStatus, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 
 import type { AdditionalAsk } from "@/lib/additional-payment-ask";
+import type { RetiredAdditionalAsk } from "@/lib/additional-ask-reduction";
 import {
+  cancelRetiredAdditionalAsksNow,
+  readReissuedAskRecovery,
+  type ReissuedAskRecovery,
+  writeReissuedAskUnderRecovery,
+} from "@/lib/additional-ask-reissue";
+import { PENDING_ASK_NETTED_BY_REDUCTION_NOTE } from "@/lib/additional-ask-recovery-close";
+import { queueFoldedReissuedAskInvoices, queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
+import {
+  mintedIntentCustomerId,
+  mintReissuedAskIntent,
+  planReissuedAskMint,
+  readReissueMintPayment,
+  resolveAskCustomerId,
+} from "@/lib/reissued-ask-mint";
+import {
+  cancelSupersededAdditionalIntentsNow,
+  queueSupersededAdditionalIntentCancellationRows,
   queueSupersededAdditionalIntentCancellations,
 } from "@/lib/booking-payment-cleanup";
 import logger from "@/lib/logger";
@@ -10,8 +28,9 @@ import {
   enqueueAdditionalPaymentIntentRecovery,
   enqueueBookingModificationRefundRecovery,
   processPaymentRecoveryOperations,
-  runPaymentRecoveryOperationNow,
 } from "@/lib/payment-recovery";
+import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
+import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 import {
   buildAdditionalIntentRecoveryIdempotencyKey,
   buildBookingModificationRefundMetadata,
@@ -29,6 +48,7 @@ import {
 } from "@/lib/stripe";
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
+import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 
 export type BookingModificationPaymentContext = {
   pendingRefundAmountCents: number;
@@ -58,6 +78,12 @@ export type BookingModificationPaymentContext = {
    * Xero one must NOT carry a superseded Stripe balance.
    */
   additionalAsk: AdditionalAsk;
+  /**
+   * #3954: the unpaid asks this edit's price reduction retired inside its
+   * transaction (`retireUnpaidAskChain`). The minter cancels them at Stripe
+   * after commit, before it mints any smaller ask. Empty for every other edit.
+   */
+  retiredAdditionalAsks: readonly RetiredAdditionalAsk[];
   hasSucceededPayment: boolean;
   /**
    * #3181: whether this booking's PRIMARY Xero invoice had already been issued
@@ -114,6 +140,29 @@ export async function drainSupersededPrimaryIntents({
   }
 }
 
+/**
+ * #4057: what an edit's after-commit refund came to. `refundDestination` is
+ * the one answer the "Booking Modified" email names (`bookingModifiedRefundSentence`):
+ * an organiser-card refund is `organiser_card` only when its debt says Stripe
+ * made it, otherwise `organiser_card_pending`. #4070: an own-card refund is
+ * `own` only when `ownCardRefundMade` says so, otherwise `own_card_pending`.
+ */
+export type BookingModificationRefundOutcome = {
+  stripeRefundId: string | undefined;
+  refundDestination: BookingModifiedRefundDestination;
+};
+
+/**
+ * #4070: an own-card edit refund is made when `refundPaymentTransactions`
+ * returned (every slice refunded at Stripe and recorded) with at least one
+ * refund, and Stripe answered each with a status the ledger counts as money
+ * back (`isRecordedRefundStatus`: `pending` and `succeeded` count, `failed`
+ * and `canceled` do not). Judged by the refunds that exist, never assumed.
+ */
+function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null }>): boolean {
+  return refunds.length > 0 && refunds.every((refund) => isRecordedRefundStatus(refund.status ?? "unknown"));
+}
+
 export async function executeBookingModificationRefund({
   format,
   bookingId,
@@ -130,9 +179,10 @@ export async function executeBookingModificationRefund({
   idempotencyKeyPrefix: string;
   failureMessage: string;
   recoveryFailureMessage: string;
-}): Promise<string | undefined> {
+}): Promise<BookingModificationRefundOutcome> {
   if (result.pendingRefundAmountCents <= 0 || !result.paymentId) {
-    return undefined;
+    // #4057: an organiser child's refund that was not run here is still owed.
+    return { stripeRefundId: undefined, refundDestination: result.organiserChildRefund ? "organiser_card_pending" : "own" };
   }
 
   // #3653: an organiser-settled child's edit wrote its refund debt before it
@@ -140,14 +190,22 @@ export async function executeBookingModificationRefund({
   // child has no transaction of its own for the path below to refund. A row
   // that is missing is logged, never replaced by the ordinary path, which would
   // find nothing to refund and close its own recovery as done.
+  // #4057: made only once the debt's own status, re-read after the run and
+  // outside any transaction, says so (`runOrganiserChildRefundDebtNow`).
   if (result.organiserChildRefund) {
-    const debt = await prisma.paymentRecoveryOperation.findUnique({
-      where: { idempotencyKey: buildOrganiserChildModificationRefundKey(result.bookingModificationId) },
-      select: { id: true },
-    });
-    if (debt) await runPaymentRecoveryOperationNow(debt.id, format);
-    else logger.error({ bookingId }, "Organiser child refund debt missing after the edit committed (#3653)");
-    return undefined;
+    // #4057: the edit has committed, so a failed read is logged, not thrown, and the debt stays owed.
+    const debt = await prisma.paymentRecoveryOperation
+      .findUnique({
+        where: { idempotencyKey: buildOrganiserChildModificationRefundKey(result.bookingModificationId) },
+        select: { id: true },
+      })
+      .catch((err: unknown) => {
+        logger.error({ err, bookingId }, "Could not read the organiser child refund debt after the edit committed (#4057)");
+        return undefined;
+      });
+    if (debt === null) logger.error({ bookingId }, "Organiser child refund debt missing after the edit committed (#3653)");
+    const made = debt ? await runOrganiserChildRefundDebtNow(debt.id, format) : false;
+    return { stripeRefundId: undefined, refundDestination: made ? "organiser_card" : "organiser_card_pending" };
   }
 
   try {
@@ -167,7 +225,10 @@ export async function executeBookingModificationRefund({
       // member while the ledger records a second refund that never happened.
       idempotencyKeyPrefix: `${idempotencyKeyPrefix}_${result.bookingModificationId}`,
     });
-    return refundResult.refunds[0]?.refundId;
+    return {
+      stripeRefundId: refundResult.refunds[0]?.refundId,
+      refundDestination: ownCardRefundMade(refundResult.refunds) ? "own" : "own_card_pending",
+    };
   } catch (refundErr) {
     logger.error(
       { err: refundErr, bookingId, amount: result.pendingRefundAmountCents },
@@ -200,8 +261,66 @@ export async function executeBookingModificationRefund({
         ),
       );
     }
-    return undefined;
+    // #4070: not made here, so the email says it is on its way.
+    return { stripeRefundId: undefined, refundDestination: "own_card_pending" };
   }
+}
+
+/** What a door's after-commit mint of its additional ask came to. */
+export type ModificationAdditionalAskMint = {
+  /** Offered only while the minted ask is still live (#3954 round 7). */
+  additionalPaymentClientSecret: string | undefined;
+  /** Returned even when retired, for the edit's Xero leg (round 8). */
+  additionalPaymentIntentId: string | undefined;
+  /**
+   * #3954 round 9: minted, but a reduction retired it before it was offered -
+   * the same liveness that withholds the secret. Nothing is owed on it. Final
+   * review: also a re-issue a later reduction netted off before the door
+   * minted it (`reissueNotMinted`).
+   */
+  additionalAskRetired: boolean;
+};
+
+const NOTHING_MINTED: ModificationAdditionalAskMint = {
+  additionalPaymentClientSecret: undefined,
+  additionalPaymentIntentId: undefined,
+  additionalAskRetired: false,
+};
+
+/**
+ * #3954 final review: what a door that did not mint its re-issue reports. A
+ * later reduction that netted the waiting re-issue off retired it - that
+ * reduction's own message told the member - so it is not named as due. A
+ * runner that claimed it, or a later increase that folded it in, still asks
+ * for that money, so it stays named.
+ */
+function reissueNotMinted(
+  recovery: Pick<ReissuedAskRecovery, "status" | "lastError"> | null,
+): ModificationAdditionalAskMint {
+  const nettedOff =
+    recovery?.status === PaymentRecoveryOperationStatus.SUCCEEDED &&
+    recovery.lastError === PENDING_ASK_NETTED_BY_REDUCTION_NOTE;
+  return nettedOff ? { ...NOTHING_MINTED, additionalAskRetired: true } : NOTHING_MINTED;
+}
+
+function mintedAsk(pi: { id: string; client_secret: string | null }, live: boolean): ModificationAdditionalAskMint {
+  return {
+    additionalPaymentClientSecret: live ? (pi.client_secret ?? undefined) : undefined,
+    additionalPaymentIntentId: pi.id,
+    additionalAskRetired: !live,
+  };
+}
+
+/**
+ * #3954 round 9: the additional figure a member-facing message may name as
+ * due. An ask a reduction retired before it was offered is owed by nobody -
+ * that reduction's own message told the member - so it is never named.
+ */
+export function additionalAmountToName(
+  amountCents: number,
+  mint: Pick<ModificationAdditionalAskMint, "additionalAskRetired">,
+): number {
+  return mint.additionalAskRetired ? 0 : amountCents;
 }
 
 /**
@@ -270,20 +389,42 @@ export async function createModificationAdditionalPaymentIntent({
   failureMessage: string;
   /** The club's format (#3565), resolved before any transaction by the caller. */
   format: ClubFormat;
-}): Promise<{
-  additionalPaymentClientSecret: string | undefined;
-  additionalPaymentIntentId: string | undefined;
-}> {
+}): Promise<ModificationAdditionalAskMint> {
+  // #3954: the asks this edit's reduction retired are cancelled at Stripe
+  // first, whether or not it owes a smaller one: their rows were retired, and
+  // their cancellations queued, inside the edit's transaction.
+  await cancelRetiredAdditionalAsksNow({
+    format,
+    bookingId,
+    retired: result.retiredAdditionalAsks,
+  });
+
   if (
     result.additionalAsk.amountCents <= 0 ||
-    !result.hasSucceededPayment ||
+    // #3954: a re-issued ask was already asked of this card, so a credit-paid
+    // ($0) booking whose reduction captured nothing still mints it.
+    !(result.hasSucceededPayment || result.additionalAsk.reissuesUnpaidAsk) ||
     !result.paymentId
   ) {
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
+
+  // #3954 review round 4: a RE-ISSUED ask's recovery was written in the edit's
+  // own transaction (`queueReissuedAskRecovery`). This mint runs under that
+  // row's Stripe key and completes the row with its own write - unless a later
+  // reduction netted it off or the runner claimed it after its grace, in which
+  // case whoever moved it owns the ask and this mints nothing.
+  const reissueRecovery = result.additionalAsk.reissuesUnpaidAsk
+    ? await readReissuedAskRecovery(result.bookingModificationId)
+    : null;
+  if (reissueRecovery && reissueRecovery.status !== PaymentRecoveryOperationStatus.PENDING) {
+    logger.info(
+      { bookingId, bookingModificationId: result.bookingModificationId, operationId: reissueRecovery.id, status: reissueRecovery.status },
+      "A re-issued additional ask's recovery has moved on since the edit committed; the door's mint leaves it to the recovery (#3954)",
+    );
+    return reissueNotMinted(reissueRecovery);
+  }
+  const stripeIdempotencyKey = reissueRecovery?.paymentIntentId ?? idempotencyKey;
 
   // Durable retry (#1096): a price increase with no instrument to collect it
   // must never be lost. One spelling for both ways a mint can fail below.
@@ -296,7 +437,7 @@ export async function createModificationAdditionalPaymentIntent({
         recoveryIdempotencyKey ??
         buildAdditionalIntentRecoveryIdempotencyKey(result.bookingModificationId),
       amountCents: result.additionalAsk.amountCents,
-      stripeIdempotencyKey: idempotencyKey,
+      stripeIdempotencyKey,
       // #3181: the EDIT's answer, frozen here because this is the last moment it
       // is known. The replay reads it back rather than re-deriving one.
       hadIssuedXeroInvoice: result.hasIssuedXeroInvoice,
@@ -311,13 +452,81 @@ export async function createModificationAdditionalPaymentIntent({
   if (chargeRefusal) {
     logger.error({ bookingId, currencyCode: chargeRefusal.currencyCode }, `${failureMessage}: ${chargeRefusal.message}`);
     await keepTheDebt();
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
 
   try {
+    if (reissueRecovery) {
+      // #3954 round 6: the ONE request both of a re-issue's minters send
+      // (`planReissuedAskMint`) - sized on the outstanding ask as it stands
+      // now, exactly as the recovery's replay sizes it, so an ask minted since
+      // the reduction (an officer's review charge, say) is carried rather than
+      // superseded away, and the two never answer each other with an
+      // `idempotency_error`. The row, the recovery's completion and the
+      // supersede's durable rows commit together, or not at all (see above).
+      const current = await readReissueMintPayment(paymentId);
+      // Round 7: the customer resolved exactly as the recovery runner resolves
+      // it, so the two minters of this key send one request.
+      const customerId = await resolveAskCustomerId(current);
+      const plan = planReissuedAskMint({
+        bookingId,
+        recovery: { amountCents: reissueRecovery.amountCents, stripeKey: reissueRecovery.paymentIntentId },
+        payment: current,
+      });
+      const pi = await mintReissuedAskIntent({
+        format,
+        plan,
+        customerId,
+        recoveryCreatedAt: reissueRecovery.createdAt,
+      });
+      const superseded = await writeReissuedAskUnderRecovery(reissueRecovery, pi.id, async (store) => {
+        await upsertPaymentIntentTransaction({
+          paymentId,
+          kind: PaymentTransactionKind.ADDITIONAL,
+          paymentIntentId: pi.id,
+          amountCents: plan.ask.amountCents,
+          carriedAskCents: plan.ask.carriedCents,
+          status: PaymentStatus.PENDING,
+          reason: plan.reason,
+          stripeCustomerId: mintedIntentCustomerId(pi, customerId),
+          // #3954 round 8: the reducing edit whose re-issue this is, so a later
+          // reduction that retires it names this edit.
+          bookingModificationId: result.bookingModificationId,
+          store,
+        });
+        return queueSupersededAdditionalIntentCancellationRows({
+          bookingId,
+          paymentId,
+          newPaymentIntentId: pi.id,
+          store,
+        });
+      });
+      if (superseded === null) {
+        logger.warn(
+          { bookingId, bookingModificationId: result.bookingModificationId, paymentIntentId: pi.id },
+          "A re-issued additional ask's recovery moved while the door minted it (#3954); nothing written - the recovery's owner asks the member",
+        );
+        // Final review: whoever moved it decides whether it is still owed. A
+        // failed re-read names it, as before.
+        const moved = await readReissuedAskRecovery(result.bookingModificationId).catch((err) => {
+          logger.error({ err, bookingId }, "Could not re-read a re-issued ask's recovery; the email names it (#3954)");
+          return null;
+        });
+        return reissueNotMinted(moved);
+      }
+      await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded });
+      // Decision A (#3954): the smaller ask's own invoice, waiting on it - only
+      // while it is still live (round 7): a reduction may have retired it during
+      // the cancels above, and named this edit for it. Round 8: only the secret
+      // is withheld then; the minted intent's id is still returned.
+      const live = await queueReissuedAskSupplementaryInvoice({
+        bookingId,
+        bookingModificationId: result.bookingModificationId,
+        paymentIntentId: pi.id,
+      });
+      return mintedAsk(pi, live);
+    }
+
     let customerId = result.paymentCustomerId ?? undefined;
     if (!customerId) {
       const customer = await findOrCreateCustomer({
@@ -337,7 +546,7 @@ export async function createModificationAdditionalPaymentIntent({
         type: "modification_additional",
         reason,
       },
-      idempotencyKey,
+      idempotencyKey: stripeIdempotencyKey,
     });
 
     // THE NEW INTENT'S OWN ROW IS WRITTEN FIRST, AND THE ORDER IS LOAD-BEARING
@@ -371,6 +580,12 @@ export async function createModificationAdditionalPaymentIntent({
       status: PaymentStatus.PENDING,
       reason,
       stripeCustomerId: customerId,
+      // #3954 round 7: the edit's own invoice answer, on the row it asks with,
+      // so a later reduction knows which invoice billed this money. Round 8:
+      // and the edit itself, so a reduction that retires the row names it.
+      // A member's price ask only: a review charge is never set against.
+      ...(result.hasIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: result.hasIssuedXeroInvoice } : {}),
+      ...(recoveryIdempotencyKey ? {} : { bookingModificationId: result.bookingModificationId }),
     });
 
     await queueSupersededAdditionalIntentCancellations({
@@ -385,18 +600,28 @@ export async function createModificationAdditionalPaymentIntent({
       ),
     );
 
-    return {
-      additionalPaymentClientSecret: pi.client_secret ?? undefined,
-      additionalPaymentIntentId: pi.id,
-    };
+    // #3954 round 6: the re-issues this increase folded in are asked for on
+    // this intent now, so their own invoices wait on it. An ordinary edit's ask
+    // only: a review charge folds nothing.
+    // Round 7: only while this intent is still live - a reduction may have
+    // retired it during the cancels above, and then no secret is offered.
+    // Round 8: but its id still goes back to the edit's Xero leg, which parks
+    // the increase's own invoice on it (retired with the intent) rather than
+    // raising it unpaid; the reduction named this edit when it retired the row.
+    const live = recoveryIdempotencyKey
+      ? true
+      : await queueFoldedReissuedAskInvoices({
+          bookingId,
+          increaseModificationId: result.bookingModificationId,
+          paymentIntentId: pi.id,
+        });
+
+    return mintedAsk(pi, live);
   } catch (piErr) {
     logger.error({ err: piErr, bookingId }, failureMessage);
     // The recovery cron re-creates the intent with this same modification-scoped
     // Stripe idempotency key, so route retry and cron retry never double-mint.
     await keepTheDebt();
-    return {
-      additionalPaymentClientSecret: undefined,
-      additionalPaymentIntentId: undefined,
-    };
+    return NOTHING_MINTED;
   }
 }

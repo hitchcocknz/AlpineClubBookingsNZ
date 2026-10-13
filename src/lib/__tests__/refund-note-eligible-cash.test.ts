@@ -32,7 +32,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     memberCredit: { aggregate: async () => ({ _sum: { amountCents: 0 } }) },
     manualRefundTask: {
-      findMany: async ({ where }: { where: { OR: [{ lateCaptureApprovalIntentId: { in: string[] } }, { reason: { in: string[] } }] } }) =>
+      // #3924 round 4: the cash evidence's paid-another-way read (by key prefix) finds none here.
+      findMany: async ({ where }: { where: { occurrenceKey?: unknown; OR: [{ lateCaptureApprovalIntentId: { in: string[] } }, { reason: { in: string[] } }] } }) =>
+        where.occurrenceKey !== undefined ? [] :
         state.tasks.filter(
           (t) =>
             (t.lateCaptureApprovalIntentId && where.OR[0].lateCaptureApprovalIntentId.in.includes(t.lateCaptureApprovalIntentId)) ||
@@ -42,16 +44,18 @@ vi.mock("@/lib/prisma", () => ({
         state.tasks.find((t) => t.lateCaptureApprovalIntentId === where.lateCaptureApprovalIntentId) ?? null,
     },
     xeroObjectLink: {
-      findFirst: async ({ where }: { where: { localId: string } }) =>
-        state.keptLinks.find((l) => l.localId === where.localId) ?? null,
+      // #3924 round 10: a change's own invoice link is asked too; none here.
+      findFirst: async ({ where }: { where: { localId: string; role?: string } }) =>
+        where.role === "SUPPLEMENTARY_INVOICE" ? null : (state.keptLinks.find((l) => l.localId === where.localId) ?? null),
     },
     xeroSyncOperation: {
-      count: async ({ where }: { where: { localId: string } }) =>
-        state.resolvedKept.filter((id) => id === where.localId).length,
-      findMany: async ({ where }: { where: { requestPayload: { equals: string } } }) =>
-        state.supplementary
-          .filter((row) => row.paymentIntentId === where.requestPayload.equals)
-          .map((row) => ({ ...row, manuallyResolvedAt: null })),
+      // Round 10: the kept receipt's resolved rows are read with their invoice id.
+      findMany: async ({ where }: { where: { queueType?: string; localId?: string; requestPayload?: { equals: string } } }) =>
+        where.queueType === "KEPT_LATE_CAPTURE_INVOICE"
+          ? state.resolvedKept.filter((id) => id === where.localId).map(() => ({ xeroObjectId: null }))
+          : state.supplementary
+              .filter((row) => row.paymentIntentId === where.requestPayload?.equals)
+              .map((row) => ({ ...row, manuallyResolvedAt: null })),
     },
   },
 }));

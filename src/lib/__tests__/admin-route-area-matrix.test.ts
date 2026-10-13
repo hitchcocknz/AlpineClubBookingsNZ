@@ -341,6 +341,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/lodge": "lodge",
   "/api/admin/lodge-instructions": "lodge",
   "/api/admin/lodge-settings": "lodge",
+  "/api/admin/lodge-settings/school-hut-leaders": "lodge",
   "/api/admin/lodges": "lodge",
   "/api/admin/lodges/[id]": "lodge",
   // The member lodge roster's per-lodge name-detail dial (#2942). It sits under
@@ -425,6 +426,9 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // B5 (#2262): the open hand-back queue and the endpoint that closes a task.
   // The /api/admin/payments prefix already resolves to finance, so no
   // SPECIAL_ROUTE_AREA_PATTERNS entry is needed for this one.
+  "/api/admin/payments/card-refunds/[id]/paid-another-way": "finance",
+  // #3372 (owner, 9 Oct 2026): a paid-twice row marked Resolved, gated as the close is.
+  "/api/admin/payments/card-refunds/[id]/paid-twice-resolved": "finance",
   "/api/admin/payments/manual-refund-tasks": "finance",
   "/api/admin/payments/manual-refund-tasks/[id]": "finance",
   // #3498 (owner decision D2): putting a dismissed money task back on the queue

@@ -10,11 +10,8 @@ import {
 } from "./booking-owner";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "./booking-status";
 import { getLodgeHeldNights } from "./capacity";
-import {
-  findCustodianBedHolds,
-  holdCoversNight,
-  type CustodianBedHold,
-} from "./custodian-occupancy";
+import { holdCoversNight, isCustodianOnNight } from "./custodian-occupancy";
+import { findCustodianOccupants, type CustodianOccupant } from "./custodian-occupants";
 import {
   addCalendarDays,
   eachCalendarDate,
@@ -122,6 +119,12 @@ export const MEMBER_ROSTER_BOOKING_SELECT = {
       stayStart: true,
       stayEnd: true,
       nights: { select: { stayDate: true } },
+      // CONSULTED, NEVER DISCLOSED, like `wholeLodgeHold` above (#3821, owner
+      // decision on #3820, 13 Oct 2026, "Show once, as custodian"). It matches
+      // a custodian to their own guest row, so a custodian who also books is
+      // listed once, as custodian; the builder reads it only to drop those
+      // nights and never copies it into the payload.
+      memberId: true,
     },
   },
 } satisfies Prisma.BookingSelect;
@@ -311,17 +314,20 @@ export async function buildMemberLodgeRoster(
     select: MEMBER_ROSTER_BOOKING_SELECT,
   });
 
-  // Custodian bed holds for the same window, per lodge. Read per lodge rather
-  // than once unfiltered, so no row for a lodge this member cannot reach is
+  // Custodians for the same window, per lodge: every custodian occupancy — a
+  // held bed or the "Custodian (lives on site)" tick, one entry per assignment
+  // (#3818, orchestrator decision on #3820, 3 Oct 2026: "The roster therefore
+  // includes ticked custodians, under its existing naming rules"). Read per
+  // lodge rather than once unfiltered, so no row for a lodge this member cannot reach is
   // ever loaded — the same discipline the booking read follows.
   //
   // Whole-lodge held nights the same way, and for the same reason (#3474).
-  const custodianHoldsByLodge = new Map<string, CustodianBedHold[]>();
+  const custodianHoldsByLodge = new Map<string, CustodianOccupant[]>();
   const heldNightsByLodge = new Map<string, string[]>();
   await Promise.all(
     lodgeIds.map(async (lodgeId) => {
       const [custodianHolds, heldNights] = await Promise.all([
-        findCustodianBedHolds({
+        findCustodianOccupants({
           lodgeId,
           from: dateOnlyInstantOf(from),
           toExclusive: dateOnlyInstantOf(to),
@@ -362,7 +368,7 @@ export async function buildMemberLodgeRoster(
 function buildOneLodgeRoster(
   lodge: { id: string; name: string; rosterNameGranularity: DisplayNameGranularity | null },
   bookings: readonly RosterBookingRow[],
-  custodianHolds: readonly CustodianBedHold[],
+  custodianHolds: readonly CustodianOccupant[],
   heldNights: readonly string[],
   windowNights: readonly CalendarDate[]
 ): LodgeRoster {
@@ -384,7 +390,10 @@ function buildOneLodgeRoster(
     const present = booking.guests
       .map((guest) => ({
         guest,
-        nights: nightsForGuest(guest, booking, windowNights),
+        // A custodian who also books is listed once, as custodian (#3821).
+        nights: nightsForGuest(guest, booking, windowNights).filter(
+          (night) => !isCustodianOnNight(custodianHolds, guest.memberId, night),
+        ),
       }))
       .filter((entry) => entry.nights.length > 0);
 

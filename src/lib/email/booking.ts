@@ -1,5 +1,10 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
-import { bookingModifiedRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  bookingCancelledRefundSentence,
+  type BookingCancelledRefundMethod,
+  type BookingModifiedRefundDestination,
+  bookingModifiedRefundSentence,
+} from "@/lib/booking-modified-email-copy";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
 import {
   type BookingCalendarLinks,
@@ -53,7 +58,7 @@ import {
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
-import { appliedCreditGiveBackNote } from "@/lib/booking-credit-give-back-copy";
+import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";
 import { supersededPaymentRefundedTemplate } from "@/lib/email-templates/refunds";
 import { supersededRefundOwingSentence } from "@/lib/superseded-additional-refund-event";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
@@ -829,13 +834,15 @@ export async function sendBookingCancelledEmail(
   refundCents: number,
   /** The club's format (#3565); see sendBookingConfirmedEmail. */
   format: ClubFormat,
-  // B5 (#2262): "manual" — a cash / off-Xero settlement handed back by a person.
-  refundMethod: "card" | "credit" | "manual" = "card",
+  // B5 (#2262) "manual", #3973 the organiser's refunds: see `BookingCancelledRefundMethod`.
+  refundMethod: BookingCancelledRefundMethod = "card",
   creditRestoredCents: number = 0,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
   // #3792: "in-full" for a cancel the member did not choose (capacity, hold expiry).
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
+  // #3973: the amount the refund line names when the refund is the group's; `{{refundAmount}}` stays this booking's.
+  refundSentenceCents: number = refundCents,
 ) {
   await sendEmail({
     to: email,
@@ -849,6 +856,7 @@ export async function sendBookingCancelledEmail(
       refundMethod,
       creditRestoredCents,
       creditRestoredBasis,
+      refundSentenceCents,
     )),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-cancelled",
@@ -857,14 +865,7 @@ export async function sendBookingCancelledEmail(
       checkIn: emailCalendarDay(checkIn),
       checkOut: emailCalendarDay(checkOut),
       refundAmount: formatMoneyCents(refundCents, format),
-      refundMessage:
-        refundCents > 0 && refundMethod === "manual"
-          ? `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${formatMoneyCents(refundCents, format)} directly and will be in touch.`
-          : refundCents > 0 && refundMethod === "credit"
-            ? `A credit of ${formatMoneyCents(refundCents, format)} has been added to your account for future bookings.`
-            : refundCents > 0
-              ? `A refund of ${formatMoneyCents(refundCents, format)} has been processed to your original payment method.`
-              : "No refund was applicable based on the cancellation policy.",
+      refundMessage: bookingCancelledRefundSentence(refundSentenceCents, formatMoneyCents(refundSentenceCents, format), refundMethod),
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).
@@ -1381,6 +1382,12 @@ export async function sendBookingModifiedEmail(params: {
    */
   appliedCreditGivenBackCents: number;
   additionalAmountCents: number;
+  /**
+   * #3954: this edit's price drop cancelled the member's unpaid additional payment
+   * outright (`unpaidAskOffsetCents > 0` and nothing re-issued). REQUIRED, as
+   * `financialReviewPending` is: every sender answers it.
+   */
+  unpaidAskCancelled: boolean;
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;
@@ -1420,9 +1427,8 @@ export async function sendBookingModifiedEmail(params: {
    * instead (`INV-SSOT`, "prefer unrepresentable over policed").
    */
   financialReviewPending: boolean;
-  /** #3916: the refund went to the group organiser's card (#3653). REQUIRED, like `financialReviewPending`;
-   * the settlement's own `result.organiserChildRefund !== null`, never recomputed. */
-  refundReturnedToOrganiser: boolean;
+  /** #3916, #4057: REQUIRED; the answer `executeBookingModificationRefund` gives after the refund ran, never recomputed. */
+  refundDestination: BookingModifiedRefundDestination;
   /**
    * #3827 (D-3813-6, `INV-PAY-117`): the refund is a bank transfer the club
    * still has to send. REQUIRED, as `financialReviewPending` is; the template's
@@ -1488,7 +1494,7 @@ export async function sendBookingModifiedEmail(params: {
           bookingModifiedRefundSentence(
             formatMoneyCents(params.refundAmountCents, format),
             params.refundByBankTransfer,
-            params.refundReturnedToOrganiser,
+            params.refundDestination,
           ),
           accountCreditAmountCents > 0
             ? `Account credit of ${formatMoneyCents(accountCreditAmountCents, format)} has been added for future bookings.`
@@ -1504,7 +1510,8 @@ export async function sendBookingModifiedEmail(params: {
   // #3809: true beside a card refund on a booking paid by card and credit, so
   // composed with the settlement note rather than one of its arms.
   const giveBackNote = appliedCreditGiveBackNote(params.appliedCreditGivenBackCents, format);
-  const paymentNote = [reviewNote, settlementNote, giveBackNote].filter(Boolean).join(" ");
+  const askCancelledNote = unpaidAskCancelledNote(params.unpaidAskCancelled);
+  const paymentNote = [reviewNote, settlementNote, giveBackNote, askCancelledNote].filter(Boolean).join(" ");
 
   await sendEmail({
     to: params.email,

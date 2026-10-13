@@ -4,6 +4,8 @@ import { z } from "zod";
 import { requireCalendarDate } from "@/lib/club-time";
 import { raisedEditFinancialReviewStrands as raisedStrands } from "@/lib/__tests__/helpers/raised-edit-financial-review-strands";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
+import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 // #3123 (`INV-LOCK-004`) — the CLUB's day, resolved by the caller BEFORE it opens
 // its transaction and threaded in. Pinned to the frozen clock's club day, so
@@ -107,6 +109,8 @@ vi.mock("@/lib/prisma", () => ({
     manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })), findMany: vi.fn().mockResolvedValue([]) },
     paymentRecoveryOperation: {
       findUnique: (...args: unknown[]) => mockRecoveryOperationFindUnique(...args),
+      // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
+      findMany: vi.fn(async () => []),
     },
     $transaction: (...args: unknown[]) => {
       const fn = args[0];
@@ -128,6 +132,8 @@ vi.mock("@/lib/prisma", () => ({
     paymentTransaction: {
       updateMany: mockPaymentTransactionUpdateMany,
       findMany: (...args: unknown[]) => mockSupersedeRead(...args),
+      // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
+      findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }),
     },
     member: {
       findUnique: mockMemberFindUnique,
@@ -524,6 +530,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // #3032: the pending-review fence reads this under the booking-edit locks.
     // Empty by default - no financial review is open - so every pre-#3032 test
     // asserts exactly what it asserted before.
+    // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
+    paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
     manualRefundTask: {
       // #3827 (`INV-PAY-117`): no open edit refund hand-back on file.
       aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })),
@@ -1841,6 +1849,43 @@ describe("PUT /api/bookings/[id]/modify", () => {
     });
   });
 
+  // #3954 round 9: the same liveness that withholds the secret.
+  it("MUTATION (round 9): an increase whose ask a reduction retired is not named as due in the member's email", async () => {
+    const tx = makeTx(makeBooking());
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
+    mockCalculateBookingPrice
+      .mockReturnValueOnce({
+        totalPriceCents: 15000,
+        guests: [
+          { priceCents: 5000, perNightCents: [2500, 2500] },
+          { priceCents: 10000, perNightCents: [5000, 5000] },
+        ],
+      })
+      .mockReturnValueOnce({ totalPriceCents: 5000, guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }] })
+      .mockReturnValueOnce({ totalPriceCents: 10000, guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }] });
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.paymentTransaction.findUnique).mockResolvedValueOnce({ status: "FAILED", withdrawnAt: new Date("2026-07-01T00:00:00.000Z") } as never);
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+
+    const response = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify", {
+        method: "PUT",
+        body: JSON.stringify({ addGuests: [{ firstName: "Bob", lastName: "Guest", ageTier: "ADULT", isMember: false }] }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 10000 }));
+    expect(data.additionalPaymentClientSecret).toBeNull();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalAmountCents: 0, additionalPaymentMethod: undefined }),
+      expect.anything(),
+    );
+  });
+
   it("creates an additional PaymentIntent when a paid booking increases in price", async () => {
     const booking = makeBooking();
     const tx = makeTx(booking);
@@ -1935,6 +1980,81 @@ describe("PUT /api/bookings/[id]/modify", () => {
       }
     );
     expect(mockKickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalledWith({ limit: 1 });
+  });
+
+  /*
+    #3502 (owner decision, 6 Oct 2026): a booking paid wholly with credit is a
+    $0 SUCCEEDED card-source payment. The batch door used to read
+    `hasCapturedPayment`, find "nothing captured", and send the increase to a
+    supplementary invoice - which, with Xero off, does not exist. It now asks
+    the member's card, with or without Xero.
+  */
+  it.each([
+    { label: "with Xero off (no primary invoice)", xeroInvoiceId: null },
+    { label: "with an issued primary invoice", xeroInvoiceId: "inv_primary" },
+  ])("asks a credit-paid ($0) booking's card when it grows, $label (#3502)", async ({ xeroInvoiceId }) => {
+    const base = makeBooking();
+    const booking = makeBooking({
+      payment: {
+        ...base.payment,
+        amountCents: 0,
+        creditAppliedCents: 5000,
+        stripePaymentIntentId: null,
+        xeroInvoiceId,
+      },
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
+    mockCalculateBookingPrice
+      .mockReturnValueOnce({
+        totalPriceCents: 15000,
+        guests: [
+          { priceCents: 5000, perNightCents: [2500, 2500] },
+          { priceCents: 10000, perNightCents: [5000, 5000] },
+        ],
+      })
+      .mockReturnValueOnce({
+        totalPriceCents: 5000,
+        guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
+      })
+      .mockReturnValueOnce({
+        totalPriceCents: 10000,
+        guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+      });
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+    const response = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify", {
+        method: "PUT",
+        body: JSON.stringify({
+          addGuests: [{ firstName: "Bob", lastName: "Guest", ageTier: "ADULT", isMember: false }],
+        }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.additionalAmountCents).toBe(10000);
+    expect(data.additionalPaymentClientSecret).toBe("pi_batch_secret");
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 10000, customerId: "cus_new" }),
+    );
+
+    await Promise.resolve();
+    if (xeroInvoiceId) {
+      // Billed once: the supplementary invoice records the card payment.
+      expect(mockEnqueueXeroSupplementaryInvoiceOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingId: "bk1", priceDiffCents: 10000 }),
+        expect.objectContaining({
+          paymentIntentId: "pi_batch",
+          waitForConfirmedAdditionalPayment: true,
+          recordPayment: true,
+        }),
+      );
+    } else {
+      expect(mockEnqueueXeroSupplementaryInvoiceOperation).not.toHaveBeenCalled();
+    }
   });
 
   it("enqueues durable intent recovery when additional PaymentIntent creation fails (#1096)", async () => {
@@ -3579,6 +3699,54 @@ describe("PUT /api/bookings/[id]/modify", () => {
         createdByMemberId: "m1",
       }
     );
+    // #4070: no Stripe refund ran, so the member's own bank-transfer wording stands.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 5000, refundDestination: "own", refundByBankTransfer: true }),
+      expect.anything(),
+    );
+  });
+
+  // #4070: removing Bob refunds $50 to the member's own card. The email says
+  // the refund was made only when Stripe made it; one the Stripe call could not
+  // make is queued for the recovery runner and on its way.
+  it.each(OWN_CARD_REFUND_STATES)("an own-card reduction's email refund destination: $label -> $destination (#4070)", async ({ answer, queued, destination }) => {
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
+    booking.guests = reconcilingNightRows(booking, [
+      ...booking.guests,
+      { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Guest", ageTier: "ADULT", isMember: false, memberId: null, priceCents: 5000 },
+    ]);
+    booking.totalPriceCents = 10000;
+    booking.finalPriceCents = 10000;
+    booking.payment!.amountCents = 10000;
+    mockCalculateBookingPrice.mockReturnValue({
+      totalPriceCents: 5000,
+      guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
+    });
+    primeOwnCardRefund(mockRefundPaymentTransactions, answer);
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+    const response = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify", {
+        method: "PUT",
+        body: JSON.stringify({ removeGuestIds: ["g2"], settlementMethod: "card" }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay_1", amountCents: 5000 }));
+    if (queued) expect(mockEnqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 5000 }));
+    else expect(mockEnqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 5000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.anything(),
+    );
   });
 
   // #3653 (`INV-PAY-114`), fix round. A REAL edit door, on a joiner's booking
@@ -3588,7 +3756,8 @@ describe("PUT /api/bookings/[id]/modify", () => {
   // refund credit note once Stripe has, so the joiner's invoice was credited
   // twice. The executor's note is the only one now; its single note per refund
   // is proved against PostgreSQL in `organiser-child-refund.realdb.test.ts`.
-  it("an organiser child's reduction writes its refund debt and queues no modification credit note (#3653)", async () => {
+  /** A joiner's booking the organiser paid for by card, reduced by removing Bob: $50 back to the organiser's card. */
+  async function reduceOrganiserChild() {
     const booking = makeBooking({ organiserSettled: true, parentBookingId: "organiser_bk" });
     const tx = makeTx(booking) as ReturnType<typeof makeTx> & Record<string, unknown>;
     const debtCreate = vi.fn().mockResolvedValue({ id: "op_child", amountCents: 5000 });
@@ -3610,7 +3779,6 @@ describe("PUT /api/bookings/[id]/modify", () => {
       },
     });
     mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
-    mockRecoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_child" });
 
     booking.guests = reconcilingNightRows(booking, [
       ...booking.guests,
@@ -3644,6 +3812,12 @@ describe("PUT /api/bookings/[id]/modify", () => {
       }),
       { params: Promise.resolve({ id: "bk1" }) },
     );
+    return { response, debtCreate };
+  }
+
+  it("an organiser child's reduction writes its refund debt and queues no modification credit note (#3653)", async () => {
+    mockRecoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_child" });
+    const { response, debtCreate } = await reduceOrganiserChild();
 
     expect(response.status).toBe(200);
     expect(debtCreate).toHaveBeenCalledWith({
@@ -3659,6 +3833,28 @@ describe("PUT /api/bookings/[id]/modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockEnqueueXeroModificationCreditNoteOperation).not.toHaveBeenCalled();
     expect(mockEnqueueXeroModificationAccountCreditNoteOperation).not.toHaveBeenCalled();
+  });
+
+  // #4057: the real refund helper runs the debt and re-reads it after commit;
+  // the email says the refund was made only when the debt says so.
+  it.each(ORGANISER_REFUND_DEBT_STATES)("an organiser child's email refund destination: debt $label -> $destination (#4057)", async ({ lookupThrows, reread, runs, destination }) => {
+    primeOrganiserRefundDebt(mockRecoveryOperationFindUnique, { bookingModificationId: "mod_1", debtId: "op_child", lookupThrows, reread });
+    try {
+      const { response } = await reduceOrganiserChild();
+      expect(response.status).toBe(200);
+      // A lookup that throws leaves nothing to run; the debt stays owed.
+      if (runs) expect(mockRunPaymentRecoveryOperationNow).toHaveBeenCalledWith("op_child", expect.anything());
+      else expect(mockRunPaymentRecoveryOperationNow).not.toHaveBeenCalledWith("op_child", expect.anything());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const { sendBookingModifiedEmail } = await import("@/lib/email");
+      expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ refundAmountCents: 5000, refundDestination: destination }),
+        expect.anything(),
+      );
+    } finally {
+      mockRecoveryOperationFindUnique.mockReset();
+      mockRecoveryOperationFindUnique.mockResolvedValue(null);
+    }
   });
 
   it("refuses a price increase on an organiser child before the edit commits (#3653)", async () => {

@@ -65,12 +65,30 @@ import {
   toIsoDate,
 } from "./xero-booking-repair-utils";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import { reductionLeftAfterUnpaidAskCents } from "@/lib/additional-payment-ask";
 import { readModificationNoteWording } from "@/lib/xero-refund-method";
 import { isCancellationRefundDecisionRecorded } from "@/lib/cancellation-settled-money";
 import { recordedCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
-import { scopedGiveBackNote, withoutGiveBackNote } from "@/lib/xero-booking-repair-give-back";
+import {
+  ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE,
+  ASK_RETIRED_BY_REDUCTION_SUMMARY,
+  isAskRetiredByReductionOperation,
+  isFoldedReissueAccountedFor,
+  isReissueRetiredByLaterReduction,
+  recordedReissuedAskInvoiceCents,
+  recordedUnpaidAskOffsetCents,
+  REISSUED_ASK_INVOICE_MISSING_SUMMARY,
+  retiringReductionFor,
+} from "@/lib/unpaid-ask-offset-marker";
+import {
+  addScopedSideNoteFindings,
+  addUnpaidAskUnsureFindings,
+  scopedBilledOffsetNote,
+  scopedGiveBackNote,
+  withoutScopedSideNotes,
+} from "@/lib/xero-booking-repair-side-notes";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
-import { APPLIED_CREDIT_GIVE_BACK_NOTE_SCOPE } from "@/lib/xero-review-task-key";
+import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
 import {
@@ -626,6 +644,32 @@ export function classifyBookingContext(
             },
             actionKeys: [manualAction.key],
           });
+        } else if (!blockingOperation && retiringReductionFor(modification.id, booking.modifications)) {
+          // #3954 (`INV-PAY-120`, review round 4): a later reduction retired
+          // this edit's unpaid ask - its parked invoice, or the ask itself
+          // before its failed mint's retry ran - and its history names this
+          // edit. What Xero is owed for it now is that reduction's: the smaller
+          // re-issued ask's own invoice, or nothing when the ask was cancelled,
+          // both checked on the reduction below. No finding here, so a fully
+          // cancelled ask does not sit in manual review for ever.
+        } else if (!blockingOperation && modificationOperations.some(isAskRetiredByReductionOperation)) {
+          // A retired invoice no reduction names: a one-click bill would charge
+          // money nobody owes, so a person looks.
+          const manualAction = addAction(actionMap, buildManualReviewAction(booking.id, ASK_RETIRED_BY_REDUCTION_SUMMARY));
+          addFinding(findings, {
+            code: "MISSING_SUPPLEMENTARY_INVOICE",
+            severity: "manual_review",
+            summary: ASK_RETIRED_BY_REDUCTION_SUMMARY,
+            safeToAutoApply: false,
+            details: {
+              modificationId: modification.id,
+              netAmountCents,
+              priceDiffCents: expectedAsk.priceDiffCents,
+              changeFeeCents: expectedAsk.changeFeeCents,
+              retiredBy: ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE,
+            },
+            actionKeys: [manualAction.key],
+          });
         } else if (!blockingOperation) {
           // #3187: a review-priced ask must not be queued as if the member had
           // already paid it. `planEditReviewChargeInvoicePayment` states why in
@@ -842,8 +886,57 @@ export function classifyBookingContext(
       }
     }
 
-    if (modificationNetAmountCents < 0 && primaryInvoice) {
-      const refundDueCents = Math.abs(modificationNetAmountCents);
+    // #3954 decision A (owner, 9 Oct 2026): a reduction that only shrank an
+    // unpaid ask re-issues it with its own supplementary invoice, raised once
+    // the smaller ask is minted. Present (queued, waiting, raised or linked),
+    // deferred (its mint's recovery still open), carried on (a later
+    // reduction retired the re-issue in turn, and names this edit), or folded
+    // into a later increase whose own ask is still to mint or was retired in
+    // turn (round 6) - else a person raises it.
+    const reissuedAskInvoiceCents = recordedReissuedAskInvoiceCents(modification.newData);
+    if (
+      reissuedAskInvoiceCents > 0 &&
+      primaryInvoice &&
+      !modificationLinks.some((link) => link.xeroObjectType === "INVOICE" && link.role === "SUPPLEMENTARY_INVOICE") &&
+      !modificationOperations.some(
+        (operation) => operation.entityType === "INVOICE" && operation.operationType === "CREATE" && operation.status !== "CANCELLED",
+      ) &&
+      !context.openAdditionalIntentRecoveryModificationIds.has(modification.id) &&
+      !retiringReductionFor(modification.id, booking.modifications) &&
+      !isFoldedReissueAccountedFor(modification.id, booking.modifications, context.openAdditionalIntentRecoveryModificationIds)
+    ) {
+      const manualAction = addAction(actionMap, buildManualReviewAction(booking.id, REISSUED_ASK_INVOICE_MISSING_SUMMARY));
+      addFinding(findings, {
+        code: "MISSING_SUPPLEMENTARY_INVOICE",
+        severity: "manual_review",
+        summary: REISSUED_ASK_INVOICE_MISSING_SUMMARY,
+        safeToAutoApply: false,
+        details: { modificationId: modification.id, reissuedAskInvoiceCents, xeroInvoiceId: primaryInvoice.objectId },
+        actionKeys: [manualAction.key],
+      });
+    }
+    // #3954 (owner decision 10 Oct 2026, "Auto credit note"): the part of the
+    // offset a primary invoice raised after the increase had already billed
+    // takes a scoped invoice-correction note, queued by the edit; verified or queued.
+    // #3954: what an unpaid ask took of a reduction returned no money, so no note.
+    const reductionNoteDueCents = reductionLeftAfterUnpaidAskCents({
+      netAmountCents: modificationNetAmountCents,
+      unpaidAskOffsetCents: recordedUnpaidAskOffsetCents(modification.newData),
+    });
+    const billedOffsetNote = scopedBilledOffsetNote({ newData: modification.newData, operations: modificationOperations });
+    if (billedOffsetNote && primaryInvoice) {
+      // Round 8: a note queued here waits for the edit's own, when one is due.
+      addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: billedOffsetNote, edit: { operations: modificationOperations, links: modificationLinks }, ownNoteDue: reductionNoteDueCents > 0, actionMap, findings });
+    }
+    // Round 6/7: what the edit could not establish of the offset's billing, or
+    // of the re-issue's invoice, it acted on not at all; a person decides.
+    if (primaryInvoice) {
+      const reissueRetired = isReissueRetiredByLaterReduction(modification.id, booking.modifications);
+      addUnpaidAskUnsureFindings({ bookingId: booking.id, modification, reissueRetired, xeroInvoiceId: primaryInvoice.objectId, actionMap, findings });
+    }
+
+    if (reductionNoteDueCents > 0 && primaryInvoice) {
+      const refundDueCents = reductionNoteDueCents;
       // Captured money via the payment status OR the transaction ledger —
       // ledger-first states (a SUCCEEDED capture row under a still-PENDING
       // aggregate status) must count as captured for the policy split below.
@@ -856,43 +949,9 @@ export function classifyBookingContext(
       // below without it, so neither hides the other or stands in for it.
       const giveBackNote = scopedGiveBackNote({ newData: modification.newData, operations: modificationOperations });
       if (giveBackNote) {
-        const blocking = getBlockingOperation(giveBackNote.operations, "CREDIT_NOTE", "CREATE");
-        if (blocking?.kind === "retryable") {
-          const action = addAction(actionMap, buildRetryAction(booking.id, blocking));
-          addFinding(findings, {
-            code: "BLOCKED_BY_XERO_OPERATION",
-            severity: "warning",
-            summary: `A failed or partial Xero give-back credit note operation is blocking modification ${modification.id}.`,
-            safeToAutoApply: true,
-            details: { modificationId: modification.id, operationId: blocking.operation.id, operationStatus: blocking.operation.status },
-            actionKeys: [action.key],
-          });
-        } else if (!blocking && !giveBackNote.operations.some(isSuccessfulXeroOperation)) {
-          const action = addAction(actionMap, {
-            key: `queue:give-back-note:${modification.id}`,
-            bookingId: booking.id,
-            type: "QUEUE_MODIFICATION_CREDIT_NOTE",
-            description: "Queue the missing Xero credit note for the applied credit a booking modification gave back.",
-            safeToAutoApply: true,
-            payload: {
-              bookingId: booking.id,
-              bookingModificationId: modification.id,
-              refundAmountCents: giveBackNote.givenBackCents,
-              refundMethod: "account-credit",
-              reviewTaskId: APPLIED_CREDIT_GIVE_BACK_NOTE_SCOPE,
-            },
-          });
-          addFinding(findings, {
-            code: "MISSING_MODIFICATION_CREDIT_NOTE",
-            severity: "critical",
-            summary: "A booking modification gave back applied credit, but no Xero credit note for it exists.",
-            safeToAutoApply: true,
-            details: { modificationId: modification.id, refundAmountCents: giveBackNote.givenBackCents, refundAmountSource: "recorded-give-back" },
-            actionKeys: [action.key],
-          });
-        }
+        addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: giveBackNote, edit: { operations: modificationOperations, links: modificationLinks }, actionMap, findings });
       }
-      const { links: noteLinks, operations: noteOperations } = withoutGiveBackNote(modificationLinks, modificationOperations);
+      const { links: noteLinks, operations: noteOperations } = withoutScopedSideNotes(modificationLinks, modificationOperations);
       const modificationCreditNote = resolveObjectFromCandidates({
         links: noteLinks,
         operations: noteOperations,
@@ -1996,9 +2055,9 @@ export function classifyBookingContext(
   //  - A kept invoice raised in Xero whose Stripe payment was never recorded
   //    (PARTIAL) is retried even after a reopen and approval: the cash was
   //    really taken, and the retry records only the payment.
-  //  - A kept invoice an officer recorded by hand and resolved in Xero gets no
-  //    refund note from the app; once its capture is refunded, an officer is
-  //    told to record that refund by hand as well. Report-only.
+  //  - A kept invoice resolved by hand in Xero gets no refund note from the app,
+  //    so its card refunds are recorded by hand - only where the card verdict
+  //    says so, sized by what no note in Xero answers (#3924 round 13).
   if (booking.status === "CANCELLED" && payment) {
     for (const transaction of capturedPaymentTransactions) {
       if (!transaction.stripePaymentIntentId) continue;
@@ -2007,24 +2066,18 @@ export function classifyBookingContext(
       const keptInvoice = getBlockingOperation(lateTask.operations, "INVOICE", "CREATE", {
         payloadQueueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
       });
-      if (keptInvoice?.kind === "resolved") {
-        if (transaction.refundedAmountCents > 0) {
-          addFinding(findings, {
-            code: "KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND",
-            severity: "warning",
-            summary:
-              "A late card payment an officer recorded by hand in Xero was refunded. The app raises no refund credit note for it: record the refund by hand in Xero too.",
-            safeToAutoApply: false,
-            details: {
-              paymentId: payment.id,
-              manualRefundTaskId: lateTask.taskId,
-              paymentIntentId: transaction.stripePaymentIntentId,
-              refundedCents: transaction.refundedAmountCents,
-              operationId: keptInvoice.resolvedOperation.id,
-            },
-            actionKeys: [],
-          });
-        }
+      // #3924 round 7 (M2), round 11: an approved capture's close is answered by its own finding, never the one below.
+      if (lateTask.status === "COMPLETED" && lateTask.paidAnotherWayClose) {
+        const args = { findings, actionMap, booking, paymentId: payment.id, transaction, lateTask, keptInvoice };
+        if (addPaidAnotherWayReceiptFinding(args) || keptInvoice?.kind === "resolved") continue;
+      } else if (keptInvoice?.kind === "resolved") {
+        const details = {
+          paymentId: payment.id,
+          manualRefundTaskId: lateTask.taskId,
+          paymentIntentId: transaction.stripePaymentIntentId,
+          operationId: keptInvoice.resolvedOperation.id,
+        };
+        addKeptLateCaptureRefundByHandFinding(findings, details, context.lateCaptureCardRefundsByHand);
         continue;
       }
       if (
@@ -2048,6 +2101,7 @@ export function classifyBookingContext(
         });
       }
     }
+    addLateCaptureCardRefundByHandFindings(findings, payment.id, context.lateCaptureCardRefundsByHand);
   }
 
   if (

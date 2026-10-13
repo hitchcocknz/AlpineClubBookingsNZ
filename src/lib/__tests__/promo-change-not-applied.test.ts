@@ -420,7 +420,8 @@ function emailParams(overrides: Record<string, unknown> = {}) {
     financialReviewPending: true,
     refundByBankTransfer: false,
     appliedCreditGivenBackCents: 0,
-    refundReturnedToOrganiser: false,
+    unpaidAskCancelled: false,
+    refundDestination: "own" as const,
     ...overrides,
   };
 }

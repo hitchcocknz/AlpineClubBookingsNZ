@@ -3,8 +3,59 @@
 // repair loader, #1491) can build keys without importing the Prisma client
 // that module initializes at load time.
 
+// THE PREFIXES BELOW ARE THE ONE SPELLING OF EACH RECOVERY KEY'S SHAPE (#4076).
+// The Diagnostics finance pack classifies a `PaymentRecoveryOperation` by these
+// and its test fails when an export here is neither mapped to a scenario nor
+// declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
+export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
+export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
+  "capacity_claim_failed_refund_recovery_";
+export const DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX = "duplicate_capture_";
+export const EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX =
+  "edit_financial_review_refund_recovery_";
+export const ADDITIONAL_INTENT_RECOVERY_PREFIX = "payment_recovery_additional_intent_";
+export const EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX =
+  "edit_financial_review_additional_intent_recovery_";
+/** An approved refund appeal's card refund (`enqueueRefundRequestRefundRecovery`). */
+export const REFUND_REQUEST_REFUND_RECOVERY_PREFIX = "refund_request_refund_";
+/** Cancelling a card payment request that was replaced or withdrawn. */
+export const PAYMENT_INTENT_CANCEL_RECOVERY_PREFIX = "payment_recovery_cancel_";
+/**
+ * Refunding a card payment taken on a REPLACED payment request that was paid
+ * anyway (`REFUND_SUPERSEDED_PAYMENT`). Not a booking edit's refund, whatever the
+ * similar spelling suggests.
+ */
+export const SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX = "payment_recovery_refund_";
+/** A booking edit's card refund (`enqueueBookingModificationRefundRecovery`). */
+export const BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX =
+  "payment_recovery_modification_refund_";
+
 export function buildBookingCancellationRefundIdempotencyKey(bookingId: string) {
-  return `booking_cancel_refund_recovery_${bookingId}`;
+  return `${BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX}${bookingId}`;
+}
+
+export function buildPaymentIntentCancelRecoveryIdempotencyKey(
+  paymentTransactionId: string,
+  paymentIntentId: string,
+) {
+  return `${PAYMENT_INTENT_CANCEL_RECOVERY_PREFIX}${paymentTransactionId}_${paymentIntentId}`;
+}
+
+export function buildSupersededPaymentRefundRecoveryIdempotencyKey(
+  paymentTransactionId: string,
+  paymentIntentId: string,
+) {
+  return `${SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX}${paymentTransactionId}_${paymentIntentId}`;
+}
+
+export function buildBookingModificationRefundRecoveryIdempotencyKey(
+  bookingModificationId: string,
+) {
+  return `${BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX}${bookingModificationId}`;
+}
+
+export function buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId: string) {
+  return `${REFUND_REQUEST_REFUND_RECOVERY_PREFIX}${refundRequestId}`;
 }
 
 // Capacity-race auto-refund durability: the recovery-operation dedup key for a
@@ -16,7 +67,7 @@ export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
   bookingId: string,
   paymentIntentId: string,
 ) {
-  return `capacity_claim_failed_refund_recovery_${bookingId}_${paymentIntentId}`;
+  return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_${paymentIntentId}`;
 }
 
 // The Stripe idempotency-key prefix the INLINE capacity-race auto-refund has
@@ -56,7 +107,7 @@ export function buildDuplicateCaptureRefundRecoveryIdempotencyKey(
 export function buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(
   bookingId: string,
 ) {
-  return `duplicate_capture_${bookingId}_`;
+  return `${DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX}${bookingId}_`;
 }
 
 // The Stripe idempotency-key prefix for the duplicate-capture auto-refund
@@ -84,7 +135,7 @@ export function buildDuplicateCaptureRefundStripeKeyPrefix(
 export function buildEditFinancialReviewRefundRecoveryIdempotencyKey(
   taskId: string,
 ) {
-  return `edit_financial_review_refund_recovery_${taskId}`;
+  return `${EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX}${taskId}`;
 }
 
 // #3032: the Stripe idempotency-key prefix for that same refund, task-scoped for
@@ -96,6 +147,15 @@ export function buildEditFinancialReviewRefundRecoveryIdempotencyKey(
 // REFUNDED event. The member is told their money came back when only half of it
 // did. The inline refund and the recovery replay share this prefix, which is what
 // makes a genuine replay of ONE task's refund converge instead of double-refund.
+// A booking-edit refund recovery row written before its stored Stripe prefix
+// existed replays under this operation-scoped Stripe key. It is FROZEN: it only
+// happens to share its text with `BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX`,
+// and renaming the recovery prefix must never move an in-flight legacy replay's
+// Stripe key (that would refund twice).
+export function buildLegacyModificationRefundStripeKeyPrefix(operationId: string) {
+  return `payment_recovery_modification_refund_${operationId}`;
+}
+
 export function buildEditFinancialReviewRefundStripeKeyPrefix(taskId: string) {
   return `edit_financial_review_refund_${taskId}`;
 }
@@ -123,10 +183,17 @@ export function buildLateCaptureRefundMetadata(
 }
 // #3639: the recovery row of a treasurer-approved late-capture refund. One per
 // capture: the approval task is one per payment intent (its `occurrenceKey`).
+export const LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX = "late_capture_approval_refund_recovery_";
 export function buildLateCaptureApprovalRefundRecoveryIdempotencyKey(
   paymentIntentId: string,
 ) {
-  return `late_capture_approval_refund_recovery_${paymentIntentId}`;
+  return `${LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX}${paymentIntentId}`;
+}
+/** The late capture a treasurer-approved late-capture refund's recovery row refunds; null for any other row. */
+export function lateCaptureIntentOfApprovalRefundRecoveryKey(key: string): string | null {
+  if (!key.startsWith(LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX)) return null;
+  const intent = key.slice(LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX.length);
+  return intent.length > 0 ? intent : null;
 }
 // The inverse of `buildLateCaptureRefundStripeKeyPrefix`, for the recovery
 // replay: the operation's own `paymentIntentId` is the payment's representative
@@ -156,8 +223,27 @@ export function isLateCaptureRefundStripeKeyPrefix(
 export function buildAdditionalIntentRecoveryIdempotencyKey(
   bookingModificationId: string,
 ) {
-  return `payment_recovery_additional_intent_${bookingModificationId}`;
+  return `${ADDITIONAL_INTENT_RECOVERY_PREFIX}${bookingModificationId}`;
 }
+
+/**
+ * #3954 review round 4: the Stripe key a price reduction's RE-ISSUED ask is
+ * minted under - frozen on its recovery row inside the edit's transaction and
+ * read back by both the door's after-commit mint and the recovery runner, so
+ * the two converge on one intent whichever runs. Scoped to the reducing edit,
+ * whatever door it came through.
+ */
+export function buildReissuedAskStripeIdempotencyKey(bookingModificationId: string) {
+  return `mod_reissued_ask_${bookingModificationId}`;
+}
+
+/**
+ * #3954 review round 6: the reason every re-issued ask's intent and
+ * `PaymentTransaction` row carry, whichever minter wrote it
+ * (`planReissuedAskMint`) - and how a reduction knows a ledger row as a
+ * re-issue when it reads what Xero billed of it (`unpaidAskBillingEvidence`).
+ */
+export const REISSUED_ASK_REASON = "modification_reissued_ask";
 
 // #3170: the recovery-operation dedup key for the additional PaymentIntent a
 // completed EDIT_FINANCIAL_REVIEW task contributes to when the officer decides
@@ -201,7 +287,7 @@ export function buildAdditionalIntentRecoveryIdempotencyKey(
 export function buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey(
   bookingModificationId: string,
 ) {
-  return `edit_financial_review_additional_intent_recovery_${bookingModificationId}`;
+  return `${EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX}${bookingModificationId}`;
 }
 
 // #3170: the Stripe idempotency key for that same additional PaymentIntent,
@@ -272,7 +358,7 @@ export function isEditFinancialReviewAdditionalIntentRecoveryKey(
 ): boolean {
   return Boolean(
     idempotencyKey?.startsWith(
-      "edit_financial_review_additional_intent_recovery_",
+      EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
     ),
   );
 }
@@ -294,8 +380,8 @@ export function isEditFinancialReviewAdditionalIntentRecoveryKey(
 // new caller builds one of these keys, or its recovery replay silently skips the
 // Xero attach.
 const ADDITIONAL_INTENT_RECOVERY_KEY_PREFIXES = [
-  "edit_financial_review_additional_intent_recovery_",
-  "payment_recovery_additional_intent_",
+  EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
+  ADDITIONAL_INTENT_RECOVERY_PREFIX,
 ] as const;
 
 export function bookingModificationIdForAdditionalIntentRecoveryKey(
@@ -434,8 +520,18 @@ export function bookingModificationRefundReasonForKeyPrefix(
 // card payment. One recovery row per refund, and the row's key doubles as the
 // Stripe idempotency key, so a replay can only ever answer with the refund the
 // first attempt made. An edit's refund is keyed by its `BookingModification`; a
-// group cancellation's by its settlement and the child.
-const ORGANISER_CHILD_REFUND_KEY_PREFIX = "organiser_child_refund_";
+// group cancellation's by its settlement and the child; an approved refund
+// appeal's by its `RefundRequest` (#3956, `INV-PAY-123`).
+//
+// The appeal's prefix is deliberately NOT under `organiser_child_refund_`
+// (#3956 review, blue/green): a worker older than #3956 routes only that
+// prefix to the #3653 executor, which would refund the appeal under a reduction's
+// Stripe metadata and write the booking event an appeal must not. Under its own
+// prefix, such a worker takes it for an ordinary modification refund, meets the
+// allocation that names no real transaction (`organiserChildRefundAllocationPlan`),
+// and fails the row before any Stripe call; the retry lands on a current worker.
+export const ORGANISER_CHILD_REFUND_KEY_PREFIX = "organiser_child_refund_";
+export const ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX = "organiser_card_appeal_refund_";
 export function buildOrganiserChildModificationRefundKey(bookingModificationId: string) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}mod_${bookingModificationId}`;
 }
@@ -445,23 +541,58 @@ export function buildOrganiserChildCancellationRefundKey(
 ) {
   return `${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_${settlementId}_${childBookingId}`;
 }
-export function isOrganiserChildRefundKey(key: string) {
-  return key.startsWith(ORGANISER_CHILD_REFUND_KEY_PREFIX);
+export function buildOrganiserChildAppealRefundKey(refundRequestId: string) {
+  return `${ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX}${refundRequestId}`;
 }
+/** Every child refund debt out of the combined payment: an edit's, a group cancel's or an appeal's. */
+export function isOrganiserChildRefundKey(key: string) {
+  return key.startsWith(ORGANISER_CHILD_REFUND_KEY_PREFIX) || isOrganiserChildAppealRefundKey(key);
+}
+/** #3956: an approved refund appeal's refund out of the combined payment - not the cancellation's money. */
+export function isOrganiserChildAppealRefundKey(key: string) {
+  return key.startsWith(ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX);
+}
+/**
+ * `isOrganiserChildRefundKey` as a `PaymentRecoveryOperation` where fragment -
+ * the one spelling a query uses, so no reader counts one prefix and misses the
+ * other (`INV-SSOT`).
+ */
+export const ORGANISER_CHILD_REFUND_KEY_WHERE = {
+  OR: [
+    { idempotencyKey: { startsWith: ORGANISER_CHILD_REFUND_KEY_PREFIX } },
+    { idempotencyKey: { startsWith: ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX } },
+  ],
+};
 /** The Stripe `reason` metadata, rebuilt from the key alone so a replay sends the same body. */
 export function organiserChildRefundReasonForKey(key: string) {
-  return key.startsWith(`${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_`)
-    ? "organiser_cancellation"
-    : "organiser_child_reduction";
+  if (key.startsWith(`${ORGANISER_CHILD_REFUND_KEY_PREFIX}cancel_`)) return "organiser_cancellation";
+  if (isOrganiserChildAppealRefundKey(key)) return "organiser_child_appeal";
+  return "organiser_child_reduction";
 }
-export { ORGANISER_CHILD_REFUND_KEY_PREFIX };
 
-// The organiser cancel's durable retry of a pre-#3653 group settlement refund
-// (F3, #1351): ONE operation for the whole group's plan. Here, not in
-// payment-recovery.ts, so the booking-ledger census (#3854) can find an
-// in-flight one without importing the Prisma client.
+// Group organiser-cancel settlement refund (F3, #1351): the organiser cancel's
+// durable retry of a pre-#3653 group settlement refund - ONE operation for the
+// whole group's plan, keyed on the settlement. Its `paymentId` is only an anchor
+// for the schema FK - the money belongs to the children in the settlement's
+// frozen `{childId: cents}` plan - so a reader of the row's payment must
+// recognise it by this key. Here, not in payment-recovery.ts, so a reader can
+// recognise one without importing the Prisma client.
 export const GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX = "group_settlement_refund_recovery_";
-
 export function buildGroupSettlementRefundRecoveryIdempotencyKey(settlementId: string) {
   return `${GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX}${settlementId}`;
+}
+export function isGroupSettlementRefundRecoveryKey(key: string) {
+  return key.startsWith(GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX);
+}
+/**
+ * #3372 (owner, 8 Oct 2026: "Separate club-wide line"): every group settlement
+ * refund row, as a `PaymentRecoveryOperation` where fragment, for the
+ * club-wide part of "Refunds owed" (`readRefundsAndCreditsOwed`).
+ */
+export const GROUP_SETTLEMENT_REFUND_RECOVERY_WHERE = {
+  idempotencyKey: { startsWith: GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX },
+} as const;
+/** The settlement a group settlement refund row replays. */
+export function groupSettlementIdForRefundRecoveryKey(key: string) {
+  return key.slice(GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX.length);
 }

@@ -19,7 +19,10 @@ import {
 } from "@/lib/email-message-notes";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
-import { refundRequestApprovedRefundSentence } from "@/lib/booking-modified-email-copy";
+import {
+  organiserJoinerAppealRefundSentence,
+  refundRequestApprovedRefundSentence,
+} from "@/lib/booking-modified-email-copy";
 
 type EmailTemplateAudience = "member" | "admin" | "system";
 export type NotificationDeliveryModeValue = "always" | "content_only" | "disabled";
@@ -400,6 +403,8 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   // {{refundSentence}}; it stays allowed so an override saved from the old
   // default keeps validating and rendering.
   "refund-request-approved": ["adminNotes", "amount"],
+  // #3956: the parts the composed {{refundSentence}} is made of, for an override.
+  "group-organiser-joiner-refund": ["amount", "joinerName"],
   "refund-request-declined": ["adminNotes"],
   "age-up-invitation": ["resetUrl", "targetAgeTier", "targetAgeTierMinAge"],
   "age-up-parent-email-handoff": ["targetAgeTier", "targetAgeTierMinAge"],
@@ -477,6 +482,8 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // around {{amount}}) would tell an internet-banking member the wrong thing,
   // so the editor flags it as stale and a re-save must put the token back.
   "refund-request-approved": ["refundSentence"],
+  // #3956: the sentence that says whose card the money goes to, and for whom.
+  "group-organiser-joiner-refund": ["refundSentence"],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
   "member-setup-invite": ["token"],
@@ -1146,6 +1153,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     triggerSummary: "Organiser-pays combined group payment settled successfully",
     frequency: "One receipt to the organiser per settlement",
   },
+  "group-organiser-joiner-refund": {
+    triggerSummary:
+      "An admin approved a refund appeal on a joiner's booking the organiser paid for by card, so the refund goes to the organiser's card (#3956)",
+    frequency:
+      "Once per approved appeal, beside the joiner's approval email; withheld when the admin chose not to notify, or the organiser is the joiner",
+  },
   "group-join-settled": {
     triggerSummary:
       "Organiser settled a joiner's spot as part of a combined group payment",
@@ -1641,6 +1654,7 @@ export function sampleValue(token: string): string {
   if (token === "s") return "s";
   if (token === "token") return "sample-token";
   if (token === "recipientName") return "Sam Parent";
+  if (token === "joinerName") return "Sam Joiner";
   if (token === "lodgeName") return "Example Mountain Club Lodge";
   if (token === "seasonYear") return "2026";
   if (token === "targetAgeTier") return "ADULT";
@@ -1683,6 +1697,11 @@ const TEMPLATE_SAMPLE_VALUE_OVERRIDES: Partial<
   // src/lib/email/booking.ts). The preview shows what the send does.
   "checkin-reminder": {
     guestLastName: "",
+  },
+  // #3956: the organiser's sentence, not the joiner's card arm the global
+  // {{refundSentence}} sample previews.
+  "group-organiser-joiner-refund": {
+    refundSentence: organiserJoinerAppealRefundSentence("$123.45", "Sam Joiner"),
   },
 };
 
@@ -1769,6 +1788,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "adminNoteLine",
   "adminNotes",
   "adminNotesLine",
+  // #4058: what a pay-link email asks the member to pay now — the booking's
+  // price plus a recorded change fee, less applied credit. `{{price}}` stays the
+  // booking's own price, so an override written against it keeps its meaning.
+  "amountDue",
   "amountRecordedNote",
   "amount",
   // #3340: what is still owed on the booking AFTER a supersede refund, on both
@@ -1902,6 +1925,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "issueTotalCount",
   "joinerBookingLinks",
   "joinerCount",
+  // #3956: the joiner whose appeal the organiser's card is refunding.
+  "joinerName",
   "latestErrorMessage",
   "latestErrorNote",
   "localId",

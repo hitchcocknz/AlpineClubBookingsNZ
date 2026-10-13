@@ -425,7 +425,7 @@ global lock (#3415): a late accept or modify/query `409`s (no new booking,
 Payment, or PaymentLink; no resurrection to
 `MODIFICATION_REQUESTED`/`QUERY_PENDING`). Approve's `convertedBookingId`
 idempotency returns the one existing booking (#1232). Per-teacher hut-leader
-records, when the school policy creates them (#3416), are always created fresh.
+records, when the booking's lodge ticks teachers (#3819), are always created fresh.
 The held owner is
 re-validated at officer approval's conversion:
 if a previously mapped contact is no longer a valid non-login contact by then
@@ -1550,7 +1550,8 @@ decision and would need its own owner decision.
   than being retired here — one route to terminal failure (`INV-PAY-056`).
   The source task stays COMPLETED (`INV-PAY-099`); the
   `booking.additionalPayment.withdrawn` audit row is the record.
-- **`withdrawnAt` is the durable fact; the columns are a projection.**
+- **`withdrawnAt` is the durable fact; the columns are a projection.** A
+  reduction stamps it too ([INV-PAY-120]).
   `reconcilePaymentAggregates` derives the additional columns from the latest
   ADDITIONAL row WITHOUT a stamp, so the `payment_intent.canceled` webhook the
   cancel triggers cannot put the ask back. A FAILED row still projects as owed

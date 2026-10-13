@@ -756,7 +756,8 @@ describe("booking-modified default body (#2267)", () => {
       financialReviewPending: false,
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
-      refundReturnedToOrganiser: false,
+      unpaidAskCancelled: false,
+      refundDestination: "own",
       ...overrides,
     }, CLUB_FORMAT_TEST);
     const call = sendEmailMock.mock.calls[0][0];
