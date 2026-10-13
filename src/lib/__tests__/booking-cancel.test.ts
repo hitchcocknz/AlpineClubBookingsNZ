@@ -2840,7 +2840,8 @@ describe("cancelBooking credit refunds", () => {
 
         const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
-        const raised = mocks.txManualRefundTaskCreateMany.mock.calls.map(([{ data }]: [{ data: Array<{ occurrenceKey: string; amountCents: number }> }]) => [data[0].occurrenceKey, data[0].amountCents]);
+        const calls = mocks.txManualRefundTaskCreateMany.mock.calls as unknown as Array<[{ data: Array<{ occurrenceKey: string; amountCents: number }> }]>;
+        const raised = calls.map(([{ data }]) => [data[0]!.occurrenceKey, data[0]!.amountCents]);
         expect(raised).toEqual([
           ["cancel-card-shortfall:booking_1", 500],
           ["cancel-card-shortfall:booking_1:check", 1500],

@@ -7,7 +7,7 @@ the officers. The task, its alert and its reason live in
 seams that have to sit where they are.
 
 file: src/lib/booking-cancel.ts
-lines: 2850
+lines: 2859
 reason: the task is raised inside the paid cancel's claim transaction, beside
   the card refund plan it measures, under the claim's locks - there is no seam
   outside it with the same client; the card branch then sizes its event and
@@ -15,7 +15,7 @@ reason: the task is raised inside the paid cancel's claim transaction, beside
   and the alert. Each is one call into the helper module.
 
 file: src/components/admin/manual-refund-task-queue.tsx
-lines: 2239
+lines: 2252
 reason: the money-to-settle card explains each kind of row in its own
   paragraph beside the others, and must not describe a card booking's
   shortfall with the cash paragraph; the paragraph and its row flag belong
@@ -26,3 +26,14 @@ lines: 1805
 reason: the Booking Cancelled sender's `{{refundMessage}}` comes from the one
   wording home and needs the bank-transfer remainder passed through beside
   the other refund arguments.
+
+file: src/lib/email-message-registry.ts
+lines: 2308
+reason: the Manual refund needed email's description names its third
+  situation (a card refund shortfall) beside the cash and group ones, in the
+  one registry entry an admin reads.
+
+file: src/lib/email-message-renderer.ts
+lines: 959
+reason: the {{handBackNote}} requirement's sentence names the third situation
+  the token has to explain, in the one guidance table the editor reads.

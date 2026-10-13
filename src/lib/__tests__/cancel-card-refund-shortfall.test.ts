@@ -84,7 +84,7 @@ describe("raising a cancel's card refund shortfall (#4097)", () => {
     const store = tx(1_000);
     const raised = await raise(store, 6_000);
     expect(raised).toEqual({ cardCents: 6_000, bank: { taskId: "task-1", cents: 1_000 }, check: { taskId: "task-2", cents: 3_000 } });
-    const checkCall = store.manualRefundTask.createMany.mock.calls[1]![0].data[0] as { occurrenceKey: string; reason: string };
+    const checkCall = store.manualRefundTask.createMany.mock.calls[1]![0].data[0] as unknown as { occurrenceKey: string; reason: string };
     expect(checkCall.occurrenceKey).toBe(CHECK_KEY);
     expect(checkCall.reason).toBe(
       "Booking booking-1 cancelled - its card refund could carry only $60.00 of the $100.00 refund due. The payment's records show the remaining $30.00 already refunded, or nothing holds it. Check Stripe and the bank before paying; dismiss this with a note if it was refunded (#4097).",
@@ -120,7 +120,7 @@ describe("raising a cancel's card refund shortfall (#4097)", () => {
 
   it("refuses, rolling the claim back, when the row cannot be read back", async () => {
     const store = tx(4_000);
-    store.manualRefundTask.findUnique.mockResolvedValueOnce(null);
+    store.manualRefundTask.findUnique.mockResolvedValueOnce(null as unknown as Row);
     await expect(raise(store, 6_000)).rejects.toThrow(/was not written/);
   });
 

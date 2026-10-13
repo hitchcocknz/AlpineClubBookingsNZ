@@ -66,7 +66,7 @@ function shortfallReason(part: CancelCardShortfallPart, bookingId: string, figur
 
 async function raisePart(
   tx: Prisma.TransactionClient,
-  params: { bookingId: string; paymentId: string; part: CancelCardShortfallPart; cents: number; reason: string },
+  params: { bookingId: string; paymentId: string; part: CancelCardShortfallPart; cents: number; reason: string; format: ClubFormat },
 ): Promise<{ taskId: string; cents: number } | null> {
   if (params.cents <= 0) return null;
   const occurrenceKey = cancelCardShortfallOccurrenceKey(params.bookingId, params.part);
@@ -92,7 +92,7 @@ async function raisePart(
   // A replay that hit the key must find what this claim would have written.
   if (inserted.count === 0 && (task.status !== ManualRefundTaskStatus.OPEN || task.amountCents !== params.cents)) {
     throw new Error(
-      `The card refund shortfall task ${task.id} for booking ${params.bookingId} already exists as ${task.status} for ${task.amountCents ?? "no"} cents, not OPEN for ${params.cents} (#4097).`,
+      `The card refund shortfall task ${task.id} for booking ${params.bookingId} already exists as ${task.status} for ${task.amountCents === null ? "no amount" : formatCents(task.amountCents, params.format)}, not OPEN for ${formatCents(params.cents, params.format)} (#4097).`,
     );
   }
   return { taskId: task.id, cents: params.cents };
@@ -118,7 +118,7 @@ export async function raiseCancelCardShortfallHandBack(
   const sizes = splitCardShortfall(shortfallCents, headroomCents);
   const figures = (cents: number) => ({ card: formatCents(cardCents, format), due: formatCents(refundAmountCents, format), part: formatCents(cents, format) });
   const raise = (part: CancelCardShortfallPart) =>
-    raisePart(tx, { bookingId, paymentId, part, cents: sizes[part], reason: shortfallReason(part, bookingId, figures(sizes[part])) });
+    raisePart(tx, { bookingId, paymentId, part, cents: sizes[part], reason: shortfallReason(part, bookingId, figures(sizes[part])), format });
   const shortfall: CancelCardShortfall = { cardCents, bank: await raise("bank"), check: await raise("check") };
   logger.warn(
     { bookingId, paymentId, refundAmountCents, cardCents, bankCents: sizes.bank, checkCents: sizes.check },
