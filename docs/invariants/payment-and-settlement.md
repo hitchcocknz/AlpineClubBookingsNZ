@@ -1010,6 +1010,30 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   credit included, is the member's own money and stays on `hutFeeRefunds`.
   Noteless is not the accounting question.
 
+## INV-PAY-127
+
+**Related: `INV-PAY-023`** (the engine that uses the lots).
+
+- **A member's credit lots are used in one order: oldest first, and between two
+  lots stamped with the same instant, the lower `id` first** (#4013, owner
+  decision 14 Oct 2026). `createdAt` alone is not an order. Lots written in one
+  transaction, or under the frozen test clock, carry the same instant, and
+  PostgreSQL returns tied rows in whatever order its plan meets them. Which lot
+  comes first decides whether the allocation engine allocates an existing
+  floating note or mints a remainder, so a tie left to the database made the
+  same ledger allocate on one run and mint on the next.
+- The order has one home, `CREDIT_LOT_USE_ORDER` in
+  `xero-applied-credit-plan.ts`, and every read that hands lots to the planner
+  orders by it and by nothing else. Today that is the engine's lot loader alone.
+  `credit-lot-use-order-census.test.ts` fails a `memberCredit` read ordered by
+  `createdAt` without it, unless it is declared as a read that uses no lot
+  (a history listing, a refuse-if-two read), with the reason.
+- The tie-break changes no lot's eligibility, no amount, no transaction and no
+  lock. It reorders only lots whose `createdAt` is exactly equal, and among
+  those the engine's total is unchanged: conservation never depended on lot
+  order (`INV-PAY-023`). What it fixes is which of two equal lots goes first,
+  and so whether a note is allocated or minted, the same way every time.
+
 ## INV-PAY-024
 
 - Applied credit reduces the CARD (Stripe) charge the same way (#1641, owner

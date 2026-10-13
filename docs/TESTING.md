@@ -1418,6 +1418,31 @@ passed alone immediately afterwards. That is the evidence of the limit being
 crossed; a lane running any such batch beside another lane's tests, a build, or
 a typecheck is where it will be crossed again.
 
+## The shared race harness: declare the environment role per suite, and put it back
+
+The real-PostgreSQL race harness (`concurrency-lock-races.realdb.test.ts`)
+imports some forty suites into one vitest file, so whatever one suite leaves in
+`process.env` is there for every suite after it. A suite that drives a Xero or
+email path should still say what installation it is (`INV-CONFIG-003`): left
+unset, the role resolves UNKNOWN and the containment gates refuse, which is the
+safe default and the wrong premise for a disposable test database.
+
+Use `declareEnvironmentRoleForSuite("non-production")` from
+`src/lib/__tests__/helpers/environment-role.ts` in the suite's `beforeAll`,
+call the handle's `restore()` in a `finally` in its `afterAll`, and add a
+describe after the suite that asserts the variable equals the handle's
+`before` again. #4013 does all three in
+`credit-only-card-allocation.realdb.test.ts`. Do not use
+`declareEnvironmentRole` (`vi.stubEnv`) here: nothing unstubs it until the
+whole file ends, and `vi.unstubAllEnvs()` would undo every other suite's stubs
+too. Only `production` and `non-production` are accepted values; never weaken
+the production containment gate to make a suite pass.
+
+A declared role is not a fix for a path a suite should never reach. #4013's H1
+case reached the remainder-note mint because its credit lots tied on the
+frozen clock; the cure was an explicit fixture chronology and a regression that
+names the path (`INV-PAY-127`), not a declaration that let the mint go further.
+
 ## Mocking a money seam: never in a test that asserts its money
 
 The rule is `INV-OPS-015` ([`invariants/operations.md`](invariants/operations.md));
