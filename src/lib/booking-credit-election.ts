@@ -428,18 +428,22 @@ export function resolveCreditElectionUpdate({
  * disclosed to them, and a notice without the amount would still disclose
  * that the owner elected credit while offering the guest nothing actionable.
  *
+ * #3991: WHO may see the owner's credit is the booking page's one predicate,
+ * `canSeeOwnerCredit` (`booking-detail-viewer.ts`), which also gates the
+ * narrative's credit wording, the timeline's credit entries and the
+ * cancellation outcome's credit lines; this only chooses the phrasing.
+ *
  * Pure so the three viewer classes are unit-testable away from the page.
  */
 export function resolveCreditElectionNoticeAudience({
   isBookingOwner,
-  isNonOwnerAdminViewer,
+  canSeeOwnerCredit,
 }: {
   isBookingOwner: boolean;
-  isNonOwnerAdminViewer: boolean;
+  canSeeOwnerCredit: boolean;
 }): "owner" | "admin" | null {
-  if (isBookingOwner) return "owner";
-  if (isNonOwnerAdminViewer) return "admin";
-  return null;
+  if (!canSeeOwnerCredit) return null;
+  return isBookingOwner ? "owner" : "admin";
 }
 
 /**

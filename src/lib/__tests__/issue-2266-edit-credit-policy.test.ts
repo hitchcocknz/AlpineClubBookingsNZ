@@ -124,7 +124,7 @@ describe("resolveCreditElectionNoticeAudience (#2266 MED-2)", () => {
     expect(
       resolveCreditElectionNoticeAudience({
         isBookingOwner: true,
-        isNonOwnerAdminViewer: false,
+        canSeeOwnerCredit: true,
       }),
     ).toBe("owner");
   });
@@ -133,19 +133,19 @@ describe("resolveCreditElectionNoticeAudience (#2266 MED-2)", () => {
     expect(
       resolveCreditElectionNoticeAudience({
         isBookingOwner: false,
-        isNonOwnerAdminViewer: true,
+        canSeeOwnerCredit: true,
       }),
     ).toBe("admin");
   });
 
   it("shows a linked-guest viewer nothing — the election is the owner's money", () => {
-    // A linked guest is neither the owner nor an admin-type viewer; they must
+    // A linked guest cannot see the owner's credit (`canSeeOwnerCredit`); they must
     // not be addressed in the second person about the owner's money, and the
     // owner's elected amount must not be disclosed to them at all.
     expect(
       resolveCreditElectionNoticeAudience({
         isBookingOwner: false,
-        isNonOwnerAdminViewer: false,
+        canSeeOwnerCredit: false,
       }),
     ).toBeNull();
   });

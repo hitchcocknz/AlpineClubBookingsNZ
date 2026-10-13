@@ -841,6 +841,7 @@ describe("getPaymentLinkContext under an open financial review", () => {
       booking: {
         status: booking.status,
         finalPriceCents: booking.finalPriceCents,
+        amountOwed: { owedCents: booking.finalPriceCents, dueCents: booking.finalPriceCents, appliedCreditCents: 0 },
         checkIn: booking.checkIn,
         checkOut: booking.checkOut,
         firstName: booking.member.firstName,
