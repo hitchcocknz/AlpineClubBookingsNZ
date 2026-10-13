@@ -113,6 +113,8 @@ export const netCollectedBookingSelect = Prisma.validator<Prisma.BookingSelect>(
       kind: true,
       amountCents: true,
       partPaymentReviewPaymentId: true,
+      // #4042: marks a group organiser's hand-back, which is not this booking's.
+      occurrenceKey: true,
     },
   },
 });

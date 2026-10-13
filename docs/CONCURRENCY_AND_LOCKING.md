@@ -3113,6 +3113,47 @@ runner replays is refused and backs off until this runner replays it, and an
 intent the old runner minted under its own reason is adopted only as the one
 unrecorded match no other in-flight recovery of the booking could own.
 
+**#4042 adds the organiser's hand-back to the same claim, and no key.** An
+Internet Banking settlement's per-child claim, after its `lock(1)` and the
+joiner's mirror, books that joiner's share on the one `ManualRefundTask` keyed
+`group-organiser-hand-back:<settlement id>` (`recordGroupOrganiserHandBackShare`,
+`INV-PAY-124`): the first share creates it, each later one sets it, by a
+status-guarded `updateMany` while OPEN, to the total derived under the lock
+(the joiners whose refund lines are on the ledger, those a group task records,
+and its own, less closed group tasks), and one booked after it closed creates
+a supplementary task keyed per joiner. That per-child claim is the ONLY raise
+site - it runs on the first cancel and on the reaper's resume, both through
+`settleGroupBookingOnOrganiserCancel` - and the plan's recovery replay never
+raises it (an Internet Banking plan is never replayed). Each step is a
+find-then-write made single by the claim's `lock(1)`, with the unique key as
+the backstop; it reads ledger lines and children under that lock and makes no
+provider call. **Its alert adds one `lock(1)` participant,
+`updateGroupHandBackAlertRecord`** (registered as
+`updateGroupHandBackAlertRecord#1`, `INV-LOCK-003`). Once the children loop
+ends - and from the reaper's own task-keyed sweep of OPEN group tasks older
+than the resume grace (by `updatedAt`, which every growth moves) with no alert
+sent, skipping a group that still has an active organiser-settled joiner - a
+run CLAIMS each unsent alert: a short transaction takes `lock(1)` first, reads
+the database's time, re-reads the task and writes a 30-minute lease
+(`alertClaimedAt`), but only on an OPEN, unsent task with no unexpired lease.
+Only the winning run sends, after that commit, so two runs never send at once;
+it then records the send (`alertSentAt`, lease cleared, retried three times)
+through the same writer, or, when the send reached nobody, gives the lease back
+and counts it (three and no run tries again). The guarantee is AT LEAST ONCE:
+a crash, or a record that never lands, between the send and the record lets
+the lease expire and the alert repeat. Every write to `reviewContext` - the
+lease, its release, the record and a claim's growth of the task - takes
+`lock(1)` and re-reads first, so none drops another's fields; the growth's
+`updateMany` is fenced on status only, since a fence miss there would raise a
+supplementary task. It takes the key ALONE, holds it for a read and an
+update, and makes no provider call inside. Its
+COMPLETION joins the cohort too: `resolveManualRefundTask` takes `lock(1)`
+first for this task (as for an edit review and a non-cancellation hand-back,
+`resolveManualRefundTask#1`), so a growth and a completion never interleave,
+and a completion must name the total its screen showed; a grown one is
+refused. No new key
+or order.
+
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`
 (`src/lib/deleted-booking-modification-payment.ts`) creates the OPEN
@@ -3424,8 +3465,9 @@ does too, and both would post. So `resolveManualRefundTask` takes
   `updateMany` still fences on `OPEN` for every kind, pinned with the lock
   mocked in `manual-refund-task.test.ts`. Legacy hand-back kinds take no key,
   exactly as before — **except an edit refund hand-back** (#3827,
-  `INV-PAY-117`) and an approved refund appeal's (`INV-PAY-118`), which take
-  the same key first, decided from its immutable
+  `INV-PAY-117`), an approved refund appeal's (`INV-PAY-118`) and a group
+  organiser's (#4042, `INV-PAY-124`, which later joiners' claims grow under
+  it), which take the same key first, decided from its immutable
   `kind` and `occurrenceKey`. Its completion moves the payment's
   `refundedAmountCents` and closes the task in one commit, and every edit,
   acceptance, paid cancel and by-hand edit-review refund (refused before its

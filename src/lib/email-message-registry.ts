@@ -10,6 +10,11 @@ import {
   checkoutDayChoreNote,
   duplicateCaptureRefundOutcomeParagraph,
   internetBankingHoldKeptParagraph,
+  manualRefundTaskAlertAmountLabel,
+  manualRefundTaskAlertHeading,
+  manualRefundTaskAlertLabel,
+  manualRefundTaskAlertNote,
+  manualRefundTaskAlertRecipientLabel,
   lateCaptureAutoRefundLeadParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCaptureHandBackConflictSubjectLabel,
@@ -585,7 +590,9 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // B5 (#2262): memberName identifies the affected member and reviewUrl is the
   // admin action link (the payments board), mirroring the other admin alerts.
   "admin-manual-settlement-conflict": ["memberName", "reviewUrl"],
-  "admin-manual-refund-task": ["memberName", "reviewUrl"],
+  // #4042: {{handBackNote}} says which hand-back it is - the cash cancel's, or
+  // an organiser's Internet Banking group cancel, whose refunds are booked.
+  "admin-manual-refund-task": ["memberName", "reviewUrl", "handBackNote"],
   // #3643: {{holdKeptNote}} is the instruction - part-paid, paid in full,
   // unreadable and released-while-unreadable need different next steps.
   "admin-internet-banking-hold-kept": ["memberName", "reviewUrl", "holdKeptNote"],
@@ -743,6 +750,8 @@ const REQUIRED_SUBJECT_TEMPLATE_TOKENS: Partial<
   Record<EmailAuditTemplateName, string[]>
 > = {
   "admin-late-capture-hand-back-conflict": ["handBackConflictLabel"],
+  // #4042: a stored subject naming one situation would title the other's alert.
+  "admin-manual-refund-task": ["handBackLabel"],
 };
 
 /**
@@ -895,8 +904,8 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "admin-manual-refund-task": {
     triggerSummary:
-      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, so a hand-back task was raised for an admin to pay the member back",
-    frequency: "On cancellation of a cash-settled booking with a non-zero refund",
+      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, or an organiser cancelled a group they paid for by Internet Banking, so a hand-back task was raised for an admin to pay the member or organiser back",
+    frequency: "On cancellation of a cash-settled booking with a non-zero refund, and once per Internet Banking group an organiser cancels with a refund owed",
   },
   "admin-late-capture-auto-refund": {
     // #2773: BOTH handlers send this now, so the summary may not say
@@ -1491,6 +1500,12 @@ export function sampleValue(token: string): string {
   if (token === "holdKeptNote") {
     return internetBankingHoldKeptParagraph("part-paid");
   }
+  // #4042: previewed as the cash arm, what the shipped default always said.
+  if (token === "handBackNote") return manualRefundTaskAlertNote("cash-cancellation");
+  if (token === "handBackLabel") return manualRefundTaskAlertLabel("cash-cancellation");
+  if (token === "handBackRecipientLabel") return manualRefundTaskAlertRecipientLabel("cash-cancellation");
+  if (token === "handBackHeading") return manualRefundTaskAlertHeading("cash-cancellation");
+  if (token === "handBackAmountLabel") return manualRefundTaskAlertAmountLabel("cash-cancellation");
   if (token === "handBackConflictNote") {
     return lateCaptureHandBackConflictOutcomeParagraph(false);
   }
@@ -2041,6 +2056,13 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "handBackConflictNote",
   // #3643: why an expired internet banking hold was kept, not released.
   "holdKeptNote",
+  // #4042: which hand-back a manual refund task alert is about - its body
+  // paragraphs, its subject/heading phrase, and whom the money goes back to.
+  "handBackNote",
+  "handBackLabel",
+  "handBackRecipientLabel",
+  "handBackHeading",
+  "handBackAmountLabel",
   // #3638: the second-instrument alert's live-versus-cancelled sentence.
   "secondInstrumentConflictNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and

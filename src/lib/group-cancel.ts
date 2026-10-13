@@ -109,6 +109,7 @@ import {
 } from "@/lib/payment-recovery";
 import { deserializeRefundPlan, isMirrorRefundPlan, mirrorPlanRefundedCents, organiserCancelJoinerEmailRefund } from "@/lib/group-settlement-refund-plan";
 import { refundOrganiserCancelChildren } from "@/lib/organiser-child-refund-executor";
+import { alertUnsentGroupOrganiserHandBacks, recordGroupOrganiserHandBackShare, type GroupOrganiserHandBack } from "@/lib/group-organiser-hand-back";
 import { enqueueXeroGroupSettlementInvoiceVoidOperation } from "@/lib/xero-group-settlement-void-outbox";
 import logger from "@/lib/logger";
 import { clubToday } from "@/lib/club-time";
@@ -510,6 +511,8 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
   }
 
+  // #4042 (`INV-PAY-124`): the organiser's hand-back is alerted once the loop ends (finally), at least once.
+  try {
   for (const child of children) {
     const refundForChild = refundByChildId.get(child.id) ?? 0;
     const owedForChild = owedByChildId.get(child.id) ?? 0;
@@ -517,6 +520,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     // kick can run POST-commit (the enqueue itself is now durable — below).
     let queuedCreditNoteOperationId: string | null = null;
     let childClaimed = false;
+    const raised: { handBack: GroupOrganiserHandBack | null } = { handBack: null };
     try {
       queuedCreditNoteOperationId = await prisma.$transaction(async (tx) => {
         let queuedOperationId: string | null = null;
@@ -591,6 +595,8 @@ export async function settleGroupBookingOnOrganiserCancel(
             { createdByMemberId: sessionUserId, store: tx }
           );
           queuedOperationId = queued.queueOperationId;
+          // #4042: an Internet Banking settlement's refund is the club's to repay by hand.
+          if (settlement && !settlement.stripePaymentIntentId) raised.handBack = await recordGroupOrganiserHandBackShare(tx, { settlementId: settlement.id, organiserBookingId, plan: plannedMirrorRefunds, claimedChildId: child.id, format });
         }
 
         // #3209 (`INV-HOST-041`). The beds are reconciled above; ADULT SUPERVISION
@@ -667,6 +673,7 @@ export async function settleGroupBookingOnOrganiserCancel(
         refundForChild,
         owedRefundForChild: owedForChild,
         paymentId: child.payment?.id ?? null,
+        organiserHandBackTaskId: raised.handBack?.id ?? null,
       },
       ipAddress,
     });
@@ -729,6 +736,10 @@ export async function settleGroupBookingOnOrganiserCancel(
     // organiser's own drain in `booking-cancel.ts` cannot reach them. It never
     // throws, and the cron sweep remains the authority on completion.
     await settleHostingCoverageAfterCommit({ bookingId: child.id });
+  }
+  } finally {
+    // Outside every transaction; a task only a committed claim wrote; any unsent alert, so a crashed run's is retried.
+    if (settlement && !settlement.stripePaymentIntentId) await alertUnsentGroupOrganiserHandBacks({ settlementId: settlement.id, organiserBookingId, format });
   }
 
   // The group was fenced CANCELLED before provider calls and child cleanup.

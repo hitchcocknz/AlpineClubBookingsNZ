@@ -824,6 +824,9 @@ const GENERATED_CASES: EmailRenderCase[] = [
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "cancelledAfterRefund", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: "cardPaymentIntentId-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminManualRefundTaskTemplate:minimal", fn: "adminManualRefundTaskTemplate", render: () =>
     adminManualRefundTaskTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), refundAmountCents: 104, bookingId: "bookingId-5", reason: "reason-6", reviewUrl: "reviewUrl-7" }, CLUB_FORMAT_TEST) },
+  // #4042: an organiser's Internet Banking group cancel, whose refunds are already booked.
+  { id: "adminManualRefundTaskTemplate:group-organiser", fn: "adminManualRefundTaskTemplate", render: () =>
+    adminManualRefundTaskTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), refundAmountCents: 104, bookingId: "bookingId-5", reason: "reason-6", reviewUrl: "reviewUrl-7", situation: "group-organiser-internet-banking" }, CLUB_FORMAT_TEST) },
   { id: "adminLateCaptureHeldTemplate:minimal", fn: "adminLateCaptureHeldTemplate", render: () =>
     adminLateCaptureHeldTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, bookingId: "bookingId-5", reviewUrl: "reviewUrl-6" }, CLUB_FORMAT_TEST) },
   { id: "adminPendingDeadlineTemplate:minimal", fn: "adminPendingDeadlineTemplate", render: () =>

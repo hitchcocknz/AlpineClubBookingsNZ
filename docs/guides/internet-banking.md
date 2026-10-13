@@ -99,6 +99,16 @@ A send that fails is retried on the next run, including the email for a hold
 already released; one that reaches nobody (every address suppressed, for
 example) is tried again a day later, not every run.
 
+**When the organiser cancels a group they paid for.** Each joiner's refund is
+recorded in the app's ledger, and the club repays the organiser by bank
+transfer. A task appears in **Money to settle** on the
+[payments board](payments.md#pay-back-a-refund-for-a-cash-booking): it holds
+the total as each joiner's place is cancelled and lists their shares. The task
+is the record. Admins get the **Manual refund needed** email once the cancel
+has worked through the joiners; if it could not go out, a background job sends
+it later, and a task raised after the first was paid back gets its own email
+(#4042; details in [payments](payments.md#pay-back-a-refund-for-a-cash-booking)).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

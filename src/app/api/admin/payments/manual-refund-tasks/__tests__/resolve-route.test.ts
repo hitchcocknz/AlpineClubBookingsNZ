@@ -363,3 +363,23 @@ describe("the officer's cash-or-bank answer on a hand-settled refund (#3536)", (
     expect(mocks.resolveManualRefundTask).not.toHaveBeenCalled();
   });
 });
+
+// #4042 (`INV-PAY-124`): a group organiser's hand-back completion that does not
+// say the total it was shown reaches the door as null, and the door's refusal
+// is what the officer reads.
+describe("a group organiser's hand-back marked paid back without the total it was shown", () => {
+  it("passes no amount through as null, and answers with the door's 409 and its sentence", async () => {
+    const { ManualBookingPaymentError } = await import("@/lib/manual-refund-task-resolution");
+    const refusal = "This repayment's total grows as each joiner's place is cancelled, so it is marked paid back at the total the screen shows. Refresh the page and try again.";
+    mocks.resolveManualRefundTask.mockRejectedValueOnce(new ManualBookingPaymentError(refusal, 409));
+
+    const response = await POST(request({ resolution: "completed", confirmed: true, note: null }), { params });
+
+    expect(mocks.resolveManualRefundTask).toHaveBeenLastCalledWith(
+      expect.objectContaining({ resolution: "completed", confirmedAmountCents: null }),
+      CLUB_FORMAT_TEST,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: refusal });
+  });
+});
