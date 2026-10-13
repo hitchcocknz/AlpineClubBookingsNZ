@@ -2,7 +2,11 @@ import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
-import { dateOnlyInstantOf, requireCalendarDate } from "@/lib/club-time";
+import {
+  calendarDateOfDateOnlyInstant,
+  dateOnlyInstantOf,
+  requireCalendarDate,
+} from "@/lib/club-time";
 import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRange,
@@ -141,6 +145,28 @@ export function isEffectiveStayRangeChange(
   if (!range.stayStart || !range.stayEnd) return false;
   if (!current) return true;
   return range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd;
+}
+
+/**
+ * #4030 review M2: whether any of a request's stay ranges changes a guest's
+ * nights, against the guests' stored `@db.Date` ranges.
+ */
+export function namesStayRangeChange(
+  ranges: ReadonlyArray<{ guestId: string; stayStart?: string | null; stayEnd?: string | null }>,
+  guests: ReadonlyArray<{ id: string; stayStart: Date; stayEnd: Date }>,
+): boolean {
+  return ranges.some((range) => {
+    const guest = guests.find((candidate) => candidate.id === range.guestId);
+    return isEffectiveStayRangeChange(
+      range,
+      guest
+        ? {
+            stayStart: calendarDateOfDateOnlyInstant(guest.stayStart),
+            stayEnd: calendarDateOfDateOnlyInstant(guest.stayEnd),
+          }
+        : undefined,
+    );
+  });
 }
 
 /**

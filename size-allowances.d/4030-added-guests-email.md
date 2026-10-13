@@ -34,3 +34,11 @@ file: src/lib/email/booking.ts
 lines: 1799
 reason: the sender's one new required parameter; the rows it composes live in
   booking-money-lines.ts, so nothing else grew here.
+
+file: src/app/api/bookings/[id]/change-requests/route.ts
+lines: 591
+reason: the member's request door runs the one dependant-identity rule
+  (INV-GUEST-019, #4030 review M4) on the guests it is asked to add, refusing
+  with its own message - six lines that belong at this door, beside the other
+  refusals the route answers before it writes anything. The stay-range check
+  and every message live in booking-change-request-guests.ts.
