@@ -35,6 +35,7 @@ import { parseInstant, type BoundClubTime, formatStayDateOrNull } from "@/lib/cl
 import { MoneyInput } from "@/components/ui/money-input"
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents, formatCentsPlain } from "@/lib/utils"
+import { refundAppealApprovedNotice, refundAppealRefundedCents } from "@/lib/refund-request-card-refund-copy"
 import { useClubFormat } from "@/components/club-format-provider"
 import {
   ORGANISER_CARD_APPEAL_CEILING_NOTE,
@@ -59,6 +60,8 @@ interface RefundRequestData {
   approvedAmountCents: number | null
   reviewedAt: string | null
   createdAt: string
+  // #4117: an approved appeal's card refund still owed - not made, queued for retry.
+  cardRefundOwedCents?: number
   booking: {
     id: string
     checkIn: string
@@ -318,8 +321,8 @@ export default function RefundRequestsPage() {
         body: JSON.stringify(body),
       })
 
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        const data = await res.json()
         throw new Error(data.error || "Failed to process")
       }
 
@@ -328,7 +331,7 @@ export default function RefundRequestsPage() {
       setApprovedAmount("")
       toast.success(
         (status === "APPROVED"
-          ? "Refund approved and processed"
+          ? refundAppealApprovedNotice(data.cardRefundOwedCents ?? 0, data.cardRefundQueued !== false, (cents) => formatCents(cents, format))
           : "Appeal rejected") +
           (noEmails
             ? " Emails are off for this booking, so nothing was sent — the withheld message is listed on the booking."
@@ -566,10 +569,17 @@ export default function RefundRequestsPage() {
                         {req.status !== "PENDING" && (
                           <div className="border-t pt-3 mt-3">
                             {req.approvedAmountCents != null && req.approvedAmountCents > 0 && (
-                              <p className="text-sm">
-                                <span className="text-muted-foreground">Refunded:</span>{" "}
-                                <strong>{formatCents(req.approvedAmountCents, format)}</strong>
-                              </p>
+                              <>
+                                <p className="text-sm">
+                                  <span className="text-muted-foreground">Refunded:</span>{" "}
+                                  <strong>{formatCents(refundAppealRefundedCents(req.approvedAmountCents, req.cardRefundOwedCents ?? 0), format)}</strong>
+                                </p>
+                                {(req.cardRefundOwedCents ?? 0) > 0 && (
+                                  <p className="text-sm text-muted-foreground">
+                                    {formatCents(req.cardRefundOwedCents ?? 0, format)} of the card refund is queued for retry.
+                                  </p>
+                                )}
+                              </>
                             )}
                             {req.adminNotes && (
                               <p className="text-sm mt-1">

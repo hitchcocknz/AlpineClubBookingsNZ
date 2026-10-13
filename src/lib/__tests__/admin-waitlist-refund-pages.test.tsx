@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
 
 const fetchMock = vi.fn();
 const scrollIntoView = vi.fn();
+const toastSuccess = vi.hoisted(() => vi.fn());
+
+vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: vi.fn() } }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -1023,3 +1026,102 @@ describe("Admin refund and credit review page", () => {
     }
   });
 });
+
+/*
+  #4117 (`INV-PAY-128`): an approved appeal's card refund may not be made in
+  full - Stripe refused a part, or a part could not be sent - and that part is
+  queued for retry. The screen says so, rather than "approved and processed",
+  and its Refunded figure is what was actually refunded.
+*/
+describe("an approved appeal whose card refund is still partly owed (#4117)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    global.fetch = fetchMock as typeof fetch;
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+  });
+
+  function appeal(overrides: Record<string, unknown>) {
+    return {
+      id: "refund-1",
+      bookingId: "booking-1",
+      memberId: "member-1",
+      reason: "Weather closure",
+      requestedAmountCents: 2500,
+      status: "PENDING",
+      adminNotes: null,
+      approvedAmountCents: null,
+      reviewedAt: null,
+      createdAt: "2026-07-01T00:00:00.000Z",
+      booking: {
+        id: "booking-1",
+        checkIn: "2026-08-01T00:00:00.000Z",
+        checkOut: "2026-08-03T00:00:00.000Z",
+        finalPriceCents: 10000,
+        status: "CANCELLED",
+        noEmails: false,
+        creditsFromCancellation: [],
+        payment: { status: "SUCCEEDED", amountCents: 10000, refundedAmountCents: 0, stripePaymentIntentId: "pi_1" },
+      },
+      member: { id: "member-1", firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      ...overrides,
+    };
+  }
+
+  function serve(status: string, rows: unknown[], put?: unknown) {
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === `/api/admin/refund-requests?status=${status}`) {
+        return Promise.resolve({ ok: true, json: async () => ({ data: rows, page: 1, pageSize: 25, total: rows.length }) });
+      }
+      if (url === `/api/admin/credit-approvals?status=${status}`) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === "/api/admin/refund-requests/refund-1" && init?.method === "PUT") {
+        return Promise.resolve({ ok: true, json: async () => put });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+  }
+
+  it("shows Refunded as what was made, and the part still queued for retry", async () => {
+    mocks.currentSearch = "status=APPROVED";
+    serve("APPROVED", [
+      appeal({ status: "APPROVED", approvedAmountCents: 2500, reviewedAt: "2026-07-02T00:00:00.000Z", cardRefundOwedCents: 1000 }),
+    ]);
+
+    render(<RefundRequestsPage />);
+
+    expect((await screen.findByText("Refunded:")).parentElement).toHaveTextContent("Refunded: $15.00");
+    expect(screen.getByText("$10.00 of the card refund is queued for retry.")).toBeTruthy();
+  });
+
+  it("an appeal refunded in full shows the whole amount and no retry line", async () => {
+    mocks.currentSearch = "status=APPROVED";
+    serve("APPROVED", [appeal({ status: "APPROVED", approvedAmountCents: 2500, reviewedAt: "2026-07-02T00:00:00.000Z", cardRefundOwedCents: 0 })]);
+
+    render(<RefundRequestsPage />);
+
+    expect((await screen.findByText("Refunded:")).parentElement).toHaveTextContent("Refunded: $25.00");
+    expect(screen.queryByText(/queued for retry/)).toBeNull();
+  });
+
+  it.each([
+    [{ cardRefundOwedCents: 1000, cardRefundQueued: true }, "Refund approved; $10.00 is queued for retry"],
+    [{ cardRefundOwedCents: 0, cardRefundQueued: true }, "Refund approved and processed"],
+    [
+      { cardRefundOwedCents: 2500, cardRefundQueued: false },
+      "Refund approved; $25.00 could not be queued for retry - the officers have been alerted to refund it another way",
+    ],
+  ])("after approving, the toast reads the route's answer %o", async (answer, toast) => {
+    mocks.currentSearch = "";
+    serve("PENDING", [appeal({})], { ...appeal({ status: "APPROVED", approvedAmountCents: 2500 }), ...answer });
+
+    render(<RefundRequestsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve & Refund" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and email member" }));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(toast));
+  });
+});
+

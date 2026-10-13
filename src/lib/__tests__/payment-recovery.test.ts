@@ -2229,7 +2229,7 @@ describe("payment recovery worker", () => {
       expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
         expect.objectContaining({
           amountCents: 1500,
-          errorMessage: "Stripe refused $15.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+          errorMessage: "Stripe refused $15.00 of this card refund (failed or cancelled), so that $15.00 did not go back and is still owed; it will be retried automatically.",
         }),
         CLUB_FORMAT_TEST,
       );

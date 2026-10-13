@@ -31,7 +31,8 @@ function request(id: string, status = "PENDING") {
   return {
     id,
     status,
-    booking: { id: `b-${id}`, payment: { id: `p-${id}`, source: "STRIPE" } },
+    // The payment as the route selects it: its card refund rows and refunds (#4117) included.
+    booking: { id: `b-${id}`, payment: { id: `p-${id}`, source: "STRIPE", status: "SUCCEEDED", amountCents: 10_000, refundedAmountCents: 0, recoveryOperations: [], refunds: [] } },
   };
 }
 
@@ -60,5 +61,55 @@ describe("GET /api/admin/refund-requests, organiser-card appeals (#3956)", () =>
     // A decided request is not re-read: no ceiling is offered on it.
     expect(byId.done).not.toHaveProperty("organiserCardCombinedRefundPending");
     expect(mocks.organiserCardAppealCeilingFor).toHaveBeenCalledTimes(3);
+  });
+});
+
+/**
+ * #4117 (`INV-PAY-128`): an approved appeal's card refund still owed - its
+ * recovery row's unmade part - so the screen shows what was actually refunded.
+ */
+describe("GET /api/admin/refund-requests, an approved appeal's card refund still owed (#4117)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.requireAdmin.mockResolvedValue({ ok: true });
+    mocks.count.mockResolvedValue(1);
+    mocks.organiserCardAppealCeilingFor.mockResolvedValue(null);
+  });
+
+  it("reads the request's own recovery row: its made slice filled by its refund, the refused one owed; the rows stay off the wire", async () => {
+    const approved = request("rq-1", "APPROVED");
+    approved.booking.payment = {
+      ...approved.booking.payment,
+      refundedAmountCents: 1_500,
+      recoveryOperations: [
+        {
+          id: "op-1",
+          type: "REFUND_BOOKING_MODIFICATION",
+          status: "PENDING",
+          idempotencyKey: "refund_request_refund_rq-1",
+          amountCents: 2_500,
+          allocationPlan: [
+            { paymentTransactionId: "txn-new", amountCents: 1_500, madeRefundId: "re_made" },
+            { paymentTransactionId: "txn-old", amountCents: 1_000, stripeKeySuffix: "refused1" },
+          ],
+          paymentTransactionId: null,
+          createdAt: new Date("2026-06-20T00:00:05.000Z"),
+          succeededAt: null,
+        },
+      ] as never[],
+      refunds: [
+        { stripeRefundId: "re_made", paymentTransactionId: "txn-new", amountCents: 1_500, status: "succeeded", createdAt: new Date("2026-06-20T00:00:01.000Z"), stripeCreatedAt: new Date("2026-06-20T00:00:01.000Z") },
+      ] as never[],
+    };
+    mocks.findMany.mockResolvedValue([approved, request("rq-other", "APPROVED")]);
+
+    const response = await GET(new NextRequest("http://localhost/api/admin/refund-requests?status=APPROVED"));
+    const { data } = (await response.json()) as { data: Array<{ id: string; cardRefundOwedCents: number; booking: { payment: Record<string, unknown> } }> };
+    const byId = Object.fromEntries(data.map((row) => [row.id, row]));
+
+    expect(byId["rq-1"]?.cardRefundOwedCents).toBe(1_000);
+    expect(byId["rq-other"]?.cardRefundOwedCents).toBe(0);
+    expect(byId["rq-1"]?.booking.payment).not.toHaveProperty("recoveryOperations");
+    expect(byId["rq-1"]?.booking.payment).not.toHaveProperty("refunds");
   });
 });

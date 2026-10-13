@@ -121,6 +121,8 @@ export interface CardRefundOperationRow {
 
 /** A refund recorded on the payment (`PaymentRefund`), as the net-out reads it. */
 export interface RecordedCardRefundRow {
+  /** Stripe's refund id: a plan slice marked with it (`madeRefundId`) is filled by this refund (#4117). */
+  stripeRefundId: string;
   paymentTransactionId: string | null;
   amountCents: number;
   status: string;
@@ -176,13 +178,19 @@ export interface CardRefundSlice {
    */
   exact: boolean;
   filledCents: number;
+  /**
+   * #4083/#4102: the Stripe refund that made this slice, on an attempt that met
+   * a refusal. Filled by exactly that recorded refund, whenever it was made.
+   */
+  madeRefundId?: string;
 }
 
 /**
  * The slices an operation still has to send, with nothing filled yet.
  *
  * - A frozen plan (#1097): each slice is replayed under its own Stripe key, so
- *   what the operation still owes is the plan's unsent slices.
+ *   what the operation still owes is the plan's unsent slices. A slice marked
+ *   made (`madeRefundId`) is filled by that refund alone (`attributeRecordedRefunds`).
  * - A superseded intent's refund (#3340): the whole of one transaction goes
  *   back, and the worker sends whatever that transaction still holds, up to the
  *   operation's amount (`processRefundSupersededPaymentOperation`). Any refund
@@ -210,9 +218,9 @@ function operationSlices(operation: CardRefundOperationRow): CardRefundSlice[] {
   return [{ paymentTransactionId: "", amountCents: operation.amountCents, exact: true, filledCents: 0 }];
 }
 
-/** Whether a slice takes this refund, of which `leftCents` is not yet placed. */
+/** Whether a slice takes this refund, of which `leftCents` is not yet placed. A marked slice takes only its own. */
 function sliceTakes(slice: CardRefundSlice, refund: RecordedCardRefundRow, leftCents: number): boolean {
-  if (slice.paymentTransactionId !== refund.paymentTransactionId) return false;
+  if (slice.madeRefundId || slice.paymentTransactionId !== refund.paymentTransactionId) return false;
   if (slice.filledCents >= slice.amountCents) return false;
   return slice.exact
     ? leftCents === refund.amountCents && refund.amountCents === slice.amountCents
@@ -274,12 +282,19 @@ function operationWindowTakes(operation: CardRefundOperationRow, refund: Recorde
  * slice's transaction, of exactly its amount, inside the operation's window
  * (`operationWindowTakes`: made by Stripe no earlier than it was raised and,
  * once it closed, no later than its close). A refund made BEFORE an operation
- * was raised is never its: every writer that raises one after a partial inline refund carries only
- * the remainder - the refund request's route enqueues the plan's unsent slices
- * (a recording failure included, since round 4: `refundPaymentTransactions`
- * wraps it in `PartialRefundError`), an edit's enqueues the amount less what
- * was recorded, and a cancellation persists its plan before its first Stripe
- * call. Each row fills at most one slice, and goes to the operation raised MOST
+ * was raised is never its: every writer that raises one after a partial
+ * inline refund carries only the remainder, or marks what was made - the
+ * refund request's route enqueues the slices its attempt did not make, refused
+ * ones on their next key, with each made one marked (#4102); an edit's
+ * enqueues the amount less what was made; and a cancellation persists its plan
+ * before its first Stripe call.
+ *
+ * A MARKED SLICE (`madeRefundId`, #4083, #4102) is filled first, by the
+ * recorded refund with exactly that Stripe id, whenever Stripe made it - the
+ * refund request's row is raised after its made slices - and that refund then
+ * leaves the pool, so it can fill nothing else (an older row's slice of the
+ * same transaction and amount included). A marked slice whose refund is not
+ * recorded as made stays unfilled, and owed. Each other row fills at most one slice, and goes to the operation raised MOST
  * RECENTLY before it with a slice it fits - so a later operation's own refund,
  * open or closed, is never taken as an older open one's progress. Every card
  * refund operation on the payment takes part, closed ones included, though only
@@ -317,8 +332,25 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
     .map((operation) => ({ operation, slices: operationSlices(operation) }))
     .sort((left, right) => left.operation.createdAt.getTime() - right.operation.createdAt.getTime());
   const lateCentsByOperation = new Map<string, number>();
-  const refunds = payment.refunds
-    .filter((refund) => refund.paymentTransactionId !== null && isRecordedRefundStatus(refund.status))
+  const recorded = payment.refunds.filter(
+    (refund) => refund.paymentTransactionId !== null && isRecordedRefundStatus(refund.status),
+  );
+  const claimed = new Set<RecordedCardRefundRow>();
+  for (const { operation, slices } of operations) {
+    for (const slice of slices) {
+      const refund = slice.madeRefundId
+        ? recorded.find((each) => each.stripeRefundId === slice.madeRefundId && !claimed.has(each))
+        : undefined;
+      if (!refund) continue;
+      claimed.add(refund);
+      slice.filledCents = Math.min(slice.amountCents, Math.max(0, refund.amountCents));
+      if (operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime()) {
+        lateCentsByOperation.set(operation.id, (lateCentsByOperation.get(operation.id) ?? 0) + slice.filledCents);
+      }
+    }
+  }
+  const refunds = recorded
+    .filter((refund) => !claimed.has(refund))
     .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
   for (const refund of refunds) {
     let leftCents = Math.max(0, refund.amountCents);

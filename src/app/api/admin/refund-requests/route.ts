@@ -4,6 +4,20 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT } from "@/lib/manual-refund-task-settlement-rules";
 import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
+import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
+import { openCardRefundOwedByOperation, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
+import { buildRefundRequestRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+
+/**
+ * #4117 (`INV-PAY-128`): what an approved appeal's card refund still owes - its
+ * recovery row's unmade part, read as "Refunds owed" reads it - so the screen
+ * shows what was refunded, not only what was approved.
+ */
+function appealCardRefundOwedCents(requestId: string, payment: CardRefundOwedPaymentRow): number {
+  const key = buildRefundRequestRefundRecoveryIdempotencyKey(requestId);
+  const operation = payment.recoveryOperations.find((each) => each.idempotencyKey === key);
+  return operation ? (openCardRefundOwedByOperation(payment).get(operation.id) ?? 0) : 0;
+}
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("PENDING"),
@@ -69,6 +83,8 @@ export async function GET(req: NextRequest) {
                 refundedAmountCents: true,
                 stripePaymentIntentId: true,
                 manualRefundTasks: OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT,
+                // #4117: read for `appealCardRefundOwedCents`, not returned.
+                ...netCollectedCardRefundSelect,
               },
             },
           },
@@ -94,10 +110,21 @@ export async function GET(req: NextRequest) {
   // still return - the approve route's own cap, read here unlocked as advice -
   // so the screen offers the figure the approval will accept.
   const data = await Promise.all(
-    requests.map(async (request) => {
-      const payment = request.booking.payment;
-      if (request.status !== "PENDING" || !payment) return request;
-      const organiserCard = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
+    requests.map(async (withOwed) => {
+      const fullPayment = withOwed.booking.payment;
+      let payment: Omit<NonNullable<typeof fullPayment>, "recoveryOperations" | "refunds"> | null = null;
+      if (fullPayment) {
+        const { recoveryOperations: _operations, refunds: _refunds, ...rest } = fullPayment;
+        payment = rest;
+      }
+      const request = {
+        ...withOwed,
+        cardRefundOwedCents:
+          withOwed.status === "APPROVED" && fullPayment ? appealCardRefundOwedCents(withOwed.id, fullPayment) : 0,
+        booking: { ...withOwed.booking, payment },
+      };
+      if (request.status !== "PENDING" || !fullPayment) return request;
+      const organiserCard = await organiserCardAppealCeilingFor(prisma, withOwed.booking, fullPayment);
       if (organiserCard === null) return request;
       return {
         ...request,

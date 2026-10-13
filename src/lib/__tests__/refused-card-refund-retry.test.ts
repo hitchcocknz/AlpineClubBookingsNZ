@@ -2,10 +2,12 @@
 // retry asks under a key Stripe has never seen. These are the pure rules: the
 // key spelling and its generations, which statuses are refusals, which plan
 // slices move, and that a persisted plan keeps the generation it was moved to.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const updateMany = vi.hoisted(() => vi.fn(async () => ({ count: 1 })));
 vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany } } }));
+const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
 
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import {
@@ -16,7 +18,16 @@ import {
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { lastErrorSuggestsStripeMayHaveRefunded } from "@/lib/card-refund-paid-another-way";
 import { PartialRefundError } from "@/lib/payment-transactions";
-import { inlineRefundNotMade, planAfterRefusals, refundPlanOrRetryRefusals, refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import {
+  firstRefusals,
+  inlineRefundAfterAttempt,
+  planAfterRefusals,
+  refundPlanOrRetryRefusals,
+  refusedRefundAlertMessage,
+  refusedRefundCents,
+  refusedRefundMessage,
+  refusedRefundSlices,
+} from "@/lib/refused-card-refund-retry";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 describe("a refund slice's Stripe key and its generations", () => {
@@ -100,39 +111,80 @@ describe("the plan after a refusal", () => {
   });
 });
 
-// #4102: a door that raises its row AFTER the inline attempt (an approved refund
-// request) queues only what the attempt did not make.
-describe("what an inline attempt did not make", () => {
+// #4102, #4117: a door that raises its row AFTER the inline attempt (an
+// approved refund request) queues the whole plan read: refused slices moved,
+// made ones marked with their refund, unanswered ones on their own key.
+describe("an inline attempt, read", () => {
   const a = { paymentTransactionId: "txn_a", amountCents: 1000 };
   const b = { paymentTransactionId: "txn_b", amountCents: 500 };
   const c = { paymentTransactionId: "txn_c", amountCents: 250 };
-  const answer = (slice: typeof a, status: string) => ({ status, slice });
+  const answer = (slice: typeof a, status: string) => ({
+    status,
+    slice,
+    refundId: `re_${slice.paymentTransactionId}`,
+    paymentIntentId: `pi_${slice.paymentTransactionId}`,
+  });
   const partial = (refunds: ReturnType<typeof answer>[], refusedSlices: Array<typeof a>) =>
-    new PartialRefundError({ completedRefundCents: 0, refunds: refunds.map((each) => ({ ...each, paymentIntentId: "pi", refundId: "re", amountCents: each.slice.amountCents })), refusedSlices, cause: new Error("boom"), format: CLUB_FORMAT_TEST });
+    new PartialRefundError({
+      completedRefundCents: 0,
+      refunds: refunds.map((each) => ({ ...each, amountCents: each.slice.amountCents })),
+      refusedSlices,
+      cause: new Error("boom"),
+      format: CLUB_FORMAT_TEST,
+    });
 
-  it("every slice answered: the refused ones on their next key, the made ones left out", () => {
-    expect(inlineRefundNotMade([a, b, c], { refunds: [answer(a, "succeeded"), answer(b, "failed"), answer(c, "pending")] })).toEqual({
-      plan: [{ ...b, stripeKeySuffix: "refused1" }],
-      refused: [b],
+  it("every slice answered: refused ones on their next key, made ones marked; only the refused part is unmade", () => {
+    expect(inlineRefundAfterAttempt([a, b, c], { refunds: [answer(a, "succeeded"), answer(b, "failed"), answer(c, "pending")] })).toEqual({
+      plan: [{ ...a, madeRefundId: "re_txn_a" }, { ...b, stripeKeySuffix: "refused1" }, { ...c, madeRefundId: "re_txn_c" }],
+      refused: [{ slice: b, paymentIntentId: "pi_txn_b" }],
+      unmadeCents: 500,
+      reachedStripe: true,
     });
   });
 
   it("a refusal before a throw: it moves; the slice that threw and the one never sent keep their keys", () => {
-    expect(inlineRefundNotMade([a, b, c], { error: partial([answer(a, "canceled")], [a]) })).toEqual({
+    expect(inlineRefundAfterAttempt([a, b, c], { error: partial([answer(a, "canceled")], [a]) })).toEqual({
       plan: [{ ...a, stripeKeySuffix: "refused1" }, b, c],
-      refused: [a],
+      refused: [{ slice: a, paymentIntentId: "pi_txn_a" }],
+      unmadeCents: 1750,
+      reachedStripe: true,
     });
   });
 
-  it("a made slice before a throw is left out, as before #4102", () => {
-    expect(inlineRefundNotMade([a, b, c], { error: partial([answer(a, "succeeded")], []) })).toEqual({ plan: [b, c], refused: [] });
+  it("a made slice before a throw is marked, never asked for again", () => {
+    expect(inlineRefundAfterAttempt([a, b, c], { error: partial([answer(a, "succeeded")], []) })).toMatchObject({
+      plan: [{ ...a, madeRefundId: "re_txn_a" }, b, c],
+      unmadeCents: 750,
+      reachedStripe: true,
+    });
   });
 
-  it("a throw before any Stripe call: the whole plan, as frozen, is unsent", () => {
+  it("the first slice threw: Stripe was asked, so it was reached, though nothing came back", () => {
+    expect(inlineRefundAfterAttempt([a, b], { error: partial([], []) })).toMatchObject({ plan: [a, b], unmadeCents: 1500, reachedStripe: true });
+  });
+
+  it("a throw before any Stripe call: the whole plan, as frozen, is unsent and Stripe was never reached", () => {
     const plan = [a, b];
-    const read = inlineRefundNotMade(plan, { error: new Error("payment not found") });
-    expect(read).toEqual({ plan, refused: [] });
+    const read = inlineRefundAfterAttempt(plan, { error: new Error("payment not found") });
+    expect(read).toEqual({ plan, refused: [], unmadeCents: 1500, reachedStripe: false });
     expect(read.plan).toBe(plan);
+  });
+});
+
+describe("which refusals the officers hear of (#4117)", () => {
+  it("a slice refused on the key it was first planned under, never one already moved", () => {
+    const first = { slice: { paymentTransactionId: "txn_a", amountCents: 1000 } };
+    const again = { slice: { paymentTransactionId: "txn_b", amountCents: 500, stripeKeySuffix: "refused1" } };
+    expect(firstRefusals([first, again])).toEqual([first]);
+  });
+
+  it("the state names the refused part, the alert adds that it will be retried", () => {
+    expect(refusedRefundMessage(500, CLUB_FORMAT_TEST)).toBe(
+      "Stripe refused $5.00 of this card refund (failed or cancelled), so that $5.00 did not go back and is still owed.",
+    );
+    expect(refusedRefundAlertMessage(500, CLUB_FORMAT_TEST)).toBe(
+      "Stripe refused $5.00 of this card refund (failed or cancelled), so that $5.00 did not go back and is still owed; it will be retried automatically.",
+    );
   });
 });
 
@@ -169,3 +221,38 @@ describe("the attempt's failure", () => {
     expect(lastErrorSuggestsStripeMayHaveRefunded(failure.message)).toBe(false);
   });
 });
+
+// #4117: the runner alerts once per refused slice - when a slice is first moved
+// off the key it was planned under - not once per row.
+describe("the runner's refusal alert", () => {
+  const held = { id: "op_1", bookingId: "b1", paymentIntentId: "pi_row", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") };
+  const moved = { paymentTransactionId: "txn_a", amountCents: 1000, stripeKeySuffix: "refused1" };
+  const ownKey = { paymentTransactionId: "txn_b", amountCents: 500 };
+  const refusedAnswer = (slice: typeof ownKey & { stripeKeySuffix?: string }, intent: string) => ({ status: "failed", slice, refundId: `re_${slice.paymentTransactionId}`, paymentIntentId: intent });
+
+  beforeEach(() => alertPaymentRecoveryOfficers.mockClear());
+
+  it("a slice queued on its own key and refused later is alerted, with its own intent, though the row already left its first keys", async () => {
+    await refundPlanOrRetryRefusals({
+      operation: held,
+      plan: [moved, ownKey],
+      format: CLUB_FORMAT_TEST,
+      refund: async () => ({ refunds: [refusedAnswer(moved, "pi_a"), refusedAnswer(ownKey, "pi_b")] }),
+    }).catch(() => undefined);
+
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 500, paymentIntentId: "pi_b" }), CLUB_FORMAT_TEST);
+  });
+
+  it("a slice refused again on the key it was moved to is not alerted twice", async () => {
+    await refundPlanOrRetryRefusals({
+      operation: held,
+      plan: [moved],
+      format: CLUB_FORMAT_TEST,
+      refund: async () => ({ refunds: [refusedAnswer(moved, "pi_a")] }),
+    }).catch(() => undefined);
+
+    expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+  });
+});
+

@@ -29,12 +29,8 @@ import {
   planStripeRefundAllocation,
   refundPaymentTransactions,
 } from "@/lib/payment-transactions";
-import {
-  alertRefusedCardRefund,
-  inlineRefundNotMade,
-  refusedRefundCents,
-} from "@/lib/refused-card-refund-retry";
-import { enqueueRefundRequestRefundRecovery } from "@/lib/payment-recovery";
+import { inlineRefundAfterAttempt } from "@/lib/refused-card-refund-retry";
+import { queueUnmadeRefundRequestCardRefund } from "@/lib/refund-request-card-refund";
 import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatStayDate } from "@/lib/club-time";
@@ -110,6 +106,9 @@ export async function PUT(
   const booking = refundRequest.booking;
   const payment = booking.payment;
 
+  // #4117: what the approval's card refund still owes, and whether it is queued for retry.
+  let cardRefundOwedCents = 0;
+  let cardRefundQueued = true;
   if (status === "APPROVED") {
     if (!approvedAmountCents || approvedAmountCents <= 0) {
       return NextResponse.json(
@@ -385,7 +384,7 @@ export async function PUT(
     }
 
     if (!organiserChildDebtId) {
-      let attempt: Parameters<typeof inlineRefundNotMade>[1];
+      let attempt: Parameters<typeof inlineRefundAfterAttempt>[1];
       try {
         attempt = await refundPaymentTransactions({
           format: money.format,
@@ -414,75 +413,59 @@ export async function PUT(
         );
         attempt = { error: err };
       }
-      // Persist the frozen slices the inline attempt did NOT make (#1510; #3924
-      // F1): the cron replays their keys, Refunds owed reads only them. #4102
-      // (`INV-PAY-128`): a slice Stripe refused, thrown past or not, is among
-      // them, on its next key; one that threw or was never sent keeps its key.
-      const { plan: notMadePlan, refused } = inlineRefundNotMade(refundPlan, attempt);
-      const refusedCents = refusedRefundCents(refused);
-      if (refusedCents > 0) {
-        logger.error({ refundRequestId: id, refusedCents }, "Stripe refused part of an approved appeal's card refund - enqueueing durable recovery");
-      }
-      // The officers hear of a refusal once: when this approval wrote the row,
-      // or when no row could be written, as then the alert is its only record.
-      const alertRefusal = async (paymentIntentId: string) => {
-        if (refusedCents > 0) await alertRefusedCardRefund({ bookingId: booking.id, paymentIntentId, refusedCents }, money.format);
-      };
-      const notMadeCents = notMadePlan.reduce((sum, slice) => sum + slice.amountCents, 0);
-      if (notMadeCents > 0) {
-        let queued: Awaited<ReturnType<typeof enqueueRefundRequestRefundRecovery>>;
-        try {
-          queued = await enqueueRefundRequestRefundRecovery({
-            bookingId: booking.id,
-            paymentId: payment.id,
-            refundRequestId: id,
-            amountCents: notMadeCents,
-            allocationPlan: notMadePlan,
-          });
-        } catch (enqueueErr) {
-          // No durable row could be written: fall back to the pre-#1039
-          // behaviour and release the claim so an admin can retry manually.
-          logger.error(
-            { err: enqueueErr, refundRequestId: id },
-            "Failed to enqueue refund recovery - releasing the claim for manual retry"
-          );
-          await alertRefusal(payment.stripePaymentIntentId ?? "");
-          // #3827 (D-3813-7): the bank-transfer task this approval raised goes
-          // with the claim, in one transaction under the same lock, or a retried
-          // approval would find its key taken and its cash already netted.
-          await prisma
-            .$transaction(async (tx) => {
-              await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-              const released = await tx.refundRequest.updateMany({
-                where: { id, status: "APPROVED" },
-                data: {
-                  status: "PENDING",
-                  approvedAmountCents: null,
-                  reviewedBy: null,
-                  reviewedAt: null,
+      // Persist the frozen plan with what the inline attempt did NOT make still
+      // to send (#1510; #3924 F1): the cron replays those keys. #4102, #4117
+      // (`INV-PAY-128`): a slice Stripe refused is among them on its next key;
+      // one that threw or was never sent keeps its key; a made one is marked.
+      const read = inlineRefundAfterAttempt(refundPlan, attempt);
+      cardRefundOwedCents = read.unmadeCents;
+      const outcome = await queueUnmadeRefundRequestCardRefund({
+        bookingId: booking.id,
+        paymentId: payment.id,
+        refundRequestId: id,
+        read,
+        paymentIntentIdFallback: payment.stripePaymentIntentId ?? "",
+        format: money.format,
+      });
+      cardRefundQueued = outcome !== "not_queued";
+      if (outcome === "release_claim") {
+        // No durable row could be written and Stripe was never asked: fall
+        // back to the pre-#1039 behaviour and release the claim so an admin
+        // can retry manually.
+        // #3827 (D-3813-7): the bank-transfer task this approval raised goes
+        // with the claim, in one transaction under the same lock, or a retried
+        // approval would find its key taken and its cash already netted.
+        await prisma
+          .$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+            const released = await tx.refundRequest.updateMany({
+              where: { id, status: "APPROVED" },
+              data: {
+                status: "PENDING",
+                approvedAmountCents: null,
+                reviewedBy: null,
+                reviewedAt: null,
+              },
+            });
+            if (released.count === 1) {
+              await tx.manualRefundTask.deleteMany({
+                where: {
+                  occurrenceKey: refundRequestHandBackOccurrenceKey(id),
+                  status: "OPEN",
                 },
               });
-              if (released.count === 1) {
-                await tx.manualRefundTask.deleteMany({
-                  where: {
-                    occurrenceKey: refundRequestHandBackOccurrenceKey(id),
-                    status: "OPEN",
-                  },
-                });
-              }
-            })
-            .catch((revertErr) => {
-              logger.error(
-                { err: revertErr, refundRequestId: id },
-                "Failed to revert refund request claim after Stripe refund failure"
-              );
-            });
-          return NextResponse.json(
-            { error: "Failed to process Stripe refund" },
-            { status: 500 }
-          );
-        }
-        if (queued.created) await alertRefusal(queued.paymentIntentId);
+            }
+          })
+          .catch((revertErr) => {
+            logger.error(
+              { err: revertErr, refundRequestId: id },
+              "Failed to revert refund request claim after Stripe refund failure"
+            );
+          });
+        return NextResponse.json(
+          { error: "Failed to process Stripe refund" },
+          { status: 500 }
+        );
       }
     }
 
@@ -744,5 +727,5 @@ export async function PUT(
     },
   });
 
-  return NextResponse.json(updated);
+  return NextResponse.json({ ...updated, cardRefundOwedCents, cardRefundQueued });
 }

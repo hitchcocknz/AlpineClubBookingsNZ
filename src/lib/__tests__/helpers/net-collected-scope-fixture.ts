@@ -330,6 +330,7 @@ type ReconciliationRow = FixtureRow & {
   memberId: string;
   recoveryOperations: ReadonlyArray<CardRefundOperationFixture>;
   refunds: ReadonlyArray<{
+    stripeRefundId: string;
     paymentTransactionId: string | null;
     amountCents: number;
     status: string;
@@ -428,9 +429,9 @@ export const OWED_RECONCILIATION_PAYMENTS: ReadonlyArray<ReconciliationRow> = [
     ],
     refunds: [
       // Before the cancel: not this operation's.
-      { paymentTransactionId: "txn-a", amountCents: 2_000, status: "succeeded", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+      { stripeRefundId: "re-before-cancel", paymentTransactionId: "txn-a", amountCents: 2_000, status: "succeeded", createdAt: new Date("2026-06-01T00:00:00.000Z") },
       // The operation's first slice, recorded before it closed.
-      { paymentTransactionId: "txn-b", amountCents: 10_000, status: "succeeded", createdAt: new Date("2026-06-21T00:00:05.000Z") },
+      { stripeRefundId: "re-first-slice", paymentTransactionId: "txn-b", amountCents: 10_000, status: "succeeded", createdAt: new Date("2026-06-21T00:00:05.000Z") },
     ],
   },
   {
