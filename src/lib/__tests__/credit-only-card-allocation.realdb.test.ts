@@ -26,6 +26,8 @@ import type { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+import { ENVIRONMENT_ROLE_ENV_VAR } from "@/lib/environment-role-declaration";
+import type { SuiteEnvironmentRoleDeclaration } from "./helpers/environment-role";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
@@ -39,8 +41,17 @@ const LEAVING_GUEST_ID = "race-3836-guest-leaves";
 const PAYMENT_ID = "race-3836-payment";
 const XERO_INVOICE_ID = "race-3836-xero-invoice";
 const CREDIT_NOTE_ID = "race-3836-credit-note";
+/** The earlier cancellation's credit: the lot whose floating note the engine allocates. */
+const ORIGINAL_LOT_ID = "race-3836-lot-original";
 
 const TODAY = new Date("2026-07-01T00:00:00.000Z");
+/**
+ * #4013: when the earlier cancellation's credit was written. It is stated, not
+ * left to the frozen clock: every row the cancel writes is stamped TODAY, so a
+ * lot the fixture also stamped TODAY tied with them, and which one the engine
+ * used first was PostgreSQL's choice (`INV-PAY-127`).
+ */
+const EARLIER_CANCELLATION_AT = new Date("2026-06-01T00:00:00.000Z");
 const NIGHTS = [new Date("2026-08-01T00:00:00.000Z"), new Date("2026-08-02T00:00:00.000Z")];
 const CHECK_IN = NIGHTS[0]!;
 const CHECK_OUT = new Date("2026-08-03T00:00:00.000Z");
@@ -147,6 +158,15 @@ let ledger: typeof import("@/lib/booking-ledger-balance");
 let lockHolderClient: PrismaClient;
 let observerClient: PrismaClient;
 
+/**
+ * #4013: the harness says what installation it is, as a deployment must
+ * (`INV-CONFIG-003`): a disposable copy, so `non-production`, one of the only
+ * two values the declaration accepts. It is declared for this describe alone and
+ * put back after it, and the describe that follows fails if it was not, so no
+ * suite the shared harness runs later inherits it. Unset until declared.
+ */
+let harnessRole: SuiteEnvironmentRoleDeclaration | undefined;
+
 (RUN ? describe : describe.skip)(
   "#3836: a card-path booking paid entirely by credit has its credit allocated against its invoice - real PostgreSQL",
   { timeout: 60_000 },
@@ -179,7 +199,7 @@ let observerClient: PrismaClient;
      * booking confirmed at $0 by $200 of credit (a cancellation's floating note
      * in Xero), its full-price invoice raised, its credit not yet allocated.
      */
-    async function creditOnlyCardBooking({ cardCents = 0, source = "STRIPE" as "STRIPE" | "INTERNET_BANKING" } = {}) {
+    async function creditOnlyCardBooking({ cardCents = 0, source = "STRIPE" as "STRIPE" | "INTERNET_BANKING", originalLotAt = EARLIER_CANCELLATION_AT } = {}) {
       const creditCents = PRICE_CENTS - cardCents;
       await deleteFixtures();
       await prisma.member.create({
@@ -222,8 +242,13 @@ let observerClient: PrismaClient;
             : { paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: "race-3836-pi", amountCents: cardCents, status: "SUCCEEDED" },
         });
       }
+      // An EARLIER cancellation's credit, so it is older than anything the
+      // test's own cancel writes (#4013).
       await prisma.memberCredit.create({
-        data: { memberId: MEMBER_ID, amountCents: creditCents, type: "CANCELLATION_REFUND", description: "race 3836 earlier cancellation", xeroCreditNoteId: CREDIT_NOTE_ID },
+        data: {
+          id: ORIGINAL_LOT_ID, memberId: MEMBER_ID, amountCents: creditCents, type: "CANCELLATION_REFUND", description: "race 3836 earlier cancellation",
+          xeroCreditNoteId: CREDIT_NOTE_ID, createdAt: originalLotAt,
+        },
       });
       await prisma.$transaction((tx) => credit.applyCreditToBooking(MEMBER_ID, creditCents, BOOKING_ID, tx, CLUB_FORMAT_TEST));
 
@@ -260,6 +285,29 @@ let observerClient: PrismaClient;
     async function notelessRestoredCents() {
       const rows = await prisma.memberCredit.aggregate({ where: { memberId: MEMBER_ID, restoredFromBookingId: BOOKING_ID, xeroCreditNoteId: null }, _sum: { amountCents: true } });
       return rows._sum.amountCents ?? 0;
+    }
+
+    /**
+     * #4013: the remainder mint's first step past its own link check is the
+     * member's Xero contact, and nothing else in the engine asks for one. This
+     * turns that step into a refusal naming the path, so a run that reaches
+     * `mintAppliedCreditRemainderNote` fails saying so - not in the contact
+     * guard's environment check, which is where H1 used to fail - and the spy
+     * records that it did. Restore it in a `finally`.
+     */
+    async function refuseRemainderMint() {
+      const contacts = await import("@/lib/xero-contacts");
+      return vi.spyOn(contacts, "findOrCreateXeroContact").mockRejectedValue(
+        new Error("#4013: the allocation engine entered the remainder-note path (mintAppliedCreditRemainderNote)"),
+      );
+    }
+    /** Any trace of a remainder note for the payment: its link or its sync operation. */
+    async function remainderNoteRecords() {
+      const [links, operations] = await Promise.all([
+        prisma.xeroObjectLink.count({ where: { localModel: "Payment", localId: PAYMENT_ID, role: "APPLIED_CREDIT_REMAINDER_NOTE" } }),
+        prisma.xeroSyncOperation.count({ where: { localModel: "Payment", localId: PAYMENT_ID, idempotencyKey: { contains: "applied-credit-remainder-note" } } }),
+      ]);
+      return links + operations;
     }
 
     async function raiseReplay() {
@@ -313,6 +361,10 @@ let observerClient: PrismaClient;
       assertSafeRaceDbUrl(RACE_DB_URL);
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
+      // Imported here, not at the top: it reaches `@/lib/prisma`, which must
+      // first see the race database's URL.
+      const { declareEnvironmentRoleForSuite } = await import("./helpers/environment-role");
+      harnessRole = declareEnvironmentRoleForSuite("non-production");
       credit = await import("@/lib/member-credit");
       ledger = await import("@/lib/booking-ledger-balance");
       const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
@@ -336,13 +388,17 @@ let observerClient: PrismaClient;
 
     afterAll(async () => {
       fakeXero.state.on = false;
-      await Promise.all([lockHolderClient, observerClient].map((client) => (client ? client.$disconnect().catch(() => {}) : Promise.resolve())));
-      if (typeof prisma !== "undefined") {
-        try {
-          await deleteFixtures();
-        } finally {
-          await prisma.$disconnect().catch(() => {});
+      try {
+        await Promise.all([lockHolderClient, observerClient].map((client) => (client ? client.$disconnect().catch(() => {}) : Promise.resolve())));
+        if (typeof prisma !== "undefined") {
+          try {
+            await deleteFixtures();
+          } finally {
+            await prisma.$disconnect().catch(() => {});
+          }
         }
+      } finally {
+        harnessRole?.restore();
       }
     });
 
@@ -651,13 +707,48 @@ let observerClient: PrismaClient;
       await cancel("credit");
       expect(await clearingNoteQueued()).toBe(false);
 
+      // #4013: the cancel left three $50-or-more lots - the earlier note, its
+      // noteless restore and the $150 cash turned to credit. The $50 applied is
+      // the earlier lot's note, allocated: the engine never reaches the
+      // remainder mint, which this fake cannot serve and which would mint a
+      // second note for credit Xero already holds.
+      const remainderMint = await refuseRemainderMint();
       await prisma.xeroSyncOperation.update({ where: { id: queued.queueOperationId! }, data: { status: "RUNNING" } });
       const { allocateAppliedCreditForBooking } = await import("@/lib/xero-applied-credit-allocation");
-      await allocateAppliedCreditForBooking(BOOKING_ID, { syncOperationId: queued.queueOperationId! });
+      try {
+        await allocateAppliedCreditForBooking(BOOKING_ID, { syncOperationId: queued.queueOperationId! });
+      } finally {
+        remainderMint.mockRestore();
+      }
+      expect(remainderMint, "the remainder-note path (mintAppliedCreditRemainderNote) was not entered").not.toHaveBeenCalled();
+      expect(await remainderNoteRecords(), "no remainder note was minted or attempted").toBe(0);
+      const slices = await prisma.memberCreditNoteAllocation.findMany({ where: { appliedToBookingId: BOOKING_ID }, select: { memberCreditId: true, xeroCreditNoteId: true, amountCents: true } });
+      expect(slices).toEqual([{ memberCreditId: ORIGINAL_LOT_ID, xeroCreditNoteId: CREDIT_NOTE_ID, amountCents: 5_000 }]);
 
       // $150 of cash and the $50 note pay the $200 invoice: nothing owing, nothing over.
       expect(allocatedCents()).toBe(5_000);
       expect(PRICE_CENTS - 15_000 - allocatedCents()).toBe(0);
+    });
+
+    it.each([
+      { shape: "the lower id written second", tiedLotId: "race-3836-lot-0-tied", usedLotId: "race-3836-lot-0-tied" },
+      { shape: "the lower id written first", tiedLotId: "race-3836-lot-z-tied", usedLotId: ORIGINAL_LOT_ID },
+    ])("#4013 (`INV-PAY-127`): of two noted lots stamped with the same instant, the engine uses the lower id first, $shape", async ({ tiedLotId, usedLotId }) => {
+      // Both lots hold the whole $200 and carry a floating note, so either could
+      // fund it alone: which one the slice draws from is the use order and
+      // nothing else. The fixture's lot is written first; this one second.
+      await creditOnlyCardBooking({ originalLotAt: TODAY });
+      const tiedNoteId = "race-3836-credit-note-tied";
+      await prisma.memberCredit.create({
+        data: { id: tiedLotId, memberId: MEMBER_ID, amountCents: PRICE_CENTS, type: "CANCELLATION_REFUND", description: "race 3836 tied cancellation", xeroCreditNoteId: tiedNoteId, createdAt: TODAY },
+      });
+      fakeXero.state.notes.set(tiedNoteId, { totalCents: PRICE_CENTS, allocations: [] });
+
+      await raiseReplay();
+
+      const slices = await prisma.memberCreditNoteAllocation.findMany({ where: { appliedToBookingId: BOOKING_ID }, select: { memberCreditId: true, amountCents: true } });
+      expect(slices).toEqual([{ memberCreditId: usedLotId, amountCents: PRICE_CENTS }]);
+      expect(allocatedCents()).toBe(PRICE_CENTS);
     });
 
     it("FORCES the lock order and keeps the provider outside it: the engine queues on the member's credit-ledger key holding no row lock, and no ledger key is held during a Xero write", async () => {
@@ -714,6 +805,16 @@ let observerClient: PrismaClient;
     }
   },
 );
+
+// #4013: runs after the describe above has finished, its `afterAll` included,
+// so a declaration that outlived it fails here rather than silently arming
+// whichever suite the shared harness runs next.
+(RUN ? describe : describe.skip)("#4013: the #3836 harness puts the environment role back", () => {
+  it("leaves APP_ENVIRONMENT_ROLE as it found it, so no later suite inherits the harness's declaration", () => {
+    expect(harnessRole, "the harness declared its environment role").toBeDefined();
+    expect(process.env[ENVIRONMENT_ROLE_ENV_VAR]).toBe(harnessRole!.before);
+  });
+});
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
