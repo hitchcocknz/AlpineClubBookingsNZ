@@ -666,7 +666,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       recipientMemberId: reprice.owner.memberId,
       email: reprice.owner.email,
       firstName: reprice.owner.firstName,
-      modificationType: "PROMO_REPRICE",
+      modificationType: "PROMO_REPRICE", addedGuests: [], // #4030: an acceptance re-price adds nobody
       oldCheckIn: reprice.checkIn,
       oldCheckOut: reprice.checkOut,
       newCheckIn: reprice.checkIn,

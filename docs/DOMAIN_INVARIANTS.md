@@ -529,6 +529,7 @@ File:
 | `INV-REQ-008` | A correction re-opens the request; an accepted quote refuses it outright |
 | `INV-REQ-009` | A corrected school name is stored only against the confirmed record |
 | `INV-REQ-010` | A corrected request never keeps beds held for its old shape |
+| `INV-REQ-011` | A request names a structured change; officers enter guests atomically |
 
 ### Subscription-lockout pricing, admin date overrides and member-facing email
 

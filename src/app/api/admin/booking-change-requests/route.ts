@@ -5,6 +5,9 @@ import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
 import { isFinishedStay } from "@/lib/booking-edit-policy";
+import { storedRequestNamesNoChange } from "@/lib/booking-change-request-stored";
+import { hasAdminAreaAccess } from "@/lib/admin-permissions";
+import { loadMemberGuestFindGate } from "@/lib/member-guest-find-service";
 
 const querySchema = z.object({
   status: z.enum(["REQUESTED", "APPROVED", "REJECTED", "ALL"]).optional().default("REQUESTED"),
@@ -66,6 +69,9 @@ export async function GET(req: NextRequest) {
             },
             // #3369: the owner may be an Organisation; bookingOwner() reads both.
             organisation: { select: { name: true, email: true } },
+            // #4030: the member ids already on the booking, and nothing else
+            // about its guests, so the officer's member finder disables them.
+            guests: { where: { memberId: { not: null } }, select: { memberId: true } },
             payment: {
               select: {
                 id: true,
@@ -90,10 +96,39 @@ export async function GET(req: NextRequest) {
   // finished — answered here from the same `isFinishedStay` the decision route
   // asks, so the panel's wording and the route's behaviour cannot disagree.
   const today = await clubTodayDateOnlyInstant();
-  const data = requests.map((request) => ({
-    ...request,
-    executesOnApproval: isFinishedStay(request.booking, today),
-  }));
+  const data = requests.map(({ booking: { guests, ...booking }, ...request }) => {
+    const executesOnApproval = isFinishedStay(booking, today);
+    // #4030 Part B: a pending request on a finished stay that names no change
+    // (a member's free-text note) — the officer may enter the guests it
+    // describes. Asked through the executor's own mapping, so the card never
+    // offers an entry the approval would refuse.
+    const acceptsOfficerGuests =
+      executesOnApproval &&
+      request.status === "REQUESTED" &&
+      storedRequestNamesNoChange(request.requestedChanges, booking);
+    return {
+      ...request,
+      // #4030 review S7: the guests' member ids reach the screen only where
+      // the officer's finder uses them.
+      booking: acceptsOfficerGuests ? { ...booking, guests } : booking,
+      executesOnApproval,
+      acceptsOfficerGuests,
+    };
+  });
 
-  return NextResponse.json({ data, page, pageSize, total });
+  // #4030 Part B: the officer's member-guest finder, when the club's module is
+  // on — email lookup for any officer, name search only with the membership
+  // directory, exactly the gates the admin finder route itself applies.
+  const memberGuestFind = data.some((request) => request.acceptsOfficerGuests)
+    ? (await loadMemberGuestFindGate({ requiresOpenSearch: false })).ok
+      ? {
+          openSearchEnabled: hasAdminAreaAccess(guard.session.user, {
+            area: "membership",
+            level: "view",
+          }),
+        }
+      : null
+    : null;
+
+  return NextResponse.json({ data, page, pageSize, total, memberGuestFind });
 }

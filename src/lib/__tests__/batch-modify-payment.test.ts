@@ -886,6 +886,11 @@ describe("PUT /api/bookings/[id]/modify", () => {
     expect(result.stripeRefundId).toBeNull();
     // The deferred thunk runs the post-commit work (idempotent, returns void).
     await expect(result.deferredPostCommit!()).resolves.toBeUndefined();
+    // #4030: a member's own edit that adds a guest names them in the change email.
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+      expect.objectContaining({ firstName: "New", lastName: "Guest" }),
+    ]);
   }, 10_000);
 
   /**
@@ -1086,6 +1091,76 @@ describe("PUT /api/bookings/[id]/modify", () => {
         },
       }),
     );
+
+    // #4030: an officer's edit (the path a finished-stay approval runs) names the
+    // added guest in the change email, with their own nights since they stay
+    // only part of the booking.
+    await result.deferredPostCommit?.();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+      expect.objectContaining({
+        firstName: "Sparse",
+        lastName: "Guest",
+        stayStart: sparseNight,
+        stayEnd: new Date("2026-08-22T00:00:00.000Z"),
+      }),
+    ]);
+  }, 10_000);
+
+  it("#4030 review M6: the change email names an added guest with the nights actually priced", async () => {
+    const booking = withSoldNightProvenance(makeBooking());
+    const tx = makeTx(booking);
+    const pricedNight = new Date("2026-08-21T00:00:00.000Z");
+    // The engine prices the added guest for one night of the two asked for, so
+    // the row is rewritten to that night's envelope after it is created.
+    mockCalculateBookingPrice.mockImplementation(
+      ((_checkIn: unknown, _checkOut: unknown, guests: unknown[]) => ({
+        totalPriceCents: 8000,
+        guests: guests.map((_guest, index) =>
+          index === 0
+            ? {
+                priceCents: 5000,
+                perNightCents: [2500, 2500],
+                nightDates: [
+                  new Date("2026-08-20T00:00:00.000Z"),
+                  new Date("2026-08-21T00:00:00.000Z"),
+                ],
+              }
+            : { priceCents: 3000, perNightCents: [3000], nightDates: [pricedNight] },
+        ),
+      })) as never,
+    );
+    const { modifyBookingBatch } = await import("@/lib/booking-batch-modification-service");
+    const result = await modifyBookingBatch({
+      format: CLUB_FORMAT_TEST,
+      todayAtClub: FIXTURE_CLUB_DAY,
+      bookingId: "bk1",
+      actor: { id: "officer-1", role: "ADMIN" },
+      input: {
+        addGuests: [
+          {
+            firstName: "Late",
+            lastName: "Arrival",
+            ageTier: "ADULT",
+            isMember: false,
+            stayStart: "2026-08-20",
+            stayEnd: "2026-08-22",
+          },
+        ],
+      },
+      ipAddress: "127.0.0.1",
+      tx: tx as never,
+      preTransaction: TX_MODE_PRE_TRANSACTION,
+    });
+    await result.deferredPostCommit?.();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+      expect.objectContaining({
+        firstName: "Late",
+        stayStart: pricedNight,
+        stayEnd: new Date("2026-08-22T00:00:00.000Z"),
+      }),
+    ]);
   }, 10_000);
 
   it("allows identity-only edits on a quote-priced booking without repricing (#1099)", async () => {
@@ -3457,6 +3532,16 @@ describe("PUT /api/bookings/[id]/modify", () => {
           priceCents: 6000,
         }),
       });
+      // #4030: the change email names the in-progress add with the nights priced.
+      const { sendBookingModifiedEmail } = await import("@/lib/email");
+      await vi.waitFor(() => expect(vi.mocked(sendBookingModifiedEmail)).toHaveBeenCalled());
+      expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+        expect.objectContaining({
+          firstName: "Bob",
+          stayStart: new Date("2026-08-22T00:00:00.000Z"),
+          stayEnd: new Date("2026-08-24T00:00:00.000Z"),
+        }),
+      ]);
 
       await Promise.resolve();
       expect(mockEnqueueXeroSupplementaryInvoiceOperation).toHaveBeenCalledWith(

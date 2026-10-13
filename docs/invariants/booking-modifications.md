@@ -729,7 +729,8 @@ guests, valued net of promotion — is charged the same-day (0-day) tier's
 retention as its change fee, paid or unpaid (on an unpaid stay it is added to
 what is owed, `INV-PAY-119`), never netted against what is added; nights it
 adds are charged normally, and the ordinary late-change fee does not apply.
-Member self-service on a finished stay stays refused.
+Member self-service on a finished stay stays refused. Officer-entered guests
+(`INV-REQ-011`) are applied the same way.
 
 ## INV-MOD-025
 

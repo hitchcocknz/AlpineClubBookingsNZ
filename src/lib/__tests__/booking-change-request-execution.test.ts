@@ -53,8 +53,8 @@ import {
   LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE,
   LOCKED_PERIOD_REQUEST_NOTHING_TO_APPLY_MESSAGE,
   LOCKED_PERIOD_REQUEST_UNREADABLE_MESSAGE,
-  lockedPeriodRequestToBatchInput,
 } from "@/lib/booking-change-request-execution";
+import { lockedPeriodRequestToBatchInput } from "@/lib/booking-change-request-stored";
 import type { BatchModificationPreTransaction } from "@/lib/booking-batch-modification-service";
 
 const TODAY = requireCalendarDate("2026-07-01");
@@ -131,8 +131,24 @@ const finishedBooking = {
   payment: { amountCents: 12_000, creditAppliedCents: 0 },
 };
 
-function run(overrides: Partial<Parameters<typeof approveAndExecuteLockedPeriodChangeRequest>[0]> = {}) {
+type RunParams = Parameters<typeof approveAndExecuteLockedPeriodChangeRequest>[0];
+/** The figures the mocked edit produces: what the officer's check would have shown. */
+const CHECKED_FIGURES = { additionalAmountCents: 4_500, refundAmountCents: 0, accountCreditAmountCents: 0 };
+
+/**
+ * An approval carries the figures it was shown (#4030 re-review of 72c933ffc:
+ * the executor's type requires them), so `run()` defaults them to the mocked
+ * edit's own; `run({ dryRun: true })` sends none.
+ */
+function run(
+  overrides: Partial<Omit<RunParams, "dryRun" | "expectedFigures">> & {
+    dryRun?: true;
+    expectedFigures?: RunParams["expectedFigures"];
+  } = {},
+) {
+  const { dryRun, expectedFigures, ...rest } = overrides;
   return approveAndExecuteLockedPeriodChangeRequest({
+    ...(dryRun ? { dryRun } : { expectedFigures: expectedFigures ?? CHECKED_FIGURES }),
     requestId: "cr-1",
     expectedVersion: 3,
     actorMemberId: "officer-1",
@@ -144,7 +160,7 @@ function run(overrides: Partial<Parameters<typeof approveAndExecuteLockedPeriodC
     preTransaction: PRE_TRANSACTION,
     ipAddress: "127.0.0.1",
     db,
-    ...overrides,
+    ...rest,
   });
 }
 
@@ -321,6 +337,48 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     });
     expect(await run()).toEqual({ outcome: "notFound" });
     expect(mocks.calls).not.toContain("global-lock");
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("a row stored before guest ranges were recorded keeps the dates-and-ids drift check (round 7, F1)", async () => {
+    // The stored original names no ranges, so a guest's live nights are not
+    // compared: this row behaves exactly as it did before ranges were stored.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        { id: "g2", stayStart: new Date("2026-06-11T00:00:00.000Z"), stayEnd: new Date("2026-06-12T00:00:00.000Z") },
+        { id: "g1", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-14T00:00:00.000Z") },
+      ],
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+  });
+
+  it("keeps the request pending when a guest's stored range has moved since the request (round 7, F1)", async () => {
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        { id: "g2", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-12T00:00:00.000Z") },
+        { id: "g1", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-14T00:00:00.000Z") },
+      ],
+    });
+    expect(await run()).toEqual({ outcome: "keptPending", message: LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
     expect(mocks.updateMany).not.toHaveBeenCalled();
   });
 
