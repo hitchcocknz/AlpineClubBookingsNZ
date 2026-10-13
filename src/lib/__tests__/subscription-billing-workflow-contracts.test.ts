@@ -18,7 +18,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     environmentSafetySettings: { findUnique: vi.fn().mockResolvedValue(null) },
-    membershipSubscriptionCharge: { findUnique: mocks.chargeFind, update: mocks.chargeUpdate },
+    // #4098: the already-paid conflict write is a status-guarded updateMany.
+    membershipSubscriptionCharge: { findUnique: mocks.chargeFind, update: mocks.chargeUpdate, updateMany: mocks.chargeUpdate },
     memberSubscription: { updateMany: mocks.memberSubscriptionUpdateMany },
     xeroObjectLink: { upsert: mocks.linkUpsert },
     $transaction: mocks.transaction,
@@ -257,6 +258,10 @@ describe("subscription invoice delivery behavior", () => {
     }));
     expect(mocks.complete).toHaveBeenCalledWith("op-1", expect.objectContaining({
       responsePayload: expect.objectContaining({ conflict: "SUBSCRIPTION_ALREADY_PAID", manuallyMarkedPaid: true }),
+    }));
+    // #4098: the write cannot reopen a charge an officer closed meanwhile.
+    expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "charge-1", status: { notIn: ["NOT_REQUIRED", "VOIDED"] } },
     }));
     // #4098: the message names the two real choices, not a "resolve" action
     // that never existed.

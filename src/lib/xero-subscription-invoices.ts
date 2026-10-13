@@ -279,8 +279,10 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
   if (!charge.xeroInvoiceId) {
     const alreadyPaid = charge.coverage.filter((row) => row.subscription.status === "PAID");
     if (alreadyPaid.length > 0) {
-      await prisma.membershipSubscriptionCharge.update({
-        where: { id: charge.id },
+      // #4098: status-guarded, so an officer's close landing after the read
+      // above is not overwritten back into a conflict.
+      await prisma.membershipSubscriptionCharge.updateMany({
+        where: { id: charge.id, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } },
         data: {
           status: "CONFLICT",
           lastErrorCode: SUBSCRIPTION_ALREADY_PAID_CODE,
