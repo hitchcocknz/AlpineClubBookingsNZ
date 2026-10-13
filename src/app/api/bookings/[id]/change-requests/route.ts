@@ -31,6 +31,7 @@ import {
   changeRequestAddGuestsSchema,
   namesStayRangeChange,
   guestStayRangesRefusal,
+  requestedDatesIgnoredByNightsRefusal,
   CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
 } from "@/lib/booking-change-request-guests";
 import {
@@ -271,7 +272,15 @@ export async function POST(
   // the existing guests' ranges, by the one canonical range rule.
   const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
   const nightsRefusal =
-    addedGuestNightsRefusal(addGuests ?? [], stay) ?? guestStayRangesRefusal(guestStayRanges ?? [], stay);
+    addedGuestNightsRefusal(addGuests ?? [], stay) ??
+    guestStayRangesRefusal(guestStayRanges ?? [], stay) ??
+    requestedDatesIgnoredByNightsRefusal({
+      booking,
+      guests: booking.guests,
+      input: { checkIn: requestedCheckIn, checkOut: requestedCheckOut, addGuests, removeGuestIds, guestStayRanges },
+      movesCheckIn: Boolean(changedDate(checkIn, booking.checkIn)),
+      movesCheckOut: Boolean(changedDate(checkOut, booking.checkOut)),
+    });
   if (nightsRefusal) {
     return NextResponse.json({ error: nightsRefusal }, { status: 400 });
   }

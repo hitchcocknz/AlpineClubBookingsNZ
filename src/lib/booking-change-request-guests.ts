@@ -11,6 +11,11 @@ import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
+import {
+  resolveModificationStayRanges,
+  type LiveGuestStayRow,
+  type StayRangeDeltaInput,
+} from "@/lib/booking-modification-stay-ranges";
 import { nameField } from "@/lib/zod-helpers";
 
 /**
@@ -162,6 +167,40 @@ export function guestStayRangesRefusal(
     }
   }
   return null;
+}
+
+export const CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE =
+  "The new check-in or check-out date doesn't match the nights your guests are staying. Set each guest's nights to the dates you want; the stay's dates follow from them.";
+
+/**
+ * #4030 round 7 (F2): a request that moves check-in or check-out while also
+ * naming guests' nights. With nights named, the planner sets the stay's dates
+ * from them (`resolveModificationStayRanges`, range mode) and ignores the
+ * requested ones, so a moved date the nights do not reach would be dropped
+ * without a word. Refused instead, with `null` when the dates are where the
+ * nights put them, or the request moves no date.
+ */
+export function requestedDatesIgnoredByNightsRefusal(args: {
+  booking: { checkIn: Date; checkOut: Date };
+  guests: ReadonlyArray<LiveGuestStayRow>;
+  input: StayRangeDeltaInput;
+  /** Whether the request moves check-in / check-out at all. */
+  movesCheckIn: boolean;
+  movesCheckOut: boolean;
+}): string | null {
+  if (!args.movesCheckIn && !args.movesCheckOut) return null;
+  let resolved;
+  try {
+    resolved = resolveModificationStayRanges(args);
+  } catch (error) {
+    if (error instanceof BookingGuestStayRangeValidationError) return error.message;
+    throw error;
+  }
+  if (!resolved.hasRangeInputs) return null;
+  const ignored =
+    (args.movesCheckIn && resolved.checkIn.getTime() !== resolved.requestedCheckIn.getTime()) ||
+    (args.movesCheckOut && resolved.checkOut.getTime() !== resolved.requestedCheckOut.getTime());
+  return ignored ? CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE : null;
 }
 
 /**

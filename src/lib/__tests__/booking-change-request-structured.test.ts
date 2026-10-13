@@ -55,7 +55,10 @@ vi.mock("@/lib/club-time/server", () => ({
 }));
 
 import { POST } from "@/app/api/bookings/[id]/change-requests/route";
-import { CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE } from "@/lib/booking-change-request-guests";
+import {
+  CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE,
+  CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
+} from "@/lib/booking-change-request-guests";
 
 function inProgressBooking() {
   return {
@@ -240,6 +243,30 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/Date In and Date Out are both required/);
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses a date move the guests' nights do not reach, which range mode would drop (round 7, F2)", async () => {
+    // Beyond the nights, and inside them: either way the planner would set the
+    // stay's dates from the nights and silently ignore the requested one.
+    for (const checkIn of ["2026-06-28", "2026-07-01"]) {
+      const response = await post({
+        checkIn,
+        guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }],
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE);
+    }
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("accepts a date move the guests' nights reach, and one that names no nights (round 7, F2)", async () => {
+    const reached = await post({
+      checkIn: "2026-06-29",
+      guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-29", stayEnd: "2026-07-03" }],
+    });
+    expect(reached.status, JSON.stringify(await reached.clone().json())).toBe(201);
+    const datesOnly = await post({ checkIn: "2026-06-29" });
+    expect(datesOnly.status).toBe(201);
   });
 
   it("still accepts a stay range that changes the guest's nights", async () => {
