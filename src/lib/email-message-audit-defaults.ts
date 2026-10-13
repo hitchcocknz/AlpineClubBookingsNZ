@@ -303,6 +303,11 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Booking may have been paid twice — card and Xero: {{memberName}}",
     "defaultBody": "Booking May Have Been Paid Twice - Card and Xero\n\nA card payment and an Internet Banking payment have both been recorded against this booking. Nothing was refunded or credited automatically - please reconcile.\n\n{{secondInstrumentConflictNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nBooking status: {{status}}\nInvoice amount: {{amount}}\nCard payment still held: {{paidAmount}}\nStripe PI: {{paymentIntentId}}\nXero invoice: {{xeroInvoiceNumber}}\nOpen the invoice in Xero: {{xeroObjectUrl}}\n\nOpen Booking: {{bookingUrl}}\nView Payments: {{reviewUrl}}"
   },
+  // #3979 (`INV-PAY-125`): a recorded bank-transfer amount that needs a person.
+  "admin-bank-transfer-settlement-figure": {
+    "defaultSubject": "Bank transfer amount needs checking: {{memberName}}",
+    "defaultBody": "Bank Transfer Amount Needs Checking\n\nXero reports this booking's bank-transfer invoice paid, and the payment has been recorded. The amount needs a person to check it.\n\n{{settlementFigureNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount recorded: {{amount}}\nCash Xero shows: {{paidAmount}}\nBooking owes: {{amountOwing}}\nXero invoice: {{xeroInvoiceNumber}}\nOpen the invoice in Xero: {{xeroObjectUrl}}\n\nOpen Booking: {{bookingUrl}}\nView Payments: {{reviewUrl}}"
+  },
   "admin-manual-refund-task": {
     "defaultSubject": "Manual refund needed - {{handBackLabel}}: {{memberName}}",
     "defaultBody": "{{handBackHeading}}\n\n{{handBackNote}}\n\n{{handBackRecipientLabel}}: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\n{{handBackAmountLabel}}: {{refundAmount}}\nReason: {{reason}}\n\nView Payments: {{reviewUrl}}"

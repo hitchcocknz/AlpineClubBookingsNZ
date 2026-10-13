@@ -22,8 +22,10 @@ import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sy
 // without an import cycle (#3581); re-exported so existing importers stand.
 import {
   CAPTURED_TRANSACTION_STATUS_LIST,
+  deriveAggregatePaymentStatus,
   EXCLUDED_LEDGER_REFUND_STATUSES,
   expectedRefundedFloorCents,
+  grossCapturedCents,
   isCapturedTransactionStatus,
   isRecordedRefundStatus,
   LEGACY_ADDITIONAL_BACKFILL_REASON,
@@ -239,27 +241,6 @@ async function ensurePaymentTransactionsBackfilled(
   return loadPaymentWithTransactions(store, paymentId);
 }
 
-function deriveAggregatePaymentStatus(
-  fallbackStatus: PaymentStatus,
-  grossCapturedAmountCents: number,
-  refundedAmountCents: number,
-  latestPrimaryStatus: PaymentStatus | null
-) {
-  if (grossCapturedAmountCents > 0) {
-    if (refundedAmountCents >= grossCapturedAmountCents) {
-      return PaymentStatus.REFUNDED;
-    }
-
-    if (refundedAmountCents > 0) {
-      return PaymentStatus.PARTIALLY_REFUNDED;
-    }
-
-    return PaymentStatus.SUCCEEDED;
-  }
-
-  return latestPrimaryStatus ?? fallbackStatus;
-}
-
 export async function reconcilePaymentAggregates({
   paymentId,
   store = prisma,
@@ -287,9 +268,7 @@ export async function reconcilePaymentAggregates({
     PaymentTransactionKind.ADDITIONAL
   );
 
-  const grossCapturedAmountCents = payment.transactions.reduce((sum, transaction) => {
-    return sum + (isCapturedTransactionStatus(transaction.status) ? transaction.amountCents : 0);
-  }, 0);
+  const grossCapturedAmountCents = grossCapturedCents(payment.transactions);
   const refundedAmountCents = payment.transactions.reduce((sum, transaction) => {
     return sum + transaction.refundedAmountCents;
   }, 0);

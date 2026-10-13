@@ -94,11 +94,12 @@ offered to them at all:
 
 ### Always-on alerts
 
-Five alerts are sent outside this grid. They have no checkbox anywhere and cannot
+Six alerts are sent outside this grid. They have no checkbox anywhere and cannot
 be muted — not here, and not in [Delivery Rules](notification-rules.md), because
 their templates (`admin-email-failure`, `admin-late-capture-auto-refund`,
 `admin-late-capture-hand-back-conflict`,
-`admin-second-instrument-settlement-conflict`) are locked to always-send:
+`admin-second-instrument-settlement-conflict`,
+`admin-bank-transfer-settlement-figure`) are locked to always-send:
 
 | Alert | Goes to | Sent when |
 | --- | --- | --- |
@@ -107,6 +108,7 @@ their templates (`admin-email-failure`, `admin-late-capture-auto-refund`,
 | *Payment refunded automatically — booking already deleted / already cancelled* | Every admin whose role can **edit** Finance | A member's payment landed after the booking had already been cancelled, so the charge was returned to them automatically. This happens for a booking's own payment and for a payment for a change to it, and the mail says which. Nothing failed and nothing is owed — the mail exists so the money movement is not invisible, and it names whether the booking was also deleted, in which case remaking it means charging the member again |
 | *Automatic refund withheld — already paid back by hand* / *Payment may have been refunded TWICE — reconcile* | Every admin whose role can **edit** Finance | Somebody had already marked a hand-back task for that payment as paid back, which records the refund in the ledger. The automatic refund was withheld so the member is not paid twice — or, if the hand-back was recorded at the exact moment the refund was going out, it went as well and the two have to be reconciled. This is the one mail that may be telling you money left the club twice, which is why it cannot be switched off either |
 | *Booking may have been paid twice — card and Xero* | Every admin whose role can **edit** Finance | A card payment had already settled the booking (or settled it before it was cancelled), and Xero then reported its Internet Banking invoice paid as well. The bank payment is recorded and nothing was refunded or credited automatically, so the mail links the booking and the Xero invoice for a person to reconcile. The club may be holding the price twice, which is why it cannot be switched off |
+| *Bank transfer amount needs checking* | Every admin whose role can **edit** Finance | Xero reported a booking's bank-transfer invoice paid, and the app either kept the amount it had recorded instead of the cash the invoice collected (it could not tie that cash to this booking alone), or the cash is not what the booking owes (#3979). A wrong recorded amount sizes every later refund and credit, which is why it cannot be switched off |
 
 The first two name the intended recipient's email address and the template that
 failed, so they are operational detail rather than routine notification. The refund

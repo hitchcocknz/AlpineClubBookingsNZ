@@ -3,6 +3,7 @@ import {
   type EmailAuditTemplateName,
 } from "@/lib/email-message-audit-defaults";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
@@ -103,6 +104,10 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // delivery-locked below, because the system refunds nothing on its own and
   // this mail is the only thing that pulls a person to reconcile it.
   "admin-second-instrument-settlement-conflict",
+  // #3979: a bank transfer the inbound settle recorded whose amount needs a
+  // person - the stored figure kept, or the cash not what the booking owes.
+  // Admin audience, unmuteable sender, delivery-locked below, for #3638's reason.
+  "admin-bank-transfer-settlement-figure",
   // #2761: the alert for an automatically refunded late capture on a cancelled
   // booking. Ships to admins, so admin audience — but through the unmuteable
   // sender rather than sendToAdmins, because it reports an automatic MONEY
@@ -217,6 +222,9 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // booking), and nothing is refunded or credited automatically, so muting it
   // club-wide would leave the money with nobody to reconcile it.
   "admin-second-instrument-settlement-conflict",
+  // #3979: the same lock - a recorded bank-transfer figure that is wrong sizes
+  // every later refund and credit, and this mail is what pulls a person to check it.
+  "admin-bank-transfer-settlement-figure",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -607,6 +615,14 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "secondInstrumentConflictNote",
     "xeroObjectUrl",
   ],
+  // #3979: {{settlementFigureNote}} says what needs a person (the figure kept,
+  // the member over- or under-paid) and who corrects a recorded figure.
+  "admin-bank-transfer-settlement-figure": [
+    "memberName",
+    "reviewUrl",
+    "settlementFigureNote",
+    "xeroObjectUrl",
+  ],
   // #2761: memberName and reviewUrl as its siblings, plus the two tokens that
   // carry WHICH of the two populations this was. An override that drops
   // {{bookingStateLabel}} or {{refundOutcomeNote}} leaves an operator unable to
@@ -901,6 +917,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "Xero reported a booking's Internet Banking invoice PAID after a card payment had already settled it, so the club may be holding the price twice",
     frequency:
       "On the inbound second-instrument check firing — rare; throttled per payment and invoice by a cross-instance cooldown so webhook replays do not re-send",
+  },
+  "admin-bank-transfer-settlement-figure": {
+    triggerSummary:
+      "Xero reported a booking's bank-transfer invoice paid, and the app either kept the amount it had recorded instead of the cash the invoice collected, or the cash is not what the booking owes",
+    frequency:
+      "Once per booking and invoice, when the payment is first recorded - the record is written with the payment, and the email is re-sent on a later Xero delivery only if it had not gone out",
   },
   "admin-manual-refund-task": {
     triggerSummary:
@@ -1520,6 +1542,11 @@ export function sampleValue(token: string): string {
   if (token === "secondInstrumentConflictNote") {
     return secondInstrumentConflictOutcomeParagraph("settled");
   }
+  // #3979: previewed as the kept-figure arm - the case the alert exists for;
+  // the owed-only arm is the sender's other branch.
+  if (token === "settlementFigureNote") {
+    return ibSettlementFigureParagraph({ keptReason: "folded-refund", owed: null, hasSupplementaryInvoice: false });
+  }
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
   }
@@ -2065,6 +2092,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "handBackAmountLabel",
   // #3638: the second-instrument alert's live-versus-cancelled sentence.
   "secondInstrumentConflictNote",
+  // #3979: the bank-transfer settlement alert's what-needs-a-person sentence.
+  "settlementFigureNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and
   // paid-twice arms cannot collapse into one claim when an admin saves the template
   // — the {{bookingStateLabel}} construction (#2761), plus the subject requirement

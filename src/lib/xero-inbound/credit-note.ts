@@ -7,9 +7,9 @@ import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync"
 import { buildCreditNoteAllocationTargets, buildSyntheticAllocationLinkId, buildXeroPaymentDisplayNumber, getCreditNoteAmountCents } from "./amounts";
 import { dedupeResolvedXeroObjectLinks, dedupeXeroObjectLinks, findActiveXeroObjectLinks, getDerivedInboundAllocationRole, recoverBookingScopedLinksFromOutboundOperations } from "./object-links";
 import { writeXeroInboundAuditLogs } from "./audit";
-import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance, resolvePaymentIdsByInvoiceTargets } from "./credit-note-repairs";
+import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
+import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
-import { noCashModificationNoteIds } from "./account-credit-modification-notes";
 import { isIncludedRefundCreditNoteStatus, mayRecordAsCanonicalRefundNote } from "@/lib/xero-refund-note-status";
 
 export async function reconcileXeroCreditNote(creditNoteId: string) {
@@ -316,31 +316,15 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     await upsertXeroObjectLink(link);
   }
 
-  // #3809 (review M2), #3954: a give-back or billed-offset note moved no cash.
-  const modificationRefundPaymentIdsByInvoiceId = resolvedCreditNoteLinks.some(
-    (link) => link.role === "MODIFICATION_CREDIT_NOTE"
-  ) && !(await noCashModificationNoteIds([creditNote.creditNoteID])).has(creditNote.creditNoteID)
-    ? await resolvePaymentIdsByInvoiceTargets(
-        creditNote.creditNoteID,
-        allocationTargets
-      )
-    : new Map<string, string>();
-  const modificationRefundAmountsByPaymentId = new Map<string, number>();
-
-  for (const target of allocationTargets) {
-    const paymentId = modificationRefundPaymentIdsByInvoiceId.get(
-      target.invoiceId
-    );
-    if (!paymentId) {
-      continue;
-    }
-
-    modificationRefundAmountsByPaymentId.set(
-      paymentId,
-      (modificationRefundAmountsByPaymentId.get(paymentId) ?? 0) +
-        target.amountCents
-    );
-  }
+  const resolveCurrentModificationRefunds = () =>
+    resolveModificationRefundAmountsByPaymentId({
+      creditNoteId: creditNote.creditNoteID!,
+      isModificationNote: resolvedCreditNoteLinks.some(
+        (link) => link.role === "MODIFICATION_CREDIT_NOTE"
+      ),
+      allocationTargets,
+    });
+  const modificationRefundAmountsByPaymentId = await resolveCurrentModificationRefunds();
 
   const refundedPaymentRepair = await repairRefundedPaymentBusinessState({
     creditNoteId: creditNote.creditNoteID,
@@ -355,6 +339,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       ...accountCreditPayments.map((payment) => payment.id),
     ],
     modificationRefundAmountsByPaymentId,
+    recomputeModificationRefundAmounts: resolveCurrentModificationRefunds,
   });
 
   const accountCreditAllocationRepair =

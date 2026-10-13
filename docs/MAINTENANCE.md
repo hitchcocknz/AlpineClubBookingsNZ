@@ -2206,6 +2206,38 @@ internet-banking cash that became credit on an already-cancelled booking. Only
 the first is the #3640 repair question. The arithmetic and its caveats are in
 `src/lib/refunded-total-shortfall-audit.ts`.
 
+### Audit bank-transfer receipts settled at a stale figure (#3979)
+
+Before #3979 the inbound Xero settle kept the figure an Internet Banking payment
+was born with, so a booking re-priced (or charged a recorded fee) before its
+invoice was raised was settled at its old price: its ledger bank receipt and
+`Payment.amountCents`, which refund and credit caps read, were wrong
+(`INV-PAY-125` stops new cases). And while the old and new code are both live in
+a deploy, they can count an invoice correction differently (`INV-PAY-126`).
+`scripts/audit-ib-settled-cash.ts` lists:
+
+- each captured bank-transfer receipt whose figure differs from the payments Xero
+  recorded against its invoice, as the inbound invoice sync stored them;
+- each payment whose refunded total exceeds what its rows record (a credit note
+  folded in), which catches both directions of the deploy window.
+
+It is READ-ONLY and repairs nothing. **Run it after every cutover that carries
+#3979**, on a non-production copy:
+
+```bash
+DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash
+DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash --json
+```
+
+A receipt whose invoice was paid by an applied overpayment or prepayment (Xero
+records an allocation, not a payment; the inbound sync marks the primary-invoice
+link), one with no recorded payment, or one whose amount cannot be read is
+listed apart as not judged: check its invoice in Xero. Officer-settled payments
+(`INV-PAY-001`) are left out. **Correcting a row is a database change**: the
+owner or a developer makes it under the raw-SQL rules (`INV-OPS`), and corrects
+the receipt and the payment's refunded total TOGETHER - either alone moves the
+payment's net. The rules are in `src/lib/ib-settled-cash-audit.ts`.
+
 ### Audit organiser-settled children's refunded mirrors (#3653)
 
 Before #3653 a joiner's reduction of a booking the group organiser paid for could
