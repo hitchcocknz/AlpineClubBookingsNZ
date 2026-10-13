@@ -353,7 +353,11 @@ function mayCorrectDespiteCapturedAggregate(input: ClassifyXeroBookingEditSettle
     input.priceDiffCents + (input.changeFeeCents ?? 0) < 0 &&
     input.refundMethod == null &&
     input.refundedThroughStripe === false &&
-    isPrimaryInvoiceUnsafe(input.originalPaymentStatus)
+    // A refunded aggregate is the #1765 shape: a card capture refunded before
+    // the switch, with the bank receipt possibly never captured. A SUCCEEDED
+    // aggregate whose money is not a Stripe refund is a captured bank receipt
+    // (or an officer's cash), so nothing needs reading.
+    (input.originalPaymentStatus === "REFUNDED" || input.originalPaymentStatus === "PARTIALLY_REFUNDED")
   );
 }
 

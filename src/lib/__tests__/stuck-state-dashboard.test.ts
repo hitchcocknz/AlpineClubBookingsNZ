@@ -4,6 +4,7 @@ import {
   MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
   MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
   SECOND_INSTRUMENT_SETTLEMENT_CONFLICT_EVENT_REASON,
+  IB_SETTLEMENT_FIGURE_CHECK_EVENT_REASON,
   GROUP_JOINER_PAYS_OWN_EVENT_REASON,
 } from "@/lib/manual-settlement-reversal-event";
 import {
@@ -713,6 +714,8 @@ describe("getStuckStateDashboard", () => {
                     MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
                     // #3638: the second-instrument conflict marker.
                     SECOND_INSTRUMENT_SETTLEMENT_CONFLICT_EVENT_REASON,
+                    // #3979: the bank-transfer settlement-figure marker.
+                    IB_SETTLEMENT_FIGURE_CHECK_EVENT_REASON,
                     // #3672: the group payer-switch marker.
                     GROUP_JOINER_PAYS_OWN_EVENT_REASON,
                   ],
