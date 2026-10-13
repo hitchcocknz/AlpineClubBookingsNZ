@@ -1062,9 +1062,12 @@ discriminated by a named test in the tree already:
   click it — and `expectToHoldFocus(editButton)` from the same helper file,
   finding the re-rendered Edit by role and name
   (`use-section-edit-state.test.tsx`, `allocation-preferences-section.test.tsx`,
-  `list-editor-focus-return.test.tsx`). jsdom never drops focus from a control
+  `list-editor-focus-return.test.tsx`; a row's direct write in
+  `row-action-focus-return.test.tsx`). jsdom never drops focus from a control
   that becomes disabled, so a failed-save return is tested by blurring to the
-  page inside the save, as a browser would (#4087).
+  page inside the save, as a browser would (#4087); jsdom will not blur a
+  DISABLED control either, so park focus on a throwaway control and remove it
+  (#4116).
 
 `admin-attention-primitive-contract.test.ts` is the census that keeps the admin
 tree routed through the module: a direct `scrollIntoView` / `scrollTo`, or a

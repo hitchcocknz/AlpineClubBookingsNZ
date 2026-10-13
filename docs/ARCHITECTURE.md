@@ -1795,7 +1795,11 @@ the reference for that shape (#2142). Because the open editor unmounts on close,
 the LIST owns the focus return there: it calls `useEditorFocusReturn`'s
 `capture` from Add and each row's Edit, and `close` from Cancel, a successful
 save and a save conflict that closes the stale editor, so focus goes back to the
-control that opened the editor (#4087). Wherever the read endpoint SYNTHESISES
+control that opened the editor (#4087). A row's direct write (Activate/Deactivate,
+Delete) unmounts or disables the button pressed, so it returns focus through
+`useRowActionFocusReturn` — the row's toggle, a neighbouring row's Delete, or the
+card — which keeps its own anchor so the write never consumes the open editor's
+(#4116). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
 carry the first-save exception: count the draft as dirty so committing the
 defaults stays reachable, but
