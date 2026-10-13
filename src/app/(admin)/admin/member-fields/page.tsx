@@ -20,10 +20,7 @@ import {
   type MemberFieldKey,
   type MemberFieldsSettingsValues,
 } from "@/config/member-fields";
-import {
-  useActionAttention,
-  useRevealAttention,
-} from "@/hooks/use-scroll-to-feedback";
+import { useActionAttention } from "@/hooks/use-scroll-to-feedback";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ForbiddenSaveError,
@@ -84,6 +81,9 @@ export default function AdminMemberFieldsPage() {
   const canEdit = useAdminAreaEditAccess("membership");
 
   const section = useSectionEditState<MemberFieldsSettingsValues>({
+    // Edit unmounts the button that held focus; the hook brings the field
+    // grid into view, only when the admin asked to edit (#2934, #4115).
+    revealTarget: sectionRef,
     load: async (signal) => {
       const response = await fetch(ENDPOINT, {
         credentials: "same-origin",
@@ -130,9 +130,6 @@ export default function AdminMemberFieldsPage() {
     success,
     successTarget: pageRef,
   });
-  // Edit unmounts the button that held focus; bring the section into view
-  // only when the admin asked to edit (#2934).
-  useRevealAttention(sectionRef, section.editRequestKey);
 
   const fields = useMemo(
     () => MEMBER_FIELD_KEYS.map((key) => MEMBER_FIELD_DEFINITIONS[key]),
