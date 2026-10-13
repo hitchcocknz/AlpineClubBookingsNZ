@@ -27,7 +27,7 @@ reason: the refunded-total repair's own status decision gains the un-refund
   moved out to `modification-note-refunds.ts`.
 
 file: src/lib/email-message-registry.ts
-lines: 2285
+lines: 2307
 reason: one more template in the registry's own lists - the admin audience,
   the delivery lock, its required tokens, its trigger summary, its token preview
   and the token list. The registry is the one enumeration the email census
