@@ -106,6 +106,10 @@ function identityChanged(draft: Draft, saved: Draft): boolean {
  * last saved snapshot. All four fields go out in one whole-object PUT that this
  * section alone owns, so there is no sibling card whose fields need merging.
  */
+/** The section's title: the page's visible card title and this panel's
+ * region name read the one string, so they cannot drift (INV-SSOT-001). */
+export const CLUB_IDENTITY_TITLE = "Club identity";
+
 export function ClubIdentityPanel() {
   const canEdit = useAdminAreaEditAccess("content");
   const viewOnlyReasonId = useId();
@@ -204,7 +208,7 @@ export function ClubIdentityPanel() {
     <div
       ref={cardRef}
       role="region"
-      aria-label="Club identity"
+      aria-label={CLUB_IDENTITY_TITLE}
       tabIndex={-1}
       className="focus:outline-none"
     >
