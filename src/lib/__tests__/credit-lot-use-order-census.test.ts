@@ -29,7 +29,7 @@
  * (`findMany(query)`), and an `orderBy` imported from another module under a
  * name other than `CREDIT_LOT_USE_ORDER`. None exists today; the walk refuses a
  * `findMany(query)` or an unresolvable `orderBy` identifier rather than passing
- * it. Raw SQL is scanned separately, by text with comments stripped, below.
+ * it. Raw SQL is scanned separately, by text, below.
  *
  * **Re-measure by running this test. Add an entry only with its reason.**
  */
@@ -41,7 +41,6 @@ import {
   relativeSource,
   sourceFiles,
 } from "@/lib/__tests__/support/booking-guest-night-writer-scan";
-import { stripComments } from "@/lib/__tests__/support/strip-comments";
 
 const USE_ORDER = "CREDIT_LOT_USE_ORDER";
 const ORDER_HOME = "src/lib/xero-applied-credit-plan.ts";
@@ -179,7 +178,7 @@ describe("every credit-lot read ordered by createdAt is classified (#4013, INV-P
   it("finds no raw SQL that orders MemberCredit rows by createdAt", () => {
     const rawSqlOrder = /"MemberCredit"[^`]{0,800}ORDER\s+BY[^`;]*"createdAt"/i;
     const offenders = sourceFiles()
-      .filter((file) => rawSqlOrder.test(stripComments(readFileSync(file, "utf8"))))
+      .filter((file) => rawSqlOrder.test(readFileSync(file, "utf8")))
       .map(relativeSource);
     expect(offenders, "INV-PAY-127: raw SQL orders MemberCredit by createdAt; tie it by \"id\" and declare it here.").toEqual([]);
   });
