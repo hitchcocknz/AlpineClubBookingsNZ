@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
+import {
+  captureFocusReturn,
+  useEditorFocusReturn,
+  useReturnAttention,
+  type FocusReturnAnchor,
+} from "@/hooks/use-scroll-to-feedback";
 
 /**
  * Shared state for the canonical admin settings-section pattern (#2136).
@@ -28,6 +34,21 @@ import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action
  * the hook only owns the one clearing rule every card already shares — both
  * messages are cleared at the start of a save — and exposes `setError` /
  * `setSuccess` so each card keeps its existing behaviour explicitly.
+ *
+ * What it DOES own is where focus goes when the editor closes (#4087). Save and
+ * Cancel unmount the button that held focus, which dropped a keyboard user to
+ * `<body>`. The hook records the focused element when `startEditing` runs and,
+ * after Cancel or a successful save, hands focus back to it — or to the Edit
+ * rendered in its place, found by `editTriggerProps`, or to the card marked
+ * with `sectionRegionProps` and named by the title carrying `titleProps` —
+ * through `useEditorFocusReturn`. That is where
+ * focus ends after Cancel. After a successful save it is where focus ends
+ * UNLESS the card also positions its success (`useActionAttention` with a
+ * `successTarget`, as member fields does): that runs in the same commit, after
+ * the return, and the success target is where the admin lands. A FAILED save
+ * keeps edit mode open; if the disabled-while-saving Save dropped focus to the
+ * page, focus goes back to the control that started the save, and any failure
+ * position the card takes for its error still wins.
  *
  * The transport also stays in the caller's `save` callback, so idioms that are
  * genuinely per-card survive untouched: the security cards' GET-fresh-settings-
@@ -98,6 +119,12 @@ export interface UseSectionEditStateOptions<T extends object> {
    * busts caches for a change that never happened (#2143).
    */
   allowPristineSave?: boolean;
+  /**
+   * The section's name, for a card with no visible title of its own to point
+   * `titleProps` at (#4087). Omit it everywhere else: the card is then named
+   * by its title, so the two cannot drift.
+   */
+  regionLabel?: string;
 }
 
 export interface SectionEditState<T extends object> {
@@ -127,8 +154,31 @@ export interface SectionEditState<T extends object> {
    * editor is never focused because content re-rendered (#2934).
    */
   editRequestKey: number;
-  /** Restore every field from the snapshot and leave edit mode. */
+  /**
+   * Restore every field from the snapshot and leave edit mode. Focus returns to
+   * where `startEditing` was called from, as it does after a successful `save`.
+   */
   cancelEditing: () => void;
+  /**
+   * Spread on the section's Edit control (#4087). Edit is unmounted while the
+   * editor is open, so this per-instance marker is how the return finds the
+   * one rendered in its place.
+   */
+  editTriggerProps: Record<"data-return-focus-trigger", string>;
+  /**
+   * Spread on the section's card: where focus returns when Edit is missing or
+   * disabled for a view-only admin. It makes the card a `region` named by the
+   * element carrying `titleProps` (or by `regionLabel`), so a keyboard user who
+   * lands on it hears the section's name.
+   */
+  sectionRegionProps: {
+    "data-return-focus-region": string;
+    role: "region";
+    "aria-label"?: string;
+    "aria-labelledby"?: string;
+  };
+  /** Spread on the card's visible title: the name `sectionRegionProps` points at. */
+  titleProps: { id: string };
   save: () => Promise<void>;
   /** Re-run `load`, clearing both messages first. No-op without a `load`. */
   reload: () => Promise<void>;
@@ -157,6 +207,10 @@ export function useSectionEditState<T extends object>(
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editRequestKey, setEditRequestKey] = useState(0);
+  const editorFocus = useEditorFocusReturn({ regionLabel: options.regionLabel });
+  // Where a FAILED save hands focus back to, recorded as the save starts.
+  const saveFocusReturn = useRef<FocusReturnAnchor | null>(null);
+  const [saveFailureKey, setSaveFailureKey] = useState(0);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -225,21 +279,30 @@ export function useSectionEditState<T extends object>(
     });
   }, []);
 
+  useReturnAttention(saveFocusReturn, saveFailureKey);
+  const { capture: captureEditFocus, close: returnEditFocus } = editorFocus;
+
   const startEditing = useCallback(() => {
+    // Read before the render that unmounts the Edit button holding focus.
+    captureEditFocus();
     setEditing(true);
     setEditRequestKey((key) => key + 1);
-  }, []);
+  }, [captureEditFocus]);
 
   const cancelEditing = useCallback(() => {
     // Restoring the snapshot object wholesale is the point of the hook: no
     // field can be missed the way a field-by-field revert can miss one.
     setDraftState((current) => (saved === null ? current : saved));
     setEditing(false);
-  }, [saved]);
+    returnEditFocus();
+  }, [saved, returnEditFocus]);
 
   const save = useCallback(async () => {
     if (draft === null || saving || !valid) return;
     if (!dirty && !allowPristineSave) return;
+    // Read before `saving` disables the Save that holds focus — a browser
+    // drops focus from a disabled control to the page.
+    saveFocusReturn.current = captureFocusReturn();
     setSaving(true);
     setError("");
     setSuccess("");
@@ -250,9 +313,12 @@ export function useSectionEditState<T extends object>(
       setSaved(next);
       setDraftState(next);
       setEditing(false);
+      saveFocusReturn.current = null;
+      returnEditFocus();
       const message = callbacks.current.successMessage;
       setSuccess(typeof message === "function" ? message(next) : message);
     } catch (saveError) {
+      setSaveFailureKey((key) => key + 1);
       if (saveError instanceof ForbiddenSaveError) {
         setError(ADMIN_FORBIDDEN_SAVE_REASON);
       } else {
@@ -267,7 +333,7 @@ export function useSectionEditState<T extends object>(
     }
     // `save` / `successMessage` are read from the latest-ref, so only the
     // guards need to be dependencies.
-  }, [draft, saved, saving, valid, dirty, allowPristineSave]);
+  }, [draft, saved, saving, valid, dirty, allowPristineSave, returnEditFocus]);
 
   return {
     draft,
@@ -285,6 +351,9 @@ export function useSectionEditState<T extends object>(
     setDraft,
     startEditing,
     cancelEditing,
+    editTriggerProps: editorFocus.triggerProps(),
+    sectionRegionProps: editorFocus.regionProps,
+    titleProps: editorFocus.titleProps,
     save,
     reload,
   };

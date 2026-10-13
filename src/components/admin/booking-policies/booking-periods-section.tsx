@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
+import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
 import { normalizeCancellationRule } from "@/lib/cancellation-rules"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -232,6 +233,9 @@ export function BookingPeriodsSection() {
   // again on a row you were already editing silently keeps the unsaved draft
   // instead of resetting the form (#2142 review).
   const [editorInstance, setEditorInstance] = useState(0)
+  // The open editor is its own component, unmounted on close, so the list owns
+  // where focus goes when it closes: back to Add or the row's Edit (#4087).
+  const editorFocus = useEditorFocusReturn()
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -305,10 +309,12 @@ export function BookingPeriodsSection() {
   function cancelPeriodForm() {
     setError("")
     resetPeriodForm()
+    editorFocus.close()
   }
 
   function startAddPeriod() {
     if (!policyScopeReady) return
+    editorFocus.capture("add")
     setEditingPeriodId(null)
     setEditingDraft(NEW_PERIOD_DRAFT)
     setEditorInstance((n) => n + 1)
@@ -317,6 +323,7 @@ export function BookingPeriodsSection() {
 
   function startEditPeriod(period: BookingPeriod) {
     if (!policyScopeReady) return
+    editorFocus.capture(`row-${period.id}`)
     setEditingPeriodId(period.id)
     setEditingDraft(toDraft(period))
     setEditorInstance((n) => n + 1)
@@ -388,11 +395,13 @@ export function BookingPeriodsSection() {
         reseeded = draft
       }
       resetPeriodForm()
+      // Focus goes back to the Add or row Edit that opened the editor (#4087).
+      editorFocus.close()
       void fetchPeriods()
       setSuccess(wasEditing ? "Period updated" : "Period created")
       return reseeded
     },
-    [editingPeriodId, scopeLodgeId, fetchPeriods, policyScopeReady],
+    [editingPeriodId, scopeLodgeId, fetchPeriods, policyScopeReady, editorFocus],
   )
 
   async function handleDeletePeriod(id: string) {
@@ -537,11 +546,11 @@ export function BookingPeriodsSection() {
         ) : null}
 
         {policyScopeReady && !loadingPeriods && scopeKnown ? (
-          <Card>
+          <Card {...editorFocus.regionProps}>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>
+                  <CardTitle {...editorFocus.titleProps}>
                     {scopeLodgeName
                       ? `Date-Specific Periods — ${scopeLodgeName}`
                       : "Date-Specific Periods"}
@@ -560,7 +569,7 @@ export function BookingPeriodsSection() {
                   </CardDescription>
                 </div>
                 {!showPeriodForm && (
-                  <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddPeriod}>Add Period</ViewOnlyActionButton>
+                  <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...editorFocus.triggerProps("add")} onClick={startAddPeriod}>Add Period</ViewOnlyActionButton>
                 )}
               </div>
             </CardHeader>
@@ -620,7 +629,7 @@ export function BookingPeriodsSection() {
                             >
                               {period.active ? "Deactivate" : "Activate"}
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditPeriod(period)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" {...editorFocus.triggerProps(`row-${period.id}`)} onClick={() => startEditPeriod(period)}>
                               Edit
                             </ViewOnlyActionButton>
                             <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeletePeriod(period.id)}>
