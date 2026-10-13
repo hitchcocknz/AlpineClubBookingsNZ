@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   operationCreate: vi.fn(),
   transaction: vi.fn(),
   txPaymentFindUnique: vi.fn(),
+  txPaymentUpdateMany: vi.fn(),
   txLinkUpdateMany: vi.fn(),
   txLinkUpsert: vi.fn(),
   txLinkFindUnique: vi.fn(),
@@ -341,6 +342,7 @@ describe("upsertXeroObjectLink", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.txLinkUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.txPaymentUpdateMany.mockResolvedValue({ count: 1 });
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
     mocks.txLinkFindUnique.mockResolvedValue(null);
     mocks.txLinkFindMany.mockResolvedValue([]);
@@ -348,6 +350,7 @@ describe("upsertXeroObjectLink", () => {
       callback({
         payment: {
           findUnique: mocks.txPaymentFindUnique,
+          updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
           updateMany: mocks.txLinkUpdateMany,
@@ -445,6 +448,7 @@ describe("upsertXeroObjectLink", () => {
       callback({
         payment: {
           findUnique: mocks.txPaymentFindUnique,
+          updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
           updateMany: mocks.txLinkUpdateMany,
@@ -564,14 +568,17 @@ describe("upsertXeroObjectLink", () => {
       callback({
         payment: {
           findUnique: mocks.txPaymentFindUnique,
+          updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: txLinkFindUnique,
+          findMany: mocks.txLinkFindMany,
         },
       })
     );
+    mocks.txLinkFindMany.mockResolvedValue([]);
     mocks.txPaymentFindUnique.mockResolvedValue({
       source: "STRIPE",
       xeroRefundCreditNoteId: "cn_delta",
@@ -607,6 +614,129 @@ describe("upsertXeroObjectLink", () => {
     );
     // Sibling per-delta links are untouched either way.
     expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    // The scalar named this note. With no other live note, it is cleared so
+    // the nightly report does not call the inactive mirror "missing".
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: null },
+    });
+  });
+
+  it("repoints the payment's refund-note pointer at the newest other live note when a void deactivates the one it named", async () => {
+    mocks.txLinkFindMany.mockResolvedValue([
+      {
+        id: "link_old",
+        xeroObjectId: "cn_older",
+        metadata: { status: "AUTHORISED" },
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        id: "link_new",
+        xeroObjectId: "cn_newer",
+        metadata: { status: "PAID" },
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+      {
+        id: "link_void_sibling",
+        xeroObjectId: "cn_also_void",
+        metadata: { status: "VOIDED" },
+        createdAt: new Date("2026-06-03T00:00:00.000Z"),
+      },
+    ]);
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_delta",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "DELETED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: "cn_newer" },
+    });
+  });
+
+  it("never repoints the refund-note pointer at a per-refund note when a void deactivates the one it named (#3880)", async () => {
+    mocks.txLinkFindMany.mockResolvedValue([
+      {
+        id: "link_canonical",
+        xeroObjectId: "cn_canonical",
+        metadata: { status: "AUTHORISED" },
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        id: "link_per_refund",
+        xeroObjectId: "cn_per_refund",
+        metadata: { status: "AUTHORISED", perDelta: true },
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+    ]);
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_delta",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: "cn_canonical" },
+    });
+  });
+
+  it("leaves the refund-note pointer alone when a voided note is not the one it names", async () => {
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_other",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ active: false }),
+      }),
+    );
+    expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not move the refund-note pointer again once it no longer names the voided note", async () => {
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: null,
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
   });
 
   it("keeps every Stripe refund credit note link active so per-delta notes coexist (#1162)", async () => {
