@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   requireActiveSessionUser: vi.fn(),
   refundRequestFindMany: vi.fn(),
   refundRequestCount: vi.fn(),
+  // #4117: the approved appeals' payments, read for what their card refund still owes.
+  paymentFindMany: vi.fn(async () => []),
   bookingFindMany: vi.fn(),
   bookingCount: vi.fn(),
   memberApplicationFindMany: vi.fn(),
@@ -37,6 +39,7 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mocks.refundRequestFindMany,
       count: mocks.refundRequestCount,
     },
+    payment: { findMany: mocks.paymentFindMany },
     booking: {
       findMany: mocks.bookingFindMany,
       count: mocks.bookingCount,

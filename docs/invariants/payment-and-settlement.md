@@ -1223,7 +1223,7 @@ one, check the other.
 **Related: `INV-PAY-114`** (an organiser child's refund, which reopens one
 Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
 
-- **A card refund Stripe answers `failed` or `canceled` on a booking edit, a
+- **A card refund Stripe answers `failed` or `canceled` on an edit, a
   cancellation or a refund request is still owed** (#4083, #4096, #4102).
   `refundPaymentTransactions` records it, never counted as made
   (`completedRefundCents`), and returns.
@@ -1236,13 +1236,14 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
     failure, the remainder, planned by the runner.
   - **A cancellation** re-plans its pre-persisted row, only while PENDING with
     no attempt.
-  - **A refund request** queues only the slices its attempt left unmade
-    (`inlineRefundNotMade`).
+  - **A refund request** queues its whole plan; once Stripe was asked, the
+    approval stands (#4117).
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
-    it holds and fails it. A slice made beside a refusal stays, marked
-    (`madeRefundId`): never re-sent, still the row's; the amount stays.
-  - **Officers are alerted once for the refusal, and again if the retries run
-    out**, then the row dies owed, for "Paid another way".
+    it holds and fails it.
+  - **A slice made beside a refusal stays, marked** (`madeRefundId`): never
+    re-sent, filled only by that refund; the amount stays.
+  - **Officers hear once per refused slice**, on leaving its first key, and
+    again if retries run out.
   - **Deploy window**: an older release closes a refused row as paid, and
     replays a moved slice's first key, reading the cached refusal - nothing is
     refunded twice within 24 hours. Check rows it closed against Stripe.

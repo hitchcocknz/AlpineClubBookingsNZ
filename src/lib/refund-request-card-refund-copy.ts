@@ -17,7 +17,11 @@ export function refundAppealApprovedNotice(
     : `Refund approved; ${formatAmount(cardRefundOwedCents)} could not be queued for retry - the officers have been alerted to refund it another way`
 }
 
-/** What an approved appeal has refunded so far: the approved amount less what the card still owes. */
+/**
+ * What an approved appeal has refunded so far: the approved amount less what
+ * the card still owes. STATED LIMIT: a part promised by bank transfer (#3827)
+ * counts as refunded once approved; its officer task is not read here.
+ */
 export function refundAppealRefundedCents(approvedAmountCents: number, cardRefundOwedCents: number): number {
   return Math.max(0, approvedAmountCents - Math.max(0, cardRefundOwedCents))
 }
