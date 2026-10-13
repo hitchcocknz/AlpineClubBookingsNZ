@@ -153,7 +153,7 @@ export interface CommittedAppliedCreditSlice {
 
 /** The re-plan would move money a committed slice already holds. */
 export class AppliedCreditReplanDivergedError extends Error {
-  readonly name = "AppliedCreditReplanDivergedError";
+  override readonly name = "AppliedCreditReplanDivergedError";
 }
 
 /**
