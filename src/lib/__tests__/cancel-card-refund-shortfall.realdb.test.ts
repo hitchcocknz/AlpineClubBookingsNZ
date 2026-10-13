@@ -123,7 +123,9 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     async function resolve(resolution: "completed" | "dismissed", taskId: string, note: string | null = null) {
       const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
       return resolveManualRefundTask(
-        { taskId, resolution, note, actingMemberId: MEMBER_ID, confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null },
+        resolution === "completed"
+          ? { taskId, resolution, note, actingMemberId: MEMBER_ID, confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null }
+          : { taskId, resolution, note, actingMemberId: MEMBER_ID, recordedNightPrices: null },
         CLUB_FORMAT_TEST,
       );
     }
