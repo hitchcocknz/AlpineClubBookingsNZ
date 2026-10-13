@@ -3044,7 +3044,8 @@ export async function applyGuestChanges(
           data: { stayStart: envelope.stayStart, stayEnd: envelope.stayEnd },
         });
       }
-      createdGuests.push(guest);
+      // #4030 review M6: the row as written, with the priced night envelope.
+      createdGuests.push({ ...guest, stayStart: envelope.stayStart, stayEnd: envelope.stayEnd });
     }
 
     // #3029 (W15): a row this edit linked to a member — the one rule that decides
@@ -3120,7 +3121,7 @@ export async function applyGuestChanges(
         data: { stayStart: envelope.stayStart, stayEnd: envelope.stayEnd },
       });
     }
-    createdGuests.push(guest);
+    createdGuests.push({ ...guest, stayStart: envelope.stayStart, stayEnd: envelope.stayEnd });
   }
 
   for (const [i, remainingGuest] of remainingGuests.entries()) {

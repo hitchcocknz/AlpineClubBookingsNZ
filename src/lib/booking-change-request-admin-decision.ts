@@ -209,9 +209,9 @@ export async function finishedStayApprovalResponse(
     );
   }
   if (!finished) {
-    // Unreachable while the intent check above holds (`execute: true` on a
-    // stay that has not finished is a 409), and kept so an entry can never be
-    // dropped silently by an acknowledgement.
+    // Reached by an approval with `execute: false` on a stay still running —
+    // an acknowledgement, which applies nothing. An entry sent with one is
+    // refused here, never dropped silently (#4030 review C3).
     return body.officerGuests
       ? NextResponse.json({ error: OFFICER_GUESTS_NEED_EXECUTION_MESSAGE }, { status: 400 })
       : null;

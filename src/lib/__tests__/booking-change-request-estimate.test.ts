@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   loadActiveSeasonRates: vi.fn(),
   groupDiscountFindUnique: vi.fn(),
   resolveGuestRateMembershipTypes: vi.fn(),
+  checkRateLimit: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -28,6 +29,10 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 vi.mock("@/lib/lodges", () => ({ getDefaultLodgeId: async () => "lodge-1" }));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: (...args: unknown[]) => mocks.checkRateLimit(...args),
+  rateLimiters: { bookingQuery: { id: "booking-query" } },
+}));
 vi.mock("@/lib/booking-modify-plan", () => ({
   loadActiveSeasonRates: (...args: unknown[]) => mocks.loadActiveSeasonRates(...args),
 }));
@@ -148,6 +153,28 @@ describe("estimateChangeRequestAddedGuests (#4030)", () => {
     expect(smaller).toMatchObject({ outcome: "priced", totalCents: 6000 });
   });
 
+  it("counts an added member guest toward the group discount without pricing them (review M5)", async () => {
+    mocks.groupDiscountFindUnique.mockResolvedValue({
+      enabled: true,
+      applyToEdits: true,
+      minGroupSize: 3,
+      summerOnly: false,
+      rateMembershipTypeId: "FULL",
+    });
+    // One existing + one added member + one added child = 3: the child gets the
+    // discounted FULL rate, and the member is counted but never priced.
+    const estimate = await estimateChangeRequestAddedGuests(booking(1), [
+      { ...child("Cam"), isMember: true, memberId: "member-9" },
+      child("Ari"),
+    ]);
+    expect(estimate).toMatchObject({
+      outcome: "priced",
+      guests: [{ priceCents: null, nights: 3 }, { priceCents: 3000, nights: 3 }],
+      totalCents: 3000,
+      excludesMemberGuests: true,
+    });
+  });
+
   it("says the nights can't be priced when no active season covers them", async () => {
     mocks.loadActiveSeasonRates.mockResolvedValue([]);
     const estimate = await estimateChangeRequestAddedGuests(booking(), [child("Ari")]);
@@ -171,6 +198,7 @@ describe("POST /api/bookings/[id]/change-requests/quote (#4030)", () => {
     vi.clearAllMocks();
     mocks.auth.mockResolvedValue({ user: { id: "member-1", role: "MEMBER", accessRoles: [] } });
     mocks.bookingFindUnique.mockResolvedValue(booking());
+    mocks.checkRateLimit.mockResolvedValue({ success: true, resetAt: 0 });
     mocks.loadActiveSeasonRates.mockResolvedValue([SEASON]);
     mocks.groupDiscountFindUnique.mockResolvedValue(null);
     mocks.resolveGuestRateMembershipTypes.mockImplementation(
@@ -183,6 +211,21 @@ describe("POST /api/bookings/[id]/change-requests/quote (#4030)", () => {
     const response = await post({ addGuests: [child("Ari", { stayStart: "2026-07-01", stayEnd: "2026-07-03" })] });
     expect(response.status).toBe(200);
     expect((await response.json()).estimate).toMatchObject({ outcome: "priced", totalCents: 4000 });
+  });
+
+  it("throttles the estimate per member with the booking-query limiter (review S1)", async () => {
+    mocks.checkRateLimit.mockResolvedValue({ success: false, resetAt: Date.now() + 30_000 });
+    const response = await post({ addGuests: [child("Ari")] });
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect(mocks.checkRateLimit).toHaveBeenCalledWith({ id: "booking-query" }, "member-1");
+    expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
+  });
+
+  it("spends no budget for a caller refused at the owner check", async () => {
+    mocks.auth.mockResolvedValue({ user: { id: "member-2", role: "MEMBER", accessRoles: [] } });
+    expect((await post({ addGuests: [child("Ari")] })).status).toBe(403);
+    expect(mocks.checkRateLimit).not.toHaveBeenCalled();
   });
 
   it("refuses somebody else's booking", async () => {

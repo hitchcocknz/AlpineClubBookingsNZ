@@ -1105,6 +1105,62 @@ describe("PUT /api/bookings/[id]/modify", () => {
     ]);
   }, 10_000);
 
+  it("#4030 review M6: the change email names an added guest with the nights actually priced", async () => {
+    const booking = withSoldNightProvenance(makeBooking());
+    const tx = makeTx(booking);
+    const pricedNight = new Date("2026-08-21T00:00:00.000Z");
+    // The engine prices the added guest for one night of the two asked for, so
+    // the row is rewritten to that night's envelope after it is created.
+    mockCalculateBookingPrice.mockImplementation(
+      ((_checkIn: unknown, _checkOut: unknown, guests: unknown[]) => ({
+        totalPriceCents: 8000,
+        guests: guests.map((_guest, index) =>
+          index === 0
+            ? {
+                priceCents: 5000,
+                perNightCents: [2500, 2500],
+                nightDates: [
+                  new Date("2026-08-20T00:00:00.000Z"),
+                  new Date("2026-08-21T00:00:00.000Z"),
+                ],
+              }
+            : { priceCents: 3000, perNightCents: [3000], nightDates: [pricedNight] },
+        ),
+      })) as never,
+    );
+    const { modifyBookingBatch } = await import("@/lib/booking-batch-modification-service");
+    const result = await modifyBookingBatch({
+      format: CLUB_FORMAT_TEST,
+      todayAtClub: FIXTURE_CLUB_DAY,
+      bookingId: "bk1",
+      actor: { id: "officer-1", role: "ADMIN" },
+      input: {
+        addGuests: [
+          {
+            firstName: "Late",
+            lastName: "Arrival",
+            ageTier: "ADULT",
+            isMember: false,
+            stayStart: "2026-08-20",
+            stayEnd: "2026-08-22",
+          },
+        ],
+      },
+      ipAddress: "127.0.0.1",
+      tx: tx as never,
+      preTransaction: TX_MODE_PRE_TRANSACTION,
+    });
+    await result.deferredPostCommit?.();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+      expect.objectContaining({
+        firstName: "Late",
+        stayStart: pricedNight,
+        stayEnd: new Date("2026-08-22T00:00:00.000Z"),
+      }),
+    ]);
+  }, 10_000);
+
   it("allows identity-only edits on a quote-priced booking without repricing (#1099)", async () => {
     // A school booking's student names must be editable; the negotiated flat
     // price must not move. Identity-only edits skip the pricing engine, so

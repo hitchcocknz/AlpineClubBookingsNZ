@@ -12,6 +12,7 @@ import {
   changeRequestAddGuestSchema,
 } from "@/lib/booking-change-request-guests";
 import { estimateChangeRequestAddedGuests } from "@/lib/booking-change-request-estimate";
+import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
 
 /**
  * #4030 Part A: the price estimate an in-progress stay's change-request card
@@ -54,7 +55,6 @@ export async function POST(
           stayEnd: true,
           ageTier: true,
           isMember: true,
-          rateMembershipTypeId: true,
           nights: { select: { stayDate: true } },
         },
       },
@@ -71,6 +71,17 @@ export async function POST(
   // either way and this is never a deleted-or-live oracle.
   if (booking.deletedAt) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  }
+  // #4030 review S1: the card re-asks as the list changes, so the estimate is
+  // throttled per member like the change request it precedes — after the owner
+  // check, so nobody can spend another member's budget.
+  const rl = await checkRateLimit(rateLimiters.bookingQuery, session.user.id);
+  if (!rl.success) {
+    const retryAfter = Math.ceil((rl.resetAt - Date.now()) / 1000);
+    return NextResponse.json(
+      { error: "Too many requests. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
   }
 
   let body: unknown;

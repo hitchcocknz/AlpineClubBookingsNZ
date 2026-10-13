@@ -4,6 +4,7 @@ import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import type { BatchModifyInput } from "@/lib/booking-modify";
+import { isEffectiveStayRangeChange } from "@/lib/booking-change-request-guests";
 
 /**
  * A LOCKED_PERIOD change request's stored `requestedChanges`, read back, and
@@ -29,7 +30,11 @@ export const storedLockedPeriodRequestSchema = z.object({
   original: z.object({
     checkIn: z.string(),
     checkOut: z.string(),
-    guests: z.array(z.object({ id: z.string() })),
+    // The guest's stored range is read when present (#4030 review M2), so a
+    // range repeating it is not mistaken for a change.
+    guests: z.array(
+      z.object({ id: z.string(), stayStart: z.string().nullish(), stayEnd: z.string().nullish() }),
+    ),
   }),
   requested: z.object({
     checkIn: optionalDate,
@@ -91,7 +96,16 @@ export function lockedPeriodRequestToBatchInput(
   const removed = new Set(removeGuestIds);
   // A range for a guest the same request removes is moot, and the planner would
   // refuse it as naming a guest no longer on the booking.
+  const currentRanges = new Map(
+    stored.original.guests.flatMap((guest) =>
+      guest.stayStart && guest.stayEnd
+        ? [[guest.id, { stayStart: guest.stayStart, stayEnd: guest.stayEnd }] as const]
+        : [],
+    ),
+  );
   const guestStayRanges = requested.guestStayRanges
+    // #4030 review M2: only a range that changes something is a change.
+    .filter((range) => isEffectiveStayRangeChange(range, currentRanges.get(range.guestId)))
     .filter((range) => !removed.has(range.guestId))
     .map((range) => ({
       guestId: range.guestId,

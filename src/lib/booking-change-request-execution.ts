@@ -20,7 +20,12 @@ import {
   type StoredLockedPeriodRequest,
 } from "@/lib/booking-change-request-stored";
 import {
+  checkOwnDependantIdentityForParty,
+  claimedMemberPathIds,
+} from "@/lib/booking-dependant-identity";
+import {
   addedGuestNightsRefusal,
+  OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE,
   withOfficerEnteredGuests,
   type OfficerEnteredGuest,
 } from "@/lib/booking-change-request-guests";
@@ -272,6 +277,7 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
       const booking = await tx.booking.findUnique({
         where: { id: request.bookingId },
         select: {
+          memberId: true,
           checkIn: true,
           checkOut: true,
           status: true,
@@ -314,6 +320,17 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
             outcome: "keptPending",
             message: `${nightsRefusal} Nothing has been changed; the request is still pending.`,
           };
+        }
+        // #4030 review M4 (`INV-GUEST-019`): the one dependant-identity rule,
+        // before anything is written. The officer is pointed at the finder.
+        if (
+          await checkOwnDependantIdentityForParty(tx, {
+            bookerMemberId: booking.memberId,
+            party: officerGuests,
+            memberPathMemberIds: claimedMemberPathIds(officerGuests),
+          })
+        ) {
+          return { outcome: "keptPending", message: OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE };
         }
         officerRequestedChanges = withOfficerEnteredGuests(
           request.requestedChanges,

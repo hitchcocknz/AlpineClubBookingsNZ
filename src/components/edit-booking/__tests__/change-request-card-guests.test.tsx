@@ -142,4 +142,18 @@ describe("ChangeRequestCard — structured guests (#4030)", () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(screen.getByText(/Ari Example/)).toBeInTheDocument();
   });
+
+  it("says members are priced on approval, rather than $0.00, when nobody listed is priced (review M5)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        estimate: { outcome: "priced", guests: [{ priceCents: null, nights: 3 }], totalCents: 0, excludesMemberGuests: true },
+      }),
+    );
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "+ Kit Owner" }));
+    expect(
+      await screen.findByText("Members are priced at their membership rate when the officer approves."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\$0\.00/)).toBeNull();
+  });
 });

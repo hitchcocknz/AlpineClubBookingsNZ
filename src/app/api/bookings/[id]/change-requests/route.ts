@@ -29,7 +29,13 @@ import {
   buildChangeRequestSummary,
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
   changeRequestAddGuestsSchema,
+  isEffectiveStayRangeChange,
+  CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
 } from "@/lib/booking-change-request-guests";
+import {
+  checkOwnDependantIdentityForParty,
+  claimedMemberPathIds,
+} from "@/lib/booking-dependant-identity";
 
 const createChangeRequestSchema = z.object({
   checkIn: z.string().optional(),
@@ -230,7 +236,16 @@ export async function POST(
     changedDate(checkOut, booking.checkOut) ||
     Boolean(addGuests?.length) ||
     Boolean(removeGuestIds?.length) ||
-    Boolean(guestStayRanges?.length);
+    // #4030 review M2: a range only counts when it changes the guest's nights.
+    (guestStayRanges ?? []).some((range) => {
+      const guest = booking.guests.find((candidate) => candidate.id === range.guestId);
+      return isEffectiveStayRangeChange(
+        range,
+        guest
+          ? { stayStart: formatBookingDate(guest.stayStart), stayEnd: formatBookingDate(guest.stayEnd) }
+          : undefined,
+      );
+    });
 
   if (!hasRequestedChange) {
     return NextResponse.json(
@@ -266,6 +281,20 @@ export async function POST(
   });
   if (addedNightsRefusal) {
     return NextResponse.json({ error: addedNightsRefusal }, { status: 400 });
+  }
+  // #4030 review M4 (`INV-GUEST-019`): the one dependant-identity rule.
+  if (addGuests?.length) {
+    const dependantRefusal = await checkOwnDependantIdentityForParty(prisma, {
+      bookerMemberId: bookingOwner(booking).memberId,
+      party: addGuests,
+      memberPathMemberIds: claimedMemberPathIds(addGuests),
+    });
+    if (dependantRefusal) {
+      return NextResponse.json(
+        { error: CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE, code: dependantRefusal.code },
+        { status: 409 },
+      );
+    }
   }
 
   // #2266 (LOW-7): DRAFT joined the member-editable statuses, which would

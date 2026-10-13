@@ -27,7 +27,7 @@ const CHECK_OUT = new Date("2026-08-15T00:00:00.000Z");
 const ARI = { firstName: "Ari", lastName: "Grandchild", stayStart: CHECK_IN, stayEnd: CHECK_OUT };
 const BO = { firstName: "Bo", lastName: "Grandchild", stayStart: NIGHT_2, stayEnd: CHECK_OUT };
 
-function params(addedGuests: ReadonlyArray<typeof ARI>) {
+function params(addedGuests: ReadonlyArray<typeof ARI & { consentStatus?: string | null }>) {
   return {
     firstName: "Heidi",
     modificationType: "BATCH_MODIFY",
@@ -65,6 +65,18 @@ describe("booking-modified email names the added guests (#4030)", () => {
     // Right after the counts it explains.
     const labels = rows.map((row) => row.label);
     expect(labels.indexOf("Guests Added")).toBe(labels.indexOf("New Guests") + 1);
+  });
+
+  it("marks a member guest still awaiting their consent (#4030 review S8)", () => {
+    const rows = bookingModificationSummaryRows(
+      params([ARI, { ...BO, consentStatus: "PENDING" }, { ...ARI, firstName: "Cy", consentStatus: "CONFIRMED" }]),
+      CLUB_FORMAT_TEST,
+    );
+    expect(rows).toContainEqual({
+      label: "Guests Added",
+      value:
+        "Ari Grandchild; Bo Grandchild (14 Aug 2026 – 15 Aug 2026) (waiting for them to accept); Cy Grandchild",
+    });
   });
 
   it("adds no row when the change added nobody", () => {

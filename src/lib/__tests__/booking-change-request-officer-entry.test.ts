@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
   updateMany: vi.fn(),
   update: vi.fn(),
+  memberFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
@@ -45,6 +46,7 @@ import {
   approveAndExecuteLockedPeriodChangeRequest,
   OFFICER_ENTRY_ON_STRUCTURED_REQUEST_MESSAGE,
 } from "@/lib/booking-change-request-execution";
+import { OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE } from "@/lib/booking-change-request-guests";
 import { storedRequestNamesNoChange } from "@/lib/booking-change-request-stored";
 import {
   OFFICER_ENTERED_SUMMARY_SUFFIX,
@@ -67,6 +69,7 @@ const tx = {
     update: (...args: unknown[]) => mocks.update(...args),
   },
   booking: { findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args) },
+  member: { findMany: (...args: unknown[]) => mocks.memberFindMany(...args) },
 };
 const db = {
   $transaction: async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx),
@@ -95,6 +98,7 @@ function freeTextRequest(requested: Record<string, unknown> = {}) {
 }
 
 const finishedBooking = {
+  memberId: "member-1",
   checkIn: new Date("2026-06-10T00:00:00.000Z"),
   checkOut: new Date("2026-06-14T00:00:00.000Z"),
   status: "COMPLETED",
@@ -147,6 +151,7 @@ beforeEach(() => {
   mocks.reauthorize.mockResolvedValue(true);
   primeRequest(freeTextRequest());
   mocks.bookingFindUnique.mockResolvedValue(finishedBooking);
+  mocks.memberFindMany.mockResolvedValue([]);
   mocks.updateMany.mockResolvedValue({ count: 1 });
   mocks.update.mockResolvedValue({});
   mocks.modifyBookingBatch.mockResolvedValue({
@@ -255,6 +260,25 @@ describe("officer-entered guests on a free-text request (#4030 Part B)", () => {
     expect(mocks.update).not.toHaveBeenCalled();
   });
 
+  it("refuses a typed guest named like one of the member's dependants, pointing at the finder (review M4)", async () => {
+    mocks.memberFindMany.mockResolvedValue([{ id: "dep-1", firstName: "Bo", lastName: "Example" }]);
+    expect(await run()).toEqual({ outcome: "keptPending", message: OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(mocks.modifyBookingBatch).not.toHaveBeenCalled();
+    // The OWNER's dependants were read, never the officer's.
+    expect(mocks.memberFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ NOT: { id: "member-1" } }) }),
+    );
+  });
+
+  it("lets the same dependant through when entered as the member they are", async () => {
+    mocks.memberFindMany.mockResolvedValue([{ id: "dep-1", firstName: "Bo", lastName: "Example" }]);
+    const result = await run({
+      officerEnteredGuests: [{ ...GRANDCHILDREN[1], isMember: true, memberId: "dep-1" }],
+    });
+    expect(result).toMatchObject({ outcome: "executed" });
+  });
+
   it("without an entry, a free-text request is still not applied", async () => {
     const result = await run({ officerEnteredGuests: undefined });
     expect(result).toMatchObject({ outcome: "keptPending", message: expect.stringMatching(/Enter the guests/) });
@@ -281,6 +305,19 @@ describe("storedRequestNamesNoChange (#4030)", () => {
 
   it("treats a request whose dates equal the booking's own as naming nothing", () => {
     expect(storedRequestNamesNoChange(freeTextRequest({ checkOut: "2026-06-14" }), booking)).toBe(true);
+  });
+
+  it("does not count a stay range that repeats the guest's stored nights (review M2)", () => {
+    const withOriginal = (range: Record<string, unknown>) => ({
+      ...freeTextRequest({ guestStayRanges: [{ guestId: "g1", ...range }] }),
+      original: {
+        ...freeTextRequest().original,
+        guests: [{ id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" }],
+      },
+    });
+    expect(storedRequestNamesNoChange(withOriginal({ stayStart: "2026-06-10", stayEnd: "2026-06-14" }), booking)).toBe(true);
+    expect(storedRequestNamesNoChange(withOriginal({ stayEnd: "2026-06-12" }), booking)).toBe(true);
+    expect(storedRequestNamesNoChange(withOriginal({ stayStart: "2026-06-10", stayEnd: "2026-06-12" }), booking)).toBe(false);
   });
 
   it("is false for an unreadable row", () => {

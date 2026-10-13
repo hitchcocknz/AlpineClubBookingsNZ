@@ -205,6 +205,13 @@ function ChangeRequestEstimateSummary({
         <p className="text-danger-11">{state.error}</p>
       ) : estimate?.outcome === "unpriced" ? (
         <p className="text-muted-foreground">{estimate.message}</p>
+      ) : estimate?.outcome === "priced" &&
+        estimate.guests.every((guest) => guest.priceCents === null) ? (
+        // #4030 review M5: nobody in the list is priced here, so say so
+        // rather than showing $0.00.
+        <p className="text-muted-foreground">
+          Members are priced at their membership rate when the officer approves.
+        </p>
       ) : estimate?.outcome === "priced" ? (
         <>
           <p className="font-medium text-foreground">

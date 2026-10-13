@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
   bookingChangeRequestFindFirst: vi.fn(),
   bookingChangeRequestCreate: vi.fn(),
+  memberFindMany: vi.fn(),
   logAudit: vi.fn(),
   sendAdminBookingChangeRequestAlert: vi.fn(),
 }));
@@ -27,6 +28,8 @@ vi.mock("@/lib/prisma", () => ({
     lodge: { findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }) },
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
     booking: { findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args) },
+    // The owner's dependants, read by the dependant-identity rule (#4030 review M4).
+    member: { findMany: (...args: unknown[]) => mocks.memberFindMany(...args) },
     bookingChangeRequest: {
       findFirst: (...args: unknown[]) => mocks.bookingChangeRequestFindFirst(...args),
       create: (...args: unknown[]) => mocks.bookingChangeRequestCreate(...args),
@@ -107,6 +110,7 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
     });
     mocks.bookingFindUnique.mockResolvedValue(inProgressBooking());
     mocks.bookingChangeRequestFindFirst.mockResolvedValue(null);
+    mocks.memberFindMany.mockResolvedValue([]);
     mocks.bookingChangeRequestCreate.mockImplementation(async (args: { data: unknown }) => ({
       id: "request-1",
       status: "REQUESTED",
@@ -177,7 +181,7 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
       addGuests: [grandchild("Ari", { stayStart: "2026-07-01", stayEnd: "2026-07-01" })],
     });
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/date out must be after their date in/);
+    expect((await response.json()).error).toMatch(/Date Out must be after Date In/);
   });
 
   it("sends a guest added only from tomorrow to the guest editor (not a locked-period change)", async () => {
@@ -187,5 +191,55 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/past-night changes that require admin review/);
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses a guest with only one of their two dates, by the canonical range rule (review M3)", async () => {
+    const response = await post({ addGuests: [grandchild("Ari", { stayStart: "2026-06-30" })] });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/Date In and Date Out are both required/);
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not count a stay range that repeats the guest's own nights as a change (review M2)", async () => {
+    const response = await post({
+      guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }],
+      requestedEffectiveDate: "2026-06-30",
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("STRUCTURED_CHANGE_REQUIRED");
+  });
+
+  it("does not count a stay range missing a bound as a change (review M2)", async () => {
+    const response = await post({
+      guestStayRanges: [{ guestId: "guest-1", stayEnd: "2026-07-01" }],
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("STRUCTURED_CHANGE_REQUIRED");
+  });
+
+  it("still accepts a stay range that changes the guest's nights", async () => {
+    const response = await post({
+      guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-01" }],
+      requestedEffectiveDate: "2026-06-30",
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("refuses a typed guest named like one of the owner's dependants (review M4, INV-GUEST-019)", async () => {
+    mocks.memberFindMany.mockResolvedValue([{ id: "dep-1", firstName: "Ari", lastName: "Example" }]);
+    const response = await post({ addGuests: [grandchild("Ari")] });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toMatch(/same name as one of your dependants/);
+    expect(body.code).toBe("DEPENDANT_IDENTITY_UNRESOLVED");
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("lets the same dependant through on the member path (their family button)", async () => {
+    mocks.memberFindMany.mockResolvedValue([{ id: "dep-1", firstName: "Ari", lastName: "Example" }]);
+    const response = await post({
+      addGuests: [{ ...grandchild("Ari"), isMember: true, memberId: "dep-1" }],
+    });
+    expect(response.status).toBe(201);
   });
 });

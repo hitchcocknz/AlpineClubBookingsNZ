@@ -2,7 +2,11 @@ import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
-import { parseCalendarDate } from "@/lib/club-time";
+import { dateOnlyInstantOf, requireCalendarDate } from "@/lib/club-time";
+import {
+  BookingGuestStayRangeValidationError,
+  normalizeGuestStayRange,
+} from "@/lib/booking-guest-stay-range-input";
 import { nameField } from "@/lib/zod-helpers";
 
 /**
@@ -61,6 +65,18 @@ export const CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE =
   "Add the guests (or change the dates) you are asking for, then send the request. A note on its own can't be applied to your booking; use it to tell the booking officer anything else they should know.";
 
 /**
+ * #4030 review M4 (`INV-GUEST-019`): a typed-in guest whose name matches one of
+ * the booking owner's own dependants is refused when the request is sent, by
+ * the same `checkOwnDependantIdentityForParty` every booking door runs, rather
+ * than reaching the officer as a request the approval would then refuse. Said
+ * to the member, and to the officer entering guests for them.
+ */
+export const CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE =
+  "Someone you are adding has the same name as one of your dependants. Add them with their own button above (your family), so they are booked as the member they are.";
+export const OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE =
+  "A guest you entered has the same name as one of the member's dependants. Add them with + Add a member (the member finder) instead, so they are booked as the member they are. Nothing has been changed; the request is still pending.";
+
+/**
  * The stay a request's added guests must fall inside. `checkIn` / `checkOut` are
  * calendar days (`yyyy-MM-dd`), the booking's own or, on a request that also
  * moves them, the proposed ones.
@@ -72,31 +88,59 @@ export interface ChangeRequestStay {
 
 /**
  * Why an added guest's nights cannot be requested, or `null` when every one is
- * a run of nights inside the stay. An absent bound is the stay's own bound,
- * which is how the request has always read a guest with no range.
+ * a run of nights inside the stay.
  *
- * Calendar days compare correctly as strings once each has parsed as one, so
- * no instant is built here (`INV-DATE`).
+ * The range itself is read by the canonical `normalizeGuestStayRange`
+ * (`INV-SSOT`) — the rule every booking door uses: no bounds is the whole stay,
+ * one bound alone is refused, Date Out must follow Date In. This adds only the
+ * request's own rule, that the nights fall inside the stay (#4030 review M3).
  */
 export function addedGuestNightsRefusal(
   guests: ReadonlyArray<Pick<ChangeRequestAddGuest, "firstName" | "lastName" | "stayStart" | "stayEnd">>,
   stay: ChangeRequestStay,
 ): string | null {
-  for (const guest of guests) {
-    const start = guest.stayStart ?? stay.checkIn;
-    const end = guest.stayEnd ?? stay.checkOut;
-    const name = `${guest.firstName} ${guest.lastName}`.trim();
-    if (!parseCalendarDate(start) || !parseCalendarDate(end)) {
-      return `${name}'s dates are not valid dates.`;
+  const bounds = {
+    checkIn: dateOnlyInstantOf(requireCalendarDate(stay.checkIn)),
+    checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
+  };
+  for (const [index, guest] of guests.entries()) {
+    let range;
+    try {
+      range = normalizeGuestStayRange(
+        { stayStart: guest.stayStart ?? null, stayEnd: guest.stayEnd ?? null },
+        bounds,
+        index,
+      );
+    } catch (error) {
+      if (error instanceof BookingGuestStayRangeValidationError) return error.message;
+      throw error;
     }
-    if (start >= end) {
-      return `${name}'s date out must be after their date in.`;
-    }
-    if (start < stay.checkIn || end > stay.checkOut) {
+    if (range.stayStart < bounds.checkIn || range.stayEnd > bounds.checkOut) {
+      const name = `${guest.firstName} ${guest.lastName}`.trim();
       return `${name}'s nights must fall within the stay (${stay.checkIn} to ${stay.checkOut}).`;
     }
   }
   return null;
+}
+
+/**
+ * Whether a requested guest stay range actually changes anything (#4030 review
+ * M2): both bounds given, and different from the guest's own stored range. A
+ * range missing a bound, or repeating the guest's current nights, is not a
+ * structured change — it must not let a note through as one, nor stop the
+ * officer entering guests for what is really a free-text request.
+ *
+ * `current` is the guest's stored range as calendar days, or `undefined` when
+ * it is not known (a range for a guest the request does not describe), in which
+ * case a two-bound range counts.
+ */
+export function isEffectiveStayRangeChange(
+  range: { stayStart?: string | null; stayEnd?: string | null },
+  current: { stayStart: string; stayEnd: string } | undefined,
+): boolean {
+  if (!range.stayStart || !range.stayEnd) return false;
+  if (!current) return true;
+  return range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd;
 }
 
 /**

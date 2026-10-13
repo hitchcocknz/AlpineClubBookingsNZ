@@ -473,7 +473,16 @@ export interface BookingModificationAddedGuest {
   lastName: string;
   stayStart: Date;
   stayEnd: Date;
+  /**
+   * #4030 review S8: the guest row's member-guest consent status. A cross-family
+   * member guest still `PENDING` is on the booking only once they accept, so the
+   * line says so rather than reading as settled.
+   */
+  consentStatus?: string | null;
 }
+
+/** #4030 review S8: what the Guests Added line says about a guest yet to accept. */
+export const ADDED_GUEST_AWAITING_CONSENT_NOTE = "(waiting for them to accept)";
 
 /**
  * #2267: the single source of truth for WHICH change rows a booking-modified
@@ -575,7 +584,11 @@ export function bookingModificationSummaryRows(params: {
           const wholeStay =
             guest.stayStart.getTime() === params.newCheckIn.getTime() &&
             guest.stayEnd.getTime() === params.newCheckOut.getTime();
-          return wholeStay ? name : `${name} (${dateRange(guest.stayStart, guest.stayEnd)})`;
+          const awaiting =
+            guest.consentStatus === "PENDING" ? ` ${ADDED_GUEST_AWAITING_CONSENT_NOTE}` : "";
+          return wholeStay
+            ? `${name}${awaiting}`
+            : `${name} (${dateRange(guest.stayStart, guest.stayEnd)})${awaiting}`;
         })
         .join("; "),
     });

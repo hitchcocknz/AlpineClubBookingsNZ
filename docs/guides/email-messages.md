@@ -348,8 +348,9 @@ Two consequences worth knowing before you edit one:
   Dates, guest count and total appear as a Previous/New pair only when they
   changed. When the change added people, a **Guests Added** line names each of
   them, with their own nights in brackets for anyone not staying the whole stay
-  (#4030) — the same line the built-in email shows. Keep the token on a line of
-  its own.
+  (#4030), and "(waiting for them to accept)" after a member from outside the
+  family who has not yet accepted their place — the same line the built-in email
+  shows. Keep the token on a line of its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

@@ -38,9 +38,11 @@ import type {
  *    for any id it was handed would answer "is this person a paid-up member" for
  *    anyone (the D-8 boundary the member-guest finder exists to hold). A member
  *    guest's line is "priced at their membership rate when approved".
- *  - Existing guests are COUNTED, never priced: each holds its nights as
- *    count-only locked entries, so no rate is looked up for them and nothing about
- *    their price is read or returned.
+ *  - Guests already on the booking AND added member guests are COUNTED, never
+ *    priced (#4030 review M5): each holds its nights as count-only locked entries
+ *    at zero, so no rate is looked up for them, nothing about their price is read
+ *    or returned, and the party size on each night — which decides the group
+ *    discount — is the party the approval will price.
  */
 
 export const CHANGE_REQUEST_ESTIMATE_NO_RATE_MESSAGE =
@@ -60,9 +62,22 @@ interface EstimateBooking {
     stayEnd: Date;
     ageTier: AgeTier;
     isMember: boolean;
-    rateMembershipTypeId: string | null;
     nights: Array<{ stayDate: Date }>;
   }>;
+}
+
+/** Count-only party entries for a run of nights: locked at zero, never priced. */
+function countOnly(
+  guest: { ageTier: AgeTier; isMember: boolean },
+  nights: Date[],
+): GuestInput {
+  return {
+    ageTier: guest.ageTier,
+    isMember: guest.isMember,
+    rateMembershipTypeId: "count-only",
+    nights,
+    lockedNightPrices: nights.map((stayDate) => ({ stayDate, priceCents: 0 })),
+  };
 }
 
 /**
@@ -75,13 +90,7 @@ function countOnlyExistingGuest(guest: EstimateBooking["guests"][number]): Guest
     guest.nights.length > 0
       ? guest.nights.map((night) => night.stayDate)
       : getStayNights(guest.stayStart, guest.stayEnd);
-  return {
-    ageTier: guest.ageTier,
-    isMember: guest.isMember,
-    rateMembershipTypeId: guest.rateMembershipTypeId ?? "count-only",
-    nights,
-    lockedNightPrices: nights.map((stayDate) => ({ stayDate, priceCents: 0 })),
-  };
+  return countOnly(guest, nights);
 }
 
 export async function estimateChangeRequestAddedGuests(
@@ -116,12 +125,22 @@ export async function estimateChangeRequestAddedGuests(
       stayEnd: guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut,
     })),
   });
+  // The added guests in the order they were sent: a non-member's rated entry,
+  // or a member's count-only one (#4030 review M5).
+  const ratedByIndex = new Map(nonMembers.map(({ index }, row) => [index, rated[row]]));
+  const addedEntries = addGuests.map((guest, index) => {
+    const ratedEntry = ratedByIndex.get(index);
+    if (ratedEntry) return ratedEntry;
+    const start = guest.stayStart ? dateOnlyOf(guest.stayStart) : checkIn;
+    const end = guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut;
+    return countOnly({ ageTier: guest.ageTier as AgeTier, isMember: true }, getStayNights(start, end));
+  });
   let priced;
   try {
     priced = calculateBookingPrice(
       checkIn,
       checkOut,
-      [...booking.guests.map(countOnlyExistingGuest), ...rated],
+      [...booking.guests.map(countOnlyExistingGuest), ...addedEntries],
       seasons,
       groupDiscount,
     );
@@ -130,17 +149,17 @@ export async function estimateChangeRequestAddedGuests(
     return { outcome: "unpriced", message: CHANGE_REQUEST_ESTIMATE_NO_RATE_MESSAGE };
   }
   const addedRows = priced.guests.slice(booking.guests.length);
-  const byIndex = new Map(nonMembers.map(({ index }, row) => [index, addedRows[row]]));
-  const guests = addGuests.map((guest, index) => {
-    const row = byIndex.get(index);
-    if (row) return { priceCents: row.priceCents, nights: row.nights };
-    const start = guest.stayStart ? dateOnlyOf(guest.stayStart) : checkIn;
-    const end = guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut;
-    return { priceCents: null, nights: getStayNights(start, end).length };
+  const guests = addGuests.map((_guest, index) => {
+    const row = addedRows[index];
+    return {
+      priceCents: ratedByIndex.has(index) && row ? row.priceCents : null,
+      nights: row?.nights ?? 0,
+    };
   });
   return {
     outcome: "priced",
     guests,
+    // Members' count-only rows are zero, so they add nothing here.
     totalCents: addedRows.reduce((sum, row) => sum + row.priceCents, 0),
     excludesMemberGuests: nonMembers.length < addGuests.length,
   };
