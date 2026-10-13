@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ComponentType, type ReactNode } from "react";
+import { useRef, useState, type ComponentType, type ReactNode } from "react";
 
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -84,6 +84,15 @@ export function officerGuestsKey(guests: readonly OfficerEnteredGuest[] | null):
  */
 export function useFinishedStayQuotes(onError: (message: string) => void) {
   const [quotes, setQuotes] = useState<Record<string, FinishedStayQuote>>({});
+  // Per-card generation (#4030 re-review of 72c933ffc): bumped by every new
+  // quote and every `clear`, so a reply that lands after either is dropped and
+  // cannot re-create figures or an overbooking confirmation for a list the
+  // officer has since changed.
+  const generations = useRef<Record<string, number>>({});
+  const bump = (id: string) => {
+    generations.current[id] = (generations.current[id] ?? 0) + 1;
+    return generations.current[id];
+  };
   const patch = (id: string, next: Partial<FinishedStayQuote>) =>
     setQuotes((current) => ({
       ...current,
@@ -98,6 +107,8 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
       officerGuests?: OfficerEnteredGuest[] | null;
     },
   ) {
+    const generation = bump(id);
+    const stale = () => generations.current[id] !== generation;
     patch(id, { loading: true, figures: null });
     const forOfficerGuests = officerGuestsKey(answers.officerGuests ?? null);
     try {
@@ -111,6 +122,7 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
         }),
       });
       const data = await response.json().catch(() => ({}));
+      if (stale()) return;
       if (!response.ok) {
         patch(id, {
           loading: false,
@@ -131,6 +143,7 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
         overCapacityNights: null,
       });
     } catch {
+      if (stale()) return;
       patch(id, { loading: false });
       onError("Could not work out the figures for this change");
     }
@@ -141,13 +154,15 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
     /** An approval answered over capacity after its quote: ask again. */
     needsCapacity: (id: string, nights: OverCapacityNight[]) =>
       patch(id, { figures: null, overCapacityNights: nights }),
-    clear: (id: string) =>
+    clear: (id: string) => {
+      bump(id);
       setQuotes((current) => {
         if (!(id in current)) return current;
         const next = { ...current };
         delete next[id];
         return next;
-      }),
+      });
+    },
   };
 }
 
