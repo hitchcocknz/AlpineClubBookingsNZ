@@ -1406,12 +1406,12 @@ produced no timeout, so their figures show how close each suite runs to the
 budget under a batch of that size, not a red. The reds came later, on 20
 September 2026 at `6ca8f179d`, from a smaller and therefore harsher-per-file
 batch: the 141 files vitest selects for the filters `census`, `contract` and
-`guard`, 2,068 tests in 220s, run beside nothing else. All three of `client-
-server-boundary-census`, `identity-ordering-census` and `in-progress-edit-sold-
-price-census` timed out in that one run and all three passed alone immediately
-afterwards. That is the evidence of the limit being crossed; a lane running any
-such batch beside another lane's tests, a build, or a typecheck is where it will
-be crossed again.
+`guard`, 2,068 tests in 220s, run beside nothing else. All three of
+`client-server-boundary-census`, `identity-ordering-census` and
+`in-progress-edit-sold-price-census` timed out in that one run and all three
+passed alone immediately afterwards. That is the evidence of the limit being
+crossed; a lane running any such batch beside another lane's tests, a build, or
+a typecheck is where it will be crossed again.
 
 ## Mocking a money seam: never in a test that asserts its money
 
