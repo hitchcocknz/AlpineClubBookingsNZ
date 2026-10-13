@@ -109,6 +109,9 @@ const mocks = vi.hoisted(() => {
   runPaymentRecoveryOperationNow: vi.fn(),
   // #3973: the debt's own status, re-read after the inline run.
   recoveryOperationFindUnique: vi.fn(),
+  // #4096: the refused cancellation refund's re-plan and the officers' alert.
+  recoveryOperationUpdateMany: vi.fn(),
+  alertPaymentRecoveryOfficers: vi.fn(),
   };
 });
 
@@ -149,6 +152,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     paymentRecoveryOperation: {
       findUnique: mocks.recoveryOperationFindUnique,
+      updateMany: mocks.recoveryOperationUpdateMany,
     },
     $transaction: mocks.prismaTransaction,
   },
@@ -159,6 +163,10 @@ vi.mock("@/lib/cancellation", () => ({
   calculateAppliedCreditRestore: mocks.calculateAppliedCreditRestore,
   daysUntilDate: mocks.daysUntilDate,
   loadCancellationPolicy: mocks.loadCancellationPolicy,
+}));
+
+vi.mock("@/lib/payment-recovery-alert", () => ({
+  alertPaymentRecoveryOfficers: mocks.alertPaymentRecoveryOfficers,
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -1877,6 +1885,130 @@ describe("cancelBooking credit refunds", () => {
     });
   });
 
+  // #4083 (`INV-PAY-128`): Stripe answered the refund `failed` or `canceled`
+  // without throwing. The pre-persisted debt must stay open for the runner,
+  // never be closed as paid; the runner asks again under a fresh key.
+  // #4083/#4096 (`INV-PAY-128`): Stripe answered the refund `failed` or
+  // `canceled` without throwing. The pre-persisted debt must stay open, never be
+  // closed as paid: re-planned to the refused slices on their next key, fenced
+  // on a row no worker has touched, and the officers alerted once.
+  const cancelRefund = (slice: { paymentTransactionId: string; amountCents: number }, status: string) => ({
+    paymentIntentId: "pi_1",
+    refundId: `re_${slice.paymentTransactionId}_${status}`,
+    amountCents: slice.amountCents,
+    status,
+    slice,
+  });
+
+  it.each(["failed", "canceled"])("leaves the pre-persisted recovery op open, re-planned on a fresh key, when Stripe answers the card refund %s (#4083, #4096)", async (status) => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [cancelRefund({ paymentTransactionId: "ptx_1", amountCents: 50 }, status)],
+      totalRefundedAmountCents: 50,
+    });
+    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 1 });
+    mocks.recoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_cancel", paymentIntentId: "pi_1" });
+
+    const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(result).toEqual({ status: 200, data: expect.objectContaining({ success: true, refundMethod: "card" }) });
+    // The debt was written once, in the claim, with the frozen plan; nothing re-queues it.
+    expect(mocks.enqueueBookingCancellationRefundRecovery).toHaveBeenCalledTimes(1);
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+    expect(mocks.recoveryOperationUpdateMany).toHaveBeenCalledWith({
+      where: { idempotencyKey: "booking_cancel_refund_recovery_booking_1", status: "PENDING", attempts: 0 },
+      // The amount is not written: it stays the plan's total.
+      data: {
+        allocationPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50, stripeKeySuffix: "refused1" }],
+        lastError: "Stripe refused $0.50 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+      },
+    });
+    expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledWith({
+      bookingId: "booking_1",
+      message: "Stripe refused $0.50 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+    });
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking_1", operationId: "op_cancel", amountCents: 50, paymentIntentId: "pi_1" }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("one slice made, one refused: the made slice is marked and never sent again, and the amount stays the plan's (#4083)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [
+        cancelRefund({ paymentTransactionId: "ptx_2", amountCents: 30 }, "succeeded"),
+        cancelRefund({ paymentTransactionId: "ptx_1", amountCents: 20 }, "failed"),
+      ],
+      totalRefundedAmountCents: 50,
+    });
+    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 1 });
+    mocks.recoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_cancel", paymentIntentId: "pi_1" });
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    const written = mocks.recoveryOperationUpdateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    expect(written.data.allocationPlan).toEqual([
+      { paymentTransactionId: "ptx_2", amountCents: 30, madeRefundId: "re_ptx_2_succeeded" },
+      { paymentTransactionId: "ptx_1", amountCents: 20, stripeKeySuffix: "refused1" },
+    ]);
+    expect(written.data).not.toHaveProperty("amountCents");
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+  });
+
+  it("the row it re-planned cannot be read back: the officers are still alerted, with what is in hand (#4096)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [cancelRefund({ paymentTransactionId: "ptx_1", amountCents: 50 }, "failed")],
+      totalRefundedAmountCents: 50,
+    });
+    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 1 });
+    mocks.recoveryOperationFindUnique.mockRejectedValueOnce(new Error("database blip"));
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking_1", operationId: undefined, amountCents: 50, paymentIntentId: "pi_1" }),
+      CLUB_FORMAT_TEST,
+    );
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+  });
+
+  it("a row a worker already holds is left to the worker: no re-plan, no alert, still not closed (#4096)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [cancelRefund({ paymentTransactionId: "ptx_1", amountCents: 50 }, "failed")],
+      totalRefundedAmountCents: 50,
+    });
+    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 0 });
+    // The row is there to read: only the lost fence may stop the alert.
+    mocks.recoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_cancel", paymentIntentId: "pi_1" });
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(mocks.alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+    // The lost fence never read the row: drop the queued answer so no later case inherits it.
+    mocks.recoveryOperationFindUnique.mockReset();
+  });
+
+  it("CONTROL: closes the pre-persisted recovery op when Stripe answers the card refund pending (#4083)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [
+        { paymentIntentId: "pi_1", refundId: "re_pending", amountCents: 50, status: "pending", slice: { paymentTransactionId: "ptx_1", amountCents: 50 } },
+      ],
+      totalRefundedAmountCents: 50,
+    });
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking_1" });
+    expect(mocks.recordBookingCancellationRefundRecoveryInlineError).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------------
   // F1 (#1350): an outstanding ADDITIONAL payment intent gets a durable
   // CANCEL_PAYMENT_INTENT recovery operation INSIDE the claim transaction, so
@@ -2564,8 +2696,9 @@ describe("cancelBooking credit refunds", () => {
   describe("#4084: an own-card refund is reported made only once Stripe has made it", () => {
     // The states the Booking Modified doors are driven through (#4070); the
     // cancel's email and confirmation take the same answer (`ownCardRefundMade`).
-    // Only a thrown call records an inline error on the pre-persisted recovery
-    // operation; the cancel queues nothing new, the debt committed with the claim.
+    // A thrown call, or (#4083, `INV-PAY-128`) a refund Stripe refused, records
+    // an inline error and leaves the pre-persisted recovery operation open; the
+    // cancel queues nothing new, the debt committed with the claim.
     it.each(OWN_CARD_REFUND_STATES)("$label", async ({ answer, queued, destination }) => {
       primeOwnCardRefund(mocks.refundPaymentTransactions, answer);
       const method = destination === "own" ? "card" : "card_pending";
@@ -2585,6 +2718,7 @@ describe("cancelBooking credit refunds", () => {
         expect.objectContaining({ metadata: expect.objectContaining({ refundMethod: "card" }) }),
       );
       expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledTimes(queued ? 1 : 0);
+      expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledTimes(queued ? 0 : 1);
     });
 
     it("a zero plan (nothing left to refund, e.g. refunded outside the app) calls neither Stripe nor recovery, and is reported made, as before", async () => {

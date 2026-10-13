@@ -68,6 +68,16 @@ close always records money paid back, so it can never be for $0.00. A refund
 with nothing left owed still shows in the **Exhausted recovery operations**
 count: ask a developer to reconcile it.
 
+**A refund Stripe refused** (#4083, #4096). When a booking change or a
+cancellation refunds a card and Stripe answers straight away that the refund
+failed or was cancelled, Stripe sent nothing back. The officers are emailed
+once for the refusal, saying how much Stripe refused, and again if the retries
+run out. The app asks again as a new request
+each time, because Stripe would otherwise repeat its refusal. If the retries
+run out, the row carries no **Stripe may have refunded** warning: Stripe sent
+nothing. Once the Stripe dashboard shows that refund as failed or cancelled,
+you can pay the member another way and close it here.
+
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
 

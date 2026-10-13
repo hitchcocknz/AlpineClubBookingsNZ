@@ -47,6 +47,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import {
   PartialRefundError,
+  type RefundAllocationSlice,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
 } from "@/lib/payment-transactions";
@@ -57,6 +58,13 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
 import { ownCardRefundMade } from "@/lib/payment-transaction-status";
+import {
+  alertRefusedCardRefund,
+  planAfterRefusals,
+  refusedAnswers,
+  refusedRefundCents,
+  refusedRefundSlices,
+} from "@/lib/refused-card-refund-retry";
 
 export type BookingModificationPaymentContext = {
   pendingRefundAmountCents: number;
@@ -203,10 +211,28 @@ export async function executeBookingModificationRefund({
     return { stripeRefundId: undefined, refundDestination: made ? "organiser_card" : "organiser_card_pending" };
   }
 
+  // The exact prefix this route uses (#1152): recovery retries replay the
+  // identical Stripe keys, so a refund that succeeded on Stripe without being
+  // recorded is replayed, never re-minted.
+  const stripeKeyPrefix = `${idempotencyKeyPrefix}_${result.bookingModificationId}`;
+  const paymentId = result.paymentId;
+  const keepOwed = (amountCents: number, allocationPlan?: RefundAllocationSlice[]) =>
+    enqueueBookingModificationRefundRecovery({
+      bookingId,
+      paymentId,
+      bookingModificationId: result.bookingModificationId,
+      amountCents,
+      stripeKeyPrefix,
+      allocationPlan,
+    }).catch((enqueueErr) => {
+      logger.error({ err: enqueueErr, bookingId }, recoveryFailureMessage);
+      return null;
+    });
+
   try {
     const refundResult = await refundPaymentTransactions({
       format,
-      paymentId: result.paymentId,
+      paymentId,
       amountCents: result.pendingRefundAmountCents,
       // #1507: build the Stripe metadata from the shared helper so a recovery
       // replay (which reconstructs this same reason from the stored key prefix)
@@ -218,8 +244,22 @@ export async function executeBookingModificationRefund({
       // (e.g. removing two identically-priced guests) produce an identical key
       // and Stripe replays the first refund, silently under-refunding the
       // member while the ledger records a second refund that never happened.
-      idempotencyKeyPrefix: `${idempotencyKeyPrefix}_${result.bookingModificationId}`,
+      idempotencyKeyPrefix: stripeKeyPrefix,
     });
+    // #4083 (`INV-PAY-128`): Stripe answered a slice `failed` or `canceled`
+    // without throwing. It is still owed: queued as exactly those slices,
+    // already moved to their next key, since each was read refused here.
+    const refused = refusedRefundSlices(refundResult.refunds);
+    if (refused.length > 0) {
+      const refusedCents = refusedRefundCents(refused);
+      logger.error({ bookingId, refusedCents }, failureMessage);
+      const queued = await keepOwed(refusedCents, planAfterRefusals(refused, refused));
+      // Alerted when this wrote the row, and when no row could be written: then the alert is the only record.
+      if (queued === null || queued?.created) {
+        const paymentIntentId = queued?.paymentIntentId ?? refusedAnswers(refundResult.refunds)[0]?.paymentIntentId ?? "";
+        await alertRefusedCardRefund({ bookingId, paymentIntentId, refusedCents }, format);
+      }
+    }
     return {
       stripeRefundId: refundResult.refunds[0]?.refundId,
       refundDestination: ownCardRefundMade(refundResult.refunds) ? "own" : "own_card_pending",
@@ -232,30 +272,15 @@ export async function executeBookingModificationRefund({
     // Enqueue only what is still owed (#1097): slices that already refunded
     // and recorded before the failure must not be requested again, or a
     // multi-transaction recovery would re-derive a shifted allocation over
-    // the full amount and over-refund.
+    // the full amount and over-refund. A slice Stripe refused is not among
+    // them (#4083): it sent nothing back, so it stays in the remainder.
     const completedRefundCents =
       refundErr instanceof PartialRefundError
         ? refundErr.completedRefundCents
         : 0;
     const remainingRefundCents =
       result.pendingRefundAmountCents - completedRefundCents;
-    if (remainingRefundCents > 0) {
-      await enqueueBookingModificationRefundRecovery({
-        bookingId,
-        paymentId: result.paymentId,
-        bookingModificationId: result.bookingModificationId,
-        amountCents: remainingRefundCents,
-        // The exact prefix this route just used (#1152): recovery retries
-        // replay the identical Stripe keys, so a refund that succeeded on
-        // Stripe without being recorded is replayed, never re-minted.
-        stripeKeyPrefix: `${idempotencyKeyPrefix}_${result.bookingModificationId}`,
-      }).catch((enqueueErr) =>
-        logger.error(
-          { err: enqueueErr, bookingId },
-          recoveryFailureMessage,
-        ),
-      );
-    }
+    if (remainingRefundCents > 0) await keepOwed(remainingRefundCents);
     // #4070: not made here, so the email says it is on its way.
     return { stripeRefundId: undefined, refundDestination: "own_card_pending" };
   }

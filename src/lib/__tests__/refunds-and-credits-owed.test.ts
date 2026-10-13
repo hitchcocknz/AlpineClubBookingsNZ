@@ -262,6 +262,76 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
 });
 
 /*
+  #4083 (`INV-PAY-128`): a booking edit's card refund Stripe refused (failed or
+  canceled) is queued as a recovery row whose plan is exactly the refused
+  slices. It counts in "Refunds owed" at what was refused - the slice Stripe
+  made is not owed, and a refusal is never taken as progress - until a retry
+  under a fresh key makes it.
+*/
+describe("a refused edit refund counts in Refunds owed (#4083)", () => {
+  const [base] = OWED_RECONCILIATION_PAYMENTS;
+  const edited = new Date("2026-06-20T00:00:00.000Z");
+  const queuedAt = new Date("2026-06-20T00:00:01.000Z");
+  const refusedSlice = { paymentTransactionId: "txn-primary", amountCents: 4_000 };
+  // A $100.00 edit refund: $60.00 made from the newer charge, $40.00 refused on the older one.
+  const row = (overrides: { status?: string; stripeKeySuffix?: string; retried?: { status: string } } = {}) => ({
+    ...base,
+    bookingId: "b-edit-refund-refused",
+    bookingStatus: "CONFIRMED",
+    status: "PARTIALLY_REFUNDED",
+    amountCents: 20_000,
+    refundedAmountCents: 6_000,
+    capturedLedgerRows: 2,
+    recoveryOperations: [
+      {
+        id: "op-edit-refund-refused",
+        type: "REFUND_BOOKING_MODIFICATION",
+        status: overrides.status ?? "PENDING",
+        idempotencyKey: "booking_modification_refund_mod-refused",
+        amountCents: 4_000,
+        allocationPlan: [{ ...refusedSlice, ...(overrides.stripeKeySuffix ? { stripeKeySuffix: overrides.stripeKeySuffix } : {}) }],
+        paymentTransactionId: null,
+        createdAt: queuedAt,
+        succeededAt: null,
+      },
+    ],
+    refunds: [
+      { paymentTransactionId: "txn-additional", amountCents: 6_000, status: "succeeded", createdAt: edited },
+      { paymentTransactionId: "txn-primary", amountCents: 4_000, status: "failed", createdAt: edited },
+      ...(overrides.retried
+        ? [{ paymentTransactionId: "txn-primary", amountCents: 4_000, status: overrides.retried.status, createdAt: new Date("2026-06-20T00:05:00.000Z") }]
+        : []),
+    ],
+  });
+  const owedFor = async (reconciliation: ReturnType<typeof row>) => {
+    const payment = { id: "pay-edit-refund-refused", ...owedReconciliationPaymentRow(reconciliation as never) };
+    const db = reconciliationDb();
+    db.manualRefundTask.findMany.mockResolvedValue([]);
+    db.paymentRecoveryOperation.findMany = operationReads(() =>
+      reconciliation.recoveryOperations.filter((operation) => operation.status !== "SUCCEEDED").map(() => ({ payment })),
+    );
+    db.memberCredit.groupBy.mockResolvedValue([]);
+    return (await readRefundsAndCreditsOwed(db as never)).refundsOwedCents;
+  };
+
+  it("counts exactly the refused $40.00, not the $60.00 Stripe made", async () => {
+    expect(await owedFor(row())).toBe(4_000);
+  });
+
+  it("still counts it when the runner's retry under a fresh key was refused again", async () => {
+    expect(await owedFor(row({ stripeKeySuffix: "refused1", retried: { status: "canceled" } }))).toBe(4_000);
+  });
+
+  it("counts nothing once the retry made it and the row closed", async () => {
+    expect(await owedFor(row({ status: "SUCCEEDED", stripeKeySuffix: "refused1", retried: { status: "succeeded" } }))).toBe(0);
+  });
+
+  it("a dead row (retries spent) still counts until the treasurer closes it", async () => {
+    expect(await owedFor(row({ status: "FAILED", stripeKeySuffix: "refused4" }))).toBe(4_000);
+  });
+});
+
+/*
   #3372 (owner, 8 Oct 2026: "Separate club-wide line"): a group settlement's
   card refund from before #3653 can be tied to no child's booking, so its
   unsent remainder counts in Refunds owed as one club-wide amount - never

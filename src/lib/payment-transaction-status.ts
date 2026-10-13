@@ -154,6 +154,15 @@ export function isRecordedRefundStatus(status: string): boolean {
 }
 
 /**
+ * #4083: Stripe answered the refund but refused it (`failed`, `canceled`), so
+ * no money went back and it is still owed. A refund with no status counts as
+ * made (#4070), as the ledger counts it.
+ */
+export function isRefusedRefundStatus(status: string | null | undefined): boolean {
+  return !isRecordedRefundStatus(status ?? "unknown");
+}
+
+/**
  * #4070, #4084: a refund to the member's own card, sent after commit by
  * `refundPaymentTransactions`, is made when that call returned (every slice
  * refunded at Stripe and recorded) with at least one refund, and Stripe
@@ -165,7 +174,7 @@ export function isRecordedRefundStatus(status: string): boolean {
  * Cancelled" (`booking-cancel.ts`) emails and the cancel's confirmation.
  */
 export function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null }>): boolean {
-  return refunds.length > 0 && refunds.every((refund) => isRecordedRefundStatus(refund.status ?? "unknown"));
+  return refunds.length > 0 && !refunds.some((refund) => isRefusedRefundStatus(refund.status));
 }
 
 /**

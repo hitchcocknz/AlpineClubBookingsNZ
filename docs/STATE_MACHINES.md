@@ -3434,6 +3434,8 @@ close it is money paid twice, listed on the stuck-states page.
 ```text
 PENDING -> PROCESSING (worker claim, attempts < MAX) -> SUCCEEDED (Stripe refunded every slice)
 PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
+PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
+                       held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
@@ -3446,6 +3448,22 @@ DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        COMPLETED hand-back task and its BANK_REFUND line record
                        it; audited under `payment`)
 ```
+
+A refund Stripe answers `failed` or `canceled` on a booking edit or a
+cancellation never closes its row (#4083, #4096, `INV-PAY-128`). Stripe answers
+a repeated key with the original refusal for 24 hours, so whoever reads a
+refusal moves that slice to a fresh idempotency key (`refused1`, `refused2`,
+...). An edit queues a row whose plan is exactly the refused slices, when Stripe
+answered every slice; on a partial failure, the remainder, planned by the
+runner. A cancellation re-plans its pre-persisted row the same way while it is
+still `PENDING` with no attempt. The runner re-plans only on the attempt it
+holds (`PROCESSING` under its own `processingStartedAt`) and then fails it.
+A slice Stripe made beside a refusal stays in the plan, marked with its refund
+(`madeRefundId`): never sent again, still the row's for "Refunds owed", and the
+row's amount stays the plan's total. The officers are alerted once for the
+refusal - by the write that moves the row off its first keys, or by the edit
+door when no row could be written - and again if the retries run out. Other
+card refund doors still close on a refusal (#4103, #4102).
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

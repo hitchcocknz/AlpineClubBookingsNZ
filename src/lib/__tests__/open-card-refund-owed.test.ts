@@ -328,3 +328,53 @@ describe("openCardRefundOwedCents attributes each recorded refund to the operati
     });
   });
 });
+
+/*
+  #4083 review: a row whose attempt met a refusal keeps the slice Stripe made
+  beside it, marked with its refund (`madeRefundId`), rather than dropping it.
+  The marked slice is still this row's, so its refund fills it - and is never
+  taken as an OLDER open row's unsent slice of the same transaction and amount.
+*/
+describe("a slice made beside a refusal stays its row's (#4083)", () => {
+  const older = () =>
+    operation({
+      id: "op-older",
+      status: "PENDING",
+      amountCents: 5_000,
+      allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000 }],
+      createdAt: at(1),
+    });
+  const madeRefund = refund({ paymentTransactionId: "txn-a", amountCents: 5_000, createdAt: at(20) });
+
+  it("the made refund fills the marked slice of the row that made it; the older row's slice stays owed", () => {
+    const retried = operation({
+      id: "op-retried",
+      status: "FAILED",
+      amountCents: 8_000,
+      allocationPlan: [
+        { paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_made" },
+        { paymentTransactionId: "txn-b", amountCents: 3_000, stripeKeySuffix: "refused1" },
+      ],
+      createdAt: at(10),
+    });
+
+    const owed = openCardRefundOwedByOperation(payment([older(), retried], [madeRefund], { refundedAmountCents: 5_000 }));
+
+    expect(owed.get("op-retried")).toBe(3_000);
+    expect(owed.get("op-older")).toBe(5_000);
+  });
+
+  it("CONTROL: had the made slice been dropped from the plan, the older row would have taken its refund", () => {
+    const dropped = operation({
+      id: "op-retried",
+      status: "FAILED",
+      amountCents: 3_000,
+      allocationPlan: [{ paymentTransactionId: "txn-b", amountCents: 3_000, stripeKeySuffix: "refused1" }],
+      createdAt: at(10),
+    });
+
+    const owed = openCardRefundOwedByOperation(payment([older(), dropped], [madeRefund], { refundedAmountCents: 5_000 }));
+
+    expect(owed.get("op-older")).toBe(0);
+  });
+});

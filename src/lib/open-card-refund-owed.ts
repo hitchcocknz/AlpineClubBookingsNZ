@@ -7,7 +7,7 @@ import {
   getRemainingRefundableCents,
   type BookingPaymentState,
 } from "@/lib/booking-payment-state";
-import { isGroupSettlementRefundRecoveryKey } from "@/lib/payment-recovery-keys";
+import { isGroupSettlementRefundRecoveryKey, isRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import type { RefundAllocationSlice } from "@/lib/payment-transactions";
 
@@ -64,7 +64,12 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
   ...CARD_REFUND_OPERATION_WHERE,
 };
 
-/** Parse a persisted allocation plan (#1097); null when absent or malformed. */
+/**
+ * Parse a persisted allocation plan (#1097); null when absent or malformed. A
+ * slice's key generation after a refusal (#4083) is kept, so a replay sends it,
+ * and so is the mark of a slice Stripe made beside one it refused, which the
+ * runner never sends again and which still fills here, as this row's.
+ */
 export function parseRefundAllocationPlan(
   value: unknown,
 ): RefundAllocationSlice[] | null {
@@ -72,7 +77,7 @@ export function parseRefundAllocationPlan(
   const slices: RefundAllocationSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId } = entry as Record<
       string,
       unknown
     >;
@@ -81,11 +86,18 @@ export function parseRefundAllocationPlan(
       !paymentTransactionId ||
       typeof amountCents !== "number" ||
       !Number.isInteger(amountCents) ||
-      amountCents <= 0
+      amountCents <= 0 ||
+      (stripeKeySuffix !== undefined && !isRefusedRefundKeySuffix(stripeKeySuffix)) ||
+      (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId))
     ) {
       return null;
     }
-    slices.push({ paymentTransactionId, amountCents });
+    slices.push({
+      paymentTransactionId,
+      amountCents,
+      ...(stripeKeySuffix === undefined ? {} : { stripeKeySuffix }),
+      ...(madeRefundId === undefined ? {} : { madeRefundId }),
+    });
   }
   return slices;
 }

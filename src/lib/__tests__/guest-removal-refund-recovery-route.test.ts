@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   queueXeroBookingEditSettlement: vi.fn(),
   recoveryFindUnique: vi.fn(),
   runPaymentRecoveryOperationNow: vi.fn(),
+  alertPaymentRecoveryOfficers: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -58,6 +59,7 @@ vi.mock("@/lib/payment-recovery", () => ({
   runPaymentRecoveryOperationNow: mocks.runPaymentRecoveryOperationNow,
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
+vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: mocks.alertPaymentRecoveryOfficers }));
 vi.mock("@/lib/email", () => ({ sendBookingModifiedEmail: mocks.sendBookingModifiedEmail }));
 vi.mock("@/lib/xero-booking-edit-settlement", () => ({
   queueXeroBookingEditSettlement: mocks.queueXeroBookingEditSettlement,
@@ -68,7 +70,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { DELETE } from "@/app/api/bookings/[id]/guests/[guestId]/route";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
-import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
+import { expectQueuedOnce, OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 const params = Promise.resolve({ id: "b1", guestId: "g1" });
 
@@ -284,13 +286,54 @@ describe("DELETE guest removal on the member's own card: the email's refund dest
 
     expect(res.status).toBe(200);
     expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay_1", amountCents: 2000 }));
-    if (queued) {
-      expect(mocks.enqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2000 }));
-    } else {
-      expect(mocks.enqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
-    }
+    expectQueuedOnce(mocks.enqueueBookingModificationRefundRecovery, queued, 2000);
     expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 2000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.anything(),
+    );
+  });
+
+  // #4083 review: the officers hear of a refusal once, when the edit's row is
+  // first written - not when a repeat enqueue finds it already there.
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])("a refused refund alerts the officers when its row is created (%s -> %i alert)", async (created, alerts) => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(makeResult());
+    const slice = { paymentTransactionId: "txn_primary", amountCents: 2000 };
+    mocks.refundPaymentTransactions.mockResolvedValue({
+      refunds: [{ refundId: "re_refused", paymentIntentId: "pi_original", amountCents: 2000, status: "failed", slice }],
+    });
+    mocks.enqueueBookingModificationRefundRecovery.mockResolvedValue({ created, paymentIntentId: "pi_original" });
+
+    await DELETE(makeRequest(), { params });
+
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(alerts);
+    if (alerts) {
+      expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: 2000,
+          paymentIntentId: "pi_original",
+          errorMessage: "Stripe refused $20.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+        }),
+        expect.anything(),
+      );
+    }
+  });
+
+  it("a refused refund whose row could not be written still alerts the officers: the alert is then its only record (#4083)", async () => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(makeResult());
+    const slice = { paymentTransactionId: "txn_primary", amountCents: 2000 };
+    mocks.refundPaymentTransactions.mockResolvedValue({
+      refunds: [{ refundId: "re_refused", paymentIntentId: "pi_original", amountCents: 2000, status: "failed", slice }],
+    });
+    mocks.enqueueBookingModificationRefundRecovery.mockRejectedValue(new Error("database down"));
+
+    await DELETE(makeRequest(), { params });
+
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 2000, paymentIntentId: "pi_original" }),
       expect.anything(),
     );
   });
