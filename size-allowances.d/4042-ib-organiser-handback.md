@@ -11,7 +11,7 @@ reason: the finance queue card gains the group organiser hand-back's own
   the card showed.
 
 file: src/lib/email-message-registry.ts
-lines: 2253
+lines: 2278
 reason: the "Manual refund needed" message gains its two note tokens, which
   the registry declares in its three existing tables (required body tokens,
   editor previews, the token allowlist) beside every other composed note; the
