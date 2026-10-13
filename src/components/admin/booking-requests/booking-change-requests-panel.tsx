@@ -169,13 +169,10 @@ export function BookingChangeRequestsPanel({
   // finder's reach as the list route answered it.
   const ageTierOptions = useAgeTierOptions();
   const [memberGuestFind, setMemberGuestFind] = useState<{ openSearchEnabled: boolean } | null>(null);
-  /** #4030 review S6: the officer entry's buttons, this section's view-only button. */
-  const OfficerEntryButton = useCallback(
-    (props: ButtonProps) => (
-      <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...props} />
-    ),
-    [canEdit],
-  );
+  // #4030 review S6: the officer entry's buttons are this section's view-only button.
+  const OfficerEntryButton = useCallback((props: ButtonProps) => (
+    <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...props} />
+  ), [canEdit]);
   /** This row's officer-entered guests as sent, or null (#4030). */
   const officerGuestsFor = (request: BookingChangeRequestData) =>
     request.acceptsOfficerGuests
@@ -556,9 +553,7 @@ export function BookingChangeRequestsPanel({
                           guests={decisionDraftFor(request.id).officerGuests}
                           onChange={(officerGuests) => {
                             updateDecisionDraft(request.id, { officerGuests });
-                            // #4030 review M1: figures and any overbooking
-                            // confirmation belong to the list they were given for.
-                            quotes.clear(request.id);
+                            quotes.clear(request.id); // #4030 review M1: figures belong to their list
                           }}
                           ageTierOptions={ageTierOptions}
                           memberGuestFind={memberGuestFind}
@@ -588,9 +583,7 @@ export function BookingChangeRequestsPanel({
                           onCheck={() =>
                             quotes.requestQuote(request.id, {
                               settlementMethod: decisionDraftFor(request.id).settlementMethod,
-                              // #4030 review M1: a list change clears the quote,
-                              // so a confirmation here is always for this list.
-                              confirmOverCapacity: quote?.confirmOverCapacity === true,
+                              confirmOverCapacity: quote?.confirmOverCapacity === true, // a list change clears it (M1)
                               officerGuests,
                             })
                           }
