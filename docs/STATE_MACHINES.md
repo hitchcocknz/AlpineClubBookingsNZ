@@ -1537,7 +1537,7 @@ folds modification credit notes worded as refunds into `refundedAmountCents` /
 `PARTIALLY_REFUNDED` on never-captured Internet Banking payments (see
 `docs/DOMAIN_INVARIANTS.md`). Since #3979 a note worded as an *invoice
 correction* never folds: it lowered an invoice nobody had paid, so it is a price
-correction, not a refund (`INV-PAY-124`). Genuinely captured payments survive
+correction, not a refund (`INV-PAY-125`). Genuinely captured payments survive
 the cancel unchanged — no *transaction* ever leaves the refunded states.
 
 Repay-after-refund (#1765): a booking that was paid, then deliberately
@@ -1782,29 +1782,39 @@ cash that invoice collected, not the figure the payment was born with
 (`INV-PAY-124`, `settle-from-cash.ts`):
 
 ```text
-no captured IB PRIMARY row, cash complete, one matched payment, no folded
-  refund (refunded total beyond the rows'), one uncaptured IB PRIMARY row, no
-  second instrument
-  -> PRIMARY row := invoice cash; Payment.amountCents := cash + other captured
-     rows (the ledger's own projection) -> ledger BANK_RECEIPT
+no captured IB PRIMARY row, cash complete, one matched payment, no
+  refund-worded modification note applied to the invoice, no folded refund the
+  invoice's no-cash notes do not exactly explain, one uncaptured IB PRIMARY
+  row, no second instrument
+  -> PRIMARY row := invoice cash (reason xero_invoice_paid_cash)
+  -> Payment amount / refunded / status := the ledger's projection of the rows
+     (cash + other captures; an exactly explained correction fold cleared)
+  -> ledger BANK_RECEIPT
 any of those not true
-  -> stored figure kept -> receipt at it -> admin alert (booking left live)
+  -> stored figure kept -> receipt at it -> marker + unmuteable alert (live booking)
 PRIMARY row already captured (a replay)
-  -> no amount decided again
-cash != bookingAmountOwedCents (INV-PAY-119)
-  -> figure still written -> admin alert, unless a supplementary invoice
-     explains a shortfall (INV-PAY-047)
+  -> no amount decided again (an unsent marker's alert is sent again)
+cash != bookingAmountOwedCents (INV-PAY-119), beyond what supplementary
+  invoices bill (INV-PAY-047)
+  -> figure still written -> marker + unmuteable alert
 ```
 
-The cancel arms (a cancelled booking's late cash, the late capacity cancel) size
-their credit from the settled figure and alert on their own. An
-invoice-correction note on the never-paid invoice refunds nothing, so a $300
-invoice corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
-`reconcilePaymentAggregates` keeps it. A correction folded before #3979 is not
-taken off (no backfill): that payment's settle keeps its figure and alerts, and
-the refunded-total repair never un-refunds a payment with nothing captured to
-`SUCCEEDED` (it returns to its PRIMARY row's status). Settles before #3979 are
-listed by `pnpm run payments:audit-ib-settled-cash`, never rewritten.
+The marker is an admin-only `SETTLEMENT_MARKERS` event written in the settle's
+transaction; the alert follows the commit and is recorded on it once sent. The
+cancel arms (a cancelled booking's late cash, the late capacity cancel) size
+their credit from the receipt's figure, measure a mixed invoice against its
+total less the member's own applied credit, and alert on their own.
+
+An invoice-correction note refunds nothing (`INV-PAY-125`): a $300 invoice
+corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
+`reconcilePaymentAggregates` keeps it. Against a receipt recorded at the stored
+figure (settled before #3979, or kept) the correction still counts, so the net
+stays the cash, and the refunded-total repair finds a bank-transfer payment's
+modification notes by its invoice, so a later note's recount never drops one.
+The repair writes through a claim on the status and total it read, and never
+un-refunds a payment whose PRIMARY rows show nothing captured to `SUCCEEDED`.
+Settles before #3979 are listed by `pnpm run payments:audit-ib-settled-cash`,
+never rewritten.
 
 ### Manual mark-paid (cash / off-Xero bank transfer), B5 #2262
 

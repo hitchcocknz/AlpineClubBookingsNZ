@@ -41,14 +41,14 @@ export type InvoiceCash = { knownCents: number; complete: boolean };
 
 /**
  * The `reason` on a bank-transfer PRIMARY receipt the settle recorded at the
- * invoice's cash. The refunded-total repair reads it (`INV-PAY-124`): an invoice
+ * invoice's cash. The refunded-total repair reads it (`INV-PAY-125`): an invoice
  * correction counts as refunded only against a receipt recorded at the stored
  * figure (before #3979, or kept), never against one recorded from cash.
  */
 export const IB_RECEIPT_FROM_CASH_REASON = "xero_invoice_paid_cash";
 
 /**
- * #3979 (`INV-PAY-124`): whether an invoice correction still counts as refunded
+ * #3979 (`INV-PAY-125`): whether an invoice correction still counts as refunded
  * against this payment - a bank-transfer PRIMARY receipt is captured, and none
  * was recorded at the invoice's cash. Such a receipt is the figure the payment
  * was born with (settled before #3979, or kept by the settle), so it still

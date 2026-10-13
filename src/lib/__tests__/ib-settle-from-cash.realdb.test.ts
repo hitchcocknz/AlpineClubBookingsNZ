@@ -91,6 +91,7 @@ export function assertSafeIbSettleFromCashRaceDbUrl(url: string): void {
 let prisma: PrismaClient;
 let paidEffects: typeof import("@/lib/xero-inbound/invoice-paid-effects");
 let creditNoteRepairs: typeof import("@/lib/xero-inbound/credit-note-repairs");
+let noteRefunds: typeof import("@/lib/xero-inbound/modification-note-refunds");
 let paymentTransactions: typeof import("@/lib/payment-transactions");
 let memberCredit: typeof import("@/lib/member-credit");
 
@@ -306,7 +307,7 @@ async function syncNote(
     });
   }
   const allocationTargets = [{ invoiceId: INVOICE_ID, amountCents: noteCents }];
-  const modificationRefundAmountsByPaymentId = await creditNoteRepairs.resolveModificationRefundAmountsByPaymentId({
+  const modificationRefundAmountsByPaymentId = await noteRefunds.resolveModificationRefundAmountsByPaymentId({
     creditNoteId: ids.noteId,
     isModificationNote: true,
     allocationTargets,
@@ -353,6 +354,7 @@ async function cancellationCreditCents(): Promise<number> {
     ({ prisma } = await import("@/lib/prisma"));
     paidEffects = await import("@/lib/xero-inbound/invoice-paid-effects");
     creditNoteRepairs = await import("@/lib/xero-inbound/credit-note-repairs");
+    noteRefunds = await import("@/lib/xero-inbound/modification-note-refunds");
     paymentTransactions = await import("@/lib/payment-transactions");
     memberCredit = await import("@/lib/member-credit");
 

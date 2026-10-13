@@ -748,7 +748,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   (SUCCEEDED / (PARTIALLY_)REFUNDED), or, for STRIPE rows with no ledger rows,
   the refund mirror — never on the aggregate mirror alone, which the inbound
   reconcile folds refund-worded modification credit notes into on
-  never-captured IB payments ([INV-PAY-124]). A never-captured payment flips to FAILED at cancel
+  never-captured IB payments ([INV-PAY-125]). A never-captured payment flips to FAILED at cancel
   and its open invoice gets the finalPrice+changeFee invoice-clearing credit note
   (the #1015 outstanding-balance rule). A genuinely captured PARTIALLY_REFUNDED
   payment takes the PAID cancellation path (#1491, owner decision): the member
@@ -1054,7 +1054,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   settled (PENDING/FAILED), and no credit already minted by this pipeline (matched by its own credit descriptions — never by amount, which collides with unrelated cancellation-flow rows). Both
   credit-minting arms (already-cancelled and late-capacity-failure) size the mint
   by the invoice's QUANTIFIED cash (#1459), clamped per payment to its
-  settled figure ([INV-PAY-124]) — `amountPaid` plus overpayment/prepayment allocations, falling back
+  receipt's figure ([INV-PAY-124]) — `amountPaid` plus overpayment/prepayment allocations, falling back
   to the invoice's non-DELETED payment records only when `amountPaid` is unusable
   — never by the payment's face amount alone.
   Partially quantifiable evidence floors the mint at the verified cash and the
@@ -3084,36 +3084,57 @@ _Split from `INV-PAY-057` (#3220)._
 
 ## INV-PAY-124
 
-**Related: `INV-PAY-119`** (what is owed), **`INV-PAY-116`** (the wording).
+**Related: `INV-PAY-119`** (what is owed), **`INV-PAY-125`** (corrections).
 
 - **A bank transfer settles at the cash its invoice collected** (#3979; owner
   decision 13 Oct 2026,
   [#3979](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3979#issuecomment-6140655880)).
   When Xero reports a booking's PRIMARY invoice paid, the inbound settle writes
   the invoice's quantified cash (`quantifyXeroInvoiceCashCents`) to the PRIMARY
-  `PaymentTransaction`, and it plus any other captured row to
-  `Payment.amountCents`, in its locked transaction,
-  after the [INV-PAY-042] and [INV-PAY-102] fences and before the ledger's
-  receipt sync; the cancel arms' credit cap ([INV-PAY-025]) reads it. Never the
-  amount owed: a later rise sits on a supplementary invoice ([INV-PAY-047]).
+  receipt, marked `IB_RECEIPT_FROM_CASH_REASON`, and the payment's figure,
+  refunded total and status as `reconcilePaymentAggregates` projects them from
+  the same rows, in its locked transaction after the [INV-PAY-042] and
+  [INV-PAY-102] fences. Never the amount owed: a later rise sits on a
+  supplementary invoice ([INV-PAY-047]).
 - **Only at the transition, only when the cash is this payment's alone**
-  (`planInternetBankingCashSettlement`, `settle-from-cash.ts`): no captured
-  Internet Banking PRIMARY row yet, complete positive cash, one matched payment,
-  no refunded total beyond its rows' (a fold), one uncaptured PRIMARY row, no
-  second instrument. Otherwise the stored figure stays and a booking left live
-  alerts the operators; a replay decides nothing. `bookingAmountOwedCents` is a cross-check only: cash disagreeing
-  alerts, unless a supplementary invoice explains a shortfall.
-- **An invoice correction is not a refund.** A note worded *Invoice correction*
-  ([INV-PAY-116]), raised only while the payment was uncaptured, never folds into
-  `refundedAmountCents` (`noCashModificationNoteIds`). The wording is recorded
-  when the note is raised, so syncing it before or after the transfer counts the
-  same; a refund raised after capture never carries it. $300 invoiced, $100
-  corrected, $200 paid: $200 paid, $0 refunded, kept by
-  `reconcilePaymentAggregates`. An older fold stays (no backfill), so its
-  settle keeps the figure and alerts; a repair never un-refunds a payment with
-  nothing captured to SUCCEEDED.
-- `pnpm run payments:audit-ib-settled-cash` lists settled receipts differing
-  from the cash Xero recorded.
+  (`planInternetBankingCashSettlement`): no captured Internet Banking PRIMARY
+  row yet, complete positive cash, one matched payment, no refund-worded
+  modification note applied to the invoice, no folded refund the invoice's
+  no-cash notes do not exactly explain (one they do is cleared), one uncaptured
+  PRIMARY row, no second instrument. A replay decides nothing.
+- **Never silent.** A kept figure, or cash disagreeing with
+  `bookingAmountOwedCents` beyond what supplementary invoices bill, writes an
+  admin-only marker in the settle's transaction (`SETTLEMENT_MARKERS`) and sends
+  an unmuteable alert after commit, recorded once sent. The cancel arms alert
+  themselves: their credit's face is the receipt, and a mixed invoice is
+  measured against its total less the member's own applied credit.
+- `pnpm run payments:audit-ib-settled-cash` lists receipts differing from the
+  recorded cash, and refunded totals beyond the rows.
 - Pinned by `settle-from-cash.test.ts`, `xero-inbound-reconciliation.test.ts`,
-  `account-credit-modification-notes.test.ts`, `ib-settled-cash-audit.test.ts`
-  and `ib-settle-from-cash.realdb.test.ts`.
+  `ib-settled-cash-audit.test.ts` and `ib-settle-from-cash.realdb.test.ts`.
+
+## INV-PAY-125
+
+**Related: `INV-PAY-116`** (the wording), **`INV-PAY-124`**.
+
+- **An invoice correction is not a refund** (#3979, owner decision 13 Oct
+  2026). A modification note worded *Invoice correction* ([INV-PAY-116]) moved
+  no cash (`noCashModificationNoteIds`). The edit chooses that wording from
+  whether a bank receipt was captured, never the aggregate status, which reads
+  captured after a #1765 card refund. $300 invoiced, $100 corrected, $200 paid:
+  $200 paid, $0 refunded.
+- **Except against a receipt recorded at the stored figure**
+  (`receiptCountsInvoiceCorrections`): settled before #3979, or kept. That
+  receipt still includes the corrected amount, so the correction keeps counting
+  and the net stays the cash. A recount finds a bank-transfer payment's
+  modification notes by its invoice, so a later note never drops an earlier one.
+- **The refunded-total repair writes through a claim** on the status and total
+  it read, re-reading once when lost, and never un-refunds a payment whose
+  PRIMARY rows show nothing captured to SUCCEEDED; with no rows, or for an
+  organiser-settled child, today's answer stands.
+- The Xero repair tool leaves notes that moved no cash out of its known
+  modification refunds.
+- Pinned by `account-credit-modification-notes.test.ts`,
+  `xero-credit-note-repairs.test.ts`, `xero-booking-edit-settlement.test.ts`,
+  `xero-repair-known-modification-refund.test.ts` and
+  `ib-settle-from-cash.realdb.test.ts`.

@@ -1,27 +1,33 @@
 # File-size allowances for #3979 (settle a bank transfer from its invoice's cash)
 
-Two already-over-budget Xero inbound modules grow. The new rule's logic lives
-in its own module, `src/lib/xero-inbound/settle-from-cash.ts`, written to its
-ceiling; what stays in these two files is the call sites, which belong where the
-writes and the locks are.
+Three already-over-budget files grow. The new rules' logic lives in modules of
+their own, written to their ceilings - `xero-inbound/settle-from-cash.ts`,
+`xero-inbound/settle-from-cash-notice.ts`, `xero-inbound/modification-note-refunds.ts`
+and `ib-settlement-figure-note.ts`; what stays in these files is what belongs
+where it is.
 
 file: src/lib/xero-inbound/invoice-paid-effects.ts
-lines: 1989
+lines: 2056
 reason: the receipt figure is decided and written inside the settle's own
   locked transaction, between the #2262 and #3638 fences and the ledger's
-  receipt sync, and the in-memory row is updated there so both cancel arms size
-  their credit from it. Moving the writes out would split one transaction's
-  ordering argument (INV-LOCK-002, INV-PAY-124) across two files. The decision,
-  the cross-check and the alert are already in `settle-from-cash.ts`; what is
-  left is the call, the two amount writes and the post-commit alert call.
+  receipt sync, with the payment's projected columns and the durable marker for
+  a booking left live, and the in-memory row is updated there so both cancel
+  arms size their credit from it. Moving the writes out would split one
+  transaction's ordering argument (INV-LOCK-002, INV-PAY-124) across files. The
+  decision, the cross-check, the marker and the alert are already elsewhere;
+  what is left is the calls, the writes and the cancel arms' invoice-side figure.
 
 file: src/lib/xero-inbound/credit-note-repairs.ts
-lines: 1194
-reason: `resolveModificationRefundAmountsByPaymentId` is the inbound credit-note
-  sync's current-note half of the refunded-total repair that lives in this
-  file, moved here from `credit-note.ts` so it can be called (and proved
-  against PostgreSQL) without a Xero client. It uses the module's own
-  invoice-to-payment resolver; a separate module would export that resolver
-  only to call it back. The rest is one guard in the repair's own status
-  decision (never un-refund a payment with nothing captured to SUCCEEDED),
-  which belongs beside the Stripe floor it sits under.
+lines: 1150
+reason: the refunded-total repair's own status decision gains the un-refund
+  guard and its write the claim on what it read (INV-PAY-125), and its recount
+  finds a bank-transfer payment's modification notes by its invoice. All three
+  are lines of that one loop; the note-side helpers moved out to
+  `modification-note-refunds.ts`.
+
+file: src/lib/email-message-registry.ts
+lines: 2285
+reason: one more template in the registry's own lists - the admin audience,
+  the delivery lock, its required tokens, its trigger summary, its token preview
+  and the token list. The registry is the one enumeration the email census
+  tests check against; a second file holding one template would defeat them.

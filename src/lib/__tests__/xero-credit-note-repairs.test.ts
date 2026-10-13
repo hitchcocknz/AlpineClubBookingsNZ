@@ -54,10 +54,8 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import {
-  repairRefundedPaymentBusinessState,
-  resolveModificationRefundAmountsByPaymentId,
-} from "@/lib/xero-inbound/credit-note-repairs";
+import { repairRefundedPaymentBusinessState } from "@/lib/xero-inbound/credit-note-repairs";
+import { resolveModificationRefundAmountsByPaymentId } from "@/lib/xero-inbound/modification-note-refunds";
 
 // #3979: the repair writes through a claim on what it read
 // (`updateMany` keyed on id, status and refunded total). These suites assert the

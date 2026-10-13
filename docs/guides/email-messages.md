@@ -372,6 +372,13 @@ Two consequences worth knowing before you edit one:
   processed there, or on its way there when the card refund has not gone
   through yet (#4057, #4070) — or a bank transfer the club will send. Keep it
   on a line of its own, with no `$` or label in front.
+- **`{{settlementFigureNote}}` on *Bank transfer amount needs checking* is what
+  needs a person (#3979).** It says whether the app kept the amount it had
+  recorded instead of the cash Xero shows (and why), whether the member paid more
+  or less than the booking owes, and who corrects a recorded figure. The amounts
+  themselves are `{{amount}}` (recorded), `{{paidAmount}}` (the cash Xero shows)
+  and `{{amountOwing}}` (what the booking owes, or "as recorded"). The message is
+  locked to always send.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
   says where the refund went: the member's original payment method, account
   credit, or a refund the club will arrange directly. Otherwise it says no

@@ -15,7 +15,7 @@ import { getJsonRecord } from "./amounts";
  * - #3954 (owner decision 10 Oct 2026): a reduction's invoice correction for the
  *   part of its unpaid-ask offset the primary invoice had billed
  *   (`UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE`) - money the member never paid;
- * - #3979 (owner decision 13 Oct 2026, `INV-PAY-124`): any note worded as an
+ * - #3979 (owner decision 13 Oct 2026, `INV-PAY-125`): any note worded as an
  *   invoice correction (`INV-PAY-116`). The edit words a note so only when it
  *   lowers an invoice nobody had paid - the payment was not captured and no
  *   Stripe refund went back - so the note is a price correction, not a refund.
@@ -45,7 +45,7 @@ export async function noCashModificationNoteIds(
  * one no-cash class whose count depends on the payment: against a bank receipt
  * recorded at the stored figure (before #3979, or kept by the settle) the
  * receipt still includes the corrected amount, so the correction is counted as
- * refunded there to keep the payment's net at the cash (`INV-PAY-124`).
+ * refunded there to keep the payment's net at the cash (`INV-PAY-125`).
  * #3954's billed-offset corrections are not in it: they have never counted.
  */
 export async function invoiceCorrectionNoteIds(

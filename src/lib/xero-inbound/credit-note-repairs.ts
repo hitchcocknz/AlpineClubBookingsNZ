@@ -1,7 +1,5 @@
 import { type CreditNote as XeroCreditNote } from "xero-node";
-import { CreditType, PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
-import { isCapturedTransactionStatus, latestTransactionOfKind } from "@/lib/payment-transaction-status";
-import { receiptCountsInvoiceCorrections } from "./settle-from-cash";
+import { CreditType, PaymentSource, PaymentStatus } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
@@ -18,6 +16,7 @@ import { assertNoAppliedCreditDeallocationFence } from "@/lib/xero-applied-credi
 import { getClubFormat } from "@/lib/club-format-settings";
 import { formatCents } from "@/lib/utils";
 import { invoiceCorrectionNoteIds, noCashModificationNoteIds } from "./account-credit-modification-notes";
+import { paymentsCountingInvoiceCorrections, uncapturedPrimaryStatus } from "./modification-note-refunds";
 import { capOrganiserChildMirrorAtStripeRefunds } from "@/lib/organiser-child-refund";
 
 /** #3792: the operator alert, and the audit action, for a refused change. */
@@ -122,167 +121,6 @@ async function includeDeletedAppliedCreditAllocationTargets(
   return [...targetsByInvoiceId.values()];
 }
 
-async function resolvePaymentIdsByInvoiceTargets(
-  creditNoteId: string,
-  allocationTargets: AccountCreditAllocationTarget[]
-) {
-  const uniqueInvoiceIds = Array.from(
-    new Set(
-      allocationTargets
-        .map((target) => target.invoiceId)
-        .filter((invoiceId): invoiceId is string => Boolean(invoiceId))
-    )
-  );
-  if (uniqueInvoiceIds.length === 0) {
-    return new Map<string, string>();
-  }
-
-  const paymentIdsByInvoiceId = new Map<string, Set<string>>();
-  const directMatches = await prisma.payment.findMany({
-    where: {
-      xeroInvoiceId: {
-        in: uniqueInvoiceIds,
-      },
-    },
-    select: {
-      id: true,
-      xeroInvoiceId: true,
-    },
-  });
-
-  for (const payment of directMatches) {
-    if (!payment.xeroInvoiceId) {
-      continue;
-    }
-
-    const ids = paymentIdsByInvoiceId.get(payment.xeroInvoiceId) ?? new Set<string>();
-    ids.add(payment.id);
-    paymentIdsByInvoiceId.set(payment.xeroInvoiceId, ids);
-  }
-
-  const unresolvedInvoiceIds = uniqueInvoiceIds.filter(
-    (invoiceId) => (paymentIdsByInvoiceId.get(invoiceId)?.size ?? 0) !== 1
-  );
-  if (unresolvedInvoiceIds.length > 0) {
-    const linkedMatches = await prisma.xeroObjectLink.findMany({
-      where: {
-        localModel: "Payment",
-        xeroObjectType: "INVOICE",
-        xeroObjectId: {
-          in: unresolvedInvoiceIds,
-        },
-        active: true,
-      },
-      select: {
-        localId: true,
-        xeroObjectId: true,
-      },
-    });
-
-    for (const link of linkedMatches) {
-      const ids = paymentIdsByInvoiceId.get(link.xeroObjectId) ?? new Set<string>();
-      ids.add(link.localId);
-      paymentIdsByInvoiceId.set(link.xeroObjectId, ids);
-    }
-  }
-
-  const resolvedPaymentIds = new Map<string, string>();
-  for (const invoiceId of uniqueInvoiceIds) {
-    const paymentIds = paymentIdsByInvoiceId.get(invoiceId);
-    // "Exactly one payment" said as a first with no rest, so the id the
-    // resolution stores is a value this branch already holds (#2800).
-    const [onlyPaymentId, ...extraPaymentIds] = paymentIds ?? [];
-    if (onlyPaymentId !== undefined && extraPaymentIds.length === 0) {
-      resolvedPaymentIds.set(invoiceId, onlyPaymentId);
-      continue;
-    }
-
-    if ((paymentIds?.size ?? 0) > 1) {
-      logger.warn(
-        {
-          creditNoteId,
-          invoiceId,
-          matchedPayments: paymentIds?.size ?? 0,
-        },
-        "Skipping refunded-payment repair because the allocated invoice resolved to multiple local payments"
-      );
-    }
-  }
-
-  return resolvedPaymentIds;
-}
-
-/**
- * What a modification credit note being synced adds to each matched payment's
- * refunded total: its allocations, by the payment each allocated invoice
- * resolves to. Nothing for a note that moved no cash (`noCashModificationNoteIds`:
- * #3809's give-back, #3954's billed offset, and #3979's invoice correction,
- * `INV-PAY-124`), except that an invoice correction still counts against a
- * payment whose bank receipt was recorded at the stored figure
- * (`paymentsCountingInvoiceCorrections`). The current note's half of what
- * `repairRefundedPaymentBusinessState` counts; the notes already on the payment
- * are filtered by the same rule there.
- */
-export async function resolveModificationRefundAmountsByPaymentId(input: {
-  creditNoteId: string;
-  isModificationNote: boolean;
-  allocationTargets: AccountCreditAllocationTarget[];
-}): Promise<Map<string, number>> {
-  const amounts = new Map<string, number>();
-  if (!input.isModificationNote) return amounts;
-  const [noCash, corrections] = await Promise.all([
-    noCashModificationNoteIds([input.creditNoteId]),
-    invoiceCorrectionNoteIds([input.creditNoteId]),
-  ]);
-  const isCorrection = corrections.has(input.creditNoteId);
-  if (noCash.has(input.creditNoteId) && !isCorrection) return amounts;
-  const paymentIdsByInvoiceId = await resolvePaymentIdsByInvoiceTargets(
-    input.creditNoteId,
-    input.allocationTargets
-  );
-  const counting = isCorrection
-    ? await paymentsCountingInvoiceCorrections([...paymentIdsByInvoiceId.values()])
-    : null;
-  for (const target of input.allocationTargets) {
-    const paymentId = paymentIdsByInvoiceId.get(target.invoiceId);
-    if (!paymentId || (counting && !counting.has(paymentId))) continue;
-    amounts.set(paymentId, (amounts.get(paymentId) ?? 0) + target.amountCents);
-  }
-  return amounts;
-}
-
-/**
- * #3979 (`INV-PAY-124`): of these payments, those an invoice correction still
- * counts against (`receiptCountsInvoiceCorrections`).
- */
-async function paymentsCountingInvoiceCorrections(paymentIds: string[]): Promise<Set<string>> {
-  if (paymentIds.length === 0) return new Set();
-  const rows = await prisma.paymentTransaction.findMany({
-    where: { paymentId: { in: paymentIds }, kind: PaymentTransactionKind.PRIMARY },
-    select: { paymentId: true, kind: true, source: true, status: true, reason: true },
-  });
-  return new Set(
-    paymentIds.filter((paymentId) =>
-      receiptCountsInvoiceCorrections(rows.filter((row) => row.paymentId === paymentId)),
-    ),
-  );
-}
-
-/**
- * A payment's latest PRIMARY row status when it has PRIMARY rows and none of
- * its rows was ever captured; null otherwise - when something was captured, or
- * when there are no rows at all (a legacy payment, or an organiser-settled
- * child, whose mirror keeps today's answer).
- */
-async function uncapturedPrimaryStatus(paymentId: string): Promise<PaymentStatus | null> {
-  const rows = await prisma.paymentTransaction.findMany({
-    where: { paymentId },
-    select: { kind: true, status: true, createdAt: true },
-  });
-  if (rows.some((row) => isCapturedTransactionStatus(row.status))) return null;
-  return latestTransactionOfKind(rows, PaymentTransactionKind.PRIMARY)?.status ?? null;
-}
-
 export async function repairRefundedPaymentBusinessState(input: {
   creditNoteId: string;
   creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit">;
@@ -370,7 +208,7 @@ export async function repairRefundedPaymentBusinessState(input: {
     }),
   ]);
 
-  // #3979 (`INV-PAY-124`): a bank-transfer payment's modification notes are
+  // #3979 (`INV-PAY-125`): a bank-transfer payment's modification notes are
   // found by its invoice too. The inbound sync links an edit's note and its
   // allocation to the edit, not the payment, so a recount triggered by any
   // later note used to drop every earlier modification note from the total -
@@ -624,7 +462,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       (payment.status === PaymentStatus.REFUNDED ||
         payment.status === PaymentStatus.PARTIALLY_REFUNDED)
     ) {
-      // #3979 (`INV-PAY-124`): a refunded total falling to nothing on a payment
+      // #3979 (`INV-PAY-125`): a refunded total falling to nothing on a payment
       // nothing was ever captured on undoes an older fold (an invoice correction
       // counted as a refund), never a refund given back: the payment returns to
       // its uncaptured state, never to SUCCEEDED. An organiser-settled child is
