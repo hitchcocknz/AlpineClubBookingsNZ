@@ -59,7 +59,7 @@ change these pages.
    your role can view but not change club identity, a note at the top of the
    section says so and **Edit** is greyed out.
 
-   ![The Club Identity page with the Club identity form (Club name, Short name, Hut-leader label, Facebook URL) above the Lodge details form (Lodge name, Address, Travel note, Door code)](../images/admin/admin-appearance-identity.png)
+   ![The Club Identity page: the Club identity section read-only (Club name, Short name, Hut-leader label, Facebook URL) with an Edit button, then the Lodge details form (Lodge name, Address, Travel note, Door code) and the Club Contact form](../images/admin/admin-appearance-identity.png)
 
 3. Under **Lodge details**, edit the **Lodge name**, **Address**, **Travel
    note**, and **Door code**, then click **Save lodge details**. The lodge name
