@@ -1435,8 +1435,9 @@ describe after the suite that asserts the variable equals the handle's
 `credit-only-card-allocation.realdb.test.ts`. Do not use
 `declareEnvironmentRole` (`vi.stubEnv`) here: nothing unstubs it until the
 whole file ends, and `vi.unstubAllEnvs()` would undo every other suite's stubs
-too. Only `production` and `non-production` are accepted values; never weaken
-the production containment gate to make a suite pass.
+too. The helper accepts only `non-production`: a shared harness never
+declares itself the live site, and never weakens the production containment
+gate to make a suite pass.
 
 A declared role is not a fix for a path a suite should never reach. #4013's H1
 case reached the remainder-note mint because its credit lots tied on the

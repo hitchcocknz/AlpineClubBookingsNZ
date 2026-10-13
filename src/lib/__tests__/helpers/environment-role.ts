@@ -91,7 +91,9 @@ export interface SuiteEnvironmentRoleDeclaration {
  * than arming whichever suite runs next.
  */
 export function declareEnvironmentRoleForSuite(
-  value: "production" | "non-production",
+  // Only the safe declaration: a shared harness pretending to be the club's
+  // live site would arm every send and Xero write for the suites after it.
+  value: "non-production",
 ): SuiteEnvironmentRoleDeclaration {
   const before = process.env[ENVIRONMENT_ROLE_ENV_VAR];
   process.env[ENVIRONMENT_ROLE_ENV_VAR] = value;

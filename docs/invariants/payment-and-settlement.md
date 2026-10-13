@@ -982,7 +982,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `xeroCreditNoteId`. When credit is applied to an IB booking (create-time or
   switch-to-IB), the raise-path engine (`xero-applied-credit-allocation.ts`, an
   outbox op enqueued after the invoice op) allocates those notes oldest-first
-  against the new invoice, up to the applied amount; only the noteless remainder
+  ([INV-PAY-127]) against the new invoice, up to the applied amount; only the noteless remainder
   is freshly minted. Per-note
   remaining balances live in `MemberCreditNoteAllocation`. The `payment` mirror holds
   `amountCents + creditAppliedCents = finalPriceCents` (net of
@@ -1000,7 +1000,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   lot's remaining balance EXCLUDING this booking's own committed rows. A FAILED
   op has no auto FAILED→PENDING reaper; recovery runs through
   `xero-operation-retry.ts`. Cancellation is
-  UNCHANGED and still conserves: the 100% restore + `finalPrice − allocated`
+  UNCHANGED and conserves: the 100% restore + `finalPrice − allocated`
   clearing note void the invoice while returning the credit LOCALLY. After a
   cancel of an allocated-credit booking the restored credit is local-only (the
   cancelled invoice consumed its funding note); the local ledger is the source
@@ -1033,6 +1033,10 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   those the engine's total is unchanged: conservation never depended on lot
   order (`INV-PAY-023`). What it fixes is which of two equal lots goes first,
   and so whether a note is allocated or minted, the same way every time.
+- A retry keeps the slices its earlier attempt committed. One committed under
+  another order (before the tie-break, across the deploy) is refused before
+  any write (`assertPlanKeepsCommittedSlices`): the operation fails visibly,
+  never allocating a second lot beside it.
 
 ## INV-PAY-024
 

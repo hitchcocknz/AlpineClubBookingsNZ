@@ -27,6 +27,10 @@ import { formatCents } from "@/lib/utils";
  * lot's eligibility; it only makes the tie the same every time. Spread it into
  * the query (`orderBy: [...CREDIT_LOT_USE_ORDER]`) — Prisma takes a mutable
  * array and this one stays frozen.
+ *
+ * It lives here because the planner is its only consumer today. A second
+ * consumer moves it to a Prisma-free member-credit module both import, rather
+ * than reaching into the Xero planner for a ledger fact.
  */
 export const CREDIT_LOT_USE_ORDER = [
   { createdAt: "asc" },
