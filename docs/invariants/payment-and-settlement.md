@@ -3124,12 +3124,15 @@ _Split from `INV-PAY-057` (#3220)._
   captured after a #1765 card refund. $300 invoiced, $100 corrected, $200 paid:
   $200 paid, $0 refunded.
 - **Except against a receipt recorded at the stored figure**
-  (`receiptCountsInvoiceCorrections`): settled before #3979, or kept. That
-  receipt still includes the corrected amount, so the correction keeps counting
-  and the net stays the cash. A recount finds a bank-transfer payment's
+  (`receiptCountsInvoiceCorrections`): settled before #3979, or kept, decided
+  from an allowlist of the reasons a receipt is born with. Any other receipt,
+  a part payment recognised at cancel included, is cash-sized. That receipt
+  still includes the corrected amount, so the correction keeps counting and the
+  net stays the cash. A recount finds a bank-transfer payment's
   modification notes by its invoice, so a later note never drops an earlier one.
-- **The refunded-total repair writes through a claim** on the status and total
-  it read, re-reading once when lost, and never un-refunds a payment whose
+- **The refunded-total repair writes through a claim** on the row it read
+  (status, totals, `updatedAt`, which every settle transition touches),
+  re-running once from scratch when lost, and never un-refunds a payment whose
   PRIMARY rows show nothing captured to SUCCEEDED; with no rows, or for an
   organiser-settled child, today's answer stands.
 - The Xero repair tool leaves notes that moved no cash out of its known

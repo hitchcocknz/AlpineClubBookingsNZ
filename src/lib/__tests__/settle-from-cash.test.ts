@@ -172,6 +172,20 @@ describe("receiptCountsInvoiceCorrections (#3979 review A)", () => {
     expect(receiptCountsInvoiceCorrections([receipt("SUCCEEDED", null)])).toBe(true);
   });
 
+  it.each(["internet_banking_booking_payment", "internet_banking_switch_at_pay", "legacy_primary_backfill"])(
+    "counts it against a receipt still carrying its birth reason %s",
+    (reason) => {
+      expect(receiptCountsInvoiceCorrections([receipt("SUCCEEDED", reason)])).toBe(true);
+    },
+  );
+
+  it.each(["xero_part_payment_recognised_at_cancel", "manual_mark_paid", "something_new"])(
+    "MUTATION: never against a cash-sized receipt (%s) - the stored-figure reasons are an allowlist (#3979 final review)",
+    (reason) => {
+      expect(receiptCountsInvoiceCorrections([receipt("PARTIALLY_REFUNDED", reason)])).toBe(false);
+    },
+  );
+
   it("never against a receipt recorded from cash, or one not captured", () => {
     expect(receiptCountsInvoiceCorrections([receipt("SUCCEEDED", "xero_invoice_paid_cash")])).toBe(false);
     expect(receiptCountsInvoiceCorrections([receipt("PENDING", null)])).toBe(false);

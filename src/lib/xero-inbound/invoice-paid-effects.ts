@@ -664,7 +664,11 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         paymentWasPending ||
         !fresh.xeroInvoiceId ||
         fresh.xeroInvoiceNumber !== invoiceNumber ||
-        (settledStatus !== null && settledStatus !== fresh.status)
+        (settledStatus !== null && settledStatus !== fresh.status) ||
+        // #3979: the transition always touches the payment, even when it keeps
+        // the stored figure, so the refunded-total repair's claim on the row it
+        // read (`updatedAt`) sees that the receipt was recorded.
+        receiptFigure.plan.kind !== "replay"
       ) {
         await tx.payment.update({
           where: { id: fresh.id },

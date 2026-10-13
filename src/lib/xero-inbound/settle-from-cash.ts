@@ -32,6 +32,7 @@ import {
   deriveAggregatePaymentStatus,
   grossCapturedCents,
   isCapturedTransactionStatus,
+  LEGACY_PRIMARY_BACKFILL_REASON,
 } from "@/lib/payment-transaction-status";
 import { readModificationNoteCash } from "@/lib/xero-inbound/account-credit-modification-notes";
 import type { IbSettlementKeptReason } from "@/lib/ib-settlement-figure-note";
@@ -48,20 +49,37 @@ export type InvoiceCash = { knownCents: number; complete: boolean };
 export const IB_RECEIPT_FROM_CASH_REASON = "xero_invoice_paid_cash";
 
 /**
+ * The reasons a bank-transfer PRIMARY receipt carries when it holds the figure
+ * the payment was BORN with, not cash read from Xero: the payment's creation
+ * (`booking-create.ts`, the switch to bank transfer), the settle before #3979 or
+ * when it keeps the stored figure (`xero_invoice_paid_reconciliation`), the
+ * legacy backfill, and none. An explicit allowlist (#3979 final review): any
+ * other reason - the cash marker above, a part payment recognised at cancel
+ * (`PART_PAYMENT_RECOGNISED_REASON`), an officer's cash - is cash-sized.
+ */
+const STORED_FIGURE_RECEIPT_REASONS: ReadonlySet<string | null> = new Set([
+  null,
+  "internet_banking_booking_payment",
+  "internet_banking_switch_at_pay",
+  "xero_invoice_paid_reconciliation",
+  LEGACY_PRIMARY_BACKFILL_REASON,
+]);
+
+/**
  * #3979 (`INV-PAY-125`): whether an invoice correction still counts as refunded
- * against this payment - a bank-transfer PRIMARY receipt is captured, and none
- * was recorded at the invoice's cash. Such a receipt is the figure the payment
- * was born with (settled before #3979, or kept by the settle), so it still
- * includes the corrected amount, and counting the correction keeps the
- * payment's net at the cash. A payment never captured, or settled from cash,
- * never counts one. Pure, over the payment's rows: the refunded-total repair
- * and the Xero repair tool both read it.
+ * against this payment - a bank-transfer PRIMARY receipt is captured, and every
+ * captured one holds the stored figure (`STORED_FIGURE_RECEIPT_REASONS`). Such a
+ * receipt is the figure the payment was born with (settled before #3979, or
+ * kept by the settle), so it still includes the corrected amount, and counting
+ * the correction keeps the payment's net at the cash. A payment never
+ * captured, or with a cash-sized receipt, never counts one. Pure, over the
+ * payment's rows: the refunded-total repair and the Xero repair tool both read it.
  */
 export function receiptCountsInvoiceCorrections(
   rows: ReadonlyArray<{ kind: PaymentTransactionKind; source: PaymentSource; status: PaymentStatus; reason: string | null }>,
 ): boolean {
   const receipts = rows.filter((row) => isInternetBankingPrimary(row) && isCapturedTransactionStatus(row.status));
-  return receipts.length > 0 && !receipts.some((row) => row.reason === IB_RECEIPT_FROM_CASH_REASON);
+  return receipts.length > 0 && receipts.every((row) => STORED_FIGURE_RECEIPT_REASONS.has(row.reason));
 }
 
 /**
@@ -232,10 +250,16 @@ export async function decideInternetBankingReceiptFigure(
   let noCashCents = 0;
   let memberCreditCents = 0;
   for (const note of input.invoice.appliedCreditNotes) {
+    // The member's own account credit first (#3979 final review): an edit's
+    // credit kept as account credit on ANOTHER booking is a modification
+    // account-credit note, but applied here it is this booking's credit.
+    if (memberCreditNotes.has(note.id)) {
+      memberCreditCents += note.appliedCents;
+      continue;
+    }
     const kind = noteCash.get(note.id);
     if (kind === "refund") refundWordedCents += note.appliedCents;
     else if (kind) noCashCents += note.appliedCents;
-    else if (memberCreditNotes.has(note.id)) memberCreditCents += note.appliedCents;
   }
 
   const plan = planInternetBankingCashSettlement({

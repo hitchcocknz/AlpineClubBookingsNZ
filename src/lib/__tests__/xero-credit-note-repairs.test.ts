@@ -448,30 +448,79 @@ describe("the un-refund guard's limits and the write's claim (#3979 review C)", 
     });
   });
 
-  it("writes only through a claim on the status and refunded total it read", async () => {
+  it("writes only through a claim on the whole row it read", async () => {
     mocks.paymentTransactionFindMany.mockResolvedValue([]);
+    const readAt = new Date("2026-06-30T00:00:00.000Z");
 
-    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+    await runRepair({ paymentRow: folded({ updatedAt: readAt }), creditNote: { status: "VOIDED", total: 100 } });
 
     expect(mocks.paymentUpdateMany).toHaveBeenCalledWith({
-      where: { id: "pay-1", status: PaymentStatus.PARTIALLY_REFUNDED, refundedAmountCents: 10_000 },
+      where: {
+        id: "pay-1",
+        status: PaymentStatus.PARTIALLY_REFUNDED,
+        refundedAmountCents: 10_000,
+        amountCents: 30_000,
+        updatedAt: readAt,
+      },
       data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED },
     });
   });
 
-  it("a lost claim re-reads, and never overwrites the SUCCEEDED a concurrent settle wrote", async () => {
-    mocks.paymentTransactionFindMany.mockResolvedValue([]);
-    // The settle committed between the repair's read and its write: the row is
-    // now SUCCEEDED with nothing refunded.
-    mocks.paymentUpdateMany.mockResolvedValueOnce({ count: 0 });
-    mocks.paymentFindUnique.mockResolvedValue(
-      folded({ refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED, amountCents: 20_000 }),
-    );
+  it("MUTATION: a settle that KEEPS the stored figure between the repair's read and its write is never overwritten - the repair re-runs from scratch (#3979 final review)", async () => {
+    // $300 invoiced, a $100 correction already folded in, the payment never
+    // captured when the repair reads it: the correction does not count there,
+    // so the repair would write $0 refunded. Before it writes, the settle
+    // records the receipt and KEEPS the stored $300 - status and refunded total
+    // unchanged, the row touched. Writing $0 would leave a net of $300 against
+    // $200 of cash.
+    let settled = false;
+    const receipt = () => ({
+      paymentId: "pay-1",
+      kind: "PRIMARY",
+      source: PaymentSource.INTERNET_BANKING,
+      status: settled ? PaymentStatus.SUCCEEDED : PaymentStatus.PENDING,
+      reason: "internet_banking_booking_payment",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+    mocks.paymentTransactionFindMany.mockImplementation(async () => [receipt()]);
+    const row = (updatedAt: string) =>
+      folded({ xeroInvoiceId: "inv-1", updatedAt: new Date(updatedAt) });
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([row("2026-06-30T00:00:00.000Z")])
+      .mockResolvedValueOnce([row("2026-07-01T00:00:00.000Z")]);
+    mocks.xeroObjectLinkFindMany.mockImplementation(async ({ where }: { where: { role?: unknown } }) => {
+      if (where.role === "MODIFICATION_CREDIT_NOTE_ALLOCATION") {
+        return [{ localId: "mod-1", xeroObjectId: "alloc-correction", metadata: { creditNoteId: "cn-correction", invoiceId: "inv-1", amountCents: 10_000 } }];
+      }
+      if (where.role === "MODIFICATION_CREDIT_NOTE") {
+        return [{ xeroObjectId: "cn-correction", metadata: { status: "AUTHORISED" } }];
+      }
+      return [];
+    });
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+    ]);
+    mocks.paymentUpdateMany.mockImplementationOnce(async () => {
+      settled = true;
+      return { count: 0 };
+    });
+    const recompute = vi.fn().mockResolvedValue(new Map());
 
-    const result = await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+    const result = await repairRefundedPaymentBusinessState({
+      creditNoteId: "cn-current",
+      creditNote: { status: "VOIDED", total: 100 } as never,
+      directPaymentIds: ["pay-1"],
+      modificationRefundAmountsByPaymentId: new Map(),
+      recomputeModificationRefundAmounts: recompute,
+    });
 
-    expect(mocks.paymentFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "pay-1" } }));
-    // Re-decided from what the settle left: nothing to write.
+    // The first pass would have written $0; it lost its claim.
+    expect(mocks.paymentUpdateMany.mock.calls[0][0].data).toMatchObject({ refundedAmountCents: 0 });
+    // The re-run read everything again, the current note's share included,
+    // and now counts the correction against the stored-figure receipt: the
+    // $100 stays, so it writes nothing.
+    expect(recompute).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentFindMany).toHaveBeenCalledTimes(2);
     expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
     expect(result.updatedPayments).toBe(0);
   });
@@ -515,5 +564,29 @@ describe("an invoice correction counts only against a receipt recorded at the st
     ]);
 
     expect(await resolve()).toEqual(new Map());
+  });
+});
+
+describe("a part payment recognised at cancel is cash-sized, never a stored-figure receipt (#3979 final review)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+    ]);
+    mocks.paymentFindMany.mockResolvedValue([{ id: "pay-1", xeroInvoiceId: "inv-1" }]);
+  });
+
+  it("MUTATION: a correction does not count against a receipt the cancel recorded at the cash paid", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { paymentId: "pay-1", kind: "PRIMARY", source: "INTERNET_BANKING", status: "PARTIALLY_REFUNDED", reason: "xero_part_payment_recognised_at_cancel" },
+    ]);
+
+    expect(
+      await resolveModificationRefundAmountsByPaymentId({
+        creditNoteId: "cn-correction",
+        isModificationNote: true,
+        allocationTargets: [{ invoiceId: "inv-1", amountCents: 10_000 }],
+      }),
+    ).toEqual(new Map());
   });
 });

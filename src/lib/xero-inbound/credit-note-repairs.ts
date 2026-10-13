@@ -126,6 +126,15 @@ export async function repairRefundedPaymentBusinessState(input: {
   creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit">;
   directPaymentIds: string[];
   modificationRefundAmountsByPaymentId: Map<string, number>;
+  /**
+   * #3979: how the caller derived `modificationRefundAmountsByPaymentId`, so a
+   * repair that lost its claim to a concurrent writer recomputes it too - an
+   * invoice correction's count depends on the payment's receipt, which that
+   * writer (the inbound settle) may just have recorded.
+   */
+  recomputeModificationRefundAmounts?: () => Promise<Map<string, number>>;
+  /** Internal: the one re-run, for the payments whose claims were lost. */
+  retryPaymentIds?: string[];
 }): Promise<RefundedPaymentBusinessStateRepairResult> {
   const directPaymentIds = Array.from(
     new Set(
@@ -134,12 +143,14 @@ export async function repairRefundedPaymentBusinessState(input: {
       )
     )
   );
-  const paymentIds = Array.from(
-    new Set([
-      ...directPaymentIds,
-      ...Array.from(input.modificationRefundAmountsByPaymentId.keys()),
-    ])
-  );
+  const paymentIds =
+    input.retryPaymentIds ??
+    Array.from(
+      new Set([
+        ...directPaymentIds,
+        ...Array.from(input.modificationRefundAmountsByPaymentId.keys()),
+      ])
+    );
   if (paymentIds.length === 0) {
     return {
       matchedPayments: 0,
@@ -161,6 +172,8 @@ export async function repairRefundedPaymentBusinessState(input: {
       // F5 (#1353): Stripe payments get a raise-only ledger floor below.
       source: true,
       xeroInvoiceId: true,
+      // #3979: the claim below is on the whole row as read.
+      updatedAt: true,
       booking: { select: { organiserSettled: true } },
     },
   });
@@ -487,45 +500,53 @@ export async function repairRefundedPaymentBusinessState(input: {
       return "unchanged";
     }
 
-    // #3979: a claim on what was read, so a concurrent writer (the inbound
-    // settle recording the bank receipt) is never overwritten with a figure
-    // derived from the row before it wrote.
+    // #3979: a claim on the row as read, so a concurrent writer is never
+    // overwritten with a figure derived from the row before it wrote. The
+    // inbound settle touches the payment at every transition, even when it
+    // keeps the stored figure and leaves status and refunded total alone, so
+    // `updatedAt` is what catches it.
     const written = await prisma.payment.updateMany({
       where: {
         id: payment.id,
         status: payment.status,
         refundedAmountCents: payment.refundedAmountCents,
+        amountCents: payment.amountCents,
+        updatedAt: payment.updatedAt,
       },
       data: updates,
     });
     return written.count === 1 ? "updated" : "lost";
   };
 
-  for (const read of payments) {
-    let outcome = await repairOne(read);
-    if (outcome === "lost") {
-      // Re-read and decide once more from what the other writer left.
-      const reread = await prisma.payment.findUnique({
-        where: { id: read.id },
-        select: {
-          id: true,
-          amountCents: true,
-          refundedAmountCents: true,
-          status: true,
-          source: true,
-          xeroInvoiceId: true,
-          booking: { select: { organiserSettled: true } },
-        },
-      });
-      outcome = reread ? await repairOne(reread) : "unchanged";
-      if (outcome === "lost") {
-        logger.warn(
-          { creditNoteId: input.creditNoteId, paymentId: read.id },
-          "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"
-        );
-      }
-    }
+  const lostPaymentIds: string[] = [];
+  for (const payment of payments) {
+    const outcome = await repairOne(payment);
     if (outcome === "updated") updatedPayments += 1;
+    if (outcome === "lost") lostPaymentIds.push(payment.id);
+  }
+
+  if (lostPaymentIds.length > 0) {
+    if (input.retryPaymentIds) {
+      logger.warn(
+        { creditNoteId: input.creditNoteId, paymentIds: lostPaymentIds },
+        "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"
+      );
+    } else {
+      // Decide once more from scratch for those payments: every input is read
+      // again - the rows, the links, which notes count, and the current note's
+      // own contribution - from what the other writer left (#3979).
+      const amounts = input.recomputeModificationRefundAmounts
+        ? await input.recomputeModificationRefundAmounts()
+        : input.modificationRefundAmountsByPaymentId;
+      const retry = await repairRefundedPaymentBusinessState({
+        ...input,
+        modificationRefundAmountsByPaymentId: new Map(
+          [...amounts].filter(([paymentId]) => lostPaymentIds.includes(paymentId)),
+        ),
+        retryPaymentIds: lostPaymentIds,
+      });
+      updatedPayments += retry.updatedPayments;
+    }
   }
 
   return {

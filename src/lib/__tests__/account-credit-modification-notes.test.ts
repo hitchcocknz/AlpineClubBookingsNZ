@@ -97,3 +97,21 @@ describe("readModificationNoteCash and invoiceCorrectionNoteIds (#3979)", () => 
     expect(await invoiceCorrectionNoteIds(["cn-correction", "cn-offset"])).toEqual(new Set(["cn-correction"]));
   });
 });
+
+describe("an account-credit note read for the settle (#3979 final review)", () => {
+  beforeEach(() => findMany.mockReset());
+
+  it("MUTATION: an edit's credit kept on account moved no cash, though its payload names no refund method", async () => {
+    findMany.mockResolvedValue([
+      { xeroObjectId: "cn-edit-credit", localModel: "BookingModification", queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE", requestPayload: { refundAmountCents: 8000 } },
+      { xeroObjectId: "cn-payload-only", localModel: "BookingModification", queueType: null, requestPayload: { queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE" } },
+    ]);
+
+    expect(await readModificationNoteCash(["cn-edit-credit", "cn-payload-only"])).toEqual(
+      new Map([
+        ["cn-edit-credit", "no-cash"],
+        ["cn-payload-only", "no-cash"],
+      ]),
+    );
+  });
+});

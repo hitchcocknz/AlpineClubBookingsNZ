@@ -3,6 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { readModificationNoteWording, type ModificationNoteWording } from "@/lib/xero-refund-method";
 import { isUnpaidAskBilledOffsetNoteScope, queuedReviewTaskId } from "@/lib/xero-review-task-key";
 import { getJsonRecord } from "./amounts";
+import {
+  XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
+  XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
+} from "@/lib/xero-operation-outbox-payload";
 
 /**
  * The modification credit notes, of these, that moved no cash, so they must not
@@ -78,15 +82,43 @@ export async function readModificationNoteCash(
   const notes = new Map<string, ModificationNoteCash>();
   for (const operation of operations) {
     if (!operation.xeroObjectId || !MODIFICATION_NOTE_MODELS.has(operation.localModel ?? "")) continue;
-    notes.set(operation.xeroObjectId, noteCashOf(operation));
+    notes.set(operation.xeroObjectId, isAccountCreditNote(operation) ? "no-cash" : noteCashOf(operation));
   }
   return notes;
+}
+
+/**
+ * The account-credit notes: credit kept on the member's account, raised for a
+ * cancellation or an edit, never cash out. Their payload names the queue type,
+ * not a refund method, so `noteCashOf` alone would read one as a refund (#3979
+ * final review). Applied to a paid invoice, such a note is the member's own
+ * credit. Read here, for the settle, and not in `noteCashOf`: the refunded-total
+ * repair never reaches an account-credit note through a modification note's
+ * role, and the Xero repair tool's known modification refunds must keep
+ * counting an edit kept as credit, which the refunded total also counts.
+ */
+const ACCOUNT_CREDIT_NOTE_QUEUE_TYPES: ReadonlySet<string> = new Set([
+  XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
+  XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
+]);
+
+function isAccountCreditNote(operation: NoteOperation): boolean {
+  const payloadQueueType = getJsonRecord(operation.requestPayload)?.queueType;
+  return (
+    ACCOUNT_CREDIT_NOTE_QUEUE_TYPES.has(operation.queueType ?? "") ||
+    (typeof payloadQueueType === "string" && ACCOUNT_CREDIT_NOTE_QUEUE_TYPES.has(payloadQueueType))
+  );
 }
 
 /** Where a modification credit note's operation is anchored: an edit, or the booking (a clearing note). */
 const MODIFICATION_NOTE_MODELS = new Set(["BookingModification", "Booking"]);
 
-type NoteOperation = { xeroObjectId: string | null; localModel: string | null; requestPayload: unknown };
+type NoteOperation = {
+  xeroObjectId: string | null;
+  localModel: string | null;
+  queueType: string | null;
+  requestPayload: unknown;
+};
 
 async function readNoteOperations(
   creditNoteIds: string[],
@@ -95,7 +127,7 @@ async function readNoteOperations(
   if (creditNoteIds.length === 0) return [];
   return db.xeroSyncOperation.findMany({
     where: { direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", xeroObjectId: { in: creditNoteIds } },
-    select: { xeroObjectId: true, localModel: true, requestPayload: true },
+    select: { xeroObjectId: true, localModel: true, queueType: true, requestPayload: true },
   });
 }
 

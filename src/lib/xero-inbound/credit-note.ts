@@ -316,14 +316,15 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     await upsertXeroObjectLink(link);
   }
 
-  const modificationRefundAmountsByPaymentId =
-    await resolveModificationRefundAmountsByPaymentId({
-      creditNoteId: creditNote.creditNoteID,
+  const resolveCurrentModificationRefunds = () =>
+    resolveModificationRefundAmountsByPaymentId({
+      creditNoteId: creditNote.creditNoteID!,
       isModificationNote: resolvedCreditNoteLinks.some(
         (link) => link.role === "MODIFICATION_CREDIT_NOTE"
       ),
       allocationTargets,
     });
+  const modificationRefundAmountsByPaymentId = await resolveCurrentModificationRefunds();
 
   const refundedPaymentRepair = await repairRefundedPaymentBusinessState({
     creditNoteId: creditNote.creditNoteID,
@@ -338,6 +339,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       ...accountCreditPayments.map((payment) => payment.id),
     ],
     modificationRefundAmountsByPaymentId,
+    recomputeModificationRefundAmounts: resolveCurrentModificationRefunds,
   });
 
   const accountCreditAllocationRepair =

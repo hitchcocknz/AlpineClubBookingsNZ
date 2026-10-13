@@ -641,4 +641,53 @@ async function cancellationCreditCents(): Promise<number> {
     expect(result.status).toBe(200);
     expect(await cancellationCreditCents()).toBe(20_000);
   }, 60_000);
+
+  it("ACCOUNT CREDIT FROM ANOTHER EDIT: an $80 credit kept from another booking's edit, spent here, is the member's own credit, never a refund-worded note (#3979 final review)", async () => {
+    await bookAt(30_000);
+    // Booking A's reduction kept as account credit: the lot carries its own
+    // account-credit note, raised by A's edit (no refund method on its payload).
+    const lot = await prisma.memberCredit.create({
+      data: {
+        memberId: MEMBER_ID,
+        amountCents: 8_000,
+        type: "BOOKING_MODIFICATION_REFUND",
+        description: "race 3979 credit kept from another booking's edit",
+        xeroCreditNoteId: NOTE_ID,
+      },
+    });
+    await prisma.xeroSyncOperation.create({
+      data: {
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: MODIFICATION_ID,
+        idempotencyKey: "race-3979-other-booking-account-credit",
+        correlationKey: "race-3979-other-booking-account-credit",
+        status: "SUCCEEDED",
+        queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: NOTE_ID,
+        requestPayload: { queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE", refundAmountCents: 8_000 },
+      },
+    });
+    // Spent on this booking: $220 left to pay by bank transfer.
+    await prisma.$transaction((tx) => memberCredit.applyCreditToBooking(MEMBER_ID, 8_000, BOOKING_ID, tx, CLUB_FORMAT_TEST));
+    await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { amountCents: 22_000, creditAppliedCents: 8_000 } });
+    await prisma.paymentTransaction.update({ where: { id: PRIMARY_ID }, data: { amountCents: 22_000 } });
+    // Cut by $50 before the invoice exists; the invoice bills $250 and carries
+    // the $80 credit as an applied note; the member pays $170.
+    await editPriceTo(25_000);
+    await raiseInvoice();
+
+    await settle(17_000, { totalCents: 25_000, appliedNotes: [{ id: NOTE_ID, cents: 8_000 }] });
+
+    expect(await figures()).toMatchObject({
+      payment: { amountCents: 17_000, refundedAmountCents: 0, status: "SUCCEEDED" },
+      primary: { amountCents: 17_000, status: "SUCCEEDED" },
+      receipts: [17_000],
+    });
+    expect(await prisma.bookingEvent.count({ where: { bookingId: BOOKING_ID, reason: { contains: "needs checking" } } })).toBe(0);
+    await prisma.memberCredit.deleteMany({ where: { id: lot.id } });
+  }, 60_000);
 });

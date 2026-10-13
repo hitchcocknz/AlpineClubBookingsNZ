@@ -1821,8 +1821,12 @@ corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
 figure (settled before #3979, or kept) the correction still counts, so the net
 stays the cash, and the refunded-total repair finds a bank-transfer payment's
 modification notes by its invoice, so a later note's recount never drops one.
-The repair writes through a claim on the status and total it read, and never
-un-refunds a payment whose PRIMARY rows show nothing captured to `SUCCEEDED`.
+The repair writes through a claim on the row it read (status, totals and
+`updatedAt`, which the settle touches at every transition), re-runs once from
+scratch when it loses that claim, and never un-refunds a payment whose PRIMARY
+rows show nothing captured to `SUCCEEDED`. A receipt counts a correction only
+while it carries a reason it was born with; a part payment recognised at cancel
+is cash-sized.
 Settles before #3979 are listed by `pnpm run payments:audit-ib-settled-cash`,
 never rewritten.
 

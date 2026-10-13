@@ -261,6 +261,7 @@ describe("the ledger idempotency proof stays wired into CI (#3595)", () => {
       "GUEST REMOVAL AFTER, the fold cleared at the settle: a later note's recount leaves $50 refunded and the net at the true $150 (review A)",
       "GUEST REMOVAL AFTER, settled before #3979 at the stored $300: the recount keeps counting the correction, so the net is the true $150, never $250 (review A)",
       "A CARD REFUNDED BEFORE THE SWITCH (#1765): the receipt is the cash, the payment's figure and status are what the ledger projects, and the cancel credits the $200 back (review B)",
+      "ACCOUNT CREDIT FROM ANOTHER EDIT: an $80 credit kept from another booking's edit, spent here, is the member's own credit, never a refund-worded note (#3979 final review)",
     ]) {
       expect(suite).toContain(caseName);
     }
