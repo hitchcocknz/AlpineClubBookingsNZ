@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof of #4083 and #4096 (`INV-PAY-127`): a card refund Stripe
+ * Real-PostgreSQL proof of #4083 and #4096 (`INV-PAY-128`): a card refund Stripe
  * answered `failed` or `canceled` on a booking edit or a cancellation is still
  * owed, and its retry asks under a fresh key.
  *

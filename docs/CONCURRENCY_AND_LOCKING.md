@@ -4876,7 +4876,7 @@ is a 409: a refund the treasurer never saw is never marked resolved.
 
 ## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096)
 
-A card refund Stripe answers `failed` or `canceled` (`INV-PAY-127`) adds four
+A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds four
 writes to a `PaymentRecoveryOperation`, all lock-free and each fenced in its
 own `where`, because none moves booking status, capacity or a payment's
 refunded total (`INV-LOCK-001`), and none runs inside a transaction with the

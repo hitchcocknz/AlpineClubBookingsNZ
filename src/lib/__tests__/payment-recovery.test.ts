@@ -2168,7 +2168,7 @@ describe("payment recovery worker", () => {
     );
   });
 
-  // #4083 (`INV-PAY-127`): a replay Stripe answered `failed` or `canceled`
+  // #4083 (`INV-PAY-128`): a replay Stripe answered `failed` or `canceled`
   // returns normally from `refundPaymentTransactions`. The row must stay owed,
   // and its retry must not replay the refused key - Stripe answers a repeated
   // key with the original refusal for 24 hours.

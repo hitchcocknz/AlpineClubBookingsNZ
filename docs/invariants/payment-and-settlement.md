@@ -1218,7 +1218,7 @@ one, check the other.
 
 - External provider side effects require clear retry and idempotency behavior.
 
-## INV-PAY-127
+## INV-PAY-128
 
 **Related: `INV-PAY-114`** (an organiser child's refund, which reopens one
 Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).

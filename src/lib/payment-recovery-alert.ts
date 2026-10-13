@@ -1,7 +1,7 @@
 /**
  * The officers' alert for a card payment the club could not move - the one
  * sender for a recovery that has run out of retries (`payment-recovery.ts`)
- * and, #4083 (`INV-PAY-127`), for a card refund Stripe refused
+ * and, #4083 (`INV-PAY-128`), for a card refund Stripe refused
  * (`refused-card-refund-retry.ts`). Split out so the refusal's module can raise
  * it without importing the recovery runner.
  */
