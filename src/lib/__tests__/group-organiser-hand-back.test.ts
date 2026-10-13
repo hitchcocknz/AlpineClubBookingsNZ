@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ManualRefundTaskKind, ManualRefundTaskStatus } from "@prisma/client";
 
 /**
- * #4042 (`INV-PAY-123`): the hand-back an organiser's Internet Banking group
+ * #4042 (`INV-PAY-124`): the hand-back an organiser's Internet Banking group
  * cancel keeps for the organiser. Its total is DERIVED on every claim - the
  * joiners the ledger proves refunded, those a group task records, and this
  * claim's - less what closed group tasks repaid; a share booked after the task

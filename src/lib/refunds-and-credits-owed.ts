@@ -122,7 +122,7 @@ export async function readRefundsAndCreditsOwed(
   const owingPayments = new Map<string, Prisma.PaymentGetPayload<{ select: typeof OWING_PAYMENT_SELECT }>>();
   let uncappedTaskOwedCents = 0;
   for (const task of openTasks) {
-    // #4042 (`INV-PAY-123`): a group organiser's hand-back is money the club
+    // #4042 (`INV-PAY-124`): a group organiser's hand-back is money the club
     // still owes the organiser, and the joiners' payments already read
     // refunded, so it counts once, at its own amount - never through the
     // organiser's payment, whose Net Collected leaves it out.

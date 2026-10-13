@@ -2406,7 +2406,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     });
   });
 
-  // #4042 (`INV-PAY-123`): a group organiser's hand-back. The cancel already
+  // #4042 (`INV-PAY-124`): a group organiser's hand-back. The cancel already
   // booked the joiners' refunds, so it is paid, never dismissed, and paying it
   // moves nothing; it closes under lock(1), which each later share grows it under.
   describe("a group organiser's hand-back (#4042)", () => {

@@ -168,7 +168,7 @@ export type OpenManualRefundTaskPayload = {
    */
   refundRequestHandBack: boolean;
   /**
-   * #4042 (`INV-PAY-123`): an organiser cancelled a group paid by Internet
+   * #4042 (`INV-PAY-124`): an organiser cancelled a group paid by Internet
    * Banking, and the club repays the joiners' refunds to the organiser. The
    * cancel already booked those refunds, so the cash sentence does not fit it.
    */

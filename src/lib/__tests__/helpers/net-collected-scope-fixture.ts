@@ -72,7 +72,7 @@ type FixtureRow = {
      * Null unless the writer sets one: an edit's refund carries
      * `edit-refund-hand-back:<modification>` (`INV-PAY-117`), which changes
      * nothing here. #4042: the one key Net Collected reads is a group
-     * organiser's hand-back's (`INV-PAY-123`), which it leaves out.
+     * organiser's hand-back's (`INV-PAY-124`), which it leaves out.
      */
     occurrenceKey: string | null;
   }>;

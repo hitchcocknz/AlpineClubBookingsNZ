@@ -284,7 +284,7 @@ export function getNetCollectedCashParts(
     leftCents -= cents;
     return cents;
   };
-  // #4042 (`INV-PAY-123`): not a group organiser's hand-back. It sits on the
+  // #4042 (`INV-PAY-124`): not a group organiser's hand-back. It sits on the
   // organiser's booking but repays the joiners' refunds, which their own
   // payments already show as refunded, so taking it off this payment would
   // count it twice. Excluded here, at Net Collected's own call, not in the

@@ -180,7 +180,7 @@ export async function voidCancelledGroupSettlementInvoice(params: {
 }
 
 /**
- * #4042 (`INV-PAY-123`): a cancelled Internet Banking group's paid invoice. The
+ * #4042 (`INV-PAY-124`): a cancelled Internet Banking group's paid invoice. The
  * organiser is repaid what the cancellation policy gives back, through the
  * hand-back task, so the alert sends the treasurer there and names no figure:
  * the task holds the total, and the invoice's paid amount is not what is owed.

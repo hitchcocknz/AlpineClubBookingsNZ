@@ -22,7 +22,7 @@ import { z } from "zod";
 import { formatCents } from "@/lib/utils";
 
 /**
- * #4042 (`INV-PAY-123`): THE HAND-BACK AN ORGANISER'S INTERNET BANKING GROUP
+ * #4042 (`INV-PAY-124`): THE HAND-BACK AN ORGANISER'S INTERNET BANKING GROUP
  * CANCEL OWES THE ORGANISER.
  *
  * When the organiser cancels a group they paid for with one Internet Banking

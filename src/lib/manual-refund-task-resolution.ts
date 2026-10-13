@@ -166,7 +166,7 @@ export async function resolveManualRefundTask(
       where: { id: taskId },
       select: { kind: true, occurrenceKey: true },
     });
-    // #4042 (`INV-PAY-123`): so does a group organiser's, which later joiners' shares grow under it.
+    // #4042 (`INV-PAY-124`): so does a group organiser's, which later joiners' shares grow under it.
     if (
       head?.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW ||
       (head !== null && (isNonCancellationHandBackTask(head) || isGroupOrganiserHandBackTask(head)))

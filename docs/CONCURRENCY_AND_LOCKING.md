@@ -3112,7 +3112,7 @@ limit of the window, not of the release.
 Internet Banking settlement's per-child claim, after its `lock(1)` and the
 joiner's mirror, books that joiner's share on the one `ManualRefundTask` keyed
 `group-organiser-hand-back:<settlement id>` (`recordGroupOrganiserHandBackShare`,
-`INV-PAY-123`): the first share creates it, each later one sets it, by a
+`INV-PAY-124`): the first share creates it, each later one sets it, by a
 status-guarded `updateMany` while OPEN, to the total derived under the lock
 (the joiners whose refund lines are on the ledger, those a group task records,
 and its own, less closed group tasks), and one booked after it closed creates
@@ -3461,7 +3461,7 @@ does too, and both would post. So `resolveManualRefundTask` takes
   mocked in `manual-refund-task.test.ts`. Legacy hand-back kinds take no key,
   exactly as before — **except an edit refund hand-back** (#3827,
   `INV-PAY-117`), an approved refund appeal's (`INV-PAY-118`) and a group
-  organiser's (#4042, `INV-PAY-123`, which later joiners' claims grow under
+  organiser's (#4042, `INV-PAY-124`, which later joiners' claims grow under
   it), which take the same key first, decided from its immutable
   `kind` and `occurrenceKey`. Its completion moves the payment's
   `refundedAmountCents` and closes the task in one commit, and every edit,

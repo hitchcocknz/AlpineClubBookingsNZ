@@ -269,7 +269,7 @@ export function internetBankingHoldKeptParagraph(
 }
 
 /**
- * #4042 (`INV-PAY-123`) — which hand-back the "Manual refund needed" alert is
+ * #4042 (`INV-PAY-124`) — which hand-back the "Manual refund needed" alert is
  * about: the cash cancel's (#2262), whose ledger records the refund when it is
  * paid back, or an organiser's Internet Banking group cancel, whose joiners'
  * refunds the ledger already holds. These feed the sender's subject, the text

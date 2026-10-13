@@ -2065,7 +2065,7 @@ ledger line, Xero note or `REFUNDED` event. COMPLETED takes `lock(1)` and
 must name the total the screen showed; a missing or grown total is refused. DISMISSED is refused: the
 refunds are booked as made, so not repaying is the treasurer's correction.
 See
-[`INV-PAY-123`](invariants/payment-and-settlement.md#inv-pay-123).
+[`INV-PAY-124`](invariants/payment-and-settlement.md#inv-pay-124).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

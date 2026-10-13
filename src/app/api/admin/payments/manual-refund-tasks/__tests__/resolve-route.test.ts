@@ -364,7 +364,7 @@ describe("the officer's cash-or-bank answer on a hand-settled refund (#3536)", (
   });
 });
 
-// #4042 (`INV-PAY-123`): a group organiser's hand-back completion that does not
+// #4042 (`INV-PAY-124`): a group organiser's hand-back completion that does not
 // say the total it was shown reaches the door as null, and the door's refusal
 // is what the officer reads.
 describe("a group organiser's hand-back marked paid back without the total it was shown", () => {

@@ -190,7 +190,7 @@ export async function reapStaleGroupSettlements(
   // The club's format (#3565), resolved once, before any transaction or
   // lock below — never per amount and never inside a transaction.
   const format = await clubFormatValues();
-  // #4042 (`INV-PAY-123`): keyed on the TASK, so an alert left unsent after a
+  // #4042 (`INV-PAY-124`): keyed on the TASK, so an alert left unsent after a
   // group's last claim is retried - and run even when a step below throws.
   const resendAlerts = () =>
     resendUnsentGroupOrganiserHandBackAlerts(new Date(now.getTime() - GROUP_CANCEL_RESUME_GRACE_MINUTES * 60 * 1000), format)

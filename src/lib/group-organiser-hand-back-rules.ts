@@ -4,7 +4,7 @@ import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
 
 /**
- * #4042 (`INV-PAY-123`): what marks, keys, reads and refuses a group
+ * #4042 (`INV-PAY-124`): what marks, keys, reads and refuses a group
  * organiser's hand-back - client-safe, so the finance card, the resolution
  * door, Net Collected, "Refunds owed", the ledger census and the writer
  * (`group-organiser-hand-back.ts`) all ask it here (`INV-SSOT`). Its own module
@@ -13,7 +13,7 @@ import { formatCents } from "@/lib/utils";
  */
 
 /**
- * #4042 (`INV-PAY-123`): THE OCCURRENCE-KEY PREFIX of a group organiser's
+ * #4042 (`INV-PAY-124`): THE OCCURRENCE-KEY PREFIX of a group organiser's
  * hand-back - the one task an organiser's cancel of a group settled by Internet
  * Banking raises, on the organiser's booking, so the treasurer repays the
  * joiners' refunds to the organiser. One per settlement: the key is the
@@ -25,7 +25,7 @@ export const GROUP_ORGANISER_HAND_BACK_KEY_PREFIX = "group-organiser-hand-back:"
 
 /**
  * The occurrence key of one group settlement's organiser hand-back
- * (`INV-PAY-123`), or, with a joiner, of the SUPPLEMENTARY task raised for a
+ * (`INV-PAY-124`), or, with a joiner, of the SUPPLEMENTARY task raised for a
  * share booked after the settlement's task was closed.
  */
 export function groupOrganiserHandBackOccurrenceKey(settlementId: string, childBookingId?: string): string {
@@ -39,7 +39,7 @@ export function groupOrganiserHandBackTasksWhere(settlementId: string) {
 }
 
 /**
- * #4042 (`INV-PAY-123`): a group organiser's hand-back is paid, never
+ * #4042 (`INV-PAY-124`): a group organiser's hand-back is paid, never
  * dismissed. The cancel booked the joiners' refunds as made when it raised it,
  * so dismissing it would leave the ledger saying the organiser was repaid.
  */
@@ -47,7 +47,7 @@ export const GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE =
   "This repays a group organiser for joiners' refunds the group's cancellation has already recorded as made, so it cannot be dismissed here. Repay the organiser and mark it paid back. If the club has decided not to repay them, that changes the cancelled bookings' own figures: take it to the treasurer to correct them.";
 
 /**
- * #4042 (`INV-PAY-123`): why a group organiser's hand-back cannot be closed as
+ * #4042 (`INV-PAY-124`): why a group organiser's hand-back cannot be closed as
  * asked, or null. It is never dismissed (above). Its total grows as each
  * joiner's cancel completes, so a completion must name the total the screen
  * showed, and is refused when that is no longer the total.
@@ -70,7 +70,7 @@ export function groupOrganiserHandBackRefusal(
 }
 
 /**
- * #4042 (`INV-PAY-123`): the joiners' shares a group organiser's hand-back
+ * #4042 (`INV-PAY-124`): the joiners' shares a group organiser's hand-back
  * holds, kept on the row (`reviewContext.groupOrganiserHandBack`) so its total
  * and its reason are built from data, never parsed back out of prose.
  */
@@ -111,7 +111,7 @@ export function readGroupOrganiserHandBackShares(reviewContext: unknown): GroupO
 }
 
 /**
- * #4042 (`INV-PAY-123`): THE one definition of a group organiser's hand-back -
+ * #4042 (`INV-PAY-124`): THE one definition of a group organiser's hand-back -
  * the kind and the key prefix - as a where fragment for a query and, below, as
  * the predicate for a row (`INV-SSOT`). A cancellation's hand-back, so a read
  * by this fragment needs no `NOT_NON_CANCELLATION_HAND_BACK_WHERE`: its prefix
@@ -123,7 +123,7 @@ export const GROUP_ORGANISER_HAND_BACK_WHERE = {
   occurrenceKey: { startsWith: GROUP_ORGANISER_HAND_BACK_KEY_PREFIX },
 } as const;
 
-/** #4042: is this task a group organiser's hand-back (`INV-PAY-123`)? The fragment above, for a row. */
+/** #4042: is this task a group organiser's hand-back (`INV-PAY-124`)? The fragment above, for a row. */
 export function isGroupOrganiserHandBackTask(task: {
   kind: ManualRefundTaskKind | string | null;
   occurrenceKey: string | null;
