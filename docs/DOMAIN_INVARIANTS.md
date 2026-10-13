@@ -446,6 +446,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-057` | Cancellable statuses have one home; member doors read a named subset |
 | `INV-MOD-058` | An edit stores its delta as lines; every reader reads those rows |
 | `INV-MOD-059` | A guest's dietary value is seeded once, then carried by identity |
+| `INV-MOD-060` | An ordinary price ask's door and replay send one Stripe request |
 
 ### Adult-member hosting
 

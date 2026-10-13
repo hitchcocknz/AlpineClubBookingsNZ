@@ -1526,8 +1526,7 @@ export async function modifyBookingDates({
     format,
     bookingId,
     result,
-    reason: "date_change_price_increase",
-    idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
+    door: "dateChange",
     failureMessage: "Failed to create additional PaymentIntent for modification",
   });
 

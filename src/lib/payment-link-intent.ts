@@ -41,7 +41,8 @@ import {
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { chargeCurrencyRefusal, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE } from "@/lib/stripe-charge-currency";
-import { intentCurrencyDiffers, staleIntentAction } from "@/lib/additional-intent-currency";
+import { intentCurrencyDiffers } from "@/lib/additional-intent-currency";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 import {
   PAYMENT_PROCESSING_CODE,
   PAYMENT_PROCESSING_MESSAGE,

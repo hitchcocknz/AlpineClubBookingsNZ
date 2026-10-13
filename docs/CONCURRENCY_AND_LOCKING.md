@@ -3106,7 +3106,12 @@ release's next inbound sync of a credit note on the payment recomputes the
 total without it - lowering it for a bank payment; for a card payment the
 raise-only floor (#1353) keeps the higher figure and sends the
 refund-ledger-divergence alert, so a treasurer corrects it by hand. A stated
-limit of the window, not of the release.
+limit of the window, not of the release. An ORDINARY increase's door and
+replay share one request (`INV-MOD-060`, #4036), so in the window an old
+door's row replays byte for byte under this runner, a new door's row the old
+runner replays is refused and backs off until this runner replays it, and an
+intent the old runner minted under its own reason is adopted only as the one
+unrecorded match no other in-flight recovery of the booking could own.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`

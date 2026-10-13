@@ -56,7 +56,8 @@ import {
 } from "@/lib/payment-recovery-contract";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { chargeCurrencyRefusal, stripeChargeCurrency, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE as CURRENCY_REFUSED, UnsupportedChargeCurrencyError } from "@/lib/stripe-charge-currency";
-import { intentCurrencyDiffers, staleIntentAction } from "@/lib/additional-intent-currency";
+import { intentCurrencyDiffers } from "@/lib/additional-intent-currency";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 
 class PaymentIntentCapacityError extends Error {
   constructor() {

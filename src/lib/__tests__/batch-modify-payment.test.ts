@@ -128,6 +128,18 @@ vi.mock("@/lib/prisma", () => ({
     },
     payment: {
       update: mockPaymentUpdate,
+      // #4036: with no stored customer, the door resolves the booking owner's
+      // as the recovery runner does (`readAskMintPayment`, `resolveAskCustomerId`).
+      findUnique: vi.fn(async () => ({
+        additionalAmountCents: 0,
+        additionalPaymentStatus: null,
+        stripeCustomerId: null,
+        booking: {
+          organisationId: null,
+          member: { id: "m1", email: "alice@example.com", firstName: "Alice", lastName: "Member" },
+          organisation: null,
+        },
+      })),
     },
     paymentTransaction: {
       updateMany: mockPaymentTransactionUpdateMany,
@@ -2016,6 +2028,8 @@ describe("PUT /api/bookings/[id]/modify", () => {
       email: "alice@example.com",
       name: "Alice Member",
       memberId: "m1",
+      // #4036: resolved as the recovery runner resolves it, the owner's organisation included.
+      organisationId: null,
     });
 
     expect(mockCreatePaymentIntent).toHaveBeenCalledWith(

@@ -47,12 +47,13 @@ A modification price increase whose Stripe intent creation fails transiently is
 never lost silently (#1358, F29): every additional-intent flow routes through
 the shared helper whose failure path enqueues a durable
 `CREATE_ADDITIONAL_PAYMENT_INTENT` recovery operation keyed one-per-modification
-with the same modification-scoped Stripe idempotency key, so the replay collects
-exactly once; exhausted retries alert the admins with the member, booking, and
-amount, and stalled or exhausted queues surface through the recovery health
-checks. The recovery processor is execution-time honest about lifecycle: a
-booking CANCELLED after the modification completes the operation WITHOUT
-minting an intent — cancellation already tore down its additional intents, and
+with the same modification-scoped Stripe idempotency key and request
+(`INV-MOD-060`), so the replay collects exactly once; exhausted retries alert
+the admins with the member, booking, and amount, and stalled or exhausted
+queues surface through the recovery health checks. The recovery processor is
+execution-time honest about lifecycle: a booking CANCELLED after the
+modification completes the operation WITHOUT minting an intent —
+cancellation already tore down its additional intents, and
 recovery must never resurrect a retired collectable or re-arm the parked
 supplementary Xero operation for money that must not be captured (the
 stale-WAITING_PAYMENT reaper retires that op). A replay that DOES mint also
@@ -70,6 +71,35 @@ recovery row (`PaymentRecoveryOperation.hadIssuedXeroInvoice`) rather than
 re-derived at replay time: a booking whose primary invoice is minted after the
 edit is billed for the edit BY that invoice, so a re-derivation would raise a
 second ask for the same money. Not recorded means not raised.
+
+## INV-MOD-060
+
+- **An ordinary edit's price ask is one Stripe request, whichever of its door
+  and its recovery replay sends it** (#4036). Stripe refuses a key replayed with
+  other parameters (`idempotency_error`), and a refused replay never asks the
+  member. Both plan it with `planOrdinaryAskMint`: the door's key, or that key
+  naming a re-derived amount; the amount; and metadata whose reason is the
+  door's, named by the key frozen on the recovery row
+  (`ordinaryAskReasonForStripeKey`), so an old door's row replays too. Each
+  door's key and reason are spelled once (`ordinaryAskDoorRequest`), derived
+  together from the door, and never renamed. Both resolve the customer one way
+  (`resolveAskCustomerId`), an organisation included. Ledger rows keep their
+  own reasons.
+- **A refused replay adopts an unrecorded, unpaid intent that matches this
+  ask** (`mintOrdinaryAskIntent`): this booking, an additional ask by this
+  door's reason or the pre-#4036 runner's, this amount and currency, on no
+  ledger row, created since five minutes before the recovery row. It fails
+  closed (retry, then alert, `INV-MOD-003`) when none or several match, the
+  scan stopped at its bound, or another in-flight recovery of the booking
+  (`isPaymentRecoveryOperationInFlight`) could own the match. A door-reason
+  intent must predate the row (60 seconds' skew), so a later door's is never
+  taken; the cost is that a drifted customer can exclude the runner's own
+  earlier intent, which then fails closed. Adoption leaves the payment's
+  customer as it was. The door's own mint looks nothing up.
+- **An edit's ask row is never written over another edit's**: the ask write
+  refuses, atomically, a row naming another `bookingModificationId`, and the
+  runner also refuses an adopted intent that any row holds.
+- **Not** a review charge (`INV-PAY-112`) or a re-issued ask (`INV-PAY-120`).
 
 ## INV-MOD-004
 

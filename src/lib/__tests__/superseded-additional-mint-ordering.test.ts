@@ -133,8 +133,7 @@ describe("createModificationAdditionalPaymentIntent ordering (#3340)", () => {
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       result: CONTEXT,
-      reason: "guest_add_price_increase",
-      idempotencyKey: "mod_guest_booking_1_mod_1",
+      door: "guestAdd",
       failureMessage: "boom",
     });
 
@@ -154,8 +153,7 @@ describe("createModificationAdditionalPaymentIntent ordering (#3340)", () => {
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       result: CONTEXT,
-      reason: "guest_add_price_increase",
-      idempotencyKey: "mod_guest_booking_1_mod_1",
+      door: "guestAdd",
       failureMessage: "boom",
     });
 
@@ -207,8 +205,7 @@ describe("createModificationAdditionalPaymentIntent ordering (#3340)", () => {
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       result: CONTEXT,
-      reason: "guest_add_price_increase",
-      idempotencyKey: "mod_guest_booking_1_mod_1",
+      door: "guestAdd",
       failureMessage: "boom",
     });
 
@@ -231,8 +228,7 @@ describe("a refused increase keeps its debt (#3567 re-review)", () => {
       format: stored,
       bookingId: "booking_1",
       result: CONTEXT,
-      reason: "guest_add_price_increase",
-      idempotencyKey: "mod_guest_booking_1_mod_1",
+      door: "guestAdd",
       failureMessage: "boom",
     });
 

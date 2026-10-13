@@ -2973,20 +2973,34 @@ modification refunds `buildBookingModificationRefundMetadata`, whose per-path
 key replays the original refund instead of being rejected as an
 `idempotency_error` for mismatched parameters.
 
-Additional PaymentIntent creation has the same durable safety net (#1096):
-every price-increasing edit path (batch modify, date change, guest add,
-single-guest removal) creates the intent through one shared settlement
-helper, and a transient Stripe failure enqueues a
-`CREATE_ADDITIONAL_PAYMENT_INTENT` recovery operation keyed to the booking
-modification. The worker re-creates the intent with the original
-modification-scoped Stripe idempotency key (so route and cron can never
-double-mint), skips itself if a later edit already minted a newer additional
-intent, and settles the Xero half two ways: it points any supplementary
-invoice operation still WAITING_PAYMENT at the recovered intent, and it raises
-the supplementary invoice outright for the edits that queued none — the inline
-dispatch skips that queue while no intent exists, so those edits had a
-collectable payment request and no accounting record until the replay completed
-the deferral (#3181). The figure is the `BookingModification`'s signed
+Additional PaymentIntent creation has the same durable safety net (#1096): every
+price-increasing edit path (batch modify, date change, guest add, single-guest
+removal) creates the intent through one shared settlement helper, and a
+transient Stripe failure enqueues a `CREATE_ADDITIONAL_PAYMENT_INTENT` recovery
+operation keyed to the booking modification. The worker re-creates the intent
+with the original modification-scoped Stripe idempotency key (so route and cron
+can never double-mint) and, since #4036, the same request the door sent
+(`planOrdinaryAskMint`, `INV-MOD-060`): the door's reason, named by the frozen
+key, and the customer resolved one way (`resolveAskCustomerId`), because Stripe
+refuses a key replayed with other parameters. A replay it still refuses adopts
+an unrecorded, unpaid intent that matches this ask (`mintOrdinaryAskIntent`),
+and fails closed and retries instead when none or several match, when the intent
+scan stopped at its bound, or when another recovery of the booking still in
+flight (`isPaymentRecoveryOperationInFlight`, a FAILED row awaiting its retry
+included) could own the match; it never takes an intent under a door's reason
+that Stripe created after the recovery row (`DOOR_INTENT_CLOCK_SKEW_MS`), since
+the row exists only once the door's create failed; under its claim it re-checks
+that no ledger row took the adopted intent, and it leaves the payment's customer
+as it was. Every ask write that names its edit, the door's and the runner's,
+refuses atomically a ledger row already naming another edit
+(`AdditionalAskAttributionConflictError`), so one intent is never recorded as
+two edits' asks. It skips itself if a later edit already minted a newer
+additional intent, and settles the Xero half two ways: it points any
+supplementary invoice operation still WAITING_PAYMENT at the recovered intent,
+and it raises the supplementary invoice outright for the edits that queued none
+— the inline dispatch skips that queue while no intent exists, so those edits
+had a collectable payment request and no accounting record until the replay
+completed the deferral (#3181). The figure is the `BookingModification`'s signed
 components; the anchor-scoped, advisory-locked enqueue is what keeps it to one
 invoice per edit however the two paths interleave. Whether there was an invoice
 to supplement at all is the EDIT's answer, frozen on the recovery row as
