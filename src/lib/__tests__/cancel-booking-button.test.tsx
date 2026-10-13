@@ -900,6 +900,20 @@ describe("CancelBookingButton — an own-card refund not made yet (#4084)", () =
       "Cancel Booking",
       "The club will refund $45.00 to you by bank transfer. You will receive a confirmation email shortly.",
     ],
+    [
+      "nothing on the card and nothing holding the rest",
+      { method: "card", amountCents: 0, toCheckCents: 4500 },
+      false,
+      "Cancel Booking",
+      "The club will be in touch about the $45.00 refund. You will receive a confirmation email shortly.",
+    ],
+    [
+      "a bank part and a part to check, for an officer",
+      { method: "card", amountCents: 3000, byHandCents: 500, toCheckCents: 1000 },
+      true,
+      "Cancel on behalf of member",
+      "A refund of $30.00 has been processed to the member's original payment method; the club will refund $5.00 to the member by bank transfer and will be in touch about the remaining $10.00. They will receive a confirmation email shortly.",
+    ],
   ] as const)("#4097: names the card's amount and the bank-transfer remainder (%s)", async (_label, ownCardRefund, onBehalfOfMember, buttonName, sentence) => {
     stubOwnCardFetch({ refundAmountCents: 4500, refundMethod: "card", ownCardRefund });
     render(<CancelBookingButton bookingId="bk_own" onBehalfOfMember={onBehalfOfMember} />);
