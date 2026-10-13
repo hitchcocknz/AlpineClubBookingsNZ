@@ -277,12 +277,10 @@ A `LOCKED_PERIOD` change request names the change it asks for. `POST
 guest added or removed and no guest's nights (400, `STRUCTURED_CHANGE_REQUIRED`);
 the note and `requestedEffectiveDate` are context, never a change, and a guest
 stay range counts only with both bounds and nights different from the guest's
-own. That test only decides whether a request names a change: approving one
-applies every two-bound range, repeated ones included, so a part-stay guest
-keeps their own nights when the stay moves. Added guests' nights and existing guests' ranges are read by
-`normalizeGuestStayRange`, and a typed
-guest named like one of the owner's dependants is refused at submit and in the
-officer's entry by `checkOwnDependantIdentityForParty` (`INV-GUEST-019`). The member's
+own; approval still applies every two-bound range, repeated ones included. All
+guest nights are read by `normalizeGuestStayRange`, and a typed guest named like
+one of the owner's dependants is refused at submit and in the officer's entry by
+`checkOwnDependantIdentityForParty` (`INV-GUEST-019`). The member's
 in-progress request card adds guests with the guest editor's fields, each guest's
 nights inside the stay, and shows an estimate that prices only non-member guests
 (a member-reachable route never resolves another member's rate).

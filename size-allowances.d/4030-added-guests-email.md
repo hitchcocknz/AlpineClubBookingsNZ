@@ -20,13 +20,13 @@ reason: one line handing the guest-add route's created rows to the
   booking-modified sender, so the member's add-a-guest email names them.
 
 file: src/lib/booking-batch-modification-service.ts
-lines: 2922
+lines: 2926
 reason: three lines - the created guest rows carried on the result type, set
   where the result is built, and handed to the change email - which is the
   path both a member's own edit and the officer's finished-stay approval send.
 
 file: src/lib/booking-date-modification-service.ts
-lines: 2385
+lines: 2389
 reason: one `addedGuests: []` line at each of the service's two existing calls
   to the booking-modified sender, which the required argument demands.
 
@@ -36,9 +36,11 @@ reason: the sender's one new required parameter; the rows it composes live in
   booking-money-lines.ts, so nothing else grew here.
 
 file: src/app/api/bookings/[id]/change-requests/route.ts
-lines: 591
+lines: 592
 reason: the member's request door runs the one dependant-identity rule
   (INV-GUEST-019, #4030 review M4) on the guests it is asked to add, refusing
   with its own message - six lines that belong at this door, beside the other
-  refusals the route answers before it writes anything. The stay-range check
-  and every message live in booking-change-request-guests.ts.
+  refusals the route answers before it writes anything; and the existing
+  guests' stay ranges read by the canonical range rule beside the added
+  guests' nights (one more line, #4030 re-review of 72c933ffc). The range
+  checks and every message live in booking-change-request-guests.ts.

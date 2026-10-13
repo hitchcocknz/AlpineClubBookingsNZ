@@ -267,21 +267,13 @@ export async function POST(
     );
   }
 
-  // #4030: every added guest's nights inside the stay the request proposes.
-  const addedNightsRefusal = addedGuestNightsRefusal(addGuests ?? [], {
-    checkIn: formatDateOnly(nextCheckIn),
-    checkOut: formatDateOnly(nextCheckOut),
-  });
-  if (addedNightsRefusal) {
-    return NextResponse.json({ error: addedNightsRefusal }, { status: 400 });
-  }
-  // The existing guests' nights, by the same canonical range rule.
-  const stayRangesRefusal = guestStayRangesRefusal(guestStayRanges ?? [], {
-    checkIn: formatDateOnly(nextCheckIn),
-    checkOut: formatDateOnly(nextCheckOut),
-  });
-  if (stayRangesRefusal) {
-    return NextResponse.json({ error: stayRangesRefusal }, { status: 400 });
+  // #4030: every added guest's nights inside the stay the request proposes, and
+  // the existing guests' ranges, by the one canonical range rule.
+  const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
+  const nightsRefusal =
+    addedGuestNightsRefusal(addGuests ?? [], stay) ?? guestStayRangesRefusal(guestStayRanges ?? [], stay);
+  if (nightsRefusal) {
+    return NextResponse.json({ error: nightsRefusal }, { status: 400 });
   }
   // #4030 review M4 (`INV-GUEST-019`): the one dependant-identity rule.
   if (addGuests?.length) {
