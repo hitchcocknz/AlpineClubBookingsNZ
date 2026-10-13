@@ -1033,10 +1033,10 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   those the engine's total is unchanged: conservation never depended on lot
   order (`INV-PAY-023`). What it fixes is which of two equal lots goes first,
   and so whether a note is allocated or minted, the same way every time.
-- A retry keeps the slices its earlier attempt committed. One committed under
-  another order (before the tie-break, across the deploy) is refused before
-  any write (`assertPlanKeepsCommittedSlices`): the operation fails visibly,
-  never allocating a second lot beside it.
+- A retry keeps the slices its earlier attempt committed. One whose plan no
+  longer matches them (another order across the deploy, a hand-back in
+  between) is refused before any write (`assertPlanKeepsCommittedSlices`):
+  the operation fails visibly, never allocating a second lot beside it.
 
 ## INV-PAY-024
 

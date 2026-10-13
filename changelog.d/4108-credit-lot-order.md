@@ -6,8 +6,10 @@
   Credit recorded at the same moment is now always used in the same fixed
   order. No amounts change.
 
-  One case now stops instead of guessing: if an allocation that was
-  interrupted before this upgrade is retried after it and would now pick a
-  different piece of credit, the Xero operation fails with a message naming
-  the booking, and nothing is allocated twice. Compare that booking's credit
-  notes in Xero with its allocations before retrying it.
+  One case now stops instead of guessing: when a retry of an interrupted
+  allocation would no longer keep what its earlier attempt recorded (for
+  example one interrupted across this upgrade, or one whose credit was partly
+  handed back in between), the Xero operation fails with a message naming the
+  booking, and nothing is allocated twice. If credit was handed back, retry it
+  once that hand-back has gone through; if the booking's credit notes in Xero
+  genuinely disagree with its allocations, resolve the operation in Xero.

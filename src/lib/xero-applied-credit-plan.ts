@@ -192,7 +192,7 @@ export function assertPlanKeepsCommittedSlices(
     .map((slice) => `${formatCents(slice.amountCents, format)} on credit ${slice.memberCreditId}`)
     .join(", ");
   throw new AppliedCreditReplanDivergedError(
-    `Booking ${bookingId}'s applied-credit allocation stopped: its retry would not keep the slice(s) already committed (${described}), so nothing was allocated or recorded. Check the booking's credit notes in Xero against its allocation rows before retrying (INV-PAY-127).`,
+    `Booking ${bookingId}'s applied-credit allocation stopped: its retry would not keep the slice(s) already committed (${described}), so nothing was allocated or recorded. Check the booking's credit notes in Xero against its allocation rows. If a credit was handed back since, retry once that hand-back has gone through; if they genuinely disagree, resolve the operation in Xero rather than retrying (INV-PAY-127).`,
   );
 }
 
