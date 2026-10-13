@@ -8,8 +8,8 @@ and Stripe writers (`INV-SSOT`). This route imported it beside
 `intentCurrencyDiffers` on one line; it now needs a second import line.
 
 file: src/app/api/payments/create-payment-intent/route.ts
-lines: 906
+lines: 895
 reason: one import line, for the module the unpaid reading now lives in.
   Re-exporting it from `additional-intent-currency.ts` to keep the old line
   would leave two import paths for one rule, which is what the move removes.
-  Splitting a 905-line route handler is a separate job with its own review.
+  Splitting an 894-line route handler is a separate job with its own review.
