@@ -108,6 +108,17 @@ export function isCancelCardShortfallTask(task: {
 }
 
 /**
+ * #4097: a COMPLETED card refund shortfall, as a where fragment. Its bank
+ * transfer has no refund row, so the Xero refund-note pipeline reads it as it
+ * reads a "Paid another way" close (`card-refund-paid-another-way-cash.ts`).
+ */
+export const COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE = {
+  kind: "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskKind,
+  status: "COMPLETED" satisfies ManualRefundTaskStatus,
+  occurrenceKey: { startsWith: CANCEL_CARD_SHORTFALL_KEY_PREFIX },
+} as const;
+
+/**
  * #3372 (owner, 7 Oct 2026: "Count + add close action"; #3924 round 4, M2,
  * `INV-PAY-122`): THE OCCURRENCE-KEY PREFIX of the record a "Paid another way"
  * close writes - a card refund Stripe gave up on, which the treasurer paid back

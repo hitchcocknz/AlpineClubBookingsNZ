@@ -14,7 +14,7 @@ import {
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
 import { enqueueXeroRefundRequestCreditNoteOperation } from "@/lib/xero-refund-request-credit-note-outbox";
-import { isNonCancellationHandBackTask, refundRequestIdOfHandBack } from "@/lib/manual-refund-task-settlement-rules";
+import { isCancelCardShortfallTask, isNonCancellationHandBackTask, refundRequestIdOfHandBack } from "@/lib/manual-refund-task-settlement-rules";
 import type { RefundMethod } from "@/lib/xero-refund-method";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -135,8 +135,9 @@ function enqueueCancelledReviewRefundNote(
  * #3880: a bank-transfer hand-back's note on a cancelled booking, queued on the
  * completion's own transaction after its allocation: a review's hand-back
  * (noted per refund, keyed on the task) and a `CANCELLED_BOOKING_HAND_BACK`
- * (`INV-PAY-101`, #3529: the payment's one refund note). An outbox row insert
- * and no provider call; a throw rolls the completion back.
+ * (`INV-PAY-101`, #3529: the payment's one refund note; #4097, a card refund
+ * shortfall's: its OWN, keyed on the task like a "Paid another way" close's).
+ * An outbox row insert and no provider call; a throw rolls the completion back.
  */
 export async function queueCancelledBookingHandBackNoteInTransaction({
   task,
@@ -150,6 +151,10 @@ export async function queueCancelledBookingHandBackNoteInTransaction({
   store: Prisma.TransactionClient;
 }): Promise<void> {
   const invoiceId = cancelledBookingRefundInvoiceId(task);
+  if (isCancelCardShortfallTask(task)) {
+    if (invoiceId !== null && route?.kind === "local-allocation" && route.refundCents > 0) await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, { createdByMemberId: actingMemberId, refundMethod: "internet-banking", paidAnotherWayTaskId: task.id, store });
+    return;
+  }
   const noted = cancelledReviewRefundNoteRoute(route, invoiceId);
   if (noted) {
     if (noted.kind !== "local-allocation" || noted.refundCents <= 0) return;

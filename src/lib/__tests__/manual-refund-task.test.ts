@@ -2502,7 +2502,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       occurrenceKey: "cancel-card-shortfall:booking-1",
       status: ManualRefundTaskStatus.OPEN,
       payment: { source: "STRIPE" },
-      booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: null },
+      booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId: "inv-1" } },
     });
 
     await resolveManualRefundTask({
@@ -2522,6 +2522,38 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     // A cancellation's own hand-back: no lock(1), as the cash cancel's.
     expect(mocks.executeRaw).not.toHaveBeenCalled();
     expect(mocks.recordBookingEvent).toHaveBeenCalledWith(expect.objectContaining({ type: BookingEventType.REFUNDED, amountCents: 2000 }));
+    // ONE Xero note, its own, keyed on the task (`INV-PAY-129`) - never the
+    // payment-wide cancellation hand-back note beside it - in this transaction.
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-1", 2000, {
+      createdByMemberId: "admin-1",
+      refundMethod: "internet-banking",
+      paidAnotherWayTaskId: "task-9",
+      store: tx,
+    });
+  });
+
+  it("queues no Xero note for a card refund shortfall on a booking with no invoice to credit", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue({
+      id: "task-9",
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      amountCents: 2000,
+      raisedAmountCents: 2000,
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      occurrenceKey: "cancel-card-shortfall:booking-1",
+      status: ManualRefundTaskStatus.OPEN,
+      payment: { source: "STRIPE" },
+      booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId: null } },
+    });
+
+    await resolveManualRefundTask({
+      taskId: "task-9", resolution: "completed", note: null, actingMemberId: "admin-1",
+      confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null,
+    }, CLUB_FORMAT_TEST);
+
+    expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
   });
 
   describe("an approved refund appeal's hand-back (D-3813-7)", () => {

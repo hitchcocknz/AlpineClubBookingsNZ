@@ -13,6 +13,10 @@
  *   re-driven cancel is refused and writes no second one. Marked paid back, it records the
  *   refund on the payment and posts its `BANK_REFUND` line on the card payment,
  *   and stops being owed.
+ *   Its Xero refund note is ONE bank-transfer note for exactly the task's
+ *   amount, keyed on the task, which a replay does not repeat and no card note
+ *   (the self-heal's gap) may answer - with Stripe refund rows on the payment,
+ *   and (a third case) with none.
  * - A zero plan (the payment's ledger reads the card refunded, its record does
  *   not): no Stripe call, the whole refund raised as owed. It cannot be marked
  *   paid back against a ledger with nothing left on it, so the treasurer
@@ -49,6 +53,7 @@ const PRICE_CENTS = 20_000;
 const CARD_CENTS = 14_000;
 const BANK_CENTS = 6_000;
 const TASK_KEY = `cancel-card-shortfall:${BOOKING_ID}`;
+const XERO_INVOICE_ID = "race-4097-invoice";
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 function assertSafeRaceDbUrl(url: string): void {
@@ -115,6 +120,31 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       return (await readRefundsAndCreditsOwed(prisma)).refundsOwedCents;
     }
 
+    /** Every refund credit note queued on the payment: its amount and the record it answers, if any. */
+    async function refundNotes(): Promise<Array<{ cents: unknown; taskId: unknown }>> {
+      const rows = await prisma.xeroSyncOperation.findMany({
+        where: { localModel: "Payment", localId: PAYMENT_ID, entityType: "CREDIT_NOTE", operationType: "CREATE" },
+        orderBy: { createdAt: "asc" },
+        select: { requestPayload: true },
+      });
+      return rows.map(({ requestPayload }) => {
+        const payload = (requestPayload ?? {}) as Record<string, unknown>;
+        return { cents: payload.refundAmountCents, taskId: payload.paidAnotherWayTaskId ?? null };
+      });
+    }
+
+    /**
+     * The payment's refund-note gap as the nightly self-heal and the repair tool
+     * read it: what a CARD note may still answer is the gap less the bank cash
+     * the task's own note answers (`paidAnotherWayUncoveredCents`).
+     */
+    async function cardNoteGapNow(): Promise<{ cardCents: number; bankCents: number }> {
+      const { readRefundCreditNoteGap } = await import("@/lib/xero-admin-health");
+      const payment = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { id: true, bookingId: true, refundedAmountCents: true } });
+      const gap = await readRefundCreditNoteGap(payment);
+      return { cardCents: gap.uncoveredCents - gap.paidAnotherWayUncoveredCents, bankCents: gap.paidAnotherWayUncoveredCents };
+    }
+
     async function cancel() {
       const { cancelBooking } = await import("@/lib/booking-cancel");
       return cancelBooking(BOOKING_ID, MEMBER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
@@ -175,6 +205,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           source: "STRIPE",
           status: "SUCCEEDED",
           stripePaymentIntentId: INTENT,
+          // An invoice the refund notes credit (Xero is not connected here: notes are only queued).
+          xeroInvoiceId: XERO_INVOICE_ID,
         },
       });
     });
@@ -244,6 +276,50 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(handBackLines).toEqual([{ kind: "BANK_REFUND", amountCents: -BANK_CENTS, settlementMethod: "INTERNET_BANKING" }]);
       expect(await handBackOwedNow()).toBe(0);
       expect(await refundsOwedNow()).toBe(owedBefore);
+
+      // Xero: the card's own note from the cancel, and ONE bank-transfer note
+      // for exactly the task's amount, keyed on the task - nothing payment-wide.
+      expect(await refundNotes()).toEqual([
+        { cents: CARD_CENTS, taskId: null },
+        { cents: BANK_CENTS, taskId: tasks[0]!.id },
+      ]);
+      // A replay of the task's note, and of a completion, queues none.
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, BANK_CENTS, { refundMethod: "internet-banking", paidAnotherWayTaskId: tasks[0]!.id });
+      await expect(resolve("completed", tasks[0]!.id)).rejects.toMatchObject({ status: 409 });
+      expect(await refundNotes()).toHaveLength(2);
+      // With Stripe refund rows on the payment, a card note may answer only the
+      // card's $140.00 (already queued by the cancel); the bank $60.00 is the
+      // task's own note's alone.
+      expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBeGreaterThan(0);
+      expect(await cardNoteGapNow()).toEqual({ cardCents: CARD_CENTS, bankCents: BANK_CENTS });
+    });
+
+    it("no Stripe refund rows (a zero plan whose remainder sits on a bank-paid part): ONE note for the task, and no card note may answer it", async () => {
+      // $140.00 by card, refunded before the ledger kept refund rows; a $60.00
+      // part the card cannot refund. The policy's refund is the $60.00 left.
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: CARD_CENTS, status: "PARTIALLY_REFUNDED" } });
+      await prisma.paymentTransaction.createMany({
+        data: [
+          { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, refundedAmountCents: CARD_CENTS, status: "REFUNDED", createdAt: new Date("2026-05-01T00:00:00.000Z") },
+          { id: BANK_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "INTERNET_BANKING", amountCents: BANK_CENTS, status: "SUCCEEDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+        ],
+      });
+      stripeRaceHooks.refund = async () => {
+        throw new Error("no card refund may be asked for on a zero plan");
+      };
+
+      expect(await cancel()).toMatchObject({ status: 200, data: { ownCardRefund: { amountCents: 0, byHandCents: BANK_CENTS } } });
+      const task = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: TASK_KEY } });
+      expect(task).toMatchObject({ amountCents: BANK_CENTS });
+
+      await resolve("completed", task.id);
+
+      expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBe(0);
+      expect(await refundNotes()).toEqual([{ cents: BANK_CENTS, taskId: task.id }]);
+      // On the legacy mirror, a card note may answer only the earlier card
+      // refund's $140.00, never the bank transfer the task's own note answers.
+      expect(await cardNoteGapNow()).toEqual({ cardCents: CARD_CENTS, bankCents: BANK_CENTS });
     });
 
     it("a zero plan: no card refund, the whole refund owed; with nothing left on the ledger it is dismissed with a note, and owed no more", async () => {

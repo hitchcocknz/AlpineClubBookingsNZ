@@ -3,6 +3,8 @@ import type { Prisma } from "@prisma/client";
 import { paidAnotherWayCloseReceiptRecorded } from "@/lib/late-capture-paid-another-way";
 import {
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
+  COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE,
+  isCancelCardShortfallTask,
   paidAnotherWayCloseXeroNote,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -45,7 +47,20 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  *   un-noted and waiting ones come off it - or the nightly self-heal would
  *   raise a card note, settled from the Stripe account, for money that went
  *   back by bank with no invoice to credit.
+ *
+ * #4097 (`INV-PAY-129`): A CANCEL'S CARD REFUND SHORTFALL, PAID BACK, IS READ
+ * THE SAME WAY. Its completion raises the refunded total by bank money with no
+ * refund row, and queues its own bank-transfer note keyed on the task where
+ * the payment has an invoice to credit. So a COMPLETED one is one of these
+ * records (`BANK_CASH_RECORD_WHERE`): noted when a note row names it, in any
+ * status, else un-noted - read off the rows its completion committed, never
+ * off the invoice as it stands later.
  */
+
+/** The records whose bank cash this module reads: paid-another-way closes and (#4097) paid-back card refund shortfalls. */
+const BANK_CASH_RECORD_WHERE = {
+  OR: [CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE],
+};
 
 export interface PaidAnotherWayCash {
   /** Paid back on closes that queued a refund note. */
@@ -70,12 +85,17 @@ interface PaidAnotherWayCloseCash {
 
 async function readPaidAnotherWayCloses(db: CashStore, paymentId: string): Promise<PaidAnotherWayCloseCash[]> {
   const tasks = await db.manualRefundTask.findMany({
-    where: { paymentId, ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE },
+    where: { paymentId, ...BANK_CASH_RECORD_WHERE },
     select: { id: true, kind: true, occurrenceKey: true, amountCents: true },
   });
   const closes: PaidAnotherWayCloseCash[] = [];
   for (const task of tasks ?? []) {
     const amountCents = Math.max(0, task.amountCents ?? 0);
+    if (isCancelCardShortfallTask(task)) {
+      const noteRows = await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) });
+      closes.push({ id: task.id, amountCents, counted: noteRows > 0 ? "noted" : "unnoted" });
+      continue;
+    }
     const note = paidAnotherWayCloseXeroNote(task);
     const counted =
       note === "now"
@@ -140,7 +160,7 @@ export async function readPaidAnotherWayCloseShare(
   closeId: string,
 ): Promise<{ amountCents: number; coveredCents: number; uncoveredCents: number } | null> {
   const record = await db.manualRefundTask.findFirst({
-    where: { id: closeId, paymentId, ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE },
+    where: { id: closeId, paymentId, ...BANK_CASH_RECORD_WHERE },
     select: { amountCents: true },
   });
   if (!record) return null;
