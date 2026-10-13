@@ -536,19 +536,19 @@ export function useRevealAttention(
 /**
  * Return focus when — and only when — an explicit action closed an editor.
  *
- * The counterpart of {@link useRevealAttention}: `anchor` holds what
+ * The counterpart of {@link useRevealAttention}: `anchorRef` holds what
  * {@link captureFocusReturn} recorded when the editor opened, and `returnKey`
  * counts the closes. Each close CONSUMES the anchor, so a later close with no
  * fresh open behind it moves nothing.
  */
 export function useReturnAttention(
-  anchor: RefObject<FocusReturnAnchor | null>,
+  anchorRef: RefObject<FocusReturnAnchor | null>,
   returnKey: number,
 ) {
   useEffect(() => {
     if (!returnKey) return;
-    const recorded = anchor.current;
-    anchor.current = null;
+    const recorded = anchorRef.current;
+    anchorRef.current = null;
     returnFocus(recorded);
-  }, [anchor, returnKey]);
+  }, [anchorRef, returnKey]);
 }
