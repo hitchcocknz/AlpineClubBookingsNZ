@@ -232,6 +232,10 @@ export function revealOpenedEditor(opening: EditorOpening | null) {
  *    which goes on the card's visible title, so a keyboard user who lands on
  *    the card hears its name rather than "group" (#2934) — or, for a card with
  *    no visible title of its own, by `regionLabel`.
+ *
+ * A list row's direct write (toggle, delete) returns through
+ * `useRowActionFocusReturn` instead, by these same markers; why its anchor
+ * handling is its own is written there (#4116, #4115).
  */
 export function useEditorFocusReturn({
   regionLabel,
