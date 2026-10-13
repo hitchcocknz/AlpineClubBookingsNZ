@@ -1100,9 +1100,10 @@ describe("an approved appeal whose card refund is still partly owed (#4117)", ()
     [
       { cardRefundState: "not_queued", cardRefundOwedCents: 2500, cardRefundRefusedCents: 1500, cardRefundUnansweredCents: 1000 },
       "$0.00",
-      "This card refund could not be queued for retry. $15.00 was refused by Stripe, so it certainly did not go back: refund it another way. $10.00 got no answer from Stripe and may have been made: check the payment in Stripe before refunding it another way.",
+      "This card refund could not be queued for retry. $15.00 was refused by Stripe, so it certainly did not go back: refund it another way. $10.00 got no answer from Stripe and may have been made: check the payment in Stripe before refunding it another way. A refund made another way does not show here: check and record it.",
     ],
     [{ cardRefundState: "made", cardRefundOwedCents: 0, handBackOwedCents: 500 }, "$20.00", "$5.00 is still to be refunded by bank transfer."],
+    [{ cardRefundState: "made", cardRefundOwedCents: 0, handBackDismissedCents: 700 }, "$18.00", "$7.00 was not refunded: its bank-transfer task was dismissed."],
   ])("an appeal %o: Refunded %s, and says what is still owed", async (outcome, refunded, line) => {
     mocks.currentSearch = "status=APPROVED";
     serve("APPROVED", [appeal({ status: "APPROVED", approvedAmountCents: 2500, reviewedAt: "2026-07-02T00:00:00.000Z", ...outcome })]);

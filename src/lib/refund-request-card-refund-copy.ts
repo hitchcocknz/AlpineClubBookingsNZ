@@ -13,6 +13,23 @@
  *   what Stripe did), so it may have been made.
  */
 
+/** Where an approved appeal's card refund stands (`readApprovedAppealOutcomes`). */
+export type AppealCardRefundState = "made" | "retrying" | "dead" | "not_queued"
+
+/** What an approved appeal has still to give back, as the screen reads it (`readApprovedAppealOutcomes`). */
+export interface ApprovedAppealOutcome {
+  cardRefundState: AppealCardRefundState
+  /** Not yet given back by card. */
+  cardRefundOwedCents: number
+  /** When not queued: of that, refused by Stripe (certainly not made) and unanswered (it may have been made). */
+  cardRefundRefusedCents: number
+  cardRefundUnansweredCents: number
+  /** Promised back by bank transfer, its task still open. */
+  handBackOwedCents: number
+  /** Promised back by bank transfer, its task dismissed: the club kept it. */
+  handBackDismissedCents: number
+}
+
 /** The part of an approved appeal's card refund not made, split by what is known. */
 export interface UnmadeCardRefund {
   refusedCents: number
@@ -50,8 +67,8 @@ export function refundAppealApprovedNotice(
 
 /**
  * What an approved appeal has refunded so far: the approved amount less every
- * part still to go back - by card (queued, dead or not queued) and by bank
- * transfer while this request's own task is open.
+ * part that has not gone back - by card (queued, dead or not queued) and by
+ * bank transfer while this request's own task is open or once it is dismissed.
  */
 export function refundAppealRefundedCents(approvedAmountCents: number, stillOwedCents: number): number {
   return Math.max(0, approvedAmountCents - Math.max(0, stillOwedCents))
@@ -59,13 +76,7 @@ export function refundAppealRefundedCents(approvedAmountCents: number, stillOwed
 
 /** An approved appeal's outstanding parts, as the screen lists them under "Refunded" (`readApprovedAppealOutcomes`). */
 export function refundAppealOutstandingLines(
-  outcome: {
-    cardRefundState?: "made" | "retrying" | "dead" | "not_queued"
-    cardRefundOwedCents?: number
-    cardRefundRefusedCents?: number
-    cardRefundUnansweredCents?: number
-    handBackOwedCents?: number
-  },
+  outcome: Partial<ApprovedAppealOutcome>,
   formatAmount: (cents: number) => string,
 ): string[] {
   const lines: string[] = []
@@ -74,13 +85,15 @@ export function refundAppealOutstandingLines(
   if (owed > 0 && outcome.cardRefundState === "dead") lines.push(`${formatAmount(owed)} of the card refund is still owed: its retries ran out.`)
   if (owed > 0 && outcome.cardRefundState === "not_queued") {
     lines.push(
-      cardRefundNotQueuedMessage(
+      `${cardRefundNotQueuedMessage(
         { refusedCents: outcome.cardRefundRefusedCents ?? 0, unansweredCents: outcome.cardRefundUnansweredCents ?? 0 },
         formatAmount,
-      ),
+      )} A refund made another way does not show here: check and record it.`,
     )
   }
   if ((outcome.handBackOwedCents ?? 0) > 0) lines.push(`${formatAmount(outcome.handBackOwedCents ?? 0)} is still to be refunded by bank transfer.`)
+  if ((outcome.handBackDismissedCents ?? 0) > 0) {
+    lines.push(`${formatAmount(outcome.handBackDismissedCents ?? 0)} was not refunded: its bank-transfer task was dismissed.`)
+  }
   return lines
 }
-

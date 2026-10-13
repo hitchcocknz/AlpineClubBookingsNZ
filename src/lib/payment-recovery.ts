@@ -33,7 +33,8 @@ import {
   type RefundAllocationSlice,
 } from "@/lib/payment-transactions";
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
-import { cardRefundOperationUnmadeCents, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
 import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
@@ -1222,7 +1223,7 @@ async function alertPaymentRecoveryFailure(
   await alertPaymentRecoveryOfficers({
     bookingId: operation.bookingId,
     operationId: operation.id,
-    amountCents: cardRefundOperationUnmadeCents(operation), // #4117: not a card refund's slices Stripe made
+    amountCents: await cardRefundStillOwedCents(operation), // #4117: read after the final attempt
     errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempts: ${message}`,
     paymentIntentId: operation.paymentIntentId,
   }, format);

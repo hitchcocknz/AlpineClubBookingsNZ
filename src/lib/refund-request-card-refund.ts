@@ -17,7 +17,9 @@
  *   send it again. The officers are alerted for the whole unmade amount, split
  *   into what Stripe refused (refund it another way) and what got no answer
  *   (it may have been made: check Stripe first), and the route records it on
- *   the request and its audit row.
+ *   the approval's audit row, with the plan and when it was attempted, for the
+ *   screen to net later refunds against (`readApprovedAppealOutcomes`). Never
+ *   on the request's admin notes: the member reads those.
  * - When no row can be written and Stripe was never asked, nothing moved: the
  *   route releases the claim for a manual retry, as before #1039. Nothing was
  *   refused, so nothing was alerted, and a second approval alerts once.
@@ -25,8 +27,8 @@
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { enqueueRefundRequestRefundRecovery } from "@/lib/payment-recovery";
-import { prisma } from "@/lib/prisma";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
+import type { RefundAllocationSlice } from "@/lib/payment-transactions";
 import { formatCents } from "@/lib/utils";
 import { cardRefundNotQueuedMessage } from "@/lib/refund-request-card-refund-copy";
 import {
@@ -48,6 +50,11 @@ export interface RefundRequestCardRefundAnswer {
   cardRefundRefusedCents: number;
   /** Of that, with no answer from Stripe: it may have been made. */
   cardRefundUnansweredCents: number;
+  /**
+   * Not queued only: the plan read (made slices marked, refused ones moved) and
+   * when the attempt began, so the screen can net refunds recorded later.
+   */
+  cardRefundUnqueued?: { plan: RefundAllocationSlice[]; attemptedAt: string };
 }
 
 export const NO_CARD_REFUND_OWED: RefundRequestCardRefundAnswer = {
@@ -57,12 +64,17 @@ export const NO_CARD_REFUND_OWED: RefundRequestCardRefundAnswer = {
   cardRefundUnansweredCents: 0,
 };
 
-export function refundRequestCardRefundAnswer(read: InlineRefundRead, outcome: RefundRequestCardRefundOutcome): RefundRequestCardRefundAnswer {
+export function refundRequestCardRefundAnswer(
+  read: InlineRefundRead,
+  outcome: RefundRequestCardRefundOutcome,
+  attemptedAt: Date,
+): RefundRequestCardRefundAnswer {
   return {
     cardRefundOwedCents: read.unmadeCents,
     cardRefundQueued: outcome !== "not_queued",
     cardRefundRefusedCents: read.refusedCents,
     cardRefundUnansweredCents: read.unansweredCents,
+    ...(outcome === "not_queued" ? { cardRefundUnqueued: { plan: read.plan, attemptedAt: attemptedAt.toISOString() } } : {}),
   };
 }
 
@@ -72,15 +84,12 @@ export async function queueUnmadeRefundRequestCardRefund({
   refundRequestId,
   read,
   paymentIntentIdFallback,
-  adminNotes,
   format,
 }: {
   bookingId: string;
   paymentId: string;
   refundRequestId: string;
   read: InlineRefundRead;
-  /** The officer's notes on the approval: a refund not queued is stamped after them. */
-  adminNotes: string | null | undefined;
   /** The payment's own intent, for an alert with no refused answer to name one. */
   paymentIntentIdFallback: string;
   format: ClubFormat;
@@ -120,12 +129,6 @@ export async function queueUnmadeRefundRequestCardRefund({
     } catch (alertErr) {
       logger.error({ err: alertErr, refundRequestId }, "Could not alert the officers to a card refund that could not be queued (#4117)");
     }
-    // On the request itself too, where the screen shows it: best effort, as the
-    // database may be what failed (the approval's audit row also records it).
-    const note = cardRefundNotQueuedMessage(read, (cents) => formatCents(cents, format));
-    await prisma.refundRequest
-      .updateMany({ where: { id: refundRequestId, status: "APPROVED" }, data: { adminNotes: adminNotes ? `${adminNotes}\n\n${note}` : note } })
-      .catch((stampErr: unknown) => logger.error({ err: stampErr, refundRequestId }, "Could not note an unqueued card refund on its request (#4117)"));
     return "not_queued";
   }
   const first = firstRefusals(read.refused);

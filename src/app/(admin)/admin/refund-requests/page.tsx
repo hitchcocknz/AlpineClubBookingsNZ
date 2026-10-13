@@ -39,6 +39,7 @@ import {
   refundAppealApprovedNotice,
   refundAppealOutstandingLines,
   refundAppealRefundedCents,
+  type AppealCardRefundState,
 } from "@/lib/refund-request-card-refund-copy"
 import { useClubFormat } from "@/components/club-format-provider"
 import {
@@ -65,11 +66,12 @@ interface RefundRequestData {
   reviewedAt: string | null
   createdAt: string
   // #4117: what an approved appeal has still to give back (`readApprovedAppealOutcomes`).
-  cardRefundState?: "made" | "retrying" | "dead" | "not_queued"
+  cardRefundState?: AppealCardRefundState
   cardRefundOwedCents?: number
   cardRefundRefusedCents?: number
   cardRefundUnansweredCents?: number
   handBackOwedCents?: number
+  handBackDismissedCents?: number
   booking: {
     id: string
     checkIn: string
@@ -590,7 +592,10 @@ export default function RefundRequestsPage() {
                                   <span className="text-muted-foreground">Refunded:</span>{" "}
                                   <strong>
                                     {formatCents(
-                                      refundAppealRefundedCents(req.approvedAmountCents, (req.cardRefundOwedCents ?? 0) + (req.handBackOwedCents ?? 0)),
+                                      refundAppealRefundedCents(
+                                        req.approvedAmountCents,
+                                        (req.cardRefundOwedCents ?? 0) + (req.handBackOwedCents ?? 0) + (req.handBackDismissedCents ?? 0),
+                                      ),
                                       format,
                                     )}
                                   </strong>

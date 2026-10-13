@@ -1109,10 +1109,12 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
         cardRefundRefusedCents: refused,
         cardRefundUnansweredCents: unanswered,
       });
-      // Never released back to PENDING; the request's notes carry the split.
+      // Never released back to PENDING, and never written to the request's
+      // admin notes: the member reads those (#4117). Only the claim writes it.
       const writes = mocks.refundRequestUpdateMany.mock.calls.map(([args]) => args as { where: unknown; data: Record<string, unknown> });
       expect(writes.some((write) => write.data.status === "PENDING")).toBe(false);
-      expect(writes).toContainEqual({ where: { id: "refund_1", status: "APPROVED" }, data: { adminNotes: message } });
+      expect(writes).toHaveLength(1);
+      expect(JSON.stringify(writes)).not.toContain("could not be queued");
       expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
       expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
         expect.objectContaining({ amountCents: refused + unanswered, errorMessage: message }),
@@ -1126,6 +1128,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
             cardRefundQueued: false,
             cardRefundRefusedCents: refused,
             cardRefundUnansweredCents: unanswered,
+            // The plan read and when it was attempted: the screen nets refunds recorded later.
+            cardRefundUnqueued: { plan: expect.any(Array), attemptedAt: expect.any(String) },
           }),
         }),
       );
@@ -1135,6 +1139,34 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       } else {
         expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
       }
+    });
+
+    // #4117: a refund not queued is told to the officers and the audit row,
+    // never to the member: the request's admin notes reach the member's booking
+    // page, the refund-appeal button and the booking history.
+    it("the member-facing record carries only the officer's own notes when a refund could not be queued", async () => {
+      mocks.refundRequestFindUnique.mockResolvedValue(approvedRefundRequest());
+      mocks.planStripeRefundAllocation.mockResolvedValue({ slices: [s1], plannedAmountCents: 1500, totalRefundableCents: 10000 });
+      mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer(s1, "failed")] });
+      mocks.enqueueRefundRequestRefundRecovery.mockRejectedValue(new Error("db unavailable"));
+
+      const response = await PUT(
+        new NextRequest("http://localhost/api/admin/refund-requests/refund_1", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-forwarded-for": "127.0.0.1" },
+          body: JSON.stringify({ status: "APPROVED", approvedAmountCents: 1500, adminNotes: "Approved: storm closure" }),
+        }),
+        { params: Promise.resolve({ id: "refund_1" }) },
+      );
+
+      expect(response.status).toBe(200);
+      const notes = mocks.refundRequestUpdateMany.mock.calls.flatMap(([args]) => {
+        const data = (args as { data: Record<string, unknown> }).data;
+        return "adminNotes" in data ? [data.adminNotes] : [];
+      });
+      expect(notes).toEqual(["Approved: storm closure"]);
+      // The member's outcome email does not carry it either.
+      expect(JSON.stringify(mocks.sendEmail.mock.calls)).not.toContain("could not be queued");
     });
 
     it("no row could be written and Stripe was never asked: the claim is released and nobody is alerted", async () => {

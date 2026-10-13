@@ -383,6 +383,7 @@ export async function PUT(
 
     if (!organiserChildDebtId) {
       let attempt: Parameters<typeof inlineRefundAfterAttempt>[1];
+      const attemptedAt = new Date(); // #4117: a refund Stripe makes from here is this attempt's
       try {
         attempt = await refundPaymentTransactions({
           format: money.format,
@@ -422,10 +423,9 @@ export async function PUT(
         refundRequestId: id,
         read,
         paymentIntentIdFallback: payment.stripePaymentIntentId ?? "",
-        adminNotes,
         format: money.format,
       });
-      cardRefund = refundRequestCardRefundAnswer(read, outcome);
+      cardRefund = refundRequestCardRefundAnswer(read, outcome, attemptedAt);
       if (outcome === "release_claim") {
         // No durable row could be written and Stripe was never asked: fall
         // back to the pre-#1039 behaviour and release the claim so an admin

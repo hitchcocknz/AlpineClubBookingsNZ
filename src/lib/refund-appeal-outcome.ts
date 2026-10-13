@@ -4,15 +4,23 @@
  * rather than what was approved.
  *
  * - By card, through the request's recovery row: its unmade part, read as
- *   "Refunds owed" reads it (`openCardRefundOwedByOperation`) and capped per
- *   payment the same way (`openCardRefundOwedCents`). The row is retrying while
- *   the runner will still make it (`isPaymentRecoveryOperationInFlight`), and
- *   dead after that, owed until the treasurer closes it as paid another way.
+ *   "Refunds owed" reads it (`openCardRefundOwedByOperation`). The row is
+ *   retrying while the runner will still make it
+ *   (`isPaymentRecoveryOperationInFlight`), and dead after that, owed until the
+ *   treasurer closes it as paid another way.
  * - By card, with no row: when none could be written after Stripe was asked,
- *   the approval's audit row records what was not made, refused and unanswered
- *   (`RefundRequestCardRefundAnswer`) - the only durable record of it.
- * - By bank transfer: this request's own hand-back task while it is OPEN
- *   (`refundRequestHandBackOccurrenceKey`, `INV-PAY-118`).
+ *   the approval's audit row records the plan and when it was attempted
+ *   (`RefundRequestCardRefundAnswer.cardRefundUnqueued`). It is read as one
+ *   more card refund operation, so a refund recorded later on its slices - a
+ *   webhook recording what Stripe made, a dashboard refund - clears it as it
+ *   would a row. A refund made another way (a bank transfer) is not recorded on
+ *   the payment, so it cannot clear it: the screen says to check and record it.
+ * - Capped per payment, as "Refunds owed" is (`openCardRefundOwedCents`), and
+ *   the cap is SHARED by the payment's appeals: together they never read more
+ *   than the payment can still give back.
+ * - By bank transfer: this request's own hand-back task
+ *   (`refundRequestHandBackOccurrenceKey`, `INV-PAY-118`) while OPEN, and once
+ *   DISMISSED - the club kept that money, so it never went back.
  *
  * Read-only, three queries for a page of requests.
  */
@@ -20,42 +28,45 @@ import { PaymentRecoveryOperationStatus, type PrismaClient } from "@prisma/clien
 
 import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
 import { refundRequestHandBackOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
-import { openCardRefundOwedByOperation, openCardRefundOwedCents } from "@/lib/open-card-refund-owed";
+import {
+  cardRefundSlicesByOperation,
+  openCardRefundOwedCents,
+  parseRefundAllocationPlan,
+  unsentSliceCents,
+  type CardRefundOperationRow,
+} from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildRefundRequestRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import type { ApprovedAppealOutcome } from "@/lib/refund-request-card-refund-copy";
 
-/** Where an approved appeal's card refund stands. */
-export type AppealCardRefundState = "made" | "retrying" | "dead" | "not_queued";
-
-export interface ApprovedAppealOutcome {
-  cardRefundState: AppealCardRefundState;
-  /** Not yet given back by card. */
-  cardRefundOwedCents: number;
-  /** When not queued: of that, refused by Stripe (certainly not made) and unanswered (it may have been made). */
-  cardRefundRefusedCents: number;
-  cardRefundUnansweredCents: number;
-  /** Promised back by bank transfer, its task still open. */
-  handBackOwedCents: number;
-}
-
-const MADE: ApprovedAppealOutcome = {
+const NOTHING_OWED: ApprovedAppealOutcome = {
   cardRefundState: "made",
   cardRefundOwedCents: 0,
   cardRefundRefusedCents: 0,
   cardRefundUnansweredCents: 0,
   handBackOwedCents: 0,
+  handBackDismissedCents: 0,
 };
 
-/** The approve route's audit of a card refund no retry was queued for, or null. */
-function unqueuedCardRefund(metadata: unknown): Pick<ApprovedAppealOutcome, "cardRefundOwedCents" | "cardRefundRefusedCents" | "cardRefundUnansweredCents"> | null {
+/** The approve route's audit of a card refund no retry was queued for, as an operation the owed figure can read, or null. */
+function unqueuedOperation(requestId: string, metadata: unknown): CardRefundOperationRow | null {
   if (!metadata || typeof metadata !== "object") return null;
   const record = metadata as Record<string, unknown>;
-  const cents = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : 0);
-  if (record.cardRefundQueued !== false || cents(record.cardRefundOwedCents) === 0) return null;
+  if (record.cardRefundQueued !== false) return null;
+  const unqueued = record.cardRefundUnqueued as { plan?: unknown; attemptedAt?: unknown } | undefined;
+  const plan = parseRefundAllocationPlan(unqueued?.plan);
+  const attemptedAt = typeof unqueued?.attemptedAt === "string" ? new Date(unqueued.attemptedAt) : null;
+  if (!plan || !attemptedAt || Number.isNaN(attemptedAt.getTime())) return null;
   return {
-    cardRefundOwedCents: cents(record.cardRefundOwedCents),
-    cardRefundRefusedCents: cents(record.cardRefundRefusedCents),
-    cardRefundUnansweredCents: cents(record.cardRefundUnansweredCents),
+    id: `unqueued:${requestId}`,
+    type: "REFUND_BOOKING_MODIFICATION",
+    status: "FAILED",
+    idempotencyKey: `unqueued:${requestId}`,
+    amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
+    allocationPlan: plan,
+    paymentTransactionId: null,
+    createdAt: attemptedAt,
+    succeededAt: null,
   };
 }
 
@@ -68,7 +79,7 @@ export async function readApprovedAppealOutcomes(
   const approved = requests.filter((request) => request.status === "APPROVED");
   const outcomes = new Map<string, ApprovedAppealOutcome>();
   if (approved.length === 0) return outcomes;
-  const paymentIds = approved.flatMap((request) => (request.booking.payment ? [request.booking.payment.id] : []));
+  const paymentIds = [...new Set(approved.flatMap((request) => (request.booking.payment ? [request.booking.payment.id] : [])))];
   const [payments, audits, handBacks] = await Promise.all([
     paymentIds.length
       ? db.payment.findMany({
@@ -91,31 +102,53 @@ export async function readApprovedAppealOutcomes(
       select: { entityId: true, metadata: true },
     }),
     db.manualRefundTask.findMany({
-      where: { occurrenceKey: { in: approved.map((request) => refundRequestHandBackOccurrenceKey(request.id)) }, status: "OPEN" },
-      select: { occurrenceKey: true, amountCents: true },
+      where: {
+        occurrenceKey: { in: approved.map((request) => refundRequestHandBackOccurrenceKey(request.id)) },
+        status: { in: ["OPEN", "DISMISSED"] },
+      },
+      select: { occurrenceKey: true, status: true, amountCents: true },
     }),
   ]);
-  const paymentById = new Map(payments.map((payment) => [payment.id, payment]));
-  for (const request of approved) {
-    const handBackOwedCents = handBacks
-      .filter((task) => task.occurrenceKey === refundRequestHandBackOccurrenceKey(request.id))
-      .reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
-    const payment = request.booking.payment ? paymentById.get(request.booking.payment.id) : undefined;
-    const key = buildRefundRequestRefundRecoveryIdempotencyKey(request.id);
-    const operation = payment?.recoveryOperations.find((each) => each.idempotencyKey === key);
-    if (payment && operation) {
-      const owedCents = Math.min(openCardRefundOwedByOperation(payment).get(operation.id) ?? 0, openCardRefundOwedCents(payment));
-      const open = operation.status !== PaymentRecoveryOperationStatus.SUCCEEDED && owedCents > 0;
-      outcomes.set(request.id, {
-        ...MADE,
-        cardRefundState: !open ? "made" : isPaymentRecoveryOperationInFlight(operation) ? "retrying" : "dead",
-        cardRefundOwedCents: open ? owedCents : 0,
-        handBackOwedCents,
-      });
-      continue;
+
+  for (const payment of payments) {
+    const appeals = approved.filter((request) => request.booking.payment?.id === payment.id);
+    // Each appeal's card refund: its recovery row, or the operation its audit records.
+    const unqueued = new Map<string, CardRefundOperationRow>();
+    for (const request of appeals) {
+      const hasRow = payment.recoveryOperations.some((each) => each.idempotencyKey === buildRefundRequestRefundRecoveryIdempotencyKey(request.id));
+      const operation = hasRow ? null : unqueuedOperation(request.id, audits.find((audit) => audit.entityId === request.id)?.metadata);
+      if (operation) unqueued.set(request.id, operation);
     }
-    const unqueued = unqueuedCardRefund(audits.find((audit) => audit.entityId === request.id)?.metadata);
-    outcomes.set(request.id, unqueued ? { ...MADE, ...unqueued, cardRefundState: "not_queued", handBackOwedCents } : { ...MADE, handBackOwedCents });
+    const owing = { ...payment, recoveryOperations: [...payment.recoveryOperations, ...unqueued.values()] };
+    const slicesById = new Map(cardRefundSlicesByOperation(owing).map(({ operation, slices }) => [operation.id, slices]));
+    // The per-payment cap, shared by the payment's appeals in list order.
+    let capLeftCents = openCardRefundOwedCents(owing);
+    for (const request of appeals) {
+      const row = payment.recoveryOperations.find((each) => each.idempotencyKey === buildRefundRequestRefundRecoveryIdempotencyKey(request.id));
+      const operation = row ?? unqueued.get(request.id);
+      if (!operation || (row && row.status === PaymentRecoveryOperationStatus.SUCCEEDED)) continue;
+      const slices = slicesById.get(operation.id) ?? [];
+      const owedCents = Math.min(capLeftCents, slices.reduce((sum, slice) => sum + unsentSliceCents(slice), 0));
+      capLeftCents -= owedCents;
+      if (owedCents <= 0) continue;
+      const refusedCents = Math.min(
+        owedCents,
+        slices.filter((slice) => slice.stripeKeySuffix).reduce((sum, slice) => sum + unsentSliceCents(slice), 0),
+      );
+      outcomes.set(request.id, {
+        ...NOTHING_OWED,
+        cardRefundState: !row ? "not_queued" : isPaymentRecoveryOperationInFlight(row) ? "retrying" : "dead",
+        cardRefundOwedCents: owedCents,
+        ...(row ? {} : { cardRefundRefusedCents: refusedCents, cardRefundUnansweredCents: owedCents - refusedCents }),
+      });
+    }
+  }
+
+  for (const request of approved) {
+    const key = refundRequestHandBackOccurrenceKey(request.id);
+    const tasks = handBacks.filter((task) => task.occurrenceKey === key);
+    const cents = (status: string) => tasks.filter((task) => task.status === status).reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
+    outcomes.set(request.id, { ...(outcomes.get(request.id) ?? NOTHING_OWED), handBackOwedCents: cents("OPEN"), handBackDismissedCents: cents("DISMISSED") });
   }
   return outcomes;
 }

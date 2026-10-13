@@ -31,7 +31,10 @@ function db({
   operations = [operation()],
   refundedAmountCents = 1_500,
   audits = [] as Array<{ entityId: string; metadata: unknown }>,
-  tasks = [] as Array<{ occurrenceKey: string; amountCents: number | null }>,
+  tasks = [] as Array<{ occurrenceKey: string; status?: string; amountCents: number | null }>,
+  refunds = [
+    { stripeRefundId: "re_made", paymentTransactionId: "txn-new", amountCents: 1_500, status: "succeeded", createdAt: MADE_AT, stripeCreatedAt: MADE_AT },
+  ] as Array<Record<string, unknown>>,
 } = {}) {
   return {
     payment: {
@@ -42,14 +45,12 @@ function db({
           amountCents: 10_000,
           refundedAmountCents,
           recoveryOperations: operations,
-          refunds: [
-            { stripeRefundId: "re_made", paymentTransactionId: "txn-new", amountCents: 1_500, status: "succeeded", createdAt: MADE_AT, stripeCreatedAt: MADE_AT },
-          ],
+          refunds,
         },
       ]),
     },
     auditLog: { findMany: vi.fn(async () => audits) },
-    manualRefundTask: { findMany: vi.fn(async () => tasks) },
+    manualRefundTask: { findMany: vi.fn(async () => tasks.map((task) => ({ status: "OPEN", ...task }))) },
   };
 }
 
@@ -84,40 +85,96 @@ describe("an approved appeal's card refund, read from its recovery row", () => {
 });
 
 describe("an approved appeal with no recovery row", () => {
-  it("not queued: the approval's audit row is the record, split into refused and unanswered", async () => {
-    const store = db({
-      operations: [],
-      audits: [
-        { entityId: "rq-1", metadata: { cardRefundOwedCents: 2_500, cardRefundQueued: false, cardRefundRefusedCents: 1_500, cardRefundUnansweredCents: 1_000 } },
-      ],
-    });
-    expect(await outcomeOf(store)).toEqual({
+  // The approval's audit: one slice made, one refused, one unanswered (it may
+  // have been made at Stripe), attempted a moment before the made refund.
+  const ATTEMPTED_AT = "2026-06-20T00:00:00.000Z";
+  const unqueuedAudit = {
+    entityId: "rq-1",
+    metadata: {
+      cardRefundOwedCents: 2_000,
+      cardRefundQueued: false,
+      cardRefundRefusedCents: 1_000,
+      cardRefundUnansweredCents: 1_000,
+      cardRefundUnqueued: {
+        attemptedAt: ATTEMPTED_AT,
+        plan: [
+          { paymentTransactionId: "txn-new", amountCents: 1_500, madeRefundId: "re_made" },
+          { paymentTransactionId: "txn-old", amountCents: 1_000, stripeKeySuffix: "refused1" },
+          { paymentTransactionId: "txn-mid", amountCents: 1_000 },
+        ],
+      },
+    },
+  };
+
+  it("not queued: the audit row's plan is read as an operation, split into refused and unanswered", async () => {
+    expect(await outcomeOf(db({ operations: [], audits: [unqueuedAudit] }))).toEqual({
       cardRefundState: "not_queued",
-      cardRefundOwedCents: 2_500,
-      cardRefundRefusedCents: 1_500,
+      cardRefundOwedCents: 2_000,
+      cardRefundRefusedCents: 1_000,
       cardRefundUnansweredCents: 1_000,
       handBackOwedCents: 0,
+      handBackDismissedCents: 0,
     });
   });
 
-  it("an audit row that queued its retry, or owes nothing, is made", async () => {
-    const store = db({ operations: [], audits: [{ entityId: "rq-1", metadata: { cardRefundOwedCents: 2_500, cardRefundQueued: true } }] });
-    expect(await outcomeOf(store)).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0 });
+  it("a refund recorded later on an unanswered slice - Stripe had made it - clears that part", async () => {
+    const webhookRecorded = {
+      stripeRefundId: "re_mid",
+      paymentTransactionId: "txn-mid",
+      amountCents: 1_000,
+      status: "succeeded",
+      createdAt: new Date("2026-06-20T01:00:00.000Z"),
+      stripeCreatedAt: new Date("2026-06-20T00:00:02.000Z"),
+    };
+    const store = db({
+      operations: [],
+      audits: [unqueuedAudit],
+      refunds: [
+        { stripeRefundId: "re_made", paymentTransactionId: "txn-new", amountCents: 1_500, status: "succeeded", createdAt: MADE_AT, stripeCreatedAt: MADE_AT },
+        webhookRecorded,
+      ],
+      refundedAmountCents: 2_500,
+    });
+    expect(await outcomeOf(store)).toMatchObject({ cardRefundState: "not_queued", cardRefundOwedCents: 1_000, cardRefundRefusedCents: 1_000, cardRefundUnansweredCents: 0 });
+  });
+
+  it("capped per payment: never more than the payment still holds", async () => {
+    expect(await outcomeOf(db({ operations: [], audits: [unqueuedAudit], refundedAmountCents: 9_400 }))).toMatchObject({ cardRefundOwedCents: 600 });
+  });
+
+  it("an audit row that queued its retry, or carries no plan, is read as nothing owed", async () => {
+    for (const metadata of [{ cardRefundOwedCents: 2_500, cardRefundQueued: true }, { cardRefundOwedCents: 2_500, cardRefundQueued: false }]) {
+      expect(await outcomeOf(db({ operations: [], audits: [{ entityId: "rq-1", metadata }] }))).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0 });
+    }
+  });
+});
+
+describe("two appeals on one payment share its cap (#4117)", () => {
+  it("together they never read more than the payment can still give back", async () => {
+    const second = operation({ id: "op-2", idempotencyKey: "refund_request_refund_rq-2", allocationPlan: [{ paymentTransactionId: "txn-two", amountCents: 1_000 }], amountCents: 1_000 });
+    const store = db({ operations: [operation(), second], refundedAmountCents: 9_000 });
+    const outcomes = await readApprovedAppealOutcomes(store as never, [approved, { id: "rq-2", status: "APPROVED", booking: { payment: { id: "p-1" } } }]);
+    const total = (outcomes.get("rq-1")?.cardRefundOwedCents ?? 0) + (outcomes.get("rq-2")?.cardRefundOwedCents ?? 0);
+    // $10.00 left on the payment, though the two rows owe $20.00 between them.
+    expect(total).toBe(1_000);
+    expect(outcomes.get("rq-1")?.cardRefundOwedCents).toBe(1_000);
+    expect(outcomes.get("rq-2")?.cardRefundOwedCents).toBe(0);
   });
 });
 
 describe("the bank-transfer part", () => {
-  it("this request's own OPEN hand-back task is still owed; another request's is not read", async () => {
+  it("this request's own OPEN hand-back task is still owed, and a DISMISSED one never went back; another request's is not read", async () => {
     const store = db({
       operations: [],
       tasks: [
         { occurrenceKey: "refund-request-hand-back:rq-1", amountCents: 3_000 },
+        { occurrenceKey: "refund-request-hand-back:rq-1", status: "DISMISSED", amountCents: 700 },
         { occurrenceKey: "refund-request-hand-back:rq-2", amountCents: 9_000 },
       ],
     });
-    expect(await outcomeOf(store)).toMatchObject({ cardRefundState: "made", handBackOwedCents: 3_000 });
+    expect(await outcomeOf(store)).toMatchObject({ cardRefundState: "made", handBackOwedCents: 3_000, handBackDismissedCents: 700 });
     expect(store.manualRefundTask.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { occurrenceKey: { in: ["refund-request-hand-back:rq-1"] }, status: "OPEN" } }),
+      expect.objectContaining({ where: { occurrenceKey: { in: ["refund-request-hand-back:rq-1"] }, status: { in: ["OPEN", "DISMISSED"] } } }),
     );
   });
 });
