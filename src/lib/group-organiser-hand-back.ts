@@ -17,6 +17,8 @@ import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment
 import { sendAdminManualRefundTaskAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { decodeRawRows } from "@/lib/raw-sql-rows";
+import { z } from "zod";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -246,6 +248,7 @@ function sharesContext(settlementId: string, shares: ReadonlyArray<Share>, alert
  * a run that died holds the alert back for at most this long.
  */
 const ALERT_CLAIM_LEASE_MS = 30 * 60 * 1000;
+const DATABASE_NOW_ROW = z.object({ now: z.date() });
 
 /**
  * #4042: the finance alert for every OPEN organiser hand-back of this
@@ -365,7 +368,7 @@ async function updateGroupHandBackAlertRecord(
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     // The database's clock, so every replica's lease is measured on one time.
-    const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT now() AS now`;
+    const [clock] = decodeRawRows(await tx.$queryRaw`SELECT now() AS now`, DATABASE_NOW_ROW, "group hand-back alert clock");
     if (!clock) throw new Error("The database returned no time");
     const { now } = clock;
     const task = await tx.manualRefundTask.findUniqueOrThrow({
