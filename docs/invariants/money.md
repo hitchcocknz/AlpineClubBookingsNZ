@@ -855,7 +855,9 @@ check the others.
   subscription already `PAID` (a manual PAID has no charge-coverage row, so the
   guard keys off status, not coverage); a queued/retrying invoice charge
   conflicts (`SUBSCRIPTION_ALREADY_PAID`) instead of minting an invoice for a
-  covered subscription that became `PAID`, and its coverage write never
+  covered subscription that became `PAID` — an audited finance:edit close moves
+  that conflict to `NOT_REQUIRED` only while every covered subscription is still
+  `PAID`, releasing its coverage claims (#4098) — and its coverage write never
   downgrades a `PAID` row; Xero discovery/reconciliation
   (`checkMembershipStatus`) never downgrades a manually marked-paid row that
   carries no Xero invoice link (a write-time fence, so a manual mark-paid

@@ -2361,6 +2361,10 @@ FAILED operation -> Xero Operations Retry -> same row PENDING, same correlation 
   refused (409, no write) when the charge already has a Xero invoice, needs none (VOIDED/NOT_REQUIRED/NO_INVOICE),
   another attempt for it is live, or a sibling was resolved in Xero after the row was queued
 provider reference exists but snapshot differs -> CONFLICT (no provider rewrite)
+outbox claim -> a covered subscription already PAID, no invoice yet -> CONFLICT (SUBSCRIPTION_ALREADY_PAID; no provider call)
+CONFLICT (SUBSCRIPTION_ALREADY_PAID) -> officer "Close: already paid" (finance edit, required reason) -> NOT_REQUIRED (#4098)
+  only while EVERY covered subscription is still PAID (re-checked in the guarded write); releases the
+  charge's ACTIVE coverage claims and bumps each voidGeneration; audited; a repeat is a no-op success
 provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
 stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDUAL_MODE exception (no invoice; basis must change)
@@ -2377,6 +2381,19 @@ coverage row; fee/family changes do not mutate history; invoice identity commits
 before email; email retry never calls create for a persisted invoice; exact
 existing invoices are adopted; amount/contact/account mismatch becomes visible
 `CONFLICT`; automatic post-approval failures never roll back approval.
+
+`NOT_REQUIRED` and `VOIDED` are the no-invoice statuses
+(`MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES`): the enqueue (and so Retry), the
+outbox worker, its failure handler and Xero Operations Retry never queue,
+invoice or reopen a charge in either. A `NOT_REQUIRED` charge on any basis but
+`NO_INVOICE` is one an officer closed as already paid, because confirmation
+writes `NOT_REQUIRED` only for `NO_INVOICE`. The close releases the claims
+(rather than keeping them, as a `NO_INVOICE` charge does) so the subscription is
+left exactly as a member marked paid before billing: skipped while PAID, and
+re-billable with a fresh idempotency key if the manual payment is later
+reversed. It takes no advisory lock — the charge claim and the PAID check are
+each a guarded write, so two closes close once and a reversal that commits first
+rolls the close back.
 
 ## Member Subscription Status Transitions
 
@@ -2428,7 +2445,8 @@ member (PAID, null invoice link) is still skipped. On a void/delete the sync
 marks the covering `MembershipSubscriptionCharge` `VOIDED` (kept for audit, never
 re-enqueued), releases its coverage claim (`releasedAt` set — row kept), and
 bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
-fresh idempotency key.
+fresh idempotency key. Closing a charge as already paid (#4098) releases its
+claims and bumps the generation the same way, leaving the row `PAID`.
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
 sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero

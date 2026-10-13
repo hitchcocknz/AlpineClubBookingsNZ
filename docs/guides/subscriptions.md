@@ -104,7 +104,10 @@ configurable — see [Subscription lockout](subscription-lockout.md)).
    type is missing, or a required fee is missing, the preview shows an exception
    instead of inventing a charge. Review archived-type charges before confirming.
 3. In the **Durable charge queue**, use **Retry** on any charge that failed,
-   conflicted, or is still queued.
+   conflicted, or is still queued. A charge that conflicted because its members
+   had **already paid** (for example, marked paid for cash) never invoices on
+   Retry: use **Close: already paid** on it instead (see
+   [Troubleshooting](#troubleshooting)).
 
 **Members are never double-billed.** The preview skips any member whose season
 subscription is already **paid** *or* already carries a **live Xero invoice**
@@ -225,6 +228,7 @@ stored exceptions.
 | Family billing mode | Bill families via a billing member, or bill members individually | via billing member | Per-family fee schedules require billing-member mode |
 | Confirm and queue annual batch | Snapshot the previewed charges and queue Xero work | — | Freezes fee/recipient/amount; cannot be undone by later changes |
 | Retry (charge) | Re-attempt a failed/queued charge | — | Idempotent per charge |
+| Close: already paid (charge) | Close a charge that conflicted because every member it covers has already paid | — | Finance edit; reason required and audited; only while every covered member is still paid; raises no Xero invoice; a repeat does nothing |
 | Mark as paid (manual) / unpaid | Record/reverse a non-Xero payment | — | Only when unpaid with no Xero invoice; never calls Xero |
 | Email the member on mark-paid | Sends the member a payment receipt | no default — you must choose | Paid only; the choice is audited. Reversals never email |
 | Mark family as already invoiced / Unmark | Suppress/restore a per-family charge you know is already covered | — | Finance edit; idempotent; keeps an audit row on unmark |
@@ -237,6 +241,7 @@ stored exceptions.
 | A member stays "Not Invoiced" | They have no Xero contact link | Link or create a Xero contact in [Members](members.md), then run a refresh |
 | A charge stays **Queued** with no Xero invoice number long after it was confirmed | A fault before this release (#3971) stopped the invoice being raised. This page shows no error for it; the reason, "Membership subscription charge not found: [REDACTED]", is on the charge's **Failed** operation in **Xero → Operations** | Press **Retry in background** on that operation (see the [Xero Sync guide](xero.md#troubleshooting)), or press **Retry** on the charge here. Use one or the other: either raises the one invoice |
 | A sync fails | Xero is disconnected or errored | Check the Xero connection in the [Xero Sync guide](xero.md) |
+| A charge stays **Conflict** saying the covered subscription is already paid, and **Retry** doesn't clear it | The members it covers were marked paid (usually cash) after the charge was queued, so it correctly raised no Xero invoice | If they really have paid, press **Close: already paid** on the charge and give a reason; it shows **Not required**, marked as closed, and no longer offers Retry. If a payment was recorded by mistake, use **Mark as unpaid** first and then **Retry** to invoice. Close only when you are sure: reversing a payment afterwards puts an individually billed member back in the next preview, but a family charge stays closed and the preview shows a family-already-billed exception instead |
 | **Mark as paid (manual)** isn't offered | The row already has a Xero invoice, is already paid, or is not required | Record the payment against the invoice in Xero instead |
 | A member is missing from the preview | They are already paid, or already hold a live Xero invoice for the season | Check the collapsed **Already invoiced** panel; record payment against the existing invoice in Xero, or void it there to re-bill |
 | A voided-invoice member still won't re-bill | The paid-status refresh has not run since you voided the invoice in Xero | Run **Incremental Sync** (or the daily refresh), then refresh the preview — the member reappears with a new charge |
