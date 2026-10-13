@@ -2587,6 +2587,19 @@ describe("cancelBooking credit refunds", () => {
       expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledTimes(queued ? 1 : 0);
     });
 
+    it("a zero plan (nothing left to refund, e.g. refunded outside the app) calls neither Stripe nor recovery, and is reported made, as before", async () => {
+      mocks.planStripeRefundAllocation.mockResolvedValueOnce({ slices: [], plannedAmountCents: 0, totalRefundableCents: 0 });
+
+      const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mocks.enqueueBookingCancellationRefundRecovery).not.toHaveBeenCalled();
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("card");
+      expect(result).toMatchObject({
+        data: { refundAmountCents: 5000, ownCardRefund: { method: "card", amountCents: 5000 }, message: expect.stringContaining("processed") },
+      });
+    });
+
     it("a partial refund that threw is on its way, not processed", async () => {
       mocks.refundPaymentTransactions.mockRejectedValueOnce(new mocks.PartialRefundError(4000));
 
