@@ -94,8 +94,6 @@ export function lockedPeriodRequestToBatchInput(
       : undefined;
   const removeGuestIds = requested.removeGuests.map((guest) => guest.id);
   const removed = new Set(removeGuestIds);
-  // A range for a guest the same request removes is moot, and the planner would
-  // refuse it as naming a guest no longer on the booking.
   const currentRanges = new Map(
     stored.original.guests.flatMap((guest) =>
       guest.stayStart && guest.stayEnd
@@ -103,9 +101,16 @@ export function lockedPeriodRequestToBatchInput(
         : [],
     ),
   );
+  // Every two-bound range for a guest who stays is passed through, unchanged
+  // ones included (#4030 re-review of 72c933ffc): a stored range is how the
+  // planner keeps a part-stay guest's own nights when the envelope moves. Drop
+  // the unchanged ones and a request that only shortens the stay and removes a
+  // guest leaves range mode, so every remaining guest is stretched to the new
+  // envelope and charged for nights they never stayed.
   const guestStayRanges = requested.guestStayRanges
-    // #4030 review M2: only a range that changes something is a change.
-    .filter((range) => isEffectiveStayRangeChange(range, currentRanges.get(range.guestId)))
+    .filter((range) => Boolean(range.stayStart && range.stayEnd))
+    // A range for a guest the same request removes is moot, and the planner
+    // would refuse it as naming a guest no longer on the booking.
     .filter((range) => !removed.has(range.guestId))
     .map((range) => ({
       guestId: range.guestId,
@@ -121,12 +126,18 @@ export function lockedPeriodRequestToBatchInput(
     stayStart: guest.stayStart ?? null,
     stayEnd: guest.stayEnd ?? null,
   }));
+  // #4030 review M2: whether the request names nothing is judged on the ranges
+  // that CHANGE something — a range repeating the guest's stored nights is not
+  // a change. This test decides only that; it never filters what is applied.
+  const namesRangeChange = guestStayRanges.some((range) =>
+    isEffectiveStayRangeChange(range, currentRanges.get(range.guestId)),
+  );
   if (
     !checkIn &&
     !checkOut &&
     addGuests.length === 0 &&
     removeGuestIds.length === 0 &&
-    guestStayRanges.length === 0
+    !namesRangeChange
   ) {
     return null;
   }

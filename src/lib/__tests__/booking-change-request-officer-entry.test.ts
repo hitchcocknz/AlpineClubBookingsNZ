@@ -47,7 +47,11 @@ import {
   OFFICER_ENTRY_ON_STRUCTURED_REQUEST_MESSAGE,
 } from "@/lib/booking-change-request-execution";
 import { OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE } from "@/lib/booking-change-request-guests";
-import { storedRequestNamesNoChange } from "@/lib/booking-change-request-stored";
+import {
+  lockedPeriodRequestToBatchInput,
+  storedLockedPeriodRequestSchema,
+  storedRequestNamesNoChange,
+} from "@/lib/booking-change-request-stored";
 import {
   OFFICER_ENTERED_SUMMARY_SUFFIX,
   withOfficerEnteredGuests,
@@ -336,6 +340,42 @@ describe("storedRequestNamesNoChange (#4030)", () => {
     expect(storedRequestNamesNoChange(withOriginal({ stayStart: "2026-06-10", stayEnd: "2026-06-14" }), booking)).toBe(true);
     expect(storedRequestNamesNoChange(withOriginal({ stayEnd: "2026-06-12" }), booking)).toBe(true);
     expect(storedRequestNamesNoChange(withOriginal({ stayStart: "2026-06-10", stayEnd: "2026-06-12" }), booking)).toBe(false);
+  });
+
+  it("applies every two-bound range of a request that names a change, unchanged ones included (re-review of 72c933ffc)", () => {
+    // A shorter stay plus a removal, with each remaining guest's stored range
+    // repeated. Dropping the repeated ranges would leave range mode and stretch
+    // the part-stay guest to the new envelope; they must all reach the planner.
+    const stored = storedLockedPeriodRequestSchema.parse({
+      ...freeTextRequest({
+        checkOut: "2026-06-13",
+        removeGuests: [{ id: "g1" }],
+        guestStayRanges: [
+          { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+          { guestId: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+          { guestId: "g3", stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+          { guestId: "g4", stayEnd: "2026-06-12" },
+        ],
+      }),
+      original: {
+        ...freeTextRequest().original,
+        guests: [
+          { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+          { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+          { id: "g3", stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+          { id: "g4", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+        ],
+      },
+    });
+    expect(lockedPeriodRequestToBatchInput(stored, booking)).toEqual({
+      checkOut: "2026-06-13",
+      removeGuestIds: ["g1"],
+      // g1 is removed and g4's range has one bound, so neither is applied.
+      guestStayRanges: [
+        { guestId: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+        { guestId: "g3", stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+      ],
+    });
   });
 
   it("is false for an unreadable row", () => {

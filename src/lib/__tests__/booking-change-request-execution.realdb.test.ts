@@ -45,6 +45,7 @@ const SEASON_ID = "race-3750-season";
 const BOOKING_ID = "race-3750-booking";
 const GUEST_ID = "race-3750-guest";
 const GUEST_2_ID = "race-3750-guest-2";
+const GUEST_3_ID = "race-3750-guest-3";
 const PAYMENT_ID = "race-3750-payment";
 const REQUEST_ID = "race-3750-request";
 const OTHER_BOOKING_ID = "race-3750-other-booking";
@@ -620,6 +621,122 @@ function deferred() {
     const added = booking.guests.find((guest) => guest.firstName === "Late")!;
     expect(added.nights.map((night) => night.priceCents)).toEqual([NIGHT_CENTS]);
     expect(booking.finalPriceCents).toBe(STORED_NIGHT_CENTS + NIGHT_CENTS);
+  }, 60_000);
+
+  it("#4030 re-review of 72c933ffc: a shorter stay plus a removal keeps each remaining guest on the nights they stayed", async () => {
+    // A three-night stay (10-13 June). Original stays all three nights, Second
+    // the first two, Third only the middle night. The request removes Original
+    // and moves check-out to the 12th, repeating Second's and Third's stored
+    // ranges unchanged, as the request card's range grid always sends them.
+    const NIGHT_3 = new Date("2026-06-12T00:00:00.000Z");
+    const LONG_CHECK_OUT = new Date("2026-06-13T00:00:00.000Z");
+    const nightsOf = (dates: Date[]) =>
+      dates.map((stayDate) => ({ stayDate, priceCents: STORED_NIGHT_CENTS, priceSource: "SOLD" as const }));
+    const guests = [
+      { id: GUEST_ID, firstName: "Original", nights: [CHECK_IN, NIGHT_2, NIGHT_3] },
+      { id: GUEST_2_ID, firstName: "Second", nights: [CHECK_IN, NIGHT_2] },
+      { id: GUEST_3_ID, firstName: "Third", nights: [NIGHT_2] },
+    ];
+    const totalCents = 6 * STORED_NIGHT_CENTS;
+    await prisma.booking.create({
+      data: {
+        id: BOOKING_ID,
+        memberId: OWNER_ID,
+        lodgeId: LODGE_ID,
+        checkIn: CHECK_IN,
+        checkOut: LONG_CHECK_OUT,
+        status: "COMPLETED",
+        totalPriceCents: totalCents,
+        finalPriceCents: totalCents,
+      },
+    });
+    for (const guest of guests) {
+      const last = guest.nights[guest.nights.length - 1];
+      await prisma.bookingGuest.create({
+        data: {
+          id: guest.id,
+          bookingId: BOOKING_ID,
+          firstName: guest.firstName,
+          lastName: "Guest",
+          ageTier: "ADULT",
+          isMember: false,
+          stayStart: guest.nights[0],
+          stayEnd: new Date(last.getTime() + 24 * 60 * 60 * 1000),
+          priceCents: guest.nights.length * STORED_NIGHT_CENTS,
+          nights: { create: nightsOf(guest.nights) },
+        },
+      });
+    }
+    await prisma.payment.create({
+      data: {
+        id: PAYMENT_ID,
+        bookingId: BOOKING_ID,
+        amountCents: totalCents,
+        source: "INTERNET_BANKING",
+        reference: "RACE3750",
+        status: "SUCCEEDED",
+        xeroInvoiceId: "race-3750-xero-invoice",
+        xeroInvoiceNumber: "INV-3750",
+      },
+    });
+    await prisma.bookingChangeRequest.create({
+      data: {
+        id: REQUEST_ID,
+        bookingId: BOOKING_ID,
+        requestedByMemberId: OWNER_ID,
+        kind: "LOCKED_PERIOD",
+        status: "REQUESTED",
+        reason: "Original went home early; the others left on the 12th.",
+        requestedChanges: {
+          original: {
+            checkIn: "2026-06-10",
+            checkOut: "2026-06-13",
+            guests: [
+              { id: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+              { id: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+              { id: GUEST_3_ID, stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+            ],
+          },
+          requested: {
+            ...ADD_LATE_FRIEND,
+            addGuests: [],
+            checkOut: "2026-06-12",
+            removeGuests: [{ id: GUEST_ID }],
+            guestStayRanges: [
+              { guestId: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+              { guestId: GUEST_3_ID, stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+            ],
+            summary: "check-out to 2026-06-12; remove Original Guest",
+          },
+        },
+      },
+    });
+
+    const result = await approve(OFFICER_ID);
+    expect(result, JSON.stringify(result)).toMatchObject({ outcome: "executed" });
+
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: BOOKING_ID },
+      include: { guests: { include: { nights: { orderBy: { stayDate: "asc" } } } } },
+    });
+    expect(booking.checkOut.toISOString()).toBe(NIGHT_3.toISOString());
+    const nightsBy = Object.fromEntries(
+      booking.guests.map((guest) => [
+        guest.firstName,
+        guest.nights.map((night) => [night.stayDate.toISOString(), night.priceCents]),
+      ]),
+    );
+    // Nobody gains a night: Third is charged for the middle night only, never
+    // stretched back to the 10th.
+    expect(nightsBy).toEqual({
+      Second: [
+        [CHECK_IN.toISOString(), STORED_NIGHT_CENTS],
+        [NIGHT_2.toISOString(), STORED_NIGHT_CENTS],
+      ],
+      Third: [[NIGHT_2.toISOString(), STORED_NIGHT_CENTS]],
+    });
+    expect(booking.finalPriceCents).toBe(3 * STORED_NIGHT_CENTS);
+    expect(result).toMatchObject({ addedGuestCount: 0, priceDiffCents: -3 * STORED_NIGHT_CENTS });
   }, 60_000);
 
   it("refuses a stay whose season has been switched off, and keeps the request pending", async () => {
