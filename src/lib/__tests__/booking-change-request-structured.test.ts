@@ -217,6 +217,31 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
     expect((await response.json()).code).toBe("STRUCTURED_CHANGE_REQUIRED");
   });
 
+  it("reads an existing guest's nights by the canonical range rule (re-review of 72c933ffc)", async () => {
+    const refused = async (range: Record<string, unknown>) => {
+      const response = await post({
+        guestStayRanges: [{ guestId: "guest-1", ...range }],
+        requestedEffectiveDate: "2026-06-30",
+      });
+      expect(response.status).toBe(400);
+      return (await response.json()).error as string;
+    };
+    expect(await refused({ stayStart: "2026-07-02", stayEnd: "2026-07-01" })).toMatch(
+      /Date Out must be after Date In/,
+    );
+    expect(await refused({ stayStart: "30/06/2026", stayEnd: "2026-07-01" })).toMatch(
+      /must use yyyy-mm-dd format/,
+    );
+    // A one-bound range beside a real change is refused, not stored.
+    const response = await post({
+      addGuests: [grandchild("Ari")],
+      guestStayRanges: [{ guestId: "guest-1", stayEnd: "2026-07-01" }],
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/Date In and Date Out are both required/);
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
   it("still accepts a stay range that changes the guest's nights", async () => {
     const response = await post({
       guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-01" }],

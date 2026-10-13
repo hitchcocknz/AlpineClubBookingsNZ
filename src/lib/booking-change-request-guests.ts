@@ -134,6 +134,37 @@ export function addedGuestNightsRefusal(
 }
 
 /**
+ * #4030 re-review of 72c933ffc: an existing guest's requested nights are read
+ * by the same canonical range rule the added guests' are
+ * (`normalizeGuestStayRange`): real `yyyy-mm-dd` days, both bounds or neither,
+ * Date Out after Date In. The refusal message, or `null`. A range may still
+ * reach outside the stay: the planner widens the stay to cover it, as an edit
+ * does (#713).
+ */
+export function guestStayRangesRefusal(
+  ranges: ReadonlyArray<{ stayStart?: string | null; stayEnd?: string | null }>,
+  stay: ChangeRequestStay,
+): string | null {
+  const bounds = {
+    checkIn: dateOnlyInstantOf(requireCalendarDate(stay.checkIn)),
+    checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
+  };
+  for (const [index, range] of ranges.entries()) {
+    try {
+      normalizeGuestStayRange(
+        { stayStart: range.stayStart ?? null, stayEnd: range.stayEnd ?? null },
+        bounds,
+        index,
+      );
+    } catch (error) {
+      if (error instanceof BookingGuestStayRangeValidationError) return error.message;
+      throw error;
+    }
+  }
+  return null;
+}
+
+/**
  * Whether a requested guest stay range actually changes anything (#4030 review
  * M2): both bounds given, and different from the guest's own stored range. A
  * range missing a bound, or repeating the guest's current nights, is not a

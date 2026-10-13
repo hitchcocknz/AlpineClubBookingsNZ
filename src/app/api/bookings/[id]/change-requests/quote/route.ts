@@ -73,8 +73,10 @@ export async function POST(
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
   // #4030 review S1: the card re-asks as the list changes, so the estimate is
-  // throttled per member like the change request it precedes — after the owner
-  // check, so nobody can spend another member's budget.
+  // throttled on the booking-quote budget (`bookingQuery`, the one the booking
+  // quote route spends), not on the change request's own five-a-day limiter.
+  // It is keyed on the caller, so nobody spends another member's budget, and it
+  // runs after the owner check, so a refused caller spends none.
   const rl = await checkRateLimit(rateLimiters.bookingQuery, session.user.id);
   if (!rl.success) {
     const retryAfter = Math.ceil((rl.resetAt - Date.now()) / 1000);

@@ -30,6 +30,7 @@ import {
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
   changeRequestAddGuestsSchema,
   namesStayRangeChange,
+  guestStayRangesRefusal,
   CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
 } from "@/lib/booking-change-request-guests";
 import {
@@ -273,6 +274,14 @@ export async function POST(
   });
   if (addedNightsRefusal) {
     return NextResponse.json({ error: addedNightsRefusal }, { status: 400 });
+  }
+  // The existing guests' nights, by the same canonical range rule.
+  const stayRangesRefusal = guestStayRangesRefusal(guestStayRanges ?? [], {
+    checkIn: formatDateOnly(nextCheckIn),
+    checkOut: formatDateOnly(nextCheckOut),
+  });
+  if (stayRangesRefusal) {
+    return NextResponse.json({ error: stayRangesRefusal }, { status: 400 });
   }
   // #4030 review M4 (`INV-GUEST-019`): the one dependant-identity rule.
   if (addGuests?.length) {
