@@ -2479,12 +2479,8 @@ async function performBookingCancellation(
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
     }
     if (cardShortfall) {
-      alertCancelCardShortfall({
-        memberName: `${bookingOwner(fresh).member.firstName} ${bookingOwner(fresh).member.lastName}`,
-        checkIn: fresh.checkIn, checkOut: fresh.checkOut, bookingId,
-        shortfallCents: byHandCents, manualRefundTaskId: cardShortfall.taskId,
-        reason: `Card cancellation ${days} day(s) before check-in: the card refund carries ${formatCents(plannedCardRefundCents, format)} of the ${formatCents(refundAmountCents, format)} refund due (${refundPercentage}% under the policy in effect at the time).`,
-      }, format);
+      const { firstName, lastName } = bookingOwner(fresh).member;
+      alertCancelCardShortfall({ memberName: `${firstName} ${lastName}`, booking: fresh, shortfall: cardShortfall, days, refundPercentage, plannedCardRefundCents, refundAmountCents }, format);
     }
 
     // Trigger waitlist processing for freed dates

@@ -81,29 +81,30 @@ export async function raiseCancelCardShortfallHandBack(
 export function alertCancelCardShortfall(
   data: {
     memberName: string;
-    checkIn: Date;
-    checkOut: Date;
-    bookingId: string;
-    shortfallCents: number;
-    manualRefundTaskId: string;
-    reason: string;
+    booking: { id: string; checkIn: Date; checkOut: Date };
+    shortfall: { taskId: string; shortfallCents: number };
+    days: number;
+    refundPercentage: number;
+    refundAmountCents: number;
+    plannedCardRefundCents: number;
   },
   format: ClubFormat,
 ): void {
+  const { booking, shortfall } = data;
   sendAdminManualRefundTaskAlert(
     {
       memberName: data.memberName,
-      checkIn: data.checkIn,
-      checkOut: data.checkOut,
-      refundAmountCents: data.shortfallCents,
-      bookingId: data.bookingId,
-      reason: data.reason,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      refundAmountCents: shortfall.shortfallCents,
+      bookingId: booking.id,
+      reason: `Card cancellation ${data.days} day(s) before check-in: the card refund carries ${formatCents(data.plannedCardRefundCents, format)} of the ${formatCents(data.refundAmountCents, format)} refund due (${data.refundPercentage}% under the policy in effect at the time).`,
       situation: "card-refund-shortfall",
     },
     format,
   ).catch((err) =>
     logger.error(
-      { err, bookingId: data.bookingId, manualRefundTaskId: data.manualRefundTaskId },
+      { err, bookingId: booking.id, manualRefundTaskId: shortfall.taskId },
       "Failed to alert admins about a card refund shortfall's hand-back task",
     ),
   );

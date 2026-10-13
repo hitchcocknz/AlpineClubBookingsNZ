@@ -17,6 +17,7 @@
  * This module deliberately imports nothing - the email template layer, the
  * senders and the template registry all depend on it.
  */
+import { CARD_REFUND_SHORTFALL_ALERT_BODY, CARD_REFUND_SHORTFALL_ALERT_LEAD } from "@/lib/cancel-card-refund-shortfall-copy";
 
 /**
  * #2268 — compose an OPTIONAL line of an admin-editable plain-text email body.
@@ -281,30 +282,21 @@ export function internetBankingHoldKeptParagraph(
  */
 export type ManualRefundTaskAlertSituation = "cash-cancellation" | "group-organiser-internet-banking" | "card-refund-shortfall";
 
+/** Each situation's subject phrase, text heading, amount row label and recipient row label: the cash ones exactly as they always read. */
+const ALERT_WORDS: Record<ManualRefundTaskAlertSituation, { label: string; heading: string; amountLabel: string; recipientLabel: string }> = {
+  "cash-cancellation": { label: "cash booking cancelled", heading: "Manual Refund Needed - Cash Booking Cancelled", amountLabel: "Amount to refund", recipientLabel: "Member" },
+  "group-organiser-internet-banking": { label: "Internet Banking group cancelled", heading: "Manual Refund Needed - Internet Banking Group Cancelled", amountLabel: "Owed when this alert was sent", recipientLabel: "Organiser" },
+  "card-refund-shortfall": { label: "card refund short on a cancelled booking", heading: "Manual Refund Needed - Card Refund Short on a Cancelled Booking", amountLabel: "Amount the card refund could not carry", recipientLabel: "Member" },
+};
+
 /** The subject phrase (`{{handBackLabel}}`). */
-export function manualRefundTaskAlertLabel(situation: ManualRefundTaskAlertSituation): string {
-  if (situation === "card-refund-shortfall") return "card refund short on a cancelled booking";
-  return situation === "group-organiser-internet-banking" ? "Internet Banking group cancelled" : "cash booking cancelled";
-}
-
-/** The text body's heading (`{{handBackHeading}}`): the cash one exactly as it always read. */
-export function manualRefundTaskAlertHeading(situation: ManualRefundTaskAlertSituation): string {
-  if (situation === "card-refund-shortfall") return "Manual Refund Needed - Card Refund Short on a Cancelled Booking";
-  return situation === "group-organiser-internet-banking"
-    ? "Manual Refund Needed - Internet Banking Group Cancelled"
-    : "Manual Refund Needed - Cash Booking Cancelled";
-}
-
+export const manualRefundTaskAlertLabel = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].label;
+/** The text body's heading (`{{handBackHeading}}`). */
+export const manualRefundTaskAlertHeading = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].heading;
 /** The amount row's label, in the HTML and the text body (`{{handBackAmountLabel}}`). */
-export function manualRefundTaskAlertAmountLabel(situation: ManualRefundTaskAlertSituation): string {
-  if (situation === "card-refund-shortfall") return "Amount the card refund could not carry";
-  return situation === "group-organiser-internet-banking" ? "Owed when this alert was sent" : "Amount to refund";
-}
-
+export const manualRefundTaskAlertAmountLabel = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].amountLabel;
 /** Whom the money goes back to, as the text body's row label (`{{handBackRecipientLabel}}`). */
-export function manualRefundTaskAlertRecipientLabel(situation: ManualRefundTaskAlertSituation): string {
-  return situation === "group-organiser-internet-banking" ? "Organiser" : "Member";
-}
+export const manualRefundTaskAlertRecipientLabel = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].recipientLabel;
 
 /** The group alert's first sentence: the HTML's warning box, and the note's lead. */
 export const GROUP_HAND_BACK_ALERT_LEAD =
@@ -313,14 +305,6 @@ export const GROUP_HAND_BACK_ALERT_LEAD =
 /** The group alert's paragraph after its lead, shared by the HTML and the note. */
 export const GROUP_HAND_BACK_ALERT_BODY =
   "Each joiner's refund has been recorded in the app's ledger as made, but no money has moved. The hand-back task on the payments board holds the total owed: it grows as each joiner's place is cancelled, and its reason lists each joiner's share. Pay the organiser the total the task shows, then mark it paid back - that records only that the money went, because the refunds are already in the ledger. It cannot be dismissed: if the club decides not to repay the organiser, take it to the treasurer.";
-
-/** #4097: the card-shortfall alert's first sentence: the HTML's warning box, and the note's lead. */
-export const CARD_REFUND_SHORTFALL_ALERT_LEAD =
-  "A booking paid by card has been cancelled, and its card refund could not carry all of the refund due - the rest has NOT been refunded.";
-
-/** #4097: the card-shortfall alert's paragraph after its lead, shared by the HTML and the note. */
-export const CARD_REFUND_SHORTFALL_ALERT_BODY =
-  "The card refund covers only what the payment's records show can still go back to the card, which was less than the cancellation policy's refund. That usually means the payment's records disagree. The system has raised a hand-back task for the difference, and the member has been told the club will refund it by bank transfer. Check the payment in Stripe: if the member has not had this money back, pay it by bank transfer and mark the task paid back. If it was refunded another way, dismiss the task with a note saying how.";
 
 /** The text body's explaining paragraphs (`{{handBackNote}}`). */
 export function manualRefundTaskAlertNote(situation: ManualRefundTaskAlertSituation): string {

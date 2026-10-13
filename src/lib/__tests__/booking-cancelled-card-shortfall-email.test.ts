@@ -24,9 +24,8 @@ import {
   bookingCancelledRefundSentence,
   ownCardRefundWithByHandRemainderSentence,
 } from "@/lib/booking-modified-email-copy";
+import { CARD_REFUND_SHORTFALL_ALERT_BODY, CARD_REFUND_SHORTFALL_ALERT_LEAD } from "@/lib/cancel-card-refund-shortfall-copy";
 import {
-  CARD_REFUND_SHORTFALL_ALERT_BODY,
-  CARD_REFUND_SHORTFALL_ALERT_LEAD,
   manualRefundTaskAlertAmountLabel,
   manualRefundTaskAlertHeading,
   manualRefundTaskAlertLabel,
