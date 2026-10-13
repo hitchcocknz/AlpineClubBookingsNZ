@@ -44,10 +44,12 @@ export type CashSettlementRefusal =
   | "cash-zero"
   /** The invoice matched more than one payment: its cash is not this payment's alone. */
   | "several-payments"
-  /** The payment already carries refunded money - on a never-captured payment, an older credit note folded into it. */
-  | "refund-history"
-  /** Another captured row (a card capture, an addition) already sits on the payment. */
-  | "other-capture"
+  /**
+   * The payment's refunded total holds money no row records: an older credit
+   * note folded into it before it was paid. Writing the cash too would count
+   * that reduction twice.
+   */
+  | "folded-refund"
   /** More than one uncaptured Internet Banking PRIMARY row: which one the cash belongs to is not known. */
   | "several-primary-rows"
   /** A second instrument (#3638) already settled the booking: its own alert speaks for it. */
@@ -56,7 +58,12 @@ export type CashSettlementRefusal =
 export type CashSettlementPlan =
   /** The PRIMARY receipt was already captured: a replay, which decides no amount again. */
   | { kind: "replay" }
-  | { kind: "rewrite"; amountCents: number }
+  /**
+   * The receipt is the cash; the payment's figure is the cash plus whatever
+   * else is captured on it (a card capture refunded before the switch, #1765),
+   * the figure `reconcilePaymentAggregates` derives from the same rows.
+   */
+  | { kind: "rewrite"; receiptCents: number; paymentAmountCents: number }
   | { kind: "keep"; reason: CashSettlementRefusal };
 
 export type CashSettlementTransaction = {
@@ -64,6 +71,7 @@ export type CashSettlementTransaction = {
   source: PaymentSource;
   status: PaymentStatus;
   amountCents: number;
+  refundedAmountCents: number;
 };
 
 function isInternetBankingPrimary(row: Pick<CashSettlementTransaction, "kind" | "source">): boolean {
@@ -75,11 +83,10 @@ function isInternetBankingPrimary(row: Pick<CashSettlementTransaction, "kind" | 
  * no Internet Banking PRIMARY row of the payment is captured; a replay keeps
  * whatever the first settle wrote. The cash is written only when it is a
  * complete, positive figure that belongs to this payment alone: exactly one
- * matched payment, no refund history, no other captured row, at most one
- * uncaptured Internet Banking PRIMARY row, and no second instrument.
+ * matched payment, no folded refund, at most one uncaptured Internet Banking
+ * PRIMARY row, and no second instrument.
  */
 export function planInternetBankingCashSettlement(input: {
-  paymentStatus: PaymentStatus;
   refundedAmountCents: number;
   transactions: readonly CashSettlementTransaction[];
   cash: InvoiceCash;
@@ -94,22 +101,17 @@ export function planInternetBankingCashSettlement(input: {
   if (!input.cash.complete) return { kind: "keep", reason: "cash-incomplete" };
   if (input.cash.knownCents <= 0) return { kind: "keep", reason: "cash-zero" };
   if (input.matchedPayments !== 1) return { kind: "keep", reason: "several-payments" };
-  if (
-    input.refundedAmountCents > 0 ||
-    input.paymentStatus === PaymentStatus.REFUNDED ||
-    input.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
-  ) {
-    return { kind: "keep", reason: "refund-history" };
-  }
-  if (
-    input.transactions.some(
-      (row) => !isInternetBankingPrimary(row) && isCapturedTransactionStatus(row.status),
-    )
-  ) {
-    return { kind: "keep", reason: "other-capture" };
-  }
+  const ledgerRefundedCents = input.transactions.reduce((sum, row) => sum + row.refundedAmountCents, 0);
+  if (input.refundedAmountCents > ledgerRefundedCents) return { kind: "keep", reason: "folded-refund" };
   if (primaryRows.length > 1) return { kind: "keep", reason: "several-primary-rows" };
-  return { kind: "rewrite", amountCents: input.cash.knownCents };
+  const otherCapturedCents = input.transactions
+    .filter((row) => !isInternetBankingPrimary(row) && isCapturedTransactionStatus(row.status))
+    .reduce((sum, row) => sum + row.amountCents, 0);
+  return {
+    kind: "rewrite",
+    receiptCents: input.cash.knownCents,
+    paymentAmountCents: input.cash.knownCents + otherCapturedCents,
+  };
 }
 
 /** What the settle tells the operators about the figure it recorded, after it commits. */
@@ -127,15 +129,12 @@ export type CashSettlementNotice = {
 /**
  * Whether a kept figure is worth an alert. Nothing was refused when the stored
  * figure already IS the complete cash of the one payment the invoice matched.
- * A second instrument is never alerted here: #3638 raises its own.
  */
 function keptFigureNeedsAlert(
-  reason: CashSettlementRefusal,
   storedAmountCents: number,
   cash: InvoiceCash,
   matchedPayments: number,
 ): boolean {
-  if (reason === "second-instrument") return false;
   return !(cash.complete && matchedPayments === 1 && cash.knownCents === storedAmountCents);
 }
 
@@ -159,10 +158,13 @@ export async function readCashSettlementNotice(
     changeFeeCents: number | null;
   },
 ): Promise<CashSettlementNotice | null> {
+  // A replay decides nothing; a second instrument (#3638) raises its own alert
+  // and the settle writes nothing further, so neither is asked anything here.
   if (input.plan.kind === "replay") return null;
+  if (input.plan.kind === "keep" && input.plan.reason === "second-instrument") return null;
   const refusal =
     input.plan.kind === "keep" &&
-    keptFigureNeedsAlert(input.plan.reason, input.storedAmountCents, input.cash, input.matchedPayments)
+    keptFigureNeedsAlert(input.storedAmountCents, input.cash, input.matchedPayments)
       ? input.plan.reason
       : null;
 
@@ -201,9 +203,8 @@ const REFUSAL_WORDING: Record<CashSettlementRefusal, string> = {
   "cash-incomplete": "the amount paid could not be read exactly from Xero",
   "cash-zero": "Xero reported the invoice paid in cash but the amount paid came to nothing",
   "several-payments": "the invoice matched more than one payment in the app",
-  "refund-history":
+  "folded-refund":
     "the payment already records money refunded before it was paid (an older credit note on the invoice)",
-  "other-capture": "another payment is already recorded against the booking",
   "several-primary-rows": "the payment carries more than one unpaid bank-transfer record",
   "second-instrument": "a card payment had already settled the booking",
 };
@@ -239,7 +240,6 @@ export async function decideInternetBankingReceiptFigure(
     payment: {
       id: string;
       bookingId: string;
-      status: PaymentStatus;
       amountCents: number;
       refundedAmountCents: number;
       changeFeeCents: number | null;
@@ -250,6 +250,9 @@ export async function decideInternetBankingReceiptFigure(
     secondInstrument: boolean;
   },
 ): Promise<{
+  /** The PRIMARY receipt's figure: the cash, or the stored figure when kept. */
+  receiptCents: number;
+  /** `Payment.amountCents` after the settle. */
   settledAmountCents: number;
   primaryAmountRewrite: { amountCents?: number };
   notice: CashSettlementNotice | null;
@@ -257,10 +260,9 @@ export async function decideInternetBankingReceiptFigure(
   const { payment } = input;
   const rows = await tx.paymentTransaction.findMany({
     where: { paymentId: payment.id },
-    select: { kind: true, source: true, status: true, amountCents: true },
+    select: { kind: true, source: true, status: true, amountCents: true, refundedAmountCents: true },
   });
   const plan = planInternetBankingCashSettlement({
-    paymentStatus: payment.status,
     refundedAmountCents: payment.refundedAmountCents,
     transactions: rows,
     cash: input.cash,
@@ -280,14 +282,15 @@ export async function decideInternetBankingReceiptFigure(
     changeFeeCents: payment.changeFeeCents,
   });
   if (plan.kind !== "rewrite") {
-    return { settledAmountCents: payment.amountCents, primaryAmountRewrite: {}, notice };
+    return { receiptCents: payment.amountCents, settledAmountCents: payment.amountCents, primaryAmountRewrite: {}, notice };
   }
   const primaryDiffers = rows.some(
-    (row) => isInternetBankingPrimary(row) && row.amountCents !== plan.amountCents,
+    (row) => isInternetBankingPrimary(row) && row.amountCents !== plan.receiptCents,
   );
   return {
-    settledAmountCents: plan.amountCents,
-    primaryAmountRewrite: primaryDiffers ? { amountCents: plan.amountCents } : {},
+    receiptCents: plan.receiptCents,
+    settledAmountCents: plan.paymentAmountCents,
+    primaryAmountRewrite: primaryDiffers ? { amountCents: plan.receiptCents } : {},
     notice,
   };
 }

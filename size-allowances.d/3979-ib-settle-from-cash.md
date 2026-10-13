@@ -16,10 +16,12 @@ reason: the receipt figure is decided and written inside the settle's own
   left is the call, the two amount writes and the post-commit alert call.
 
 file: src/lib/xero-inbound/credit-note-repairs.ts
-lines: 1172
+lines: 1194
 reason: `resolveModificationRefundAmountsByPaymentId` is the inbound credit-note
   sync's current-note half of the refunded-total repair that lives in this
   file, moved here from `credit-note.ts` so it can be called (and proved
   against PostgreSQL) without a Xero client. It uses the module's own
   invoice-to-payment resolver; a separate module would export that resolver
-  only to call it back.
+  only to call it back. The rest is one guard in the repair's own status
+  decision (never un-refund a payment with nothing captured to SUCCEEDED),
+  which belongs beside the Stripe floor it sits under.

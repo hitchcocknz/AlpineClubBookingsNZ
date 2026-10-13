@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   notifyXeroSyncError: vi.fn(),
   xeroSyncOperationFindMany: vi.fn(),
   paymentRefundAggregate: vi.fn(),
+  paymentTransactionFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -34,6 +35,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     paymentRefund: {
       aggregate: mocks.paymentRefundAggregate,
+    },
+    paymentTransaction: {
+      findMany: mocks.paymentTransactionFindMany,
     },
   },
 }));
@@ -328,5 +332,62 @@ describe("an organiser-settled child's mirror is raised only by Stripe evidence 
 
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(result).toEqual({ matchedPayments: 1, updatedPayments: 0 });
+  });
+});
+
+// #3979 (`INV-PAY-124`): an invoice correction is not a refund, so a re-sync can
+// take an older fold off a payment nothing was ever captured on. The payment
+// goes back to its uncaptured state; it never reads as paid.
+describe("repairRefundedPaymentBusinessState undoing a fold on a never-captured payment (#3979)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.paymentUpdate.mockResolvedValue({});
+  });
+
+  const folded = () =>
+    payment({
+      source: PaymentSource.INTERNET_BANKING,
+      amountCents: 30_000,
+      refundedAmountCents: 10_000,
+      status: PaymentStatus.PARTIALLY_REFUNDED,
+    });
+
+  it("returns the payment to its PRIMARY row's PENDING, never SUCCEEDED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.PENDING, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.PENDING },
+    });
+  });
+
+  it("a cancelled booking's never-captured payment goes back to FAILED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.FAILED, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.FAILED },
+    });
+  });
+
+  it("a captured payment still un-refunds to SUCCEEDED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.PARTIALLY_REFUNDED, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
   });
 });

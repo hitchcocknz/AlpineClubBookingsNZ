@@ -1,5 +1,6 @@
 import { type CreditNote as XeroCreditNote } from "xero-node";
-import { CreditType, PaymentSource, PaymentStatus } from "@prisma/client";
+import { CreditType, PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
+import { isCapturedTransactionStatus, latestTransactionOfKind } from "@/lib/payment-transaction-status";
 import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
@@ -236,6 +237,16 @@ export async function resolveModificationRefundAmountsByPaymentId(input: {
     amounts.set(paymentId, (amounts.get(paymentId) ?? 0) + target.amountCents);
   }
   return amounts;
+}
+
+/** A payment's latest PRIMARY row status when no row of it was ever captured; null once any was. */
+async function uncapturedPrimaryStatus(paymentId: string): Promise<PaymentStatus | null> {
+  const rows = await prisma.paymentTransaction.findMany({
+    where: { paymentId },
+    select: { kind: true, status: true, createdAt: true },
+  });
+  if (rows.some((row) => isCapturedTransactionStatus(row.status))) return null;
+  return latestTransactionOfKind(rows, PaymentTransactionKind.PRIMARY)?.status ?? PaymentStatus.PENDING;
 }
 
 export async function repairRefundedPaymentBusinessState(input: {
@@ -524,6 +535,17 @@ export async function repairRefundedPaymentBusinessState(input: {
     ) {
       // F5 (#1353): never un-refund a Stripe payment from Xero-derived data.
       nextStatus = null;
+    }
+    if (
+      nextStatus === PaymentStatus.SUCCEEDED &&
+      (payment.status === PaymentStatus.REFUNDED ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED)
+    ) {
+      // #3979 (`INV-PAY-124`): a refunded total falling to nothing on a payment
+      // nothing was ever captured on undoes an older fold (an invoice correction
+      // counted as a refund), never a refund given back: the payment returns to
+      // its uncaptured state, never to SUCCEEDED.
+      nextStatus = (await uncapturedPrimaryStatus(payment.id)) ?? nextStatus;
     }
     const updates: {
       refundedAmountCents?: number;

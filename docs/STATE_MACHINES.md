@@ -1782,9 +1782,11 @@ cash that invoice collected, not the figure the payment was born with
 (`INV-PAY-124`, `settle-from-cash.ts`):
 
 ```text
-no captured IB PRIMARY row, cash complete, one matched payment, no refund
-  history, no other capture, one uncaptured IB PRIMARY row, no second instrument
-  -> PRIMARY row and Payment.amountCents := invoice cash -> ledger BANK_RECEIPT
+no captured IB PRIMARY row, cash complete, one matched payment, no folded
+  refund (refunded total beyond the rows'), one uncaptured IB PRIMARY row, no
+  second instrument
+  -> PRIMARY row := invoice cash; Payment.amountCents := cash + other captured
+     rows (the ledger's own projection) -> ledger BANK_RECEIPT
 any of those not true
   -> stored figure kept -> receipt at it -> admin alert (booking left live)
 PRIMARY row already captured (a replay)
@@ -1798,8 +1800,11 @@ The cancel arms (a cancelled booking's late cash, the late capacity cancel) size
 their credit from the settled figure and alert on their own. An
 invoice-correction note on the never-paid invoice refunds nothing, so a $300
 invoice corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
-`reconcilePaymentAggregates` keeps it. Settles before #3979 are listed by
-`pnpm run payments:audit-ib-settled-cash`, never rewritten.
+`reconcilePaymentAggregates` keeps it. A correction folded before #3979 is not
+taken off (no backfill): that payment's settle keeps its figure and alerts, and
+the refunded-total repair never un-refunds a payment with nothing captured to
+`SUCCEEDED` (it returns to its PRIMARY row's status). Settles before #3979 are
+listed by `pnpm run payments:audit-ib-settled-cash`, never rewritten.
 
 ### Manual mark-paid (cash / off-Xero bank transfer), B5 #2262
 

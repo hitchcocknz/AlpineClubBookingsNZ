@@ -53,6 +53,9 @@ const mocks = vi.hoisted(() => ({
   paymentUpdateMany: vi.fn(),
   paymentTransactionUpdateMany: vi.fn(),
   paymentTransactionCreate: vi.fn(),
+  // #3979: the refunded-total repair asks whether anything was captured before
+  // it un-refunds a payment.
+  paymentTransactionFindMany: vi.fn(),
   // #3979: the settle reads the payment's rows to decide whether the invoice's
   // cash may be written, and the booking's edits for its cross-check.
   txPaymentTransactionFindMany: vi.fn(),
@@ -173,6 +176,7 @@ vi.mock("@/lib/prisma", () => ({
     paymentTransaction: {
       updateMany: mocks.paymentTransactionUpdateMany,
       create: mocks.paymentTransactionCreate,
+      findMany: mocks.paymentTransactionFindMany,
     },
     memberSubscription: {
       findMany: mocks.subscriptionFindMany,
@@ -4279,6 +4283,7 @@ describe("processStoredXeroInboundEvents", () => {
       source: "INTERNET_BANKING",
       status: "PENDING",
       amountCents: 12345,
+      refundedAmountCents: 0,
       ...overrides,
     });
 
@@ -4386,21 +4391,27 @@ describe("processStoredXeroInboundEvents", () => {
       const [alert] = vi.mocked(sendAdminPaymentFailureAlert).mock.calls[0];
       expect(alert.errorMessage).toContain("kept the $123.45 it had recorded");
       expect(alert.errorMessage).toContain("money refunded before it was paid");
+      expect(alert.errorMessage).toContain("$100.00");
     });
 
-    it("keeps the stored figure and alerts when another capture already sits on the payment", async () => {
+    it("records the cash as the receipt and the cash plus another capture as the payment's figure", async () => {
+      // An addition captured by card beside the bank-transfer primary: the
+      // payment's figure is what the ledger projects from both rows.
       mockPendingInternetBankingInboundEvent({ finalPriceCents: 10000, amountPaid: 100.0 });
       mocks.txPaymentTransactionFindMany.mockResolvedValue([
         primaryRow(),
-        { kind: "ADDITIONAL", source: "STRIPE", status: "SUCCEEDED", amountCents: 500 },
+        { kind: "ADDITIONAL", source: "STRIPE", status: "SUCCEEDED", amountCents: 500, refundedAmountCents: 0 },
       ]);
       mocks.paymentTransactionUpdateMany.mockResolvedValue({ count: 1 });
 
       await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({ succeeded: 1, failed: 0 });
 
-      expect(mocks.paymentTransactionUpdateMany.mock.calls[0][0].data).not.toHaveProperty("amountCents");
-      const [alert] = vi.mocked(sendAdminPaymentFailureAlert).mock.calls[0];
-      expect(alert.errorMessage).toContain("another payment is already recorded against the booking");
+      expect(mocks.paymentTransactionUpdateMany.mock.calls[0][0].data).toMatchObject({ amountCents: 10000 });
+      expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+        where: { id: "pay_ib_gate" },
+        data: { amountCents: 10500 },
+      });
+      expect(sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
     it("records the cash but alerts when it disagrees with what the booking owes", async () => {
@@ -5903,6 +5914,11 @@ describe("processStoredXeroInboundEvents", () => {
   });
 
   it("clears refunded payment state when a modification credit note is voided", async () => {
+    // A captured payment: the void un-refunds it to SUCCEEDED (#3979 keeps a
+    // never-captured one in its uncaptured state instead).
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: "PARTIALLY_REFUNDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
     mocks.inboundFindMany.mockResolvedValue([
       {
         id: "evt_5c",

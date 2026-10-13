@@ -580,7 +580,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               xeroInvoiceId: invoiceId,
               xeroInvoiceNumber: invoiceNumber,
               reference: fresh.reference ?? undefined,
-              amountCents: settledAmountCents,
+              amountCents: receiptFigure.receiptCents,
               status: PaymentStatus.SUCCEEDED,
               reason: "xero_invoice_paid_reconciliation",
             },

@@ -30,6 +30,10 @@ const mocks = vi.hoisted(() => ({
   paymentUpdate: vi.fn(),
   paymentTransactionUpdateMany: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
+  // #3979: the settle's read of the payment's own rows, kept apart from the
+  // second-instrument question above so each test's answer to that question
+  // stays its own.
+  settleRowsFindMany: vi.fn(),
   paymentTransactionFindFirst: vi.fn(),
   paymentTransactionCreate: vi.fn(),
   paymentRecoveryOperationFindMany: vi.fn(),
@@ -156,9 +160,15 @@ const tx = {
     findUnique: (...a: unknown[]) => mocks.paymentFindUnique(...a),
     update: (...a: unknown[]) => mocks.paymentUpdate(...a),
   },
+  // #3979: the receipt figure's cross-check reads the booking's supplementary
+  // invoices; none here.
+  bookingModification: { findMany: async () => [] },
   paymentTransaction: {
     updateMany: (...a: unknown[]) => mocks.paymentTransactionUpdateMany(...a),
-    findMany: (...a: unknown[]) => mocks.paymentTransactionFindMany(...a),
+    findMany: (...a: unknown[]) =>
+      (a[0] as { where?: { kind?: unknown } } | undefined)?.where?.kind === undefined
+        ? mocks.settleRowsFindMany(...a)
+        : mocks.paymentTransactionFindMany(...a),
     findFirst: (...a: unknown[]) => mocks.paymentTransactionFindFirst(...a),
     create: (...a: unknown[]) => mocks.paymentTransactionCreate(...a),
   },
@@ -178,7 +188,7 @@ const tx = {
   },
   // #3535's clearing-note evidence, read by the already-cancelled credit arm
   // these bookings fall through to: no clearing note on file.
-  xeroObjectLink: { findFirst: vi.fn().mockResolvedValue(null) },
+  xeroObjectLink: { findFirst: vi.fn().mockResolvedValue(null), findMany: async () => [] },
   xeroSyncOperation: {
     findFirst: vi.fn().mockResolvedValue(null),
     updateMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -279,6 +289,17 @@ beforeEach(() => {
   mocks.executeRaw.mockResolvedValue(undefined);
   mocks.paymentTransactionUpdateMany.mockResolvedValue({ count: 1 });
   mocks.paymentTransactionFindMany.mockResolvedValue([CARD_PRIMARY]);
+  // The bank receipt this suite's switched payment already carries (#3979):
+  // a replay, so the settle decides no figure again.
+  mocks.settleRowsFindMany.mockResolvedValue([
+    {
+      kind: PaymentTransactionKind.PRIMARY,
+      source: PaymentSource.INTERNET_BANKING,
+      status: PaymentStatus.SUCCEEDED,
+      amountCents: 27000,
+      refundedAmountCents: 0,
+    },
+  ]);
   // No captured Internet Banking row yet: this bank cash is new.
   mocks.paymentTransactionFindFirst.mockResolvedValue(null);
   mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);

@@ -4,6 +4,7 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import {
   cashSettlementNoticeMessage,
   planInternetBankingCashSettlement,
+  readCashSettlementNotice,
   type CashSettlementTransaction,
 } from "@/lib/xero-inbound/settle-from-cash";
 
@@ -18,11 +19,11 @@ const primary = (overrides: Partial<CashSettlementTransaction> = {}): CashSettle
   source: "INTERNET_BANKING",
   status: "PENDING",
   amountCents: 30_000,
+  refundedAmountCents: 0,
   ...overrides,
 });
 
 const base = {
-  paymentStatus: "PENDING" as const,
   refundedAmountCents: 0,
   transactions: [primary()],
   cash: { knownCents: 20_000, complete: true },
@@ -31,21 +32,24 @@ const base = {
 };
 
 describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
+  const rewrite = (receiptCents: number, paymentAmountCents = receiptCents) => ({
+    kind: "rewrite",
+    receiptCents,
+    paymentAmountCents,
+  });
+
   it("rewrites to the cash at the transition", () => {
-    expect(planInternetBankingCashSettlement(base)).toEqual({ kind: "rewrite", amountCents: 20_000 });
+    expect(planInternetBankingCashSettlement(base)).toEqual(rewrite(20_000));
   });
 
   it("rewrites when no PRIMARY row exists yet (the settle mints one)", () => {
-    expect(planInternetBankingCashSettlement({ ...base, transactions: [] })).toEqual({
-      kind: "rewrite",
-      amountCents: 20_000,
-    });
+    expect(planInternetBankingCashSettlement({ ...base, transactions: [] })).toEqual(rewrite(20_000));
   });
 
   it("rewrites a FAILED PRIMARY row (a cancelled booking's never-captured payment)", () => {
     expect(
-      planInternetBankingCashSettlement({ ...base, paymentStatus: "FAILED", transactions: [primary({ status: "FAILED" })] }),
-    ).toEqual({ kind: "rewrite", amountCents: 20_000 });
+      planInternetBankingCashSettlement({ ...base, transactions: [primary({ status: "FAILED" })] }),
+    ).toEqual(rewrite(20_000));
   });
 
   it.each(["SUCCEEDED", "PARTIALLY_REFUNDED", "REFUNDED"] as const)(
@@ -55,12 +59,30 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
     },
   );
 
-  it("a captured card row is not the bank receipt: the transition is still open", () => {
-    const plan = planInternetBankingCashSettlement({
-      ...base,
-      transactions: [primary(), { kind: "PRIMARY", source: "STRIPE", status: "SUCCEEDED", amountCents: 30_000 }],
-    });
-    expect(plan).toEqual({ kind: "keep", reason: "other-capture" });
+  it("a card capture refunded before the switch (#1765) stays on the payment: the receipt is the cash, the payment the cash plus the card", () => {
+    const card: CashSettlementTransaction = {
+      kind: "PRIMARY",
+      source: "STRIPE",
+      status: "REFUNDED",
+      amountCents: 30_000,
+      refundedAmountCents: 30_000,
+    };
+    expect(
+      planInternetBankingCashSettlement({ ...base, refundedAmountCents: 30_000, transactions: [card, primary()] }),
+    ).toEqual(rewrite(20_000, 50_000));
+  });
+
+  it("a captured addition counts towards the payment's figure, never the receipt", () => {
+    const addition: CashSettlementTransaction = {
+      kind: "ADDITIONAL",
+      source: "STRIPE",
+      status: "SUCCEEDED",
+      amountCents: 500,
+      refundedAmountCents: 0,
+    };
+    expect(planInternetBankingCashSettlement({ ...base, transactions: [primary(), addition] })).toEqual(
+      rewrite(20_000, 20_500),
+    );
   });
 
   it.each([
@@ -68,21 +90,34 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
     ["cash-incomplete", { cash: { knownCents: 20_000, complete: false } }],
     ["cash-zero", { cash: { knownCents: 0, complete: true } }],
     ["several-payments", { matchedPayments: 2 }],
-    ["refund-history", { refundedAmountCents: 1 }],
-    ["refund-history", { paymentStatus: "PARTIALLY_REFUNDED" as const }],
-    ["refund-history", { paymentStatus: "REFUNDED" as const }],
-    ["other-capture", { transactions: [primary(), { kind: "ADDITIONAL", source: "STRIPE", status: "SUCCEEDED", amountCents: 1 } as CashSettlementTransaction] }],
+    ["folded-refund", { refundedAmountCents: 1 }],
     ["several-primary-rows", { transactions: [primary(), primary()] }],
   ] as const)("keeps the stored figure: %s", (reason, overrides) => {
     expect(planInternetBankingCashSettlement({ ...base, ...overrides })).toEqual({ kind: "keep", reason });
   });
 
+  it("a refunded total a row records is not a fold", () => {
+    const card: CashSettlementTransaction = {
+      kind: "PRIMARY",
+      source: "STRIPE",
+      status: "PARTIALLY_REFUNDED",
+      amountCents: 30_000,
+      refundedAmountCents: 10_000,
+    };
+    expect(
+      planInternetBankingCashSettlement({ ...base, refundedAmountCents: 15_000, transactions: [card, primary()] }),
+    ).toEqual({ kind: "keep", reason: "folded-refund" });
+    expect(
+      planInternetBankingCashSettlement({ ...base, refundedAmountCents: 10_000, transactions: [card, primary()] }),
+    ).toEqual(rewrite(20_000, 50_000));
+  });
+
   it("an uncaptured card row does not refuse the rewrite", () => {
     const plan = planInternetBankingCashSettlement({
       ...base,
-      transactions: [primary(), { kind: "PRIMARY", source: "STRIPE", status: "FAILED", amountCents: 30_000 }],
+      transactions: [primary(), { kind: "PRIMARY", source: "STRIPE", status: "FAILED", amountCents: 30_000, refundedAmountCents: 0 }],
     });
-    expect(plan).toEqual({ kind: "rewrite", amountCents: 20_000 });
+    expect(plan).toEqual(rewrite(20_000));
   });
 });
 
@@ -131,5 +166,38 @@ describe("cashSettlementNoticeMessage (#3979)", () => {
       CLUB_FORMAT_TEST,
     );
     expect(message).toContain("an amount it could not read exactly (its figures come to $200.00)");
+  });
+});
+
+describe("readCashSettlementNotice (#3979)", () => {
+  // Any read through this client fails the test: these plans ask nothing.
+  const untouchable = new Proxy({}, {
+    get: (_target, property) => {
+      throw new Error(`unexpected read of tx.${String(property)}`);
+    },
+  }) as never;
+  const input = {
+    storedAmountCents: 30_000,
+    cash: { knownCents: 20_000, complete: true },
+    matchedPayments: 1,
+    booking: { id: "b-1", finalPriceCents: 25_000, cancelled: false },
+    changeFeeCents: null,
+  };
+
+  it.each([
+    ["a replay", { kind: "replay" } as const],
+    ["a second instrument (#3638 alerts on its own)", { kind: "keep", reason: "second-instrument" } as const],
+  ])("says nothing, and reads nothing, for %s", async (_label, plan) => {
+    expect(await readCashSettlementNotice(untouchable, { ...input, plan })).toBeNull();
+  });
+
+  it("does not cross-check a cancelled booking: its late-cash arm alerts on its own", async () => {
+    expect(
+      await readCashSettlementNotice(untouchable, {
+        ...input,
+        plan: { kind: "rewrite", receiptCents: 20_000, paymentAmountCents: 20_000 },
+        booking: { ...input.booking, cancelled: true },
+      }),
+    ).toBeNull();
   });
 });

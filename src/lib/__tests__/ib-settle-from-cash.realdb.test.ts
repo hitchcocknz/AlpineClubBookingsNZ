@@ -459,4 +459,54 @@ async function cancellationCreditCents(): Promise<number> {
       primary: { amountCents: 30_000, status: "SUCCEEDED" },
     });
   }, 60_000);
+
+  it("A CORRECTION FOLDED BEFORE #3979 is left alone by a re-sync, so the settle keeps the stored figure rather than count it twice", async () => {
+    await bookAt(30_000);
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { noteWording: "invoice-correction" });
+    // What the sync wrote before this change: the correction counted as refunded.
+    await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" } });
+
+    // The note now contributes nothing, so its re-sync names no payment and
+    // writes nothing: no backfill, and never an un-refund to SUCCEEDED.
+    await syncNote(10_000);
+    expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" });
+
+    await settle(20_000);
+    expect(await figures()).toMatchObject({
+      payment: { amountCents: 30_000, refundedAmountCents: 10_000 },
+      primary: { amountCents: 30_000, status: "SUCCEEDED" },
+    });
+  }, 60_000);
+
+  it("A CARD REFUNDED BEFORE THE SWITCH (#1765): the receipt is the cash, and the payment's figure is what the ledger projects from both rows", async () => {
+    await bookAt(30_000);
+    await prisma.paymentTransaction.create({
+      data: {
+        paymentId: PAYMENT_ID,
+        kind: "PRIMARY",
+        source: "STRIPE",
+        stripePaymentIntentId: "pi_race_3979_refunded",
+        amountCents: 30_000,
+        refundedAmountCents: 30_000,
+        status: "REFUNDED",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    });
+    await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 30_000 } });
+    await editPriceTo(20_000);
+    await raiseInvoice();
+
+    await settle(20_000);
+
+    expect(await figures()).toMatchObject({
+      payment: { amountCents: 50_000, refundedAmountCents: 30_000 },
+      primary: { amountCents: 20_000, status: "SUCCEEDED" },
+      receipts: [20_000],
+    });
+    // The ledger's own projection agrees.
+    await paymentTransactions.reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
+    expect((await figures()).payment).toMatchObject({ amountCents: 50_000, refundedAmountCents: 30_000 });
+  }, 60_000);
 });
