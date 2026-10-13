@@ -55,6 +55,9 @@ const GUEST_ID = "race-3979-guest";
 const INVOICE_ID = "race-3979-invoice";
 const MODIFICATION_ID = "race-3979-modification";
 const NOTE_ID = "race-3979-note";
+// A later edit's note, whose sync recounts the payment's refunded total.
+const LATER_MODIFICATION_ID = "race-3979-modification-later";
+const LATER_NOTE_ID = "race-3979-note-later";
 const CHECK_IN = new Date("2027-09-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2027-09-02T00:00:00.000Z");
 // A stay already finished, for the #3955 finished-stay fee.
@@ -91,14 +94,24 @@ let creditNoteRepairs: typeof import("@/lib/xero-inbound/credit-note-repairs");
 let paymentTransactions: typeof import("@/lib/payment-transactions");
 let memberCredit: typeof import("@/lib/member-credit");
 
-/** A PAID invoice carrying `cashCents` of bank cash, as a fresh getInvoice reads it. */
-function paidInvoice(cashCents: number): Invoice {
+/**
+ * A PAID invoice carrying `cashCents` of bank cash, as a fresh getInvoice reads
+ * it: its total, when given, and the credit notes applied to it.
+ */
+function paidInvoice(
+  cashCents: number,
+  extra: { totalCents?: number; appliedNotes?: Array<{ id: string; cents: number }> } = {},
+): Invoice {
   return {
     invoiceID: INVOICE_ID,
     invoiceNumber: "INV-3979",
     status: "PAID",
     amountPaid: cashCents / 100,
     payments: [{ paymentID: "race-3979-xpay", amount: cashCents / 100, status: "AUTHORISED" }],
+    ...(extra.totalCents !== undefined ? { total: extra.totalCents / 100 } : {}),
+    ...(extra.appliedNotes
+      ? { creditNotes: extra.appliedNotes.map((note) => ({ creditNoteID: note.id, appliedAmount: note.cents / 100 })) }
+      : {}),
   } as unknown as Invoice;
 }
 
@@ -106,9 +119,16 @@ async function clean(): Promise<void> {
   await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.xeroObjectLink.deleteMany({
-    where: { OR: [{ localId: { in: [PAYMENT_ID, BOOKING_ID, MODIFICATION_ID] } }, { xeroObjectId: { in: [INVOICE_ID, NOTE_ID] } }] },
+    where: {
+      OR: [
+        { localId: { in: [PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, LATER_MODIFICATION_ID] } },
+        { xeroObjectId: { in: [INVOICE_ID, NOTE_ID, LATER_NOTE_ID] } },
+      ],
+    },
   });
-  await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID, MODIFICATION_ID] } } });
+  await prisma.xeroSyncOperation.deleteMany({
+    where: { localId: { in: [PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, LATER_MODIFICATION_ID] } },
+  });
   await prisma.auditLog.deleteMany({ where: { OR: [{ entityId: { in: [BOOKING_ID, PAYMENT_ID] } }, { targetId: BOOKING_ID }] } });
   await prisma.memberCredit.deleteMany({ where: { memberId: MEMBER_ID } });
   await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -195,8 +215,8 @@ async function raiseInvoice(): Promise<void> {
   });
 }
 
-async function settle(cashCents: number) {
-  return paidEffects.syncInternetBankingPaymentsForPaidInvoice(paidInvoice(cashCents), [PAYMENT_ID], CLUB_FORMAT_TEST);
+async function settle(cashCents: number, extra: Parameters<typeof paidInvoice>[1] = {}) {
+  return paidEffects.syncInternetBankingPaymentsForPaidInvoice(paidInvoice(cashCents, extra), [PAYMENT_ID], CLUB_FORMAT_TEST);
 }
 
 async function figures() {
@@ -220,10 +240,14 @@ async function figures() {
  * `INV-PAY-116`), in the rows its builder leaves: the outbound operation that
  * recorded the wording, and the note's link to the edit.
  */
-async function queueModificationNote(noteCents: number, wording: Record<string, unknown>): Promise<void> {
+async function queueModificationNote(
+  noteCents: number,
+  wording: Record<string, unknown>,
+  ids: { noteId: string; modificationId: string } = { noteId: NOTE_ID, modificationId: MODIFICATION_ID },
+): Promise<void> {
   await prisma.bookingModification.create({
     data: {
-      id: MODIFICATION_ID,
+      id: ids.modificationId,
       bookingId: BOOKING_ID,
       memberId: MEMBER_ID,
       modificationType: "BATCH_MODIFY",
@@ -239,38 +263,79 @@ async function queueModificationNote(noteCents: number, wording: Record<string, 
       entityType: "CREDIT_NOTE",
       operationType: "CREATE",
       localModel: "BookingModification",
-      localId: MODIFICATION_ID,
-      idempotencyKey: `race-3979-mod-credit-note-${noteCents}`,
-      correlationKey: `race-3979-mod-credit-note-${noteCents}`,
+      localId: ids.modificationId,
+      idempotencyKey: `race-3979-mod-credit-note-${ids.noteId}`,
+      correlationKey: `race-3979-mod-credit-note-${ids.noteId}`,
       status: "SUCCEEDED",
       xeroObjectType: "CREDIT_NOTE",
-      xeroObjectId: NOTE_ID,
+      xeroObjectId: ids.noteId,
       requestPayload: { invoiceId: INVOICE_ID, refundAmountCents: noteCents, ...wording },
     },
   });
   await prisma.xeroObjectLink.create({
-    data: { localModel: "BookingModification", localId: MODIFICATION_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_ID, role: "MODIFICATION_CREDIT_NOTE", active: true },
+    data: { localModel: "BookingModification", localId: ids.modificationId, xeroObjectType: "CREDIT_NOTE", xeroObjectId: ids.noteId, role: "MODIFICATION_CREDIT_NOTE", active: true },
   });
 }
 
 /**
  * The inbound credit-note sync, after its Xero read of the AUTHORISED note,
- * fully allocated to the invoice: the current note's contribution, then the
- * payment's refunded total recomputed (`reconcileXeroCreditNote`).
+ * fully allocated to the invoice: the links it writes (the note's status, and
+ * its allocation, both on the edit), then the current note's contribution and
+ * the payment's refunded total recomputed (`reconcileXeroCreditNote`).
  */
-async function syncNote(noteCents: number): Promise<void> {
+async function syncNote(
+  noteCents: number,
+  ids: { noteId: string; modificationId: string } = { noteId: NOTE_ID, modificationId: MODIFICATION_ID },
+): Promise<void> {
+  await prisma.xeroObjectLink.updateMany({
+    where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: ids.noteId, role: "MODIFICATION_CREDIT_NOTE" },
+    data: { metadata: { status: "AUTHORISED", total: noteCents / 100 } },
+  });
+  const allocationId = `${ids.noteId}:${INVOICE_ID}:${noteCents}`;
+  if (!(await prisma.xeroObjectLink.findFirst({ where: { xeroObjectId: allocationId } }))) {
+    await prisma.xeroObjectLink.create({
+      data: {
+        localModel: "BookingModification",
+        localId: ids.modificationId,
+        xeroObjectType: "ALLOCATION",
+        xeroObjectId: allocationId,
+        role: "MODIFICATION_CREDIT_NOTE_ALLOCATION",
+        active: true,
+        metadata: { creditNoteId: ids.noteId, invoiceId: INVOICE_ID, amountCents: noteCents },
+      },
+    });
+  }
   const allocationTargets = [{ invoiceId: INVOICE_ID, amountCents: noteCents }];
   const modificationRefundAmountsByPaymentId = await creditNoteRepairs.resolveModificationRefundAmountsByPaymentId({
-    creditNoteId: NOTE_ID,
+    creditNoteId: ids.noteId,
     isModificationNote: true,
     allocationTargets,
   });
   await creditNoteRepairs.repairRefundedPaymentBusinessState({
-    creditNoteId: NOTE_ID,
+    creditNoteId: ids.noteId,
     creditNote: { status: CreditNote.StatusEnum.AUTHORISED, total: noteCents / 100, appliedAmount: noteCents / 100, remainingCredit: 0 },
     directPaymentIds: [],
     modificationRefundAmountsByPaymentId,
   });
+}
+
+/** A bank transfer settled BEFORE #3979: the receipt captured at the stored figure. */
+async function settledBeforeThisChange(refundedCents: number): Promise<void> {
+  await prisma.paymentTransaction.update({
+    where: { id: PRIMARY_ID },
+    data: { status: "SUCCEEDED", reason: "xero_invoice_paid_reconciliation" },
+  });
+  await prisma.payment.update({
+    where: { id: PAYMENT_ID },
+    data: { status: refundedCents > 0 ? "PARTIALLY_REFUNDED" : "SUCCEEDED", refundedAmountCents: refundedCents },
+  });
+  await prisma.booking.update({ where: { id: BOOKING_ID }, data: { status: "PAID" } });
+}
+
+/** The payment's net: what it holds after refunds. */
+async function netCents(): Promise<number> {
+  const { payment } = await figures();
+  return payment.amountCents - payment.refundedAmountCents;
 }
 
 async function cancellationCreditCents(): Promise<number> {
@@ -425,7 +490,7 @@ async function cancellationCreditCents(): Promise<number> {
     await syncNote(10_000);
     expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 0, status: "PENDING" });
 
-    await settle(20_000);
+    await settle(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] });
     expect(await figures()).toMatchObject({
       payment: { amountCents: 20_000, refundedAmountCents: 0, status: "SUCCEEDED" },
       primary: { amountCents: 20_000, status: "SUCCEEDED" },
@@ -453,14 +518,33 @@ async function cancellationCreditCents(): Promise<number> {
     await syncNote(10_000);
     expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 10_000 });
 
-    await settle(20_000);
+    await settle(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] });
     expect(await figures()).toMatchObject({
       payment: { amountCents: 30_000, refundedAmountCents: 10_000 },
       primary: { amountCents: 30_000, status: "SUCCEEDED" },
     });
+    expect(await netCents()).toBe(20_000);
   }, 60_000);
 
-  it("A CORRECTION FOLDED BEFORE #3979 is left alone by a re-sync, so the settle keeps the stored figure rather than count it twice", async () => {
+  it("SYNCED AFTER THE SETTLE: a refund-worded note applied before payment keeps the stored figure, and its later fold leaves the net at the cash (review D)", async () => {
+    await bookAt(30_000);
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { refundMethod: "internet-banking" });
+
+    // The invoice lists the note applied; the note itself has not synced yet.
+    await settle(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] });
+    expect(await figures()).toMatchObject({
+      payment: { amountCents: 30_000, refundedAmountCents: 0, status: "SUCCEEDED" },
+      primary: { amountCents: 30_000, status: "SUCCEEDED" },
+    });
+
+    await syncNote(10_000);
+    expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 10_000 });
+    expect(await netCents()).toBe(20_000);
+  }, 60_000);
+
+  it("A CORRECTION FOLDED BEFORE #3979: its re-sync changes nothing, and the settle clears the fold the invoice exactly explains and records the cash (review A)", async () => {
     await bookAt(30_000);
     await raiseInvoice();
     await editPriceTo(20_000);
@@ -468,19 +552,59 @@ async function cancellationCreditCents(): Promise<number> {
     // What the sync wrote before this change: the correction counted as refunded.
     await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" } });
 
-    // The note now contributes nothing, so its re-sync names no payment and
-    // writes nothing: no backfill, and never an un-refund to SUCCEEDED.
+    // The note now contributes nothing to a never-paid payment, so its re-sync
+    // names no payment and writes nothing: no backfill, and no un-refund.
     await syncNote(10_000);
     expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" });
 
-    await settle(20_000);
+    await settle(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] });
     expect(await figures()).toMatchObject({
-      payment: { amountCents: 30_000, refundedAmountCents: 10_000 },
-      primary: { amountCents: 30_000, status: "SUCCEEDED" },
+      payment: { amountCents: 20_000, refundedAmountCents: 0, status: "SUCCEEDED" },
+      primary: { amountCents: 20_000, status: "SUCCEEDED" },
+      receipts: [20_000],
     });
   }, 60_000);
 
-  it("A CARD REFUNDED BEFORE THE SWITCH (#1765): the receipt is the cash, and the payment's figure is what the ledger projects from both rows", async () => {
+  it("GUEST REMOVAL AFTER, the fold cleared at the settle: a later note's recount leaves $50 refunded and the net at the true $150 (review A)", async () => {
+    await bookAt(30_000);
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { noteWording: "invoice-correction" });
+    await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" } });
+    await syncNote(10_000);
+    await settle(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] });
+
+    // A guest removed later: a $50 reduction refunded by bank transfer.
+    const later = { noteId: LATER_NOTE_ID, modificationId: LATER_MODIFICATION_ID };
+    await queueModificationNote(5_000, { refundMethod: "internet-banking" }, later);
+    await syncNote(5_000, later);
+
+    expect((await figures()).payment).toMatchObject({ amountCents: 20_000, refundedAmountCents: 5_000 });
+    expect(await netCents()).toBe(15_000);
+  }, 60_000);
+
+  it("GUEST REMOVAL AFTER, settled before #3979 at the stored $300: the recount keeps counting the correction, so the net is the true $150, never $250 (review A)", async () => {
+    await bookAt(30_000);
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { noteWording: "invoice-correction" });
+    // Before this change: the correction folded in, and the receipt settled at $300.
+    await syncNote(10_000);
+    await settledBeforeThisChange(10_000);
+    expect(await netCents()).toBe(20_000);
+
+    const later = { noteId: LATER_NOTE_ID, modificationId: LATER_MODIFICATION_ID };
+    await queueModificationNote(5_000, { refundMethod: "internet-banking" }, later);
+    await syncNote(5_000, later);
+
+    expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 15_000 });
+    expect(await netCents()).toBe(15_000);
+    // And the correction's own re-sync leaves it so.
+    await syncNote(10_000);
+    expect(await netCents()).toBe(15_000);
+  }, 60_000);
+
+  it("A CARD REFUNDED BEFORE THE SWITCH (#1765): the receipt is the cash, the payment's figure and status are what the ledger projects, and the cancel credits the $200 back (review B)", async () => {
     await bookAt(30_000);
     await prisma.paymentTransaction.create({
       data: {
@@ -494,19 +618,25 @@ async function cancellationCreditCents(): Promise<number> {
         createdAt: new Date("2026-06-01T00:00:00.000Z"),
       },
     });
-    await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 30_000 } });
+    await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 30_000, status: "REFUNDED" } });
     await editPriceTo(20_000);
     await raiseInvoice();
 
     await settle(20_000);
 
     expect(await figures()).toMatchObject({
-      payment: { amountCents: 50_000, refundedAmountCents: 30_000 },
+      payment: { amountCents: 50_000, refundedAmountCents: 30_000, status: "PARTIALLY_REFUNDED" },
       primary: { amountCents: 20_000, status: "SUCCEEDED" },
       receipts: [20_000],
     });
     // The ledger's own projection agrees.
     await paymentTransactions.reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
-    expect((await figures()).payment).toMatchObject({ amountCents: 50_000, refundedAmountCents: 30_000 });
+    expect((await figures()).payment).toMatchObject({ amountCents: 50_000, refundedAmountCents: 30_000, status: "PARTIALLY_REFUNDED" });
+
+    // Left REFUNDED, the cancel would have refunded nothing.
+    const { cancelBooking } = await import("@/lib/booking-cancel");
+    const result = await cancelBooking(BOOKING_ID, MEMBER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+    expect(result.status).toBe(200);
+    expect(await cancellationCreditCents()).toBe(20_000);
   }, 60_000);
 });

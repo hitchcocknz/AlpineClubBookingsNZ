@@ -322,6 +322,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       status: true,
       // F5 (#1353): Stripe payments get a raise-only ledger floor below.
       source: true,
+      xeroInvoiceId: true,
       booking: { select: { organiserSettled: true } },
     },
   });
@@ -369,9 +370,44 @@ export async function repairRefundedPaymentBusinessState(input: {
     }),
   ]);
 
+  // #3979 (`INV-PAY-124`): a bank-transfer payment's modification notes are
+  // found by its invoice too. The inbound sync links an edit's note and its
+  // allocation to the edit, not the payment, so a recount triggered by any
+  // later note used to drop every earlier modification note from the total -
+  // overstating the net of a payment whose receipt kept the stored figure.
+  const invoicePaymentIds = new Map(
+    payments.flatMap((payment) =>
+      payment.source === PaymentSource.INTERNET_BANKING && payment.xeroInvoiceId
+        ? [[payment.xeroInvoiceId, payment.id] as const]
+        : [],
+    ),
+  );
+  const invoiceAllocationLinks =
+    invoicePaymentIds.size === 0
+      ? []
+      : await prisma.xeroObjectLink.findMany({
+          where: {
+            xeroObjectType: "ALLOCATION",
+            role: "MODIFICATION_CREDIT_NOTE_ALLOCATION",
+            active: true,
+            OR: [...invoicePaymentIds.keys()].map((invoiceId) => ({
+              metadata: { path: ["invoiceId"], equals: invoiceId },
+            })),
+          },
+          select: { localId: true, xeroObjectId: true, metadata: true },
+        });
+  const existingModificationAllocations = [
+    ...modificationAllocationLinks.map((link) => ({ paymentId: link.localId, metadata: link.metadata })),
+    ...invoiceAllocationLinks.flatMap((link) => {
+      const invoiceId = getJsonRecord(link.metadata)?.invoiceId;
+      const paymentId = typeof invoiceId === "string" ? invoicePaymentIds.get(invoiceId) : undefined;
+      return paymentId ? [{ paymentId, metadata: link.metadata }] : [];
+    }),
+  ];
+
   const existingModificationCreditNoteIds = Array.from(
     new Set(
-      modificationAllocationLinks
+      existingModificationAllocations
         .map((link) => getCreditNoteIdFromAllocationMetadata(link.metadata))
         .filter(
           (creditNoteId): creditNoteId is string =>
@@ -436,15 +472,16 @@ export async function repairRefundedPaymentBusinessState(input: {
     directRefundCentsByPaymentId.set(link.localId, paymentRefunds);
   }
 
+  // One contribution per note and payment, however many links name it.
   const modificationRefundCentsByPaymentId = new Map<string, Map<string, number>>();
-  for (const link of modificationAllocationLinks) {
+  for (const link of existingModificationAllocations) {
     const creditNoteId = getCreditNoteIdFromAllocationMetadata(link.metadata);
     if (!creditNoteId || creditNoteId === input.creditNoteId) {
       continue;
     }
     if (
       !validModificationCreditNoteIds.has(creditNoteId) &&
-      !(validCorrectionNoteIds.has(creditNoteId) && paymentsCountingCorrections.has(link.localId))
+      !(validCorrectionNoteIds.has(creditNoteId) && paymentsCountingCorrections.has(link.paymentId))
     ) {
       continue;
     }
@@ -455,10 +492,10 @@ export async function repairRefundedPaymentBusinessState(input: {
     }
 
     const paymentRefunds =
-      modificationRefundCentsByPaymentId.get(link.localId) ??
+      modificationRefundCentsByPaymentId.get(link.paymentId) ??
       new Map<string, number>();
-    paymentRefunds.set(link.xeroObjectId, contributionCents);
-    modificationRefundCentsByPaymentId.set(link.localId, paymentRefunds);
+    paymentRefunds.set(creditNoteId, contributionCents);
+    modificationRefundCentsByPaymentId.set(link.paymentId, paymentRefunds);
   }
 
   const includesCurrentCreditNoteContribution = isIncludedRefundCreditNoteStatus(
@@ -638,6 +675,7 @@ export async function repairRefundedPaymentBusinessState(input: {
           refundedAmountCents: true,
           status: true,
           source: true,
+          xeroInvoiceId: true,
           booking: { select: { organiserSettled: true } },
         },
       });

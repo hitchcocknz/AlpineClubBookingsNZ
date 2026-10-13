@@ -256,8 +256,11 @@ describe("the ledger idempotency proof stays wired into CI (#3595)", () => {
       "CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200",
       "DECISION 2: invoice $300, an invoice-correction note of $100, paid $200: $200 paid and $0 refunded, and a recount keeps it",
       "A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure rather than count the reduction twice",
-      "A CORRECTION FOLDED BEFORE #3979 is left alone by a re-sync, so the settle keeps the stored figure rather than count it twice",
-      "A CARD REFUNDED BEFORE THE SWITCH (#1765): the receipt is the cash, and the payment's figure is what the ledger projects from both rows",
+      "SYNCED AFTER THE SETTLE: a refund-worded note applied before payment keeps the stored figure, and its later fold leaves the net at the cash (review D)",
+      "A CORRECTION FOLDED BEFORE #3979: its re-sync changes nothing, and the settle clears the fold the invoice exactly explains and records the cash (review A)",
+      "GUEST REMOVAL AFTER, the fold cleared at the settle: a later note's recount leaves $50 refunded and the net at the true $150 (review A)",
+      "GUEST REMOVAL AFTER, settled before #3979 at the stored $300: the recount keeps counting the correction, so the net is the true $150, never $250 (review A)",
+      "A CARD REFUNDED BEFORE THE SWITCH (#1765): the receipt is the cash, the payment's figure and status are what the ledger projects, and the cancel credits the $200 back (review B)",
     ]) {
       expect(suite).toContain(caseName);
     }
