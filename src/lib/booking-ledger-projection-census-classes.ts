@@ -20,7 +20,7 @@ import type { LedgerLineKind, ManualRefundTaskStatus } from "@prisma/client";
 
 import type { BookingLedgerCensusRow, CensusLedgerLine } from "@/lib/booking-ledger-projection-census-row";
 import { inFlightGroupPlanRefundCents } from "@/lib/booking-ledger-projection-census-group";
-import { captureKey, creditKey, refundKey } from "@/lib/booking-ledger-posting-keys";
+import { captureKey, creditKey, handBackKey, refundKey } from "@/lib/booking-ledger-posting-keys";
 import { reviewAdjustmentEvidence } from "@/lib/booking-ledger-projection-census-review-adjustments";
 import { settlementChainWalker } from "@/lib/booking-ledger-settlement-posting";
 import { isCapturedPaymentStatus } from "@/lib/booking-payment-state";
@@ -30,6 +30,7 @@ import { cancellationCreditDescription } from "@/lib/cancellation-settled-money"
 import { internetBankingSettlementEvidence, type InternetBankingSettlementEvidence } from "@/lib/internet-banking-settlement-evidence";
 import { isCreditAppliedToBooking, isCreditIssuedFromBooking } from "@/lib/member-credit-booking-rows";
 import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
+import { isCancelCardShortfallTask } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
 import {
@@ -582,7 +583,12 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     .filter((operation) => operation.idempotencyKey === cancelRefundKey)
     .reduce((sum, operation) => sum + operation.amountCents, 0);
   const policyRefundCents = row.cancellation?.refundMethod === "card" ? (row.cancellation.settledAmountCents ?? 0) : 0;
-  const v5 = Math.max(0, policyRefundCents - plannedCents);
+  // #4097 (`INV-PAY-129`): a shortfall part paid back by bank posted its own `BANK_REFUND`,
+  // so the plan's shortfall is short by only what is not yet paid back that way.
+  const shortfallPaidCents = row.tasks
+    .filter((task) => isCancelCardShortfallTask(task) && task.status === "COMPLETED" && row.lines.some((line) => line.postingKey === handBackKey(task.id)))
+    .reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
+  const v5 = Math.max(0, policyRefundCents - plannedCents - shortfallPaidCents);
   return [
     [
       { name: "IN_FLIGHT_HAND_BACK", cents: handBacks("OPEN") },

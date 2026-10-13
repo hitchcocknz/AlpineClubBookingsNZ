@@ -16,6 +16,7 @@ import {
   type ResolveBookingNarrativeInput,
 } from "@/lib/booking-narrative";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
+import { readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
 import { bindClubTime } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import logger from "@/lib/logger";
@@ -158,6 +159,8 @@ export async function getPaymentLinkContext(
 
   const narrativeInput = {
     club,
+    // #4097: a card cancel's shortfall parts, so the page says which are done.
+    cardShortfallStatuses: booking.status === BookingStatus.CANCELLED ? await readCardShortfallTaskStatuses(booking.id) : {},
     booking: {
       status: booking.status,
       finalPriceCents: booking.finalPriceCents,

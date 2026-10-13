@@ -927,7 +927,7 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "admin-manual-refund-task": {
     triggerSummary:
-      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, an organiser cancelled a group they paid for by Internet Banking, or a card booking was cancelled and its card refund could not carry all of the refund due, so a hand-back task was raised for an admin to pay back or check",
+      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, an organiser cancelled a group they paid for by Internet Banking, or a card booking was cancelled and its card refund could not carry all of the refund due, so a hand-back task (or two) was raised for an admin to pay back or check",
     frequency: "On cancellation of a cash-settled booking with a non-zero refund, once per Internet Banking group an organiser cancels with a refund owed, and once per card cancellation whose card refund falls short",
   },
   "admin-late-capture-auto-refund": {

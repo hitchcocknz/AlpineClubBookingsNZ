@@ -101,8 +101,15 @@ export function cancelCardShortfallOccurrenceKey(bookingId: string, part: Cancel
   return `${CANCEL_CARD_SHORTFALL_KEY_PREFIX}${bookingId}${part === "check" ? CANCEL_CARD_SHORTFALL_CHECK_SUFFIX : ""}`;
 }
 
-/** #4097: what a cancel's shortfall tasks stand at, by part; read by the booking page, handed to the pure narrative. */
-export type CardShortfallTaskStatuses = Partial<Record<CancelCardShortfallPart, "OPEN" | "COMPLETED" | "DISMISSED">>;
+/**
+ * #4097: where a card refund shortfall's cancel stands, read by the booking and
+ * payment-link pages and handed to the pure narrative: each part's task status,
+ * and the card part's own refund - settled, still on its way, or closed as
+ * "Paid another way" (`INV-PAY-122`).
+ */
+export type CardShortfallTaskStatuses = Partial<Record<CancelCardShortfallPart, "OPEN" | "COMPLETED" | "DISMISSED">> & {
+  card?: "settled" | "on-its-way" | "paid-another-way";
+};
 
 /** Which part of a card refund shortfall this task is, or null for any other task. */
 export function cancelCardShortfallPart(task: {

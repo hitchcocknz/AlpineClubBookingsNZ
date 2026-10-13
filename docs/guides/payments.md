@@ -282,15 +282,21 @@ short on a cancelled booking"):
   the refund on the payment and the booking ledger and queues one Xero refund
   credit note for exactly that amount, worded as a bank transfer, beside the
   card refund's own note; nothing needs recording in Xero by hand. A booking
-  with no Xero invoice to credit gets no note. While the card part of the
-  refund is still going through (Stripe has not finished it), marking it paid
-  back is refused: wait until the card refund settles.
+  with no Xero invoice to credit gets no note.
 - **The part to check before paying** is anything beyond that: the payment's
   records show it already refunded, or nothing holds it. The member is told
-  only that the club will be in touch. Check Stripe and the bank. If the
-  member has had the money, dismiss it with a note saying how; the app refuses
-  to mark it paid back when the payment's records show nothing left to refund,
-  and says to dismiss it.
+  only that the club will be in touch. Check Stripe and the bank, then contact
+  the member with what you found. If they have had the money, dismiss it with
+  a note saying how. If it really is owed, pay it by bank transfer and mark it
+  paid back - after the bank-transfer part, which the app requires, since both
+  are settled on the same money. Where the payment's records show nothing left
+  to refund, the app refuses to mark it and says to dismiss it.
+
+**Neither part can be marked paid back until the card refund itself has gone
+through.** While Stripe is still making it, the app says to mark the part once
+it settles. If the card refund failed and is waiting to retry, wait for the
+retry. If its retries have run out, close it as **Paid another way** on this
+page once the member has had that money back, then mark the part.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price

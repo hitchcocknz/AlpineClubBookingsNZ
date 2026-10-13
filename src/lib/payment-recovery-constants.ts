@@ -30,7 +30,13 @@ export const MAX_PAYMENT_RECOVERY_ATTEMPTS = 5;
  * #3835, its Prisma-filter twin) read a row in a claimable status (`PENDING`
  * OR `FAILED`) with no retry time or its attempts spent as DEAD — the re-arm
  * leaves such a row (`INV-PAY-057`), so for them a stranded `PENDING` row is a
- * person's to settle, where this predicate still counts it in flight.
+ * person's to settle, where this predicate still counts it in flight. A third
+ * reader routes through this one and adds that rule beside it: the card refund
+ * shortfall's completion guard (`cardShortfallSettlement`,
+ * `cancel-card-refund-shortfall-settle.ts`, #4097) reads a claimable row at the
+ * attempt ceiling as stopped - the "Paid another way" close's own rule
+ * (`deadCardRefundOperationWhere`) - so its refusal points at that close
+ * rather than at a retry that will never come.
  */
 export function isPaymentRecoveryOperationInFlight(operation: {
   status: PaymentRecoveryOperationStatus;

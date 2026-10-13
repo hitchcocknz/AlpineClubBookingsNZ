@@ -39,7 +39,14 @@ function cardShortfallClause(
   const money = (cents: number) => formatCents(cents, format);
   const clauses: string[] = [];
   if (parts.cardCents > 0) {
-    clauses.push(`${money(parts.cardCents)} was refunded to your card${cardRefundedOn ? ` on ${cardRefundedOn}` : ""}`);
+    // The card part as its own refund stands, as the cancellation email says it.
+    clauses.push(
+      statuses.card === "on-its-way"
+        ? `${money(parts.cardCents)} is on its way to your card`
+        : statuses.card === "paid-another-way"
+          ? `${money(parts.cardCents)} could not go back to your card and was paid back to you another way`
+          : `${money(parts.cardCents)} was refunded to your card${cardRefundedOn ? ` on ${cardRefundedOn}` : ""}`,
+    );
   }
   if (parts.bankCents > 0) {
     const status = statuses.bank ?? "OPEN";
@@ -47,18 +54,20 @@ function cardShortfallClause(
       status === "COMPLETED"
         ? `${money(parts.bankCents)} was refunded to you by bank transfer`
         : status === "DISMISSED"
-          ? `the club checked the ${money(parts.bankCents)} it was to refund by bank transfer and closed it`
+          ? `the club has recorded the ${money(parts.bankCents)} as settled`
           : `${money(parts.bankCents)} is being refunded to you by bank transfer`,
     );
   }
   if (parts.checkCents > 0) {
     const status = statuses.check ?? "OPEN";
+    // Nothing went to the card or by bank: it is the whole refund, not "the remaining" one.
+    const remaining = parts.cardCents > 0 || parts.bankCents > 0 ? "remaining " : "";
     clauses.push(
       status === "COMPLETED"
         ? `${money(parts.checkCents)} was refunded to you by bank transfer`
         : status === "DISMISSED"
-          ? `the club checked the remaining ${money(parts.checkCents)} and closed it`
-          : `the club will be in touch about the remaining ${money(parts.checkCents)}`,
+          ? `the club checked the ${remaining}${money(parts.checkCents)} and closed it`
+          : `the club will be in touch about the ${remaining}${money(parts.checkCents)}${remaining ? "" : " refund"}`,
     );
   }
   if (retainedAmountCents > 0) clauses.push(`${money(retainedAmountCents)} was retained`);

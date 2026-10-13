@@ -5,14 +5,10 @@ import type { ClubFormat } from "@/lib/club-format";
 import { sendAdminManualRefundTaskAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import {
-  CANCEL_CARD_SHORTFALL_KEY_PREFIX,
   cancelCardShortfallOccurrenceKey,
-  cancelCardShortfallPart,
   type CancelCardShortfallPart,
-  type CardShortfallTaskStatuses,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
-import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -127,20 +123,6 @@ export async function raiseCancelCardShortfallHandBack(
   return shortfall;
 }
 
-/** What a cancel's shortfall tasks stand at now, by part, for the booking page's narrative. */
-export async function readCardShortfallTaskStatuses(bookingId: string): Promise<CardShortfallTaskStatuses> {
-  const tasks = await prisma.manualRefundTask.findMany({
-    where: { bookingId, occurrenceKey: { startsWith: CANCEL_CARD_SHORTFALL_KEY_PREFIX } },
-    select: { kind: true, occurrenceKey: true, status: true },
-  });
-  const statuses: CardShortfallTaskStatuses = {};
-  for (const task of tasks ?? []) {
-    const part = cancelCardShortfallPart(task);
-    if (part) statuses[part] = task.status;
-  }
-  return statuses;
-}
-
 /**
  * #4097: tell the officers, once, as soon as the cancel commits. Admin
  * audience, so exempt from the per-booking "No emails" switch (#2258 rule 2),
@@ -168,8 +150,8 @@ export function alertCancelCardShortfall(
     checkCents > 0 ? `${formatCents(checkCents, format)} to check before paying (the payment's records show it already refunded, or nothing holds it)` : null,
   ].filter(Boolean);
   const told = data.memberEmailed
-    ? "The member's cancellation email names what went to the card and the rest."
-    : "The member was not emailed about this cancellation.";
+    ? "The member is being sent a cancellation email that names the card's part and what the club does about the rest."
+    : "The member is not being emailed about this cancellation (emails are turned off for this booking); their booking page says the same as the email would.";
   sendAdminManualRefundTaskAlert(
     {
       memberName: data.memberName,
@@ -177,7 +159,7 @@ export function alertCancelCardShortfall(
       checkOut: booking.checkOut,
       refundAmountCents: bankCents + checkCents,
       bookingId: booking.id,
-      reason: `Card cancellation ${data.days} day(s) before check-in (${data.refundPercentage}% under the policy in effect at the time): the card refund carries ${formatCents(shortfall.cardCents, format)} of the ${formatCents(data.refundAmountCents, format)} refund due; ${parts.join("; ")}. ${told}`,
+      reason: `Card cancellation ${data.days} day(s) before check-in (${data.refundPercentage}% under the policy in effect at the time): the card refund is being sent for ${formatCents(shortfall.cardCents, format)} of the ${formatCents(data.refundAmountCents, format)} refund due, and may still be going through; ${parts.join("; ")}. ${told}`,
       situation: "card-refund-shortfall",
     },
     format,

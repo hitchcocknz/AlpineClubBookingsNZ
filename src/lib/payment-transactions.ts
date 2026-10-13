@@ -124,7 +124,7 @@ async function loadPaymentWithTransactions(store: PaymentStore, paymentId: strin
   });
 }
 
-function isStripeTransaction<
+export function isStripeTransaction<
   T extends {
     source: PaymentSource;
     stripePaymentIntentId: string | null;

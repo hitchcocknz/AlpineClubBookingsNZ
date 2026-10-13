@@ -1598,12 +1598,14 @@ export function ManualRefundTaskQueue() {
                 className="text-sm text-muted-foreground"
                 data-testid="manual-refund-task-card-shortfall-intro"
               >
-                Some of these are card bookings that were cancelled when the
-                card refund could not carry all of the refund due. This part is
-                held by the payment&apos;s other (non-card) charges and the
-                member has been told the club will refund it by bank transfer:
-                pay it by bank transfer, then mark it paid back, which also
-                raises its Xero refund credit note.
+                Some of these are from card cancellations whose card refund could
+                not carry all of the refund due; each is the part the
+                payment&apos;s other (non-card) charges hold. The member is told
+                (on their booking page, and by email unless emails were turned
+                off) that the club will refund it by bank transfer: pay it by bank
+                transfer, then mark it paid back, which also raises its Xero
+                refund credit note. None can be marked until the card refund
+                itself has gone through.
               </p>
             ) : null}
             {hasCardShortfallCheckRows ? (
@@ -1611,11 +1613,15 @@ export function ManualRefundTaskQueue() {
                 className="text-sm text-muted-foreground"
                 data-testid="manual-refund-task-card-shortfall-check-intro"
               >
-                Some of these are the rest of a card cancellation&apos;s refund that
-                the card refund could not carry and that the payment&apos;s records
-                show already refunded, or that nothing holds. Check Stripe and the
-                bank before paying anything; if the member was refunded, dismiss it
-                with a note saying how.
+                Some of these are the rest of a card cancellation&apos;s refund
+                that the payment&apos;s records show already refunded, or that
+                nothing holds. The member is told (on their booking page, and by
+                email unless emails were turned off) only that the club will be
+                in touch. Check Stripe and the bank before paying anything, then
+                contact the member with what you found. If they were refunded,
+                dismiss it with a note saying how; if it really is owed, pay it
+                by bank transfer and mark it paid back, once the bank-transfer
+                part and the card refund are done.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (

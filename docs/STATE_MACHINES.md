@@ -2131,7 +2131,8 @@ tasks OPEN inside its claim, keyed per booking: the part the payment's non-card
 charges hold (owed by bank transfer) and the rest (checked before paying). Each
 is a cancellation's own hand-back: completed or dismissed as the cash cancel's,
 with no `lock(1)`, except that COMPLETED is refused (409) while the cancel's
-card refund recovery is not SUCCEEDED, settles on the non-card charges first,
+card refund recovery is not SUCCEEDED and, for the part to check, while its
+bank-transfer sibling is OPEN; it settles on the non-card charges first,
 posts its `BANK_REFUND` line on the card payment, which no refund row will
 post, and queues one Xero refund note of its own, keyed on the task. Where the
 payment's ledger has nothing left to allocate, COMPLETED is refused with a

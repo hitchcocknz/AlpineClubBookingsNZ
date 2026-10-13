@@ -16,7 +16,7 @@ import {
 import { settlementMarkerTimelineEntries } from "@/lib/manual-settlement-reversal-event";
 import { bookingHasOpenFinancialReview } from "@/lib/booking-financial-review-visibility";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
-import { readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall";
+import { readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
 import type { BookingDetailRecord } from "./load-booking-detail";
 import type { BookingDetailViewer } from "./booking-detail-viewer";
 

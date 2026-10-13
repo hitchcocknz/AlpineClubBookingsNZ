@@ -1275,12 +1275,13 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
   - **The card's records are what the card refund carries**: its REFUNDED
     event says so, and its Xero note.
   - **Marked paid back**, a part settles on the non-card charges first, never
-    while the card refund recovery is unsettled (409, under the `Payment` row
-    lock). Its `BANK_REFUND` posts on the card payment (`INV-MONEY-035`) and
-    it takes ONE Xero note of its own, keyed on the task. Where the ledger
-    holds nothing for it, the refusal says to dismiss it.
-  - **The booking page names each part** - owed, refunded or checked - from
-    the CANCELLED snapshot and the tasks' status.
+    while the card refund recovery is unsettled (409 under the `Payment` row
+    lock, naming the next step by its state), and `check` only after `bank`.
+    Its `BANK_REFUND` posts on the card payment (`INV-MONEY-035`) and it takes
+    ONE Xero note of its own, keyed on the task. Where the ledger holds nothing
+    for it, the refusal says to dismiss it.
+  - **The booking and payment-link pages name each part and where it stands**,
+    from the CANCELLED snapshot and live status.
   - Proven by `booking-cancel.test.ts`, `cancel-card-refund-shortfall.test.ts`,
     `booking-cancelled-card-shortfall-email.test.ts`,
     `manual-refund-task.test.ts`, `stripe-cash-refund-evidence.test.ts`,
