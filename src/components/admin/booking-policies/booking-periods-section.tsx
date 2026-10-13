@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useRowActionFocusReturn } from "./use-row-action-focus-return"
 import { normalizeCancellationRule } from "@/lib/cancellation-rules"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -236,6 +237,7 @@ export function BookingPeriodsSection() {
   // The open editor is its own component, unmounted on close, so the list owns
   // where focus goes when it closes: back to Add or the row's Edit (#4087).
   const editorFocus = useEditorFocusReturn()
+  const rowFocus = useRowActionFocusReturn(editorFocus)
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -404,16 +406,27 @@ export function BookingPeriodsSection() {
     [editingPeriodId, scopeLodgeId, fetchPeriods, policyScopeReady, editorFocus],
   )
 
+  /**
+   * A delete removes the row, and the Delete holding focus with it (#4116), so
+   * focus returns to the next row's Delete — the previous row's for the last
+   * one — or, with the list now empty, the card. The refresh is awaited so the
+   * return lands on the list it re-read.
+   */
   async function handleDeletePeriod(id: string) {
     if (!policyScopeReady) return
     if (!confirm("Delete this booking period?")) return
+    const index = periods.findIndex((period) => period.id === id)
+    const neighbour = periods[index + 1] ?? periods[index - 1]
+    rowFocus.capture(`delete-${neighbour?.id ?? ""}`)
     try {
       const res = await fetch(`/api/admin/booking-policies/periods/${id}`, { method: "DELETE" })
       if (!res.ok) throw new Error("Failed to delete")
-      fetchPeriods()
+      await fetchPeriods()
       setSuccess("Period deleted")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      rowFocus.close()
     }
   }
 
@@ -430,13 +443,15 @@ export function BookingPeriodsSection() {
    * double-click dispatched inside one tick — where both handlers close over the
    * same pre-update state — still only fires once. `togglingId` is the visible
    * half, disabling the button for the round trip, and the refresh is awaited so
-   * it stays disabled until the row it re-reads is on screen.
+   * it stays disabled until the row it re-reads is on screen. A browser drops
+   * focus from a button it disables, so focus is returned to it after (#4116).
    */
   const togglingRef = useRef(false)
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
   async function handleTogglePeriod(period: BookingPeriod) {
     if (!policyScopeReady || togglingRef.current) return
+    rowFocus.capture(`toggle-${period.id}`)
     togglingRef.current = true
     setTogglingId(period.id)
     try {
@@ -452,6 +467,7 @@ export function BookingPeriodsSection() {
     } finally {
       togglingRef.current = false
       setTogglingId(null)
+      rowFocus.close()
     }
   }
 
@@ -625,6 +641,7 @@ export function BookingPeriodsSection() {
                               variant="outline"
                               size="sm"
                               disabled={togglingId === period.id}
+                              {...editorFocus.triggerProps(`toggle-${period.id}`)}
                               onClick={() => void handleTogglePeriod(period)}
                             >
                               {period.active ? "Deactivate" : "Activate"}
@@ -632,7 +649,7 @@ export function BookingPeriodsSection() {
                             <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" {...editorFocus.triggerProps(`row-${period.id}`)} onClick={() => startEditPeriod(period)}>
                               Edit
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeletePeriod(period.id)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" {...editorFocus.triggerProps(`delete-${period.id}`)} onClick={() => void handleDeletePeriod(period.id)}>
                               Delete
                             </ViewOnlyActionButton>
                           </div>

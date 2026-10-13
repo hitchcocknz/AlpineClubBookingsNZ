@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useRowActionFocusReturn } from "./use-row-action-focus-return"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
@@ -331,6 +332,7 @@ export function MinimumNightStaySection() {
   const [editorInstance, setEditorInstance] = useState(0)
   // The editor unmounts on close, so the list returns focus to its opener (#4087).
   const editorFocus = useEditorFocusReturn()
+  const rowFocus = useRowActionFocusReturn(editorFocus)
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -534,7 +536,8 @@ export function MinimumNightStaySection() {
 
   // The synchronous ref is the real guard for every direct row write. A
   // state-only disabled button cannot stop two events dispatched before React
-  // commits the first state update.
+  // commits the first state update. The refresh unmounts the pressed button, so
+  // `rowFocus` returns to the row's toggle (a soft delete keeps it) or the card.
   const rowActionRef = useRef(false)
   const [rowActionId, setRowActionId] = useState<string | null>(null)
 
@@ -547,6 +550,7 @@ export function MinimumNightStaySection() {
     ) {
       return
     }
+    rowFocus.capture(`toggle-${policy.id}`)
     rowActionRef.current = true
     setRowActionId(policy.id)
     try {
@@ -585,6 +589,7 @@ export function MinimumNightStaySection() {
     } finally {
       rowActionRef.current = false
       setRowActionId(null)
+      rowFocus.close()
     }
   }
 
@@ -605,6 +610,7 @@ export function MinimumNightStaySection() {
    */
   async function handleToggleMinStay(policy: MinStayPolicy) {
     if (!policyScopeReady || rowActionRef.current) return
+    rowFocus.capture(`toggle-${policy.id}`)
     rowActionRef.current = true
     setRowActionId(policy.id)
     try {
@@ -637,6 +643,7 @@ export function MinimumNightStaySection() {
     } finally {
       rowActionRef.current = false
       setRowActionId(null)
+      rowFocus.close()
     }
   }
 
@@ -794,6 +801,7 @@ export function MinimumNightStaySection() {
                               variant="outline"
                               size="sm"
                               disabled={rowActionId === policy.id}
+                              {...editorFocus.triggerProps(`toggle-${policy.id}`)}
                               onClick={() => void handleToggleMinStay(policy)}
                             >
                               {policy.active ? "Deactivate" : "Activate"}
