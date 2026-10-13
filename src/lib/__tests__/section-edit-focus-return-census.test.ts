@@ -68,7 +68,7 @@ const REVEAL_TARGET_ADOPTERS = [
 
 const REVEAL_FAILURE =
   "INV-SSOT-001 / #4115: Edit's reveal lives in `useEditorFocusReturn` " +
-  "(`src/hooks/use-scroll-to-feedback.ts`), which `startEditing` and a list " +
+  "(`src/hooks/use-editor-focus-return.ts`), which `startEditing` and a list " +
   "editor's `capture` already run: focus goes to the first control the edit " +
   "opened, or to the section. Do not reveal the editor again in the section, " +
   "and leave `revealTarget` to the three sections pinned here.";

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useEditorFocusReturn } from "@/hooks/use-editor-focus-return"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint"

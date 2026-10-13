@@ -1762,8 +1762,9 @@ that held focus, so `startEditing` moves focus — once the editor has rendered,
 and never merely because the section re-rendered — to the first control the
 edit made editable (mounted or enabled by it, inside the card marked by
 `sectionRegionProps`), or to that card when it made none (#4115, through
-`useEditorFocusReturn` in `src/hooks/use-scroll-to-feedback.ts`, the one home
-for failure / reveal / success positioning — #2934). A control the admin could
+`useEditorFocusReturn` in `src/hooks/use-editor-focus-return.ts`, which
+positions through `src/hooks/use-scroll-to-feedback.ts`, the one home for
+failure / reveal / success positioning — #2934). A control the admin could
 already change, such as a scope select, is not what Edit opened and is skipped.
 The hook's `revealTarget` option instead reveals a given element at the top;
 it exists only for the three sections whose card reveal predates #4115 —

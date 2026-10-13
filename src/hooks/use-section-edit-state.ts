@@ -8,9 +8,9 @@ import {
   type RefObject,
 } from "react";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
+import { useEditorFocusReturn } from "@/hooks/use-editor-focus-return";
 import {
   captureFocusReturn,
-  useEditorFocusReturn,
   useReturnAttention,
   type FocusReturnAnchor,
 } from "@/hooks/use-scroll-to-feedback";
