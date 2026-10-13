@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof of #4083 (`INV-PAY-125`): a card refund Stripe answered
+ * Real-PostgreSQL proof of #4083 (`INV-PAY-127`): a card refund Stripe answered
  * `failed` or `canceled` is still owed, and its retry asks under a fresh key.
  *
  * Three things a mock can only imitate, run here against the database:

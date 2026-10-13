@@ -6,7 +6,7 @@
  * "Booking Cancelled" email says `card` for `own` and `card_pending` for
  * `own_card_pending`. `queued` is what still owed goes to the recovery runner
  * (`enqueueBookingModificationRefundRecovery`): a call that throws queues the
- * unpaid remainder, and (#4083, `INV-PAY-125`) a refund Stripe answered
+ * unpaid remainder, and (#4083, `INV-PAY-127`) a refund Stripe answered
  * `failed` or `canceled` queues exactly the slices it refused, as their plan,
  * so the runner asks for them again under a fresh key. The cancel queues
  * nothing new for either: its pre-persisted debt is left open.

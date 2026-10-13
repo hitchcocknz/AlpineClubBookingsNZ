@@ -2180,7 +2180,7 @@ async function processBookingModificationRefundOperation(
     );
   }
 
-  // #4083 (`INV-PAY-125`): a slice Stripe refused fails the attempt, retried under a fresh key.
+  // #4083 (`INV-PAY-127`): a slice Stripe refused fails the attempt, retried under a fresh key.
   await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
     format,
     paymentId: operation.paymentId,

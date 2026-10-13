@@ -2350,7 +2350,7 @@ async function performBookingCancellation(
         });
         stripeRefundId = refundResult.refunds[0]?.refundId;
         refundMade = ownCardRefundMade(refundResult.refunds);
-        // #4083 (`INV-PAY-125`): a slice Stripe refused (failed/canceled) is
+        // #4083 (`INV-PAY-127`): a slice Stripe refused (failed/canceled) is
         // still owed, so the pre-persisted debt is left open for the runner,
         // which asks for it again under a fresh key.
         const refused = refusedRefundSlices(refundResult.refunds);

@@ -1877,7 +1877,7 @@ describe("cancelBooking credit refunds", () => {
     });
   });
 
-  // #4083 (`INV-PAY-125`): Stripe answered the refund `failed` or `canceled`
+  // #4083 (`INV-PAY-127`): Stripe answered the refund `failed` or `canceled`
   // without throwing. The pre-persisted debt must stay open for the runner,
   // never be closed as paid; the runner asks again under a fresh key.
   it.each(["failed", "canceled"])("leaves the pre-persisted recovery op open when Stripe answers the card refund %s (#4083)", async (status) => {
@@ -2603,7 +2603,7 @@ describe("cancelBooking credit refunds", () => {
   describe("#4084: an own-card refund is reported made only once Stripe has made it", () => {
     // The states the Booking Modified doors are driven through (#4070); the
     // cancel's email and confirmation take the same answer (`ownCardRefundMade`).
-    // A thrown call, or (#4083, `INV-PAY-125`) a refund Stripe refused, records
+    // A thrown call, or (#4083, `INV-PAY-127`) a refund Stripe refused, records
     // an inline error and leaves the pre-persisted recovery operation open; the
     // cancel queues nothing new, the debt committed with the claim.
     it.each(OWN_CARD_REFUND_STATES)("$label", async ({ answer, queued, destination }) => {

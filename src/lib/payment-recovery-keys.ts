@@ -156,7 +156,7 @@ export function buildLegacyModificationRefundStripeKeyPrefix(operationId: string
   return `payment_recovery_modification_refund_${operationId}`;
 }
 
-// #4083 (`INV-PAY-125`): THE STRIPE KEY OF ONE REFUND SLICE, and the generation
+// #4083 (`INV-PAY-127`): THE STRIPE KEY OF ONE REFUND SLICE, and the generation
 // a refused slice moves to. Stripe answers a repeated key with its ORIGINAL
 // response for 24 hours, so a slice Stripe refused (`failed` or `canceled`)
 // replayed under its own key only reads the refusal back. The recovery runner
