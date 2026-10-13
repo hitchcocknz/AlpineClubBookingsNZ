@@ -113,7 +113,7 @@ import { reissueUnpaidAdditionalAsk } from "@/lib/additional-payment-ask";
 import { requireCalendarDate } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
-import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
+import { expectQueuedOnce, OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 const TODAY = requireCalendarDate("2026-07-01");
 const N1 = new Date("2026-08-01T00:00:00.000Z");
@@ -414,8 +414,7 @@ describe("after commit: the card refund, the Xero correction, the email and the 
     await settleGuestAcceptanceRepriceAfterCommit({ bookingId: "booking-1", actorMemberId: "cara", reprice, format: CLUB_FORMAT_TEST });
 
     expect(h.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay-1", amountCents: 6000 }));
-    if (queued) expect(h.enqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 6000 }));
-    else expect(h.enqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
+    expectQueuedOnce(h.enqueueBookingModificationRefundRecovery, queued, 6000);
     expect(h.sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 6000, refundDestination: destination, refundByBankTransfer: false }),
       CLUB_FORMAT_TEST,

@@ -1876,6 +1876,45 @@ describe("cancelBooking credit refunds", () => {
     });
   });
 
+  // #4083 (`INV-PAY-124`): Stripe answered the refund `failed` or `canceled`
+  // without throwing. The pre-persisted debt must stay open for the runner,
+  // never be closed as paid; the runner asks again under a fresh key.
+  it.each(["failed", "canceled"])("leaves the pre-persisted recovery op open when Stripe answers the card refund %s (#4083)", async (status) => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [
+        { paymentIntentId: "pi_1", refundId: `re_${status}`, amountCents: 50, status, slice: { paymentTransactionId: "ptx_1", amountCents: 50 } },
+      ],
+      totalRefundedAmountCents: 50,
+    });
+
+    const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(result).toEqual({ status: 200, data: expect.objectContaining({ success: true, refundMethod: "card" }) });
+    // The debt was written once, in the claim, with the frozen plan; nothing re-queues it.
+    expect(mocks.enqueueBookingCancellationRefundRecovery).toHaveBeenCalledTimes(1);
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+    expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledWith({
+      bookingId: "booking_1",
+      message: expect.stringContaining("Stripe refused"),
+    });
+  });
+
+  it("CONTROL: closes the pre-persisted recovery op when Stripe answers the card refund pending (#4083)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [
+        { paymentIntentId: "pi_1", refundId: "re_pending", amountCents: 50, status: "pending", slice: { paymentTransactionId: "ptx_1", amountCents: 50 } },
+      ],
+      totalRefundedAmountCents: 50,
+    });
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking_1" });
+    expect(mocks.recordBookingCancellationRefundRecoveryInlineError).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------------
   // F1 (#1350): an outstanding ADDITIONAL payment intent gets a durable
   // CANCEL_PAYMENT_INTENT recovery operation INSIDE the claim transaction, so

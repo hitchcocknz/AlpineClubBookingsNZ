@@ -156,6 +156,33 @@ export function buildLegacyModificationRefundStripeKeyPrefix(operationId: string
   return `payment_recovery_modification_refund_${operationId}`;
 }
 
+// #4083 (`INV-PAY-124`): THE STRIPE KEY OF ONE REFUND SLICE, and the generation
+// a refused slice moves to. Stripe answers a repeated key with its ORIGINAL
+// response for 24 hours, so a slice Stripe refused (`failed` or `canceled`)
+// replayed under its own key only reads the refusal back. The recovery runner
+// moves a slice it READ refused to the next generation (`refused1`,
+// `refused2`, ...), a key never sent before. A slice it did not read refused
+// keeps its key, so a refund made but not recorded is still answered with the
+// original and never made twice. One spelling for the sender and the runner.
+const REFUSED_REFUND_KEY_SUFFIX = /^refused([1-9][0-9]{0,5})$/;
+
+export function isRefusedRefundKeySuffix(value: unknown): value is string {
+  return typeof value === "string" && REFUSED_REFUND_KEY_SUFFIX.test(value);
+}
+
+export function nextRefusedRefundKeySuffix(current: string | undefined): string {
+  const generation = current ? REFUSED_REFUND_KEY_SUFFIX.exec(current)?.[1] : undefined;
+  return `refused${generation ? Number(generation) + 1 : 1}`;
+}
+
+export function refundSliceStripeIdempotencyKey(
+  prefix: string,
+  slice: { paymentTransactionId: string; amountCents: number; stripeKeySuffix?: string },
+): string {
+  const key = `${prefix}_${slice.paymentTransactionId}_${slice.amountCents}`;
+  return slice.stripeKeySuffix ? `${key}_${slice.stripeKeySuffix}` : key;
+}
+
 export function buildEditFinancialReviewRefundStripeKeyPrefix(taskId: string) {
   return `edit_financial_review_refund_${taskId}`;
 }

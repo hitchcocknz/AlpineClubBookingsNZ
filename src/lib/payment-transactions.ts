@@ -5,6 +5,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { processRefund } from "@/lib/stripe";
 import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references";
 import Stripe from "stripe";
@@ -25,6 +26,7 @@ import {
   expectedRefundedFloorCents,
   isCapturedTransactionStatus,
   isRecordedRefundStatus,
+  isRefusedRefundStatus,
   LEGACY_ADDITIONAL_BACKFILL_REASON,
   LEGACY_PRIMARY_BACKFILL_REASON,
   latestTransactionOfKind,
@@ -1295,6 +1297,8 @@ export async function planStripeRefundAllocation({
 export interface RefundAllocationSlice {
   paymentTransactionId: string;
   amountCents: number;
+  /** #4083: the slice's key generation after Stripe refused it (`refundSliceStripeIdempotencyKey`). */
+  stripeKeySuffix?: string;
 }
 
 /**
@@ -1310,16 +1314,20 @@ export class PartialRefundError extends Error {
     refundId: string;
     amountCents: number;
   }>;
+  /** #4083: slices Stripe answered but refused before the failure; still owed. */
+  refusedSlices: RefundAllocationSlice[];
   override cause: unknown;
 
   constructor({
     completedRefundCents,
     refunds,
+    refusedSlices = [],
     cause,
     format,
   }: {
     completedRefundCents: number;
     refunds: PartialRefundError["refunds"];
+    refusedSlices?: RefundAllocationSlice[];
     cause: unknown;
     /** The club's format (#3565): the message names the amount already refunded. */
     format: ClubFormat;
@@ -1332,6 +1340,7 @@ export class PartialRefundError extends Error {
     this.name = "PartialRefundError";
     this.completedRefundCents = completedRefundCents;
     this.refunds = refunds;
+    this.refusedSlices = refusedSlices;
     this.cause = cause;
   }
 }
@@ -1377,6 +1386,7 @@ export async function refundPaymentTransactions({
   let slices: Array<{
     transaction: (typeof stripeTransactions)[number];
     amountCents: number;
+    stripeKeySuffix?: string;
   }>;
 
   if (allocation) {
@@ -1390,7 +1400,7 @@ export async function refundPaymentTransactions({
           `Refund allocation references transaction ${slice.paymentTransactionId} which is not a captured Stripe transaction of payment ${paymentId}`
         );
       }
-      return { transaction, amountCents: slice.amountCents };
+      return { transaction, amountCents: slice.amountCents, stripeKeySuffix: slice.stripeKeySuffix };
     });
   } else {
     // Shared with planStripeRefundAllocation (#1349) so a plan frozen at
@@ -1405,11 +1415,18 @@ export async function refundPaymentTransactions({
     slices = derived.slices;
   }
 
-  // #4070: Stripe's own status rides along, so a caller can tell a refund made from one it refused.
-  const refunds: Array<PartialRefundError["refunds"][number] & { status: string | null }> = [];
+  // #4070: Stripe's own status rides along, so a caller can tell a refund made from one it refused;
+  // #4083: with the slice as sent, so a refused one can be asked for again (`refusedRefundSlices`).
+  const refunds: Array<PartialRefundError["refunds"][number] & { status: string | null; slice: RefundAllocationSlice }> = [];
+  const refusedSlices: RefundAllocationSlice[] = [];
   let completedRefundCents = 0;
 
-  for (const { transaction, amountCents: refundAmountForTransaction } of slices) {
+  for (const { transaction, amountCents: refundAmountForTransaction, stripeKeySuffix } of slices) {
+    const slice: RefundAllocationSlice = {
+      paymentTransactionId: transaction.id,
+      amountCents: refundAmountForTransaction,
+      ...(stripeKeySuffix ? { stripeKeySuffix } : {}),
+    };
     let refund;
     try {
       refund = await processRefund({
@@ -1419,13 +1436,14 @@ export async function refundPaymentTransactions({
           typeof reason === "string" ? reason : "requested_by_customer",
         metadata,
         idempotencyKey: idempotencyKeyPrefix
-          ? `${idempotencyKeyPrefix}_${transaction.id}_${refundAmountForTransaction}`
+          ? refundSliceStripeIdempotencyKey(idempotencyKeyPrefix, slice)
           : undefined,
       });
     } catch (err) {
       throw new PartialRefundError({
         completedRefundCents,
         refunds,
+        refusedSlices,
         cause: err,
         format,
       });
@@ -1450,6 +1468,7 @@ export async function refundPaymentTransactions({
       throw new PartialRefundError({
         completedRefundCents,
         refunds,
+        refusedSlices,
         cause: err,
         format,
       });
@@ -1460,8 +1479,11 @@ export async function refundPaymentTransactions({
       refundId: refund.id,
       amountCents: refund.amount,
       status: refund.status,
+      slice,
     });
-    completedRefundCents += refundAmountForTransaction;
+    // #4083: a refused slice sent nothing back, so it is owed, never completed.
+    if (isRefusedRefundStatus(refund.status)) refusedSlices.push(slice);
+    else completedRefundCents += refundAmountForTransaction;
   }
 
   return {

@@ -35,6 +35,7 @@ import {
 } from "@/lib/payment-transactions";
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
 import {
   findWaitingSupplementaryInvoiceOperationForPaymentIntent,
   // Type-only, so it adds nothing to this module's runtime import graph.
@@ -295,6 +296,7 @@ export async function enqueueBookingModificationRefundRecovery({
   bookingModificationId,
   amountCents,
   stripeKeyPrefix,
+  allocationPlan,
   store = prisma,
 }: {
   bookingId: string;
@@ -307,6 +309,8 @@ export async function enqueueBookingModificationRefundRecovery({
    * Stripe but was never recorded locally is replayed, not re-minted.
    */
   stripeKeyPrefix?: string | null;
+  /** #4083: the slices Stripe refused, exactly as sent; omitted, the worker derives its plan. */
+  allocationPlan?: RefundAllocationSlice[];
   store?: PaymentRecoveryStore;
 }) {
   return enqueueLedgerRefundRecovery({
@@ -316,6 +320,7 @@ export async function enqueueBookingModificationRefundRecovery({
     idempotencyKey:
       buildBookingModificationRefundRecoveryIdempotencyKey(bookingModificationId),
     stripeKeyPrefix,
+    allocationPlan,
     store,
   });
 }
@@ -2175,13 +2180,21 @@ async function processBookingModificationRefundOperation(
     );
   }
 
-  await refundPaymentTransactions({
+  // #4083 (`INV-PAY-124`): a slice Stripe refused fails the attempt, retried under a fresh key.
+  const frozenPlan = plan;
+  await refundPlanOrRetryRefusals({
+    operation,
+    plan: frozenPlan,
     format,
-    paymentId: operation.paymentId,
-    amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
-    allocation: plan,
-    metadata,
-    idempotencyKeyPrefix,
+    refund: () =>
+      refundPaymentTransactions({
+        format,
+        paymentId: operation.paymentId,
+        amountCents: frozenPlan.reduce((sum, slice) => sum + slice.amountCents, 0),
+        allocation: frozenPlan,
+        metadata,
+        idempotencyKeyPrefix,
+      }),
   });
 
   // #2008 — the #1992 duplicate-capture auto-refund replays through this generic

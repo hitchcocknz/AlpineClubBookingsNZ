@@ -334,6 +334,8 @@ describe("payment refund ledger", () => {
         amountCents: 2500,
         // #4070: Stripe's own status, so a caller can tell a refund made from one it refused.
         status: "succeeded",
+        // #4083: the slice as sent, so a refused one can be asked for again.
+        slice: { paymentTransactionId: "txn_1", amountCents: 2500 },
       },
     ]);
     expect(store.paymentRefund.createMany).toHaveBeenCalledWith(
@@ -818,6 +820,74 @@ describe("multi-transaction refund allocation (#1097)", () => {
     expect(partial.refunds).toEqual([expect.objectContaining({ refundId: "re_slice_a", amountCents: 3000 })]);
     expect(partial.completedRefundCents).toBe(3000);
     expect([...refunds.keys()]).toEqual(["re_slice_a"]);
+  });
+
+  // #4083 (`INV-PAY-124`): Stripe can answer a refund `failed` or `canceled`
+  // without throwing. Such a slice sent nothing back: it is returned with the
+  // slice as sent (so it can be queued and asked for again) and is never
+  // counted as completed (so a remainder sized from the partial failure keeps it).
+  it("#4083: a refused slice is returned with its slice and never counted as completed", async () => {
+    const { store } = twoTransactionStore();
+    mocks.processRefund
+      .mockResolvedValueOnce({ ...stripeRefund("re_refused", 3000, "pi_2", "ch_2"), status: "failed" })
+      .mockResolvedValueOnce(stripeRefund("re_made", 3000, "pi_1", "ch_1"));
+
+    const result = await refundPaymentTransactions({
+      format: CLUB_FORMAT_TEST,
+      paymentId: "payment_1",
+      amountCents: 6000,
+      idempotencyKeyPrefix: "mod_dates_refund_b1_m1",
+      store: store as any,
+    });
+
+    expect(result.refunds).toEqual([
+      expect.objectContaining({ refundId: "re_refused", status: "failed", slice: { paymentTransactionId: "txn_2", amountCents: 3000 } }),
+      expect.objectContaining({ refundId: "re_made", status: "succeeded", slice: { paymentTransactionId: "txn_1", amountCents: 3000 } }),
+    ]);
+  });
+
+  it("#4083: a slice refused before a later one throws is owed: completedRefundCents excludes it and refusedSlices names it", async () => {
+    const { store } = twoTransactionStore();
+    mocks.processRefund
+      .mockResolvedValueOnce({ ...stripeRefund("re_refused", 3000, "pi_2", "ch_2"), status: "canceled" })
+      .mockRejectedValueOnce(new Error("stripe unavailable"));
+
+    const thrown = await refundPaymentTransactions({
+      format: CLUB_FORMAT_TEST,
+      paymentId: "payment_1",
+      amountCents: 6000,
+      idempotencyKeyPrefix: "mod_dates_refund_b1_m1",
+      store: store as any,
+    }).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(PartialRefundError);
+    expect((thrown as PartialRefundError).completedRefundCents).toBe(0);
+    expect((thrown as PartialRefundError).refusedSlices).toEqual([{ paymentTransactionId: "txn_2", amountCents: 3000 }]);
+  });
+
+  it("#4083: a slice moved to a fresh key generation is sent under that key; the others keep theirs", async () => {
+    const { store } = twoTransactionStore();
+    mocks.processRefund
+      .mockResolvedValueOnce(stripeRefund("re_retry", 3000, "pi_2", "ch_2"))
+      .mockResolvedValueOnce(stripeRefund("re_replayed", 3000, "pi_1", "ch_1"));
+
+    const result = await refundPaymentTransactions({
+      format: CLUB_FORMAT_TEST,
+      paymentId: "payment_1",
+      amountCents: 6000,
+      allocation: [
+        { paymentTransactionId: "txn_2", amountCents: 3000, stripeKeySuffix: "refused1" },
+        { paymentTransactionId: "txn_1", amountCents: 3000 },
+      ],
+      idempotencyKeyPrefix: "mod_dates_refund_b1_m1",
+      store: store as any,
+    });
+
+    expect(mocks.processRefund.mock.calls.map(([call]) => call.idempotencyKey)).toEqual([
+      "mod_dates_refund_b1_m1_txn_2_3000_refused1",
+      "mod_dates_refund_b1_m1_txn_1_3000",
+    ]);
+    expect(result.refunds[0]?.slice).toEqual({ paymentTransactionId: "txn_2", amountCents: 3000, stripeKeySuffix: "refused1" });
   });
 
   it("rejects an allocation slice that references an unknown transaction", async () => {

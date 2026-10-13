@@ -2116,6 +2116,153 @@ describe("payment recovery worker", () => {
     );
   });
 
+  // #4083 (`INV-PAY-124`): a replay Stripe answered `failed` or `canceled`
+  // returns normally from `refundPaymentTransactions`. The row must stay owed,
+  // and its retry must not replay the refused key - Stripe answers a repeated
+  // key with the original refusal for 24 hours.
+  describe("#4083: a refund Stripe refused is still owed and is retried under a fresh key", () => {
+    const refusedRefund = (slice: Record<string, unknown>, status: string) => ({
+      paymentIntentId: "pi_original",
+      refundId: `re_${status}`,
+      amountCents: slice.amountCents,
+      status,
+      slice,
+    });
+
+    function queueOperation(overrides: Record<string, unknown>) {
+      const operation = makeOperation({
+        id: "recovery-refused",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        paymentTransactionId: null,
+        ...overrides,
+      });
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
+      );
+      return operation;
+    }
+
+    const planWrites = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => "allocationPlan" in args.data);
+    const closed = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls.some(
+        ([args]) => (args as { data: { status?: string } }).data.status === PaymentRecoveryOperationStatus.SUCCEEDED,
+      );
+
+    it.each([
+      ["an edit's refund", "booking_modification_refund_mod-1", "failed"],
+      ["an edit's refund", "booking_modification_refund_mod-1", "canceled"],
+      ["a cancellation's refund", "booking_cancel_refund_recovery_booking-1", "failed"],
+      ["an approved refund request's refund", "refund_request_refund_rq-1", "canceled"],
+    ])("%s answered %s: not closed; the slice moves to its next key on the attempt held; the attempt is retried", async (_label, idempotencyKey, status) => {
+      const slice = { paymentTransactionId: "txn-1", amountCents: 1500 };
+      const operation = queueOperation({ idempotencyKey, amountCents: 1500, allocationPlan: [slice] });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(slice, status)], totalRefundedAmountCents: 1500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1, failed: 0 });
+      expect(closed()).toBe(false);
+      expect(planWrites()).toEqual([
+        {
+          where: { id: operation.id, status: PaymentRecoveryOperationStatus.PROCESSING, processingStartedAt: operation.processingStartedAt },
+          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }] },
+        },
+      ]);
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: PaymentRecoveryOperationStatus.FAILED,
+            lastError: expect.stringContaining("still owed"),
+            nextRetryAt: expect.any(Date),
+          }),
+        }),
+      );
+    });
+
+    it("the retry sends the refused slice under its fresh key generation, and closes once Stripe makes it", async () => {
+      const moved = { paymentTransactionId: "txn-1", amountCents: 1500, stripeKeySuffix: "refused1" };
+      queueOperation({
+        idempotencyKey: "booking_modification_refund_mod-1",
+        stripeKeyPrefix: "mod_dates_refund_booking-1_mod-1",
+        amountCents: 1500,
+        allocationPlan: [moved],
+        attempts: 2,
+      });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(moved, "succeeded")], totalRefundedAmountCents: 1500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 1, retried: 0 });
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
+        expect.objectContaining({ allocation: [moved], idempotencyKeyPrefix: "mod_dates_refund_booking-1_mod-1" }),
+      );
+      expect(planWrites()).toEqual([]);
+      expect(closed()).toBe(true);
+    });
+
+    it("a second refusal moves the slice on again, never back to a key already refused", async () => {
+      const moved = { paymentTransactionId: "txn-1", amountCents: 1500, stripeKeySuffix: "refused1" };
+      queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [moved], attempts: 2 });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(moved, "failed")], totalRefundedAmountCents: 1500 });
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...moved, stripeKeySuffix: "refused2" }] });
+    });
+
+    it("one slice made, one refused: only the refused slice moves; the made one keeps its key, so a replay never makes it twice", async () => {
+      const made = { paymentTransactionId: "txn-2", amountCents: 1000 };
+      const refused = { paymentTransactionId: "txn-1", amountCents: 500 };
+      queueOperation({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", amountCents: 1500, allocationPlan: [made, refused] });
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [refusedRefund(made, "succeeded"), refusedRefund(refused, "failed")],
+        totalRefundedAmountCents: 1500,
+      });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [made, { ...refused, stripeKeySuffix: "refused1" }] });
+      expect(closed()).toBe(false);
+    });
+
+    it("a slice refused before a later slice threw moves on too, and the attempt fails with the thrown error", async () => {
+      const refused = { paymentTransactionId: "txn-2", amountCents: 1000 };
+      const unsent = { paymentTransactionId: "txn-1", amountCents: 500 };
+      queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [refused, unsent] });
+      mockRefundPaymentTransactions.mockRejectedValue(
+        Object.assign(new Error("Stripe is unavailable"), { completedRefundCents: 0, refunds: [], refusedSlices: [refused] }),
+      );
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...refused, stripeKeySuffix: "refused1" }, unsent] });
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ lastError: "Stripe is unavailable" }) }),
+      );
+    });
+
+    it("spent retries: the row dies owed and the treasurer is alerted, never closed as paid", async () => {
+      const slice = { paymentTransactionId: "txn-1", amountCents: 1500 };
+      queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [slice], attempts: 5 });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(slice, "failed")], totalRefundedAmountCents: 1500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, failed: 1 });
+      expect(closed()).toBe(false);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 1500, errorMessage: expect.stringContaining("still owed") }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+  });
+
   it("enqueueBookingModificationRefundRecovery picks the latest captured PaymentIntent", async () => {
     mockPaymentFindUnique.mockResolvedValueOnce({
       id: "payment-1",

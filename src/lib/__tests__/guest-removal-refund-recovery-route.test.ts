@@ -68,7 +68,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { DELETE } from "@/app/api/bookings/[id]/guests/[guestId]/route";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
-import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
+import { expectQueuedOnce, OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 const params = Promise.resolve({ id: "b1", guestId: "g1" });
 
@@ -284,11 +284,7 @@ describe("DELETE guest removal on the member's own card: the email's refund dest
 
     expect(res.status).toBe(200);
     expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay_1", amountCents: 2000 }));
-    if (queued) {
-      expect(mocks.enqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2000 }));
-    } else {
-      expect(mocks.enqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
-    }
+    expectQueuedOnce(mocks.enqueueBookingModificationRefundRecovery, queued, 2000);
     expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 2000, refundDestination: destination, refundByBankTransfer: false }),
       expect.anything(),

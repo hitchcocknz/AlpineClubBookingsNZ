@@ -32,6 +32,22 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("nor when the claim's #1491 fold took the transaction row before the top-up write");
   });
 
+  // #4083: the refused-refund proof rides the same harness.
+  it("wires the refused card refund's real-database proof the same way (#4083)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./refused-card-refund-retry.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/refused-card-refund-retry.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("a replayed enqueue writes no second row");
+    expect(suite).toContain("the runner moves a refused slice only on the attempt it holds");
+  });
+
   // #3793: the paid cancel's read-under-lock proof rides the same harness.
   it("wires the paid cancel's refunded-total race proof the same way (#3793)", () => {
     const harness = readFileSync(

@@ -326,7 +326,7 @@ import {
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
-import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
+import { expectQueuedOnce, OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 import { UNSUPPORTED_CHARGE_CURRENCY_MEMBER_BODY } from "@/lib/stripe-charge-currency";
 import {
   ADDITIONAL_PAYMENT_ALREADY_MADE_CODE,
@@ -1260,8 +1260,7 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
 
     expect(res.status).toBe(200);
     expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "p1", amountCents: 3000 }));
-    if (queued) expect(mockEnqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 3000 }));
-    else expect(mockEnqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
+    expectQueuedOnce(mockEnqueueBookingModificationRefundRecovery, queued, 3000);
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 3000, refundDestination: destination, refundByBankTransfer: false }),

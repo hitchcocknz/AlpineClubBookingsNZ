@@ -115,6 +115,15 @@ export function isRecordedRefundStatus(status: string): boolean {
 }
 
 /**
+ * #4083: Stripe answered the refund but refused it (`failed`, `canceled`), so
+ * no money went back and it is still owed. A refund with no status counts as
+ * made (#4070), as the ledger counts it.
+ */
+export function isRefusedRefundStatus(status: string | null | undefined): boolean {
+  return !isRecordedRefundStatus(status ?? "unknown");
+}
+
+/**
  * #3639: HOW MUCH OF ONE CAPTURE HAS GONE BACK, and how much Stripe still holds
  * - one home for every late-capture reader that must not refund, approve or
  * record a hand-back twice (the webhook's verdict, the treasurer's approval,
