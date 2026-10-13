@@ -84,13 +84,24 @@ import {
 
 /**
  * The booking must still be the one the request was written about: the same
- * dates and the same guests. Anything else means somebody changed it since, and
- * executing the member's delta against a different party is how a removal
- * lands on the wrong person.
+ * dates, the same guests and, where the request stored them, each guest's same
+ * nights. Anything else means somebody changed it since, and executing the
+ * member's delta against a different party is how a removal lands on the wrong
+ * person.
+ *
+ * #4030 round 7 (F1): a request carries every guest's range, unchanged ones
+ * included, and approval applies them all. So a guest whose nights an officer
+ * trimmed (and refunded) after the request was sent would have the stale range
+ * re-applied and be charged again. A row stored before ranges were recorded
+ * names none, and keeps the dates-and-ids check alone.
  */
 function bookingDriftedFromRequest(
   stored: StoredLockedPeriodRequest,
-  booking: { checkIn: Date; checkOut: Date; guests: Array<{ id: string }> },
+  booking: {
+    checkIn: Date;
+    checkOut: Date;
+    guests: Array<{ id: string; stayStart: Date; stayEnd: Date }>;
+  },
 ): boolean {
   if (stored.original.checkIn !== calendarDateOfDateOnlyInstant(booking.checkIn)) {
     return true;
@@ -100,7 +111,20 @@ function bookingDriftedFromRequest(
   }
   const before = stored.original.guests.map((guest) => guest.id).sort();
   const now = booking.guests.map((guest) => guest.id).sort();
-  return before.length !== now.length || before.some((id, i) => id !== now[i]);
+  if (before.length !== now.length || before.some((id, i) => id !== now[i])) {
+    return true;
+  }
+  const live = new Map(booking.guests.map((guest) => [guest.id, guest]));
+  return stored.original.guests.some((guest) => {
+    const current = live.get(guest.id);
+    return Boolean(
+      current &&
+        guest.stayStart &&
+        guest.stayEnd &&
+        (guest.stayStart !== calendarDateOfDateOnlyInstant(current.stayStart) ||
+          guest.stayEnd !== calendarDateOfDateOnlyInstant(current.stayEnd)),
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +350,7 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
           checkIn: true,
           checkOut: true,
           status: true,
-          guests: { select: { id: true } },
+          guests: { select: { id: true, stayStart: true, stayEnd: true } },
           payment: { select: { amountCents: true, creditAppliedCents: true } },
         },
       });

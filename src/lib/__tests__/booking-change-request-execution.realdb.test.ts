@@ -775,7 +775,101 @@ function deferred() {
       Third: [[NIGHT_2.toISOString(), STORED_NIGHT_CENTS]],
     });
     expect(booking.finalPriceCents).toBe(3 * STORED_NIGHT_CENTS);
-    expect(result).toMatchObject({ addedGuestCount: 0, priceDiffCents: -3 * STORED_NIGHT_CENTS });
+    // #4030 round 7 (F3): how the money goes back. Only Original's three nights
+    // are removed; the same-day tier keeps half of them as the change fee, and
+    // the other half comes back the way the stay was paid (internet banking),
+    // never as account credit. No extra is asked of anyone.
+    const removedCents = 3 * STORED_NIGHT_CENTS;
+    const refundCents = Math.round(removedCents / 2);
+    expect(result).toMatchObject({
+      addedGuestCount: 0,
+      removedGuestCount: 1,
+      priceDiffCents: -removedCents,
+      changeFeeCents: removedCents - refundCents,
+      refundAmountCents: refundCents,
+      accountCreditAmountCents: 0,
+      additionalAmountCents: 0,
+    });
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification.newData).toMatchObject({
+      finishedStayCorrection: { changeFeeRule: "SAME_DAY_NOTICE", removedPortionCents: removedCents },
+    });
+  }, 60_000);
+
+  it("#4030 round 7 (F1): a guest's nights changed after the request was sent is drift, and nothing is applied", async () => {
+    // The request card sends every guest's range, unchanged ones included, and
+    // the request stores each guest's range as it stood.
+    await seed({
+      secondGuest: true,
+      requested: {
+        guestStayRanges: [
+          { guestId: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+          { guestId: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+        ],
+      },
+    });
+    const stored = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    const changes = stored.requestedChanges as { original: Record<string, unknown>; requested: unknown };
+    await prisma.bookingChangeRequest.update({
+      where: { id: REQUEST_ID },
+      data: {
+        requestedChanges: {
+          ...changes,
+          original: {
+            ...changes.original,
+            guests: [GUEST_ID, GUEST_2_ID].map((id) => ({ id, stayStart: "2026-06-10", stayEnd: "2026-06-12" })),
+          },
+        } as never,
+      },
+    });
+    // Then an officer trims Second to the first night (and refunds it): the
+    // guest row and its nights as that edit leaves them.
+    await prisma.bookingGuestNight.deleteMany({ where: { bookingGuestId: GUEST_2_ID, stayDate: NIGHT_2 } });
+    await prisma.bookingGuest.update({
+      where: { id: GUEST_2_ID },
+      data: { stayEnd: NIGHT_2, priceCents: STORED_NIGHT_CENTS },
+    });
+
+    // Re-applying the request's stale 10-12 range would charge that night again.
+    const result = await approve(OFFICER_ID);
+    expect(result).toEqual({ outcome: "keptPending", message: executor.LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    const second = await prisma.bookingGuest.findUniqueOrThrow({
+      where: { id: GUEST_2_ID },
+      include: { nights: true },
+    });
+    expect(second.nights.map((night) => night.stayDate.toISOString())).toEqual([CHECK_IN.toISOString()]);
+    expect(await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } })).toMatchObject({
+      status: "REQUESTED",
+      version: 1,
+    });
+  }, 60_000);
+
+  it("#4030 round 7 (F1): a request whose stored ranges still match the guests is not drift", async () => {
+    await seed({
+      secondGuest: true,
+      requested: {
+        guestStayRanges: [
+          { guestId: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+          { guestId: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+        ],
+      },
+    });
+    const stored = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    const changes = stored.requestedChanges as { original: Record<string, unknown>; requested: unknown };
+    await prisma.bookingChangeRequest.update({
+      where: { id: REQUEST_ID },
+      data: {
+        requestedChanges: {
+          ...changes,
+          original: {
+            ...changes.original,
+            guests: [GUEST_ID, GUEST_2_ID].map((id) => ({ id, stayStart: "2026-06-10", stayEnd: "2026-06-12" })),
+          },
+        } as never,
+      },
+    });
+    expect(await approve(OFFICER_ID)).toMatchObject({ outcome: "executed", addedGuestCount: 1 });
   }, 60_000);
 
   it("refuses a stay whose season has been switched off, and keeps the request pending", async () => {

@@ -779,7 +779,8 @@ request stays `REQUESTED` at its old `version`.
 LOCKED_PERIOD request, stay finished -> officer approves
   -> pg_advisory_xact_lock(1) -> lodge capacity lock -> fresh-role reauthorisation
   -> re-read: REQUESTED, LOCKED_PERIOD, expected version   (else claim lost, no effect)
-  -> drift: booking dates + guest set still the request's original   (else stays REQUESTED)
+  -> drift: booking dates + guest set still the request's original, and each guest's
+       nights where the request stored them (#4030)   (else stays REQUESTED)
   -> request names no change: the officer's entered guests (#4030), else stays REQUESTED
        entry on a request that names a change, or nights outside the stay -> stays REQUESTED
   -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry)

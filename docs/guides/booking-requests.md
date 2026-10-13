@@ -135,7 +135,7 @@ are listed on the booking for you to relay.
      has. Under **If the change lowers the price** the default is the way the
      booking was paid; you can choose card or account credit instead.
    - **When nothing is applied.** If the booking has changed since the member
-     asked, the season for those nights has been switched off, a guest cannot
+     asked (its dates, its guests, or a guest's nights), the season for those nights has been switched off, a guest cannot
      be booked, nothing
      is applied and the request stays pending with the reason. If the change
      moves the stay's dates on an unpaid booking whose invoice was issued in a

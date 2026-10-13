@@ -340,6 +340,48 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     expect(mocks.updateMany).not.toHaveBeenCalled();
   });
 
+  it("a row stored before guest ranges were recorded keeps the dates-and-ids drift check (round 7, F1)", async () => {
+    // The stored original names no ranges, so a guest's live nights are not
+    // compared: this row behaves exactly as it did before ranges were stored.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        { id: "g2", stayStart: new Date("2026-06-11T00:00:00.000Z"), stayEnd: new Date("2026-06-12T00:00:00.000Z") },
+        { id: "g1", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-14T00:00:00.000Z") },
+      ],
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+  });
+
+  it("keeps the request pending when a guest's stored range has moved since the request (round 7, F1)", async () => {
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        { id: "g2", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-12T00:00:00.000Z") },
+        { id: "g1", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-14T00:00:00.000Z") },
+      ],
+    });
+    expect(await run()).toEqual({ outcome: "keptPending", message: LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
   it("keeps the request pending when the booking has moved since the request (drift)", async () => {
     mocks.bookingFindUnique.mockResolvedValue({
       ...finishedBooking,
