@@ -2,9 +2,15 @@
 
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
+import {
+  bookingCancelledRefundMade,
+  bookingCancelledRefundSentence,
+  type OrganiserRefundMethod,
+} from "@/lib/booking-modified-email-copy";
 
 /**
- * #3643: the two cancel-dialog lines internet banking needs, split out of
+ * #3643: the two cancel-dialog lines internet banking needs, and (#3973) the
+ * confirmation of an organiser-paid refund, split out of
  * `cancel-booking-button.tsx` for size.
  */
 
@@ -101,4 +107,26 @@ export function ForcedRefundNote({
       format={format}
     />
   );
+}
+
+/**
+ * #3973: the confirmation after cancelling a joiner's booking the group
+ * organiser paid for by card. The refund is the ORGANISER's, so it never reads
+ * "your original payment method": the cancel's own answer of where it went, in
+ * the "Booking Cancelled" email's own sentence and tone. `emailNote` is the
+ * button's confirmation-email sentence, or nothing when no email goes.
+ */
+export function OrganiserRefundConfirmation({
+  organiserRefund,
+  format,
+  emailNote,
+}: {
+  organiserRefund: { method: OrganiserRefundMethod; amountCents: number };
+  format: ClubFormat;
+  emailNote: string;
+}) {
+  const { method, amountCents } = organiserRefund;
+  const sentence = bookingCancelledRefundSentence(amountCents, formatCents(amountCents, format), method);
+  const tone = bookingCancelledRefundMade(amountCents, method) ? "text-success-11" : "text-info-11";
+  return <p className={`text-sm ${tone}`}>{sentence + emailNote}</p>;
 }

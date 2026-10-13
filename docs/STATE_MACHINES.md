@@ -472,10 +472,12 @@ recovery operation per paid child (`PENDING -> PROCESSING -> SUCCEEDED`, or
 `FAILED` and retried, alerting on exhaustion). Each operation is one Stripe
 refund against the combined intent; its child's refund row, mirror, Xero note,
 the settlement's `SUCCEEDED -> PARTIALLY_REFUNDED -> REFUNDED` move and the
-operation's close commit together, after Stripe answered. A joiner's reduction
-and a joiner's own cancellation use the same operation, so a live group's
-settlement can now read `PARTIALLY_REFUNDED` - still paid
-(`organiserHasPaidSettlement`), and the organiser is not asked to pay again. A
+operation's close commit together, after Stripe answered. A joiner's reduction,
+a joiner's own cancellation and, since #3956, an approved refund appeal on the
+joiner's booking (`INV-PAY-123`, keyed `organiser_card_appeal_refund_*` by the
+request) use the same operation, so a live group's settlement can now read
+`PARTIALLY_REFUNDED` - still paid (`organiserHasPaidSettlement`), and the
+organiser is not asked to pay again. A
 refund Stripe answered `pending` and later failed moves its operation
 `SUCCEEDED -> PENDING` (owed again with a fresh retry budget, first due once
 Stripe's 24-hour idempotency window on its key has passed, since a retry inside
@@ -1509,11 +1511,14 @@ counted as paying members: school groups (the school contact and each teacher)
 get role `SCHOOL`, and general public booking-request contacts get `NON_MEMBER`.
 Both non-member roles grant no access, are excluded from member rosters, and never
 owe a membership subscription (see Member roles in `docs/ARCHITECTURE.md`). At
-school conversion the booking-policy setting **Assign school teachers as hut
-leaders** is sampled once: it is off by default, so teachers remain named guests
-and school contact people but receive no assignment or PIN email. When enabled,
-the conversion also creates their lodge-scoped hut-leader assignments and sends
-the post-commit PIN emails.
+school conversion the booking lodge's **Who can be hut leader for school
+bookings** setting is sampled once (#3819, replacing #3416's club-wide switch):
+unless the lodge ticks **A teacher on the booking**, teachers remain named
+guests and school contact people but receive no assignment or PIN email. When
+it is ticked, the conversion also creates their lodge-scoped hut-leader
+assignments, from arrival to the night before checkout, and sends the
+post-commit PIN emails. If the club's default lodge changes between that read
+and the lodge lock, the approval refuses with a 409 and can be retried.
 
 After conversion (or while a hold booking exists), the resulting booking keeps
 the negotiated flat price and the standard edit endpoints refuse it — editing

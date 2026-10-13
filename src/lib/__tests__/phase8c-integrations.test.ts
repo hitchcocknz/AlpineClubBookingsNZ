@@ -376,7 +376,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     expect(html).toContain("Booking Modified");
@@ -412,7 +412,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     expect(html).toContain("Guests Added");
@@ -447,7 +447,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     expect(html).toContain("Guest Removed");
@@ -480,7 +480,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     expect(html).not.toContain("<script>");
@@ -513,7 +513,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     // Should show "Total" not "Previous Total" / "New Total"

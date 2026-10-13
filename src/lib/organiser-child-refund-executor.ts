@@ -25,12 +25,14 @@ import {
   findCombinedCardSettlementForChild,
   organiserChildRefundAllocationPlan,
   organiserChildRefundedCents,
+  organiserChildRefundMade,
   organiserChildRefundWasReopened,
   planOrganiserCancelChildRefunds,
 } from "@/lib/organiser-child-refund";
 import { runPaymentRecoveryOperationNow } from "@/lib/payment-recovery";
 import {
   buildOrganiserChildCancellationRefundKey,
+  isOrganiserChildAppealRefundKey,
   isOrganiserChildRefundKey,
   organiserChildRefundReasonForKey,
 } from "@/lib/payment-recovery-keys";
@@ -236,15 +238,21 @@ export async function processOrganiserChildRefundOperation(
       { operationId: operation.id, settlementId: settlement.id, stripeRefundId: refund.id, refundCents: refund.amount },
       "Organiser child refund recorded against the combined payment (#3653)",
     );
-    await recordBookingEvent({
-      bookingId: operation.bookingId,
-      type: BookingEventType.REFUNDED,
-      actorMemberId: null,
-      amountCents: refund.amount,
-      reason: `${amount} was refunded to the group organiser's card, who paid for this booking.`,
-    }).catch((err) =>
-      logger.error({ err, bookingId: operation.bookingId }, "Failed to record the organiser child refund event"),
-    );
+    // #3956: an approved appeal's refund writes no booking event, as no Stripe
+    // appeal refund does - the booking is already cancelled, and the narrative
+    // reads a REFUNDED event after the cancel as the cancellation's settlement.
+    // The appeal's own approval and its audit row carry the record.
+    if (!isOrganiserChildAppealRefundKey(key)) {
+      await recordBookingEvent({
+        bookingId: operation.bookingId,
+        type: BookingEventType.REFUNDED,
+        actorMemberId: null,
+        amountCents: refund.amount,
+        reason: `${amount} was refunded to the group organiser's card, who paid for this booking.`,
+      }).catch((err) =>
+        logger.error({ err, bookingId: operation.bookingId }, "Failed to record the organiser child refund event"),
+      );
+    }
     // A refund an earlier attempt failed to make (the first claim is attempt
     // 1), or one Stripe failed after it was recorded (the debt was reopened,
     // with its attempts restarted at 0 - so the reopen's durable marker, not
@@ -446,15 +454,23 @@ export async function refundOrganiserCancelChildren({
     const key = buildOrganiserChildCancellationRefundKey(settlementId, childId);
     const debt = await prisma.paymentRecoveryOperation.findUnique({ where: { idempotencyKey: key } });
     if (!debt) continue;
-    if (debt.status !== PaymentRecoveryOperationStatus.SUCCEEDED) {
-      await runPaymentRecoveryOperationNow(debt.id, format);
-    }
-    const after = await prisma.paymentRecoveryOperation.findUnique({
-      where: { idempotencyKey: key },
-      select: { status: true },
-    });
-    if (after?.status === PaymentRecoveryOperationStatus.SUCCEEDED) refunded.set(childId, cents);
+    if (organiserChildRefundMade(debt) || (await runOrganiserChildRefundDebtNow(debt.id, format))) refunded.set(childId, cents);
     else owed.set(childId, cents);
   }
   return { refunded, owed };
+}
+
+/**
+ * #3973: run an organiser child refund debt now and answer whether Stripe has
+ * made it, by the debt's own status re-read afterwards, never the run's answer
+ * (`organiserChildRefundMade`). A re-read that fails answers "not made": the
+ * debt stays owed for the recovery runner, and no caller reports a refund that
+ * may not exist or fails after the refund over a database blip.
+ */
+export async function runOrganiserChildRefundDebtNow(debtId: string, format: ClubFormat): Promise<boolean> {
+  await runPaymentRecoveryOperationNow(debtId, format);
+  const after = await prisma.paymentRecoveryOperation
+    .findUnique({ where: { id: debtId }, select: { status: true } })
+    .catch(() => null);
+  return organiserChildRefundMade(after);
 }

@@ -345,9 +345,11 @@ The other three writers, and why the guarantee is worded the way it is:
 
 **The cron's coverage probes are a fifth decision point, and they are
 deliberately NOT the same rule** (#2926). `cron-hut-leader-auto-assign` asks two
-questions per (lodge, night): *is this night already covered?* — a `findFirst`
-over any assignment spanning the night, once cheaply and once again under the key
-— and *would this assignment overlap?*, which is the shared predicate. The
+questions per (lodge, night): *is this night already covered?* — since #3818
+`isHutLeaderNightCovered` from `hut-leader-night-cover.ts` (an assignment claims
+the night AND its leader is staying it, `INV-DATE-031`), asked once cheaply on
+`prisma` and once again on `tx` under the key; it is two reads and takes no lock
+of its own — and *would this assignment overlap?*, which is the shared predicate. The
 coverage probes stay **source-blind**: a school-teacher row counts as coverage,
 so the job does not auto-assign a leader for a night a school group already has
 teachers on site. The overlap predicate excludes those same rows **only for a
@@ -374,7 +376,9 @@ would make the two skips disagree.
 
 **COVERAGE is a whole class of reader, and every one of them stays
 source-blind.** The cron's two probes are the ones that can refuse an automatic
-write, which is why they are named above, but `hut-leader-coverage.ts`, the
+write, which is why they are named above, but `hut-leader-coverage.ts` (all of
+them now through the one `hut-leader-night-cover.ts` helper, where a teacher row
+is present on its school booking's nights), the
 admin page's uncovered-dates panel and the `eligible-members` suggester all ask
 the same "is somebody on site that night?" question, and all of them should keep
 counting a teacher. The consequence to know about is a conservatism, not a
@@ -384,6 +388,19 @@ accept one. An officer who wants a leader beside the teachers adds the
 assignment directly and is no longer refused. Anything NEW that refuses a write
 on the strength of an overlap belongs behind `findHutLeaderOverlapRefusal`
 rather than behind its own read.
+
+**The custodian exemption reads the cover under the same key (#3821).** When a
+clash pairs a custodian row with an ordinary one — either may be the existing
+row or the proposed row the caller passes as `candidate` — the predicate loads
+`hut-leader-night-cover.ts` on the client it was given and leaves out the
+school nights the custodian does not cover and the ordinary row does, then
+applies the one-night rule to each remaining run. Two custodians are never
+exempted from each other. These are reads on the transaction client after
+`acquireLodgeCapacityLock`, like the overlap read itself: no new key, no new
+order, and nothing is read unless a custodian clashes with an ordinary row.
+The cron passes its ordinary CRON row as `candidate` and writes no custodian;
+its span is cut to the nights the member may lead (`leadableNightRun`),
+re-read on `tx` under the key before the locked overlap ask.
 
 ### Composition: roster-date writers (#2586)
 
@@ -2967,6 +2984,40 @@ transaction open, then takes `lock(1)` and the child's `Payment` row
 mirror, Xero note, settlement status and the debt's close together, so a
 concurrent headroom read sees the debt either owed or recorded. The status-
 guarded recovery claim is the guarded claim before the provider effect.
+
+**#3956 adds a fourth writer of a child refund debt, and no key: a refund
+appeal's approval (`INV-PAY-123`).** `PUT /api/admin/refund-requests/[id]#1`
+already holds `lock(1)` alone. Under it the approval first re-reads the
+request's status, so one another review settled while it waited answers
+"already reviewed" rather than a cap refusal. On a booking the organiser paid
+for by card it then reads the same headroom (`organiserCardAppealCap`), refuses
+past it before the claim, claims the request with its status-guarded
+`updateMany`, and reserves the debt (`reserveOrganiserChildAppealRefund`) in
+that transaction - so a reduction, a cancel or a second approval queues behind
+it and reads the debt as owed (proven by
+`organiser-child-refund.realdb.test.ts`). The cap is zero while the group
+cancel's own combined refund is unmade - a pre-#3653 plan on a settlement still
+`SUCCEEDED`, or its `group_settlement_refund_recovery_` retry not yet
+`SUCCEEDED` - because `executeGroupSettlementRefundPlan` records that refund
+without reading this headroom. Stripe is called after the commit through the
+recorder above, never by the route; the debt, not an inline refund, is the
+durable record, so the approval's release path (`#2`) is never reached on this
+branch.
+
+The appeal's debt is keyed `organiser_card_appeal_refund_<request>`, outside
+the `organiser_child_refund_` prefix a pre-#3956 worker routes to the executor.
+During a blue/green window such a worker takes the row for an ordinary
+modification refund, meets the allocation that names no real transaction, and
+fails it before any Stripe call; the retry, with backoff, lands on a current
+worker. Every current reader counts both prefixes (`isOrganiserChildRefundKey`,
+`ORGANISER_CHILD_REFUND_KEY_WHERE`). A pre-#3956 headroom reader does not count
+an appeal debt; each child's own room still bounds its refunds, and the
+approval runs its debt inline on the new code.
+On a rollback to that code an appeal debt also counts as an ordinary
+modification refund: the old `listDeadCardRefunds` and its "paid another way"
+close can act on it once it has used its attempts, and the old headroom readers
+ignore it, with each cancelled child's own room still bounding it. That is
+accepted for a short window; a rollback drains or closes these debts first.
 
 **#3854 adds booking-ledger lines to this cohort and no lock.** The settle
 posts each child's confirmation and share after its `lock(1)` and the sorted

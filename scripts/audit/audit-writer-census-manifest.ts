@@ -619,6 +619,12 @@ export const AUDIT_CENSUS_TOTALS = {
   // member-guest finder's lookups. Both disjoint from #3792's and #3653's, so the
   // composed figure is all four. RE-MEASURED with `pnpm run audit:census` on the
   // tree composed by #3829.
+  // 499 -> 500 (#3819): `LODGE_SETTINGS_UPDATED` from the new
+  // `/api/admin/lodge-settings/school-hut-leaders` PUT, recording one lodge's
+  // "Who can be hut leader for school bookings" before and after. Categorised
+  // `admin` at the site like its sibling lodge-settings writer, and pinned in
+  // `LODGE_GATED_ADMIN_CATEGORIES_2765` under INV-PRIV-013's uniformity rule.
+  // RE-MEASURED with `pnpm run audit:census`.
   // 499 -> 497 (#52, other-lodges central-server sync): the other-lodges
   // CREATE and DELETE handlers are removed with their `OTHER_LODGE_CREATED`
   // and `OTHER_LODGE_DELETED` writers - a site changes only the lodge the
@@ -634,7 +640,16 @@ export const AUDIT_CENSUS_TOTALS = {
   // 499 -> 500 (#3372, owner 9 Oct 2026): `booking-payment.card-refund.paid-twice-resolved`,
   // the treasurer marking a refund paid back twice as sorted out, on the
   // write's own transaction under `payment`. RE-MEASURED.
-  writeSites: 500,
+  // 500/498 -> 499 (hand sync of `main` f1ecdb5ff into epic #3789): #3819's
+  // one addition, #52's two removals and #3750's one addition are all
+  // disjoint. RE-MEASURED with `pnpm run audit:census` on the composed tree,
+  // never added together.
+  // 499/500 -> 501 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3819's
+  // one site and #3372's two are disjoint. RE-MEASURED with
+  // `pnpm run audit:census` on the composed tree, never added together.
+  // Hand sync of `main` f3b6c008b (epic #3789): the same additions arrived again,
+  // disjoint; 501 RE-MEASURED on the merged tree.
+  writeSites: 501,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -826,7 +841,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the close's transaction so the row commits with the money.
     // 140 -> 141 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved,
     // awaited on the transaction that writes the resolution.
-    createAuditLog: { total: 141, uncategorised: 0 },
+    // 139 -> 140 (#3819): the school hut-leader kinds PUT, through
+    // `createAuditLog` like the lodge-settings route beside it.
+    // 140/141 -> 142 (sync of `main` 0ff7e6d46 into epic #3789, #3821):
+    // #3819's one and #3372's two are disjoint. RE-MEASURED on the composed tree.
+    createAuditLog: { total: 142, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1161,9 +1180,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // of the administrator whose currency change cleared it - no member data -
     // and is `admin` for the reason its sibling AI_SPEND_CURRENCY_RATE_UPDATED
     // is: installation configuration.
+    // 109 -> 110 (#3819): the school hut-leader kinds PUT. `admin` is readable
+    // with support:view alone, so the weakest-gate set widens by one lodge
+    // configuration row, the same audience as its sibling lodge-settings write.
     // 109 -> 107 (#52): `OTHER_LODGE_CREATED` and `OTHER_LODGE_DELETED` are
     // gone with their handlers; `OTHER_LODGE_UPDATED` stays, still `admin`.
-    admin: 107,
+    // 110/107 -> 108 (hand sync of `main` f1ecdb5ff into epic #3789): #3819's
+    // one and #52's two removals are disjoint. RE-MEASURED on the composed tree.
+    admin: 108,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
@@ -2629,6 +2653,9 @@ export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
   "src/app/api/admin/lodge-instructions/route.ts::PUT#0": "admin",
   "src/app/api/admin/lodge-instructions/route.ts::PUT#1": "admin",
   "src/app/api/admin/lodge-settings/route.ts::PUT#0": "admin",
+  // "Who can be hut leader for school bookings" (#3819): a second writer in the
+  // lodge-settings subsystem, classified under INV-PRIV-013's uniformity rule.
+  "src/app/api/admin/lodge-settings/school-hut-leaders/route.ts::PUT#0": "admin",
 
   // ─── The `LODGE_*` lodge records themselves (gated `lodge:edit`) ────────────
   // `LODGE_DISPLAY_CONFIG_UPDATED` moved to `lodge` in #2730 and these did not,

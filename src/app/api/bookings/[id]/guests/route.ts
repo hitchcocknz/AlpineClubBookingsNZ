@@ -578,9 +578,9 @@ export async function POST(
         booking.checkOut,
         [
           ...booking.guests,
-          ...normalizedNewGuests.map(() => ({
-            stayStart: booking.checkIn,
-            stayEnd: booking.checkOut,
+          ...normalizedNewGuests.map((guest) => ({
+            stayStart: booking.checkIn, stayEnd: booking.checkOut,
+            memberId: guest.memberId ?? null,
           })),
         ],
         bookingId,
@@ -1508,7 +1508,7 @@ export async function POST(
         promoCoverageNote: result.promoCoverage?.message ?? null,
         addedGuests: result.addedGuests, // #4030: named in the change rows
         financialReviewPending,
-        refundReturnedToOrganiser: false,
+        refundDestination: "own",
         lodgeId: result.booking.lodgeId,
       }, format).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")

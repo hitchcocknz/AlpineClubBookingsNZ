@@ -50,7 +50,7 @@ function params(addedGuests: ReadonlyArray<typeof ARI & { consentStatus?: string
     unpaidAskCancelled: false,
     financialReviewPending: false,
     refundByBankTransfer: false,
-    refundReturnedToOrganiser: false,
+    refundDestination: "own" as const,
   };
 }
 

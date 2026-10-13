@@ -453,7 +453,7 @@ beforeEach(() => {
     supersededPrimaryPaymentIntents: [],
   });
   mocks.drainSupersededPrimaryIntents.mockResolvedValue(undefined);
-  mocks.executeBookingModificationRefund.mockResolvedValue(null);
+  mocks.executeBookingModificationRefund.mockResolvedValue({ stripeRefundId: undefined, refundDestination: "own" });
   mocks.reconcileBedAllocationsForBooking.mockResolvedValue(undefined);
   mocks.queueXeroBookingEditSettlement.mockResolvedValue(undefined);
   mocks.sendBookingModifiedEmail.mockResolvedValue(undefined);
