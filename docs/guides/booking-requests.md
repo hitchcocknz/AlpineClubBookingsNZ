@@ -119,7 +119,14 @@ are listed on the booking for you to relay.
      the member guest rules, the overbooking confirmation, and the usual change
      email with the amount due. If the approval is refused at any step, nothing
      you entered is kept on the request. To decline instead, **Reject** with a
-     note; a rejection never carries the guests.
+     note; a rejection never carries the guests. Changing the list clears the
+     figures (and any overbooking confirmation), so check them again. A guest
+     who shares a name with one of the member's dependants has to be added with
+     **+ Add a member**, so they are booked as the member they are.
+   - **The figures you approve are the figures charged.** **Approve and apply**
+     sends the figures you checked. If anything moved since — a season rate, a
+     payment, the lodge's capacity — nothing is applied and you are asked to
+     check the figures again.
    - **Check the figures first.** **Check the figures** works out exactly what
      approving will do — the change fee, and the refund, credit or amount due —
      without changing anything, and **Approve and apply** stays off until it

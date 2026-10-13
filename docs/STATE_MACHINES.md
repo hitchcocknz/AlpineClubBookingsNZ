@@ -782,6 +782,7 @@ LOCKED_PERIOD request, stay finished -> officer approves
        entry on a request that names a change, or nights outside the stay -> stays REQUESTED
   -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry)
   -> modifyBookingBatch(finishedStayCorrection) on the same transaction
+       figures differ from the officer's check -> refused, rolled back (#4030)
        over-capacity past night -> refused until the officer confirms (whole-lodge hold: always refused)
        no active season / member-night clash / a guest who cannot be booked -> refused
        dates moved on an unpaid booking whose invoice is in a Xero-locked period -> refused
