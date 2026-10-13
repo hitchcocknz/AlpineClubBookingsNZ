@@ -613,8 +613,7 @@ export function AnalyticsIntegrationCard() {
                     type="button"
                     canEdit={canEdit}
                     describeReason={false}
-                    onClick={() => section.startEditing()}
-                    {...section.editTriggerProps}
+                    onClick={() => section.startEditing()} {...section.editTriggerProps}
                   >
                     Edit
                   </ViewOnlyActionButton>

@@ -523,8 +523,7 @@ function S3BackupCard({
               describeReason={false}
               variant="outline"
               size="sm"
-              onClick={section.startEditing}
-              {...section.editTriggerProps}
+              onClick={section.startEditing} {...section.editTriggerProps}
             >
               Edit
             </ViewOnlyActionButton>

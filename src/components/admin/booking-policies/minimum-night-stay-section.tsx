@@ -329,8 +329,7 @@ export function MinimumNightStaySection() {
   // clicking Edit again on a row you were already editing silently keeps the
   // unsaved draft instead of resetting the form (#2142 review).
   const [editorInstance, setEditorInstance] = useState(0)
-  // The open editor is its own component, unmounted on close, so the list owns
-  // where focus goes when it closes: back to Add or the row's Edit (#4087).
+  // The editor unmounts on close, so the list returns focus to its opener (#4087).
   const editorFocus = useEditorFocusReturn()
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
@@ -520,8 +519,6 @@ export function MinimumNightStaySection() {
           wasEditing ? "Minimum stay policy updated" : "Minimum stay policy created",
         )
       }
-      // The refresh closed the editor and re-rendered the list; focus goes back
-      // to the Add or row Edit that opened it, now the list is there again.
       editorFocus.close()
       return saved ? toDraft(saved) : draft
     },
@@ -530,8 +527,7 @@ export function MinimumNightStaySection() {
       scopeLodgeId,
       applyServerPolicy,
       policyScopeReady,
-      refreshAfterMutation,
-      editorFocus,
+      refreshAfterMutation, editorFocus,
     ],
   )
 
