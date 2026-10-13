@@ -791,7 +791,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `Prisma.validator<Prisma.BookingSelect>()` and spread into
   // `booking.findUniqueOrThrow`/`findMany` selects, and Booking declares
   // `organisation`.
-  "src/lib/group-organiser-hand-back.ts:87",
+  "src/lib/group-organiser-hand-back.ts:92",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
   // `Prisma.validator<Prisma.ManualRefundTaskSelect>()`, and `organisation` sits
