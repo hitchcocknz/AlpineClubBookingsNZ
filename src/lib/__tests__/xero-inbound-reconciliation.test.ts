@@ -2630,6 +2630,8 @@ describe("processStoredXeroInboundEvents", () => {
     /** #3979: the invoice's total, and the credit notes Xero lists as applied. */
     invoiceTotal?: number;
     invoiceCreditNotes?: unknown[];
+    /** #3979: the payment's rows as the settle reads them, when not just its receipt. */
+    settleRows?: unknown[];
   }) {
     const organisationOwned = params.owner === "organisation";
     const faceCents = params.faceCents ?? 12345;
@@ -2662,7 +2664,9 @@ describe("processStoredXeroInboundEvents", () => {
             // the bank receipt this payment carries - captured once it was
             // settled, so a replay decides no figure again.
             findMany: vi.fn().mockImplementation(async (args: { where?: { kind?: unknown } }) =>
-              args?.where?.kind === undefined &&
+              args?.where?.kind === undefined && params.settleRows
+                ? params.settleRows
+                : args?.where?.kind === undefined &&
               ["SUCCEEDED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(params.paymentStatus)
                 ? [{ kind: "PRIMARY", source: "INTERNET_BANKING", status: params.paymentStatus, amountCents: faceCents, refundedAmountCents: 0 }]
                 : []),
@@ -3703,6 +3707,16 @@ describe("processStoredXeroInboundEvents", () => {
       }),
     });
 
+    // #3979 (review N): the invoice's complete cash is not either payment's
+    // alone, so neither receipt nor payment figure is rewritten to it.
+    for (const [args] of mocks.paymentTransactionUpdateMany.mock.calls) {
+      expect(args.data).not.toHaveProperty("amountCents");
+      expect(args.data).not.toHaveProperty("reason");
+    }
+    for (const [args] of mocks.paymentUpdate.mock.calls) {
+      expect(args.data).not.toHaveProperty("amountCents");
+    }
+
     // The offsetting account-credit notes mirror the minted (not face) amounts.
     const enqueuedAmounts = mocks.startXeroSyncOperation.mock.calls
       .filter(([input]) => input?.requestPayload?.queueType === "ACCOUNT_CREDIT_NOTE")
@@ -3820,6 +3834,31 @@ describe("processStoredXeroInboundEvents", () => {
     expect(sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
     const [alertArgs] = vi.mocked(sendAdminPaymentFailureAlert).mock.calls[0];
     expect(alertArgs.errorMessage).toContain("quantifies to zero");
+  });
+
+  it("never calls a #1765 payment's credit partial: the face is the receipt, not the payment's total with its refunded card (#3979 review J)", async () => {
+    // $300 captured by card and refunded before the switch; the bank transfer
+    // of $200 arrives after the cancel. The payment's total is $500.
+    mockAlreadyCancelledInboundEvent({
+      paymentStatus: "FAILED",
+      existingCredit: null,
+      amountPaid: 200.0,
+      invoicePayments: [],
+      faceCents: 50000,
+      invoiceTotal: 200.0,
+      settleRows: [
+        { kind: "PRIMARY", source: "STRIPE", status: "REFUNDED", amountCents: 30000, refundedAmountCents: 30000 },
+        { kind: "PRIMARY", source: "INTERNET_BANKING", status: "FAILED", amountCents: 20000, refundedAmountCents: 0 },
+      ],
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    expect(mocks.memberCreditCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ amountCents: 20000 }),
+    });
+    const [alertArgs] = vi.mocked(sendAdminPaymentFailureAlert).mock.calls[0];
+    expect(alertArgs.errorMessage).not.toContain("mixed invoice");
   });
 
   it("names the part of a cancelled booking's invoice cleared some other way, from the invoice's total (#1459, #3979 review I)", async () => {
