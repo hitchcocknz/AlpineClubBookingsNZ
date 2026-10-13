@@ -4,15 +4,15 @@ import { describe, expect, it } from "vitest";
 
 import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { relativeSource, sourceFiles } from "./support/booking-guest-night-writer-scan";
-import { stripComments } from "./support/strip-comments";
 
 const CANONICAL_MODULE = "src/lib/ordinary-ask-request.ts";
 const INVARIANT = "INV-SSOT-001";
 
 // Exact literals only: longer recovery/reissue reasons are separate facts.
-// Parsing the stripped source also handles quote styles and escaped literals.
+// The TypeScript AST excludes comments and handles quote styles/escaped literals.
+// Parse original JSX: stripping a URL text node can erase valid code after it.
 function tagLiterals(file: string, raw: string) {
-  const source = ts.createSourceFile(file, stripComments(raw), ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true);
   const found: { file: string; line: number; canonical: boolean }[] = [];
   const visit = (node: ts.Node) => {
     if (
@@ -55,6 +55,13 @@ describe(`${INVARIANT}: additional asks share one intent type (#4078)`, () => {
     ]);
   });
 
+  it("detects a handwritten tag after JSX URL text on the same line", () => {
+    const code = 'export const UI = () => <><strong>https://</strong><Widget intentType={"modification_additional"} /></>;';
+    expect(tagLiterals("src/app/new-consumer.tsx", code)).toEqual([
+      { file: "src/app/new-consumer.tsx", line: 1, canonical: false },
+    ]);
+  });
+
   it("ignores comments and the distinct reason strings", () => {
     expect(tagLiterals("src/lib/example.ts", `
       // type: "modification_additional"
@@ -77,5 +84,7 @@ describe(`${INVARIANT}: additional asks share one intent type (#4078)`, () => {
     const literals = files.flatMap(({ file, relative }) => tagLiterals(relative, readFileSync(file, "utf8")));
     expect(literals.filter(({ canonical }) => !canonical), `${INVARIANT}: import ADDITIONAL_ASK_INTENT_TYPE instead of copying its wire value`).toEqual([]);
     expect(literals.filter(({ canonical }) => canonical), `${INVARIANT}: expected exactly one canonical definition`).toHaveLength(1);
-  });
+    // The whole-production AST walk measured 5.8s under the 772-file related batch.
+    // Keep the walk complete while giving this disk/parse test its own bounded budget.
+  }, 20_000);
 });
