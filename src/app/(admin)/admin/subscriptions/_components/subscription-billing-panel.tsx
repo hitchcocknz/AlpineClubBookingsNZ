@@ -17,6 +17,11 @@ import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
 import { useClubTime } from "@/components/club-time-provider";
 import { useClubFormat } from "@/components/club-format-provider";
+import {
+  CLOSE_ALREADY_PAID_REASON_MAX,
+  isChargeClosableAsAlreadyPaid,
+  isChargeClosedAsAlreadyPaid,
+} from "@/lib/subscription-charge-already-paid";
 
 type BillingData = {
   preview: {
@@ -84,10 +89,13 @@ type BillingData = {
   charges: Array<{
     id: string;
     status: string;
+    billingBasis: string;
     membershipTypeName: string;
     chargedAmountCents: number;
     recipientName: string;
+    xeroInvoiceId: string | null;
     xeroInvoiceNumber: string | null;
+    lastErrorCode: string | null;
     lastErrorMessage: string | null;
     coverage: Array<{ memberName: string }>;
   }>;
@@ -117,6 +125,10 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
   // open, and the draft note. null = no editor open.
   const [markingFamilyGroupId, setMarkingFamilyGroupId] = useState<string | null>(null);
   const [markNote, setMarkNote] = useState("");
+  // #4098: the conflicted charge whose "close as already paid" reason editor is
+  // open, and the draft reason. null = no editor open.
+  const [closingChargeId, setClosingChargeId] = useState<string | null>(null);
+  const [closeReason, setCloseReason] = useState("");
   const [loadFeedback, setLoadFeedback] = useState<{ kind: "error"; text: string } | null>(null);
   const [mutationFeedback, setMutationFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const loadGeneration = useRef(0);
@@ -199,6 +211,16 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
     await post({ action: "MARK_FAMILY_INVOICED", seasonYear, familyGroupId, ...(note ? { note } : {}) });
   }
 
+  // #4098: the inline reason editor IS the confirm step, as for the family
+  // marker; the reason is required and the server refuses a blank one.
+  async function closeAlreadyPaid(chargeId: string) {
+    const reason = closeReason.trim();
+    if (!reason) return;
+    setClosingChargeId(null);
+    setCloseReason("");
+    await post({ action: "CLOSE_ALREADY_PAID", chargeId, reason });
+  }
+
   async function unmarkFamily(familyGroupId: string) {
     const accepted = await confirm({
       title: "Unmark this family?",
@@ -237,7 +259,7 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
   */
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEditFinance} className="mb-4">
-      Finance view access can inspect previews and charge history. Finance edit access is required to change settings, confirm billing, or retry Xero delivery.
+      Finance view access can inspect previews and charge history. Finance edit access is required to change settings, confirm billing, retry Xero delivery, or close a charge as already paid.
     </AdminViewOnlySectionBanner>
   );
 
@@ -409,11 +431,23 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                 <h3 className="font-medium">Durable charge queue</h3>
                 {data.charges.map((charge) => (
                   <div key={charge.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm">
-                    <div><p className="font-medium">{charge.membershipTypeName} · {charge.recipientName} · {formatCents(charge.chargedAmountCents, format)}</p><p className="text-muted-foreground">{charge.coverage.map((row) => row.memberName).join(", ")} · {charge.xeroInvoiceNumber ?? "No Xero number yet"}</p>{charge.lastErrorMessage ? <p className="text-danger">{charge.lastErrorMessage}</p> : null}</div>
+                    <div><p className="font-medium">{charge.membershipTypeName} · {charge.recipientName} · {formatCents(charge.chargedAmountCents, format)}</p><p className="text-muted-foreground">{charge.coverage.map((row) => row.memberName).join(", ")} · {charge.xeroInvoiceNumber ?? "No Xero number yet"}</p>{charge.lastErrorMessage ? <p className="text-danger">{charge.lastErrorMessage}</p> : null}{isChargeClosedAsAlreadyPaid(charge) ? <p className="text-muted-foreground">Closed as already paid. No Xero invoice is raised for this charge.</p> : null}</div>
                     <div className="flex items-center gap-2">
                       <Badge variant="secondary">{charge.status.replaceAll("_", " ")}</Badge>
                       {charge.status === "EMAIL_FAILED" || charge.status === "CONFLICT" || charge.status === "QUEUED" || charge.status === "INVOICE_CREATED" ? <ViewOnlyActionButton canEdit={canEditFinance} describeReason={false} size="sm" variant="outline" disabled={working} onClick={() => void post({ action: "RETRY_CHARGE", chargeId: charge.id })}>{charge.status === "EMAIL_FAILED" ? <MailWarning className="mr-1 h-4 w-4" /> : charge.status === "CONFLICT" ? <AlertTriangle className="mr-1 h-4 w-4" /> : <CheckCircle2 className="mr-1 h-4 w-4" />} Retry</ViewOnlyActionButton> : null}
+                      {isChargeClosableAsAlreadyPaid(charge) && closingChargeId !== charge.id ? <ViewOnlyActionButton canEdit={canEditFinance} describeReason={false} type="button" size="sm" variant="outline" disabled={working} onClick={() => { setClosingChargeId(charge.id); setCloseReason(""); }}>Close: already paid</ViewOnlyActionButton> : null}
                     </div>
+                    {isChargeClosableAsAlreadyPaid(charge) && closingChargeId === charge.id ? (
+                      <div className="basis-full space-y-2 rounded-md border border-dashed p-2">
+                        <p className="text-muted-foreground">Closing records that every member on this charge has already paid. No Xero invoice will be raised for it, and Retry is no longer offered. If a payment was recorded by mistake, reverse it and Retry instead.</p>
+                        <Label htmlFor={`close-reason-${charge.id}`}>Reason (required) — e.g. how and when they paid</Label>
+                        <Input id={`close-reason-${charge.id}`} value={closeReason} onChange={(event) => setCloseReason(event.target.value)} maxLength={CLOSE_ALREADY_PAID_REASON_MAX} />
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" size="sm" disabled={working || !closeReason.trim()} onClick={() => void closeAlreadyPaid(charge.id)}>Confirm — close as already paid</Button>
+                          <Button type="button" size="sm" variant="outline" disabled={working} onClick={() => { setClosingChargeId(null); setCloseReason(""); }}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>

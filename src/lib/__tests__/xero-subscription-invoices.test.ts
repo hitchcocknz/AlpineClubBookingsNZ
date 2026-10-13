@@ -10,7 +10,7 @@ const enqueueMocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    membershipSubscriptionCharge: { findUnique: enqueueMocks.chargeFindUnique, update: enqueueMocks.chargeUpdate },
+    membershipSubscriptionCharge: { findUnique: enqueueMocks.chargeFindUnique, updateMany: enqueueMocks.chargeUpdate },
     xeroSyncOperation: { findFirst: enqueueMocks.operationFindFirst },
   },
 }));

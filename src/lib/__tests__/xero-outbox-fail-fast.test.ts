@@ -130,6 +130,8 @@ vi.mock("@/lib/prisma", () => ({
     membershipSubscriptionCharge: {
       findUnique: mocks.chargeFindUnique,
       update: mocks.chargeUpdate,
+      // #4098: the failure handler's charge write is a status-guarded updateMany.
+      updateMany: mocks.chargeUpdate,
     },
   },
 }));
