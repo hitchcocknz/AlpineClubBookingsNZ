@@ -707,11 +707,11 @@ let harnessRole: SuiteEnvironmentRoleDeclaration | undefined;
       await cancel("credit");
       expect(await clearingNoteQueued()).toBe(false);
 
-      // #4013: the cancel left three $50-or-more lots - the earlier note, its
-      // noteless restore and the $150 cash turned to credit. The $50 applied is
-      // the earlier lot's note, allocated: the engine never reaches the
-      // remainder mint, which this fake cannot serve and which would mint a
-      // second note for credit Xero already holds.
+      // #4013: the member now holds three positive lots - the earlier noted
+      // $50, the cancel's noteless $50 restore and its $150 of cash turned to
+      // credit. The earlier lot is the oldest, so the $50 applied is its note,
+      // allocated, and the engine never reaches the remainder mint (which this
+      // fake cannot serve).
       const remainderMint = await refuseRemainderMint();
       await prisma.xeroSyncOperation.update({ where: { id: queued.queueOperationId! }, data: { status: "RUNNING" } });
       const { allocateAppliedCreditForBooking } = await import("@/lib/xero-applied-credit-allocation");
