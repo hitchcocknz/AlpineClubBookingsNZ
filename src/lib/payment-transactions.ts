@@ -1422,11 +1422,7 @@ export async function refundPaymentTransactions({
   let completedRefundCents = 0;
 
   for (const { transaction, amountCents: refundAmountForTransaction, stripeKeySuffix } of slices) {
-    const slice: RefundAllocationSlice = {
-      paymentTransactionId: transaction.id,
-      amountCents: refundAmountForTransaction,
-      ...(stripeKeySuffix ? { stripeKeySuffix } : {}),
-    };
+    const slice: RefundAllocationSlice = { paymentTransactionId: transaction.id, amountCents: refundAmountForTransaction, ...(stripeKeySuffix ? { stripeKeySuffix } : {}) };
     let refund;
     try {
       refund = await processRefund({

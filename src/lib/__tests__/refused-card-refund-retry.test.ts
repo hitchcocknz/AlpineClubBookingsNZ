@@ -4,7 +4,8 @@
 // slices move, and that a persisted plan keeps the generation it was moved to.
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+const updateMany = vi.hoisted(() => vi.fn(async () => ({ count: 1 })));
+vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany } } }));
 
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import {
@@ -13,7 +14,9 @@ import {
   refundSliceStripeIdempotencyKey,
 } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
-import { planAfterRefusals, refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import { lastErrorSuggestsStripeMayHaveRefunded } from "@/lib/card-refund-paid-another-way";
+import { planAfterRefusals, refundPlanOrRetryRefusals, refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 describe("a refund slice's Stripe key and its generations", () => {
   it("generation 0 is the spelling every slice has always been sent under", () => {
@@ -112,5 +115,20 @@ describe("a persisted plan keeps its generation", () => {
 
   it.each([["refused0"], ["anything"], [7]])("refuses a malformed generation %s as a malformed plan", (suffix) => {
     expect(parseRefundAllocationPlan([{ paymentTransactionId: "txn_a", amountCents: 1000, stripeKeySuffix: suffix }])).toBeNull();
+  });
+});
+
+describe("the attempt's failure", () => {
+  it("names the refused amount and reads as a definite refusal on the stuck list, never as 'Stripe may have refunded'", async () => {
+    const slice = { paymentTransactionId: "txn_a", amountCents: 50_000 };
+    const failure = (await refundPlanOrRetryRefusals({
+      operation: { id: "op_1", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") },
+      plan: [slice],
+      format: CLUB_FORMAT_TEST,
+      refund: async () => ({ refunds: [{ status: "failed", slice }] }),
+    }).catch((error: unknown) => error)) as Error;
+
+    expect(failure.message).toMatch(/Stripe refused \$500\.00 .*still owed/);
+    expect(lastErrorSuggestsStripeMayHaveRefunded(failure.message)).toBe(false);
   });
 });

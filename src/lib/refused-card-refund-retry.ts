@@ -98,11 +98,14 @@ export async function refundPlanOrRetryRefusals({
   operation: Pick<PaymentRecoveryOperation, "id" | "processingStartedAt">;
   plan: ReadonlyArray<RefundAllocationSlice>;
   format: ClubFormat;
-  refund: () => Promise<{ refunds: ReadonlyArray<{ status: string | null; slice: RefundAllocationSlice }> }>;
+  /** Sends the plan (`refundPaymentTransactions` with it as the allocation). */
+  refund: (
+    plan: RefundAllocationSlice[],
+  ) => Promise<{ refunds: ReadonlyArray<{ status: string | null; slice: RefundAllocationSlice }> }>;
 }): Promise<void> {
   let refused: RefundAllocationSlice[];
   try {
-    refused = refusedRefundSlices((await refund()).refunds);
+    refused = refusedRefundSlices((await refund([...plan])).refunds);
   } catch (err) {
     // A slice refused before a later one threw (`PartialRefundError`) moves on too.
     const before = (err as { refusedSlices?: RefundAllocationSlice[] } | null)?.refusedSlices ?? [];

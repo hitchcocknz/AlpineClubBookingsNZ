@@ -1190,6 +1190,38 @@ one, check the other.
 
 - External provider side effects require clear retry and idempotency behavior.
 
+## INV-PAY-124
+
+**Related: `INV-PAY-030`** (provider retry and idempotency), **`INV-PAY-114`**
+(an organiser child's refund, which reopens one Stripe fails later) and
+**`INV-PAY-122`** (closing a dead card refund).
+
+- **A card refund Stripe answers `failed` or `canceled` is still owed** (#4083).
+  Stripe can refuse a refund without throwing; `refundPaymentTransactions`
+  records it, uncounted (`isRecordedRefundStatus`), and returns.
+  - **Never counted as made**: a refused slice is not in
+    `PartialRefundError.completedRefundCents`, and each refund comes back with
+    the slice as sent (`refusedRefundSlices`).
+  - **An edit queues it**: every door (`executeBookingModificationRefund`)
+    queues exactly the refused slices as its recovery row's plan, one row per
+    edit, so "Refunds owed" counts them (`openCardRefundOwedByOperation`).
+  - **A cancellation leaves its pre-persisted row open.**
+  - **The runner never closes a row on a refusal.** Stripe answers a repeated
+    key with the original refusal for 24 hours, so each slice the runner read
+    refused moves to its next key generation (`refused1`, `refused2`, ...;
+    `refundSliceStripeIdempotencyKey`), written only on the attempt it holds
+    (PROCESSING and its own `processingStartedAt`), and the attempt fails, so
+    the backoff retries under a key never sent. Only a slice read refused
+    moves: a made slice keeps its key, so a refund made but not recorded is
+    still answered with the original, never made twice.
+  - **Retries spent**: the row dies owed and alerted, for "Paid another way".
+  - **Stated limit**: a refund Stripe accepted (`pending`) and failed later is
+    not re-owed here; only an organiser child's is (`INV-PAY-114`).
+  - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`
+    ("#4083"), the four doors' `own-card-refund-outcome` states,
+    `booking-cancel.test.ts`, `refunds-and-credits-owed.test.ts` and
+    `refused-card-refund-retry.realdb.test.ts`.
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the

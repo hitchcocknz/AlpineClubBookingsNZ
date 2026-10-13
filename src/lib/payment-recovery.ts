@@ -2181,21 +2181,14 @@ async function processBookingModificationRefundOperation(
   }
 
   // #4083 (`INV-PAY-124`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  const frozenPlan = plan;
-  await refundPlanOrRetryRefusals({
-    operation,
-    plan: frozenPlan,
+  await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
     format,
-    refund: () =>
-      refundPaymentTransactions({
-        format,
-        paymentId: operation.paymentId,
-        amountCents: frozenPlan.reduce((sum, slice) => sum + slice.amountCents, 0),
-        allocation: frozenPlan,
-        metadata,
-        idempotencyKeyPrefix,
-      }),
-  });
+    paymentId: operation.paymentId,
+    amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
+    allocation,
+    metadata,
+    idempotencyKeyPrefix,
+  }) });
 
   // #2008 — the #1992 duplicate-capture auto-refund replays through this generic
   // modification-refund executor (its durable operation is a

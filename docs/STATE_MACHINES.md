@@ -3361,6 +3361,8 @@ close it is money paid twice, listed on the stuck-states page.
 ```text
 PENDING -> PROCESSING (worker claim, attempts < MAX) -> SUCCEEDED (Stripe refunded every slice)
 PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
+PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: that slice's key moves
+                       to its next generation on the attempt held, then retried; INV-PAY-124)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
@@ -3373,6 +3375,15 @@ DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        COMPLETED hand-back task and its BANK_REFUND line record
                        it; audited under `payment`)
 ```
+
+A refund Stripe answers `failed` or `canceled` never closes a row (#4083,
+`INV-PAY-124`). A booking edit that meets one queues a row whose plan is
+exactly the refused slices; a cancellation leaves its pre-persisted row open;
+and the runner, before failing the attempt, moves each slice it read refused to
+a fresh Stripe idempotency key (`refused1`, `refused2`, ...), because Stripe
+answers a repeated key with the original refusal for 24 hours. The move is
+written only while the row is still `PROCESSING` under that attempt's own
+`processingStartedAt`; a slice Stripe made keeps its key.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row
