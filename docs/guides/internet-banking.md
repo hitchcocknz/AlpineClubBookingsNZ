@@ -104,8 +104,10 @@ recorded in the app's ledger, and the club repays the organiser by bank
 transfer. A task appears in **Money to settle** on the
 [payments board](payments.md#pay-back-a-refund-for-a-cash-booking): it holds
 the total as each joiner's place is cancelled and lists their shares. The task
-is the record; admins get one **Manual refund needed** email when it is raised,
-which is not resent (#4042).
+is the record. Admins get the **Manual refund needed** email once the cancel
+has worked through the joiners; if it could not go out, a background job sends
+it later, and a task raised after the first was paid back gets its own email
+(#4042; details in [payments](payments.md#pay-back-a-refund-for-a-cash-booking)).
 
 ## Troubleshooting
 

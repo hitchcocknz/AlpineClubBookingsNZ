@@ -5,8 +5,9 @@
   money. The cancel now raises one task in **Money to settle** on the payments
   board, on the organiser's booking, holding every joiner refund the ledger
   shows for the group and listing the shares. Admins get the **Manual refund
-  needed** email once, after the cancel has worked through the joiners, worded
-  for a group (the cash-booking wording is unchanged). Re-running the cancel
+  needed** email after the cancel has worked through the joiners, worded for a
+  group (the cash-booking wording is unchanged); one that could not go out is
+  sent on a later run. Re-running the cancel
   adds nothing twice. Marking the task paid back records only that the money
   went, sends nothing to Xero, and is refused if the total has grown since the
   page loaded; the task cannot be dismissed, and an officer who would not
