@@ -197,6 +197,31 @@ class FinishedStayDryRun extends Error {
   }
 }
 
+/**
+ * #4030 re-review of 72c933ffc: an applying approval cannot be built without
+ * the figures the officer was shown. A call is either a dry run (which is how
+ * those figures are produced, so it carries none) or an approval carrying them;
+ * leaving them off an approval does not type-check.
+ */
+export type FinishedStayApprovalMode =
+  | {
+      /**
+       * P2 on #3955: run everything — locks, claim, the canonical edit — and
+       * roll it back before commit, answering `quoted` with the figures. No
+       * provider work runs and nothing is written.
+       */
+      dryRun: true;
+      expectedFigures?: never;
+    }
+  | {
+      dryRun?: false;
+      /**
+       * #4030 review C4: the figures the officer's check showed. An executed
+       * approval whose own figures differ is refused and rolled back.
+       */
+      expectedFigures: FinishedStayExpectedFigures;
+    };
+
 export async function approveAndExecuteLockedPeriodChangeRequest(params: {
   requestId: string;
   /** The `version` the officer's screen was read at; a moved row is a lost claim. */
@@ -232,20 +257,8 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
    * already names a change.
    */
   officerEnteredGuests?: OfficerEnteredGuest[];
-  /**
-   * #4030 review C4: the figures the officer's check showed. An executed
-   * approval whose own figures differ is refused and rolled back. Absent only on
-   * a dry run, which is how those figures are produced.
-   */
-  expectedFigures?: FinishedStayExpectedFigures;
-  /**
-   * P2 on #3955: run everything — locks, claim, the canonical edit — and roll
-   * it back before commit, answering `quoted` with the figures. No provider
-   * work runs and nothing is written.
-   */
-  dryRun?: boolean;
   db?: ExecutionDb;
-}): Promise<LockedPeriodExecutionResult> {
+} & FinishedStayApprovalMode): Promise<LockedPeriodExecutionResult> {
   const db = params.db ?? prisma;
   const { requestId, expectedVersion, actorMemberId } = params;
 
@@ -453,10 +466,9 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
       // the claim, the entry and the edit back together.
       const expected = params.expectedFigures;
       if (
-        expected &&
-        (expected.additionalAmountCents !== modified.additionalAmountCents ||
-          expected.refundAmountCents !== modified.refundAmountCents ||
-          expected.accountCreditAmountCents !== modified.accountCreditAmountCents)
+        expected.additionalAmountCents !== modified.additionalAmountCents ||
+        expected.refundAmountCents !== modified.refundAmountCents ||
+        expected.accountCreditAmountCents !== modified.accountCreditAmountCents
       ) {
         throw new FinishedStayFiguresChangedError({
           additionalAmountCents: modified.additionalAmountCents,

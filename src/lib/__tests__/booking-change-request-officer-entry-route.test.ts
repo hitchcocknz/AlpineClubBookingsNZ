@@ -127,8 +127,10 @@ describe("PATCH — the officer's entry (#4030 Part B)", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.execute).toHaveBeenCalledWith(
-      expect.objectContaining({ actorMemberId: "officer-1", officerEnteredGuests: GUESTS, dryRun: false }),
+      expect.objectContaining({ actorMemberId: "officer-1", officerEnteredGuests: GUESTS, expectedFigures: FIGS }),
     );
+    // An applying approval, never a dry run (the executor's mode union).
+    expect(mocks.execute.mock.calls[0]![0]).not.toHaveProperty("dryRun");
     expect((await response.json()).execution).toMatchObject({
       executed: true,
       officerEnteredGuestCount: 2,

@@ -263,23 +263,24 @@ async function seed(
   });
 }
 
-async function approve(
+type ExecutorParams = Parameters<typeof executor.approveAndExecuteLockedPeriodChangeRequest>[0];
+type ExpectedFigures = NonNullable<ExecutorParams["expectedFigures"]>;
+type ApproveOptions = {
+  confirmOverCapacity?: boolean;
+  officerEnteredGuests?: ExecutorParams["officerEnteredGuests"];
+  /** The figures the approval was shown; when absent they are checked first. */
+  expectedFigures?: ExpectedFigures;
+  dryRun?: boolean;
+};
+
+async function execute(
   officerId: string,
-  options: {
-    confirmOverCapacity?: boolean;
-    officerEnteredGuests?: Parameters<
-      typeof executor.approveAndExecuteLockedPeriodChangeRequest
-    >[0]["officerEnteredGuests"];
-    expectedFigures?: Parameters<
-      typeof executor.approveAndExecuteLockedPeriodChangeRequest
-    >[0]["expectedFigures"];
-    dryRun?: boolean;
-  } = {},
+  options: ApproveOptions,
+  mode: { dryRun: true } | { expectedFigures: ExpectedFigures },
 ) {
   return executor.approveAndExecuteLockedPeriodChangeRequest({
     ...(options.officerEnteredGuests ? { officerEnteredGuests: options.officerEnteredGuests } : {}),
-    ...(options.expectedFigures ? { expectedFigures: options.expectedFigures } : {}),
-    ...(options.dryRun ? { dryRun: true } : {}),
+    ...mode,
     requestId: REQUEST_ID,
     expectedVersion: 1,
     actorMemberId: officerId,
@@ -293,6 +294,39 @@ async function approve(
     }),
     ipAddress: "127.0.0.1",
   });
+}
+
+/**
+ * The officer's own sequence: check the figures (a dry run), then approve with
+ * them. An approval cannot be sent without the figures it was shown (#4030
+ * re-review of 72c933ffc), so a case that names none is checked first; a dry
+ * run that does not quote is returned (or throws) as the approval would.
+ * A race case checks with {@link checkFigures} BEFORE it sets up the race, so
+ * the approval itself, not the check, is what meets the other writer.
+ */
+async function approve(officerId: string, options: ApproveOptions = {}) {
+  if (options.dryRun) return execute(officerId, options, { dryRun: true });
+  if (options.expectedFigures) {
+    return execute(officerId, options, { expectedFigures: options.expectedFigures });
+  }
+  const checked = await execute(officerId, options, { dryRun: true });
+  if (checked.outcome !== "quoted") return checked;
+  return execute(officerId, options, { expectedFigures: figuresOf(checked) });
+}
+
+function figuresOf(quoted: ExpectedFigures): ExpectedFigures {
+  return {
+    additionalAmountCents: quoted.additionalAmountCents,
+    refundAmountCents: quoted.refundAmountCents,
+    accountCreditAmountCents: quoted.accountCreditAmountCents,
+  };
+}
+
+/** The figures an officer's check shows, read before a race is set up. */
+async function checkFigures(officerId: string, options: ApproveOptions = {}): Promise<ExpectedFigures> {
+  const checked = await execute(officerId, options, { dryRun: true });
+  if (checked.outcome !== "quoted") throw new Error(`expected a quote, got ${JSON.stringify(checked)}`);
+  return figuresOf(checked);
 }
 
 function deferred() {
@@ -456,7 +490,12 @@ function deferred() {
 
   it("two officers approving at once produce exactly one modification and one ask", async () => {
     await seed();
-    const results = await Promise.all([approve(OFFICER_ID), approve(OFFICER_2_ID)]);
+    // Both checked the figures first; the approvals are what race.
+    const expectedFigures = await checkFigures(OFFICER_ID);
+    const results = await Promise.all([
+      approve(OFFICER_ID, { expectedFigures }),
+      approve(OFFICER_2_ID, { expectedFigures }),
+    ]);
     const outcomes = results.map((result) => result.outcome).sort();
     expect(outcomes).toEqual(["claimLost", "executed"]);
 
@@ -960,6 +999,8 @@ function deferred() {
       requested: { addGuests: [], removeGuests: [{ id: GUEST_2_ID }], summary: "remove Second Guest" },
     });
     const { FINISHED_STAY_INVOICE_RAISED_MESSAGE } = await import("@/lib/booking-finished-stay-correction");
+    // The officer checked the figures before the invoice started persisting.
+    const expectedFigures = await checkFigures(OFFICER_ID);
     // An invoice create persisting its link: it holds the payment row, not yet
     // committed, while the approval reads "no invoice" and routes its fee to
     // the primary invoice.
@@ -974,7 +1015,7 @@ function deferred() {
       { timeout: 30_000 },
     );
     await holding.promise;
-    const approval = approve(OFFICER_ID);
+    const approval = approve(OFFICER_ID, { expectedFigures });
     const approvalSettled = approval.then(
       () => "executed",
       (error: unknown) => error,
@@ -1298,6 +1339,8 @@ function deferred() {
 
   it("an approval racing a cancel waits on lock(1), then applies nothing to the cancelled booking", async () => {
     await seed();
+    // The officer checked the figures before the cancel began.
+    const expectedFigures = await checkFigures(OFFICER_ID);
     const lockHeld = deferred();
     const releaseCancel = deferred();
     const cancel = prisma.$transaction(
@@ -1312,7 +1355,7 @@ function deferred() {
     await lockHeld.promise;
 
     let approvalSettled = false;
-    const approval = approve(OFFICER_ID).finally(() => {
+    const approval = approve(OFFICER_ID, { expectedFigures }).finally(() => {
       approvalSettled = true;
     });
     // The approval is queued behind the cancel's global key, not racing it.
@@ -1477,9 +1520,16 @@ function deferred() {
   });
   it("#4030 review C1: two officers entering different guests at once — one applies, the other loses the claim", async () => {
     await seed({ requested: FREE_TEXT });
+    // Each officer checked the figures for their own entry first.
+    const first = { officerEnteredGuests: [GRANDCHILDREN[0]] };
+    const second = { officerEnteredGuests: [GRANDCHILDREN[1]] };
+    const [firstFigures, secondFigures] = [
+      await checkFigures(OFFICER_ID, first),
+      await checkFigures(OFFICER_2_ID, second),
+    ];
     const results = await Promise.all([
-      approve(OFFICER_ID, { officerEnteredGuests: [GRANDCHILDREN[0]] }),
-      approve(OFFICER_2_ID, { officerEnteredGuests: [GRANDCHILDREN[1]] }),
+      approve(OFFICER_ID, { ...first, expectedFigures: firstFigures }),
+      approve(OFFICER_2_ID, { ...second, expectedFigures: secondFigures }),
     ]);
     const outcomes = results.map((result) => result.outcome).sort();
     expect(outcomes, JSON.stringify(results)).toEqual(["claimLost", "executed"]);

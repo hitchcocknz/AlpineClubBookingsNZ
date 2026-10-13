@@ -131,8 +131,24 @@ function primeRequest(requestedChanges: unknown) {
     });
 }
 
-function run(overrides: Partial<Parameters<typeof approveAndExecuteLockedPeriodChangeRequest>[0]> = {}) {
+type RunParams = Parameters<typeof approveAndExecuteLockedPeriodChangeRequest>[0];
+/** The figures the mocked edit produces: what the officer's check would have shown. */
+const CHECKED_FIGURES = { additionalAmountCents: 10_000, refundAmountCents: 0, accountCreditAmountCents: 0 };
+
+/**
+ * An approval carries the figures it was shown (#4030 re-review of 72c933ffc:
+ * the executor's type requires them), so `run()` defaults them to the mocked
+ * edit's own; `run({ dryRun: true })` sends none.
+ */
+function run(
+  overrides: Partial<Omit<RunParams, "dryRun" | "expectedFigures">> & {
+    dryRun?: true;
+    expectedFigures?: RunParams["expectedFigures"];
+  } = {},
+) {
+  const { dryRun, expectedFigures, ...rest } = overrides;
   return approveAndExecuteLockedPeriodChangeRequest({
+    ...(dryRun ? { dryRun } : { expectedFigures: expectedFigures ?? CHECKED_FIGURES }),
     requestId: "cr-1",
     expectedVersion: 2,
     actorMemberId: "officer-1",
@@ -145,7 +161,7 @@ function run(overrides: Partial<Parameters<typeof approveAndExecuteLockedPeriodC
     ipAddress: "127.0.0.1",
     officerEnteredGuests: GRANDCHILDREN,
     db,
-    ...overrides,
+    ...rest,
   });
 }
 

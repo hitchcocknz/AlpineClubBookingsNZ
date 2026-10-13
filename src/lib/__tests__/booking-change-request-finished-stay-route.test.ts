@@ -414,6 +414,8 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
     expect(mocks.execute).toHaveBeenCalledWith(
       expect.objectContaining({ dryRun: true, expectedVersion: 2, settlementMethod: "card" }),
     );
+    // A dry run carries no figures: it is how they are produced.
+    expect(mocks.execute.mock.calls[0]![0]).not.toHaveProperty("expectedFigures");
     expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 });

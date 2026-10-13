@@ -14,6 +14,7 @@ import { isFinishedStay } from "@/lib/booking-edit-policy";
 import {
   approveAndExecuteLockedPeriodChangeRequest,
   FinishedStayFiguresChangedError,
+  type FinishedStayApprovalMode,
   type FinishedStayExpectedFigures,
 } from "@/lib/booking-change-request-execution";
 import { prepareBatchModificationForCallerTransaction } from "@/lib/booking-batch-modification-service";
@@ -262,9 +263,8 @@ export async function finishedStayApprovalResponse(
     confirmOverCapacity: body.confirmOverCapacity === true,
     settlementMethod: body.settlementMethod,
     officerGuests: body.officerGuests,
-    expectedFigures: body.expectedFigures,
     todayAtClub: today,
-    dryRun: false,
+    mode: { expectedFigures: body.expectedFigures },
   });
 }
 
@@ -317,9 +317,8 @@ export async function finishedStayQuoteResponse(
     confirmOverCapacity: args.body.confirmOverCapacity === true,
     settlementMethod: args.body.settlementMethod,
     officerGuests: args.body.officerGuests,
-    expectedFigures: undefined,
     todayAtClub: today,
-    dryRun: true,
+    mode: { dryRun: true },
   });
 }
 
@@ -425,9 +424,9 @@ async function runFinishedStayApproval(
     confirmOverCapacity: boolean;
     settlementMethod: "card" | "credit" | undefined;
     officerGuests: OfficerEnteredGuest[] | undefined;
-    expectedFigures: FinishedStayExpectedFigures | undefined;
     todayAtClub: CalendarDate;
-    dryRun: boolean;
+    /** A dry run, or an approval carrying the figures the officer was shown. */
+    mode: FinishedStayApprovalMode;
   },
 ): Promise<NextResponse> {
   const { id } = args;
@@ -451,12 +450,11 @@ async function runFinishedStayApproval(
       confirmOverCapacity: args.confirmOverCapacity,
       settlementMethod: args.settlementMethod,
       ...(args.officerGuests ? { officerEnteredGuests: args.officerGuests } : {}),
-      ...(args.expectedFigures ? { expectedFigures: args.expectedFigures } : {}),
       todayAtClub: args.todayAtClub,
       format,
       preTransaction,
       ipAddress,
-      dryRun: args.dryRun,
+      ...args.mode,
     });
   } catch (error) {
     const refusal = finishedStayRefusalResponse(error, {
