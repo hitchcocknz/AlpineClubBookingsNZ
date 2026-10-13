@@ -1032,7 +1032,7 @@ why the reveal key is a required argument, what reduced motion does, and what
 the census does and does not hold. This section is about TESTING a call site,
 and deliberately does not restate it.
 
-Testing a call site is the same three assertions each time, and each is
+Testing a call site is the same four assertions each time, and each is
 discriminated by a named test in the tree already:
 
 - **Failure**: `expectRecoveryAlertToHoldFocus(alert)` above — the element the
@@ -1056,6 +1056,11 @@ discriminated by a named test in the tree already:
   page wrapper (`use-scroll-to-feedback.test.ts`). A surface whose success closes
   a Radix dialog cannot assert focus at all — the dialog's focus release wins, by
   design, and the scroll still happens — so assert the scroll there.
+- **Return**: operate Save or Cancel as a keyboard user does — `focus()` the
+  control, then click it — and `expectToHoldFocus(editButton)` from the same
+  helper file, finding the re-rendered Edit by role and name
+  (`use-section-edit-state.test.tsx`, `allocation-preferences-section.test.tsx`).
+  A bare click with nothing focused tests the no-op path, not the return (#4087).
 
 `admin-attention-primitive-contract.test.ts` is the census that keeps the admin
 tree routed through the module: a direct `scrollIntoView` / `scrollTo`, or a

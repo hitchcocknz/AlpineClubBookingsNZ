@@ -1761,7 +1761,14 @@ either: the hook counts explicit Edit clicks in `editRequestKey`, and a section
 hands that to `useRevealAttention` (`src/hooks/use-scroll-to-feedback.ts`, the
 one home for failure / reveal / success positioning — #2934) so the card takes
 focus and comes into view when Edit unmounts the button that held focus, and
-never merely because it re-rendered. A section whose snapshot is a LIST with per-row
+never merely because it re-rendered. The way back out needs no wiring: Save and
+Cancel unmount the button that held focus too, so the hook records the focused
+element when `startEditing` runs and, after Cancel or a successful save, returns
+focus to it — or to the Edit button re-rendered in its place, or, when that is
+missing or disabled for a view-only admin, to the enclosing section, region or
+form — through the same module's `useReturnAttention` (#4087). It moves focus
+only when the close dropped it to the page, and a failed save moves nothing, so
+the card's own failure position stands. A section whose snapshot is a LIST with per-row
 edits is not out of scope, but the hook belongs one level down: the OPEN EDITOR
 gets its own instance, keyed on the row being edited AND on an instance counter
 bumped every time an editor is opened
