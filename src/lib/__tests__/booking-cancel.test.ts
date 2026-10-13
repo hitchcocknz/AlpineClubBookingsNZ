@@ -1917,9 +1917,9 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
     expect(mocks.recoveryOperationUpdateMany).toHaveBeenCalledWith({
       where: { idempotencyKey: "booking_cancel_refund_recovery_booking_1", status: "PENDING", attempts: 0 },
+      // The amount is not written: it stays the plan's total.
       data: {
         allocationPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50, stripeKeySuffix: "refused1" }],
-        amountCents: 50,
         lastError: "Stripe refused $0.50 of this card refund (failed or cancelled), so no money went back and it is still owed.",
       },
     });
@@ -1934,7 +1934,7 @@ describe("cancelBooking credit refunds", () => {
     );
   });
 
-  it("one slice made, one refused: only the refused slice stays in the plan, so the made one is never sent again (#4083)", async () => {
+  it("one slice made, one refused: the made slice is marked and never sent again, and the amount stays the plan's (#4083)", async () => {
     mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
     mocks.refundPaymentTransactions.mockResolvedValueOnce({
       refunds: [
@@ -1948,13 +1948,30 @@ describe("cancelBooking credit refunds", () => {
 
     await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
-    expect(mocks.recoveryOperationUpdateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          allocationPlan: [{ paymentTransactionId: "ptx_1", amountCents: 20, stripeKeySuffix: "refused1" }],
-          amountCents: 20,
-        }),
-      }),
+    const written = mocks.recoveryOperationUpdateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    expect(written.data.allocationPlan).toEqual([
+      { paymentTransactionId: "ptx_2", amountCents: 30, madeRefundId: "re_ptx_2_succeeded" },
+      { paymentTransactionId: "ptx_1", amountCents: 20, stripeKeySuffix: "refused1" },
+    ]);
+    expect(written.data).not.toHaveProperty("amountCents");
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+  });
+
+  it("the row it re-planned cannot be read back: the officers are still alerted, with what is in hand (#4096)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.refundPaymentTransactions.mockResolvedValueOnce({
+      refunds: [cancelRefund({ paymentTransactionId: "ptx_1", amountCents: 50 }, "failed")],
+      totalRefundedAmountCents: 50,
+    });
+    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 1 });
+    mocks.recoveryOperationFindUnique.mockRejectedValueOnce(new Error("database blip"));
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking_1", operationId: undefined, amountCents: 50, paymentIntentId: "pi_1" }),
+      CLUB_FORMAT_TEST,
     );
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
   });

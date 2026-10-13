@@ -24,7 +24,7 @@ import {
   summarizeBookingLedgerCensus,
 } from "@/lib/booking-ledger-projection-census-report";
 import { evaluateBookingLedgerPages } from "@/lib/booking-ledger-projection-census-store";
-import { BOOKING_LEDGER_CENSUS_GATE_POLICY } from "@/lib/booking-ledger-projection-census-classes";
+import { BOOKING_LEDGER_CENSUS_GATE_POLICY, cancelledOwedComponents } from "@/lib/booking-ledger-projection-census-classes";
 import type { BookingLedgerCensusRow, CensusLedgerLine } from "@/lib/booking-ledger-projection-census-row";
 import { planSettlementLines, type PostedSettlementLine } from "@/lib/booking-ledger-settlement-posting";
 import { buildBookingLedgerRows, type BookingLedgerPosting } from "@/lib/booking-ledger-write";
@@ -1473,6 +1473,20 @@ describe("every named class lands in its class; a cent either way, or its eviden
     const result = identity(cardCancelled(9_000, false), "PRICE");
     expect(result.status).toBe("CLASSIFIED");
     expect(result.explainedBy.map((component) => component.name).sort()).toEqual(["IN_FLIGHT_REFUND", "V5_PLANNED_REFUND_SHORT"]);
+  });
+
+  // #4083 review: a cancellation refund Stripe partly refused keeps its row's
+  // amount as the plan's total, made slices marked rather than dropped. V5 reads
+  // that amount as the planned refund, so lowering it to the refused part
+  // would read as a refund planned short.
+  it("a cancellation refund re-planned after a refusal is not V5: its amount stays the planned total (#4083)", () => {
+    const v5 = (subject: BookingLedgerCensusRow) =>
+      cancelledOwedComponents(subject)[0]!.find((component) => component.name === "V5_PLANNED_REFUND_SHORT")!.cents;
+    const replanned = cardCancelled(9_500, false);
+    expect(v5(replanned)).toBe(0);
+    // CONTROL: the amount lowered to the $40.00 refused, as dropping the made slice did.
+    const lowered = { ...replanned, recoveryOperations: replanned.recoveryOperations.map((op) => ({ ...op, amountCents: 4_000 })) };
+    expect(v5(lowered)).toBe(5_500);
   });
 
   it("RETAINED_COLLECTED is information: once the share is collected every identity agrees and owed reads −share", () => {

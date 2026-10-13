@@ -3457,10 +3457,13 @@ refusal moves that slice to a fresh idempotency key (`refused1`, `refused2`,
 answered every slice; on a partial failure, the remainder, planned by the
 runner. A cancellation re-plans its pre-persisted row the same way while it is
 still `PENDING` with no attempt. The runner re-plans only on the attempt it
-holds (`PROCESSING` under its own `processingStartedAt`) and then fails it;
-where Stripe answered every slice, the slices it made leave the plan. The
-officers are alerted once per row, by the write that moves it off its first
-keys. Other card refund doors still close on a refusal (#4103, #4102).
+holds (`PROCESSING` under its own `processingStartedAt`) and then fails it.
+A slice Stripe made beside a refusal stays in the plan, marked with its refund
+(`madeRefundId`): never sent again, still the row's for "Refunds owed", and the
+row's amount stays the plan's total. The officers are alerted once for the
+refusal - by the write that moves the row off its first keys, or by the edit
+door when no row could be written - and again if the retries run out. Other
+card refund doors still close on a refusal (#4103, #4102).
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

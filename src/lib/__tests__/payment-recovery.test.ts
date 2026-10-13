@@ -732,8 +732,11 @@ describe("payment recovery worker", () => {
         id: "recovery-stale-2",
         status: { in: [PaymentRecoveryOperationStatus.PROCESSING] },
         // #3220 fix round: the exact attempt the sweep read. Status alone would
-        // also match a row that has since been re-claimed.
-        processingStartedAt: new Date("2026-05-01T00:00:00.000Z"),
+        // also match a row that has since been re-claimed. #4083: both fences, ANDed.
+        AND: [
+          { processingStartedAt: new Date("2026-05-01T00:00:00.000Z") },
+          { attempts: 2, processingStartedAt: { not: null } },
+        ],
       },
       data: {
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -768,7 +771,10 @@ describe("payment recovery worker", () => {
         status: { in: [PaymentRecoveryOperationStatus.PROCESSING] },
         // #3220 fix round: as above - the read and the write are fenced to one
         // attempt, so a re-claimed row falls out instead of being killed.
-        processingStartedAt: new Date("2026-05-01T00:00:00.000Z"),
+        AND: [
+          { processingStartedAt: new Date("2026-05-01T00:00:00.000Z") },
+          { attempts: 5, processingStartedAt: { not: null } },
+        ],
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -2164,7 +2170,7 @@ describe("payment recovery worker", () => {
       expect(planWrites()).toEqual([
         {
           where: { id: operation.id, status: PaymentRecoveryOperationStatus.PROCESSING, processingStartedAt: operation.processingStartedAt },
-          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }], amountCents: 1500 },
+          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }] },
         },
       ]);
       // The officers hear of it once, from the write that moved the row off its first keys.
@@ -2208,6 +2214,20 @@ describe("payment recovery worker", () => {
       expect(closed()).toBe(true);
     });
 
+    it("a slice marked made is never sent again: the retry sends only the refused one, and closes once Stripe makes it", async () => {
+      const made = { paymentTransactionId: "txn-2", amountCents: 1000, madeRefundId: "re_made" };
+      const moved = { paymentTransactionId: "txn-1", amountCents: 500, stripeKeySuffix: "refused1" };
+      queueOperation({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", amountCents: 1500, allocationPlan: [made, moved], attempts: 2 });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(moved, "succeeded")], totalRefundedAmountCents: 500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 1 });
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 500, allocation: [moved] }));
+      expect(planWrites()).toEqual([]);
+      expect(closed()).toBe(true);
+    });
+
     it("a second refusal moves the slice on again, never back to a key already refused", async () => {
       const moved = { paymentTransactionId: "txn-1", amountCents: 1500, stripeKeySuffix: "refused1" };
       queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [moved], attempts: 2 });
@@ -2215,12 +2235,12 @@ describe("payment recovery worker", () => {
 
       await processPaymentRecoveryOperations({ limit: 1 });
 
-      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...moved, stripeKeySuffix: "refused2" }], amountCents: 1500 });
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...moved, stripeKeySuffix: "refused2" }] });
       // Once per row: it was already off its first keys, so no second alert.
       expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
-    it("one slice made, one refused: the plan keeps only the refused slice, on its next key, so the made one is never sent again", async () => {
+    it("one slice made, one refused: the made slice is marked and never sent again, the refused one moves, and the amount stays the plan's", async () => {
       const made = { paymentTransactionId: "txn-2", amountCents: 1000 };
       const refused = { paymentTransactionId: "txn-1", amountCents: 500 };
       queueOperation({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", amountCents: 1500, allocationPlan: [made, refused] });
@@ -2232,7 +2252,11 @@ describe("payment recovery worker", () => {
       const result = await processPaymentRecoveryOperations({ limit: 1 });
 
       expect(result).toMatchObject({ succeeded: 0, retried: 1 });
-      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...refused, stripeKeySuffix: "refused1" }], amountCents: 500 });
+      // #4083 review: the made slice stays this row's - the owed figure fills it
+      // with its refund, and the census reads the amount as the plan's total.
+      expect(planWrites()[0]?.data).toEqual({
+        allocationPlan: [{ ...made, madeRefundId: "re_succeeded" }, { ...refused, stripeKeySuffix: "refused1" }],
+      });
       expect(closed()).toBe(false);
     });
 
@@ -2241,7 +2265,7 @@ describe("payment recovery worker", () => {
       const unsent = { paymentTransactionId: "txn-1", amountCents: 500 };
       queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [refused, unsent] });
       mockRefundPaymentTransactions.mockRejectedValue(
-        Object.assign(new Error("Stripe is unavailable"), { completedRefundCents: 0, refunds: [], refusedSlices: [refused] }),
+        Object.assign(new Error("Stripe is unavailable"), { completedRefundCents: 0, refunds: [refusedRefund(refused, "failed")], refusedSlices: [refused] }),
       );
 
       const result = await processPaymentRecoveryOperations({ limit: 1 });
@@ -3537,6 +3561,36 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
     expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
   });
 
+  // #4083 review: the webhook takes a row from outside any worker's attempt, so
+  // its claim counts an attempt - the worker it took the row from cannot then
+  // write FAILED over it (the failure write is fenced on the attempt).
+  it("#4083 — the webhook's hand-off claim counts an attempt; a worker's own hand-off does not", async () => {
+    const op = makeOperation({ status: PaymentRecoveryOperationStatus.PROCESSING });
+    mockPaymentRecoveryFindFirst.mockResolvedValue(op);
+    const handOffClaims = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { data: Record<string, unknown> })
+        .filter((args) => args.data.status === PaymentRecoveryOperationStatus.PROCESSING && "processingStartedAt" in args.data && !("lastError" in args.data));
+
+    await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: "pi_superseded", amountCents: 6000, paymentMethodId: "pm_1" });
+    expect(handOffClaims()).toEqual([expect.objectContaining({ data: expect.objectContaining({ attempts: { increment: 1 } }) })]);
+
+    vi.clearAllMocks();
+    mockPaymentRecoveryUpdateMany.mockImplementation(({ where }: { where?: { id?: string } }) => Promise.resolve({ count: where?.id ? 1 : 0 }));
+    mockPaymentRecoveryFindMany.mockImplementation((args?: unknown) => Promise.resolve(isStaleWorkerSweep(args) ? [] : [makeOperation({ status: "PENDING" })]));
+    mockPaymentRecoveryFindUnique.mockResolvedValue(makeOperation());
+    mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      canceled: false,
+      paymentIntent: { id: "pi_superseded", status: "succeeded", amount: 6000, payment_method: "pm_123" },
+    });
+    await processPaymentRecoveryOperations({ limit: 1 });
+    const workerHandOff = mockPaymentRecoveryUpdateMany.mock.calls
+      .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+      .find((args) => args.data.status === PaymentRecoveryOperationStatus.PROCESSING && !("attempts" in args.where));
+    expect(workerHandOff).toBeDefined();
+    expect(workerHandOff?.data).not.toHaveProperty("attempts");
+  });
+
   it("#3639 — a hand-off the club holds for a treasurer moves no money: no superseded refund, the cancel op completes", async () => {
     const op = makeOperation({ status: PaymentRecoveryOperationStatus.PENDING });
     mockPaymentRecoveryFindFirst.mockResolvedValue(op);
@@ -4774,8 +4828,10 @@ describe("#3220 - the stale-worker reaper cannot kill a re-claimed attempt", () 
           id: "recovery-stale-fence",
           status: { in: [PaymentRecoveryOperationStatus.PROCESSING] },
           // Without this the reaper matches a row that has since been failed,
-          // re-armed and re-claimed - and kills the live attempt.
-          processingStartedAt: readAt,
+          // re-armed and re-claimed - and kills the live attempt. #4083: the
+          // attempt fence joins it as its own clause, so neither overwrites the
+          // other's `processingStartedAt`.
+          AND: [{ processingStartedAt: readAt }, { attempts: 1, processingStartedAt: { not: null } }],
         },
       }),
     );

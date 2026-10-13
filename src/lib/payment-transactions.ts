@@ -1270,6 +1270,8 @@ export interface RefundAllocationSlice {
   amountCents: number;
   /** #4083: the slice's key generation after Stripe refused it (`refundSliceStripeIdempotencyKey`). */
   stripeKeySuffix?: string;
+  /** #4083: Stripe made it (this refund) on an attempt that met a refusal: never sent again, still this plan's. */
+  madeRefundId?: string;
 }
 
 /**

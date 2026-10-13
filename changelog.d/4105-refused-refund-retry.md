@@ -6,7 +6,8 @@
   treasurer's **Refunds owed** did not show it - a cancellation's refund was
   even marked as paid - so the member might never get the money. Now the
   refused amount stays owed: it counts in **Refunds owed**, the officers are
-  emailed once, and it is retried automatically, each retry a fresh request so
+  emailed once for the refusal (and again if the retries run out), and it is
+  retried automatically, each retry a fresh request so
   the provider does not just repeat its refusal. If the retries run out it is
   listed for the treasurer to close as paid another way, as any other card
   refund that could not be made is. This covers changing dates, removing a

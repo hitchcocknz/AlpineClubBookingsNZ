@@ -4882,9 +4882,9 @@ own `where`, because none moves booking status, capacity or a payment's
 refunded total (`INV-LOCK-001`), and none runs inside a transaction with the
 Stripe call:
 
-- **The runner's re-plan** (`refundPlanOrRetryRefusals`) writes the plan, and
-  the amount, only while the row is `PROCESSING` under the attempt's own
-  `processingStartedAt` - the reaper's fence. A lost fence moves nothing; the
+- **The runner's re-plan** (`refundPlanOrRetryRefusals`) writes the plan
+  (never the amount) only while the row is `PROCESSING` under the attempt's
+  own `processingStartedAt` - the reaper's fence. A lost fence moves nothing; the
   next attempt reads the same refusal back and moves it then.
 - **The cancellation's re-plan** (`keepRefusedCancellationRefundOwed`) writes
   only while its pre-persisted row is `PENDING` with `attempts` 0, so it never
@@ -4895,7 +4895,12 @@ Stripe call:
 - **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
   the attempt's `attempts` and a live claim, so an attempt the reaper gave up
   on cannot write `FAILED` over a reclaimed one. Not on the claim time: an
-  attempt may re-stamp that itself (`holdAdditionalIntentRecoveryClaim`).
+  attempt may re-stamp that itself (`holdAdditionalIntentRecoveryClaim`, the
+  worker's own superseded hand-off). The reaper's write takes both fences, each
+  its own clause. Every claim therefore counts an attempt: the worker's claim,
+  and the webhook's superseded hand-off
+  (`queueSupersededPaymentIntentRefundRecovery`), which takes the row from
+  outside any attempt and so spends one of its five.
 
 The "Paid another way" close above claims only `PENDING|FAILED` rows with
 their attempts spent, so it never meets the runner's re-plan.

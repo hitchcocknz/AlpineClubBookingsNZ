@@ -1206,13 +1206,13 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
   - **The four edit doors** (`executeBookingModificationRefund`) queue exactly
     the refused slices, when Stripe answered every slice; on a partial
     failure, the remainder, planned by the runner.
-  - **A cancellation** re-plans its pre-persisted row so, only while PENDING
-    with no attempt.
+  - **A cancellation** re-plans its pre-persisted row, only while PENDING with
+    no attempt.
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
-    it holds and fails it. Where Stripe answered every slice, made ones leave
-    the plan.
-  - **Officers are alerted once per row**, by the write moving it off its
-    first keys; spent retries die owed, for "Paid another way".
+    it holds and fails it. A slice made beside a refusal stays, marked
+    (`madeRefundId`): never re-sent, still the row's; the amount stays.
+  - **Officers are alerted once for the refusal, and again if the retries run
+    out**, then the row dies owed, for "Paid another way".
   - **Deploy window**: an older release closes a refused row as paid, and
     replays a moved slice's first key, reading the cached refusal - nothing is
     refunded twice within 24 hours. Check rows it closed against Stripe.

@@ -60,6 +60,7 @@ import { ownCardRefundMade } from "@/lib/payment-transaction-status";
 import {
   alertRefusedCardRefund,
   planAfterRefusals,
+  refusedAnswers,
   refusedRefundCents,
   refusedRefundSlices,
 } from "@/lib/refused-card-refund-retry";
@@ -224,7 +225,10 @@ export async function executeBookingModificationRefund({
       amountCents,
       stripeKeyPrefix,
       allocationPlan,
-    }).catch((enqueueErr) => logger.error({ err: enqueueErr, bookingId }, recoveryFailureMessage));
+    }).catch((enqueueErr) => {
+      logger.error({ err: enqueueErr, bookingId }, recoveryFailureMessage);
+      return null;
+    });
 
   try {
     const refundResult = await refundPaymentTransactions({
@@ -251,7 +255,11 @@ export async function executeBookingModificationRefund({
       const refusedCents = refusedRefundCents(refused);
       logger.error({ bookingId, refusedCents }, failureMessage);
       const queued = await keepOwed(refusedCents, planAfterRefusals(refused, refused));
-      if (queued?.created) await alertRefusedCardRefund({ bookingId, paymentIntentId: queued.paymentIntentId, refusedCents }, format);
+      // Alerted when this wrote the row, and when no row could be written: then the alert is the only record.
+      if (queued === null || queued?.created) {
+        const paymentIntentId = queued?.paymentIntentId ?? refusedAnswers(refundResult.refunds)[0]?.paymentIntentId ?? "";
+        await alertRefusedCardRefund({ bookingId, paymentIntentId, refusedCents }, format);
+      }
     }
     return {
       stripeRefundId: refundResult.refunds[0]?.refundId,

@@ -321,6 +321,23 @@ describe("DELETE guest removal on the member's own card: the email's refund dest
     }
   });
 
+  it("a refused refund whose row could not be written still alerts the officers: the alert is then its only record (#4083)", async () => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(makeResult());
+    const slice = { paymentTransactionId: "txn_primary", amountCents: 2000 };
+    mocks.refundPaymentTransactions.mockResolvedValue({
+      refunds: [{ refundId: "re_refused", paymentIntentId: "pi_original", amountCents: 2000, status: "failed", slice }],
+    });
+    mocks.enqueueBookingModificationRefundRecovery.mockRejectedValue(new Error("database down"));
+
+    await DELETE(makeRequest(), { params });
+
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 2000, paymentIntentId: "pi_original" }),
+      expect.anything(),
+    );
+  });
+
   it("a bank-transfer refund runs no Stripe refund and keeps the member's own wording", async () => {
     mocks.removeBookingGuestInTransaction.mockResolvedValue(
       makeResult({ pendingRefundAmountCents: 0, hasSucceededPayment: false }),

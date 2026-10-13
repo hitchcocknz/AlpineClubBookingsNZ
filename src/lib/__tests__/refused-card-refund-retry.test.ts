@@ -125,7 +125,7 @@ describe("the attempt's failure", () => {
       operation: { id: "op_1", bookingId: "b1", paymentIntentId: "pi_1", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") },
       plan: [slice],
       format: CLUB_FORMAT_TEST,
-      refund: async () => ({ refunds: [{ status: "failed", slice }] }),
+      refund: async () => ({ refunds: [{ status: "failed", slice, refundId: "re_1", paymentIntentId: "pi_1" }] }),
     }).catch((error: unknown) => error)) as Error;
 
     expect(failure.message).toMatch(/Stripe refused \$500\.00 .*still owed/);

@@ -66,7 +66,9 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
 
 /**
  * Parse a persisted allocation plan (#1097); null when absent or malformed. A
- * slice's key generation after a refusal (#4083) is kept, so a replay sends it.
+ * slice's key generation after a refusal (#4083) is kept, so a replay sends it,
+ * and so is the mark of a slice Stripe made beside one it refused, which the
+ * runner never sends again and which still fills here, as this row's.
  */
 export function parseRefundAllocationPlan(
   value: unknown,
@@ -75,7 +77,7 @@ export function parseRefundAllocationPlan(
   const slices: RefundAllocationSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents, stripeKeySuffix } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId } = entry as Record<
       string,
       unknown
     >;
@@ -85,15 +87,17 @@ export function parseRefundAllocationPlan(
       typeof amountCents !== "number" ||
       !Number.isInteger(amountCents) ||
       amountCents <= 0 ||
-      (stripeKeySuffix !== undefined && !isRefusedRefundKeySuffix(stripeKeySuffix))
+      (stripeKeySuffix !== undefined && !isRefusedRefundKeySuffix(stripeKeySuffix)) ||
+      (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId))
     ) {
       return null;
     }
-    slices.push(
-      stripeKeySuffix === undefined
-        ? { paymentTransactionId, amountCents }
-        : { paymentTransactionId, amountCents, stripeKeySuffix },
-    );
+    slices.push({
+      paymentTransactionId,
+      amountCents,
+      ...(stripeKeySuffix === undefined ? {} : { stripeKeySuffix }),
+      ...(madeRefundId === undefined ? {} : { madeRefundId }),
+    });
   }
   return slices;
 }

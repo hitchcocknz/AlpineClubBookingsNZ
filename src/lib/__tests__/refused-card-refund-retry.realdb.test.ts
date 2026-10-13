@@ -101,6 +101,8 @@ const CANCEL_PAYMENT_ID = "race-4083-cancel-payment";
 const CANCEL_TXN = "race-4083-cancel-txn";
 const CANCEL_INTENT = "pi_race_4083_cancel";
 const CANCEL_CENTS = 20_000;
+const CANCEL_ADDITIONAL_TXN = "race-4083-cancel-txn-additional";
+const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
 
 (RUN ? describe : describe.skip)(
   "a card refund Stripe refused stays owed and is retried under a fresh key — real PostgreSQL (#4083)",
@@ -314,7 +316,7 @@ const CANCEL_CENTS = 20_000;
       });
       const held = (processingStartedAt: Date) => ({ id: queued.id, bookingId: BOOKING_ID, paymentIntentId: queued.paymentIntentId, processingStartedAt });
       const refusedAnswer = (slice: { paymentTransactionId: string; amountCents: number; stripeKeySuffix?: string }) => async () => ({
-        refunds: [{ status: "failed", slice }],
+        refunds: [{ status: "failed", slice, refundId: "re_race_4083_runner", paymentIntentId: queued.paymentIntentId }],
       });
       const planNow = async () => parseRefundAllocationPlan((await queuedRow()).allocationPlan);
       const twice = { ...REFUSED_SLICE, stripeKeySuffix: "refused2" };
@@ -424,6 +426,49 @@ const CANCEL_CENTS = 20_000;
         // Recorded, not counted: nothing went back, and the whole refund is owed.
         expect(await prisma.paymentRefund.findMany({ where: { paymentId: CANCEL_PAYMENT_ID }, select: { status: true } })).toEqual([{ status }]);
         expect(await owedNow(CANCEL_PAYMENT_ID)).toBe(CANCEL_CENTS);
+      }, 60_000);
+
+      it("one charge refunded, the other refused: the made slice stays in the plan, marked; the amount stays the plan's; only the refused part is owed", async () => {
+        // A $60.00 top-up on the $200.00 booking, refunded first (newest first).
+        await prisma.paymentTransaction.update({ where: { id: CANCEL_TXN }, data: { amountCents: CANCEL_CENTS - 6_000 } });
+        await prisma.paymentTransaction.create({
+          data: {
+            id: CANCEL_ADDITIONAL_TXN,
+            paymentId: CANCEL_PAYMENT_ID,
+            kind: "ADDITIONAL",
+            source: "STRIPE",
+            stripePaymentIntentId: CANCEL_ADDITIONAL_INTENT,
+            amountCents: 6_000,
+            status: "SUCCEEDED",
+            createdAt: new Date("2026-06-01T00:00:00.000Z"),
+          },
+        });
+        stripeRaceHooks.refund = async (args) => ({
+          id: `re_race_4083_${args.paymentIntentId}`,
+          object: "refund",
+          amount: args.amountCents,
+          currency: "nzd",
+          status: args.paymentIntentId === CANCEL_ADDITIONAL_INTENT ? "succeeded" : "failed",
+          reason: "requested_by_customer",
+          created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+          charge: `ch_${args.paymentIntentId}`,
+          payment_intent: args.paymentIntentId,
+          metadata: args.metadata ?? {},
+        });
+        const { cancelBooking } = await import("@/lib/booking-cancel");
+
+        expect((await cancelBooking(CANCEL_BOOKING_ID, MEMBER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card")).status).toBe(200);
+
+        const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({
+          where: { idempotencyKey: `booking_cancel_refund_recovery_${CANCEL_BOOKING_ID}` },
+        });
+        expect(row).toMatchObject({ status: "PENDING", amountCents: CANCEL_CENTS });
+        expect(parseRefundAllocationPlan(row.allocationPlan)).toEqual([
+          { paymentTransactionId: CANCEL_ADDITIONAL_TXN, amountCents: 6_000, madeRefundId: `re_race_4083_${CANCEL_ADDITIONAL_INTENT}` },
+          { paymentTransactionId: CANCEL_TXN, amountCents: CANCEL_CENTS - 6_000, stripeKeySuffix: "refused1" },
+        ]);
+        // The made $60.00 fills its marked slice; the refused $140.00 is owed.
+        expect(await owedNow(CANCEL_PAYMENT_ID)).toBe(CANCEL_CENTS - 6_000);
       }, 60_000);
     });
   },

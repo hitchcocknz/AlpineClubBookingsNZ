@@ -2355,8 +2355,9 @@ async function performBookingCancellation(
         // #4083/#4096 (`INV-PAY-127`): a slice Stripe refused (failed/canceled)
         // is still owed: the pre-persisted debt stays open, re-planned to the
         // refused slices on fresh keys, and the catch records why.
-        const refused = refusedRefundSlices(refundResult.refunds);
-        if (refused.length > 0) throw await keepRefusedCancellationRefundOwed({ bookingId, refused, format });
+        if (refusedRefundSlices(refundResult.refunds).length > 0) {
+          throw await keepRefusedCancellationRefundOwed({ bookingId, answered: refundResult.refunds, format });
+        }
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation

@@ -1310,14 +1310,15 @@ async function markPaymentRecoveryOperationFailed({
   /** The club's format (#3565), resolved before any transaction by the caller. */
   format: ClubFormat;
 }): Promise<PaymentRecoveryFailureOutcome> {
+  // Both fences apply when both are given: each is its own clause, so neither
+  // can overwrite the other's `processingStartedAt`.
+  const claimFence = fromProcessingStartedAt === undefined ? undefined : { processingStartedAt: fromProcessingStartedAt };
+  const attemptFence = fromAttempts === undefined ? undefined : { attempts: fromAttempts, processingStartedAt: { not: null } };
   const marked = await prisma.paymentRecoveryOperation.updateMany({
     where: {
       id: operation.id,
       status: { in: [...fromStatuses] },
-      ...(fromProcessingStartedAt === undefined
-        ? {}
-        : { processingStartedAt: fromProcessingStartedAt }),
-      ...(fromAttempts === undefined ? {} : { attempts: fromAttempts, processingStartedAt: { not: null } }),
+      ...(claimFence && attemptFence ? { AND: [claimFence, attemptFence] } : { ...claimFence, ...attemptFence }),
     },
     data: {
       status: PaymentRecoveryOperationStatus.FAILED,
@@ -1738,6 +1739,8 @@ async function resetStaleProcessingOperations(format: ClubFormat) {
       // it, a row re-claimed between the read and this write is killed mid-flight
       // by a fence that only looks at status.
       fromProcessingStartedAt: operation.processingStartedAt,
+      // #4083: and the attempt it read, in the same fence.
+      fromAttempts: operation.attempts,
     });
   }
 }
@@ -1797,10 +1800,18 @@ async function handoffSucceededSupersededIntentToRefund({
   operation,
   amountCents,
   paymentMethodId,
+  takenFromOutside = false,
 }: {
   operation: PaymentRecoveryOperation;
   amountCents: number;
   paymentMethodId?: string | null;
+  /**
+   * #4083: the webhook takes the row from outside any worker's attempt, so
+   * its claim counts as an attempt of its own - a worker that held the row
+   * then cannot write FAILED over it (`failPaymentRecoveryOperation` is fenced
+   * on the attempt). The worker's own hand-off stays inside its attempt.
+   */
+  takenFromOutside?: boolean;
 }) {
   if (!operation.paymentTransactionId) {
     throw new Error("Payment recovery operation is missing paymentTransactionId");
@@ -1825,6 +1836,7 @@ async function handoffSucceededSupersededIntentToRefund({
     data: {
       status: PaymentRecoveryOperationStatus.PROCESSING,
       processingStartedAt: new Date(),
+      ...(takenFromOutside ? { attempts: { increment: 1 } } : {}),
     },
   });
   if (claimed.count === 0) {
@@ -3415,6 +3427,7 @@ export async function queueSupersededPaymentIntentRefundRecovery({
     operation,
     amountCents,
     paymentMethodId,
+    takenFromOutside: true,
   });
 
   return true;
