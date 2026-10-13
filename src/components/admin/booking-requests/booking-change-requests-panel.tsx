@@ -580,10 +580,9 @@ export function BookingChangeRequestsPanel({
                           onCheck={() =>
                             quotes.requestQuote(request.id, {
                               settlementMethod: decisionDraftFor(request.id).settlementMethod,
-                              // #4030 review M1: carried only for the same list.
-                              confirmOverCapacity:
-                                quote?.confirmOverCapacity === true &&
-                                quote.forOfficerGuests === officerGuestsKey(officerGuests),
+                              // #4030 review M1: a list change clears the quote,
+                              // so a confirmation here is always for this list.
+                              confirmOverCapacity: quote?.confirmOverCapacity === true,
                               officerGuests,
                             })
                           }

@@ -3530,6 +3530,16 @@ describe("PUT /api/bookings/[id]/modify", () => {
           priceCents: 6000,
         }),
       });
+      // #4030: the change email names the in-progress add with the nights priced.
+      const { sendBookingModifiedEmail } = await import("@/lib/email");
+      await vi.waitFor(() => expect(vi.mocked(sendBookingModifiedEmail)).toHaveBeenCalled());
+      expect(vi.mocked(sendBookingModifiedEmail).mock.calls.at(-1)?.[0].addedGuests).toEqual([
+        expect.objectContaining({
+          firstName: "Bob",
+          stayStart: new Date("2026-08-22T00:00:00.000Z"),
+          stayEnd: new Date("2026-08-24T00:00:00.000Z"),
+        }),
+      ]);
 
       await Promise.resolve();
       expect(mockEnqueueXeroSupplementaryInvoiceOperation).toHaveBeenCalledWith(
