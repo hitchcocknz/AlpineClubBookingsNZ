@@ -486,7 +486,7 @@ describe("useSectionEditState", () => {
       await expectToHoldFocus(elsewhere);
     });
 
-    it("falls back to the section, named after its heading, when Edit comes back disabled (view-only)", async () => {
+    it("falls back to the section, named by its title, when Edit comes back disabled (view-only)", async () => {
       const view = render(<StagedSection title="Discount" />);
 
       activate(button("Edit Discount"));
