@@ -238,4 +238,26 @@ describe("the ledger idempotency proof stays wired into CI (#3595)", () => {
       expect(suite).toContain(caseName);
     }
   });
+
+  it("carries #3979's settle-from-cash proof into the same harness", () => {
+    const harness = source(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+    );
+    expect(harness).toContain('import "./ib-settle-from-cash.realdb.test";');
+    const suite = source(
+      resolve(REPO_ROOT, "src/lib/__tests__/ib-settle-from-cash.realdb.test.ts"),
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    for (const caseName of [
+      "THE WORKED EXAMPLE: booked at $300, cut to $200 before its invoice, paid $200: the row, the payment and the bank receipt are $200, and the cancel's cap is $200",
+      "RAISED before its invoice: booked at $200, raised to $300, paid $300: everything is $300, and the cancel credits $300 back where the stale $200 used to cap it",
+      "A FINISHED-STAY FEE recorded before the invoice: the invoice bills price and fee, and the settle records both",
+      "THE LATE CAPACITY CANCEL: raised to $300 before its invoice, paid $300 after the beds went: the member's credit is the $300 the invoice collected",
+      "CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200 and nothing alerts",
+      "DECISION 2: invoice $300, an invoice-correction note of $100, paid $200: $200 paid and $0 refunded, and a recount keeps it",
+      "A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure and alerts rather than count the reduction twice",
+    ]) {
+      expect(suite).toContain(caseName);
+    }
+  });
 });
