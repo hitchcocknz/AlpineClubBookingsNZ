@@ -7,7 +7,7 @@ import {
   sumOutstandingCreditCents,
 } from "@/lib/member-credit-balances";
 import { OPEN_CARD_REFUND_OPERATION_WHERE } from "@/lib/open-card-refund-owed";
-import { deserializeRefundPlan } from "@/lib/group-settlement-refund-plan";
+import { legacyGroupSettlementRefundUnsentCents } from "@/lib/group-settlement-refund-plan";
 import {
   getNetCollectedCashParts,
   netCollectedPaymentTookMoney,
@@ -69,19 +69,15 @@ export interface LegacyGroupSettlementRefundRow {
  * owed against any booking. The owner's decision counts it in "Refunds owed" as
  * one club-wide amount, never against a booking and never in Net Collected.
  *
- * The remainder is the replay's own rule (`executeGroupSettlementRefundPlan`):
- * while the settlement is still SUCCEEDED on a Stripe intent, the whole plan is
- * still to send; once it reads REFUNDED or PARTIALLY_REFUNDED the refund went
- * and only the children's mirrors are left; a FAILED or PENDING settlement, or
- * an empty plan (a #3653 per-child plan reads empty), sends nothing.
+ * What each settlement still has to send is `legacyGroupSettlementRefundUnsentCents`,
+ * the one rule the refund appeal's wait reads too (`INV-SSOT`).
  */
 export function legacyGroupSettlementRefundOwedCents(
   settlements: ReadonlyArray<LegacyGroupSettlementRefundRow>,
 ): number {
   let owedCents = 0;
   for (const settlement of settlements) {
-    if (settlement.status !== "SUCCEEDED" || !settlement.stripePaymentIntentId) continue;
-    for (const cents of deserializeRefundPlan(settlement.refundPlan).values()) owedCents += cents;
+    owedCents += legacyGroupSettlementRefundUnsentCents(settlement);
   }
   return owedCents;
 }

@@ -432,11 +432,11 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   },
   "booking-request-approved": {
     "defaultSubject": "Your booking request has been approved — {{CLUB_NAME}}",
-    "defaultBody": "Booking Request Approved\n\nHi {{firstName}}, great news — your booking request has been approved!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nTotal: {{price}}\nBooking reference: {{bookingReference}}\n\nPlease complete payment to confirm your booking.\n\nPay Now: {{BASE_URL}}/pay/{{token}}\n\nThis payment link expires on {{expiresAt}}. If it expires before you pay, please contact the club to request a new link."
+    "defaultBody": "Booking Request Approved\n\nHi {{firstName}}, great news — your booking request has been approved!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount due: {{amountDue}}\nBooking reference: {{bookingReference}}\n\nPlease complete payment to confirm your booking.\n\nPay Now: {{BASE_URL}}/pay/{{token}}\n\nThis payment link expires on {{expiresAt}}. If it expires before you pay, please contact the club to request a new link."
   },
   "split-guest-payment-link": {
     "defaultSubject": "Pay for your guests to confirm their place — {{CLUB_NAME}}",
-    "defaultBody": "Pay for Your Guests to Confirm Their Place\n\nHi {{firstName}}, your own place is confirmed, but your non-member guests still need to be paid for before we can hold beds for them. There is no card on file for this part of your booking, so please use the secure link below to pay for your guests.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount due: {{price}}\n\nPay for My Guests: {{BASE_URL}}/pay/{{token}}\n\nUntil payment is received, no beds are held for your guests and their place may be bumped if the lodge fills for these dates.\n\nThis payment link expires on {{expiresAt}}. If you have any questions, just reply to this email or contact the club."
+    "defaultBody": "Pay for Your Guests to Confirm Their Place\n\nHi {{firstName}}, your own place is confirmed, but your non-member guests still need to be paid for before we can hold beds for them. There is no card on file for this part of your booking, so please use the secure link below to pay for your guests.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount due: {{amountDue}}\n\nPay for My Guests: {{BASE_URL}}/pay/{{token}}\n\nUntil payment is received, no beds are held for your guests and their place may be bumped if the lodge fills for these dates.\n\nThis payment link expires on {{expiresAt}}. If you have any questions, just reply to this email or contact the club."
   },
   "booking-request-quote": {
     "defaultSubject": "Your booking quote is ready — {{CLUB_NAME}}",
@@ -509,6 +509,11 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   "group-settlement-receipt": {
     "defaultSubject": "Your group booking is settled — {{CLUB_NAME}}",
     "defaultBody": "Your Group Booking Is Settled\n\nHi {{firstName}}, thanks for settling your group's stay at {{CLUB_NAME}}'s lodge. Everyone you are paying for is now confirmed.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nJoiners settled: {{joinerCount}}\nTotal paid: {{total}}\n\nEach joiner has been emailed to confirm their spot. There is nothing more for them to pay.\n\nIf anything looks wrong, contact the club at {{SUPPORT_EMAIL}}."
+  },
+  // #3956 (`INV-PAY-123`): a joiner's approved appeal refunded to the organiser's card.
+  "group-organiser-joiner-refund": {
+    "defaultSubject": "A refund to your card for your group booking — {{CLUB_NAME}}",
+    "defaultBody": "Refund to Your Card\n\nHi {{firstName}},\n\n{{refundSentence}}\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nIf you have questions, contact the club at {{SUPPORT_EMAIL}}."
   },
   "group-join-settled": {
     "defaultSubject": "Your spot is confirmed — {{CLUB_NAME}}",

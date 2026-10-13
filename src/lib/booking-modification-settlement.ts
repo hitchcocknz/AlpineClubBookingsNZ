@@ -48,6 +48,7 @@ import {
 } from "@/lib/stripe";
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
+import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 
 export type BookingModificationPaymentContext = {
   pendingRefundAmountCents: number;
@@ -143,12 +144,24 @@ export async function drainSupersededPrimaryIntents({
  * #4057: what an edit's after-commit refund came to. `refundDestination` is
  * the one answer the "Booking Modified" email names (`bookingModifiedRefundSentence`):
  * an organiser-card refund is `organiser_card` only when its debt says Stripe
- * made it, otherwise `organiser_card_pending`.
+ * made it, otherwise `organiser_card_pending`. #4070: an own-card refund is
+ * `own` only when `ownCardRefundMade` says so, otherwise `own_card_pending`.
  */
 export type BookingModificationRefundOutcome = {
   stripeRefundId: string | undefined;
   refundDestination: BookingModifiedRefundDestination;
 };
+
+/**
+ * #4070: an own-card edit refund is made when `refundPaymentTransactions`
+ * returned (every slice refunded at Stripe and recorded) with at least one
+ * refund, and Stripe answered each with a status the ledger counts as money
+ * back (`isRecordedRefundStatus`: `pending` and `succeeded` count, `failed`
+ * and `canceled` do not). Judged by the refunds that exist, never assumed.
+ */
+function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null }>): boolean {
+  return refunds.length > 0 && refunds.every((refund) => isRecordedRefundStatus(refund.status ?? "unknown"));
+}
 
 export async function executeBookingModificationRefund({
   format,
@@ -212,7 +225,10 @@ export async function executeBookingModificationRefund({
       // member while the ledger records a second refund that never happened.
       idempotencyKeyPrefix: `${idempotencyKeyPrefix}_${result.bookingModificationId}`,
     });
-    return { stripeRefundId: refundResult.refunds[0]?.refundId, refundDestination: "own" };
+    return {
+      stripeRefundId: refundResult.refunds[0]?.refundId,
+      refundDestination: ownCardRefundMade(refundResult.refunds) ? "own" : "own_card_pending",
+    };
   } catch (refundErr) {
     logger.error(
       { err: refundErr, bookingId, amount: result.pendingRefundAmountCents },
@@ -245,7 +261,8 @@ export async function executeBookingModificationRefund({
         ),
       );
     }
-    return { stripeRefundId: undefined, refundDestination: "own" };
+    // #4070: not made here, so the email says it is on its way.
+    return { stripeRefundId: undefined, refundDestination: "own_card_pending" };
   }
 }
 

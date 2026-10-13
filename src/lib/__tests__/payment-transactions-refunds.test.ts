@@ -332,6 +332,8 @@ describe("payment refund ledger", () => {
         paymentIntentId: "pi_1",
         refundId: "re_direct_1",
         amountCents: 2500,
+        // #4070: Stripe's own status, so a caller can tell a refund made from one it refused.
+        status: "succeeded",
       },
     ]);
     expect(store.paymentRefund.createMany).toHaveBeenCalledWith(

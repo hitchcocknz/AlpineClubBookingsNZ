@@ -115,10 +115,12 @@ exists.
 `{{paymentNote}}` on the **Booking Modified** message is another: it says what
 happens to the money for the change, and the wording follows how the booking was
 paid. A card refund reads "A refund of $X has been processed to your original
-payment method." A refund on a booking paid by internet banking or in cash reads
-"The club will refund $X to you by bank transfer." — it is promised, not
-reported, because a treasurer still has to send it from the **Money to settle**
-card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
+payment method." once the card refund has gone through; until then — when the
+card refund failed, timed out or was not made — it reads "A refund of $X is on
+its way to your original payment method." (#4070). A refund on a booking
+paid by internet banking or in cash reads "The club will refund $X to you by
+bank transfer." — it is promised, not reported, because a treasurer still has
+to send it from the **Money to settle** card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
 (#3827). On a group booking the organiser paid for by card, the refund goes to
 the group organiser's card, and the sentence says it has been processed there
 only once that card refund has gone through; until then it says the refund is
@@ -132,8 +134,29 @@ payment we asked for has been cancelled, so you no longer need to pay it."
 way. A card refund reads "A refund of $X will be processed to your original
 payment method."; on a booking paid by internet banking it reads "The club will
 refund $X to you by bank transfer.", and a booking paid partly by card names
-both parts (#3827). `{{amount}}` is still available to a saved override, but it
-cannot say which way the money goes, so use `{{refundSentence}}`.
+both parts (#3827). On a group joiner's booking the organiser paid for by card
+it reads "A refund of $X has been processed to the group organiser's card,
+because the group organiser paid for this booking." (or "is on its way to" while
+the card provider has not answered yet) (#3956). `{{amount}}` is still available
+to a saved override, but it cannot say which way the money goes, so use
+`{{refundSentence}}`.
+
+The organiser of that group gets their own message at the same time, **Group
+Organiser Joiner Refund** (#3956). Its `{{refundSentence}}` names the joiner and
+says the amount for their share is being refunded to the card the organiser paid
+with; `{{joinerName}}` and `{{amount}}` are there for an override too. It is not
+sent when the admin chose not to email, or when the organiser is the joiner.
+
+`{{amountDue}}` on the **Booking Request Approved** and **Split Guest Payment
+Link** messages is what the pay link asks the member to pay: the booking's price
+plus any change fee recorded on it, less account credit already applied - the
+same figure the `/pay/` page shows (#4058). Their default bodies read
+`Amount due: {{amountDue}}`. `{{price}}` stays the booking's own price, so an
+override written against it keeps its meaning, but it can differ from what the
+link asks for (applied credit lowers that, a recorded change fee raises it); use
+`{{amountDue}}` to name what to pay. A saved Split Guest Payment Link override
+copied from the old default reads `Amount due: {{price}}`: re-save it against
+the new default so it quotes `{{amountDue}}`.
 
 `{{promoSummary}}` on a booking that carries several promo codes shows one
 `Promo adjustment (CODE)` line per code, each with its own amount, while
@@ -344,11 +367,11 @@ Two consequences worth knowing before you edit one:
   being returned to the member (a reduction on a booking paid with credit), an
   amount still to pay, an unpaid additional payment cancelled by the change
   (#3954) — whichever apply, already worded and with the amount in them. A
-  refund names where it went: the member's original payment method, a bank
-  transfer the club will send, or, on a group booking the organiser paid for
-  by card, the group organiser's card: processed there, or on its way there
-  when the card refund has not gone through yet (#4057). Keep it on a line of
-  its own, with no `$` or label in front.
+  refund names where it went: the member's original payment method or, on a
+  group booking the organiser paid for by card, the group organiser's card —
+  processed there, or on its way there when the card refund has not gone
+  through yet (#4057, #4070) — or a bank transfer the club will send. Keep it
+  on a line of its own, with no `$` or label in front.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
   says where the refund went: the member's original payment method, account
   credit, or a refund the club will arrange directly. Otherwise it says no

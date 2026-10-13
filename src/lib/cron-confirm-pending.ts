@@ -73,6 +73,7 @@ import {
   sendSplitGuestPaymentLinkEmail,
   sendSplitGuestPortionCancelledEmail,
 } from "./email";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { bookingPromoEmailOptions } from "./booking-promo-email-options";
 import { getNonMemberHoldDays } from "./cancellation";
 import { processWaitlistForDates } from "./waitlist";
@@ -1506,6 +1507,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               checkOut: resolution.booking.checkOut,
               guestCount: resolution.booking.guests.length,
               priceCents: resolution.booking.finalPriceCents,
+              amountDueCents: (await readBookingAmountOwed(resolution.booking)).dueCents,
               bookingReference: resolution.booking.id,
               expiresAt,
               lodgeId: resolution.booking.lodgeId ?? null,
