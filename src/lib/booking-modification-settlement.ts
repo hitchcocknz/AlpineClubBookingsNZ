@@ -40,6 +40,7 @@ import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-exe
 import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 import {
   buildAdditionalIntentRecoveryIdempotencyKey,
+  bookingModificationRefundReasonForKeyPrefix,
   buildBookingModificationRefundMetadata,
   buildOrganiserChildModificationRefundKey,
 } from "@/lib/payment-recovery-keys";
@@ -171,7 +172,6 @@ export async function executeBookingModificationRefund({
   format,
   bookingId,
   result,
-  metadataReason,
   idempotencyKeyPrefix,
   failureMessage,
   recoveryFailureMessage,
@@ -179,7 +179,6 @@ export async function executeBookingModificationRefund({
   format: ClubFormat;
   bookingId: string;
   result: BookingModificationPaymentContext;
-  metadataReason: string;
   idempotencyKeyPrefix: string;
   failureMessage: string;
   recoveryFailureMessage: string;
@@ -239,7 +238,7 @@ export async function executeBookingModificationRefund({
       // replay (which reconstructs this same reason from the stored key prefix)
       // sends a byte-identical body and Stripe replays the original refund
       // instead of rejecting the reused idempotency key.
-      metadata: buildBookingModificationRefundMetadata(bookingId, metadataReason),
+      metadata: buildBookingModificationRefundMetadata(bookingId, bookingModificationRefundReasonForKeyPrefix(idempotencyKeyPrefix)),
       // Scope the Stripe idempotency key to this modification. Without it two
       // reductions on the same booking that resolve to the same refund amount
       // (e.g. removing two identically-priced guests) produce an identical key
