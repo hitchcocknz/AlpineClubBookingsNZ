@@ -32,6 +32,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import {
   EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE,
+  isCancelCardShortfallTask,
   isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
@@ -464,6 +465,7 @@ export async function resolveManualRefundTask(
           amountCents: settlementRoute.refundCents,
           refundMethod: refundMethodForEditReviewRoute(settlementRoute),
           paymentSource: task.payment?.source ?? null,
+          cardShortfall: isCancelCardShortfallTask(task), // #4097
           officerMemberId: actingMemberId,
           store: tx,
         });

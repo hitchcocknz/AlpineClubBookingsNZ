@@ -27,6 +27,7 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCapturePaymentLabel,
+  CARD_REFUND_SHORTFALL_ALERT_BODY, CARD_REFUND_SHORTFALL_ALERT_LEAD,
   GROUP_HAND_BACK_ALERT_BODY, GROUP_HAND_BACK_ALERT_LEAD, manualRefundTaskAlertAmountLabel,
   secondInstrumentConflictOutcomeParagraph,
   type ManualRefundTaskAlertSituation,
@@ -548,9 +549,10 @@ export function adminManualRefundTaskTemplate(data: {
   format: ClubFormat,
 ): string {
   const group = data.situation === "group-organiser-internet-banking"; // #4042
+  const shortfall = data.situation === "card-refund-shortfall"; // #4097
   return layout(`
-    ${heading(group ? "Manual Refund Needed — Internet Banking Group Cancelled" : "Manual Refund Needed — Cash Booking Cancelled")}
-    ${group ? `${alertBox(GROUP_HAND_BACK_ALERT_LEAD, "warning")}${paragraph(GROUP_HAND_BACK_ALERT_BODY)}` : `${alertBox(
+    ${heading(group ? "Manual Refund Needed — Internet Banking Group Cancelled" : shortfall ? "Manual Refund Needed — Card Refund Short on a Cancelled Booking" : "Manual Refund Needed — Cash Booking Cancelled")}
+    ${group ? `${alertBox(GROUP_HAND_BACK_ALERT_LEAD, "warning")}${paragraph(GROUP_HAND_BACK_ALERT_BODY)}` : shortfall ? `${alertBox(CARD_REFUND_SHORTFALL_ALERT_LEAD, "warning")}${paragraph(CARD_REFUND_SHORTFALL_ALERT_BODY)}` : `${alertBox(
       "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand — nothing was refunded automatically.",
       "warning"
     )}

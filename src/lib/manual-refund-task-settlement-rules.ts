@@ -76,6 +76,38 @@ export function refundRequestHandBackOccurrenceKey(refundRequestId: string): str
 }
 
 /**
+ * #4097 (`INV-PAY-129`): THE OCCURRENCE-KEY PREFIX of a cancellation's card
+ * refund shortfall - the part of an own-card cancel's refund that its frozen
+ * card refund plan could not carry, raised in the cancel's claim so the
+ * treasurer pays it by bank transfer. A cancellation's OWN hand-back, so it is
+ * deliberately not in the non-cancellation list below. One per booking (a
+ * booking is cancelled once): the key is the duplicate fence and, with the
+ * kind, the marker.
+ */
+export const CANCEL_CARD_SHORTFALL_KEY_PREFIX = "cancel-card-shortfall:";
+
+/** The one occurrence key of one cancellation's card refund shortfall (`INV-PAY-129`). */
+export function cancelCardShortfallOccurrenceKey(bookingId: string): string {
+  return `${CANCEL_CARD_SHORTFALL_KEY_PREFIX}${bookingId}`;
+}
+
+/**
+ * #4097 (`INV-PAY-129`): IS THIS TASK A CANCELLATION'S CARD REFUND SHORTFALL?
+ * Its money goes back by bank transfer on a card payment that has no refund
+ * row for it, so its completion posts the booking ledger's `BANK_REFUND` line
+ * itself (`postHandBackLedgerLine`, `INV-MONEY-035`).
+ */
+export function isCancelCardShortfallTask(task: {
+  kind: ManualRefundTaskKind | string | null;
+  occurrenceKey: string | null;
+}): boolean {
+  return (
+    task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+    (task.occurrenceKey?.startsWith(CANCEL_CARD_SHORTFALL_KEY_PREFIX) ?? false)
+  );
+}
+
+/**
  * #3372 (owner, 7 Oct 2026: "Count + add close action"; #3924 round 4, M2,
  * `INV-PAY-122`): THE OCCURRENCE-KEY PREFIX of the record a "Paid another way"
  * close writes - a card refund Stripe gave up on, which the treasurer paid back

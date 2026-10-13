@@ -7,6 +7,7 @@ import {
   bookingCancelledRefundSentence,
   type OrganiserRefundMethod,
   ownCardRefundPendingSentence,
+  ownCardRefundWithByHandRemainderSentence,
 } from "@/lib/booking-modified-email-copy";
 
 /**
@@ -138,23 +139,32 @@ export function OrganiserRefundConfirmation({
  * `card_pending`, so `pending`), it is the "Booking Cancelled" email's own
  * sentence, as information, never "has been processed"; an officer cancelling
  * on the member's behalf reads "the member's". A made refund keeps its wording.
+ * #4097: `byHandCents`, the part the card refund could not carry, is named
+ * beside the card's own amount (`amountCents`), as information.
  */
 export function OwnCardRefundConfirmation({
   amountCents,
+  byHandCents = 0,
   pending,
   format,
   emailNote,
   onBehalfOfMember,
 }: {
   amountCents: number;
+  byHandCents?: number;
   pending: boolean;
   format: ClubFormat;
   emailNote: string;
   onBehalfOfMember: boolean;
 }) {
   const amount = formatCents(amountCents, format);
+  const whose = onBehalfOfMember ? "the member's" : "your";
+  if (byHandCents > 0) {
+    const sentence = ownCardRefundWithByHandRemainderSentence(amountCents, byHandCents, (cents) => formatCents(cents, format), pending, whose);
+    return <p className="text-sm text-info-11" data-testid="own-card-refund-by-hand-remainder">{sentence + emailNote}</p>;
+  }
   if (pending) {
-    return <p className="text-sm text-info-11">{ownCardRefundPendingSentence(amount, onBehalfOfMember ? "the member's" : "your") + emailNote}</p>;
+    return <p className="text-sm text-info-11">{ownCardRefundPendingSentence(amount, whose) + emailNote}</p>;
   }
   return (
     <p className="text-sm text-success-11">

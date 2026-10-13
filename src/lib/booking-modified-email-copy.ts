@@ -102,17 +102,52 @@ export type OwnCardRefundMethod = "card" | "card_pending";
 export type BookingCancelledRefundMethod = OwnCardRefundMethod | "credit" | "manual" | "organiser_by_hand" | OrganiserRefundMethod;
 
 /**
+ * #4097 (`INV-PAY-129`): the part of an own-card cancel's refund its card
+ * refund plan could not carry, which the club refunds by bank transfer (a
+ * hand-back task). `cents` is that part, inside `refundCents`; `formatAmount`
+ * formats cents in the club's format.
+ */
+export type OwnCardByHandRemainder = { cents: number; formatAmount: (cents: number) => string };
+
+/**
+ * #4097 (`INV-PAY-129`): an own-card cancel's refund split between the card
+ * (made, or on its way when `pending`) and the remainder the club refunds by
+ * bank transfer. Nothing on the card says only the bank transfer. The email
+ * and the cancel dialog's confirmation, where an officer cancelling on the
+ * member's behalf reads "the member's" (`whose`).
+ */
+export function ownCardRefundWithByHandRemainderSentence(
+  cardCents: number,
+  byHandCents: number,
+  formatAmount: (cents: number) => string,
+  pending: boolean,
+  whose: "your" | "the member's" = "your",
+): string {
+  const recipient = whose === "your" ? "you" : "the member";
+  if (cardCents <= 0) return `The club will refund ${formatAmount(byHandCents)} to ${recipient} by bank transfer.`;
+  const card = pending
+    ? `A refund of ${formatAmount(cardCents)} is on its way to ${whose} original payment method`
+    : `A refund of ${formatAmount(cardCents)} has been processed to ${whose} original payment method`;
+  return `${card}, and the club will refund the remaining ${formatAmount(byHandCents)} to ${recipient} by bank transfer.`;
+}
+
+/**
  * #3973: the refund line of a "Booking Cancelled" email, ONE wording for the
  * HTML template, the admin-editable body's `{{refundMessage}}` and the cancel
  * dialog's organiser-paid confirmation (`INV-SSOT`). `amount` is `refundCents`
- * formatted in the club's format.
+ * formatted in the club's format. #4097: `byHand`, on an own-card refund, is
+ * the part the club refunds by bank transfer.
  */
 export function bookingCancelledRefundSentence(
   refundCents: number,
   amount: string,
   refundMethod: BookingCancelledRefundMethod,
+  byHand?: OwnCardByHandRemainder,
 ): string {
   if (refundCents <= 0) return "No refund was applicable based on the cancellation policy.";
+  if (byHand && byHand.cents > 0 && (refundMethod === "card" || refundMethod === "card_pending")) {
+    return ownCardRefundWithByHandRemainderSentence(refundCents - byHand.cents, byHand.cents, byHand.formatAmount, refundMethod === "card_pending");
+  }
   switch (refundMethod) {
     case "manual":
       return `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${amount} directly and will be in touch.`;
@@ -138,10 +173,12 @@ export function bookingCancelledRefundSentence(
 /**
  * #3973: a refund already made reads as a success; a hand-back, a refund still
  * on its way (#4084: `card_pending` too), or no refund at all reads as
- * information. The email's box and the confirmation screen both ask here.
+ * information. #4097: so does a card refund with a remainder the club still
+ * refunds by bank transfer (`byHandCents`). The email's box and the
+ * confirmation screen both ask here.
  */
-export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod): boolean {
-  if (refundCents <= 0) return false;
+export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod, byHandCents = 0): boolean {
+  if (refundCents <= 0 || byHandCents > 0) return false;
   return refundMethod === "card" || refundMethod === "credit" || refundMethod === "organiser_card" || refundMethod === "group_cancel_refunded";
 }
 
