@@ -1,8 +1,23 @@
 // @vitest-environment jsdom
 
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { expectToHoldFocus } from "@/lib/__tests__/helpers/focus";
 import {
   ForbiddenSaveError,
   useSectionEditState,
@@ -28,6 +43,82 @@ function renderSection(
     }),
   );
   return { ...view, save };
+}
+
+afterEach(() => {
+  cleanup();
+});
+
+/** Operate a control the way a keyboard user does: it holds focus first. */
+function activate(control: HTMLElement) {
+  control.focus();
+  fireEvent.click(control);
+}
+
+interface StagedSectionProps {
+  title: string;
+  save?: (draft: Draft) => Promise<Draft>;
+  /** The Edit control is rendered while read-only (a view-only card may hide it). */
+  showEdit?: boolean;
+  /** The Edit control is rendered disabled (a view-only admin). */
+  editDisabled?: boolean;
+}
+
+/**
+ * The canonical staged section's shape: Edit renders only while read-only, and
+ * Save/Cancel only while editing, so every transition unmounts the button that
+ * was just pressed. Save is disabled while saving, as every adopter's is.
+ */
+function StagedSection({
+  title,
+  save = async (draft) => draft,
+  showEdit = true,
+  editDisabled = false,
+}: StagedSectionProps) {
+  const section = useSectionEditState<Draft>({
+    initial: INITIAL,
+    save,
+    successMessage: "Saved",
+    allowPristineSave: true,
+  });
+  // The real card primitives: `CardTitle` renders a `div`, not a heading, so
+  // the region's name has to come from `titleProps`, not a heading lookup.
+  return (
+    <Card {...section.sectionRegionProps}>
+      <CardHeader>
+        <CardTitle {...section.titleProps}>{title}</CardTitle>
+        {!section.editing && showEdit ? (
+          <button
+            type="button"
+            disabled={editDisabled}
+            onClick={section.startEditing}
+            {...section.editTriggerProps}
+          >
+            Edit {title}
+          </button>
+        ) : null}
+      </CardHeader>
+      <CardContent>
+        {/* A row heading the name must NOT be taken from. */}
+        <h4>Row one</h4>
+      </CardContent>
+      {section.error ? <p role="alert">{section.error}</p> : null}
+      {section.editing ? (
+        <div>
+          <button
+            type="button"
+            disabled={section.saving}
+            onClick={() => void section.save()}
+          >
+            Save {title}
+          </button>
+          <button type="button" onClick={section.cancelEditing}>
+            Cancel {title}
+          </button>
+        </div>
+      ) : null}
+    </Card>
+  );
 }
 
 describe("useSectionEditState", () => {
@@ -325,6 +416,212 @@ describe("useSectionEditState", () => {
       expect(result.current.success).toBe("");
       // Reloading drops back to read-only, discarding any in-flight edit.
       expect(result.current.editing).toBe(false);
+    });
+  });
+
+  describe("returning focus when the editor closes (#4087)", () => {
+    const button = (name: string) => screen.getByRole("button", { name });
+
+    it("hands focus back to the re-rendered Edit button after Cancel", async () => {
+      render(<StagedSection title="Discount" />);
+
+      activate(button("Edit Discount"));
+      activate(button("Cancel Discount"));
+
+      // Cancel unmounted the button that held focus; without the return a
+      // keyboard user is left on <body>.
+      await expectToHoldFocus(button("Edit Discount"));
+    });
+
+    it("hands focus back to the Edit button after a successful Save", async () => {
+      render(<StagedSection title="Discount" />);
+
+      activate(button("Edit Discount"));
+      activate(button("Save Discount"));
+
+      await expectToHoldFocus(
+        await screen.findByRole("button", { name: "Edit Discount" }),
+      );
+      expect(screen.queryByRole("button", { name: "Save Discount" })).toBeNull();
+    });
+
+    it("gives focus back to the re-enabled Save when a failed save dropped it", async () => {
+      // A browser drops focus from a control that becomes disabled; jsdom does
+      // not, so the save does what the browser would while it is in flight.
+      const save = vi.fn(async () => {
+        (document.activeElement as HTMLElement | null)?.blur();
+        throw new Error("Rejected");
+      });
+      render(<StagedSection title="Discount" save={save} />);
+
+      activate(button("Edit Discount"));
+      const saveButton = button("Save Discount");
+      activate(saveButton);
+
+      await waitFor(() =>
+        expect(screen.getByRole("alert").textContent).toBe("Rejected"),
+      );
+      // Edit mode stays open and the control the admin pressed has it back.
+      await expectToHoldFocus(saveButton);
+      expect(screen.queryByRole("button", { name: "Edit Discount" })).toBeNull();
+
+      // The edit anchor survived the failure: Cancel still returns to Edit.
+      activate(button("Cancel Discount"));
+      await expectToHoldFocus(button("Edit Discount"));
+    });
+
+    it("leaves a failed save's focus alone when it was never dropped", async () => {
+      const save = vi.fn(async () => {
+        throw new Error("Rejected");
+      });
+      render(<StagedSection title="Discount" save={save} />);
+
+      activate(button("Edit Discount"));
+      const saveButton = button("Save Discount");
+      activate(saveButton);
+      const elsewhere = button("Cancel Discount");
+      elsewhere.focus();
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      await expectToHoldFocus(elsewhere);
+    });
+
+    it("falls back to the section, named by its title, when Edit comes back disabled (view-only)", async () => {
+      const view = render(<StagedSection title="Discount" />);
+
+      activate(button("Edit Discount"));
+      // Permissions narrowed while the editor was open.
+      view.rerender(<StagedSection title="Discount" editDisabled />);
+      activate(button("Cancel Discount"));
+
+      await expectToHoldFocus(screen.getByRole("region", { name: "Discount" }));
+    });
+
+    it("names the card a region by its own title, declaratively, from the first render", () => {
+      render(<StagedSection title="Discount" />);
+
+      const region = screen.getByRole("region", { name: "Discount" });
+      // Named by the CardTitle (a div), not by the row's h4, and before any
+      // return has run — nothing is written into the DOM later.
+      expect(region.getAttribute("aria-labelledby")).toBe(
+        screen.getByText("Discount").id,
+      );
+      expect(screen.queryByRole("region", { name: "Row one" })).toBeNull();
+    });
+
+    it("names a card with no visible title by its regionLabel", () => {
+      function Untitled() {
+        const section = useSectionEditState<Draft>({
+          initial: INITIAL,
+          save: async (draft) => draft,
+          successMessage: "Saved",
+          regionLabel: "Club identity",
+        });
+        return <div {...section.sectionRegionProps} />;
+      }
+      render(<Untitled />);
+
+      const region = screen.getByRole("region", { name: "Club identity" });
+      expect(region.hasAttribute("aria-labelledby")).toBe(false);
+    });
+
+    it("falls back to the section when it no longer renders Edit", async () => {
+      const view = render(<StagedSection title="Discount" />);
+
+      activate(button("Edit Discount"));
+      view.rerender(<StagedSection title="Discount" showEdit={false} />);
+      activate(button("Cancel Discount"));
+
+      await expectToHoldFocus(screen.getByRole("region", { name: "Discount" }));
+    });
+
+    it("returns each of two sections open at once to its OWN Edit", async () => {
+      render(
+        <>
+          <StagedSection title="First" />
+          <StagedSection title="Second" />
+        </>,
+      );
+
+      activate(button("Edit First"));
+      activate(button("Edit Second"));
+
+      // First closes first, so when Second closes BOTH Edit controls are on
+      // the page and only Second's own marker picks the right one.
+      activate(button("Cancel First"));
+      await expectToHoldFocus(button("Edit First"));
+
+      activate(button("Cancel Second"));
+      await expectToHoldFocus(button("Edit Second"));
+    });
+
+    it("finds this section's Edit by its marker, not by its name", async () => {
+      // Two Edit controls with IDENTICAL names: only the per-instance marker
+      // tells them apart.
+      function SameName({ marker }: { marker: string }) {
+        const section = useSectionEditState<Draft>({
+          initial: INITIAL,
+          save: async (draft) => draft,
+          successMessage: "Saved",
+        });
+        // Cancel sits in a wrapper so React cannot reuse the Edit's DOM node
+        // for it: the Edit after Cancel is a NEW element, as in every section.
+        return section.editing ? (
+          <span>
+            <button type="button" onClick={section.cancelEditing}>
+              Cancel {marker}
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            data-testid={marker}
+            onClick={section.startEditing}
+            {...section.editTriggerProps}
+          >
+            Edit
+          </button>
+        );
+      }
+      render(
+        <div>
+          <SameName marker="first" />
+          <SameName marker="second" />
+        </div>,
+      );
+
+      activate(screen.getByTestId("second"));
+      activate(button("Cancel second"));
+
+      await expectToHoldFocus(screen.getByTestId("second"));
+    });
+
+    it("leaves focus alone when the admin has already moved it", async () => {
+      render(
+        <>
+          <StagedSection title="Discount" />
+          <input aria-label="Elsewhere" />
+        </>,
+      );
+
+      activate(button("Edit Discount"));
+      const elsewhere = screen.getByRole("textbox", { name: "Elsewhere" });
+      elsewhere.focus();
+      // A pointer press on Cancel that never moved focus.
+      fireEvent.click(button("Cancel Discount"));
+
+      await expectToHoldFocus(elsewhere);
+    });
+
+    it("still returns to Edit when it was opened with nothing focused", async () => {
+      render(<StagedSection title="Discount" />);
+
+      // Mouse clicks in a browser that does not focus buttons; then the close
+      // drops focus to the page all the same.
+      fireEvent.click(button("Edit Discount"));
+      fireEvent.click(button("Cancel Discount"));
+
+      await expectToHoldFocus(button("Edit Discount"));
     });
   });
 });
