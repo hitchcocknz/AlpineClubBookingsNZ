@@ -12,7 +12,7 @@
  * imports this file so CI reaches it; it owns and cleans its own `race-4046-`
  * fixtures.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -48,6 +48,7 @@ export function assertSafeVoidPointerRaceDbUrl(url: string): void {
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let upsertXeroObjectLink: (typeof import("@/lib/xero-sync"))["upsertXeroObjectLink"];
+let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["reconcileXeroCreditNote"];
 
 (RUN ? describe : describe.skip)(
   "a voided refund credit note moves the payment's pointer in the same write - real PostgreSQL (#4046)",
@@ -116,6 +117,7 @@ let upsertXeroObjectLink: (typeof import("@/lib/xero-sync"))["upsertXeroObjectLi
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ upsertXeroObjectLink } = await import("@/lib/xero-sync"));
+      ({ reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note"));
 
       await deleteFixtures();
       await prisma.member.create({
@@ -178,6 +180,81 @@ let upsertXeroObjectLink: (typeof import("@/lib/xero-sync"))["upsertXeroObjectLi
       const after = await state();
       expect(after).toEqual({ pointer: "cn_canonical", active: ["cn_canonical", "cn_per_refund_new"] });
       expectNoMissingLink(after);
+    });
+
+    /** The inbound reconcile, reading `note` from a fake Xero (no provider call). */
+    async function withFakeXero<T>(note: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+      const xero = { accountingApi: { getCreditNote: async () => ({ body: { creditNotes: [note] } }) } };
+      const apiClient = await import("@/lib/xero-api-client");
+      const spies = [
+        vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero, tenantId: "tenant-4046" } as never),
+        vi.spyOn(apiClient, "callXeroApi").mockImplementation(((call: () => unknown) => call()) as never),
+      ];
+      try {
+        return await run();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    }
+
+    /**
+     * Every value committed to this payment's pointer while `run` executes,
+     * recorded by a temporary trigger so a write that a later step undoes is
+     * still seen.
+     */
+    async function recordPointerWrites(run: () => Promise<unknown>): Promise<Array<string | null>> {
+      await prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS race_4046_pointer_writes (seq serial PRIMARY KEY, note_id text)`);
+      await prisma.$executeRawUnsafe(`TRUNCATE race_4046_pointer_writes`);
+      await prisma.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION race_4046_record_pointer() RETURNS trigger AS $$
+        BEGIN
+          IF NEW."id" = '${PAYMENT_ID}' AND NEW."xeroRefundCreditNoteId" IS DISTINCT FROM OLD."xeroRefundCreditNoteId" THEN
+            INSERT INTO race_4046_pointer_writes (note_id) VALUES (NEW."xeroRefundCreditNoteId");
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS race_4046_pointer_trigger ON "Payment"`);
+      await prisma.$executeRawUnsafe(
+        `CREATE TRIGGER race_4046_pointer_trigger AFTER UPDATE OF "xeroRefundCreditNoteId" ON "Payment" FOR EACH ROW EXECUTE FUNCTION race_4046_record_pointer()`,
+      );
+      try {
+        await run();
+        const rows = await prisma.$queryRawUnsafe<Array<{ note_id: string | null }>>(
+          `SELECT note_id FROM race_4046_pointer_writes ORDER BY seq`,
+        );
+        return rows.map((row) => row.note_id);
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS race_4046_pointer_trigger ON "Payment"`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS race_4046_record_pointer()`);
+        await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS race_4046_pointer_writes`);
+      }
+    }
+
+    it("an inbound reconcile of a card payment's only note, voided, never writes the voided note back into the pointer", async () => {
+      await paymentWithNotes("STRIPE", "cn_only", [
+        { id: "cn_only", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000 } },
+      ]);
+      const voided = {
+        creditNoteID: "cn_only", creditNoteNumber: "CN-4046", status: "VOIDED",
+        total: 200, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [],
+      };
+
+      // The first link loop clears the pointer. Before the fix the
+      // canonical-backfill pass then wrote the voided note straight back (one
+      // commit), and only the second link loop cleared it again - so a throw
+      // between the two left the report's "missing link" in place.
+      const writes = await recordPointerWrites(() => withFakeXero(voided, () => reconcileXeroCreditNote("cn_only")));
+
+      expect(writes).not.toContain("cn_only");
+      expect(writes).toEqual([null]);
+      const after = await state();
+      expect(after).toEqual({ pointer: null, active: [] });
+      expectNoMissingLink(after);
+
+      // A redelivery writes nothing.
+      expect(await recordPointerWrites(() => withFakeXero(voided, () => reconcileXeroCreditNote("cn_only"))))
+        .toEqual([]);
+      expect(await state()).toEqual(after);
     });
 
     it("the pointer move commits or rolls back with the mirror write", async () => {
