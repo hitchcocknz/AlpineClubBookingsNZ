@@ -30,6 +30,7 @@ import {
   FinishedStayApprovalNotice,
   FinishedStaySettlementField,
   FinishedStayQuoteSummary,
+  expectedFiguresOf,
   OfficerGuestEntry,
   officerGuestsKey,
   officerGuestsPayload,
@@ -252,6 +253,8 @@ export function BookingChangeRequestsPanel({
                   ? { confirmOverCapacity: true }
                   : {}),
                 ...(officerGuestsFor(request) ? { officerGuests: officerGuestsFor(request) } : {}),
+                // #4030 review C4: the figures this approval was shown.
+                expectedFigures: expectedFiguresOf(quotes.quoteFor(request.id)),
               }
             : {}),
         }),
@@ -260,6 +263,9 @@ export function BookingChangeRequestsPanel({
       if (!response.ok) {
         // #3750 decision 3: over-capacity past nights warn, and the officer
         // confirms on this card before the change is applied.
+        // #4030 review C4: the figures moved under the officer; drop the stale
+        // ones so Approve stays off until they are checked again.
+        if (data.code === "FIGURES_CHANGED") quotes.clear(request.id);
         if (data.needsCapacityConfirmation === true) {
           quotes.needsCapacity(
             request.id,

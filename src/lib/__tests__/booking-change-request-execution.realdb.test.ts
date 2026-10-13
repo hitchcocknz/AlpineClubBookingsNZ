@@ -269,10 +269,16 @@ async function approve(
     officerEnteredGuests?: Parameters<
       typeof executor.approveAndExecuteLockedPeriodChangeRequest
     >[0]["officerEnteredGuests"];
+    expectedFigures?: Parameters<
+      typeof executor.approveAndExecuteLockedPeriodChangeRequest
+    >[0]["expectedFigures"];
+    dryRun?: boolean;
   } = {},
 ) {
   return executor.approveAndExecuteLockedPeriodChangeRequest({
     ...(options.officerEnteredGuests ? { officerEnteredGuests: options.officerEnteredGuests } : {}),
+    ...(options.expectedFigures ? { expectedFigures: options.expectedFigures } : {}),
+    ...(options.dryRun ? { dryRun: true } : {}),
     requestId: REQUEST_ID,
     expectedVersion: 1,
     actorMemberId: officerId,
@@ -1352,4 +1358,64 @@ function deferred() {
     expect(requested).not.toHaveProperty("officerEntry");
     expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
   });
+  it("#4030 review C1: two officers entering different guests at once — one applies, the other loses the claim", async () => {
+    await seed({ requested: FREE_TEXT });
+    const results = await Promise.all([
+      approve(OFFICER_ID, { officerEnteredGuests: [GRANDCHILDREN[0]] }),
+      approve(OFFICER_2_ID, { officerEnteredGuests: [GRANDCHILDREN[1]] }),
+    ]);
+    const outcomes = results.map((result) => result.outcome).sort();
+    expect(outcomes, JSON.stringify(results)).toEqual(["claimLost", "executed"]);
+    const winnerIndex = results.findIndex((result) => result.outcome === "executed");
+    const winnerId = winnerIndex === 0 ? OFFICER_ID : OFFICER_2_ID;
+    const winnerGuest = GRANDCHILDREN[winnerIndex];
+
+    const { request, requested } = await storedRequested();
+    expect(request).toMatchObject({ status: "APPROVED", version: 2, reviewedByMemberId: winnerId });
+    expect(requested.addGuests).toEqual([winnerGuest]);
+    expect(requested.officerEntry).toMatchObject({ officerMemberId: winnerId });
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+    const guests = await prisma.bookingGuest.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(guests.map((guest) => guest.firstName).sort()).toEqual(["Original", winnerGuest!.firstName].sort());
+  }, 60_000);
+
+  it("#4030 review C2: a dry run with an officer's entry quotes it and writes nothing", async () => {
+    await seed({ requested: FREE_TEXT });
+    const before = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN, dryRun: true });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "quoted",
+      additionalAmountCents: 3 * NIGHT_CENTS,
+      changeFeeCents: 0,
+    });
+    const after = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(after).toMatchObject({ status: "REQUESTED", version: 1, reviewedByMemberId: null, linkedModificationId: null });
+    expect(after.requestedChanges).toEqual(before.requestedChanges);
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+  });
+
+  it("#4030 review C4: an approval whose figures moved since the check is refused and rolled back", async () => {
+    await seed({ requested: FREE_TEXT });
+    const before = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    await expect(
+      approve(OFFICER_ID, {
+        officerEnteredGuests: GRANDCHILDREN,
+        // The officer was shown one night fewer than the edit now charges.
+        expectedFigures: { additionalAmountCents: 2 * NIGHT_CENTS, refundAmountCents: 0, accountCreditAmountCents: 0 },
+      }),
+    ).rejects.toBeInstanceOf(executor.FinishedStayFiguresChangedError);
+    const after = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(after).toMatchObject({ status: "REQUESTED", version: 1, linkedModificationId: null });
+    expect(after.requestedChanges).toEqual(before.requestedChanges);
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+
+    // With the figures the edit really produces, it applies once.
+    const applied = await approve(OFFICER_ID, {
+      officerEnteredGuests: GRANDCHILDREN,
+      expectedFigures: { additionalAmountCents: 3 * NIGHT_CENTS, refundAmountCents: 0, accountCreditAmountCents: 0 },
+    });
+    expect(applied).toMatchObject({ outcome: "executed", additionalAmountCents: 3 * NIGHT_CENTS });
+  }, 60_000);
 });

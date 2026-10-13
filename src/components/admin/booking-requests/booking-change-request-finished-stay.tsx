@@ -151,6 +151,22 @@ export function useFinishedStayQuotes(onError: (message: string) => void) {
   };
 }
 
+/**
+ * #4030 review C4: the money figures an approval sends as what it was shown.
+ * The Approve button is enabled only with current figures, so this is never
+ * undefined when it is sent; the server refuses an applying approval without it.
+ */
+export function expectedFiguresOf(quote: FinishedStayQuote | undefined) {
+  const figures = quote?.figures;
+  return figures
+    ? {
+        additionalAmountCents: figures.additionalAmountCents,
+        refundAmountCents: figures.refundAmountCents,
+        accountCreditAmountCents: figures.accountCreditAmountCents,
+      }
+    : undefined;
+}
+
 /** Whether a card's quote still describes what approving would do. */
 export function quoteIsCurrent(
   quote: FinishedStayQuote | undefined,

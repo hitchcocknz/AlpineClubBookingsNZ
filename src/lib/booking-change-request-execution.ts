@@ -164,6 +164,31 @@ export interface FinishedStayCorrectionFigures {
   settlementMethod: BookingModificationSettlementMethod;
 }
 
+/**
+ * #4030 review C4: the money figures the officer was shown before approving.
+ * An approval is applied only if the edit it runs, under the locks, produces
+ * exactly these; anything else (a season rate, the capacity, the payment
+ * moved since the check) refuses and rolls back, so nobody is charged a
+ * figure the officer never saw.
+ */
+export interface FinishedStayExpectedFigures {
+  additionalAmountCents: number;
+  refundAmountCents: number;
+  accountCreditAmountCents: number;
+}
+
+export const FINISHED_STAY_FIGURES_CHANGED_MESSAGE =
+  "The figures changed since you checked them, so nothing has been applied. Check the figures again before approving; the request is still pending.";
+
+/** Thrown to roll an approval back when its figures moved (#4030 review C4). */
+export class FinishedStayFiguresChangedError extends Error {
+  readonly code = "FIGURES_CHANGED";
+  constructor(readonly actual: FinishedStayExpectedFigures) {
+    super(FINISHED_STAY_FIGURES_CHANGED_MESSAGE);
+    this.name = "FinishedStayFiguresChangedError";
+  }
+}
+
 /** Thrown to roll a dry run back, carrying what it would have done. */
 class FinishedStayDryRun extends Error {
   constructor(readonly figures: FinishedStayCorrectionFigures) {
@@ -206,6 +231,12 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
    * already names a change.
    */
   officerEnteredGuests?: OfficerEnteredGuest[];
+  /**
+   * #4030 review C4: the figures the officer's check showed. An executed
+   * approval whose own figures differ is refused and rolled back. Absent only on
+   * a dry run, which is how those figures are produced.
+   */
+  expectedFigures?: FinishedStayExpectedFigures;
   /**
    * P2 on #3955: run everything — locks, claim, the canonical edit — and roll
    * it back before commit, answering `quoted` with the figures. No provider
@@ -414,6 +445,22 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
           accountCreditAmountCents: modified.accountCreditAmountCents,
           capacityOverridden: modified.capacityOverridden,
           settlementMethod,
+        });
+      }
+
+      // #4030 review C4: charge only what the officer was shown. A throw rolls
+      // the claim, the entry and the edit back together.
+      const expected = params.expectedFigures;
+      if (
+        expected &&
+        (expected.additionalAmountCents !== modified.additionalAmountCents ||
+          expected.refundAmountCents !== modified.refundAmountCents ||
+          expected.accountCreditAmountCents !== modified.accountCreditAmountCents)
+      ) {
+        throw new FinishedStayFiguresChangedError({
+          additionalAmountCents: modified.additionalAmountCents,
+          refundAmountCents: modified.refundAmountCents,
+          accountCreditAmountCents: modified.accountCreditAmountCents,
         });
       }
 

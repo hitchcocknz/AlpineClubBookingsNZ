@@ -160,6 +160,7 @@ describe("change-request panel — the officer enters the guests (#4030)", () =>
       adminNotes: "Added your grandchildren.",
       expectedVersion: 2,
       officerGuests: [ari],
+      expectedFigures: { additionalAmountCents: 8_000, refundAmountCents: 0, accountCreditAmountCents: 0 },
     });
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/recorded on the member's behalf/i)),
@@ -211,5 +212,31 @@ describe("change-request panel — the officer enters the guests (#4030)", () =>
         String(input).startsWith("/api/admin/bookings/bk-1/member-guest-candidates"),
       ),
     ).toBe(true);
+  });
+
+  it("drops figures that moved under the officer, so Approve waits for a fresh check (review C4)", async () => {
+    let approvals = 0;
+    const base = fetchMock.getMockImplementation() as (input: unknown, init?: RequestInit) => Promise<Response>;
+    fetchMock.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).endsWith("req-1") && init?.method === "PATCH") {
+        approvals += 1;
+        return jsonResponse(
+          { id: "req-1", status: "REQUESTED", keptPending: true, code: "FIGURES_CHANGED", error: "The figures changed since you checked them." },
+          409,
+        );
+      }
+      return base(input, init);
+    });
+    render(<BookingChangeRequestsPanel />);
+    fireEvent.change(await screen.findByLabelText(/Explanation for the member/i), { target: { value: "ok" } });
+    await enterGuest("Ari");
+    fireEvent.click(screen.getByRole("button", { name: /Check the figures/i }));
+    await screen.findByRole("list", { name: /What approving will do/i });
+    const approve = screen.getByRole("button", { name: "Approve and apply" });
+    fireEvent.click(approve);
+    expect(await screen.findByText(/The figures changed since you checked them/)).toBeInTheDocument();
+    expect(approvals).toBe(1);
+    await waitFor(() => expect(approve).toBeDisabled());
+    expect(screen.queryByRole("list", { name: /What approving will do/i })).toBeNull();
   });
 });

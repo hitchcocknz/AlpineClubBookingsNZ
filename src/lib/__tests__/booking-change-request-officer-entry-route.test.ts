@@ -38,9 +38,15 @@ vi.mock("@/lib/club-time/server", () => ({
   clubTime: async () => ({ today: () => requireCalendarDate("2026-07-01") }),
 }));
 vi.mock("@/lib/club-format-server", () => ({ clubFormatValues: async () => CLUB_FORMAT_TEST }));
-vi.mock("@/lib/booking-change-request-execution", () => ({
+vi.mock("@/lib/booking-change-request-execution", async (importActual) => ({
+  // The real error class (#4030 review C4), so the route's mapping is the real one.
+  FinishedStayFiguresChangedError: (
+    (await importActual()) as typeof import("@/lib/booking-change-request-execution")
+  ).FinishedStayFiguresChangedError,
   approveAndExecuteLockedPeriodChangeRequest: (...args: unknown[]) => mocks.execute(...args),
 }));
+// #4030 review C4: the figures an applying approval says it was shown.
+const FIGS = { additionalAmountCents: 4_500, refundAmountCents: 0, accountCreditAmountCents: 0 };
 vi.mock("@/lib/booking-batch-modification-service", () => ({
   prepareBatchModificationForCallerTransaction: async () => ({ marker: "pre" }),
 }));
@@ -113,7 +119,7 @@ describe("PATCH — the officer's entry (#4030 Part B)", () => {
 
     const response = await patch({
       status: "APPROVED",
-      execute: true,
+      execute: true, expectedFigures: FIGS,
       expectedVersion: 2,
       adminNotes: "Added your grandchildren.",
       officerGuests: GUESTS,
@@ -151,7 +157,7 @@ describe("PATCH — the officer's entry (#4030 Part B)", () => {
     mocks.requestFindUnique
       .mockResolvedValueOnce(preRead(FINISHED))
       .mockResolvedValueOnce({ id: "cr-1" });
-    await patch({ status: "APPROVED", execute: true, adminNotes: "ok" });
+    await patch({ status: "APPROVED", execute: true, expectedFigures: FIGS, adminNotes: "ok" });
     expect(mocks.execute.mock.calls[0][0]).not.toHaveProperty("officerEnteredGuests");
     const [audit] = mocks.logAudit.mock.calls[0] as [{ metadata: Record<string, unknown> }];
     expect(audit.metadata.officerEnteredGuests).toBeNull();
@@ -181,7 +187,7 @@ describe("PATCH — the officer's entry (#4030 Part B)", () => {
   it("refuses an entry whose guests do not state their nights", async () => {
     const response = await patch({
       status: "APPROVED",
-      execute: true,
+      execute: true, expectedFigures: FIGS,
       adminNotes: "ok",
       officerGuests: [{ firstName: "Ari", lastName: "Example", ageTier: "CHILD", isMember: false }],
     });
@@ -190,8 +196,43 @@ describe("PATCH — the officer's entry (#4030 Part B)", () => {
   });
 
   it("refuses an empty entry", async () => {
-    const response = await patch({ status: "APPROVED", execute: true, adminNotes: "ok", officerGuests: [] });
+    const response = await patch({ status: "APPROVED", execute: true, expectedFigures: FIGS, adminNotes: "ok", officerGuests: [] });
     expect(response.status).toBe(400);
+  });
+});
+
+describe("PATCH — the figures the approval was shown (#4030 review C4)", () => {
+  it("refuses an applying approval that does not send the figures it was shown, writing nothing", async () => {
+    mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
+    const response = await patch({ status: "APPROVED", execute: true, adminNotes: "ok" });
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("EXPECTED_FIGURES_REQUIRED");
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("hands the shown figures to the executor", async () => {
+    mocks.requestFindUnique
+      .mockResolvedValueOnce(preRead(FINISHED))
+      .mockResolvedValueOnce({ id: "cr-1" });
+    await patch({ status: "APPROVED", execute: true, expectedFigures: FIGS, adminNotes: "ok" });
+    expect(mocks.execute).toHaveBeenCalledWith(expect.objectContaining({ expectedFigures: FIGS }));
+  });
+
+  it("answers moved figures with a 409 that keeps the request pending", async () => {
+    const { FinishedStayFiguresChangedError } = await import("@/lib/booking-change-request-execution");
+    mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
+    mocks.execute.mockRejectedValue(
+      new FinishedStayFiguresChangedError({ additionalAmountCents: 9_000, refundAmountCents: 0, accountCreditAmountCents: 0 }),
+    );
+    const response = await patch({ status: "APPROVED", execute: true, expectedFigures: FIGS, adminNotes: "ok" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "FIGURES_CHANGED",
+      keptPending: true,
+      status: "REQUESTED",
+      error: expect.stringMatching(/Check the figures again/),
+    });
+    expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 });
 

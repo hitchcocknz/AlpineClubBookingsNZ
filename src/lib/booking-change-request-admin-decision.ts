@@ -11,7 +11,11 @@ import { clubTime } from "@/lib/club-time/server";
 import { dateOnlyInstantOf, type CalendarDate } from "@/lib/club-time";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { isFinishedStay } from "@/lib/booking-edit-policy";
-import { approveAndExecuteLockedPeriodChangeRequest } from "@/lib/booking-change-request-execution";
+import {
+  approveAndExecuteLockedPeriodChangeRequest,
+  FinishedStayFiguresChangedError,
+  type FinishedStayExpectedFigures,
+} from "@/lib/booking-change-request-execution";
 import { prepareBatchModificationForCallerTransaction } from "@/lib/booking-batch-modification-service";
 import { BookingModificationSettlementMethodRequiredError } from "@/lib/booking-modify-settlement-required";
 import { NO_SEASON_RATE_MESSAGE } from "@/lib/booking-modify-plan";
@@ -123,7 +127,23 @@ export const finishedStayApprovalFields = {
    * the member's behalf by the approval's own claim.
    */
   officerGuests: officerEnteredGuestsSchema.optional(),
+  /**
+   * #4030 review C4: the money figures the officer's check showed, REQUIRED on
+   * an approval that applies the request; the executor refuses one whose own
+   * figures differ.
+   */
+  expectedFigures: z
+    .object({
+      additionalAmountCents: z.number().int(),
+      refundAmountCents: z.number().int(),
+      accountCreditAmountCents: z.number().int(),
+    })
+    .optional(),
 };
+
+/** #4030 review C4: an applying approval sent without the figures it was shown. */
+export const EXPECTED_FIGURES_MISSING_MESSAGE =
+  "Check the figures before approving: this approval applies the change and does not say what it was shown. Nothing has been changed.";
 
 /** The quote route's body (P2 on #3955), with the officer's entry (#4030). */
 export const finishedStayQuoteSchema = z.object({
@@ -181,6 +201,7 @@ export async function finishedStayApprovalResponse(
       expectedVersion?: number;
       execute?: boolean;
       officerGuests?: OfficerEnteredGuest[];
+      expectedFigures?: FinishedStayExpectedFigures;
     };
     actorMemberId: string;
   },
@@ -225,6 +246,12 @@ export async function finishedStayApprovalResponse(
       { status: 400 },
     );
   }
+  if (!body.expectedFigures) {
+    return NextResponse.json(
+      { error: EXPECTED_FIGURES_MISSING_MESSAGE, code: "EXPECTED_FIGURES_REQUIRED" },
+      { status: 400 },
+    );
+  }
   return runFinishedStayApproval(req, {
     id: request.id,
     actorMemberId: args.actorMemberId,
@@ -235,6 +262,7 @@ export async function finishedStayApprovalResponse(
     confirmOverCapacity: body.confirmOverCapacity === true,
     settlementMethod: body.settlementMethod,
     officerGuests: body.officerGuests,
+    expectedFigures: body.expectedFigures,
     todayAtClub: today,
     dryRun: false,
   });
@@ -289,6 +317,7 @@ export async function finishedStayQuoteResponse(
     confirmOverCapacity: args.body.confirmOverCapacity === true,
     settlementMethod: args.body.settlementMethod,
     officerGuests: args.body.officerGuests,
+    expectedFigures: undefined,
     todayAtClub: today,
     dryRun: true,
   });
@@ -314,6 +343,10 @@ function finishedStayRefusalResponse(
     keptPending: true,
   });
   if (hostingRetry) return hostingRetry;
+  if (error instanceof FinishedStayFiguresChangedError) {
+    // #4030 review C4: rolled back; the card clears its figures and re-checks.
+    return pending({ error: error.message, code: error.code, figures: error.actual }, 409);
+  }
   if (error instanceof OverCapacityConfirmationRequiredError) {
     // Decision 3: warn, and let the officer confirm. Nothing was written.
     return pending(
@@ -392,6 +425,7 @@ async function runFinishedStayApproval(
     confirmOverCapacity: boolean;
     settlementMethod: "card" | "credit" | undefined;
     officerGuests: OfficerEnteredGuest[] | undefined;
+    expectedFigures: FinishedStayExpectedFigures | undefined;
     todayAtClub: CalendarDate;
     dryRun: boolean;
   },
@@ -417,6 +451,7 @@ async function runFinishedStayApproval(
       confirmOverCapacity: args.confirmOverCapacity,
       settlementMethod: args.settlementMethod,
       ...(args.officerGuests ? { officerEnteredGuests: args.officerGuests } : {}),
+      ...(args.expectedFigures ? { expectedFigures: args.expectedFigures } : {}),
       todayAtClub: args.todayAtClub,
       format,
       preTransaction,

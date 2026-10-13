@@ -254,6 +254,24 @@ describe("officer-entered guests on a free-text request (#4030 Part B)", () => {
     expect(mocks.update).not.toHaveBeenCalled();
   });
 
+  it("applies when the edit produces exactly the figures the officer was shown (review C4)", async () => {
+    const result = await run({
+      expectedFigures: { additionalAmountCents: 10_000, refundAmountCents: 0, accountCreditAmountCents: 0 },
+    });
+    expect(result).toMatchObject({ outcome: "executed" });
+    expect(mocks.update).toHaveBeenCalled();
+  });
+
+  it("refuses, rolling everything back, when the figures moved since the officer checked (review C4)", async () => {
+    const { FinishedStayFiguresChangedError } = await import("@/lib/booking-change-request-execution");
+    await expect(
+      run({ expectedFigures: { additionalAmountCents: 9_000, refundAmountCents: 0, accountCreditAmountCents: 0 } }),
+    ).rejects.toBeInstanceOf(FinishedStayFiguresChangedError);
+    // Thrown inside the transaction, after the claim and the edit: nothing is linked.
+    expect(mocks.calls).toEqual(["global-lock", "lodge-lock", "claim", "modify"]);
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
   it("a dry run computes the figures for the entry and answers `quoted`", async () => {
     const result = await run({ dryRun: true });
     expect(result).toMatchObject({ outcome: "quoted", additionalAmountCents: 10_000 });
