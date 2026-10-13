@@ -415,6 +415,7 @@ function emailParams(overrides: Record<string, unknown> = {}) {
     oldFinalPriceCents: 24000,
     newFinalPriceCents: 24000,
     changeFeeCents: 0,
+    addedGuests: [],
     refundAmountCents: 0,
     additionalAmountCents: 0,
     financialReviewPending: true,
@@ -433,6 +434,7 @@ beforeEach(() => {
 describe("the email carries the sentence (#3179)", () => {
   it("adds one change row, labelled, with the member's own sentence", () => {
     const rows = bookingModificationSummaryRows({
+      addedGuests: [],
       oldCheckIn: OLD_CHECK_IN,
       oldCheckOut: OLD_CHECK_OUT,
       newCheckIn: NEW_CHECK_IN,
@@ -453,6 +455,7 @@ describe("the email carries the sentence (#3179)", () => {
 
   it("adds NO such row when the edit carried nothing it had to drop — the CONTROL", () => {
     const rows = bookingModificationSummaryRows({
+      addedGuests: [],
       oldCheckIn: OLD_CHECK_IN,
       oldCheckOut: OLD_CHECK_OUT,
       newCheckIn: NEW_CHECK_IN,

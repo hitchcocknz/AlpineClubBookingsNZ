@@ -8,6 +8,7 @@ import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-paym
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 import { prisma } from "@/lib/prisma";
 import {
   reconcilePaymentAggregates,
@@ -30,33 +31,6 @@ export function intentCurrencyDiffers(
   format: ClubFormat,
 ): boolean {
   return intent.currency.trim().toLowerCase() !== stripeChargeCurrency(format);
-}
-
-/**
- * What may be done with an intent in another currency (#3567 re-review), read
- * off Stripe's status — never assumed from the ledger, which lags the webhook:
- *
- * - `reissue`: the member has not paid (`requires_payment_method`,
- *   `requires_confirmation`, `requires_action`). Superseding it is safe.
- * - `in_flight`: `succeeded` or `processing` — the member HAS paid, or is paying,
- *   and the webhook has not landed yet (a 3DS return, a refresh). Re-issuing
- *   would queue the paid intent for cancellation, whose processor finds it
- *   captured and REFUNDS it, and then ask the member to pay again.
- * - `gone`: `canceled` (or `requires_capture`, which this product never asks
- *   for) — nothing to hand back and nothing to re-issue.
- */
-export type StaleIntentAction = "reissue" | "in_flight" | "gone";
-
-const REISSUABLE_STATUSES: ReadonlySet<string> = new Set([
-  "requires_payment_method",
-  "requires_confirmation",
-  "requires_action",
-]);
-
-export function staleIntentAction(intent: Pick<Stripe.PaymentIntent, "status">): StaleIntentAction {
-  if (REISSUABLE_STATUSES.has(intent.status)) return "reissue";
-  if (intent.status === "succeeded" || intent.status === "processing") return "in_flight";
-  return "gone";
 }
 
 /**

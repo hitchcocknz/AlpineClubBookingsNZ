@@ -467,8 +467,9 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/arrival-time/route.ts:298",
   "src/app/api/bookings/[id]/arrival-time/route.ts:367",
   "src/app/api/bookings/[id]/cancel-preview/route.ts:75",
-  "src/app/api/bookings/[id]/change-requests/route.ts:214",
-  "src/app/api/bookings/[id]/change-requests/route.ts:542",
+  "src/app/api/bookings/[id]/change-requests/quote/route.ts:66",
+  "src/app/api/bookings/[id]/change-requests/route.ts:191",
+  "src/app/api/bookings/[id]/change-requests/route.ts:558",
   "src/app/api/bookings/[id]/confirm-draft/route.ts:175",
   "src/app/api/bookings/[id]/confirm-draft/route.ts:96",
   "src/app/api/bookings/[id]/confirm-modification-payment/route.ts:70",
@@ -481,11 +482,11 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/refund-request/route.ts:49",
   "src/app/api/bookings/[id]/requested-room/options/route.ts:85",
   "src/app/api/bookings/[id]/send-guest-payment-link/route.ts:67",
-  "src/app/api/payments/create-payment-intent/route.ts:164",
+  "src/app/api/payments/create-payment-intent/route.ts:165",
   "src/app/api/payments/create-setup-intent/route.ts:59",
   "src/app/api/payments/switch-to-internet-banking/route.ts:118",
   "src/lib/adult-member-hosting-review.ts:3256",
-  "src/lib/booking-batch-modification-service.ts:1076",
+  "src/lib/booking-batch-modification-service.ts:1077",
   "src/lib/booking-cancel.ts:534",
   "src/lib/booking-date-modification-service.ts:405",
   "src/lib/booking-delete.ts:120",
@@ -519,7 +520,7 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // records that store the owner's member id (null for a school), and one
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
-  "src/lib/member-guest-consent-service.ts:1337",
+  "src/lib/member-guest-consent-service.ts:1336",
   "src/lib/payment-recovery.ts:2643",
   "src/lib/payment-recovery.ts:2695",
   "src/lib/xero-admin-health.ts:394",
@@ -782,7 +783,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // out of the route file to keep it in budget. Verified by hand: it is passed
   // as `include` to `bookingChangeRequest.findUnique`, and `organisation` sits
   // under its `booking` relation, which declares it.
-  "src/lib/booking-change-request-admin-decision.ts:79",
+  "src/lib/booking-change-request-admin-decision.ts:88",
   "src/lib/cron-additional-payment-reminders.ts:437",
   "src/lib/cron-confirm-pending.ts:209",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",

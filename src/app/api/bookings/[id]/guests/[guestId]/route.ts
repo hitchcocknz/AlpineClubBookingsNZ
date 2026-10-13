@@ -257,8 +257,7 @@ export async function DELETE(
       format,
       bookingId,
       result,
-      reason: "guest_removal_price_increase",
-      idempotencyKey: `mod_guest_remove_${bookingId}_${result.bookingModificationId}`,
+      door: "guestRemoval",
       failureMessage:
         "Failed to create additional PaymentIntent for guest removal",
     });
@@ -340,6 +339,7 @@ export async function DELETE(
         email: member.email,
         firstName: member.firstName,
         modificationType: "GUEST_REMOVE",
+        addedGuests: [], // #4030: adds nobody
         oldCheckIn: result.booking.checkIn,
         oldCheckOut: result.booking.checkOut,
         newCheckIn: result.booking.checkIn,

@@ -87,7 +87,21 @@ vi.mock("@/lib/prisma", () => ({
     promoCode: { update: mockUpdate },
     choreAssignment: { findMany: mockFindMany, delete: mockDelete, deleteMany: mockDeleteMany },
     season: { findMany: mockFindMany },
-    payment: { update: mockUpdate },
+    payment: {
+      update: mockUpdate,
+      // #4036: with no stored customer, the door reads the owner after commit
+      // and resolves the customer as the recovery runner does.
+      findUnique: vi.fn(async () => ({
+        additionalAmountCents: 0,
+        additionalPaymentStatus: null,
+        stripeCustomerId: null,
+        booking: {
+          organisationId: null,
+          member: { id: "m1", email: "alice@test.com", firstName: "Alice", lastName: "Smith" },
+          organisation: null,
+        },
+      })),
+    },
     // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
     paymentTransaction: { findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }) },
     member: { count: mockMemberCount, findUnique: mockFindUnique, findMany: mockFindMany },
@@ -3252,6 +3266,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders date change template", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Alice",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3283,6 +3298,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders guest add template", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Bob",
       modificationType: "GUEST_ADD",
       oldCheckIn: new Date("2026-06-01"),
@@ -3313,6 +3329,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders guest remove with refund", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Carol",
       modificationType: "GUEST_REMOVE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3342,6 +3359,7 @@ describe("bookingModifiedTemplate", () => {
   it("shows change fee when present", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Dave",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3371,6 +3389,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders Internet Banking additional payment context", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Eve",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3405,6 +3424,7 @@ describe("bookingModifiedTemplate", () => {
   it("escapes HTML in firstName", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "<script>alert('xss')</script>",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),

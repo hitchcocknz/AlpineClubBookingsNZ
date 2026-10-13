@@ -962,8 +962,7 @@ export async function finaliseMemberGuestConsentTransition(params: {
       format,
       bookingId,
       result: outcome.askRetirement,
-      reason: "guest_consent_removal_reissued_ask",
-      idempotencyKey: `mod_guest_consent_${bookingId}_${outcome.askRetirement.bookingModificationId}`,
+      door: "guestConsentRemoval",
       failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a member-guest consent removal",
     }).catch((err) => logger.error({ err, bookingId, guestId }, "Failed to settle the asks a member-guest consent removal retired"));
   }

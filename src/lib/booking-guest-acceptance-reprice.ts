@@ -601,8 +601,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
   // #3954: the retired asks die at Stripe and the smaller one is minted - the
   // only ask a re-price can mint, since it never raises a settled price.
   const additionalMint = await createModificationAdditionalPaymentIntent({
-    format, bookingId, result: paymentContext, reason: "guest_accepted_promo_reprice_reissued_ask",
-    idempotencyKey: `guest_accept_${bookingId}_${bookingModificationId}`,
+    format, bookingId, result: paymentContext, door: "guestAcceptanceReprice",
     failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a guest-acceptance re-price",
   });
   try {
@@ -666,7 +665,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       recipientMemberId: reprice.owner.memberId,
       email: reprice.owner.email,
       firstName: reprice.owner.firstName,
-      modificationType: "PROMO_REPRICE",
+      modificationType: "PROMO_REPRICE", addedGuests: [], // #4030: an acceptance re-price adds nobody
       oldCheckIn: reprice.checkIn,
       oldCheckOut: reprice.checkOut,
       newCheckIn: reprice.checkIn,
