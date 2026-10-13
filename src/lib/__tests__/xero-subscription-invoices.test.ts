@@ -50,6 +50,27 @@ describe("enqueueMembershipSubscriptionChargeOperation ignores VOIDED charges (#
     expect(result.queueOperationId).toBe("op-1");
     expect(enqueueMocks.startOperation).toHaveBeenCalledTimes(1);
   });
+
+  it("no-ops a charge an officer closed as already paid (#4098)", async () => {
+    enqueueMocks.chargeFindUnique.mockResolvedValue({
+      id: "charge-closed", status: "NOT_REQUIRED", billingBasis: "PER_MEMBER", xeroInvoiceId: null, emailSentAt: null,
+    });
+    const result = await enqueueMembershipSubscriptionChargeOperation("charge-closed");
+    expect(result).toEqual({ queueOperationId: null, message: "No subscription invoice work is required." });
+    expect(enqueueMocks.startOperation).not.toHaveBeenCalled();
+    expect(enqueueMocks.chargeUpdate).not.toHaveBeenCalled();
+  });
+
+  it("guards its status write, so a close landing after the read keeps the charge closed (#4098)", async () => {
+    enqueueMocks.chargeFindUnique.mockResolvedValue({
+      id: "charge-conflict", status: "CONFLICT", billingBasis: "PER_MEMBER", xeroInvoiceId: null, emailSentAt: null,
+    });
+    await enqueueMembershipSubscriptionChargeOperation("charge-conflict");
+    expect(enqueueMocks.chargeUpdate).toHaveBeenCalledWith({
+      where: { id: "charge-conflict", status: { notIn: ["NOT_REQUIRED", "VOIDED"] } },
+      data: { status: "QUEUED", lastErrorCode: null, lastErrorMessage: null },
+    });
+  });
 });
 
 function invoice(overrides: Partial<Invoice> = {}): Invoice {

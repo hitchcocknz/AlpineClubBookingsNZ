@@ -258,6 +258,26 @@ describe("subscription invoice delivery behavior", () => {
     expect(mocks.complete).toHaveBeenCalledWith("op-1", expect.objectContaining({
       responsePayload: expect.objectContaining({ conflict: "SUBSCRIPTION_ALREADY_PAID", manuallyMarkedPaid: true }),
     }));
+    // #4098: the message names the two real choices, not a "resolve" action
+    // that never existed.
+    expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Close it as already paid on the Subscriptions page, or reverse the manual payment and Retry.",
+      }),
+    }));
+  });
+
+  it("skips a charge an officer closed as already paid, with no provider call (#4098)", async () => {
+    mocks.chargeFind.mockResolvedValue(charge({ status: "NOT_REQUIRED" }));
+
+    const result = await createXeroMembershipSubscriptionInvoice({ chargeId: "charge-1", syncOperationId: "op-1" });
+
+    expect(result).toBeNull();
+    expect(mocks.findContact).not.toHaveBeenCalled();
+    expect(mocks.getInvoices).not.toHaveBeenCalled();
+    expect(mocks.createInvoices).not.toHaveBeenCalled();
+    expect(mocks.chargeUpdate).not.toHaveBeenCalled();
+    expect(mocks.complete).toHaveBeenCalledWith("op-1", { responsePayload: { skipped: true, reason: "NOT_REQUIRED" } });
   });
 
   it("resume path still delivers an already-minted invoice but the coverage write is fenced against PAID rows (#1944)", async () => {

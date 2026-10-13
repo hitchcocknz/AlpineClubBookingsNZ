@@ -414,6 +414,101 @@ describe("subscription billing panel", () => {
     });
   });
 
+  // #4098: a charge in CONFLICT because its subscriptions are already PAID can
+  // be closed, with a required reason; nothing else offers the action.
+  function chargePayload(charge: Record<string, unknown>) {
+    return {
+      ...payload(),
+      charges: [{
+        id: "charge-paid",
+        status: "CONFLICT",
+        billingBasis: "PER_MEMBER",
+        membershipTypeName: "Full",
+        chargedAmountCents: 12_000,
+        recipientName: "Cash Payer",
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        lastErrorCode: "SUBSCRIPTION_ALREADY_PAID",
+        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created.",
+        coverage: [{ memberName: "Cash Payer" }],
+        ...charge,
+      }],
+    };
+  }
+
+  function servePayload(body: unknown, postMessage = "Charge closed as already paid. No Xero invoice will be raised for it.") {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (_input, init) => (init as RequestInit | undefined)?.method === "POST"
+      ? ({ ok: true, json: async () => ({ message: postMessage }) } as Response)
+      : ({ ok: true, json: async () => body } as Response));
+    return fetchMock;
+  }
+
+  it("closes an already-paid conflict with a required reason (#4098)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    const fetchMock = servePayload(chargePayload({}));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Close: already paid" }));
+    const confirmButton = screen.getByRole("button", { name: /Confirm.*close as already paid/ });
+    expect(confirmButton.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(screen.getByLabelText(/Reason \(required\)/), { target: { value: "  Paid in cash at the AGM  " } });
+    expect(confirmButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(true));
+    const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(JSON.parse(String((postCall![1] as RequestInit).body))).toEqual({
+      action: "CLOSE_ALREADY_PAID", chargeId: "charge-paid", reason: "Paid in cash at the AGM",
+    });
+    expect(await screen.findByText("Charge closed as already paid. No Xero invoice will be raised for it.")).toBeTruthy();
+  });
+
+  it("cancelling the reason editor posts nothing (#4098)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    const fetchMock = servePayload(chargePayload({}));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Close: already paid" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText(/Reason \(required\)/)).toBeNull();
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(false);
+  });
+
+  it.each([
+    ["a conflict with another code", { lastErrorCode: "PROVIDER_MISMATCH" }],
+    ["a conflict whose charge has a Xero invoice", { xeroInvoiceId: "xero-invoice-1" }],
+    ["an email failure", { status: "EMAIL_FAILED", lastErrorCode: "EMAIL_FAILED" }],
+    ["a queued charge", { status: "QUEUED", lastErrorCode: null }],
+  ])("offers no close for %s (#4098)", async (_label, charge) => {
+    mocks.canEdit.mockReturnValue(true);
+    servePayload(chargePayload(charge));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText("Durable charge queue")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close: already paid" })).toBeNull();
+  });
+
+  it("keeps the close disabled for a view-only admin (#4098)", async () => {
+    mocks.canEdit.mockReturnValue(false);
+    servePayload(chargePayload({}));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect((await screen.findByRole("button", { name: "Close: already paid" })).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("labels a closed charge and offers neither Retry nor Close (#4098)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    servePayload(chargePayload({ status: "NOT_REQUIRED", lastErrorCode: null, lastErrorMessage: null }));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText("Closed as already paid. No Xero invoice is raised for this charge.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close: already paid" })).toBeNull();
+  });
+
+  it("does not label a zero-cent NO_INVOICE charge as closed (#4098)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    servePayload(chargePayload({ status: "NOT_REQUIRED", billingBasis: "NO_INVOICE", lastErrorCode: null, lastErrorMessage: null }));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText("Durable charge queue")).toBeTruthy();
+    expect(screen.queryByText(/Closed as already paid/)).toBeNull();
+  });
+
   it("reloads the latest selection when an older-selection mutation completes", async () => {
     mocks.canEdit.mockReturnValue(true);
     const fetchMock = vi.mocked(fetch);
