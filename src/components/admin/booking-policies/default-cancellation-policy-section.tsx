@@ -500,10 +500,6 @@ export function DefaultCancellationPolicySection() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {/* It opens this section's editor, so it carries Edit's marker:
-                  the reveal knows focus is still where the admin opened it
-                  from once the seed fetch lands, and Cancel finds it again
-                  (#4087, #4115). It and Edit are never mounted together. */}
               <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...section.editTriggerProps} onClick={() => void handleCreateOverride()}>
                 Create override for this lodge
               </ViewOnlyActionButton>

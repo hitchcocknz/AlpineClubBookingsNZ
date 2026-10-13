@@ -1768,7 +1768,8 @@ failure / reveal / success positioning — #2934). A control the admin could
 already change, such as a scope select, is not what Edit opened and is skipped,
 as is an unchecked radio whose group has a checked one (Tab's own rule). The
 reveal moves nothing when focus has moved off the control that opened the
-editor — an opening that awaited a fetch first ("Create override") — or when
+editor — an opening that awaited a fetch first ("Create override", which
+carries Edit's `editTriggerProps` so the reveal knows it opened) — or when
 the card is hidden behind a modal, as the analytics card is while its dialog
 holds Edit. The hook's `revealTarget` option instead reveals a given element at
 the top; it exists only for the two sections whose card reveal predates #4115 —
