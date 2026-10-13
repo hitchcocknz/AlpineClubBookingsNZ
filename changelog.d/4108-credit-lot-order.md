@@ -4,5 +4,10 @@
   could previously be used in either order, so the same booking could
   sometimes use an existing Xero credit note and sometimes create a new one.
   Credit recorded at the same moment is now always used in the same fixed
-  order. No amounts change, and nothing an administrator sees or does is
-  different.
+  order. No amounts change.
+
+  One case now stops instead of guessing: if an allocation that was
+  interrupted before this upgrade is retried after it and would now pick a
+  different piece of credit, the Xero operation fails with a message naming
+  the booking, and nothing is allocated twice. Compare that booking's credit
+  notes in Xero with its allocations before retrying it.
