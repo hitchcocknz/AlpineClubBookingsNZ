@@ -55,6 +55,7 @@ import {
   capturedShareOwedAfterCancellation,
 } from "@/lib/edit-financial-review-cancel-netting";
 import type { EditReviewSettlementTask } from "@/lib/edit-financial-review-settlement-task";
+import { cardShortfallSettlement } from "@/lib/cancel-card-refund-shortfall-settle";
 
 /**
  * #3032 (epic #2797): WHERE a confirmed review amount goes when the task is
@@ -183,12 +184,8 @@ export type EditReviewSettlementRoute =
   | {
       kind: "local-allocation";
       paymentId: string;
-      /**
-       * The `BookingModification` anchor, for the Xero credit note the caller
-       * queues after the commit. NULL on every pre-#3032 task kind, keeping their
-       * behaviour byte-identical: they were raised for bookings with no edit
-       * behind them and no invoice line to correct.
-       */
+      /** The `BookingModification` anchor, for the Xero credit note the caller queues after the commit. NULL on
+       * every pre-#3032 task kind, which were raised with no edit behind them and no invoice line to correct. */
       bookingModificationId: string | null;
       /** What is handed back: the share, or on a cancelled booking the capture's part of what is still owed (#3835). */
       refundCents: number;
@@ -197,6 +194,8 @@ export type EditReviewSettlementRoute =
       /** #3536 (`INV-PAY-116`): the officer said this went back in cash, never inferred from
        * "marked paid by hand". Words on the Xero note only; settlement and ledger unchanged. */
       handedBackInCash?: true;
+      /** #4097 (`INV-PAY-129`): a card refund shortfall settles on its non-card charges first; its refusal names dismissing. */
+      cardShortfall?: { preferTransactionIds: string[] };
     }
   | {
       kind: "account-credit";
@@ -304,9 +303,8 @@ export async function chooseEditReviewSettlementRoute({
     if (direction === ManualRefundTaskDirection.CHARGE_TO_MEMBER) {
       throw new ManualBookingPaymentError(REVIEW_CHARGE_WRONG_KIND_MESSAGE, 400);
     }
-    // #3639: an approved late-capture refund goes back to the card through
-    // Stripe - never a hand-back ledger mirror, which would count one refund
-    // twice once `charge.refunded` synced a dashboard refund of the same money.
+    // #3639: an approved late-capture refund goes back to the card through Stripe - never a hand-back
+    // ledger mirror, which would count one refund twice once `charge.refunded` synced a dashboard refund.
     if (task.lateCaptureApprovalIntentId) {
       return planLateCaptureApprovalRefund({ task, amountCents, store });
     }
@@ -314,13 +312,14 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
+    const cardShortfall = await cardShortfallSettlement(task, store); // #4097: null unless a card refund shortfall
     return handsBackByHand(task) && task.paymentId !== null
       ? {
           kind: "local-allocation",
           paymentId: task.paymentId,
           bookingModificationId: null,
           refundCents: amountCents,
-          creditBackCents: 0,
+          creditBackCents: 0, ...(cardShortfall ? { cardShortfall } : {}),
         }
       : null;
   }

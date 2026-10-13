@@ -86,9 +86,31 @@ export function refundRequestHandBackOccurrenceKey(refundRequestId: string): str
  */
 export const CANCEL_CARD_SHORTFALL_KEY_PREFIX = "cancel-card-shortfall:";
 
-/** The one occurrence key of one cancellation's card refund shortfall (`INV-PAY-129`). */
-export function cancelCardShortfallOccurrenceKey(bookingId: string): string {
-  return `${CANCEL_CARD_SHORTFALL_KEY_PREFIX}${bookingId}`;
+/**
+ * #4097 (`INV-PAY-129`): the two parts a cancellation's card refund shortfall
+ * is split into when it is raised. `bank`: what the payment's captured
+ * non-card charges still hold, owed by bank transfer. `check`: anything
+ * beyond that - the payment's records show it already refunded, or nothing
+ * holds it - which an officer checks before paying.
+ */
+export type CancelCardShortfallPart = "bank" | "check";
+const CANCEL_CARD_SHORTFALL_CHECK_SUFFIX = ":check";
+
+/** The one occurrence key of one part of one cancellation's card refund shortfall (`INV-PAY-129`). */
+export function cancelCardShortfallOccurrenceKey(bookingId: string, part: CancelCardShortfallPart = "bank"): string {
+  return `${CANCEL_CARD_SHORTFALL_KEY_PREFIX}${bookingId}${part === "check" ? CANCEL_CARD_SHORTFALL_CHECK_SUFFIX : ""}`;
+}
+
+/** #4097: what a cancel's shortfall tasks stand at, by part; read by the booking page, handed to the pure narrative. */
+export type CardShortfallTaskStatuses = Partial<Record<CancelCardShortfallPart, "OPEN" | "COMPLETED" | "DISMISSED">>;
+
+/** Which part of a card refund shortfall this task is, or null for any other task. */
+export function cancelCardShortfallPart(task: {
+  kind: ManualRefundTaskKind | string | null;
+  occurrenceKey: string | null;
+}): CancelCardShortfallPart | null {
+  if (!isCancelCardShortfallTask(task)) return null;
+  return task.occurrenceKey?.endsWith(CANCEL_CARD_SHORTFALL_CHECK_SUFFIX) ? "check" : "bank";
 }
 
 /**

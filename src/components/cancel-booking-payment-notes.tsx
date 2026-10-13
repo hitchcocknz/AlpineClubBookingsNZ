@@ -7,7 +7,7 @@ import {
   bookingCancelledRefundSentence,
   type OrganiserRefundMethod,
   ownCardRefundPendingSentence,
-  ownCardRefundWithByHandRemainderSentence,
+  ownCardRefundWithShortfallSentence,
 } from "@/lib/booking-modified-email-copy";
 
 /**
@@ -139,12 +139,14 @@ export function OrganiserRefundConfirmation({
  * `card_pending`, so `pending`), it is the "Booking Cancelled" email's own
  * sentence, as information, never "has been processed"; an officer cancelling
  * on the member's behalf reads "the member's". A made refund keeps its wording.
- * #4097: `byHandCents`, the part the card refund could not carry, is named
- * beside the card's own amount (`amountCents`), as information.
+ * #4097: the parts the card refund could not carry - `byHandCents` by bank
+ * transfer, `toCheckCents` the club will be in touch about - are named beside
+ * the card's own amount (`amountCents`), as information.
  */
 export function OwnCardRefundConfirmation({
   amountCents,
   byHandCents = 0,
+  toCheckCents = 0,
   pending,
   format,
   emailNote,
@@ -152,6 +154,7 @@ export function OwnCardRefundConfirmation({
 }: {
   amountCents: number;
   byHandCents?: number;
+  toCheckCents?: number;
   pending: boolean;
   format: ClubFormat;
   emailNote: string;
@@ -159,8 +162,9 @@ export function OwnCardRefundConfirmation({
 }) {
   const amount = formatCents(amountCents, format);
   const whose = onBehalfOfMember ? "the member's" : "your";
-  if (byHandCents > 0) {
-    const sentence = ownCardRefundWithByHandRemainderSentence(amountCents, byHandCents, (cents) => formatCents(cents, format), pending, whose);
+  if (byHandCents + toCheckCents > 0) {
+    const shortfall = { bankCents: byHandCents, checkCents: toCheckCents, formatAmount: (cents: number) => formatCents(cents, format) };
+    const sentence = ownCardRefundWithShortfallSentence(amountCents, shortfall, pending, whose);
     return <p className="text-sm text-info-11" data-testid="own-card-refund-by-hand-remainder">{sentence + emailNote}</p>;
   }
   if (pending) {

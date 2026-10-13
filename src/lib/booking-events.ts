@@ -55,6 +55,12 @@ export interface CancellationEventSnapshot {
    * the credit figures it rests on. Absent on cancellations before #3611.
    */
   ledger?: CancellationLedgerSnapshot;
+  /**
+   * #4097 (`INV-PAY-129`): a card cancel whose card refund plan carried less
+   * than the refund due - the card's part, the part owed by bank transfer, and
+   * the part the club checks first. Absent otherwise.
+   */
+  cardShortfall?: { cardCents: number; bankCents: number; checkCents: number };
 }
 
 /** Frozen bump facts stored on a BUMPED event. */
