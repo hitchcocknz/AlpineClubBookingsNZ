@@ -151,6 +151,21 @@ describe("revealing an opened editor (#4115)", () => {
     expect(document.activeElement).toBe(elsewhere);
   });
 
+  it("still moves nothing when where the admin went is gone by the reveal", () => {
+    // Focus left the opener before the opening ran, and the render then took
+    // that control away too: the page holding focus is not a licence to move.
+    const region = markedRegion();
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    const opening = captureEditorOpening("section", "trigger");
+    control(region, "input");
+    elsewhere.remove();
+    revealOpenedEditor(opening);
+
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("moves nothing when focus moved off the opening control after it ran", () => {
     const region = markedRegion();
     const opener = control(region, "button", {
