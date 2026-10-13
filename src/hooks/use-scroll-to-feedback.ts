@@ -662,8 +662,9 @@ export function useActionAttention({
 /**
  * Reveal an editor when — and only when — an explicit action opened it.
  *
- * `revealKey` is the caller's count of explicit opens: `formOpenNonce`,
- * `section.editRequestKey`, or any integer that changes once per user action.
+ * `revealKey` is the caller's count of explicit opens: `formOpenNonce`, or any
+ * integer that changes once per user action. A staged section does not need
+ * it: `useSectionEditState`'s Edit reveals through `useEditorFocusReturn`.
  * `0` / `null` means "no action yet" and moves nothing, and a re-render with the
  * same key moves nothing either — which is the whole reason the key is a
  * required argument rather than a boolean.
