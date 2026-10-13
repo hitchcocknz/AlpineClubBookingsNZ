@@ -58,18 +58,13 @@ const POLICY = {
   active: true,
 };
 
-/**
- * GETs answer the list; a write answers `written`. Every answer waits a real
- * event-loop turn, as a network round trip does, so a list that shows a
- * loading state while it refreshes actually renders it.
- */
+/** GETs answer the list; a write answers `written`. */
 function stubList(list: unknown[], written?: unknown) {
-  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    return new Response(JSON.stringify(init?.method ? written : list), {
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+    new Response(JSON.stringify(init?.method ? written : list), {
       status: 200,
-    });
-  });
+    }),
+  );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -130,7 +125,27 @@ describe("MinimumNightStaySection returns focus from its editor (#4087)", () => 
   it("returns to the row's re-rendered Edit after a successful update", async () => {
     // The save refreshes the list through its loading state, so the row's
     // Edit is a NEW element by the time focus returns: found by its marker.
-    stubList([POLICY], { ...POLICY, name: "Winter weekends", version: 5 });
+    // The refresh is held until the loading state has rendered, so the test
+    // cannot pass on a list that happened to refresh inside one render.
+    let releaseRefresh: () => void = () => {};
+    const refreshHeld = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let wrote = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method) {
+          wrote = true;
+          return new Response(
+            JSON.stringify({ ...POLICY, name: "Winter weekends", version: 5 }),
+            { status: 200 },
+          );
+        }
+        if (wrote) await refreshHeld;
+        return new Response(JSON.stringify([POLICY]), { status: 200 });
+      }),
+    );
     render(<MinimumNightStaySection />);
     const originalEdit = await screen.findByRole("button", { name: "Edit" });
     press(originalEdit);
@@ -140,8 +155,11 @@ describe("MinimumNightStaySection returns focus from its editor (#4087)", () => 
     press(button("Update Policy"));
 
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Update Policy" })).toBeNull(),
+      expect(screen.queryByRole("button", { name: "Edit" })).toBeNull(),
     );
+    expect(originalEdit.isConnected).toBe(false);
+    releaseRefresh();
+
     const edit = await screen.findByRole("button", { name: "Edit" });
     expect(edit).not.toBe(originalEdit);
     await expectToHoldFocus(edit);
