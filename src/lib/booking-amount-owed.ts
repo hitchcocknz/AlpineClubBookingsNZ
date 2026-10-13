@@ -9,8 +9,9 @@ import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
  * payment, less the credit applied to it. The pure arithmetic stays in
  * `bookingAmountOwedCents`; this adds the two reads it needs.
  *
- * THE ONE READ (`INV-SSOT`) for every surface that quotes the amount to a member
- * or charges it: the `/pay/<token>` page and its card intent, the pay-link and
+ * THE ONE READ (`INV-SSOT`) for every surface that quotes the amount owed to a
+ * member or charges what is owed (the saved-card charge takes the booking's
+ * full worth by design, #3864, and does not read this): the `/pay/<token>` page and its card intent, the pay-link and
  * exception-approved emails, the booking page (its narrative, pay card and
  * `{amountDue}` token, read once per page load) and the member's card intent
  * (`create-payment-intent`, both reads, the second under its transaction). So
