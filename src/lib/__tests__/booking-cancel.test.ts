@@ -100,6 +100,10 @@ const mocks = vi.hoisted(() => {
   // #3827 (`INV-PAY-117`): the open edit refund hand-backs on the payment.
   txManualRefundTaskAggregate: vi.fn(),
   txManualRefundTaskCreate: vi.fn(),
+  // #4097 (`INV-PAY-129`): the card refund shortfall's hand-back, and the officers' alert.
+  txManualRefundTaskCreateMany: vi.fn(),
+  txManualRefundTaskFindUnique: vi.fn(),
+  sendAdminManualRefundTaskAlert: vi.fn(),
   // #3653: a joiner's own cancel of a booking the organiser paid for by card.
   txSettlementFindFirst: vi.fn(),
   txPaymentRefundAggregate: vi.fn(),
@@ -171,6 +175,7 @@ vi.mock("@/lib/payment-recovery-alert", () => ({
 
 vi.mock("@/lib/email", () => ({
   sendBookingCancelledEmail: mocks.sendBookingCancelledEmail,
+  sendAdminManualRefundTaskAlert: mocks.sendAdminManualRefundTaskAlert,
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -405,6 +410,8 @@ describe("cancelBooking credit refunds", () => {
               findMany: vi.fn().mockResolvedValue([]),
               findFirst: mocks.txManualRefundTaskFindFirst,
               create: mocks.txManualRefundTaskCreate,
+              createMany: mocks.txManualRefundTaskCreateMany,
+              findUnique: mocks.txManualRefundTaskFindUnique,
             },
             groupBookingSettlement: { findFirst: mocks.txSettlementFindFirst },
             paymentRefund: { aggregate: mocks.txPaymentRefundAggregate },
@@ -458,6 +465,13 @@ describe("cancelBooking credit refunds", () => {
     mocks.recordBookingEvent.mockResolvedValue(undefined);
     mocks.createCancellationCredit.mockResolvedValue(undefined);
     mocks.sendBookingCancelledEmail.mockResolvedValue(undefined);
+    // #4097: the shortfall task is the row the insert wrote, read back by its key.
+    mocks.sendAdminManualRefundTaskAlert.mockResolvedValue({ sent: true });
+    mocks.txManualRefundTaskCreateMany.mockResolvedValue({ count: 1 });
+    mocks.txManualRefundTaskFindUnique.mockImplementation(async () => {
+      const [{ data }] = mocks.txManualRefundTaskCreateMany.mock.calls.at(-1) ?? [{ data: [] }];
+      return data[0] ? { id: "task_shortfall", amountCents: data[0].amountCents } : null;
+    });
     mocks.processWaitlistForDates.mockResolvedValue(undefined);
     mocks.isXeroConnected.mockResolvedValue(true);
     mocks.enqueueXeroAccountCreditNoteOperation.mockResolvedValue({
@@ -2648,7 +2662,11 @@ describe("cancelBooking credit refunds", () => {
       1500,
       // The booking's lodge. This read `undefined` while the fixture carried no
       // lodgeId — which Booking.lodgeId being NOT NULL means never happens.
-      "lodge_1"
+      "lodge_1",
+      "cancellation-policy",
+      5000,
+      // #4097: nothing owed by hand beside the card refund.
+      0,
     );
   });
 
@@ -2721,7 +2739,7 @@ describe("cancelBooking credit refunds", () => {
       expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledTimes(queued ? 0 : 1);
     });
 
-    it("a zero plan (nothing left to refund, e.g. refunded outside the app) calls neither Stripe nor recovery, and is reported made, as before", async () => {
+    it("a zero plan calls neither Stripe nor recovery, and (#4097) owes the whole refund by hand", async () => {
       mocks.planStripeRefundAllocation.mockResolvedValueOnce({ slices: [], plannedAmountCents: 0, totalRefundableCents: 0 });
 
       const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
@@ -2729,8 +2747,126 @@ describe("cancelBooking credit refunds", () => {
       expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
       expect(mocks.enqueueBookingCancellationRefundRecovery).not.toHaveBeenCalled();
       expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("card");
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][12]).toBe(5000);
+      expect(mocks.txManualRefundTaskCreateMany).toHaveBeenCalledWith({
+        data: [expect.objectContaining({ amountCents: 5000, raisedAmountCents: 5000 })],
+        skipDuplicates: true,
+      });
+      // Nothing went to the card, so nothing is recorded as refunded to it.
+      expect(mocks.recordBookingEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "REFUNDED" }));
       expect(result).toMatchObject({
-        data: { refundAmountCents: 5000, ownCardRefund: { method: "card", amountCents: 5000 }, message: expect.stringContaining("processed") },
+        data: {
+          refundAmountCents: 5000,
+          ownCardRefund: { method: "card", amountCents: 0, byHandCents: 5000 },
+          message: expect.stringContaining("The club will refund $50.00 to you by bank transfer."),
+        },
+      });
+    });
+
+    describe("#4097 (`INV-PAY-129`): what the card refund plan cannot carry is owed by hand", () => {
+      const prime = (plannedAmountCents: number) =>
+        mocks.planStripeRefundAllocation.mockResolvedValueOnce({
+          slices: [{ paymentTransactionId: "txn_1", amountCents: plannedAmountCents }],
+          plannedAmountCents,
+          totalRefundableCents: plannedAmountCents,
+        });
+
+      it("a partial plan raises one hand-back task for the rest, inside the claim", async () => {
+        prime(3000);
+
+        const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+        expect(result.status).toBe(200);
+        expect(mocks.txManualRefundTaskCreateMany).toHaveBeenCalledTimes(1);
+        expect(mocks.txManualRefundTaskCreateMany).toHaveBeenCalledWith({
+          data: [
+            expect.objectContaining({
+              bookingId: "booking_1",
+              paymentId: "payment_1",
+              amountCents: 2000,
+              raisedAmountCents: 2000,
+              kind: "CANCELLED_BOOKING_HAND_BACK",
+              occurrenceKey: "cancel-card-shortfall:booking_1",
+            }),
+          ],
+          skipDuplicates: true,
+        });
+        // On the claim's own transaction client, so it commits with the CANCELLED flip.
+        expect(mocks.txManualRefundTaskCreateMany.mock.invocationCallOrder[0]).toBeLessThan(
+          mocks.refundPaymentTransactions.mock.invocationCallOrder[0],
+        );
+        // The card's own refund is what the plan carries.
+        expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 3000 }));
+        expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment_1", 3000, expect.anything());
+        expect(mocks.recordBookingEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "REFUNDED", amountCents: 3000 }));
+        // The member is told both parts.
+        const emailCall = mocks.sendBookingCancelledEmail.mock.calls[0];
+        expect(emailCall[5]).toBe(5000);
+        expect(emailCall[7]).toBe("card");
+        expect(emailCall[11]).toBe(5000);
+        expect(emailCall[12]).toBe(2000);
+        expect(result).toMatchObject({
+          data: {
+            refundAmountCents: 5000,
+            ownCardRefund: { method: "card", amountCents: 3000, byHandCents: 2000 },
+            message:
+              "Booking cancelled. 50% refund of $50.00: A refund of $30.00 has been processed to your original payment method, and the club will refund the remaining $20.00 to you by bank transfer.",
+          },
+        });
+        expect(mocks.logAudit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({ cardRefundCents: 3000, byHandRemainderCents: 2000, manualRefundTaskId: "task_shortfall" }),
+          }),
+        );
+      });
+
+      it("alerts the officers once, for the remainder", async () => {
+        prime(3000);
+
+        await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+        expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
+        expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledWith(
+          expect.objectContaining({ bookingId: "booking_1", refundAmountCents: 2000, situation: "card-refund-shortfall" }),
+          CLUB_FORMAT_TEST,
+        );
+      });
+
+      it("a re-driven cancel loses the claim and raises and alerts nothing more", async () => {
+        prime(3000);
+        await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+        mocks.txBookingFindUnique.mockResolvedValue({ ...(await mocks.txBookingFindUnique.mock.results[0].value), status: "CANCELLED" });
+
+        const replay = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+        expect(replay.status).not.toBe(200);
+        expect(mocks.txManualRefundTaskCreateMany).toHaveBeenCalledTimes(1);
+        expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
+      });
+
+      it("a refund the plan carries in full raises no task and no alert", async () => {
+        const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+        expect(result).toMatchObject({ data: { ownCardRefund: { method: "card", amountCents: 5000 } } });
+        expect(result).not.toMatchObject({ data: { ownCardRefund: { byHandCents: expect.anything() } } });
+        expect(mocks.txManualRefundTaskCreateMany).not.toHaveBeenCalled();
+        expect(mocks.sendAdminManualRefundTaskAlert).not.toHaveBeenCalled();
+        expect(mocks.sendBookingCancelledEmail.mock.calls[0][12]).toBe(0);
+      });
+
+      it("a partial plan whose card refund threw is on its way, beside the remainder", async () => {
+        prime(3000);
+        mocks.refundPaymentTransactions.mockRejectedValueOnce(new Error("Stripe unavailable"));
+
+        const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+        expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("card_pending");
+        expect(result).toMatchObject({
+          data: {
+            ownCardRefund: { method: "card_pending", amountCents: 3000, byHandCents: 2000 },
+            message: expect.stringContaining("A refund of $30.00 is on its way to your original payment method, and the club will refund the remaining $20.00"),
+          },
+        });
       });
     });
 

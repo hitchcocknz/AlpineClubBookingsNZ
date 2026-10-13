@@ -2037,3 +2037,47 @@ describe("#3924 round 4 (M2): a dead card refund closed as paid another way is a
     expect(refunded.deltaCents).toBe(9_500);
   });
 });
+
+describe("#4097 (`INV-PAY-129`): a cancellation's card refund shortfall is a hand-back the census explains", () => {
+  /**
+   * Card paid $190, cancelled at 50%: $95.00 due, the plan carried $55.00 to
+   * the card and the claim raised a $40.00 hand-back. Completed, the treasurer
+   * paid it by bank: the refunded total rose with no refund row, and its
+   * completion posted the bank-refund line on the card payment
+   * (`postHandBackLedgerLine`, `cardShortfall`).
+   */
+  function cardShortfall(task: "OPEN" | "COMPLETED", withLine: boolean): BookingLedgerCensusRow {
+    const planned = cardCancelled(5_500, true);
+    const paid = task === "COMPLETED";
+    const handBack = new Ledger();
+    if (paid && withLine) {
+      handBack.post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: "task-short", amountCents: 4_000, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+    }
+    const refunded = 5_500 + (paid ? 4_000 : 0);
+    return {
+      ...planned,
+      lines: [...planned.lines, ...handBack.lines.map((line) => ({ ...line, id: `handback-${line.id}` }))],
+      transactions: [txn("t1", 19_000, { refundedAmountCents: refunded })],
+      payment: payment({ refundedAmountCents: refunded }),
+      tasks: [{ id: "task-short", kind: "CANCELLED_BOOKING_HAND_BACK", status: task, amountCents: 4_000, settlementDirection: null, paymentId: "pay-3583", lateCaptureApprovalIntentId: null, occurrenceKey: "cancel-card-shortfall:" + B }],
+    };
+  }
+
+  it("while OPEN, the short plan is V5_PLANNED_REFUND_SHORT, as before the task existed", () => {
+    const open = identity(cardShortfall("OPEN", false), "PRICE");
+    expect(open.status).toBe("CLASSIFIED");
+    expect(open.explainedBy).toEqual([{ name: "V5_PLANNED_REFUND_SHORT", cents: 4_000 }]);
+  });
+
+  it("completed with its line, the refunded column is REFUND_MIRROR_HAND_BACK and nothing disagrees", () => {
+    const results = evaluateBookingLedgerIdentities(cardShortfall("COMPLETED", true));
+    expect(results.integrity).toEqual([]);
+    expect(identity(cardShortfall("COMPLETED", true), "REFUNDED").explainedBy).toEqual([{ name: "REFUND_MIRROR_HAND_BACK", cents: 4_000 }]);
+    expect(results.identities.filter((each) => each.status === "DISAGREE")).toEqual([]);
+  });
+
+  it("without the line (the poster declining a card payment's) the raised refunded total is unexplained", () => {
+    const refunded = identity(cardShortfall("COMPLETED", false), "REFUNDED");
+    expect(refunded.status).toBe("DISAGREE");
+  });
+});

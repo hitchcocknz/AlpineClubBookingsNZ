@@ -2213,6 +2213,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       amountCents: 9000,
       refundMethod: "internet-banking",
       paymentSource: null,
+      cardShortfall: false,
       officerMemberId: "admin-1",
       store: tx,
     });
@@ -2487,6 +2488,42 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
   // appeal's bank-transfer task. Always on a CANCELLED booking (appeals exist
   // only after the cancel), with the paid invoice the cancellation hand-back
   // leg would otherwise write a refund note against.
+  // #4097 (`INV-PAY-129`): a cancellation's card refund shortfall completes as a
+  // cancellation's hand-back, and its BANK_REFUND posts on the card payment it
+  // sits on - the poster declines a card payment's hand-back otherwise.
+  it("completes a card refund shortfall as a cancellation hand-back and posts its line on the card payment", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue({
+      id: "task-9",
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      amountCents: 2000,
+      raisedAmountCents: 2000,
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      occurrenceKey: "cancel-card-shortfall:booking-1",
+      status: ManualRefundTaskStatus.OPEN,
+      payment: { source: "STRIPE" },
+      booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: null },
+    });
+
+    await resolveManualRefundTask({
+      taskId: "task-9",
+      resolution: "completed",
+      note: null,
+      actingMemberId: "admin-1",
+      confirmedAmountCents: null,
+      direction: "REFUND_TO_MEMBER",
+      recordedNightPrices: null,
+    }, CLUB_FORMAT_TEST);
+
+    expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx });
+    expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(
+      expect.objectContaining({ manualRefundTaskId: "task-9", amountCents: 2000, paymentSource: "STRIPE", cardShortfall: true }),
+    );
+    // A cancellation's own hand-back: no lock(1), as the cash cancel's.
+    expect(mocks.executeRaw).not.toHaveBeenCalled();
+    expect(mocks.recordBookingEvent).toHaveBeenCalledWith(expect.objectContaining({ type: BookingEventType.REFUNDED, amountCents: 2000 }));
+  });
+
   describe("an approved refund appeal's hand-back (D-3813-7)", () => {
     function appealTask() {
       mocks.manualRefundTaskFindUnique.mockResolvedValue({
