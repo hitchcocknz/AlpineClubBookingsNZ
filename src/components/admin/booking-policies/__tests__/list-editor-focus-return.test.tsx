@@ -58,13 +58,18 @@ const POLICY = {
   active: true,
 };
 
-/** GETs answer the list; a write answers `written`. */
+/**
+ * GETs answer the list; a write answers `written`. Every answer waits a real
+ * event-loop turn, as a network round trip does, so a list that shows a
+ * loading state while it refreshes actually renders it.
+ */
 function stubList(list: unknown[], written?: unknown) {
-  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
-    new Response(JSON.stringify(init?.method ? written : list), {
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return new Response(JSON.stringify(init?.method ? written : list), {
       status: 200,
-    }),
-  );
+    });
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -127,7 +132,8 @@ describe("MinimumNightStaySection returns focus from its editor (#4087)", () => 
     // Edit is a NEW element by the time focus returns: found by its marker.
     stubList([POLICY], { ...POLICY, name: "Winter weekends", version: 5 });
     render(<MinimumNightStaySection />);
-    press(await screen.findByRole("button", { name: "Edit" }));
+    const originalEdit = await screen.findByRole("button", { name: "Edit" });
+    press(originalEdit);
     fireEvent.change(screen.getByLabelText("Policy Name"), {
       target: { value: "Winter weekends" },
     });
@@ -136,6 +142,8 @@ describe("MinimumNightStaySection returns focus from its editor (#4087)", () => 
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Update Policy" })).toBeNull(),
     );
-    await expectToHoldFocus(await screen.findByRole("button", { name: "Edit" }));
+    const edit = await screen.findByRole("button", { name: "Edit" });
+    expect(edit).not.toBe(originalEdit);
+    await expectToHoldFocus(edit);
   });
 });

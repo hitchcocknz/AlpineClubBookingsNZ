@@ -506,11 +506,13 @@ describe("useSectionEditState", () => {
       activate(button("Edit First"));
       activate(button("Edit Second"));
 
-      activate(button("Cancel Second"));
-      await expectToHoldFocus(button("Edit Second"));
-
+      // First closes first, so when Second closes BOTH Edit controls are on
+      // the page and only Second's own marker picks the right one.
       activate(button("Cancel First"));
       await expectToHoldFocus(button("Edit First"));
+
+      activate(button("Cancel Second"));
+      await expectToHoldFocus(button("Edit Second"));
     });
 
     it("finds this section's Edit by its marker, not by its name", async () => {
@@ -522,10 +524,14 @@ describe("useSectionEditState", () => {
           save: async (draft) => draft,
           successMessage: "Saved",
         });
+        // Cancel sits in a wrapper so React cannot reuse the Edit's DOM node
+        // for it: the Edit after Cancel is a NEW element, as in every section.
         return section.editing ? (
-          <button type="button" onClick={section.cancelEditing}>
-            Cancel {marker}
-          </button>
+          <span>
+            <button type="button" onClick={section.cancelEditing}>
+              Cancel {marker}
+            </button>
+          </span>
         ) : (
           <button
             type="button"
