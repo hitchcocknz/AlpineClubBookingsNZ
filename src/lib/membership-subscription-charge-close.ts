@@ -46,8 +46,9 @@ import {
  * only PAID rows and must touch every one; a manual reversal that committed
  * first makes it fall short and the whole transaction rolls back, and one that
  * arrives later waits on the row and then finds the member re-billable. A
- * Retry racing the close cannot reopen it: the enqueue's status write excludes
- * `NOT_REQUIRED`, and the worker skips a `NOT_REQUIRED` charge.
+ * Retry racing the close cannot reopen it: the enqueue's status write, the
+ * worker's own already-paid conflict write and the outbox failure handler's
+ * write all exclude `NOT_REQUIRED`, and the worker skips a `NOT_REQUIRED` charge.
  */
 
 export class CloseAlreadyPaidChargeError extends Error {
