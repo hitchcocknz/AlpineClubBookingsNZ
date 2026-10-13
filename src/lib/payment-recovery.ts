@@ -1215,11 +1215,7 @@ async function completePaymentRecoveryOperation(
   return closed.count === 1;
 }
 
-async function alertPaymentRecoveryFailure(
-  operation: PaymentRecoveryOperation,
-  message: string,
-  format: ClubFormat,
-) {
+async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, message: string, format: ClubFormat) {
   await alertPaymentRecoveryOfficers({
     bookingId: operation.bookingId,
     operationId: operation.id,

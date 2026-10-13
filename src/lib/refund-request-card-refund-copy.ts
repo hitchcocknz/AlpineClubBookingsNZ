@@ -1,8 +1,9 @@
 /**
  * #4117 (`INV-PAY-128`): what is said about an approved appeal's card refund
- * that was not made in full - on the screen, in the approval's toast, on the
- * request's admin notes and in the officers' alert. One home, so the four say
- * the same thing. Plain module: the client page imports it.
+ * that was not made in full - on the screen, in the approval's toast and in the
+ * officers' alert. One home, so the three say the same thing. Never on the
+ * request's admin notes, which the member reads. Plain module: the client page
+ * imports it.
  *
  * The part not made splits in two, because a bank transfer for the second
  * could pay the member twice:
@@ -50,7 +51,7 @@ export function unmadeCardRefundInstructions(unmade: UnmadeCardRefund, formatAmo
   return parts.join(" ")
 }
 
-/** The officers' alert, and the line stamped on the request's admin notes, when no retry could be queued. */
+/** The officers' alert, and the screen's line, when no retry could be queued. */
 export function cardRefundNotQueuedMessage(unmade: UnmadeCardRefund, formatAmount: (cents: number) => string): string {
   return `This card refund could not be queued for retry. ${unmadeCardRefundInstructions(unmade, formatAmount)}`
 }
