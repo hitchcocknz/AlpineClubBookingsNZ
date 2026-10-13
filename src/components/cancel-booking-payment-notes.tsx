@@ -6,12 +6,13 @@ import {
   bookingCancelledRefundMade,
   bookingCancelledRefundSentence,
   type OrganiserRefundMethod,
+  ownCardRefundPendingSentence,
 } from "@/lib/booking-modified-email-copy";
 
 /**
- * #3643: the two cancel-dialog lines internet banking needs, and (#3973) the
- * confirmation of an organiser-paid refund, split out of
- * `cancel-booking-button.tsx` for size.
+ * #3643: the two cancel-dialog lines internet banking needs, and the
+ * confirmations of an organiser-paid refund (#3973) and of an own-card refund
+ * not made yet (#4084), split out of `cancel-booking-button.tsx` for size.
  */
 
 /** No payment the app can refund: none taken, or one settled by hand (DECISION 2). */
@@ -129,4 +130,25 @@ export function OrganiserRefundConfirmation({
   const sentence = bookingCancelledRefundSentence(amountCents, formatCents(amountCents, format), method);
   const tone = bookingCancelledRefundMade(amountCents, method) ? "text-success-11" : "text-info-11";
   return <p className={`text-sm ${tone}`}>{sentence + emailNote}</p>;
+}
+
+/**
+ * #4084: the confirmation after a cancel whose refund to the member's own card
+ * Stripe did not make (the cancel's `ownCardRefund` says `card_pending`): the
+ * "Booking Cancelled" email's own sentence, as information, never "has been
+ * processed". An officer cancelling on the member's behalf reads "the member's".
+ */
+export function OwnCardRefundPendingConfirmation({
+  amountCents,
+  format,
+  emailNote,
+  onBehalfOfMember,
+}: {
+  amountCents: number;
+  format: ClubFormat;
+  emailNote: string;
+  onBehalfOfMember: boolean;
+}) {
+  const sentence = ownCardRefundPendingSentence(formatCents(amountCents, format), onBehalfOfMember ? "the member's" : "your");
+  return <p className="text-sm text-info-11">{sentence + emailNote}</p>;
 }

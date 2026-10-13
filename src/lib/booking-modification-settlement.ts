@@ -48,7 +48,7 @@ import {
 } from "@/lib/stripe";
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
-import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
+import { ownCardRefundMade } from "@/lib/payment-transaction-status";
 
 export type BookingModificationPaymentContext = {
   pendingRefundAmountCents: number;
@@ -151,17 +151,6 @@ export type BookingModificationRefundOutcome = {
   stripeRefundId: string | undefined;
   refundDestination: BookingModifiedRefundDestination;
 };
-
-/**
- * #4070: an own-card edit refund is made when `refundPaymentTransactions`
- * returned (every slice refunded at Stripe and recorded) with at least one
- * refund, and Stripe answered each with a status the ledger counts as money
- * back (`isRecordedRefundStatus`: `pending` and `succeeded` count, `failed`
- * and `canceled` do not). Judged by the refunds that exist, never assumed.
- */
-function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null }>): boolean {
-  return refunds.length > 0 && refunds.every((refund) => isRecordedRefundStatus(refund.status ?? "unknown"));
-}
 
 export async function executeBookingModificationRefund({
   format,
