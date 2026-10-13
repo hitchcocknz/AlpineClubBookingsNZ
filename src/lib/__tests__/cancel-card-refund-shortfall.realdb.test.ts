@@ -129,13 +129,17 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     async function refundNotes(): Promise<Array<{ cents: unknown; taskId: unknown }>> {
       const rows = await prisma.xeroSyncOperation.findMany({
         where: { localModel: "Payment", localId: PAYMENT_ID, entityType: "CREDIT_NOTE", operationType: "CREATE" },
-        orderBy: { createdAt: "asc" },
         select: { requestPayload: true },
       });
-      return rows.map(({ requestPayload }) => {
-        const payload = (requestPayload ?? {}) as Record<string, unknown>;
-        return { cents: payload.refundAmountCents, taskId: payload.paidAnotherWayTaskId ?? null };
-      });
+      // Sorted here, never by `createdAt`: under the frozen test clock two rows
+      // queued in one run carry the same stamp, so the database's order is not
+      // stable (it reddened the race harness once in five runs).
+      return rows
+        .map(({ requestPayload }) => {
+          const payload = (requestPayload ?? {}) as Record<string, unknown>;
+          return { cents: payload.refundAmountCents, taskId: payload.paidAnotherWayTaskId ?? null };
+        })
+        .sort((a, b) => Number(a.taskId !== null) - Number(b.taskId !== null) || Number(a.cents) - Number(b.cents));
     }
 
     /**
