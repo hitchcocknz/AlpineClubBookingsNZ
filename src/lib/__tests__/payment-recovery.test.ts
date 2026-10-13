@@ -1253,6 +1253,52 @@ describe("payment recovery worker", () => {
     ]);
   });
 
+  // #4101: one row per Stripe key prefix a refund recovery stores, with the
+  // reason its INLINE sender stamps, spelled here as the sender spells it rather
+  // than read from the map under test. The replay must send that reason under
+  // that prefix, or Stripe refuses the reused key with idempotency_error and the
+  // refund never recovers. The four booking-edit senders are found and checked
+  // against the map by modification-refund-replay-reason.test.ts.
+  it.each([
+    ["mod_dates_refund_booking-1_mod-1", "date_change_price_decrease"],
+    ["mod_batch_refund_booking-1_mod-1", "batch_modification"],
+    ["guest_remove_refund_booking-1_mod-1", "guest_removed_price_decrease"],
+    ["guest_accept_refund_booking-1_mod-1", "guest_accepted_promo_reprice"],
+    ["capacity_claim_failed_booking-1_pi_1", "capacity_claim_failed"],
+    ["duplicate_capture_refund_booking-1_pi_1", "duplicate_capture"],
+    ["edit_financial_review_refund_task-1", "edit_financial_review"],
+    ["late_cancel_refund_booking-1_pi_1", "cancelled_booking_late_capture"],
+  ])(
+    "replays a refund stored under %s with the inline reason %s (#4101)",
+    async (stripeKeyPrefix, inlineReason) => {
+      const crashed = makeOperation({
+        id: "recovery-replay-reason",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        amountCents: 4000,
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
+        idempotencyKey: "payment_recovery_modification_refund_replay-reason",
+        stripeKeyPrefix,
+        paymentTransactionId: null,
+      });
+      mockPaymentRecoveryFindUnique.mockResolvedValue(crashed);
+      mockPaymentRecoveryFindMany.mockImplementation(
+        (args?: { where?: { attempts?: { gte?: number } } }) =>
+          Promise.resolve(
+            isStaleWorkerSweep(args) ? [] : [{ ...crashed, status: "PENDING" }],
+          ),
+      );
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      const [refundArgs] = mockRefundPaymentTransactions.mock.calls[0];
+      expect(refundArgs.idempotencyKeyPrefix).toBe(stripeKeyPrefix);
+      expect(refundArgs.metadata).toEqual({
+        bookingId: "booking-1",
+        reason: inlineReason,
+      });
+    },
+  );
+
   it("replays a treasurer-approved late-capture refund under the webhook's own prefix and body, then queues the Xero correction (#3639)", async () => {
     // The approval persisted this debt inside its claim and the inline refund
     // did not finish. The replay must send exactly what the webhook's automatic
@@ -1376,7 +1422,7 @@ describe("payment recovery worker", () => {
 
   it("derives every inline modification-refund reason from its stored key prefix (#1507 freeze)", () => {
     // Freezes the derivation against the exact (idempotencyKeyPrefix, reason)
-    // pairs the three inline callers pass to executeBookingModificationRefund. A
+    // pairs the four inline callers pass to executeBookingModificationRefund. A
     // new modification refund path (or a renamed prefix/reason) breaks this until
     // its prefix is added to bookingModificationRefundReasonForKeyPrefix, keeping
     // the recovery replay byte-identical to the inline refund.
@@ -1389,6 +1435,10 @@ describe("payment recovery worker", () => {
     expect(
       bookingModificationRefundReasonForKeyPrefix("guest_remove_refund_bk_mod"),
     ).toBe("guest_removed_price_decrease");
+    // #4101: the guest-acceptance re-price, missing until then.
+    expect(
+      bookingModificationRefundReasonForKeyPrefix("guest_accept_refund_bk_mod"),
+    ).toBe("guest_accepted_promo_reprice");
     // #3639: a treasurer-approved late-capture refund replays the webhook's body.
     expect(
       bookingModificationRefundReasonForKeyPrefix("late_cancel_refund_bk_pi"),

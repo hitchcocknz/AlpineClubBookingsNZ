@@ -461,11 +461,13 @@ export function buildBookingModificationRefundMetadata(
 // #1507: map a modification refund's persisted Stripe idempotency-key prefix
 // (`stripeKeyPrefix`, #1152) back to the `reason` the inline settlement helper
 // stamped, so a recovery replay reconstructs the inline Stripe body
-// byte-for-byte. The three prefixes mirror the `idempotencyKeyPrefix` each
+// byte-for-byte. The first four prefixes mirror the `idempotencyKeyPrefix` each
 // modification caller passes to executeBookingModificationRefund
-// (booking-date/-batch modification services and the guest-removal route). A NEW
-// modification refund path MUST add its prefix here, or its recovery replay
-// diverges (safe-fails to idempotency_error, never double-refunds). Legacy rows
+// (booking-date/-batch modification services, the guest-removal route and the
+// guest-acceptance re-price). A NEW modification refund path MUST add its prefix
+// here, or its recovery replay diverges (safe-fails to idempotency_error, never
+// double-refunds); `modification-refund-replay-reason.test.ts` finds every
+// caller and fails until it does (#4101). Legacy rows
 // enqueued before #1152 carry no stored prefix; they keep the historical
 // recovery reason and their operation-scoped key (they were never shared-key
 // with the inline refund, so convergence does not apply to them).
@@ -480,6 +482,12 @@ export function bookingModificationRefundReasonForKeyPrefix(
   }
   if (keyPrefix?.startsWith("guest_remove_refund_")) {
     return "guest_removed_price_decrease";
+  }
+  // #4101: a guest's acceptance that re-prices a paid booking down
+  // (`settleGuestAcceptanceRepriceAfterCommit`). Missing, its replay sent the
+  // default reason below and Stripe refused the reused key for ever.
+  if (keyPrefix?.startsWith("guest_accept_refund_")) {
+    return "guest_accepted_promo_reprice";
   }
   // Capacity-race auto-refund (payment succeeded after the final capacity
   // claim failed). The inline path builds its Stripe metadata from
