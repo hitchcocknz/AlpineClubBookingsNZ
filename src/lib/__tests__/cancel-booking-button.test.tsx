@@ -851,16 +851,28 @@ describe("CancelBookingButton — an own-card refund not made yet (#4084)", () =
     expect(screen.queryByText(/has been processed/i)).toBeNull();
   });
 
-  it("keeps the made wording, byte-identical, when Stripe made the refund", async () => {
+  it.each([
+    [
+      "the member",
+      false,
+      "Cancel Booking",
+      "Your refund of $45.00 has been processed to your original payment method. You will receive a confirmation email shortly.",
+    ],
+    [
+      "an officer on the member's behalf",
+      true,
+      "Cancel on behalf of member",
+      "The refund of $45.00 has been processed to the member's original payment method. They will receive a confirmation email shortly.",
+    ],
+  ] as const)("keeps the made wording, byte-identical, for %s when Stripe made the refund", async (_label, onBehalfOfMember, buttonName, sentence) => {
     stubOwnCardFetch({ refundAmountCents: 4500, refundMethod: "card", ownCardRefund: { method: "card", amountCents: 4500 } });
-    render(<CancelBookingButton bookingId="bk_own" />);
-    await confirmCancel("Cancel Booking");
+    render(<CancelBookingButton bookingId="bk_own" onBehalfOfMember={onBehalfOfMember} />);
+    await confirmCancel(buttonName);
 
     await waitFor(() => {
-      expect(
-        screen.getByText("Your refund of $45.00 has been processed to your original payment method. You will receive a confirmation email shortly."),
-      ).toBeTruthy();
+      expect(screen.getByText(sentence)).toBeTruthy();
     });
+    expect(screen.getByText(sentence).className).toContain("text-success-11");
     expect(screen.queryByText(/on its way/i)).toBeNull();
   });
 });
