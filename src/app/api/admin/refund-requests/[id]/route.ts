@@ -26,10 +26,14 @@ import {
 import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { refundRequestHandBackOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import {
-  PartialRefundError,
   planStripeRefundAllocation,
   refundPaymentTransactions,
 } from "@/lib/payment-transactions";
+import {
+  alertRefusedCardRefund,
+  inlineRefundNotMade,
+  refusedRefundCents,
+} from "@/lib/refused-card-refund-retry";
 import { enqueueRefundRequestRefundRecovery } from "@/lib/payment-recovery";
 import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
@@ -381,8 +385,9 @@ export async function PUT(
     }
 
     if (!organiserChildDebtId) {
+      let attempt: Parameters<typeof inlineRefundNotMade>[1];
       try {
-        await refundPaymentTransactions({
+        attempt = await refundPaymentTransactions({
           format: money.format,
           paymentId: payment.id,
           amountCents: plannedAmountCents,
@@ -407,23 +412,33 @@ export async function PUT(
           { err, refundRequestId: id },
           "Stripe refund failed for approved appeal - enqueueing durable recovery"
         );
-        // Persist the frozen slices the inline attempt did NOT refund and record
-        // (#1510; #3924 F1): the cron replays their keys, Refunds owed reads only them.
-        // Any failure after a Stripe call is a `PartialRefundError`, an unrecorded
-        // slice included (#3924 C2); any other came before one, so all are unsent.
-        const unsentPlan =
-          err instanceof PartialRefundError ? refundPlan.slice(err.refunds.length) : refundPlan;
-        const unsentCents = unsentPlan.reduce((sum, slice) => sum + slice.amountCents, 0);
+        attempt = { error: err };
+      }
+      // Persist the frozen slices the inline attempt did NOT make (#1510; #3924
+      // F1): the cron replays their keys, Refunds owed reads only them. #4102
+      // (`INV-PAY-128`): a slice Stripe refused, thrown past or not, is among
+      // them, on its next key; one that threw or was never sent keeps its key.
+      const { plan: notMadePlan, refused } = inlineRefundNotMade(refundPlan, attempt);
+      const refusedCents = refusedRefundCents(refused);
+      if (refusedCents > 0) {
+        logger.error({ refundRequestId: id, refusedCents }, "Stripe refused part of an approved appeal's card refund - enqueueing durable recovery");
+      }
+      // The officers hear of a refusal once: when this approval wrote the row,
+      // or when no row could be written, as then the alert is its only record.
+      const alertRefusal = async (paymentIntentId: string) => {
+        if (refusedCents > 0) await alertRefusedCardRefund({ bookingId: booking.id, paymentIntentId, refusedCents }, money.format);
+      };
+      const notMadeCents = notMadePlan.reduce((sum, slice) => sum + slice.amountCents, 0);
+      if (notMadeCents > 0) {
+        let queued: Awaited<ReturnType<typeof enqueueRefundRequestRefundRecovery>>;
         try {
-          if (unsentCents > 0) {
-            await enqueueRefundRequestRefundRecovery({
-              bookingId: booking.id,
-              paymentId: payment.id,
-              refundRequestId: id,
-              amountCents: unsentCents,
-              allocationPlan: unsentPlan,
-            });
-          }
+          queued = await enqueueRefundRequestRefundRecovery({
+            bookingId: booking.id,
+            paymentId: payment.id,
+            refundRequestId: id,
+            amountCents: notMadeCents,
+            allocationPlan: notMadePlan,
+          });
         } catch (enqueueErr) {
           // No durable row could be written: fall back to the pre-#1039
           // behaviour and release the claim so an admin can retry manually.
@@ -431,6 +446,7 @@ export async function PUT(
             { err: enqueueErr, refundRequestId: id },
             "Failed to enqueue refund recovery - releasing the claim for manual retry"
           );
+          await alertRefusal(payment.stripePaymentIntentId ?? "");
           // #3827 (D-3813-7): the bank-transfer task this approval raised goes
           // with the claim, in one transaction under the same lock, or a retried
           // approval would find its key taken and its cash already netted.
@@ -466,6 +482,7 @@ export async function PUT(
             { status: 500 }
           );
         }
+        if (queued.created) await alertRefusal(queued.paymentIntentId);
       }
     }
 

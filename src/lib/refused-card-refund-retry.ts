@@ -1,7 +1,7 @@
 /**
- * #4083, #4096 (`INV-PAY-128`): A CARD REFUND STRIPE REFUSES ON A BOOKING EDIT
- * OR A CANCELLATION IS STILL OWED, AND IS ASKED FOR AGAIN UNDER A KEY STRIPE
- * HAS NEVER SEEN.
+ * #4083, #4096, #4102 (`INV-PAY-128`): A CARD REFUND STRIPE REFUSES ON A
+ * BOOKING EDIT, A CANCELLATION OR AN APPROVED REFUND REQUEST IS STILL OWED, AND
+ * IS ASKED FOR AGAIN UNDER A KEY STRIPE HAS NEVER SEEN.
  *
  * Stripe can answer a refund with `failed` or `canceled` instead of throwing.
  * `refundPaymentTransactions` records that refund (the ledger does not count
@@ -18,6 +18,8 @@
  *   row's plan, so "Refunds owed" counts them (`openCardRefundOwedByOperation`).
  * - The cancellation moves its pre-persisted row's plan the same way, only while
  *   no worker has touched it (PENDING, no attempt yet).
+ * - An approved refund request queues what its attempt did not make, refused
+ *   slices already moved (`inlineRefundNotMade`, #4102).
  * - The runner, on the attempt it holds, does the same and fails the attempt,
  *   so the backoff asks again.
  *
@@ -40,7 +42,7 @@ import logger from "@/lib/logger";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import { buildBookingCancellationRefundIdempotencyKey, nextRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
-import type { RefundAllocationSlice } from "@/lib/payment-transactions";
+import { PartialRefundError, type RefundAllocationSlice } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 
@@ -109,6 +111,35 @@ export function planAfterAttempt(
       ? { ...slice, stripeKeySuffix: nextRefusedRefundKeySuffix(slice.stripeKeySuffix) }
       : { ...slice, madeRefundId: answer.refundId };
   });
+}
+
+/**
+ * #4102: what an inline attempt over a frozen plan did NOT make, for a door
+ * that raises its recovery row after the attempt (an approved refund
+ * request), with the slices Stripe refused. `refundPaymentTransactions` sends
+ * the plan in order and stops at the first slice that throws, wrapping any
+ * throw after a Stripe call in `PartialRefundError` with the slices answered
+ * before it; any other throw came before one, so the whole plan is unsent.
+ *
+ * - Each slice Stripe refused moves to its next key, as it was read refused.
+ * - Each with no answer (it threw, or was never sent) keeps its key: it may
+ *   have been made at Stripe, and must be replayed under it.
+ * - Each made is LEFT OUT, not marked (`madeRefundId`): its refund was made
+ *   before the row existed, so "Refunds owed" could never fill it
+ *   (`operationWindowTakes`) and would count it as still owed.
+ */
+export function inlineRefundNotMade(
+  plan: RefundAllocationSlice[],
+  attempt: { refunds: ReadonlyArray<{ status: string | null; slice: RefundAllocationSlice }> } | { error: unknown },
+): { plan: RefundAllocationSlice[]; refused: RefundAllocationSlice[] } {
+  const notMade = (answeredCount: number, refused: RefundAllocationSlice[]) => {
+    const refusedHere = plan.slice(0, answeredCount).filter((slice) => refused.some((each) => sameRequest(each, slice)));
+    return { plan: [...planAfterRefusals(refusedHere, refused), ...plan.slice(answeredCount)], refused };
+  };
+  if (!("error" in attempt)) return notMade(attempt.refunds.length, refusedRefundSlices(attempt.refunds));
+  return attempt.error instanceof PartialRefundError
+    ? notMade(attempt.error.refunds.length, attempt.error.refusedSlices)
+    : { plan, refused: [] };
 }
 
 /** Whether a plan is still on its first keys: no slice has been read refused yet. */

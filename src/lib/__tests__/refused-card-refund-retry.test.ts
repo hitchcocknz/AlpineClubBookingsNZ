@@ -15,7 +15,8 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { lastErrorSuggestsStripeMayHaveRefunded } from "@/lib/card-refund-paid-another-way";
-import { planAfterRefusals, refundPlanOrRetryRefusals, refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import { PartialRefundError } from "@/lib/payment-transactions";
+import { inlineRefundNotMade, planAfterRefusals, refundPlanOrRetryRefusals, refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 describe("a refund slice's Stripe key and its generations", () => {
@@ -96,6 +97,42 @@ describe("the plan after a refusal", () => {
     const moved = { ...b, stripeKeySuffix: "refused1" };
     expect(planAfterRefusals([moved], [b])).toEqual([moved]);
     expect(planAfterRefusals([moved], [moved])).toEqual([{ ...b, stripeKeySuffix: "refused2" }]);
+  });
+});
+
+// #4102: a door that raises its row AFTER the inline attempt (an approved refund
+// request) queues only what the attempt did not make.
+describe("what an inline attempt did not make", () => {
+  const a = { paymentTransactionId: "txn_a", amountCents: 1000 };
+  const b = { paymentTransactionId: "txn_b", amountCents: 500 };
+  const c = { paymentTransactionId: "txn_c", amountCents: 250 };
+  const answer = (slice: typeof a, status: string) => ({ status, slice });
+  const partial = (refunds: ReturnType<typeof answer>[], refusedSlices: Array<typeof a>) =>
+    new PartialRefundError({ completedRefundCents: 0, refunds: refunds.map((each) => ({ ...each, paymentIntentId: "pi", refundId: "re", amountCents: each.slice.amountCents })), refusedSlices, cause: new Error("boom"), format: CLUB_FORMAT_TEST });
+
+  it("every slice answered: the refused ones on their next key, the made ones left out", () => {
+    expect(inlineRefundNotMade([a, b, c], { refunds: [answer(a, "succeeded"), answer(b, "failed"), answer(c, "pending")] })).toEqual({
+      plan: [{ ...b, stripeKeySuffix: "refused1" }],
+      refused: [b],
+    });
+  });
+
+  it("a refusal before a throw: it moves; the slice that threw and the one never sent keep their keys", () => {
+    expect(inlineRefundNotMade([a, b, c], { error: partial([answer(a, "canceled")], [a]) })).toEqual({
+      plan: [{ ...a, stripeKeySuffix: "refused1" }, b, c],
+      refused: [a],
+    });
+  });
+
+  it("a made slice before a throw is left out, as before #4102", () => {
+    expect(inlineRefundNotMade([a, b, c], { error: partial([answer(a, "succeeded")], []) })).toEqual({ plan: [b, c], refused: [] });
+  });
+
+  it("a throw before any Stripe call: the whole plan, as frozen, is unsent", () => {
+    const plan = [a, b];
+    const read = inlineRefundNotMade(plan, { error: new Error("payment not found") });
+    expect(read).toEqual({ plan, refused: [] });
+    expect(read.plan).toBe(plan);
   });
 });
 
