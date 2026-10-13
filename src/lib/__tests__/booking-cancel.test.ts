@@ -1973,6 +1973,8 @@ describe("cancelBooking credit refunds", () => {
 
     expect(mocks.alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+    // The lost fence never read the row: drop the queued answer so no later case inherits it.
+    mocks.recoveryOperationFindUnique.mockReset();
   });
 
   it("CONTROL: closes the pre-persisted recovery op when Stripe answers the card refund pending (#4083)", async () => {

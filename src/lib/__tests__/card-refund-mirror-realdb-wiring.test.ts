@@ -44,7 +44,8 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
       "utf8",
     );
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
-    expect(suite).toContain("a replayed enqueue writes no second row");
+    expect(suite).toContain("a second enqueue of the edit's refusal writes no second row, and never re-plans a row a worker holds");
+    expect(suite).toContain("the REAL cancelBooking, Stripe answering the card refund refused (#4096)");
     expect(suite).toContain("the runner moves a refused slice only on the attempt it holds");
   });
 
