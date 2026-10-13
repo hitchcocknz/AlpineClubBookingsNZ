@@ -154,6 +154,21 @@ export function isRecordedRefundStatus(status: string): boolean {
 }
 
 /**
+ * #4070, #4084: a refund to the member's own card, sent after commit by
+ * `refundPaymentTransactions`, is made when that call returned (every slice
+ * refunded at Stripe and recorded) with at least one refund, and Stripe
+ * answered each with a status counted as money back (`isRecordedRefundStatus`:
+ * `pending` and `succeeded` count, `failed` and `canceled` do not; no status
+ * counts, as the organiser executor reads it). Judged by the refunds that
+ * exist, never assumed. A call that threw made nothing here. ONE rule for the
+ * "Booking Modified" (`executeBookingModificationRefund`) and "Booking
+ * Cancelled" (`booking-cancel.ts`) emails and the cancel's confirmation.
+ */
+export function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null }>): boolean {
+  return refunds.length > 0 && refunds.every((refund) => isRecordedRefundStatus(refund.status ?? "unknown"));
+}
+
+/**
  * #3639: HOW MUCH OF ONE CAPTURE HAS GONE BACK, and how much Stripe still holds
  * - one home for every late-capture reader that must not refund, approve or
  * record a hand-back twice (the webhook's verdict, the treasurer's approval,

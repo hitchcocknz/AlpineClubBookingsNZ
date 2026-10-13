@@ -1,6 +1,6 @@
 /**
  * SETTLE A BANK TRANSFER FROM THE CASH ITS INVOICE COLLECTED (#3979,
- * `INV-PAY-124`).
+ * `INV-PAY-125`).
  *
  * When Xero reports a booking's PRIMARY invoice paid, the inbound settle
  * (`invoice-paid-effects.ts`) records the bank receipt. Before #3979 it kept the
@@ -42,7 +42,7 @@ export type InvoiceCash = { knownCents: number; complete: boolean };
 
 /**
  * The `reason` on a bank-transfer PRIMARY receipt the settle recorded at the
- * invoice's cash. The refunded-total repair reads it (`INV-PAY-125`): an invoice
+ * invoice's cash. The refunded-total repair reads it (`INV-PAY-126`): an invoice
  * correction counts as refunded only against a receipt recorded at the stored
  * figure (before #3979, or kept), never against one recorded from cash.
  */
@@ -66,7 +66,7 @@ const STORED_FIGURE_RECEIPT_REASONS: ReadonlySet<string | null> = new Set([
 ]);
 
 /**
- * #3979 (`INV-PAY-125`): whether an invoice correction still counts as refunded
+ * #3979 (`INV-PAY-126`): whether an invoice correction still counts as refunded
  * against this payment - a bank-transfer PRIMARY receipt is captured, and every
  * captured one holds the stored figure (`STORED_FIGURE_RECEIPT_REASONS`). Such a
  * receipt is the figure the payment was born with (settled before #3979, or
@@ -129,7 +129,7 @@ function isInternetBankingPrimary(row: Pick<CashSettlementTransaction, "kind" | 
 }
 
 /**
- * The one decision (`INV-PAY-124`). It is taken only at the TRANSITION, while
+ * The one decision (`INV-PAY-125`). It is taken only at the TRANSITION, while
  * no Internet Banking PRIMARY row of the payment is captured; a replay keeps
  * whatever the first settle wrote. The cash is written only when it is a
  * complete, positive figure that belongs to this payment alone: exactly one
@@ -202,7 +202,7 @@ export function paidInvoiceFacts(invoice: Pick<Invoice, "total" | "creditNotes">
 
 /**
  * The settle's one call, inside its locked transaction after both fences
- * (`INV-PAY-124`): the payment's rows, the plan, the receipt and the payment's
+ * (`INV-PAY-125`): the payment's rows, the plan, the receipt and the payment's
  * columns to write, and the invoice-side figure the cancel arms report a mixed
  * invoice against.
  */

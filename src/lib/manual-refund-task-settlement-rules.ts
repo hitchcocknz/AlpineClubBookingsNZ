@@ -217,7 +217,8 @@ export const CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE = {
  * `CANCELLED_BOOKING_HAND_BACK` — reused rather than a new label for the reason
  * #3639 and #3643 give: the previous app version cannot read a label it does
  * not know, and lists this kind as money to pay back by hand, which is what it
- * is — marked by its occurrence key, which no cancellation writer sets. So the
+ * is — marked by its occurrence key, whose prefix no cancellation writer sets
+ * (the group organiser's hand-back, #4042, has a prefix of its own). So the
  * kind cannot say it; this can. Every server reader that treats a hand-back as
  * a CANCELLATION's (its Xero note, the repair tool's late-cash evidence, the
  * organisation hand-back's duplicate check) asks it here.
@@ -509,6 +510,7 @@ export type HandBackTaskRow = {
   kind: ManualRefundTaskKind | string | null;
   amountCents: number | null;
   partPaymentReviewPaymentId: string | null;
+  occurrenceKey: string | null;
 };
 
 const OPEN_TASK_STATUS = "OPEN" satisfies ManualRefundTaskStatus;

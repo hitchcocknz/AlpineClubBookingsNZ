@@ -1,7 +1,7 @@
 /**
  * What the inbound credit-note sync counts as refunded for a modification
  * credit note, and the payment-side facts the refunded-total repair reads
- * (#3979, `INV-PAY-125`). Split out of `credit-note-repairs.ts` by size; that
+ * (#3979, `INV-PAY-126`). Split out of `credit-note-repairs.ts` by size; that
  * module's `repairRefundedPaymentBusinessState` is the one consumer of the
  * payment-side helpers here, and `credit-note.ts` calls the note-side one.
  */
@@ -108,7 +108,7 @@ async function resolvePaymentIdsByInvoiceTargets(
  * refunded total: its allocations, by the payment each allocated invoice
  * resolves to. Nothing for a note that moved no cash (`noCashModificationNoteIds`:
  * #3809's give-back, #3954's billed offset, and #3979's invoice correction,
- * `INV-PAY-125`), except that an invoice correction still counts against a
+ * `INV-PAY-126`), except that an invoice correction still counts against a
  * payment whose bank receipt was recorded at the stored figure
  * (`paymentsCountingInvoiceCorrections`). The current note's half of what
  * `repairRefundedPaymentBusinessState` counts; the notes already on the payment
@@ -143,7 +143,7 @@ export async function resolveModificationRefundAmountsByPaymentId(input: {
 }
 
 /**
- * #3979 (`INV-PAY-125`): of these payments, those an invoice correction still
+ * #3979 (`INV-PAY-126`): of these payments, those an invoice correction still
  * counts against (`receiptCountsInvoiceCorrections`).
  */
 export async function paymentsCountingInvoiceCorrections(paymentIds: string[]): Promise<Set<string>> {

@@ -159,7 +159,7 @@ export function asSecondInstrumentSettlementConflictSnapshot(
 }
 
 /**
- * #3979 (`INV-PAY-124`): the inbound settle recorded a booking's bank transfer,
+ * #3979 (`INV-PAY-125`): the inbound settle recorded a booking's bank transfer,
  * but the figure needs a person: it kept the stored amount because the
  * invoice's cash was not this payment's alone, or the cash is not what the
  * booking owes. Written in the settle's own transaction, so the record commits

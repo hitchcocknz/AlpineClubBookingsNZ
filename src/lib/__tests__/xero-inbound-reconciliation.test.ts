@@ -4394,7 +4394,7 @@ describe("processStoredXeroInboundEvents", () => {
     });
   });
 
-  // #3979 (`INV-PAY-124`): the receipt is the cash the paid invoice collected.
+  // #3979 (`INV-PAY-125`): the receipt is the cash the paid invoice collected.
   describe("settles from the invoice's cash (#3979)", () => {
     const primaryRow = (overrides: Record<string, unknown> = {}) => ({
       kind: "PRIMARY",

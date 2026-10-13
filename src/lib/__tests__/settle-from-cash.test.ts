@@ -16,7 +16,7 @@ import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
 import { adminBankTransferSettlementFigureTemplate } from "@/lib/email-templates/admin-bank-transfer-settlement";
 
 /**
- * #3979 (`INV-PAY-124`): the one decision on whether a bank transfer's settle
+ * #3979 (`INV-PAY-125`): the one decision on whether a bank transfer's settle
  * records the cash its invoice collected. The reconcile's own suite
  * (`xero-inbound-reconciliation.test.ts`) drives it through the settle; this
  * pins every arm on its own.
@@ -47,7 +47,7 @@ const rewrite = (receiptCents: number, paymentAmountCents = receiptCents, refund
   status,
 });
 
-describe("planInternetBankingCashSettlement (#3979, INV-PAY-124)", () => {
+describe("planInternetBankingCashSettlement (#3979, INV-PAY-125)", () => {
   it("rewrites to the cash at the transition", () => {
     expect(planInternetBankingCashSettlement(base)).toEqual(rewrite(20_000));
   });

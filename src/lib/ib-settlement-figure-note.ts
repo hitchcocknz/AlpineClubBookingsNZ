@@ -1,11 +1,11 @@
 /**
- * #3979 (`INV-PAY-124`) - the words of the bank-transfer settlement alert,
+ * #3979 (`INV-PAY-125`) - the words of the bank-transfer settlement alert,
  * shared by its hand-built HTML (`email-templates/admin-bank-transfer-settlement.ts`),
  * the `{{settlementFigureNote}}` token and the settle's own reasons. A sibling
  * of `email-message-notes.ts`, split by size, and like it imports nothing.
  */
 /**
- * #3979 (`INV-PAY-124`): why the inbound settle kept a bank transfer's stored
+ * #3979 (`INV-PAY-125`): why the inbound settle kept a bank transfer's stored
  * figure instead of the cash its invoice collected. The settle's own refusals
  * (`CashSettlementRefusal`) are these plus the second instrument, which #3638's
  * alert reports instead.

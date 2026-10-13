@@ -179,7 +179,7 @@ export function getKnownModificationRefundTotalCents(
   booking: BookingRepairRecord,
   modificationOperationsById: ReadonlyMap<string, readonly XeroOperationRecord[]>,
 ) {
-  // #3979 (`INV-PAY-125`): an edit whose own note moved no cash refunded
+  // #3979 (`INV-PAY-126`): an edit whose own note moved no cash refunded
   // nothing, so its reduction is not part of the refunded total - an invoice
   // correction only where the payment's receipt still counts one. Left in, it
   // would hide a missing refund note behind money never refunded.

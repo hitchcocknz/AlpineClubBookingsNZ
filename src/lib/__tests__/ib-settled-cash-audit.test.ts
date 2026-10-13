@@ -10,7 +10,7 @@ import {
 } from "@/lib/ib-settled-cash-audit";
 
 /**
- * #3979 (`INV-PAY-124`): the read-only report of settled bank-transfer receipts
+ * #3979 (`INV-PAY-125`): the read-only report of settled bank-transfer receipts
  * whose figure is not the cash Xero recorded. Report only; nothing is written.
  */
 function link(localId: string, invoiceId: string, amount: unknown, status = "AUTHORISED") {

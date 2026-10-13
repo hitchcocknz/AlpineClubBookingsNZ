@@ -1,6 +1,6 @@
 /**
  * Read-only report of settled bank-transfer receipts whose recorded figures are
- * not what Xero's cash supports (#3979, `INV-PAY-124`).
+ * not what Xero's cash supports (#3979, `INV-PAY-125`).
  *
  * Before #3979 the inbound settle kept the figure an Internet Banking payment
  * and its PRIMARY row were born with, so a booking re-priced (or charged a
@@ -225,7 +225,7 @@ export function formatIbSettledCashReport(result: IbSettledCashAuditResult, form
   const describe = (row: IbSettledCashRow) =>
     `booking ${row.bookingId} (${row.bookingStatus}) payment ${row.paymentId} invoice ${row.xeroInvoiceNumber ?? row.xeroInvoiceId}`;
   const lines = [
-    "Settled bank-transfer receipts against the cash Xero recorded (#3979, INV-PAY-124)",
+    "Settled bank-transfer receipts against the cash Xero recorded (#3979, INV-PAY-125)",
     `  receipts read: ${result.scanned}`,
     `  recorded figure differs from the cash: ${result.differences.length}`,
     `  refunded total beyond what the rows record: ${result.folded.length}`,

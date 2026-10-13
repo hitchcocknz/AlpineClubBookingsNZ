@@ -1040,7 +1040,7 @@ paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
 payment records; operator-applied overpayments/prepayments count), the
 matching local payments/bookings are flipped here, and the receipt is recorded
 at the cash the invoice collected, not the figure the payment was born with,
-whenever that cash is this payment's alone (#3979, `INV-PAY-124`). A PAID event produced by
+whenever that cash is this payment's alone (#3979, `INV-PAY-125`). A PAID event produced by
 credit-note allocation — the app's own invoice-clearing notes do exactly that
 on every unpaid-IB cancellation — settles nothing (#1435): identifiers are
 stamped for linkage only, admins are alerted if the booking is still live,

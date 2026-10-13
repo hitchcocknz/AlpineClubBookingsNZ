@@ -27,7 +27,9 @@ import {
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
   lateCapturePaymentLabel,
+  GROUP_HAND_BACK_ALERT_BODY, GROUP_HAND_BACK_ALERT_LEAD, manualRefundTaskAlertAmountLabel,
   secondInstrumentConflictOutcomeParagraph,
+  type ManualRefundTaskAlertSituation,
 } from "@/lib/email-message-notes";
 import { emailPalette } from "@/lib/email-theme";
 import {
@@ -530,9 +532,9 @@ export function adminSecondInstrumentSettlementConflictTemplate(data: {
 
 // ---- B5 (#2262): Admin Alert — manual refund task raised ----
 //
-// A cash-settled booking was cancelled. There is no card to refund and no Xero
-// credit note to raise, so the money has to be handed back by a person. The
-// task is durable; this alert is the nudge, not the record.
+// A cash-settled booking was cancelled (or, #4042, an organiser cancelled a
+// group paid by Internet Banking): no card refund backs it, so a person hands
+// the money back. The task is durable; this alert is the nudge, not the record.
 export function adminManualRefundTaskTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -541,12 +543,14 @@ export function adminManualRefundTaskTemplate(data: {
   bookingId: string;
   reason: string;
   reviewUrl: string;
+  situation?: ManualRefundTaskAlertSituation;
 },
   format: ClubFormat,
 ): string {
+  const group = data.situation === "group-organiser-internet-banking"; // #4042
   return layout(`
-    ${heading("Manual Refund Needed — Cash Booking Cancelled")}
-    ${alertBox(
+    ${heading(group ? "Manual Refund Needed — Internet Banking Group Cancelled" : "Manual Refund Needed — Cash Booking Cancelled")}
+    ${group ? `${alertBox(GROUP_HAND_BACK_ALERT_LEAD, "warning")}${paragraph(GROUP_HAND_BACK_ALERT_BODY)}` : `${alertBox(
       "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand — nothing was refunded automatically.",
       "warning"
     )}
@@ -555,13 +559,13 @@ export function adminManualRefundTaskTemplate(data: {
     )}
     ${paragraph(
       "Pay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note."
-    )}
+    )}`}
     ${infoTable([
-      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: group ? "Organiser" : "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: emailCalendarDay(data.checkIn) },
       { label: "Check-out", value: emailCalendarDay(data.checkOut) },
       { label: "Booking", value: escapeHtml(data.bookingId) },
-      { label: "Amount to refund", value: formatCents(data.refundAmountCents, format) },
+      { label: manualRefundTaskAlertAmountLabel(data.situation ?? "cash-cancellation"), value: formatCents(data.refundAmountCents, format) },
       { label: "Reason", value: escapeHtml(data.reason) },
     ])}
     ${button("View Payments", data.reviewUrl, { sameOrigin: true })}

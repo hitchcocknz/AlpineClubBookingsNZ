@@ -13,14 +13,14 @@ reason: the receipt figure is decided and written inside the settle's own
   receipt sync, with the payment's projected columns and the durable marker for
   a booking left live, and the in-memory row is updated there so both cancel
   arms size their credit from it. Moving the writes out would split one
-  transaction's ordering argument (INV-LOCK-002, INV-PAY-124) across files. The
+  transaction's ordering argument (INV-LOCK-002, INV-PAY-125) across files. The
   decision, the cross-check, the marker and the alert are already elsewhere;
   what is left is the calls, the writes and the cancel arms' invoice-side figure.
 
 file: src/lib/xero-inbound/credit-note-repairs.ts
 lines: 1171
 reason: the refunded-total repair's own status decision gains the un-refund
-  guard and its write the claim on what it read (INV-PAY-125), and its recount
+  guard and its write the claim on what it read (INV-PAY-126), and its recount
   finds a bank-transfer payment's modification notes by its invoice. All three
   are lines of that one loop, as is its one re-run from scratch when it loses
   its claim to a concurrent settle (#3979 final review); the note-side helpers

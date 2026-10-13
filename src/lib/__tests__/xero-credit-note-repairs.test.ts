@@ -351,7 +351,7 @@ describe("an organiser-settled child's mirror is raised only by Stripe evidence 
   });
 });
 
-// #3979 (`INV-PAY-124`): an invoice correction is not a refund, so a re-sync can
+// #3979 (`INV-PAY-125`): an invoice correction is not a refund, so a re-sync can
 // take an older fold off a payment nothing was ever captured on. The payment
 // goes back to its uncaptured state; it never reads as paid.
 describe("repairRefundedPaymentBusinessState undoing a fold on a never-captured payment (#3979)", () => {

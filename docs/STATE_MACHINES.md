@@ -1547,7 +1547,7 @@ folds modification credit notes worded as refunds into `refundedAmountCents` /
 `PARTIALLY_REFUNDED` on never-captured Internet Banking payments (see
 `docs/DOMAIN_INVARIANTS.md`). Since #3979 a note worded as an *invoice
 correction* never folds: it lowered an invoice nobody had paid, so it is a price
-correction, not a refund (`INV-PAY-125`). Genuinely captured payments survive
+correction, not a refund (`INV-PAY-126`). Genuinely captured payments survive
 the cancel unchanged — no *transaction* ever leaves the refunded states.
 
 Repay-after-refund (#1765): a booking that was paid, then deliberately
@@ -1789,7 +1789,7 @@ nulls a card that is set; an Internet Banking latest PRIMARY still yields null.
 When Xero reports a booking's PRIMARY invoice paid in cash, the inbound settle
 moves the payment `PENDING/FAILED -> SUCCEEDED` and records the receipt at the
 cash that invoice collected, not the figure the payment was born with
-(`INV-PAY-124`, `settle-from-cash.ts`):
+(`INV-PAY-125`, `settle-from-cash.ts`):
 
 ```text
 no captured IB PRIMARY row, cash complete, one matched payment, no
@@ -1815,7 +1815,7 @@ cancel arms (a cancelled booking's late cash, the late capacity cancel) size
 their credit from the receipt's figure, measure a mixed invoice against its
 total less the member's own applied credit, and alert on their own.
 
-An invoice-correction note refunds nothing (`INV-PAY-125`): a $300 invoice
+An invoice-correction note refunds nothing (`INV-PAY-126`): a $300 invoice
 corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
 `reconcilePaymentAggregates` keeps it. Against a receipt recorded at the stored
 figure (settled before #3979, or kept) the correction still counts, so the net
@@ -2109,6 +2109,21 @@ queues that request's own Xero refund credit note for the amount paid back
 though the booking is cancelled, because the cancel came first and never
 counted it. See
 [`INV-PAY-118`](invariants/payment-and-settlement.md#inv-pay-118).
+
+**#4042: so does a group organiser's, except that it cannot be dismissed.** An
+organiser's cancel of a group paid by Internet Banking raises the task OPEN on
+the organiser's booking, inside the first per-child claim that books a
+joiner's refund, under `lock(1)`, keyed one per settlement; each later claim
+sets its total, derived from the joiners the ledger proves refunded, while it
+is OPEN (a share booked after it closed raises a supplementary task keyed per
+joiner for what nothing covers). It carries no `paymentId`: the cancel
+already booked those refunds on the joiners' own payments, so COMPLETED
+records only that the officer repaid the organiser and writes no allocation,
+ledger line, Xero note or `REFUNDED` event. COMPLETED takes `lock(1)` and
+must name the total the screen showed; a missing or grown total is refused. DISMISSED is refused: the
+refunds are booked as made, so not repaying is the treasurer's correction.
+See
+[`INV-PAY-124`](invariants/payment-and-settlement.md#inv-pay-124).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

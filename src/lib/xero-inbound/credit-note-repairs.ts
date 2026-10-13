@@ -221,7 +221,7 @@ export async function repairRefundedPaymentBusinessState(input: {
     }),
   ]);
 
-  // #3979 (`INV-PAY-125`): a bank-transfer payment's modification notes are
+  // #3979 (`INV-PAY-126`): a bank-transfer payment's modification notes are
   // found by its invoice too. The inbound sync links an edit's note and its
   // allocation to the edit, not the payment, so a recount triggered by any
   // later note used to drop every earlier modification note from the total -
@@ -475,7 +475,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       (payment.status === PaymentStatus.REFUNDED ||
         payment.status === PaymentStatus.PARTIALLY_REFUNDED)
     ) {
-      // #3979 (`INV-PAY-125`): a refunded total falling to nothing on a payment
+      // #3979 (`INV-PAY-126`): a refunded total falling to nothing on a payment
       // nothing was ever captured on undoes an older fold (an invoice correction
       // counted as a refund), never a refund given back: the payment returns to
       // its uncaptured state, never to SUCCEEDED. An organiser-settled child is

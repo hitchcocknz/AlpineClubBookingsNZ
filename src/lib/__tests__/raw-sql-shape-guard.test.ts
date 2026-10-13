@@ -84,6 +84,11 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // returned by `pg_try_advisory_xact_lock`; the row is schema-decoded before
   // the worker decides whether it may proceed.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // #4042: a group organiser hand-back's alert lease reads the database's own
+  // `now()` - no Prisma model exposes the server clock, and stamping the lease
+  // with each replica's clock would let a skewed one take over a live lease.
+  // Its one timestamp is schema-decoded through `decodeRawRows`.
+  "src/lib/group-organiser-hand-back.ts": 1,
   // The hosting coverage participant protocol's fail-fast lock reads the boolean
   // returned by `pg_try_advisory_xact_lock` and schema-decodes it before deciding
   // whether the outer transaction must retry.

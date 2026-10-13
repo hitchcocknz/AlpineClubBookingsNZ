@@ -534,7 +534,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         includeCancelled: true,
       });
 
-      // #3979 (`INV-PAY-124`): the receipt is the cash this invoice collected.
+      // #3979 (`INV-PAY-125`): the receipt is the cash this invoice collected.
       // Decided once, at the transition (no captured PRIMARY row yet), from the
       // rows read here under the locks above and after both fences, and only
       // when the cash belongs to this payment alone; otherwise the stored
@@ -1402,7 +1402,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       bookingId: outcome.payment.bookingId,
     });
 
-    // #3979 (`INV-PAY-124`): a kept figure, or cash that disagrees with what
+    // #3979 (`INV-PAY-125`): a kept figure, or cash that disagrees with what
     // the booking owes, is never silent on a booking the settle leaves live:
     // its marker committed with the receipt, and the alert goes out now. The
     // two cancel arms turn the cash into credit and alert about it themselves,

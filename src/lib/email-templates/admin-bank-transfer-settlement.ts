@@ -1,5 +1,5 @@
 /**
- * #3979 (`INV-PAY-124`): the admin alert for a bank transfer the inbound Xero
+ * #3979 (`INV-PAY-125`): the admin alert for a bank transfer the inbound Xero
  * settle recorded but whose figure needs a person - the stored amount was kept
  * instead of the invoice's cash, or the cash is not what the booking owes.
  *

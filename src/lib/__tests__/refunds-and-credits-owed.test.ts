@@ -184,7 +184,7 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
     const both = owedReconciliationPaymentRow({
       ...failed,
       manualRefundTasks: [
-        { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null },
+        { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null, occurrenceKey: null },
       ],
     });
     const db = reconciliationDb();
@@ -207,6 +207,39 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
     expect(parts.capturedGrossCents - parts.heldCashCents - owed.refundsOwedCents).toBe(0);
   });
 
+  it("#4042: a group organiser's OPEN hand-back counts once in Refunds owed at its own amount, and never comes off the organiser's Net Collected", async () => {
+    // The organiser's own payment holds $200.00; the group task owes $300.00
+    // of joiners' refunds, which the joiners' payments already read refunded.
+    const [failed] = OWED_RECONCILIATION_PAYMENTS;
+    const groupTask = { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 30_000, partPaymentReviewPaymentId: null, occurrenceKey: "group-organiser-hand-back:settle-1" };
+    const organiser = owedReconciliationPaymentRow({ ...failed, manualRefundTasks: [groupTask] });
+    const withoutTask = owedReconciliationPaymentRow({ ...failed, manualRefundTasks: [] });
+
+    // Net Collected: the organiser's payment reads exactly as with no task.
+    expect(getNetCollectedPaymentParts(organiser)).toEqual(getNetCollectedPaymentParts(withoutTask));
+
+    // Refunds owed: the payment's own owed parts, plus the task at its full amount, once.
+    const withId = { id: "pay-organiser", ...organiser };
+    const ownOnly = reconciliationDb();
+    ownOnly.manualRefundTask.findMany.mockResolvedValue([]);
+    ownOnly.paymentRecoveryOperation.findMany = operationReads(() => [{ payment: withId }]);
+    ownOnly.memberCredit.groupBy.mockResolvedValue([]);
+    const before = (await readRefundsAndCreditsOwed(ownOnly as never)).refundsOwedCents;
+
+    const db = reconciliationDb();
+    db.manualRefundTask.findMany.mockResolvedValue([{ ...groupTask, booking: { deletedAt: null, payment: withId } }]);
+    db.paymentRecoveryOperation.findMany = operationReads(() => [{ payment: withId }]);
+    db.memberCredit.groupBy.mockResolvedValue([]);
+    expect((await readRefundsAndCreditsOwed(db as never)).refundsOwedCents).toBe(before + 30_000);
+
+    // Its payment reached only through the task: the task alone, uncapped.
+    const taskOnly = reconciliationDb();
+    taskOnly.manualRefundTask.findMany.mockResolvedValue([{ ...groupTask, booking: { deletedAt: null, payment: withId } }]);
+    taskOnly.paymentRecoveryOperation.findMany = operationReads(() => []);
+    taskOnly.memberCredit.groupBy.mockResolvedValue([]);
+    expect((await readRefundsAndCreditsOwed(taskOnly as never)).refundsOwedCents).toBe(30_000);
+  });
+
   it("never takes one payment's money off twice across a hand-back and a card refund", () => {
     const [failed] = rows;
     const both = {
@@ -214,7 +247,7 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
       booking: {
         ...failed.booking,
         manualRefundTasks: [
-          { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null },
+          { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null, occurrenceKey: null },
         ],
       },
     };

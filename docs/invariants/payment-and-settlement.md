@@ -748,7 +748,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   (SUCCEEDED / (PARTIALLY_)REFUNDED), or, for STRIPE rows with no ledger rows,
   the refund mirror — never on the aggregate mirror alone, which the inbound
   reconcile folds refund-worded modification credit notes into on
-  never-captured IB payments ([INV-PAY-125]). A never-captured payment flips to FAILED at cancel
+  never-captured IB payments ([INV-PAY-126]). A never-captured payment flips to FAILED at cancel
   and its open invoice gets the finalPrice+changeFee invoice-clearing credit note
   (the #1015 outstanding-balance rule). A genuinely captured PARTIALLY_REFUNDED
   payment takes the PAID cancellation path (#1491, owner decision): the member
@@ -1054,7 +1054,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   settled (PENDING/FAILED), and no credit already minted by this pipeline (matched by its own credit descriptions — never by amount, which collides with unrelated cancellation-flow rows). Both
   credit-minting arms (already-cancelled and late-capacity-failure) size the mint
   by the invoice's QUANTIFIED cash (#1459), clamped per payment to its
-  receipt's figure ([INV-PAY-124]) — `amountPaid` plus overpayment/prepayment allocations, falling back
+  receipt's figure ([INV-PAY-125]) — `amountPaid` plus overpayment/prepayment allocations, falling back
   to the invoice's non-DELETED payment records only when `amountPaid` is unusable
   — never by the payment's face amount alone.
   Partially quantifiable evidence floors the mint at the verified cash and the
@@ -3084,7 +3084,39 @@ _Split from `INV-PAY-057` (#3220)._
 
 ## INV-PAY-124
 
-**Related: `INV-PAY-119`** (what is owed), **`INV-PAY-125`** (corrections).
+- **An organiser's cancel of a group paid by Internet Banking keeps ONE
+  officer task to repay the organiser, holding every joiner refund the ledger
+  proves** (#4042). The cancel books each joiner's refund in the app's ledger
+  (the payment mirror, a `BANK_REFUND` line) but no Stripe refund backs it.
+  Each per-child claim that books a share, after its `lock(1)`, calls
+  `recordGroupOrganiserHandBackShare` (`src/lib/group-organiser-hand-back.ts`),
+  which DERIVES the total: every planned joiner with this settlement's refund
+  line (`groupSettlementRefundKey`; no `deletedAt` filter, the line is the
+  proof), every joiner a group task records, and its own; less closed group
+  tasks. The first claim creates a `CANCELLED_BOOKING_HAND_BACK` on the
+  organiser's booking, keyed `group-organiser-hand-back:<settlement id>`;
+  later ones set it while OPEN, by a status-guarded update. After it closes, a
+  supplementary task keyed per joiner carries only what no task covers. The
+  shares are data on the row.
+  - Its alert goes at least once; a crash between sending and recording can
+    repeat it. A lease claimed under `lock(1)` lets one run send at a time;
+    the reaper retries unsent ones, stopping after three that reach nobody.
+  - A cancel straddling the release folds in joiners old code refunded on the
+    ledger; a cancel made entirely before it raises no task.
+  - **No `paymentId`, so completion moves nothing**: no allocation, ledger
+    line, Xero note or `REFUNDED` event. It closes under `lock(1)` and must
+    name the total its screen showed; a missing or grown total is refused.
+    **Never dismissed**: not repaying is the treasurer's correction.
+  - `isGroupOrganiserHandBackTask` marks it. Refunds owed counts it at its own
+    amount; no Net Collected and no ledger census counts it as the organiser
+    booking's own.
+- Pinned by `group-organiser-hand-back.test.ts`, `group-cancel.test.ts`,
+  `manual-refund-task.test.ts`, `refunds-and-credits-owed.test.ts` and
+  `booking-ledger-group-settlement.realdb.test.ts`.
+
+## INV-PAY-125
+
+**Related: `INV-PAY-119`** (what is owed), **`INV-PAY-126`** (corrections).
 
 - **A bank transfer settles at the cash its invoice collected** (#3979; owner
   decision 13 Oct 2026,
@@ -3113,9 +3145,9 @@ _Split from `INV-PAY-057` (#3220)._
 - Pinned by `settle-from-cash.test.ts`, `xero-inbound-reconciliation.test.ts`,
   `ib-settled-cash-audit.test.ts` and `ib-settle-from-cash.realdb.test.ts`.
 
-## INV-PAY-125
+## INV-PAY-126
 
-**Related: `INV-PAY-116`** (the wording), **`INV-PAY-124`**.
+**Related: `INV-PAY-116`** (the wording), **`INV-PAY-125`**.
 
 - **An invoice correction is not a refund** (#3979, owner decision 13 Oct
   2026). A modification note worded *Invoice correction* ([INV-PAY-116]) moved

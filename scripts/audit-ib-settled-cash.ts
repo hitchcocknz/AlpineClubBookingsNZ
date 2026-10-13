@@ -1,6 +1,6 @@
 /**
  * Read-only audit of settled bank-transfer receipts whose recorded figure is
- * not the cash Xero recorded against their invoice (#3979, `INV-PAY-124`).
+ * not the cash Xero recorded against their invoice (#3979, `INV-PAY-125`).
  *
  * REPORT ONLY - this script never writes, never repairs and never calls a live
  * provider. It reads the payment links the inbound invoice sync stored. The

@@ -64,7 +64,7 @@ describe("getKnownModificationRefundTotalCents", () => {
   });
 });
 
-// #3979 (`INV-PAY-124`): an edit whose own note moved no cash refunded nothing,
+// #3979 (`INV-PAY-125`): an edit whose own note moved no cash refunded nothing,
 // so its reduction is not part of the refunded total - or a missing refund note
 // would hide behind it.
 describe("getKnownModificationRefundTotalCents leaves out notes that moved no cash (#3979 review F)", () => {

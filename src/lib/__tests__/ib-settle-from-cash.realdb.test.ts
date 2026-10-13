@@ -1,6 +1,6 @@
 /**
  * Real-PostgreSQL proof that a bank transfer settles at the cash its invoice
- * collected (#3979, `INV-PAY-124`), end to end through the REAL inbound settle
+ * collected (#3979, `INV-PAY-125`), end to end through the REAL inbound settle
  * (`syncInternetBankingPaymentsForPaidInvoice`), the booking ledger's receipt
  * sync, the REAL cancel and the REAL refunded-total repair of the inbound
  * credit-note sync.

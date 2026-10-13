@@ -5,9 +5,10 @@
  * the refund sentence of the "Booking Modified", "Booking Cancelled" and
  * "Refund Appeal Approved" emails - HTML template and admin-editable body alike -
  * and for the cancel dialog's on-screen confirmation of an organiser-paid
- * refund (#3973). Pure, with no imports, so a client component can read it.
- * Every function takes the settlement's own answer of where the money went or
- * is going; nothing here decides it.
+ * refund (#3973) or an own-card refund not made yet (#4084). Pure, with no
+ * imports, so a client component can read it. Every function takes the
+ * settlement's own answer of where the money went or is going; nothing here
+ * decides it.
  */
 
 /**
@@ -81,14 +82,24 @@ export type OrganiserRefundMethod =
 export type OrganiserCardAppealRefund = Extract<OrganiserRefundMethod, "organiser_card" | "organiser_card_pending">;
 
 /**
+ * #4084: a cancel's refund to the member's own card: made (`card`), or not
+ * made yet (`card_pending`) - the Stripe call threw and the refund is queued
+ * for the recovery runner, or Stripe answered `failed` or `canceled`
+ * (`ownCardRefundMade`). The cancel's result carries one, so the confirmation
+ * screen says what the email says.
+ */
+export type OwnCardRefundMethod = "card" | "card_pending";
+
+/**
  * Where a "Booking Cancelled" email says the refund went. B5 (#2262): "manual"
  * is a cash / off-Xero settlement a person hands back, so it must never read as
  * "on its way to your card" (no card was charged) nor as account credit (none
  * was minted; a hand-back task was raised). #3973: the organiser's card
  * refunds (`OrganiserRefundMethod`), and "organiser_by_hand", an organiser's
- * Internet Banking settlement the club repays by hand.
+ * Internet Banking settlement the club repays by hand. #4084: the member's own
+ * card (`OwnCardRefundMethod`).
  */
-export type BookingCancelledRefundMethod = "card" | "credit" | "manual" | "organiser_by_hand" | OrganiserRefundMethod;
+export type BookingCancelledRefundMethod = OwnCardRefundMethod | "credit" | "manual" | "organiser_by_hand" | OrganiserRefundMethod;
 
 /**
  * #3973: the refund line of a "Booking Cancelled" email, ONE wording for the
@@ -119,13 +130,15 @@ export function bookingCancelledRefundSentence(
       return `A credit of ${amount} has been added to your account for future bookings.`;
     case "card":
       return ownCardRefundSentence(amount);
+    case "card_pending":
+      return ownCardRefundPendingSentence(amount);
   }
 }
 
 /**
  * #3973: a refund already made reads as a success; a hand-back, a refund still
- * on its way, or no refund at all reads as information. The email's box and the
- * confirmation screen both ask here.
+ * on its way (#4084: `card_pending` too), or no refund at all reads as
+ * information. The email's box and the confirmation screen both ask here.
  */
 export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod): boolean {
   if (refundCents <= 0) return false;
@@ -137,9 +150,14 @@ function ownCardRefundSentence(amount: string): string {
   return `A refund of ${amount} has been processed to your original payment method.`;
 }
 
-/** #4070: that card refund, not made yet (`ownCardRefundMade`) - it failed, timed out or was not made. */
-function ownCardRefundPendingSentence(amount: string): string {
-  return `A refund of ${amount} is on its way to your original payment method.`;
+/**
+ * #4070: that card refund, not made yet (`ownCardRefundMade`) - it failed,
+ * timed out or was not made. Booking Modified and (#4084) Booking Cancelled
+ * alike, and the cancel dialog's confirmation, where an officer cancelling on
+ * the member's behalf reads "the member's" (`whose`).
+ */
+export function ownCardRefundPendingSentence(amount: string, whose: "your" | "the member's" = "your"): string {
+  return `A refund of ${amount} is on its way to ${whose} original payment method.`;
 }
 
 /**

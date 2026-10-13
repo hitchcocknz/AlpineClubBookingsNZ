@@ -155,6 +155,64 @@ describe("an approved appeal's refund hand-back has its own sentence (#3827, D-3
   });
 });
 
+describe("a group organiser's Internet Banking hand-back has its own sentence (#4042)", () => {
+  it("prints the group sentence, never the cash one or a Xero claim, is marked paid back and offers no Dismiss", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    const intro = screen.getByTestId("manual-refund-task-group-organiser-intro");
+    expect(intro).toBeInTheDocument();
+    expect(intro.textContent).toMatch(/take it to the treasurer/);
+    expect(intro.textContent).toMatch(/Marking it paid back sends nothing to Xero/);
+    expect(intro.textContent).not.toMatch(/(in|recorded in) Xero/);
+    expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^dismiss$/i })).not.toBeInTheDocument();
+  });
+
+  it("marking it paid back posts the total the card showed, so a total grown since is refused by the server", async () => {
+    const fetchMock = stubLoad({ tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }], viewerCanViewBookings: true });
+    render(<ManualRefundTaskQueue />);
+    await waitFor(() => expect(screen.getByTestId("manual-refund-task-queue")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Record as paid back" }));
+
+    await waitFor(() => expect(postCount(fetchMock)).toBe(1));
+    expect(postBody(fetchMock)).toEqual({ resolution: "completed", confirmed: true, note: null, confirmedAmountCents: 8000 });
+  });
+
+  it("CONTROL: a cash hand-back posts the body it always did, with no amount", async () => {
+    const fetchMock = stubLoad({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    render(<ManualRefundTaskQueue />);
+    await waitFor(() => expect(screen.getByTestId("manual-refund-task-queue")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Record as paid back" }));
+
+    await waitFor(() => expect(postCount(fetchMock)).toBe(1));
+    expect(postBody(fetchMock)).toEqual({ resolution: "completed", confirmed: true, note: null });
+  });
+
+  it("its paid-back dialog says what the action records, never that it writes the refund into the ledger", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/as repaid to the group organiser/);
+    expect(dialog.textContent).toMatch(/joiners' refunds are already in the ledger/);
+    expect(dialog.textContent).not.toMatch(/writes the refund into the payment ledger/);
+  });
+
+  it("a cancellation's hand-back does not print it", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    expect(screen.queryByTestId("manual-refund-task-group-organiser-intro")).not.toBeInTheDocument();
+  });
+});
+
 describe("the card only makes claims about rows it actually holds (#3033)", () => {
   it("prints the cash hand-back sentence only over rows it describes", async () => {
     await renderQueue({ tasks: [REVIEW_TASK], viewerCanViewBookings: true });

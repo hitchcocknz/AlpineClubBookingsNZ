@@ -11,6 +11,7 @@ import {
   openTaskOwedCents,
   type HandBackTaskRow,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import {
   openCardRefundOwedCents,
   type CardRefundOperationRow,
@@ -283,7 +284,16 @@ export function getNetCollectedCashParts(
     leftCents -= cents;
     return cents;
   };
-  const tasks = openTaskOwedCents(booking.manualRefundTasks, booking);
+  // #4042 (`INV-PAY-124`): not a group organiser's hand-back. It sits on the
+  // organiser's booking but repays the joiners' refunds, which their own
+  // payments already show as refunded, so taking it off this payment would
+  // count it twice. Excluded here, at Net Collected's own call, not in the
+  // shared helper: "Refunds owed" counts it once, at its own amount
+  // (`readRefundsAndCreditsOwed`).
+  const tasks = openTaskOwedCents(
+    booking.manualRefundTasks.filter((task) => !isGroupOrganiserHandBackTask(task)),
+    booking,
+  );
   const handBackOwedCents = takeOff(tasks.handBackCents);
   const cardRefundOwedCents = takeOff(
     captured ? openCardRefundOwedCents({ ...payment, status }) : 0,

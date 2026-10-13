@@ -2212,8 +2212,8 @@ Before #3979 the inbound Xero settle kept the figure an Internet Banking payment
 was born with, so a booking re-priced (or charged a recorded fee) before its
 invoice was raised was settled at its old price: its ledger bank receipt and
 `Payment.amountCents`, which refund and credit caps read, were wrong
-(`INV-PAY-124` stops new cases). And while the old and new code are both live in
-a deploy, they can count an invoice correction differently (`INV-PAY-125`).
+(`INV-PAY-125` stops new cases). And while the old and new code are both live in
+a deploy, they can count an invoice correction differently (`INV-PAY-126`).
 `scripts/audit-ib-settled-cash.ts` lists:
 
 - each captured bank-transfer receipt whose figure differs from the payments Xero

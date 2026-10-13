@@ -20,6 +20,7 @@ const handBack = (status: string, amountCents: number) => ({
   kind: "CANCELLED_BOOKING_HAND_BACK",
   amountCents,
   partPaymentReviewPaymentId: null,
+  occurrenceKey: null,
 });
 
 // A cancelled booking marked paid by hand for $100.00 (Internet Banking, one

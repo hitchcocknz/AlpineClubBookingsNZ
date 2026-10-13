@@ -87,7 +87,7 @@ export async function sendAdminSecondInstrumentSettlementConflictAlert(data: {
 }
 
 /**
- * #3979 (`INV-PAY-124`): the inbound settle recorded a bank transfer but kept
+ * #3979 (`INV-PAY-125`): the inbound settle recorded a bank transfer but kept
  * the stored figure instead of the invoice's cash, or the cash is not what the
  * booking owes. It first shipped through `sendAdminPaymentFailureAlert`
  * ("Payment Failed"), which misdescribed it and let the `adminPaymentFailure`

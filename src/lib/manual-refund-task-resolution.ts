@@ -39,6 +39,7 @@ import {
   nonCancellationHandBackCompletedSnapshot,
   manualRefundTaskSettlementRefusal,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { groupOrganiserHandBackRefusal, isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 // #3498: what a settle MAY repair is the plan module's; the writes are the store's.
 import { planStoredNightPriceRepair } from "@/lib/stored-night-price-repair-plan";
 import { recordReviewClosurePricing } from "@/lib/stored-night-price-repair-store";
@@ -165,9 +166,10 @@ export async function resolveManualRefundTask(
       where: { id: taskId },
       select: { kind: true, occurrenceKey: true },
     });
+    // #4042 (`INV-PAY-124`): so does a group organiser's, which later joiners' shares grow under it.
     if (
       head?.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW ||
-      (head !== null && isNonCancellationHandBackTask(head))
+      (head !== null && (isNonCancellationHandBackTask(head) || isGroupOrganiserHandBackTask(head)))
     ) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     }
@@ -205,6 +207,7 @@ export async function resolveManualRefundTask(
     ) {
       throw new ManualBookingPaymentError(EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, 409);
     }
+    const groupRefusal = groupOrganiserHandBackRefusal(task, resolution, confirmedAmountCents, format); if (groupRefusal) throw new ManualBookingPaymentError(groupRefusal, 409); // #4042
 
     const isEditReview = task.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW;
 

@@ -1,6 +1,6 @@
 /**
  * What the operators are told about a bank transfer the inbound settle
- * recorded (#3979, `INV-PAY-124`): the stored figure was kept instead of the
+ * recorded (#3979, `INV-PAY-125`): the stored figure was kept instead of the
  * invoice's cash, or the cash is not what the booking owes.
  *
  * The notice is read inside the settle's transaction; for a booking the settle

@@ -19,9 +19,9 @@ import {
   type HostingCoverageOverridePromptData,
 } from "@/lib/hosting-coverage-override-client";
 import { formatCents } from "@/lib/utils";
-import type { OrganiserRefundMethod } from "@/lib/booking-modified-email-copy";
+import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { useClubFormat } from "@/components/club-format-provider";
-import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation } from "@/components/cancel-booking-payment-notes";
+import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundConfirmation } from "@/components/cancel-booking-payment-notes";
 
 interface CancelPreview {
   refundAmountCents: number;
@@ -94,7 +94,7 @@ export function CancelBookingButton({
   const format = useClubFormat();
   const [step, setStep] = useState<"idle" | "loading" | "preview" | "cancelling" | "success" | "error">("idle");
   const [preview, setPreview] = useState<CancelPreview | null>(null);
-  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number; organiserRefund?: { method: OrganiserRefundMethod; amountCents: number } } | null>(null);
+  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number; organiserRefund?: { method: OrganiserRefundMethod; amountCents: number }; ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number } } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [refundMethod, setRefundMethod] = useState<"card" | "credit">("card");
   // Issue #1705: the admin's explicit email choice dialog, and the choice that
@@ -273,6 +273,7 @@ export function CancelBookingButton({
           creditAmountCents: data.creditAmountCents,
           creditRestoredCents: data.creditRestoredCents,
           organiserRefund: data.organiserRefund,
+          ownCardRefund: data.ownCardRefund,
         });
         setStep("success");
         router.refresh();
@@ -366,11 +367,7 @@ export function CancelBookingButton({
             A credit of {formatCents(refund, format)} has been added to {onBehalfOfMember ? "the member's" : "your"} account for future bookings.
           </p>
         ) : refund > 0 ? (
-          <p className="text-sm text-success-11">
-            {onBehalfOfMember
-              ? `The refund of ${formatCents(refund, format)} has been processed to the member's original payment method.${emailNote}`
-              : `Your refund of ${formatCents(refund, format)} has been processed to your original payment method.${emailNote}`}
-          </p>
+          <OwnCardRefundConfirmation amountCents={refund} pending={result?.ownCardRefund?.method === "card_pending"} format={format} emailNote={emailNote} onBehalfOfMember={onBehalfOfMember} />
         ) : emailSuppressed ? null : (
           <p className="text-sm text-success-11">
             {onBehalfOfMember

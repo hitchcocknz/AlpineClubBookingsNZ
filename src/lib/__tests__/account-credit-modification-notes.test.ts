@@ -12,7 +12,7 @@ import { UNPAID_ASK_BILLED_OFFSET_NOTE_SCOPE } from "@/lib/xero-review-task-key"
 
 /**
  * Which modification credit notes moved no cash, so never fold into a
- * payment's refunded total. #3979 (`INV-PAY-124`) adds the invoice correction
+ * payment's refunded total. #3979 (`INV-PAY-125`) adds the invoice correction
  * (`INV-PAY-116`) beside #3809's account-credit wording and #3954's
  * billed-offset scope. Read from the wording the note's operation recorded
  * when it was raised.
