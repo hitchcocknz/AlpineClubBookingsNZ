@@ -6,12 +6,13 @@ import {
   bookingCancelledRefundMade,
   bookingCancelledRefundSentence,
   type OrganiserRefundMethod,
+  ownCardRefundPendingSentence,
 } from "@/lib/booking-modified-email-copy";
 
 /**
- * #3643: the two cancel-dialog lines internet banking needs, and (#3973) the
- * confirmation of an organiser-paid refund, split out of
- * `cancel-booking-button.tsx` for size.
+ * #3643: the two cancel-dialog lines internet banking needs, and the
+ * confirmations of an organiser-paid refund (#3973) and of an own-card refund
+ * not made yet (#4084), split out of `cancel-booking-button.tsx` for size.
  */
 
 /** No payment the app can refund: none taken, or one settled by hand (DECISION 2). */
@@ -129,4 +130,37 @@ export function OrganiserRefundConfirmation({
   const sentence = bookingCancelledRefundSentence(amountCents, formatCents(amountCents, format), method);
   const tone = bookingCancelledRefundMade(amountCents, method) ? "text-success-11" : "text-info-11";
   return <p className={`text-sm ${tone}`}>{sentence + emailNote}</p>;
+}
+
+/**
+ * The confirmation after a cancel refunded to the member's own card. #4084:
+ * when Stripe did not make that refund (the cancel's `ownCardRefund` says
+ * `card_pending`, so `pending`), it is the "Booking Cancelled" email's own
+ * sentence, as information, never "has been processed"; an officer cancelling
+ * on the member's behalf reads "the member's". A made refund keeps its wording.
+ */
+export function OwnCardRefundConfirmation({
+  amountCents,
+  pending,
+  format,
+  emailNote,
+  onBehalfOfMember,
+}: {
+  amountCents: number;
+  pending: boolean;
+  format: ClubFormat;
+  emailNote: string;
+  onBehalfOfMember: boolean;
+}) {
+  const amount = formatCents(amountCents, format);
+  if (pending) {
+    return <p className="text-sm text-info-11">{ownCardRefundPendingSentence(amount, onBehalfOfMember ? "the member's" : "your") + emailNote}</p>;
+  }
+  return (
+    <p className="text-sm text-success-11">
+      {onBehalfOfMember
+        ? `The refund of ${amount} has been processed to the member's original payment method.${emailNote}`
+        : `Your refund of ${amount} has been processed to your original payment method.${emailNote}`}
+    </p>
+  );
 }

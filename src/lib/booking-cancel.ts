@@ -89,7 +89,7 @@ import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment
 import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
-import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -102,7 +102,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
-import type { OrganiserRefundMethod } from "@/lib/booking-modified-email-copy";
+import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -139,6 +139,8 @@ interface CancelBookingResult {
   manualRefundTaskId?: string;
   /** #3973: a refund that is the group organiser's (`refundMethod` stays "card"), as its email words it, for the confirmation screen. */
   organiserRefund?: { method: OrganiserRefundMethod; amountCents: number };
+  /** #4084: a refund to the member's own card, made or not yet (`refundMethod` stays "card"), for the confirmation screen. */
+  ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number };
   message: string;
 }
 
@@ -2311,6 +2313,7 @@ async function performBookingCancellation(
   // ── Card branch: Stripe refund ────────────────────────────────────
   if (branch === "card") {
     let stripeRefundId: string | undefined;
+    let refundMade = false; // #4084: only when Stripe's answer says so (`ownCardRefundMade`); a throw, `failed` or `canceled` is on its way
 
     // The refund debt was persisted INSIDE the claim transaction (F2, #1349):
     // a recovery operation carrying the frozen per-transaction plan committed
@@ -2345,6 +2348,7 @@ async function performBookingCancellation(
           idempotencyKeyPrefix: `booking_cancel_refund_${bookingId}`,
         });
         stripeRefundId = refundResult.refunds[0]?.refundId;
+        refundMade = ownCardRefundMade(refundResult.refunds);
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
@@ -2409,6 +2413,7 @@ async function performBookingCancellation(
     }
 
     await cleanupPromoRedemption(bookingId);
+    const ownCardRefund = { method: refundMade ? "card" : "card_pending", amountCents: refundAmountCents } as const;
 
     logBookingCancellationAudit({
       booking: fresh,
@@ -2447,7 +2452,7 @@ async function performBookingCancellation(
         fresh.checkOut,
         refundAmountCents,
         format,
-        "card",
+        ownCardRefund.method, // #4084: the email's wording only; the audit and result still say "card"
         creditRestoredCents,
         fresh.lodgeId
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
@@ -2464,9 +2469,10 @@ async function performBookingCancellation(
         refundAmountCents,
         refundPercentage,
         refundMethod: "card",
+        ownCardRefund,
         creditRestoredCents: creditRestoredCents || undefined,
         stripeRefundId,
-        message: `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)} processed.`,
+        message: `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)} ${refundMade ? "processed" : "on its way"}.`,
       },
     };
   }
