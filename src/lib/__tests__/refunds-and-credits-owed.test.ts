@@ -229,7 +229,7 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
 });
 
 /*
-  #4083 (`INV-PAY-124`): a booking edit's card refund Stripe refused (failed or
+  #4083 (`INV-PAY-125`): a booking edit's card refund Stripe refused (failed or
   canceled) is queued as a recovery row whose plan is exactly the refused
   slices. It counts in "Refunds owed" at what was refused - the slice Stripe
   made is not owed, and a refusal is never taken as progress - until a retry

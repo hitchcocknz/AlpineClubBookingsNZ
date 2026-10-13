@@ -242,7 +242,7 @@ export async function executeBookingModificationRefund({
       // member while the ledger records a second refund that never happened.
       idempotencyKeyPrefix: stripeKeyPrefix,
     });
-    // #4083 (`INV-PAY-124`): Stripe answered a slice `failed` or `canceled`
+    // #4083 (`INV-PAY-125`): Stripe answered a slice `failed` or `canceled`
     // without throwing. It is still owed: queued as exactly those slices, which
     // the recovery runner asks for again under a fresh key.
     const refused = refusedRefundSlices(refundResult.refunds);

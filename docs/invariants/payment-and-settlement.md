@@ -1190,7 +1190,7 @@ one, check the other.
 
 - External provider side effects require clear retry and idempotency behavior.
 
-## INV-PAY-124
+## INV-PAY-125
 
 **Related: `INV-PAY-030`** (provider retry and idempotency), **`INV-PAY-114`**
 (an organiser child's refund, which reopens one Stripe fails later) and

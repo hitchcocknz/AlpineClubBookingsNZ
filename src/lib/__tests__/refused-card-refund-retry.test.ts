@@ -1,4 +1,4 @@
-// #4083 (`INV-PAY-124`): a card refund Stripe refused is still owed, and its
+// #4083 (`INV-PAY-125`): a card refund Stripe refused is still owed, and its
 // retry asks under a key Stripe has never seen. These are the pure rules: the
 // key spelling and its generations, which statuses are refusals, which plan
 // slices move, and that a persisted plan keeps the generation it was moved to.

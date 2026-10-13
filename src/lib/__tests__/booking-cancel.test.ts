@@ -1876,7 +1876,7 @@ describe("cancelBooking credit refunds", () => {
     });
   });
 
-  // #4083 (`INV-PAY-124`): Stripe answered the refund `failed` or `canceled`
+  // #4083 (`INV-PAY-125`): Stripe answered the refund `failed` or `canceled`
   // without throwing. The pre-persisted debt must stay open for the runner,
   // never be closed as paid; the runner asks again under a fresh key.
   it.each(["failed", "canceled"])("leaves the pre-persisted recovery op open when Stripe answers the card refund %s (#4083)", async (status) => {

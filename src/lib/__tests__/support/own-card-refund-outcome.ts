@@ -4,7 +4,7 @@
  * Modified" email must then say. Shared by the four edit doors' tests so each
  * door is driven through the same states. `queued` is what still owed goes to
  * the recovery runner (`enqueueBookingModificationRefundRecovery`): a call that
- * throws queues the unpaid remainder, and (#4083, `INV-PAY-124`) a refund
+ * throws queues the unpaid remainder, and (#4083, `INV-PAY-125`) a refund
  * Stripe answered `failed` or `canceled` queues exactly the slices it refused,
  * as their plan, so the runner asks for them again under a fresh key.
  *

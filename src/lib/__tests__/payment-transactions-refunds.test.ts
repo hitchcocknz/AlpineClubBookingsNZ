@@ -822,7 +822,7 @@ describe("multi-transaction refund allocation (#1097)", () => {
     expect([...refunds.keys()]).toEqual(["re_slice_a"]);
   });
 
-  // #4083 (`INV-PAY-124`): Stripe can answer a refund `failed` or `canceled`
+  // #4083 (`INV-PAY-125`): Stripe can answer a refund `failed` or `canceled`
   // without throwing. Such a slice sent nothing back: it is returned with the
   // slice as sent (so it can be queued and asked for again) and is never
   // counted as completed (so a remainder sized from the partial failure keeps it).
