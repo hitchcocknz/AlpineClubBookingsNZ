@@ -372,10 +372,27 @@ Two consequences worth knowing before you edit one:
   processed there, or on its way there when the card refund has not gone
   through yet (#4057, #4070) — or a bank transfer the club will send. Keep it
   on a line of its own, with no `$` or label in front.
+- **`{{changeSummary}}` on Booking Modified lists what changed, one line each.**
+  Dates, guest count and total appear as a Previous/New pair only when they
+  changed. When the change added people, a **Guests Added** line names each of
+  them, with their own nights in brackets for anyone not staying the whole stay
+  (#4030), and "(waiting for them to accept)" after a member from outside the
+  family who has not yet accepted their place — the same line the built-in email
+  shows. Keep the token on a line of its own.
+- **`{{settlementFigureNote}}` on *Bank transfer amount needs checking* is what
+  needs a person (#3979).** It says whether the app kept the amount it had
+  recorded instead of the cash Xero shows (and why), whether the member paid more
+  or less than the booking owes, and who corrects a recorded figure. The amounts
+  themselves are `{{amount}}` (recorded), `{{paidAmount}}` (the cash Xero shows)
+  and `{{amountOwing}}` (what the booking owes, or "as recorded"). The message is
+  locked to always send.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
   says where the refund went: the member's original payment method, account
   credit, or a refund the club will arrange directly. Otherwise it says no
-  refund applied. On a group booking the organiser paid for by card, it names
+  refund applied. A card refund to the member's own card reads "has been
+  processed" only once the card refund has gone through; until then — when it
+  failed, timed out or was not made — it reads "A refund of $X is on its way to
+  your original payment method.", shown as information (#4084). On a group booking the organiser paid for by card, it names
   the organiser instead: the refund has been processed to the group organiser's
   card, or is on its way there when the card refund has not gone through yet.
   If the organiser had already cancelled the whole group, it says that

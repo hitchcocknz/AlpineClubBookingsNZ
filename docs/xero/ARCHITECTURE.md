@@ -1026,12 +1026,21 @@ note.
 
 ## Flow 2 — Inbound reconciliation (webhooks + incremental cursors)
 
-Xero pushes CONTACT and INVOICE events; the webhook stores them and returns
-fast. Reconciliation happens in a bounded worker kicked after the response and
-swept by cron. Internet-banking settlement rides this flow: when an invoice is
+Xero pushes CONTACT, INVOICE, and CREDITNOTE events (the credit-note
+category has no underscore); the webhook stores each signed event as sent and
+returns fast. A category this app does not reconcile is logged and left
+processed, so it is visible without being retried forever. A credit-note void
+that deactivates a payment's refund-note mirror also moves
+`Payment.xeroRefundCreditNoteId`, in the same link write, to the newest other
+live note that may be canonical (never a per-refund note, #3880) or clears it,
+as the #2901 repair apply does, so the nightly missing-link report never sees a
+pointer to an inactive mirror (#4046). Reconciliation happens in a bounded
+worker kicked after the response and swept by cron. Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
 payment records; operator-applied overpayments/prepayments count), the
-matching local payments/bookings are flipped here. A PAID event produced by
+matching local payments/bookings are flipped here, and the receipt is recorded
+at the cash the invoice collected, not the figure the payment was born with,
+whenever that cash is this payment's alone (#3979, `INV-PAY-125`). A PAID event produced by
 credit-note allocation — the app's own invoice-clearing notes do exactly that
 on every unpaid-IB cancellation — settles nothing (#1435): identifiers are
 stamped for linkage only, admins are alerted if the booking is still live,
@@ -1039,10 +1048,12 @@ and a payload carrying neither cash field fails the event into the
 FAILED-retry sweep rather than settling blind. Both credit-minting arms —
 cash landing on an already-cancelled booking's stale invoice, and the
 late-capacity-failure cancel — mint member credit sized by the invoice's
-quantified cash, clamped to the payment amount (#1357/#1459) and, across all
-payments matched to one invoice, to the invoice's remaining cash (#1505): a
-mixed cash+allocation invoice credits only the cash portion, the admin alert
-names both amounts so the allocation source gets verified, and verified cash
+quantified cash, clamped to the receipt's figure (#1357/#1459, which since
+#3979 is that cash itself whenever it was recorded) and, across all payments
+matched to one invoice, to the invoice's remaining cash (#1505): a mixed
+cash+allocation invoice credits only the cash portion, the admin alert names
+both amounts so the allocation source gets verified (since #3979 the invoice's
+total less the member's own applied credit, against the cash), and verified cash
 arriving after a mint alerts with the delta (it never credits automatically).
 Two never-settled payments on one invoice each mint no more than the invoice's
 cash NOT already minted for the other (a defensive invariant — no app flow

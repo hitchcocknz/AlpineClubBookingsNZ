@@ -2,11 +2,14 @@
  * #4070: the answers an own-card edit refund can get from
  * `refundPaymentTransactions` after the edit commits, and what the "Booking
  * Modified" email must then say. Shared by the four edit doors' tests so each
- * door is driven through the same states. `queued` is what still owed goes to
- * the recovery runner (`enqueueBookingModificationRefundRecovery`): a call that
- * throws queues the unpaid remainder, and (#4083, `INV-PAY-125`) a refund
- * Stripe answered `failed` or `canceled` queues exactly the slices it refused,
- * as their plan, so the runner asks for them again under a fresh key.
+ * door is driven through the same states, and (#4084) by the cancel's, whose
+ * "Booking Cancelled" email says `card` for `own` and `card_pending` for
+ * `own_card_pending`. `queued` is what still owed goes to the recovery runner
+ * (`enqueueBookingModificationRefundRecovery`): a call that throws queues the
+ * unpaid remainder, and (#4083, `INV-PAY-125`) a refund Stripe answered
+ * `failed` or `canceled` queues exactly the slices it refused, as their plan,
+ * so the runner asks for them again under a fresh key. The cancel queues
+ * nothing new for either: its pre-persisted debt is left open.
  *
  * `primeOwnCardRefund` answers a `refundPaymentTransactions` double with the
  * state's refunds, or rejects with its error; `expectQueuedOnce` asserts what

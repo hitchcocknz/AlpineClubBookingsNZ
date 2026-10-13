@@ -51,8 +51,11 @@ import { stripeErrorApiType } from "@/lib/stripe-errors";
 /** The metadata key a re-issued ask's intent carries its Stripe key under. */
 export const REISSUED_ASK_KEY_METADATA = "reissuedAskKey";
 
-/** How far before the recovery row's creation a minted intent is looked for. */
-const MINTED_INTENT_LOOKBACK_MS = 5 * 60 * 1000;
+/**
+ * How far before the recovery row's creation a minted intent is looked for -
+ * by a re-issue's replay here, and an ordinary ask's (`mintOrdinaryAskIntent`, #4036).
+ */
+export const MINTED_INTENT_LOOKBACK_MS = 5 * 60 * 1000;
 
 export type ReissuedAskMintPlan = {
   /** What is asked, all carried (`INV-PAY-098`). */
@@ -159,8 +162,9 @@ export type AskCustomerPayment = {
 
 /**
  * Round 7: THE ONE WAY an additional ask's mint names its Stripe customer,
- * for the recovery runner and the door's re-issue mint alike, so the two send
- * one request under their shared key: the `Payment`'s stored customer, else
+ * for the recovery runner and the door's mint alike - a re-issue's and, since
+ * #4036, an ordinary increase's - so the two send one request under their
+ * shared key: the `Payment`'s stored customer, else
  * the booking owner's (`findOrCreateCustomer`), an organisation by its own id.
  */
 export async function resolveAskCustomerId(payment: AskCustomerPayment): Promise<string> {
@@ -177,11 +181,12 @@ export async function resolveAskCustomerId(payment: AskCustomerPayment): Promise
 }
 
 /**
- * Round 7: the `Payment` the door's re-issue mint reads after commit - its
- * live ask, for any ask minted since the reduction (`planReissuedAskMint`), and
- * its customer and owner, for `resolveAskCustomerId`.
+ * Round 7: the `Payment` a door's mint reads after commit - its live ask, for
+ * any ask minted since the reduction (`planReissuedAskMint`), and its customer
+ * and owner, for `resolveAskCustomerId`. #4036: the ordinary increase's door
+ * reads it too, for the customer alone.
  */
-export async function readReissueMintPayment(
+export async function readAskMintPayment(
   paymentId: string,
 ): Promise<AdditionalAskPayment & AskCustomerPayment> {
   const payment = await prisma.payment.findUnique({
@@ -200,6 +205,6 @@ export async function readReissueMintPayment(
       },
     },
   });
-  if (!payment) throw new Error(`Payment ${paymentId} not found for a re-issued additional ask`);
+  if (!payment) throw new Error(`Payment ${paymentId} not found for an additional ask's mint`);
   return payment;
 }

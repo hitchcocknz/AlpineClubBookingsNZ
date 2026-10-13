@@ -222,6 +222,14 @@ import "./edit-financial-review-charge-raise-claim.realdb.test";
 // orphan heal add nothing, and a cash-only booking is unchanged. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3792-` fixtures.
 import "./ib-capacity-cancel-credit-restore.realdb.test";
+// #3979 reuses it to prove a bank transfer settles at the cash its invoice
+// collected through the REAL inbound settle, ledger sync, cancel and credit-note
+// sync: a re-price before the invoice, a finished-stay fee and the late capacity
+// cancel all record the cash, and an invoice-correction note refunds nothing.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-3979-` fixtures, and its email and Xero doubles pass through for every
+// other suite.
+import "./ib-settle-from-cash.realdb.test";
 // #3864 reuses it to prove an edit's stored credit election is never spent on top
 // of an old full-price card intent: the REAL edit, pay-step route and webhook,
 // with the old intent captured and its webhook delivered at each point, end with
@@ -286,6 +294,12 @@ import "./booking-ledger-group-settlement.realdb.test";
 // another attempt for the charge is live. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3971-` fixtures.
 import "./xero-subscription-invoice-retry.realdb.test";
+// #4046 reuses it to prove a Xero void of the refund credit note a payment's
+// pointer names moves that pointer in the same write that deactivates the
+// mirror - never onto a #3880 per-refund note - and rolls back with it.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4046-` fixtures.
+import "./xero-refund-note-void-pointer.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

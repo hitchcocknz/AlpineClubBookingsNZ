@@ -1453,7 +1453,7 @@ export function classifyBookingContext(
   if (payment) addUnsettledRefundCreditNoteFindings(findings, actionMap, booking.id, context.paymentRefundPaymentLinks, paymentOperations);
   addUnallocatedCardAppliedCreditFindings(findings, actionMap, context);
   if (payment && refundCreditNote) {
-    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks);
+    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
     if (refundAmountCents !== null && refundAmountCents > 0) {
       addXeroAmountMismatchFinding({
         findings,
@@ -2276,7 +2276,7 @@ export function classifyBookingContext(
     // per-refund ones - already answer every cent a note may: nothing is
     // missing, and nothing is ambiguous.
     if (primaryInvoice && !refundCreditNote && context.refundNoteUncoveredCents !== 0) {
-      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks);
+      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
       if (cashCancellationRefundCents === null) {
         const action = addAction(
           actionMap,
@@ -2294,7 +2294,7 @@ export function classifyBookingContext(
           details: {
             paymentId: payment.id,
             refundedAmountCents: payment.refundedAmountCents,
-            knownModificationRefundCents: getKnownModificationRefundTotalCents(booking),
+            knownModificationRefundCents: getKnownModificationRefundTotalCents(booking, context.modificationOperationsById),
           },
           actionKeys: [action.key],
         });

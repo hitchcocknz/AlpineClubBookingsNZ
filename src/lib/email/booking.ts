@@ -29,7 +29,7 @@ import {
 import {
   type AppliedCreditSummary,
   appliedCreditSummaryRows,
-  bookingModificationSummaryRows,
+  bookingModificationSummaryRows, type BookingModificationAddedGuest,
   bookingModificationTypeLabel,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
@@ -1412,6 +1412,7 @@ export async function sendBookingModifiedEmail(params: {
    * question would be asking them to answer `null` by hand.
    */
   promoChangeNotAppliedNote?: string | null;
+  addedGuests: ReadonlyArray<BookingModificationAddedGuest>; // #4030: named in the change rows; `[]` = nobody
   /**
    * #3033 (epic #2797): this change saved and its refund or credit could not be
    * worked out from stored history, so the club is deciding it.

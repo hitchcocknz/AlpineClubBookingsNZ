@@ -37,8 +37,10 @@ import {
   bookingCancelledRefundMade,
   bookingModifiedRefundSentence,
   organiserCardRefundSentence,
+  ownCardRefundPendingSentence,
 } from "@/lib/booking-modified-email-copy";
 import { bookingCancelledTemplate } from "@/lib/email-templates/booking";
+import { alertBox } from "@/lib/email-templates/layout";
 import { sendBookingCancelledEmail } from "@/lib/email/booking";
 import { groupCancellationRefundNote } from "@/lib/organiser-child-refund";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
@@ -133,7 +135,7 @@ describe("#3973: the Booking Cancelled refund line names where the refund went",
       expect(bookingCancelledRefundMade(4500, method)).toBe(true);
       expect(bookingCancelledRefundMade(0, method)).toBe(false);
     }
-    for (const method of ["manual", "organiser_card_pending", "group_cancel_refunding", "organiser_by_hand"] as const) {
+    for (const method of ["manual", "organiser_card_pending", "group_cancel_refunding", "organiser_by_hand", "card_pending"] as const) {
       expect(bookingCancelledRefundMade(4500, method)).toBe(false);
     }
   });
@@ -168,5 +170,43 @@ describe("#3973: the Booking Cancelled refund line names where the refund went",
     expect(html(0, "organiser_card")).toContain(NO_REFUND);
     expect(html(0, "organiser_card")).not.toContain("organiser's card");
     expect((await sent(0, "organiser_card")).refundMessage).toBe(NO_REFUND);
+  });
+});
+
+/**
+ * #4084: a cancel's refund to the member's own card that Stripe did not make
+ * (the call threw and the refund is queued for the recovery runner, or Stripe
+ * answered `failed` or `canceled`) is on its way, in an info box: the Booking
+ * Modified sentence (#4070), from the one home. A made refund ("card") keeps
+ * its byte-identical success wording, pinned above and by the render pins.
+ */
+describe("#4084: the Booking Cancelled refund line for an own-card refund not made yet", () => {
+  const OWN_CARD_PENDING = "A refund of $45.00 is on its way to your original payment method.";
+
+  it("says on its way, in an info box, in the HTML and in {{refundMessage}}", async () => {
+    const template = html(4500, "card_pending");
+    const sender = await sent(4500, "card_pending");
+
+    expect(template).toContain(alertBox(OWN_CARD_PENDING, "info"));
+    expect(sender.html).toContain(alertBox(OWN_CARD_PENDING, "info"));
+    expect(sender.refundMessage).toBe(OWN_CARD_PENDING);
+    for (const body of [template, sender.html, sender.refundMessage]) {
+      expect(body).not.toContain("has been processed");
+      expect(body).not.toContain("organiser's card");
+    }
+  });
+
+  it("keeps a made own-card refund in its success box", () => {
+    expect(html(4500, "card")).toContain(alertBox(OWN_CARD, "success"));
+  });
+
+  it("is the Booking Modified sentence, from the one home", () => {
+    expect(ownCardRefundPendingSentence("$45.00")).toBe(OWN_CARD_PENDING);
+    expect(bookingModifiedRefundSentence("$45.00", false, "own_card_pending")).toBe(OWN_CARD_PENDING);
+  });
+
+  it("claims no refund when nothing was refunded", () => {
+    expect(html(0, "card_pending")).toContain(NO_REFUND);
+    expect(bookingCancelledRefundMade(0, "card_pending")).toBe(false);
   });
 });

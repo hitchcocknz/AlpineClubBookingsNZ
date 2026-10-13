@@ -14,6 +14,7 @@ import { compareOrdinal } from "@/lib/ordinal-order";
 import { withStoreTransaction } from "@/lib/db-transaction";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
 import logger from "@/lib/logger";
+import { writeEditAttributedTransaction } from "@/lib/edit-attributed-ask-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import { z } from "zod";
 import type { ClubFormat } from "@/lib/club-format";
@@ -22,8 +23,10 @@ import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sy
 // without an import cycle (#3581); re-exported so existing importers stand.
 import {
   CAPTURED_TRANSACTION_STATUS_LIST,
+  deriveAggregatePaymentStatus,
   EXCLUDED_LEDGER_REFUND_STATUSES,
   expectedRefundedFloorCents,
+  grossCapturedCents,
   isCapturedTransactionStatus,
   isRecordedRefundStatus,
   isRefusedRefundStatus,
@@ -240,27 +243,6 @@ async function ensurePaymentTransactionsBackfilled(
   return loadPaymentWithTransactions(store, paymentId);
 }
 
-function deriveAggregatePaymentStatus(
-  fallbackStatus: PaymentStatus,
-  grossCapturedAmountCents: number,
-  refundedAmountCents: number,
-  latestPrimaryStatus: PaymentStatus | null
-) {
-  if (grossCapturedAmountCents > 0) {
-    if (refundedAmountCents >= grossCapturedAmountCents) {
-      return PaymentStatus.REFUNDED;
-    }
-
-    if (refundedAmountCents > 0) {
-      return PaymentStatus.PARTIALLY_REFUNDED;
-    }
-
-    return PaymentStatus.SUCCEEDED;
-  }
-
-  return latestPrimaryStatus ?? fallbackStatus;
-}
-
 export async function reconcilePaymentAggregates({
   paymentId,
   store = prisma,
@@ -288,9 +270,7 @@ export async function reconcilePaymentAggregates({
     PaymentTransactionKind.ADDITIONAL
   );
 
-  const grossCapturedAmountCents = payment.transactions.reduce((sum, transaction) => {
-    return sum + (isCapturedTransactionStatus(transaction.status) ? transaction.amountCents : 0);
-  }, 0);
+  const grossCapturedAmountCents = grossCapturedCents(payment.transactions);
   const refundedAmountCents = payment.transactions.reduce((sum, transaction) => {
     return sum + transaction.refundedAmountCents;
   }, 0);
@@ -951,39 +931,30 @@ export async function upsertPaymentIntentTransaction({
   stripeCustomerId?: string | null;
   /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
-  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. */
+  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. #4036: given, `writeEditAttributedTransaction`. */
   bookingModificationId?: string;
   store?: PaymentStore;
 }) {
   const provenance = { ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}), ...(bookingModificationId !== undefined ? { bookingModificationId } : {}) };
-  await store.paymentTransaction.upsert({
-    where: { stripePaymentIntentId: paymentIntentId },
-    create: {
-      paymentId,
-      kind,
-      source: PaymentSource.STRIPE,
-      stripePaymentIntentId: paymentIntentId,
-      amountCents,
-      status,
-      paymentMethodId: paymentMethodId ?? undefined,
-      reason,
-      ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
-      ...provenance,
-    },
-    update: {
-      paymentId,
-      kind,
-      source: PaymentSource.STRIPE,
-      amountCents,
-      status,
-      ...(paymentMethodId !== undefined
-        ? { paymentMethodId: paymentMethodId ?? null }
-        : {}),
-      ...(reason !== undefined ? { reason } : {}),
-      ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
-      ...provenance,
-    },
-  });
+  const update = {
+    paymentId, kind, source: PaymentSource.STRIPE, amountCents, status,
+    ...(paymentMethodId !== undefined ? { paymentMethodId: paymentMethodId ?? null } : {}),
+    ...(reason !== undefined ? { reason } : {}),
+    ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+    ...provenance,
+  };
+  const create = {
+    paymentId, kind, source: PaymentSource.STRIPE, stripePaymentIntentId: paymentIntentId, amountCents, status,
+    paymentMethodId: paymentMethodId ?? undefined, reason,
+    ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
+    ...provenance,
+  };
+  // #4036 review: an ask write naming its edit never lands on another edit's row.
+  if (bookingModificationId !== undefined) {
+    await writeEditAttributedTransaction(store, { paymentIntentId, bookingModificationId, create, update });
+  } else {
+    await store.paymentTransaction.upsert({ where: { stripePaymentIntentId: paymentIntentId }, create, update });
+  }
 
   if (stripeCustomerId) {
     await store.payment.update({

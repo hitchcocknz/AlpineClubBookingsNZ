@@ -45,6 +45,7 @@ const SEASON_ID = "race-3750-season";
 const BOOKING_ID = "race-3750-booking";
 const GUEST_ID = "race-3750-guest";
 const GUEST_2_ID = "race-3750-guest-2";
+const GUEST_3_ID = "race-3750-guest-3";
 const PAYMENT_ID = "race-3750-payment";
 const REQUEST_ID = "race-3750-request";
 const OTHER_BOOKING_ID = "race-3750-other-booking";
@@ -197,6 +198,8 @@ async function seed(
     unpaid?: { invoiced: boolean };
     /** A booking-level promotion with no per-night rows (pre-#3276 shape). */
     promoAdjustmentCents?: number;
+    /** #4030: paid by card (Stripe) rather than internet banking, with no invoice. */
+    card?: boolean;
     /** #3954 round 6: paid wholly with account credit - nothing captured, a card on file. */
     creditPaid?: boolean;
   } = {},
@@ -229,11 +232,13 @@ async function seed(
       amountCents: options.creditPaid ? 0 : priceCents,
       ...(options.creditPaid
         ? { source: "STRIPE" as const, creditAppliedCents: priceCents, stripeCustomerId: "cus_race_3750" }
+        : options.card
+          ? { source: "STRIPE" as const, stripePaymentIntentId: "pi_race_4030" }
         : { source: "INTERNET_BANKING" as const, reference: "RACE3750" }),
       status: options.unpaid ? "PENDING" : "SUCCEEDED",
       // An issued primary invoice: the edit's extra is billed by a supplementary
       // invoice and asked for by internet banking.
-      ...(options.unpaid && !options.unpaid.invoiced
+      ...((options.unpaid && !options.unpaid.invoiced) || options.card
         ? {}
         : { xeroInvoiceId: "race-3750-xero-invoice", xeroInvoiceNumber: "INV-3750" }),
     },
@@ -258,8 +263,24 @@ async function seed(
   });
 }
 
-async function approve(officerId: string, options: { confirmOverCapacity?: boolean } = {}) {
+type ExecutorParams = Parameters<typeof executor.approveAndExecuteLockedPeriodChangeRequest>[0];
+type ExpectedFigures = NonNullable<ExecutorParams["expectedFigures"]>;
+type ApproveOptions = {
+  confirmOverCapacity?: boolean;
+  officerEnteredGuests?: ExecutorParams["officerEnteredGuests"];
+  /** The figures the approval was shown; when absent they are checked first. */
+  expectedFigures?: ExpectedFigures;
+  dryRun?: boolean;
+};
+
+async function execute(
+  officerId: string,
+  options: ApproveOptions,
+  mode: { dryRun: true } | { expectedFigures: ExpectedFigures },
+) {
   return executor.approveAndExecuteLockedPeriodChangeRequest({
+    ...(options.officerEnteredGuests ? { officerEnteredGuests: options.officerEnteredGuests } : {}),
+    ...mode,
     requestId: REQUEST_ID,
     expectedVersion: 1,
     actorMemberId: officerId,
@@ -273,6 +294,39 @@ async function approve(officerId: string, options: { confirmOverCapacity?: boole
     }),
     ipAddress: "127.0.0.1",
   });
+}
+
+/**
+ * The officer's own sequence: check the figures (a dry run), then approve with
+ * them. An approval cannot be sent without the figures it was shown (#4030
+ * re-review of 72c933ffc), so a case that names none is checked first; a dry
+ * run that does not quote is returned (or throws) as the approval would.
+ * A race case checks with {@link checkFigures} BEFORE it sets up the race, so
+ * the approval itself, not the check, is what meets the other writer.
+ */
+async function approve(officerId: string, options: ApproveOptions = {}) {
+  if (options.dryRun) return execute(officerId, options, { dryRun: true });
+  if (options.expectedFigures) {
+    return execute(officerId, options, { expectedFigures: options.expectedFigures });
+  }
+  const checked = await execute(officerId, options, { dryRun: true });
+  if (checked.outcome !== "quoted") return checked;
+  return execute(officerId, options, { expectedFigures: figuresOf(checked) });
+}
+
+function figuresOf(quoted: ExpectedFigures): ExpectedFigures {
+  return {
+    additionalAmountCents: quoted.additionalAmountCents,
+    refundAmountCents: quoted.refundAmountCents,
+    accountCreditAmountCents: quoted.accountCreditAmountCents,
+  };
+}
+
+/** The figures an officer's check shows, read before a race is set up. */
+async function checkFigures(officerId: string, options: ApproveOptions = {}): Promise<ExpectedFigures> {
+  const checked = await execute(officerId, options, { dryRun: true });
+  if (checked.outcome !== "quoted") throw new Error(`expected a quote, got ${JSON.stringify(checked)}`);
+  return figuresOf(checked);
 }
 
 function deferred() {
@@ -436,7 +490,12 @@ function deferred() {
 
   it("two officers approving at once produce exactly one modification and one ask", async () => {
     await seed();
-    const results = await Promise.all([approve(OFFICER_ID), approve(OFFICER_2_ID)]);
+    // Both checked the figures first; the approvals are what race.
+    const expectedFigures = await checkFigures(OFFICER_ID);
+    const results = await Promise.all([
+      approve(OFFICER_ID, { expectedFigures }),
+      approve(OFFICER_2_ID, { expectedFigures }),
+    ]);
     const outcomes = results.map((result) => result.outcome).sort();
     expect(outcomes).toEqual(["claimLost", "executed"]);
 
@@ -601,6 +660,216 @@ function deferred() {
     const added = booking.guests.find((guest) => guest.firstName === "Late")!;
     expect(added.nights.map((night) => night.priceCents)).toEqual([NIGHT_CENTS]);
     expect(booking.finalPriceCents).toBe(STORED_NIGHT_CENTS + NIGHT_CENTS);
+  }, 60_000);
+
+  it("#4030 re-review of 72c933ffc: a shorter stay plus a removal keeps each remaining guest on the nights they stayed", async () => {
+    // A three-night stay (10-13 June). Original stays all three nights, Second
+    // the first two, Third only the middle night. The request removes Original
+    // and moves check-out to the 12th, repeating Second's and Third's stored
+    // ranges unchanged, as the request card's range grid always sends them.
+    const NIGHT_3 = new Date("2026-06-12T00:00:00.000Z");
+    const LONG_CHECK_OUT = new Date("2026-06-13T00:00:00.000Z");
+    const nightsOf = (dates: Date[]) =>
+      dates.map((stayDate) => ({ stayDate, priceCents: STORED_NIGHT_CENTS, priceSource: "SOLD" as const }));
+    const guests = [
+      { id: GUEST_ID, firstName: "Original", nights: [CHECK_IN, NIGHT_2, NIGHT_3] },
+      { id: GUEST_2_ID, firstName: "Second", nights: [CHECK_IN, NIGHT_2] },
+      { id: GUEST_3_ID, firstName: "Third", nights: [NIGHT_2] },
+    ];
+    const totalCents = 6 * STORED_NIGHT_CENTS;
+    await prisma.booking.create({
+      data: {
+        id: BOOKING_ID,
+        memberId: OWNER_ID,
+        lodgeId: LODGE_ID,
+        checkIn: CHECK_IN,
+        checkOut: LONG_CHECK_OUT,
+        status: "COMPLETED",
+        totalPriceCents: totalCents,
+        finalPriceCents: totalCents,
+      },
+    });
+    for (const guest of guests) {
+      const last = guest.nights[guest.nights.length - 1];
+      await prisma.bookingGuest.create({
+        data: {
+          id: guest.id,
+          bookingId: BOOKING_ID,
+          firstName: guest.firstName,
+          lastName: "Guest",
+          ageTier: "ADULT",
+          isMember: false,
+          stayStart: guest.nights[0],
+          stayEnd: new Date(last.getTime() + 24 * 60 * 60 * 1000),
+          priceCents: guest.nights.length * STORED_NIGHT_CENTS,
+          nights: { create: nightsOf(guest.nights) },
+        },
+      });
+    }
+    await prisma.payment.create({
+      data: {
+        id: PAYMENT_ID,
+        bookingId: BOOKING_ID,
+        amountCents: totalCents,
+        source: "INTERNET_BANKING",
+        reference: "RACE3750",
+        status: "SUCCEEDED",
+        xeroInvoiceId: "race-3750-xero-invoice",
+        xeroInvoiceNumber: "INV-3750",
+      },
+    });
+    await prisma.bookingChangeRequest.create({
+      data: {
+        id: REQUEST_ID,
+        bookingId: BOOKING_ID,
+        requestedByMemberId: OWNER_ID,
+        kind: "LOCKED_PERIOD",
+        status: "REQUESTED",
+        reason: "Original went home early; the others left on the 12th.",
+        requestedChanges: {
+          original: {
+            checkIn: "2026-06-10",
+            checkOut: "2026-06-13",
+            guests: [
+              { id: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+              { id: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+              { id: GUEST_3_ID, stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+            ],
+          },
+          requested: {
+            ...ADD_LATE_FRIEND,
+            addGuests: [],
+            checkOut: "2026-06-12",
+            removeGuests: [{ id: GUEST_ID }],
+            guestStayRanges: [
+              { guestId: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+              { guestId: GUEST_3_ID, stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+            ],
+            summary: "check-out to 2026-06-12; remove Original Guest",
+          },
+        },
+      },
+    });
+
+    const result = await approve(OFFICER_ID);
+    expect(result, JSON.stringify(result)).toMatchObject({ outcome: "executed" });
+
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: BOOKING_ID },
+      include: { guests: { include: { nights: { orderBy: { stayDate: "asc" } } } } },
+    });
+    expect(booking.checkOut.toISOString()).toBe(NIGHT_3.toISOString());
+    const nightsBy = Object.fromEntries(
+      booking.guests.map((guest) => [
+        guest.firstName,
+        guest.nights.map((night) => [night.stayDate.toISOString(), night.priceCents]),
+      ]),
+    );
+    // Nobody gains a night: Third is charged for the middle night only, never
+    // stretched back to the 10th.
+    expect(nightsBy).toEqual({
+      Second: [
+        [CHECK_IN.toISOString(), STORED_NIGHT_CENTS],
+        [NIGHT_2.toISOString(), STORED_NIGHT_CENTS],
+      ],
+      Third: [[NIGHT_2.toISOString(), STORED_NIGHT_CENTS]],
+    });
+    expect(booking.finalPriceCents).toBe(3 * STORED_NIGHT_CENTS);
+    // #4030 round 7 (F3): how the money goes back. Only Original's three nights
+    // are removed; the same-day tier keeps half of them as the change fee, and
+    // the other half comes back the way the stay was paid (internet banking),
+    // never as account credit. No extra is asked of anyone.
+    const removedCents = 3 * STORED_NIGHT_CENTS;
+    const refundCents = Math.round(removedCents / 2);
+    expect(result).toMatchObject({
+      addedGuestCount: 0,
+      removedGuestCount: 1,
+      priceDiffCents: -removedCents,
+      changeFeeCents: removedCents - refundCents,
+      refundAmountCents: refundCents,
+      accountCreditAmountCents: 0,
+      additionalAmountCents: 0,
+    });
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification.newData).toMatchObject({
+      finishedStayCorrection: { changeFeeRule: "SAME_DAY_NOTICE", removedPortionCents: removedCents },
+    });
+  }, 60_000);
+
+  it("#4030 round 7 (F1): a guest's nights changed after the request was sent is drift, and nothing is applied", async () => {
+    // The request card sends every guest's range, unchanged ones included, and
+    // the request stores each guest's range as it stood.
+    await seed({
+      secondGuest: true,
+      requested: {
+        guestStayRanges: [
+          { guestId: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+          { guestId: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+        ],
+      },
+    });
+    const stored = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    const changes = stored.requestedChanges as { original: Record<string, unknown>; requested: unknown };
+    await prisma.bookingChangeRequest.update({
+      where: { id: REQUEST_ID },
+      data: {
+        requestedChanges: {
+          ...changes,
+          original: {
+            ...changes.original,
+            guests: [GUEST_ID, GUEST_2_ID].map((id) => ({ id, stayStart: "2026-06-10", stayEnd: "2026-06-12" })),
+          },
+        } as never,
+      },
+    });
+    // Then an officer trims Second to the first night (and refunds it): the
+    // guest row and its nights as that edit leaves them.
+    await prisma.bookingGuestNight.deleteMany({ where: { bookingGuestId: GUEST_2_ID, stayDate: NIGHT_2 } });
+    await prisma.bookingGuest.update({
+      where: { id: GUEST_2_ID },
+      data: { stayEnd: NIGHT_2, priceCents: STORED_NIGHT_CENTS },
+    });
+
+    // Re-applying the request's stale 10-12 range would charge that night again.
+    const result = await approve(OFFICER_ID);
+    expect(result).toEqual({ outcome: "keptPending", message: executor.LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    const second = await prisma.bookingGuest.findUniqueOrThrow({
+      where: { id: GUEST_2_ID },
+      include: { nights: true },
+    });
+    expect(second.nights.map((night) => night.stayDate.toISOString())).toEqual([CHECK_IN.toISOString()]);
+    expect(await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } })).toMatchObject({
+      status: "REQUESTED",
+      version: 1,
+    });
+  }, 60_000);
+
+  it("#4030 round 7 (F1): a request whose stored ranges still match the guests is not drift", async () => {
+    await seed({
+      secondGuest: true,
+      requested: {
+        guestStayRanges: [
+          { guestId: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+          { guestId: GUEST_2_ID, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+        ],
+      },
+    });
+    const stored = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    const changes = stored.requestedChanges as { original: Record<string, unknown>; requested: unknown };
+    await prisma.bookingChangeRequest.update({
+      where: { id: REQUEST_ID },
+      data: {
+        requestedChanges: {
+          ...changes,
+          original: {
+            ...changes.original,
+            guests: [GUEST_ID, GUEST_2_ID].map((id) => ({ id, stayStart: "2026-06-10", stayEnd: "2026-06-12" })),
+          },
+        } as never,
+      },
+    });
+    expect(await approve(OFFICER_ID)).toMatchObject({ outcome: "executed", addedGuestCount: 1 });
   }, 60_000);
 
   it("refuses a stay whose season has been switched off, and keeps the request pending", async () => {
@@ -824,6 +1093,8 @@ function deferred() {
       requested: { addGuests: [], removeGuests: [{ id: GUEST_2_ID }], summary: "remove Second Guest" },
     });
     const { FINISHED_STAY_INVOICE_RAISED_MESSAGE } = await import("@/lib/booking-finished-stay-correction");
+    // The officer checked the figures before the invoice started persisting.
+    const expectedFigures = await checkFigures(OFFICER_ID);
     // An invoice create persisting its link: it holds the payment row, not yet
     // committed, while the approval reads "no invoice" and routes its fee to
     // the primary invoice.
@@ -838,7 +1109,7 @@ function deferred() {
       { timeout: 30_000 },
     );
     await holding.promise;
-    const approval = approve(OFFICER_ID);
+    const approval = approve(OFFICER_ID, { expectedFigures });
     const approvalSettled = approval.then(
       () => "executed",
       (error: unknown) => error,
@@ -1162,6 +1433,8 @@ function deferred() {
 
   it("an approval racing a cancel waits on lock(1), then applies nothing to the cancelled booking", async () => {
     await seed();
+    // The officer checked the figures before the cancel began.
+    const expectedFigures = await checkFigures(OFFICER_ID);
     const lockHeld = deferred();
     const releaseCancel = deferred();
     const cancel = prisma.$transaction(
@@ -1176,7 +1449,7 @@ function deferred() {
     await lockHeld.promise;
 
     let approvalSettled = false;
-    const approval = approve(OFFICER_ID).finally(() => {
+    const approval = approve(OFFICER_ID, { expectedFigures }).finally(() => {
       approvalSettled = true;
     });
     // The approval is queued behind the cancel's global key, not racing it.
@@ -1192,5 +1465,218 @@ function deferred() {
     expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
     const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
     expect(request).toMatchObject({ status: "REQUESTED", version: 1, linkedModificationId: null });
+  }, 60_000);
+  // ---------------------------------------------------------------------------
+  // #4030 Part B: the officer enters the guests a free-text request described.
+  // ---------------------------------------------------------------------------
+
+  /** What the old free-text card stored: an effective date and nothing else. */
+  const FREE_TEXT = {
+    addGuests: [],
+    summary: "effective 2026-06-10",
+    requestedEffectiveDate: "2026-06-10",
+  };
+  const GRANDCHILDREN = [
+    { firstName: "Ari", lastName: "Grandchild", ageTier: "ADULT" as const, isMember: false, stayStart: "2026-06-10", stayEnd: "2026-06-12" },
+    { firstName: "Bo", lastName: "Grandchild", ageTier: "ADULT" as const, isMember: false, stayStart: "2026-06-11", stayEnd: "2026-06-12" },
+  ];
+
+  async function storedRequested() {
+    const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    return { request, requested: (request.requestedChanges as { requested: Record<string, unknown> }).requested };
+  }
+
+  it("#4030: an officer's entry on an internet-banking stay is recorded on the request, applied, and billed with no fee", async () => {
+    await seed({ requested: FREE_TEXT });
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      addedGuestCount: 2,
+      // Ari two nights, Bo one: three nights at the season rate, no fee.
+      priceDiffCents: 3 * NIGHT_CENTS,
+      changeFeeCents: 0,
+      additionalAmountCents: 3 * NIGHT_CENTS,
+      officerEnteredGuests: GRANDCHILDREN,
+    });
+
+    // The entry is on the request, named as the officer's on the member's behalf.
+    const { request, requested } = await storedRequested();
+    expect(request).toMatchObject({ status: "APPROVED", version: 2, reviewedByMemberId: OFFICER_ID });
+    expect(request.linkedModificationId).toBeTruthy();
+    expect(requested).toMatchObject({
+      addGuests: GRANDCHILDREN,
+      requestedEffectiveDate: "2026-06-10",
+      officerEntry: {
+        onMemberBehalf: true,
+        officerMemberId: OFFICER_ID,
+        memberSummary: "effective 2026-06-10",
+      },
+    });
+    expect(String(requested.summary)).toMatch(/^add Ari Grandchild, Bo Grandchild \(entered by a booking officer/);
+
+    // Applied: each guest holds exactly the nights entered; the original guest is untouched.
+    const guests = await prisma.bookingGuest.findMany({
+      where: { bookingId: BOOKING_ID },
+      include: { nights: { orderBy: { stayDate: "asc" } } },
+    });
+    const nightsOf = (firstName: string) =>
+      guests.find((guest) => guest.firstName === firstName)!.nights.map((night) => [night.stayDate.toISOString(), night.priceCents]);
+    expect(nightsOf("Ari")).toEqual([[CHECK_IN.toISOString(), NIGHT_CENTS], [NIGHT_2.toISOString(), NIGHT_CENTS]]);
+    expect(nightsOf("Bo")).toEqual([[NIGHT_2.toISOString(), NIGHT_CENTS]]);
+    expect(nightsOf("Original")).toEqual([[CHECK_IN.toISOString(), STORED_NIGHT_CENTS], [NIGHT_2.toISOString(), STORED_NIGHT_CENTS]]);
+
+    // Settled the ordinary way: one supplementary invoice for exactly the extra, no fee.
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification).toMatchObject({ changeFeeCents: 0, priceDiffCents: 3 * NIGHT_CENTS });
+    expect(await supplementaryInvoices(1)).toEqual([
+      {
+        localId: modification.id,
+        idempotencyKey: `booking-mod:${modification.id}:supplementary-invoice:${3 * NIGHT_CENTS}:0:v1`,
+      },
+    ]);
+  });
+
+  it("#4030: an officer's entry on a card-paid stay raises the card ask for the extra", async () => {
+    await seed({ requested: FREE_TEXT, card: true });
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: [GRANDCHILDREN[0]] });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      addedGuestCount: 1,
+      priceDiffCents: 2 * NIGHT_CENTS,
+      changeFeeCents: 0,
+      additionalAmountCents: 2 * NIGHT_CENTS,
+      settlementMethod: "card",
+    });
+    const { request, requested } = await storedRequested();
+    expect(request.status).toBe("APPROVED");
+    expect(requested.officerEntry).toMatchObject({ officerMemberId: OFFICER_ID });
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(modification).toMatchObject({ changeFeeCents: 0, priceDiffCents: 2 * NIGHT_CENTS });
+    // A card booking is asked by card, never billed on a supplementary invoice.
+    expect(await supplementaryInvoices(0)).toEqual([]);
+  });
+
+  it("#4030: a refused approval rolls the officer's entry back with it — the request is exactly as the member left it", async () => {
+    await seed({ requested: FREE_TEXT });
+    const before = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    // Three beds, and somebody else holds two on those nights: two more guests
+    // overbook the past nights, and nobody has confirmed it.
+    await prisma.lodgeSettings.update({ where: { id: LODGE_ID }, data: { capacity: 3 } });
+    await prisma.booking.create({
+      data: {
+        id: OTHER_BOOKING_ID,
+        memberId: OFFICER_2_ID,
+        lodgeId: LODGE_ID,
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        status: "COMPLETED",
+        totalPriceCents: 0,
+        finalPriceCents: 0,
+        guests: {
+          create: [1, 2].map((n) => ({
+            firstName: `Other${n}`,
+            lastName: "Stayer",
+            ageTier: "ADULT" as const,
+            isMember: false,
+            stayStart: CHECK_IN,
+            stayEnd: CHECK_OUT,
+            priceCents: 0,
+          })),
+        },
+      },
+    });
+    const { OverCapacityConfirmationRequiredError } = await import("@/lib/over-capacity-confirmation");
+    await expect(approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN })).rejects.toBeInstanceOf(
+      OverCapacityConfirmationRequiredError,
+    );
+    const after = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(after).toMatchObject({ status: "REQUESTED", version: 1, linkedModificationId: null, reviewedByMemberId: null });
+    expect(after.requestedChanges).toEqual(before.requestedChanges);
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+
+    // Confirmed, the same entry applies once.
+    const confirmed = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN, confirmOverCapacity: true });
+    expect(confirmed).toMatchObject({ outcome: "executed", capacityOverridden: true, addedGuestCount: 2 });
+  }, 60_000);
+
+  it("#4030: an entry on a request that already names a change is refused before anything is written", async () => {
+    await seed();
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN });
+    expect(result).toEqual({
+      outcome: "keptPending",
+      message: executor.OFFICER_ENTRY_ON_STRUCTURED_REQUEST_MESSAGE,
+    });
+    const { request, requested } = await storedRequested();
+    expect(request).toMatchObject({ status: "REQUESTED", version: 1 });
+    expect(requested).not.toHaveProperty("officerEntry");
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+  });
+  it("#4030 review C1: two officers entering different guests at once — one applies, the other loses the claim", async () => {
+    await seed({ requested: FREE_TEXT });
+    // Each officer checked the figures for their own entry first.
+    const first = { officerEnteredGuests: [GRANDCHILDREN[0]] };
+    const second = { officerEnteredGuests: [GRANDCHILDREN[1]] };
+    const [firstFigures, secondFigures] = [
+      await checkFigures(OFFICER_ID, first),
+      await checkFigures(OFFICER_2_ID, second),
+    ];
+    const results = await Promise.all([
+      approve(OFFICER_ID, { ...first, expectedFigures: firstFigures }),
+      approve(OFFICER_2_ID, { ...second, expectedFigures: secondFigures }),
+    ]);
+    const outcomes = results.map((result) => result.outcome).sort();
+    expect(outcomes, JSON.stringify(results)).toEqual(["claimLost", "executed"]);
+    const winnerIndex = results.findIndex((result) => result.outcome === "executed");
+    const winnerId = winnerIndex === 0 ? OFFICER_ID : OFFICER_2_ID;
+    const winnerGuest = GRANDCHILDREN[winnerIndex];
+
+    const { request, requested } = await storedRequested();
+    expect(request).toMatchObject({ status: "APPROVED", version: 2, reviewedByMemberId: winnerId });
+    expect(requested.addGuests).toEqual([winnerGuest]);
+    expect(requested.officerEntry).toMatchObject({ officerMemberId: winnerId });
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+    const guests = await prisma.bookingGuest.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(guests.map((guest) => guest.firstName).sort()).toEqual(["Original", winnerGuest!.firstName].sort());
+  }, 60_000);
+
+  it("#4030 review C2: a dry run with an officer's entry quotes it and writes nothing", async () => {
+    await seed({ requested: FREE_TEXT });
+    const before = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    const result = await approve(OFFICER_ID, { officerEnteredGuests: GRANDCHILDREN, dryRun: true });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "quoted",
+      additionalAmountCents: 3 * NIGHT_CENTS,
+      changeFeeCents: 0,
+    });
+    const after = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(after).toMatchObject({ status: "REQUESTED", version: 1, reviewedByMemberId: null, linkedModificationId: null });
+    expect(after.requestedChanges).toEqual(before.requestedChanges);
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+  });
+
+  it("#4030 review C4: an approval whose figures moved since the check is refused and rolled back", async () => {
+    await seed({ requested: FREE_TEXT });
+    const before = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    await expect(
+      approve(OFFICER_ID, {
+        officerEnteredGuests: GRANDCHILDREN,
+        // The officer was shown one night fewer than the edit now charges.
+        expectedFigures: { additionalAmountCents: 2 * NIGHT_CENTS, refundAmountCents: 0, accountCreditAmountCents: 0 },
+      }),
+    ).rejects.toBeInstanceOf(executor.FinishedStayFiguresChangedError);
+    const after = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(after).toMatchObject({ status: "REQUESTED", version: 1, linkedModificationId: null });
+    expect(after.requestedChanges).toEqual(before.requestedChanges);
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    expect(await prisma.bookingGuest.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
+
+    // With the figures the edit really produces, it applies once.
+    const applied = await approve(OFFICER_ID, {
+      officerEnteredGuests: GRANDCHILDREN,
+      expectedFigures: { additionalAmountCents: 3 * NIGHT_CENTS, refundAmountCents: 0, accountCreditAmountCents: 0 },
+    });
+    expect(applied).toMatchObject({ outcome: "executed", additionalAmountCents: 3 * NIGHT_CENTS });
   }, 60_000);
 });

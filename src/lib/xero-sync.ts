@@ -546,6 +546,52 @@ export async function startXeroSyncOperation(
   }
 }
 
+async function releaseCancelledRefundCreditNotePointer(
+  client: Prisma.TransactionClient,
+  link: XeroObjectLinkInput,
+): Promise<void> {
+  const remaining = await client.xeroObjectLink.findMany({
+    where: {
+      localModel: "Payment",
+      localId: link.localId,
+      xeroObjectType: "CREDIT_NOTE",
+      role: "REFUND_CREDIT_NOTE",
+      active: true,
+      xeroObjectId: { not: link.xeroObjectId },
+    },
+    select: {
+      id: true,
+      xeroObjectId: true,
+      metadata: true,
+      createdAt: true,
+    },
+  });
+  const newestLive = [...remaining]
+    .sort((left, right) => {
+      const byCreated = right.createdAt.getTime() - left.createdAt.getTime();
+      if (byCreated !== 0) {
+        return byCreated;
+      }
+      return right.id.localeCompare(left.id);
+    })
+    // #3880: a per-refund note is never written into the field.
+    .find(
+      (candidate) =>
+        !isRefundCreditNoteLinkCancelledInXero(candidate.metadata) &&
+        !isPerDeltaRefundNoteLink(candidate.metadata),
+    );
+
+  await client.payment.updateMany({
+    where: {
+      id: link.localId,
+      xeroRefundCreditNoteId: link.xeroObjectId,
+    },
+    data: {
+      xeroRefundCreditNoteId: newestLive?.xeroObjectId ?? null,
+    },
+  });
+}
+
 async function normalizePaymentRefundLinkWithClient(
   client: Prisma.TransactionClient,
   link: XeroObjectLinkInput
@@ -580,6 +626,9 @@ async function normalizePaymentRefundLinkWithClient(
       // repair had just removed (upsert's update clause forces `active` from
       // this return value).
       if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
+        // The pointer move happens after this link row is written. Doing it
+        // here would lock the payment before the link, opposite the repair
+        // apply, which locks the link and then the payment.
         return {
           ...link,
           active: false,
@@ -761,7 +810,7 @@ async function upsertXeroObjectLinkWithClient(
     }
   }
 
-  return client.xeroObjectLink.upsert({
+  const written = await client.xeroObjectLink.upsert({
     where: {
       localModel_localId_xeroObjectType_xeroObjectId_role: {
         localModel: normalizedLink.localModel,
@@ -789,6 +838,31 @@ async function upsertXeroObjectLinkWithClient(
       metadata: sanitizeForJson(metadataForUpdate),
     },
   });
+
+  // After the link row, so this transaction locks links and then the payment —
+  // the same order as the refund-note repair apply. The nightly report treats
+  // Payment.xeroRefundCreditNoteId as a promise that an active
+  // REFUND_CREDIT_NOTE link exists. Deactivating a VOIDED or DELETED mirror
+  // without moving that pointer is a permanent "missing refund credit note
+  // link". Repoint at the newest other live note, or clear it. The where-clause
+  // is the claim: a pointer that already names a different note is left alone.
+  if (
+    normalizedLink.localModel === "Payment" &&
+    normalizedLink.role === "REFUND_CREDIT_NOTE" &&
+    normalizedLink.xeroObjectType === "CREDIT_NOTE" &&
+    normalizedLink.active === false &&
+    isRefundCreditNoteLinkCancelledInXero(normalizedLink.metadata)
+  ) {
+    const payment = await client.payment.findUnique({
+      where: { id: normalizedLink.localId },
+      select: { xeroRefundCreditNoteId: true },
+    });
+    if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
+      await releaseCancelledRefundCreditNotePointer(client, normalizedLink);
+    }
+  }
+
+  return written;
 }
 
 export async function upsertXeroObjectLink(

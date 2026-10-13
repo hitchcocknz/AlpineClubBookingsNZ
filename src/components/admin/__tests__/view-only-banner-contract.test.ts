@@ -378,8 +378,13 @@ const FIGURES = {
    * 372/373 -> 374 (sync of `main` 0ff7e6d46 into epic #3789, #3821): the
    * epic's sites and #3372's two stuck-states confirms are disjoint files.
    * MEASURED on the composed tree by re-running this census.
+   *
+   * 374 -> 375 (#3976 on `main` after #3821): Club identity's new Edit. MEASURED by re-running this census.
+   * 375 -> 376 (#4030 review S6, on top of main's #3976): the
+   * change-request panel's officer guest entry button, rendered through the
+   * panel's own view-only button. MEASURED on the composed tree after merging main at aaedc5481.
    */
-  callSites: 374,
+  callSites: 376,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -426,8 +431,13 @@ const FIGURES = {
    *
    * 317/318 -> 319 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3372's
    * two opt-outs are disjoint from the epic's. MEASURED on the composed tree.
+   *
+   * 319 -> 320 (#3976 on `main` after #3821): so does Club identity's Edit.
+   * 320 -> 321 (#4030 review S6, on top of main's #3976): the officer
+   * guest entry's button, under the change-request panel's banner. MEASURED
+   * on the composed tree.
    */
-  optOuts: 319,
+  optOuts: 321,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -506,8 +516,13 @@ const FIGURES = {
    * 281/284 -> 283 (sync of `main` 0ff7e6d46 into epic #3789, #3821): `main`'s
    * #3372 adds two to the epic's 281. MEASURED on the composed tree by
    * re-running this census, never by adding the deltas.
+   *
+   * 283 -> 284 (#3976): Club identity's Edit opts out under the section's own banner.
+   * 284 -> 285 (#4030 review S6, on top of main's #3976): the officer
+   * guest entry's button is defined in the change-request panel, beside that
+   * panel's own banner. MEASURED on the composed tree after merging main at aaedc5481.
    */
-  staticOptOuts: 283,
+  staticOptOuts: 285,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *

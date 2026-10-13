@@ -153,6 +153,10 @@ const REQUIRED_TOKEN_GUIDANCE: Record<string, string> = {
     "this email must tell members how to get into the lodge — keep {{doorCodeNote}}, or write your own label around the bare {{doorCode}} value",
   refundSentence:
     "this email must tell the member how their refund reaches them — keep {{refundSentence}}, which says whether it goes back to their card or by bank transfer from the club (a fixed sentence around {{amount}} is wrong for one of the two)",
+  // #4042: the one alert for two hand-backs - a cash booking cancelled, and an
+  // organiser's Internet Banking group cancelled, whose refunds are already booked.
+  handBackNote:
+    "this email is sent for two different hand-backs — a cash booking that was cancelled, and a group paid by Internet Banking that its organiser cancelled, whose joiners' refunds are already recorded — so it must keep {{handBackNote}}, which explains whichever one it is. Wording typed in by hand would tell the treasurer the wrong thing for one of the two",
 };
 
 // #2774: the same plain-English treatment for the SUBJECT requirements. Naming a
@@ -162,6 +166,8 @@ const REQUIRED_TOKEN_GUIDANCE: Record<string, string> = {
 const REQUIRED_SUBJECT_TOKEN_GUIDANCE: Record<string, string> = {
   handBackConflictLabel:
     "this email is sent in two opposite directions — a refund that was withheld, and one that may have paid a member twice — so its subject must keep {{handBackConflictLabel}}, which fills in whichever happened. A subject with the wording typed in by hand would title every double payment as a withheld refund",
+  handBackLabel:
+    "this email is sent for a cancelled cash booking and for a cancelled group paid by Internet Banking, so its subject must keep {{handBackLabel}}, which names whichever it is. A subject typed in by hand would title every group repayment as a cash booking, or the other way round",
 };
 
 /**

@@ -1384,8 +1384,7 @@ export async function POST(
       // Guest adds never decrease the price, so the shared settlement
       // context's refund side is always zero here.
       result: { ...result, pendingRefundAmountCents: 0, organiserChildRefund: null },
-      reason: "guest_add_price_increase",
-      idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
+      door: "guestAdd",
       failureMessage:
         "Failed to create additional PaymentIntent for guest addition",
     });
@@ -1506,6 +1505,7 @@ export async function POST(
         xeroInvoiceNumber: result.xeroInvoiceNumber,
         // #2390: same words as the edit preview and the booking history.
         promoCoverageNote: result.promoCoverage?.message ?? null,
+        addedGuests: result.addedGuests, // #4030: named in the change rows
         financialReviewPending,
         refundDestination: "own",
         lodgeId: result.booking.lodgeId,

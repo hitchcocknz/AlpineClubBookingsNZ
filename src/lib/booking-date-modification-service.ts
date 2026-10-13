@@ -1526,8 +1526,7 @@ export async function modifyBookingDates({
     format,
     bookingId,
     result,
-    reason: "date_change_price_increase",
-    idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
+    door: "dateChange",
     failureMessage: "Failed to create additional PaymentIntent for modification",
   });
 
@@ -1744,6 +1743,7 @@ async function dispatchDatePostTransactionSideEffects({
     // #3954 round 9: an ask a reduction retired before it was offered is not named.
     const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
     sendBookingModifiedEmail({
+      addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
       email: member.email,
@@ -2318,6 +2318,7 @@ export async function adminShiftBookingDates({
     );
 
     sendBookingModifiedEmail({
+      addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
       email: result.memberEmail,

@@ -15,9 +15,16 @@ import {
   mintedIntentCustomerId,
   mintReissuedAskIntent,
   planReissuedAskMint,
-  readReissueMintPayment,
+  readAskMintPayment,
   resolveAskCustomerId,
 } from "@/lib/reissued-ask-mint";
+import { mintOrdinaryAskIntent } from "@/lib/ordinary-ask-mint";
+import {
+  ADDITIONAL_ASK_INTENT_TYPE,
+  ordinaryAskDoorRequest,
+  planOrdinaryAskMint,
+  type OrdinaryAskDoor,
+} from "@/lib/ordinary-ask-request";
 import {
   cancelSupersededAdditionalIntentsNow,
   queueSupersededAdditionalIntentCancellationRows,
@@ -49,7 +56,7 @@ import {
 } from "@/lib/stripe";
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
-import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { ownCardRefundMade } from "@/lib/payment-transaction-status";
 import { refusedRefundCents, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
 
 export type BookingModificationPaymentContext = {
@@ -153,17 +160,6 @@ export type BookingModificationRefundOutcome = {
   stripeRefundId: string | undefined;
   refundDestination: BookingModifiedRefundDestination;
 };
-
-/**
- * #4070: an own-card edit refund is made when `refundPaymentTransactions`
- * returned (every slice refunded at Stripe and recorded) with at least one
- * refund, and Stripe answered each with a status the ledger counts as money
- * back (`isRefusedRefundStatus`: `failed` and `canceled` are refused,
- * `pending` and `succeeded` are not). Judged by the refunds that exist, never assumed.
- */
-function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null }>): boolean {
-  return refunds.length > 0 && !refunds.some((refund) => isRefusedRefundStatus(refund.status));
-}
 
 export async function executeBookingModificationRefund({
   format,
@@ -370,36 +366,44 @@ export function additionalAmountToName(
  * replay is the one such caller) has to test `additionalPaymentIntentId` rather
  * than wait for an exception that never comes.
  */
-export async function createModificationAdditionalPaymentIntent({
-  bookingId,
-  result,
-  reason,
-  idempotencyKey,
-  recoveryIdempotencyKey,
-  failureMessage,
-  format,
-}: {
-  bookingId: string;
-  result: BookingModificationPaymentContext;
-  reason: string;
-  idempotencyKey: string;
-  /**
-   * #3170: the dedup key for the durable retry, when it must not be the
-   * modification-scoped default.
-   *
-   * The review-charge caller passes
-   * `buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey`, which is
-   * EDIT-scoped - a different namespace from the ordinary edit's key over the
-   * same `BookingModification`, so the two paths' debts stay separate rows, but
-   * deliberately the SAME row for both review tasks of one edit, because they
-   * are two shares of one debt. Omitted by the ordinary edit paths, which are
-   * one-per-modification by construction.
-   */
-  recoveryIdempotencyKey?: string;
-  failureMessage: string;
-  /** The club's format (#3565), resolved before any transaction by the caller. */
-  format: ClubFormat;
-}): Promise<ModificationAdditionalAskMint> {
+export async function createModificationAdditionalPaymentIntent(
+  params: {
+    bookingId: string;
+    result: BookingModificationPaymentContext;
+    failureMessage: string;
+    /** The club's format (#3565), resolved before any transaction by the caller. */
+    format: ClubFormat;
+  } & (
+    | {
+        /**
+         * #4036 review: an ordinary edit's door. Its Stripe key and its reason
+         * are both derived from it here (`ordinaryAskDoorRequest`), so a key and
+         * a reason from different doors cannot be written.
+         */
+        door: OrdinaryAskDoor;
+        reviewCharge?: never;
+      }
+    | {
+        door?: never;
+        /**
+         * #3170: a review charge's request, its key and reason built by its
+         * own sync. `recoveryIdempotencyKey` is the dedup key for the durable
+         * retry: `buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey`,
+         * EDIT-scoped - a different namespace from the ordinary edit's key over
+         * the same `BookingModification`, so the two paths' debts stay separate
+         * rows, but deliberately the SAME row for both review tasks of one edit,
+         * because they are two shares of one debt. The ordinary doors use the
+         * modification-scoped default, one per modification by construction.
+         */
+        reviewCharge: { reason: string; idempotencyKey: string; recoveryIdempotencyKey: string };
+      }
+  ),
+): Promise<ModificationAdditionalAskMint> {
+  const { bookingId, result, failureMessage, format } = params;
+  const recoveryIdempotencyKey = params.reviewCharge?.recoveryIdempotencyKey;
+  const { reason, idempotencyKey } = params.reviewCharge
+    ? params.reviewCharge
+    : ordinaryAskDoorRequest(params.door, bookingId, result.bookingModificationId);
   // #3954: the asks this edit's reduction retired are cancelled at Stripe
   // first, whether or not it owes a smaller one: their rows were retired, and
   // their cancellations queued, inside the edit's transaction.
@@ -474,7 +478,7 @@ export async function createModificationAdditionalPaymentIntent({
       // superseded away, and the two never answer each other with an
       // `idempotency_error`. The row, the recovery's completion and the
       // supersede's durable rows commit together, or not at all (see above).
-      const current = await readReissueMintPayment(paymentId);
+      const current = await readAskMintPayment(paymentId);
       // Round 7: the customer resolved exactly as the recovery runner resolves
       // it, so the two minters of this key send one request.
       const customerId = await resolveAskCustomerId(current);
@@ -537,27 +541,55 @@ export async function createModificationAdditionalPaymentIntent({
       return mintedAsk(pi, live);
     }
 
-    let customerId = result.paymentCustomerId ?? undefined;
-    if (!customerId) {
-      const customer = await findOrCreateCustomer({
-        email: result.memberEmail,
-        name: result.memberName,
-        memberId: result.memberId,
+    let customerId: string | undefined;
+    let pi: Awaited<ReturnType<typeof createPaymentIntent>>;
+    if (recoveryIdempotencyKey) {
+      // #3170: a review charge's request. Its replay re-enters this function
+      // (`syncEditFinancialReviewChargeRequest`), so both of its minters send
+      // this same request.
+      customerId = result.paymentCustomerId ?? undefined;
+      if (!customerId) {
+        const customer = await findOrCreateCustomer({
+          email: result.memberEmail,
+          name: result.memberName,
+          memberId: result.memberId,
+        });
+        customerId = customer.id;
+      }
+      pi = await createPaymentIntent({
+        format,
+        amountCents: result.additionalAsk.amountCents,
+        customerId,
+        metadata: {
+          bookingId,
+          type: ADDITIONAL_ASK_INTENT_TYPE,
+          reason,
+        },
+        idempotencyKey: stripeIdempotencyKey,
       });
-      customerId = customer.id;
+    } else {
+      // #4036: an ordinary increase's request is the one its recovery replays
+      // (`planOrdinaryAskMint`) - the same key, amount, metadata and reason, and
+      // the customer resolved exactly as the runner resolves it
+      // (`resolveAskCustomerId`, the organisation included) - so a lost reply's
+      // replay is answered with this intent, never an `idempotency_error`. The
+      // stored customer is that rule's first answer, and this edit has just
+      // read it; the owner is read only when there is none.
+      customerId =
+        result.paymentCustomerId ?? (await resolveAskCustomerId(await readAskMintPayment(paymentId)));
+      ({ intent: pi } = await mintOrdinaryAskIntent({
+        format,
+        plan: planOrdinaryAskMint({
+          bookingId,
+          bookingModificationId: result.bookingModificationId,
+          stripeKey: stripeIdempotencyKey,
+          frozenAmountCents: result.additionalAsk.amountCents,
+          amountCents: result.additionalAsk.amountCents,
+        }),
+        customerId,
+        recovery: null,
+      }));
     }
-
-    const pi = await createPaymentIntent({
-      format,
-      amountCents: result.additionalAsk.amountCents,
-      customerId,
-      metadata: {
-        bookingId,
-        type: "modification_additional",
-        reason,
-      },
-      idempotencyKey: stripeIdempotencyKey,
-    });
 
     // THE NEW INTENT'S OWN ROW IS WRITTEN FIRST, AND THE ORDER IS LOAD-BEARING
     // (#3340 fix round). Cancelling a superseded intent reconciles the payment
