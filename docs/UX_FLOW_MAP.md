@@ -870,6 +870,35 @@ gains the review's sentences plus the fact that joins them: the unpriced
 adjustment is not part of the figure being asked for. Gating the review branch to
 PAID would have resolved the contradiction by deleting the disclosure.
 
+The figure is the **amount owed** (#3991, `INV-PAY-119`): the price plus any change
+fee recorded on the payment, less the credit applied in the ledger — the figure the
+pay card and the `{amountDue}` token quote and the payment link charges. When that
+is nothing, the banner says *"Nothing to pay"*, replaces *"This amount does not yet
+reflect…"* with a sentence that needs no figure before it, and drops the
+nothing-to-pay next step's pointer to the bookings page.
+
+**Who sees the owner's account credit (#3991).** One predicate decides it,
+`canSeeOwnerCredit` (`booking-detail-viewer.ts`): the owner, anyone who can manage
+the booking, and admin-type viewers, read-only ones included. In practice that is
+everyone the page admits except a linked guest, and a read-only admin who is also a
+guest gets the admin answer everywhere. For a viewer it excludes:
+- the banner names no credit: a credit-covered booking says only *"nothing left to
+  pay"*, and a cancellation settled as credit drops *"$X was added to your account
+  credit"* and says only what was retained;
+- the timeline drops the *"Saved account credit was not applied"* entry and any
+  *"Credit Choice Updated"* edit, and the *"Booking cancelled"* entry reads only
+  *"This booking was cancelled."*. That entry's stored text is free-form, so a
+  guest also loses its non-credit detail, such as a cancellation reason: a
+  deliberate trade-off, since the credit cannot be picked out of free text;
+- the cancellation outcome drops its *"Held as account credit"* and *"Previously
+  applied credit restored"* lines, its badge reads *"Settled on Cancellation"*
+  rather than *"Credit Issued"*, and the hand-back note is hidden;
+- the credit-election notice and the pay card's credit row stay hidden, as before.
+
+The price, what was paid, what went back to the card and what was retained stay
+visible, so a guest can still work the credit out by subtraction. What is withheld
+is the statement of the owner's credit, not the arithmetic.
+
 **And it does not displace a paid one (#3194).** #3033 replaced that narrative
 outright, which removed *"nothing more to do"* — the false reassurance the epic is
 aimed at — but removed *"we've received your payment of $360.00 on 12 Aug"* along

@@ -68,6 +68,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { DELETE } from "@/app/api/bookings/[id]/guests/[guestId]/route";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
+import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 const params = Promise.resolve({ id: "b1", guestId: "g1" });
 
@@ -263,6 +264,47 @@ describe("DELETE guest removal on an organiser-paid child: the email's refund de
     expect(mocks.recoveryFindUnique).not.toHaveBeenCalled();
     expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ refundDestination: "own" }),
+      expect.anything(),
+    );
+  });
+});
+
+/*
+  #4070: the member's own card. The email says the refund was made only when
+  Stripe made it; a refund the Stripe call could not make is queued for the
+  recovery runner and on its way. The real `executeBookingModificationRefund`
+  runs here.
+*/
+describe("DELETE guest removal on the member's own card: the email's refund destination (#4070)", () => {
+  it.each(OWN_CARD_REFUND_STATES)("$label -> $destination", async ({ answer, queued, destination }) => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(makeResult());
+    primeOwnCardRefund(mocks.refundPaymentTransactions, answer);
+
+    const res = await DELETE(makeRequest(), { params });
+
+    expect(res.status).toBe(200);
+    expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay_1", amountCents: 2000 }));
+    if (queued) {
+      expect(mocks.enqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2000 }));
+    } else {
+      expect(mocks.enqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
+    }
+    expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 2000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.anything(),
+    );
+  });
+
+  it("a bank-transfer refund runs no Stripe refund and keeps the member's own wording", async () => {
+    mocks.removeBookingGuestInTransaction.mockResolvedValue(
+      makeResult({ pendingRefundAmountCents: 0, hasSucceededPayment: false }),
+    );
+
+    await DELETE(makeRequest(), { params });
+
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    expect(mocks.sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 2000, refundDestination: "own", refundByBankTransfer: true }),
       expect.anything(),
     );
   });

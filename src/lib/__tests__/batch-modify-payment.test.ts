@@ -5,6 +5,7 @@ import { requireCalendarDate } from "@/lib/club-time";
 import { raisedEditFinancialReviewStrands as raisedStrands } from "@/lib/__tests__/helpers/raised-edit-financial-review-strands";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
+import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 // #3123 (`INV-LOCK-004`) — the CLUB's day, resolved by the caller BEFORE it opens
 // its transaction and threaded in. Pinned to the frozen clock's club day, so
@@ -3711,6 +3712,54 @@ describe("PUT /api/bookings/[id]/modify", () => {
       {
         createdByMemberId: "m1",
       }
+    );
+    // #4070: no Stripe refund ran, so the member's own bank-transfer wording stands.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 5000, refundDestination: "own", refundByBankTransfer: true }),
+      expect.anything(),
+    );
+  });
+
+  // #4070: removing Bob refunds $50 to the member's own card. The email says
+  // the refund was made only when Stripe made it; one the Stripe call could not
+  // make is queued for the recovery runner and on its way.
+  it.each(OWN_CARD_REFUND_STATES)("an own-card reduction's email refund destination: $label -> $destination (#4070)", async ({ answer, queued, destination }) => {
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) => fn(tx));
+    booking.guests = reconcilingNightRows(booking, [
+      ...booking.guests,
+      { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Guest", ageTier: "ADULT", isMember: false, memberId: null, priceCents: 5000 },
+    ]);
+    booking.totalPriceCents = 10000;
+    booking.finalPriceCents = 10000;
+    booking.payment!.amountCents = 10000;
+    mockCalculateBookingPrice.mockReturnValue({
+      totalPriceCents: 5000,
+      guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
+    });
+    primeOwnCardRefund(mockRefundPaymentTransactions, answer);
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+    const response = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify", {
+        method: "PUT",
+        body: JSON.stringify({ removeGuestIds: ["g2"], settlementMethod: "card" }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay_1", amountCents: 5000 }));
+    if (queued) expect(mockEnqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 5000 }));
+    else expect(mockEnqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 5000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.anything(),
     );
   });
 

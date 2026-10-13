@@ -212,14 +212,14 @@ export function BookingStatusBanners({
           the edit path may write one onto), and never on a deleted booking.
 
           Audience (MED-2): the OWNER hears the second-person promise, an
-          admin-type viewer the third-person one; a linked-guest viewer sees
-          nothing at all — the election is the owner's money, and every other
-          money surface on this page is likewise withheld from linked guests
-          (see resolveCreditElectionNoticeAudience). */}
+          admin-type viewer the third-person one; a viewer who cannot see the
+          owner's credit (`canSeeOwnerCredit` false — a linked guest) sees
+          nothing at all, as with the page's other credit surfaces (#3991; see
+          resolveCreditElectionNoticeAudience). */}
       {(() => {
         const creditNoticeAudience = resolveCreditElectionNoticeAudience({
           isBookingOwner,
-          isNonOwnerAdminViewer: nonOwnerAdminViewer,
+          canSeeOwnerCredit: viewer.canSeeOwnerCredit,
         });
         return !isDeleted &&
           creditNoticeAudience !== null &&

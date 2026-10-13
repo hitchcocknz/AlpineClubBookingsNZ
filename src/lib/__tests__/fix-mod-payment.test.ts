@@ -36,6 +36,7 @@ const mockMemberFindUnique = vi.fn();
 const mockAuditCreate = vi.fn();
 const mockUpsertPaymentIntentTransaction = vi.fn();
 const mockRefundPaymentTransactions = vi.fn();
+const mockEnqueueBookingModificationRefundRecovery = vi.fn();
 const mockFindPaymentTransactionByIntentId = vi.fn();
 const mockMarkPaymentIntentTransactionSucceeded = vi.fn();
 const mockMarkPaymentIntentTransactionFailed = vi.fn();
@@ -267,6 +268,9 @@ vi.mock("@/lib/payment-recovery", () => ({
   enqueuePaymentIntentCancellationRecovery: (...args: unknown[]) =>
     mockEnqueuePaymentIntentCancellationRecovery(...args),
   runPaymentRecoveryOperationNow: vi.fn().mockResolvedValue("succeeded"),
+  // #4070: what an own-card refund the Stripe call could not make still owes.
+  enqueueBookingModificationRefundRecovery: (...args: unknown[]) =>
+    mockEnqueueBookingModificationRefundRecovery(...args),
   completeCanceledSupersededPaymentIntentRecovery: (...args: unknown[]) =>
     mockCompleteCanceledSupersededPaymentIntentRecovery(...args),
   queueSupersededPaymentIntentRefundRecovery: (...args: unknown[]) =>
@@ -322,6 +326,7 @@ import {
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { ORGANISER_REFUND_DEBT_STATES, primeOrganiserRefundDebt } from "./support/organiser-refund-debt-reread";
+import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 import { UNSUPPORTED_CHARGE_CURRENCY_MEMBER_BODY } from "@/lib/stripe-charge-currency";
 import {
   ADDITIONAL_PAYMENT_ALREADY_MADE_CODE,
@@ -1236,6 +1241,44 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     }
   });
 
+  // #4070: a reduction refunded to the member's own card. The email says the
+  // refund was made only when Stripe made it; one the Stripe call could not
+  // make is queued for the recovery runner and on its way.
+  it.each(OWN_CARD_REFUND_STATES)("an own-card date reduction emails refund destination: $label -> $destination (#4070)", async ({ answer, queued, destination }) => {
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacity.mockResolvedValue({ available: true, availableBeds: 20 } as any);
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 7000, // price decreased from 10000
+      guests: [{ priceCents: 7000, perNightCents: [3500] }],
+    } as any);
+    mockedCalcChangeFee.mockReturnValue({ feeCents: 0, fromTierRefundPct: 0, toTierRefundPct: 0 });
+    mockPaymentUpdate.mockResolvedValue({});
+    mockMemberFindUnique.mockResolvedValue({ active: true, email: "alice@test.com", firstName: "Alice" });
+    mockEnqueueBookingModificationRefundRecovery.mockResolvedValue({ id: "op_refund" });
+    primeOwnCardRefund(mockRefundPaymentTransactions, answer);
+
+    const res = await PUT(
+      new NextRequest("http://localhost/api/bookings/bk1/modify-dates", {
+        method: "PUT",
+        body: JSON.stringify({ checkOut: "2026-08-02", settlementMethod: "card" }),
+      }),
+      { params: Promise.resolve({ id: "bk1" }) },
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "p1", amountCents: 3000 }));
+    if (queued) expect(mockEnqueueBookingModificationRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 3000 }));
+    else expect(mockEnqueueBookingModificationRefundRecovery).not.toHaveBeenCalled();
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ refundAmountCents: 3000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.anything(),
+    );
+  });
+
   it("does not send Internet Banking date reductions to Stripe refund recovery", async () => {
     const booking = makeBooking({
       payment: {
@@ -1283,7 +1326,8 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     });
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundAmountCents: 3000, refundByBankTransfer: true }),
+      // #4070: no Stripe refund ran, so the member's own wording stands.
+      expect.objectContaining({ refundAmountCents: 3000, refundByBankTransfer: true, refundDestination: "own" }),
       expect.anything(),
     );
 
