@@ -261,7 +261,7 @@ export async function executeBookingModificationRefund({
         ),
       );
     }
-    // #4070: not made here; what is still owed is queued for the recovery runner.
+    // #4070: not made here, so the email says it is on its way.
     return { stripeRefundId: undefined, refundDestination: "own_card_pending" };
   }
 }

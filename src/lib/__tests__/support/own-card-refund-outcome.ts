@@ -27,6 +27,8 @@ export const OWN_CARD_REFUND_STATES: ReadonlyArray<{
 }> = [
   { label: "Stripe answered succeeded", answer: made("succeeded"), queued: false, destination: "own" },
   { label: "Stripe answered pending", answer: made("pending"), queued: false, destination: "own" },
+  // A refund with no status counts as made, as the organiser executor counts it (`status ?? "unknown"`).
+  { label: "Stripe answered no status", answer: made(null), queued: false, destination: "own" },
   { label: "the Stripe call throws", answer: new Error("stripe down"), queued: true, destination: "own_card_pending" },
   { label: "Stripe answered failed", answer: made("failed"), queued: false, destination: "own_card_pending" },
   { label: "no refund came back", answer: { refunds: [] }, queued: false, destination: "own_card_pending" },
