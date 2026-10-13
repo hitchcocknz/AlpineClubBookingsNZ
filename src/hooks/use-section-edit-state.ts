@@ -1,10 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
+import { useEditorFocusReturn } from "@/hooks/use-editor-focus-return";
 import {
   captureFocusReturn,
-  useEditorFocusReturn,
   useReturnAttention,
   type FocusReturnAnchor,
 } from "@/hooks/use-scroll-to-feedback";
@@ -35,9 +41,15 @@ import {
  * messages are cleared at the start of a save — and exposes `setError` /
  * `setSuccess` so each card keeps its existing behaviour explicitly.
  *
- * What it DOES own is where focus goes when the editor closes (#4087). Save and
+ * What it DOES own is where focus goes when the editor opens and closes. Edit
+ * unmounts the button that held focus, so `startEditing` moves focus into the
+ * section once the editor has rendered — to the first control the edit made
+ * editable, or to the card marked with `sectionRegionProps` when it made none
+ * — with no wiring in the section (#4115).
+ *
+ * Save and
  * Cancel unmount the button that held focus, which dropped a keyboard user to
- * `<body>`. The hook records the focused element when `startEditing` runs and,
+ * `<body>` (#4087). The hook records the focused element when `startEditing` runs and,
  * after Cancel or a successful save, hands focus back to it — or to the Edit
  * rendered in its place, found by `editTriggerProps`, or to the card marked
  * with `sectionRegionProps` and named by the title carrying `titleProps` —
@@ -125,6 +137,14 @@ export interface UseSectionEditStateOptions<T extends object> {
    * by its title, so the two cannot drift.
    */
   regionLabel?: string;
+  /**
+   * Reveal this element on Edit instead of the first control the edit made
+   * editable (#4115). It exists ONLY for the two sections whose card reveal
+   * predates #4115 — allocation preferences and club identity, pinned by
+   * `section-edit-focus-return-census.test.ts` — which focus and scroll to
+   * their named card, as they did before. A new section omits it.
+   */
+  revealTarget?: RefObject<HTMLElement | null>;
 }
 
 export interface SectionEditState<T extends object> {
@@ -145,15 +165,12 @@ export interface SectionEditState<T extends object> {
   setSuccess: (message: string) => void;
   /** Update the draft. Ignored while `draft` is `null`. */
   setDraft: (update: Partial<T> | ((current: T) => T)) => void;
-  startEditing: () => void;
   /**
-   * Counts explicit `startEditing` calls, starting at `0`. Hand it to
-   * `useRevealAttention` (`@/hooks/use-scroll-to-feedback`) to bring the
-   * section into view and focus when the admin clicks Edit — and only then:
-   * a re-render with `editing` already `true` leaves it unchanged, so the
-   * editor is never focused because content re-rendered (#2934).
+   * Open the editor. Once it has rendered, focus moves to the first control it
+   * made editable, or to the section — only for this explicit call, never
+   * because the section re-rendered (#2934, #4115).
    */
-  editRequestKey: number;
+  startEditing: () => void;
   /**
    * Restore every field from the snapshot and leave edit mode. Focus returns to
    * where `startEditing` was called from, as it does after a successful `save`.
@@ -166,8 +183,10 @@ export interface SectionEditState<T extends object> {
    */
   editTriggerProps: Record<"data-return-focus-trigger", string>;
   /**
-   * Spread on the section's card: where focus returns when Edit is missing or
-   * disabled for a view-only admin. It makes the card a `region` named by the
+   * Spread on the section's card: where Edit looks for the controls it made
+   * editable, where focus goes when it made none, and where focus returns when
+   * Edit is missing or disabled for a view-only admin. It makes the card a
+   * `region` named by the
    * element carrying `titleProps` (or by `regionLabel`), so a keyboard user who
    * lands on it hears the section's name.
    */
@@ -206,8 +225,10 @@ export function useSectionEditState<T extends object>(
   const [loading, setLoading] = useState(Boolean(options.load));
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editRequestKey, setEditRequestKey] = useState(0);
-  const editorFocus = useEditorFocusReturn({ regionLabel: options.regionLabel });
+  const editorFocus = useEditorFocusReturn({
+    regionLabel: options.regionLabel,
+    revealTarget: options.revealTarget,
+  });
   // Where a FAILED save hands focus back to, recorded as the save starts.
   const saveFocusReturn = useRef<FocusReturnAnchor | null>(null);
   const [saveFailureKey, setSaveFailureKey] = useState(0);
@@ -283,10 +304,10 @@ export function useSectionEditState<T extends object>(
   const { capture: captureEditFocus, close: returnEditFocus } = editorFocus;
 
   const startEditing = useCallback(() => {
-    // Read before the render that unmounts the Edit button holding focus.
+    // Read before the render that unmounts the Edit button holding focus; the
+    // capture also reveals the editor once that render has committed.
     captureEditFocus();
     setEditing(true);
-    setEditRequestKey((key) => key + 1);
   }, [captureEditFocus]);
 
   const cancelEditing = useCallback(() => {
@@ -341,7 +362,6 @@ export function useSectionEditState<T extends object>(
     loading,
     saving,
     editing,
-    editRequestKey,
     dirty,
     valid,
     error,

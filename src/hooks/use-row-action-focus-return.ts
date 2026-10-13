@@ -22,9 +22,15 @@ export interface RowFocusMarkers {
 /**
  * RETURN after a list row's direct write — Activate/Deactivate, Delete — whose
  * refresh unmounted or disabled the button that held focus (#4116). It is built
- * only from the exported primitives of `use-scroll-to-feedback.ts`; its
- * anchor-plus-key logic is the same shape as `useEditorFocusReturn`'s, and the
- * two are meant to be reconciled into one helper once both have landed.
+ * only from the exported primitives of `use-scroll-to-feedback.ts`, and finds
+ * its targets by `useEditorFocusReturn`'s own markers
+ * (`use-editor-focus-return.ts`), so the trigger and region ids are already
+ * shared. What stays separate, on purpose (#4115 reconciled the two), is the
+ * anchor-plus-key: here an ACTION'S anchor is bound when `close` runs, last
+ * close wins, and `null` returns nowhere; there the HOOK'S one anchor is read
+ * when the return effect runs and consumed, so two closes in one render still
+ * return once and a close with no fresh open returns nowhere. One helper would
+ * have to pick one of those and change the other's edge case.
  *
  * The anchor is the ACTION'S, not the hook's: `capture(key)` hands it back and
  * `close(anchor)` returns through exactly that one, so a write that overlaps

@@ -1047,7 +1047,11 @@ discriminated by a named test in the tree already:
   only "group" is the defect, and `getByRole("region", { name })` is what fails
   when the name goes missing. Do not hand-roll the spy — jsdom implements no
   layout, so `Element.prototype.scrollIntoView` does not exist, and three files
-  had written the same fixture out verbatim before it moved to the helper.
+  had written the same fixture out verbatim before it moved to the helper. A
+  staged section's Edit reveals on its own (#4115), so there press Edit as a
+  keyboard user does and `expectToHoldFocus` its first field — the one the edit
+  enabled, not a control that was already live
+  (`group-discount-section.test.tsx`, `list-editor-focus-return.test.tsx`).
 - **Success**: `document.activeElement` is the page or card whose top was
   positioned at, and it contains the confirmation
   (`lodge-capacity-card.test.tsx`). A card below the top of its scroll container

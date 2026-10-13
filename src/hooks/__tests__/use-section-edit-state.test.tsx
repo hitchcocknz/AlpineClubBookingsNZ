@@ -17,7 +17,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { expectToHoldFocus } from "@/lib/__tests__/helpers/focus";
+import { useRef } from "react";
+import {
+  expectRevealed,
+  expectToHoldFocus,
+  installScrollIntoViewSpy,
+  removeScrollIntoViewSpy,
+} from "@/lib/__tests__/helpers/focus";
 import {
   ForbiddenSaveError,
   useSectionEditState,
@@ -105,6 +111,8 @@ function StagedSection({
       {section.error ? <p role="alert">{section.error}</p> : null}
       {section.editing ? (
         <div>
+          {/* Mounted by Edit, so Edit's reveal lands here (#4115). */}
+          <input aria-label={`${title} size`} />
           <button
             type="button"
             disabled={section.saving}
@@ -622,6 +630,147 @@ describe("useSectionEditState", () => {
       fireEvent.click(button("Cancel Discount"));
 
       await expectToHoldFocus(button("Edit Discount"));
+    });
+  });
+
+  describe("revealing the editor when Edit opens it (#4115)", () => {
+    const button = (name: string) => screen.getByRole("button", { name });
+
+    /**
+     * The usual staged-section shape: the fields are always rendered and Edit
+     * enables them, while a scope select above them stays editable throughout.
+     */
+    function FieldsSection({ fields = true }: { fields?: boolean }) {
+      const section = useSectionEditState<Draft>({
+        initial: INITIAL,
+        save: async (draft) => draft,
+        successMessage: "Saved",
+      });
+      const off = !section.editing;
+      return (
+        <Card {...section.sectionRegionProps}>
+          <CardHeader>
+            <CardTitle {...section.titleProps}>Group discount</CardTitle>
+            <select aria-label="Scope">
+              <option>Club-wide</option>
+            </select>
+            {off ? (
+              <button
+                type="button"
+                onClick={section.startEditing}
+                {...section.editTriggerProps}
+              >
+                Edit
+              </button>
+            ) : (
+              <button type="button" onClick={section.cancelEditing}>
+                Cancel
+              </button>
+            )}
+          </CardHeader>
+          {fields ? (
+            <CardContent>
+              {/* What a Radix checkbox renders: the widget and a hidden input. */}
+              <button type="button" role="checkbox" aria-checked="false" aria-label="Enabled" disabled={off} />
+              <input type="checkbox" aria-hidden="true" tabIndex={-1} disabled={off} />
+              <input aria-label="Minimum group size" disabled={off} />
+            </CardContent>
+          ) : null}
+        </Card>
+      );
+    }
+
+    it("focuses the first control Edit made editable, not one that already was", async () => {
+      render(<FieldsSection />);
+      // Rendering the section moves nothing.
+      expect(document.activeElement).toBe(document.body);
+
+      activate(button("Edit"));
+
+      await expectToHoldFocus(screen.getByRole("checkbox", { name: "Enabled" }));
+    });
+
+    it("focuses a control Edit mounted", async () => {
+      render(<StagedSection title="Discount" />);
+
+      activate(button("Edit Discount"));
+
+      await expectToHoldFocus(screen.getByRole("textbox", { name: "Discount size" }));
+    });
+
+    it("focuses the section, named by its title, when Edit made nothing editable", async () => {
+      render(<FieldsSection fields={false} />);
+
+      activate(button("Edit"));
+
+      await expectToHoldFocus(
+        screen.getByRole("region", { name: "Group discount" }),
+      );
+    });
+
+    it("moves nothing when the open editor merely re-renders", async () => {
+      const view = render(<FieldsSection />);
+      activate(button("Edit"));
+      await expectToHoldFocus(screen.getByRole("checkbox", { name: "Enabled" }));
+
+      const scope = screen.getByRole("combobox", { name: "Scope" });
+      scope.focus();
+      view.rerender(<FieldsSection />);
+
+      await expectToHoldFocus(scope);
+    });
+
+    it("reveals each section's OWN editor", async () => {
+      render(
+        <>
+          <StagedSection title="First" />
+          <StagedSection title="Second" />
+        </>,
+      );
+
+      activate(button("Edit Second"));
+
+      await expectToHoldFocus(screen.getByRole("textbox", { name: "Second size" }));
+    });
+
+    it("reveals the given element at the top instead, for a section that names one", async () => {
+      const scrollIntoView = installScrollIntoViewSpy();
+      try {
+        function Targeted() {
+          const cardRef = useRef<HTMLDivElement>(null);
+          const section = useSectionEditState<Draft>({
+            initial: INITIAL,
+            save: async (draft) => draft,
+            successMessage: "Saved",
+            revealTarget: cardRef,
+          });
+          return (
+            <div {...section.sectionRegionProps} aria-label="Targeted">
+              <div ref={cardRef} data-testid="target">
+                {section.editing ? (
+                  <input aria-label="Size" />
+                ) : (
+                  <button type="button" onClick={section.startEditing}>
+                    Edit
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        }
+        const view = render(<Targeted />);
+        activate(button("Edit"));
+
+        const target = screen.getByTestId("target");
+        await waitFor(() => expect(document.activeElement).toBe(target));
+        // One reveal, of the target, and not of the field the edit mounted.
+        expectRevealed(scrollIntoView, target);
+
+        view.rerender(<Targeted />);
+        expectRevealed(scrollIntoView, target);
+      } finally {
+        removeScrollIntoViewSpy();
+      }
     });
   });
 });

@@ -13,7 +13,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
-import { useRevealAttention } from "@/hooks/use-scroll-to-feedback";
 import {
   ForbiddenSaveError,
   useSectionEditState,
@@ -231,10 +230,12 @@ export function AllocationPreferencesSection({
   // Edit replaces the header button with nothing the admin can stand on, so
   // focus would drop to <body>; the shared reveal primitive moves it (and the
   // viewport) to the card instead, keyed on the explicit Edit click (#2934).
+  // The hook runs that reveal (#4115); `revealTarget` keeps it on the card.
   const cardRef = useRef<HTMLDivElement>(null);
   const lodgeId = scope.lodgeId;
   const endpoint = `/api/admin/bed-allocation/settings?lodgeId=${encodeURIComponent(lodgeId)}`;
   const section = useSectionEditState<AllocationPreferencesDraft>({
+    revealTarget: cardRef,
     load: async (signal) => {
       const response = await fetch(endpoint, { cache: "no-store", signal });
       if (!response.ok) {
@@ -282,7 +283,6 @@ export function AllocationPreferencesSection({
       draft.allocationPriorityOrder.join("|") !==
         saved.allocationPriorityOrder.join("|"),
   });
-  useRevealAttention(cardRef, section.editRequestKey);
   const draft = section.draft;
 
   const move = (from: number, to: number) => {

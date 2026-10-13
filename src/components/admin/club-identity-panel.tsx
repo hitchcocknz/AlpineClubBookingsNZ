@@ -10,7 +10,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
-import { useRevealAttention } from "@/hooks/use-scroll-to-feedback";
 import {
   ForbiddenSaveError,
   useSectionEditState,
@@ -118,6 +117,9 @@ export function ClubIdentityPanel() {
   const section = useSectionEditState<Draft>({
     // The page renders this panel's title outside it, so it names itself.
     regionLabel: CLUB_IDENTITY_TITLE,
+    // Edit unmounts the focused button, so the hook moves focus to the
+    // section, as ARCHITECTURE.md's reveal rule asks (#3990 review, #4115).
+    revealTarget: cardRef,
     load: async (signal) => {
       const response = await fetch(ENDPOINT, { signal });
       if (!response.ok) throw new Error(LOAD_ERROR);
@@ -145,9 +147,6 @@ export function ClubIdentityPanel() {
     saveErrorFallback: SAVE_ERROR,
     isDirty: identityChanged,
   });
-  // Edit unmounts the focused button, so move focus to the section, as
-  // ARCHITECTURE.md's reveal rule asks (#3990 review).
-  useRevealAttention(cardRef, section.editRequestKey);
 
   const { draft, editing, saving, dirty, error, success } = section;
 

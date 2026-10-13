@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { useEditorFocusReturn } from "@/hooks/use-editor-focus-return"
 import { useRowActionFocusReturn } from "@/hooks/use-row-action-focus-return"
 import { rowKey, toggleKey, useRowHeadings } from "./list-row-focus"
 import { normalizeCancellationRule } from "@/lib/cancellation-rules"
