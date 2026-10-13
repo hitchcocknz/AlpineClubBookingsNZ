@@ -4,7 +4,7 @@ import {
   getPaymentDisplayStatus,
 } from "@/lib/payment-status-display";
 import {
-  bookingAmountOwedCents,
+  type BookingAmountOwed,
   bookingWorthCents,
   hasCapturedPayment,
   recordedChangeFeeCents,
@@ -38,14 +38,17 @@ export function resolveBookingDetailPayment({
   viewer,
   access,
   party,
+  amountOwed,
 }: {
   booking: BookingDetailRecord;
   modules: FeatureFlags;
   viewer: BookingDetailViewer;
   access: BookingDetailEditAccess;
   party: BookingDetailLinkedParty;
+  /** #3991: the page's one read of what is owed (`readBookingAmountOwed`, via the history loader). */
+  amountOwed: BookingAmountOwed;
 }) {
-  const { canManageBooking, isBookingOwner, nonOwnerAdminViewer } = viewer;
+  const { canManageBooking, isBookingOwner, nonOwnerAdminViewer, canSeeOwnerCredit } = viewer;
   const { isDeleted } = access;
   const { hasProvisionalChildren, isProvisionalChild, isFlaggedProvisional } =
     party;
@@ -61,6 +64,8 @@ export function resolveBookingDetailPayment({
         paymentStatus: booking.payment.status,
         refundedAmountCents: booking.payment.refundedAmountCents,
         credits: booking.creditsFromCancellation,
+        // #3991: no "Credit Issued" badge for a viewer kept from the owner's credit.
+        ownerCreditHidden: !canSeeOwnerCredit,
       })
     : null;
   const internetBankingPayment =
@@ -95,10 +100,12 @@ export function resolveBookingDetailPayment({
   const retainedAfterCancellationCents = retainedCash?.heldCashCents ?? 0;
   const handBackOwedAfterCancellationCents = retainedCash?.handBackOwedCents ?? 0;
   // #3924: the note that a refund is still being paid back by hand is for the
-  // booker and officers, not a linked guest viewing the booking.
-  const showHandBackOwedNote =
-    handBackOwedAfterCancellationCents > 0 &&
-    (isBookingOwner || canManageBooking || nonOwnerAdminViewer);
+  // booker and officers, not a linked guest viewing the booking. #3991: that
+  // audience is the page's one `canSeeOwnerCredit`, which also gates the
+  // cancellation's account-credit lines — credit held for the owner and their
+  // previously applied credit restored are the owner's money.
+  const showHandBackOwedNote = handBackOwedAfterCancellationCents > 0 && canSeeOwnerCredit;
+  const showCancellationCreditLines = canSeeOwnerCredit;
   const latestRefundAppeal = booking.refundRequests[0] ?? null;
   // #3827 (`INV-PAY-118`): net of every hand-back still promised back by bank
   // transfer and of the credit minted from late cash - the figure the appeal
@@ -172,9 +179,11 @@ export function resolveBookingDetailPayment({
     isPaymentOwedBookingStatus(booking.status) &&
     (!booking.payment || booking.payment.status !== "SUCCEEDED");
 
-  // Issue #778: surface auto-applied member credit (display only). Credit nets
-  // off the booking price, so amount due = finalPriceCents - creditAppliedCents.
-  const creditAppliedCents = booking.payment?.creditAppliedCents ?? 0;
+  // Issue #778: surface auto-applied member credit (display only). #3991: the
+  // LEDGER credit the intent is minted against, from the page's one read — not
+  // the payment row's mirror column — so the card, the `{amountDue}` token and
+  // the narrative quote one figure.
+  const creditAppliedCents = amountOwed.appliedCreditCents;
   const showCreditApplied =
     canManageBooking &&
     creditAppliedCents > 0 &&
@@ -182,14 +191,7 @@ export function resolveBookingDetailPayment({
     booking.payment?.status !== "SUCCEEDED";
   // #3750: through the one home, so a change fee recorded on the payment is
   // part of what the page says is due.
-  const amountDueAfterCreditCents = Math.max(
-    bookingAmountOwedCents({
-      finalPriceCents: booking.finalPriceCents,
-      changeFeeCents: booking.payment?.changeFeeCents ?? null,
-      appliedCreditCents: creditAppliedCents,
-    }),
-    0
-  );
+  const amountDueAfterCreditCents = amountOwed.dueCents; // floored at zero
   // #3955 review F8: a change fee recorded on an unpaid booking's payment is
   // owed with the price, so the card shows it as its own row and the
   // breakdown adds up to the amount due.
@@ -215,6 +217,7 @@ export function resolveBookingDetailPayment({
     retainedAfterCancellationCents,
     handBackOwedAfterCancellationCents,
     showHandBackOwedNote,
+    showCancellationCreditLines,
     latestRefundAppeal,
     maxRefundableCents,
     showGuestPaymentLinkStandalone,

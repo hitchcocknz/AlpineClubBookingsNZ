@@ -35,8 +35,17 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
  *    property, shorthand included, reads `readBookingAmountOwed` or is pinned
  *    by its text with the reason it cannot owe more than the price.
  *
+ * Every file that resolves a booking narrative reads what is owed through
+ * `readBookingAmountOwed` (`booking-amount-owed.ts`, the one read of the figure
+ * with its ledger credit, #3991), and none may hand it a bare price as
+ * `dueCents`; the booking page's figures themselves are pinned by
+ * `booking-detail-history-amount-owed.test.ts`.
+ *
  * WHAT THIS CANNOT SEE: an amount spelled another way (a sum in a different
- * order, a helper of its own, a variable that holds the bare price).
+ * order, a helper of its own, a variable that holds the bare price); and a
+ * narrative caller that imports the resolver under another name
+ * (`import { resolveBookingNarrative as resolve }`), which the by-name walk
+ * below never finds.
  */
 
 const REPO = path.resolve(__dirname, "..", "..", "..");
@@ -63,7 +72,40 @@ const PAY_STEPS = [
   // #4058: not a pay step, but the email that tells a member what to pay once an
   // exception is approved - it must quote what the pay step will ask for.
   "src/lib/booking-exception-approval.ts",
+  // #3991: the booking page's history narrative, which quotes the amount due,
+  // and the one read every surface here shares.
+  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
+  "src/lib/booking-amount-owed.ts",
 ];
+const ONE_HOME_READ = "src/lib/booking-amount-owed.ts";
+// #3991, #4058: the surfaces that read what is owed ONLY through the one read —
+// what they quote and what they charge cannot part.
+const ONE_READ_USERS = [
+  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
+  "src/lib/payment-link-context.ts",
+  "src/lib/payment-link-intent.ts",
+  "src/app/api/payments/create-payment-intent/route.ts",
+  // #4058: the emails that quote what is owed, read through the same helper.
+  "src/lib/booking-exception-approval.ts",
+  "src/lib/cron-confirm-pending.ts",
+  "src/lib/payment-link-reissue.ts",
+  "src/lib/payment-link-split-guest.ts",
+];
+// The files that still compose it themselves, named in `booking-amount-owed.ts`.
+const KNOWN_COMPOSERS = [
+  "src/app/api/bookings/[id]/confirm-payment/route.ts",
+  "src/app/api/payments/switch-to-internet-banking/route.ts",
+  "src/lib/stripe-webhook-service.ts",
+  "src/lib/manual-booking-payment-state.ts",
+  "src/lib/payment-reconciliation.ts",
+  "src/lib/booking-modify-settlement.ts",
+  "src/lib/booking-date-modification-service.ts",
+  "src/lib/booking-credit-election.ts",
+  "src/lib/edit-financial-review-account-credit.ts",
+  "src/lib/policies/booking-route-decisions.ts",
+];
+// Reading the one home: the two helpers, or the one read built on them (#3991).
+const READS_ONE_HOME = /\b(?:booking(?:AmountOwed|Worth)Cents|readBookingAmountOwed)\(/;
 // A final price, then a minus, then — within the same expression — anything
 // named for credit or for what is already applied (#3955 round 3:
 // `verifiedFinalPriceCents - alreadyAppliedCents`). `[^;,{}]` keeps it inside
@@ -76,6 +118,9 @@ const CREDIT_VS_BARE_PRICE =
   /(?:[Cc]redit|[Aa]pplied)\w*[^;,{}()]{0,80}?(?<![=-])[<>]=?(?!=)\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*\+)|[\w.?!]*[Ff]inalPriceCents\s*[<>]=?(?!=)[^;,{}]{0,80}?(?:[Cc]redit|[Aa]pplied)\w*/g;
 // An intent, charge or payment amount that is a bare final price, in a pay step.
 const BARE_PRICE_AMOUNT = /\bamountCents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
+// #3991: the narrative's figures (`amountOwed.owedCents` / `.dueCents`) set to
+// a bare price.
+const BARE_PRICE_DUE = /\b(?:owed|due)Cents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
 
 // An email's amount-due field set from a bare final price (#4058).
 const BARE_PRICE_QUOTED = /\bamountDueCents:\s*[^,;}]*[Ff]inalPriceCents\b/g;
@@ -165,8 +210,59 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
 
   it("every pay step reads it there", () => {
     for (const file of PAY_STEPS) {
-      expect(read(file), file).toMatch(/\b(?:booking(?:AmountOwed|Worth)Cents|readBookingAmountOwed)\(/);
+      expect(read(file), file).toMatch(READS_ONE_HOME);
     }
+    // The one read is itself built on the one home, with the ledger credit.
+    expect(read(ONE_HOME_READ)).toMatch(/\bbookingAmountOwedCents\(/);
+    expect(read(ONE_HOME_READ)).toMatch(/\bderiveBookingAppliedCreditCents\(/);
+  });
+
+  it("the one read's users take credit and the owed figure from it alone (#3991)", () => {
+    for (const file of ONE_READ_USERS) {
+      const text = read(file);
+      expect(text, file).toMatch(/\breadBookingAmountOwed\(/);
+      expect(text, `${file} composes its own figure`).not.toMatch(
+        /\b(?:bookingAmountOwedCents|deriveBookingAppliedCreditCents)\(/,
+      );
+    }
+  });
+
+  it("every other composer of the owed figure is a known one (#3991)", () => {
+    const composers = sourceFiles(path.join(REPO, "src"))
+      .filter((file) => /\bbookingAmountOwedCents\(/.test(read(file)))
+      .filter((file) => file !== ONE_HOME_READ && file !== "src/lib/booking-payment-state.ts");
+    expect(composers.sort(), "INV-PAY-119: read it through readBookingAmountOwed, or list it in booking-amount-owed.ts").toEqual(
+      [...KNOWN_COMPOSERS].sort(),
+    );
+    // Its docblock names exactly these — no missing one, and no extra one left
+    // behind once a composer moves to the one read (read raw: it is a comment).
+    const docblock = fs.readFileSync(path.join(REPO, ONE_HOME_READ), "utf8");
+    const paragraph = docblock.slice(
+      docblock.indexOf("NOT YET EVERY READER"),
+      docblock.indexOf("`amount-owed-one-home.test.ts` pins"),
+    );
+    const named = [...paragraph.matchAll(/`([\w./[\]-]+\.ts)`/g)].map((match) => match[1]).sort();
+    const expected = KNOWN_COMPOSERS.map((file) =>
+      file.split("/").slice(-2).join("/").replace(/^lib\//, ""),
+    ).sort();
+    expect(named, "booking-amount-owed.ts's docblock names exactly the known composers").toEqual(expected);
+  });
+
+  // #3991 review: the booking page reads ledger credit ONCE, in the history
+  // loader through `readBookingAmountOwed`; nothing else on the page derives it
+  // again — not the pay card's projection, not the edit panel's payload.
+  it("no booking-page module derives the applied credit itself", () => {
+    const pageDir = "src/app/(authenticated)/bookings/[id]";
+    const pageFiles = sourceFiles(path.join(REPO, pageDir));
+    for (const required of [
+      `${pageDir}/_lib/booking-detail-editor-data.ts`,
+      `${pageDir}/_lib/booking-detail-payment.ts`,
+      `${pageDir}/_lib/booking-detail-history.ts`,
+    ]) {
+      expect(pageFiles, `the walk reached ${required}`).toContain(required);
+    }
+    const offenders = pageFiles.filter((file) => /\bderiveBookingAppliedCreditCents\(/.test(read(file)));
+    expect(offenders, "INV-PAY-119: take history.amountOwed, the page's one read").toEqual([]);
   });
 
   it("no pay step sizes an amount at the bare price", () => {
@@ -174,6 +270,23 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
       (file) => `${file}: ${read(file).match(BARE_PRICE_AMOUNT)?.[0]}`,
     );
     expect(offenders, "INV-PAY-119: size it through bookingAmountOwedCents / bookingWorthCents").toEqual([]);
+  });
+
+  // #3991: the narrative quotes "$X is due" from what it is handed, so every
+  // file that resolves one reads the one home, and none hands it the bare price.
+  it("every source file that resolves a booking narrative reads the amount owed there", () => {
+    const callers = sourceFiles(path.join(REPO, "src")).filter((file) =>
+      /\bresolveBookingNarrative\(/.test(read(file)) && file !== "src/lib/booking-narrative.ts",
+    );
+    expect(callers.length, "the census found no narrative caller").toBeGreaterThan(0);
+    for (const file of callers) {
+      expect(read(file), `INV-PAY-119: ${file} reads it through readBookingAmountOwed`).toMatch(
+        /\breadBookingAmountOwed\(/,
+      );
+      expect(PAY_STEPS, `INV-PAY-119: add ${file} to PAY_STEPS`).toContain(file);
+    }
+    const bareDue = sourceFiles(path.join(REPO, "src")).filter((file) => BARE_PRICE_DUE.test(read(file)));
+    expect(bareDue, "INV-PAY-119: the narrative's dueCents comes from bookingAmountOwedCents").toEqual([]);
   });
 
   it("no source file subtracts credit from the bare price any more", () => {

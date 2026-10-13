@@ -50,7 +50,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("hut-leader stay refusal offers the last night stayed (#3817)", () => {
+// The page clears the picked dates when its lodge scope settles (a scope change
+// must not carry another lodge's selection), and the date inputs render before
+// the lodge list has loaded. Typing dates before then loses them, so no
+// eligible-members fetch is ever made and the member never appears (#4085).
+// The assignments read is the first fetch made only once the scope is settled,
+// in the same commit as that clearing, so waiting for it orders the test after.
+async function waitForSettledLodgeScope() {
+  await waitFor(() => {
+    expect(screen.getByLabelText("Start Date")).toBeInTheDocument();
+    const calls = vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+    expect(calls.some((url) => url.startsWith("/api/admin/hut-leaders?lodgeId="))).toBe(true);
+  });
+}
+
+// The whole Hut Leaders page renders in jsdom, and its own findBy waits allow
+// 10,000ms; the first test absorbs the page's first render, which can pass
+// vitest's 5,000ms default under CI shard load (#4085; figures in
+// docs/TESTING.md). The 30s budget used elsewhere for full jsdom renders.
+describe("hut-leader stay refusal offers the last night stayed (#3817)", { timeout: 30_000 }, () => {
   it("shows the refusal, and Change last night keeps the member and moves only the end date", async () => {
     const posts: unknown[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -109,7 +127,7 @@ describe("hut-leader stay refusal offers the last night stayed (#3817)", () => {
       </ClubIdentityProvider>,
     );
 
-    await waitFor(() => expect(screen.getByLabelText("Start Date")).toBeInTheDocument());
+    await waitForSettledLodgeScope();
     fireEvent.change(screen.getByLabelText("Start Date"), { target: { value: "2099-07-10" } });
     fireEvent.change(screen.getByLabelText("Last night"), { target: { value: "2099-07-13" } });
 
@@ -178,7 +196,7 @@ describe("hut-leader stay refusal offers the last night stayed (#3817)", () => {
       </ClubIdentityProvider>,
     );
 
-    await waitFor(() => expect(screen.getByLabelText("Start Date")).toBeInTheDocument());
+    await waitForSettledLodgeScope();
     fireEvent.change(screen.getByLabelText("Start Date"), { target: { value: "2099-07-10" } });
     fireEvent.change(screen.getByLabelText("Last night"), { target: { value: "2099-07-12" } });
     await screen.findByText("Cat Custodian", {}, { timeout: 10000 });
@@ -236,7 +254,7 @@ describe("hut-leader stay refusal offers the last night stayed (#3817)", () => {
       </ClubIdentityProvider>,
     );
 
-    await waitFor(() => expect(screen.getByLabelText("Start Date")).toBeInTheDocument());
+    await waitForSettledLodgeScope();
     fireEvent.change(screen.getByLabelText("Start Date"), { target: { value: "2099-07-10" } });
     fireEvent.change(screen.getByLabelText("Last night"), { target: { value: "2099-07-12" } });
     await screen.findByText("Cat Custodian", {}, { timeout: 10000 });
