@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 /**
  * THE ONE HOME FOR "WHERE DOES THE ADMIN'S ATTENTION GO AFTER AN ACTION" (#2934).
  *
- * An admin action ends in one of three places, and each has one primitive here:
+ * An admin action ends in one of four places, and each has one primitive here:
  *
  *  - **failure** → `scrollToError`: the actionable message or invalid control
  *    takes focus and comes into view. Failure always wins over success.
@@ -15,6 +15,10 @@ import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
  *  - **success / step transition** → `scrollToTop`: the resulting page, card or
  *    step is positioned at its top and takes focus, so the confirmation and the
  *    new state are what a keyboard or screen-reader user lands on.
+ *  - **return** → `returnFocus`: closing an editor (Save, Cancel) that dropped
+ *    focus to the page hands it back to where the editor was opened from —
+ *    the Edit button, or the section around it — and moves nothing otherwise
+ *    (#4087).
  *
  * Passive updates — a background refresh, a poll, a re-render with the same
  * message — move nothing. The hooks below encode that: `useActionAttention` fires
@@ -282,6 +286,123 @@ export function revealEditor(target: ScrollContainerTarget) {
   focusAndReveal(element, "start");
 }
 
+/**
+ * Where focus was when an editor was opened, recorded so it can be handed back
+ * when the editor closes (#4087). The trigger itself is usually unmounted while
+ * the editor is open — a staged section renders Edit only while read-only — so
+ * the anchor also remembers how to find the trigger's REPLACEMENT: its tag and
+ * accessible name, and, for every ancestor, the trigger's position among the
+ * elements inside it that share that tag and name.
+ */
+export interface FocusReturnAnchor {
+  trigger: HTMLElement;
+  /** Nearest ancestor first; `ordinal` is the trigger's index among its namesakes inside it. */
+  ancestors: ReadonlyArray<{ element: HTMLElement; ordinal: number }>;
+}
+
+/**
+ * Where a return falls back to when the trigger has no focusable replacement —
+ * a view-only admin's disabled Edit, or a section that no longer renders one.
+ */
+const RETURN_REGION_SELECTOR = 'section, [role="region"], fieldset, form';
+
+function focusNameKey(element: HTMLElement) {
+  const name = element.getAttribute("aria-label") ?? element.textContent ?? "";
+  return `${element.tagName}|${name.replace(/\s+/g, " ").trim()}`;
+}
+
+function namesakes(container: HTMLElement, trigger: HTMLElement, key: string) {
+  return Array.from(container.querySelectorAll(trigger.tagName)).filter(
+    (element): element is HTMLElement =>
+      isHTMLElement(element) && focusNameKey(element) === key,
+  );
+}
+
+function isPageRoot(element: Element | null) {
+  return (
+    !element ||
+    element === document.body ||
+    element === document.documentElement
+  );
+}
+
+function canTakeFocus(element: HTMLElement) {
+  return (
+    element.isConnected &&
+    !element.matches(":disabled") &&
+    !element.closest("[inert], [hidden]")
+  );
+}
+
+/**
+ * Record the focused element as the place to return to. Call it from the
+ * explicit action that opens the editor, before the render that unmounts the
+ * trigger. Returns `null` when nothing is focused — a mouse click in a browser
+ * that does not focus buttons — which makes the later return a no-op.
+ */
+// test seam
+export function captureFocusReturn(): FocusReturnAnchor | null {
+  if (typeof document === "undefined") return null;
+  const trigger = document.activeElement;
+  if (!isHTMLElement(trigger) || isPageRoot(trigger)) return null;
+  const key = focusNameKey(trigger);
+  const ancestors: Array<{ element: HTMLElement; ordinal: number }> = [];
+  for (
+    let element = trigger.parentElement;
+    element && !isPageRoot(element);
+    element = element.parentElement
+  ) {
+    ancestors.push({
+      element,
+      ordinal: namesakes(element, trigger, key).indexOf(trigger),
+    });
+  }
+  return { trigger, ancestors };
+}
+
+function resolveReturnTarget(anchor: FocusReturnAnchor): HTMLElement | null {
+  const { trigger } = anchor;
+  if (canTakeFocus(trigger)) return trigger;
+  // The deepest ancestor the close did not replace still holds the trigger's
+  // replacement, at the same position among its namesakes.
+  const survivor = anchor.ancestors.find((entry) => entry.element.isConnected);
+  if (!survivor) return null;
+  const replacement = namesakes(
+    survivor.element,
+    trigger,
+    focusNameKey(trigger),
+  )[survivor.ordinal];
+  if (replacement && canTakeFocus(replacement)) return replacement;
+  const region = survivor.element.closest(RETURN_REGION_SELECTOR);
+  return isHTMLElement(region) && !isPageRoot(region)
+    ? region
+    : survivor.element;
+}
+
+/**
+ * RETURN. Hand focus back to where an editor was opened from — the trigger, its
+ * re-rendered replacement, or failing both the section around it — when
+ * closing the editor dropped focus to the page. It moves nothing while focus
+ * is anywhere else: a failure or success position another primitive took, or a
+ * control the admin moved to while a save was in flight, is left alone.
+ *
+ * The scroll is `block: "nearest"` rather than `"start"`: the target is where
+ * the admin left it, so it moves only as far as it must to be on screen.
+ */
+// test seam
+export function returnFocus(anchor: FocusReturnAnchor | null) {
+  if (!anchor || typeof document === "undefined") return;
+  if (!isPageRoot(document.activeElement)) return;
+  const target = resolveReturnTarget(anchor);
+  if (!target) return;
+  applyStickyHeaderClearance(target, "start");
+  ensureFocusable(target);
+  target.focus({ preventScroll: true });
+  if (typeof target.scrollIntoView === "function") {
+    target.scrollIntoView({ behavior: resolveScrollBehavior(), block: "nearest" });
+  }
+}
+
 export function useScrollToFeedback() {
   const scrollTop = useCallback((containerRef: ScrollContainerTarget) => {
     scrollToTop(containerRef);
@@ -410,4 +531,24 @@ export function useRevealAttention(
     if (!revealKey) return;
     revealEditor(target);
   }, [revealKey, target]);
+}
+
+/**
+ * Return focus when — and only when — an explicit action closed an editor.
+ *
+ * The counterpart of {@link useRevealAttention}: `anchor` holds what
+ * {@link captureFocusReturn} recorded when the editor opened, and `returnKey`
+ * counts the closes. Each close CONSUMES the anchor, so a later close with no
+ * fresh open behind it moves nothing.
+ */
+export function useReturnAttention(
+  anchor: RefObject<FocusReturnAnchor | null>,
+  returnKey: number,
+) {
+  useEffect(() => {
+    if (!returnKey) return;
+    const recorded = anchor.current;
+    anchor.current = null;
+    returnFocus(recorded);
+  }, [anchor, returnKey]);
 }

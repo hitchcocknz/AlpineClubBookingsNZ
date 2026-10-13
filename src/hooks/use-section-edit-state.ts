@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
+import {
+  captureFocusReturn,
+  useReturnAttention,
+  type FocusReturnAnchor,
+} from "@/hooks/use-scroll-to-feedback";
 
 /**
  * Shared state for the canonical admin settings-section pattern (#2136).
@@ -28,6 +33,14 @@ import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action
  * the hook only owns the one clearing rule every card already shares — both
  * messages are cleared at the start of a save — and exposes `setError` /
  * `setSuccess` so each card keeps its existing behaviour explicitly.
+ *
+ * What it DOES own is where focus goes when the editor closes (#4087). Save and
+ * Cancel unmount the button that held focus, which dropped a keyboard user to
+ * `<body>`; the hook records the focused element when `startEditing` runs and
+ * hands focus back to it (or its re-rendered replacement, or the section
+ * around it) after Cancel or a successful save, through `useReturnAttention`.
+ * A failed save leaves edit mode open and moves nothing, so the failure
+ * position a card takes for its error stands. No card wires anything for it.
  *
  * The transport also stays in the caller's `save` callback, so idioms that are
  * genuinely per-card survive untouched: the security cards' GET-fresh-settings-
@@ -127,7 +140,10 @@ export interface SectionEditState<T extends object> {
    * editor is never focused because content re-rendered (#2934).
    */
   editRequestKey: number;
-  /** Restore every field from the snapshot and leave edit mode. */
+  /**
+   * Restore every field from the snapshot and leave edit mode. Focus returns to
+   * where `startEditing` was called from, as it does after a successful `save`.
+   */
   cancelEditing: () => void;
   save: () => Promise<void>;
   /** Re-run `load`, clearing both messages first. No-op without a `load`. */
@@ -157,6 +173,8 @@ export function useSectionEditState<T extends object>(
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editRequestKey, setEditRequestKey] = useState(0);
+  const [exitRequestKey, setExitRequestKey] = useState(0);
+  const focusReturn = useRef<FocusReturnAnchor | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -225,7 +243,11 @@ export function useSectionEditState<T extends object>(
     });
   }, []);
 
+  useReturnAttention(focusReturn, exitRequestKey);
+
   const startEditing = useCallback(() => {
+    // Read before the render that unmounts the Edit button holding focus.
+    focusReturn.current = captureFocusReturn();
     setEditing(true);
     setEditRequestKey((key) => key + 1);
   }, []);
@@ -235,6 +257,7 @@ export function useSectionEditState<T extends object>(
     // field can be missed the way a field-by-field revert can miss one.
     setDraftState((current) => (saved === null ? current : saved));
     setEditing(false);
+    setExitRequestKey((key) => key + 1);
   }, [saved]);
 
   const save = useCallback(async () => {
@@ -250,6 +273,7 @@ export function useSectionEditState<T extends object>(
       setSaved(next);
       setDraftState(next);
       setEditing(false);
+      setExitRequestKey((key) => key + 1);
       const message = callbacks.current.successMessage;
       setSuccess(typeof message === "function" ? message(next) : message);
     } catch (saveError) {
