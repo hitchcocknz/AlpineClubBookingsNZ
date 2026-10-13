@@ -574,7 +574,12 @@ async function releaseCancelledRefundCreditNotePointer(
       }
       return right.id.localeCompare(left.id);
     })
-    .find((candidate) => !isRefundCreditNoteLinkCancelledInXero(candidate.metadata));
+    // #3880: a per-refund note is never written into the field.
+    .find(
+      (candidate) =>
+        !isRefundCreditNoteLinkCancelledInXero(candidate.metadata) &&
+        !isPerDeltaRefundNoteLink(candidate.metadata),
+    );
 
   await client.payment.updateMany({
     where: {

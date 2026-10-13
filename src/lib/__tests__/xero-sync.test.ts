@@ -663,6 +663,41 @@ describe("upsertXeroObjectLink", () => {
     });
   });
 
+  it("never repoints the refund-note pointer at a per-refund note when a void deactivates the one it named (#3880)", async () => {
+    mocks.txLinkFindMany.mockResolvedValue([
+      {
+        id: "link_canonical",
+        xeroObjectId: "cn_canonical",
+        metadata: { status: "AUTHORISED" },
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        id: "link_per_refund",
+        xeroObjectId: "cn_per_refund",
+        metadata: { status: "AUTHORISED", perDelta: true },
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+    ]);
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_delta",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: "cn_canonical" },
+    });
+  });
+
   it("leaves the refund-note pointer alone when a voided note is not the one it names", async () => {
     mocks.txPaymentFindUnique.mockResolvedValue({
       source: "STRIPE",
