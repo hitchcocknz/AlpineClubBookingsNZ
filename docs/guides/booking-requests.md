@@ -121,8 +121,10 @@ are listed on the booking for you to relay.
      you entered is kept on the request. To decline instead, **Reject** with a
      note; a rejection never carries the guests. Changing the list clears the
      figures (and any overbooking confirmation), so check them again. A guest
-     who shares a name with one of the member's dependants has to be added with
-     **+ Add a member**, so they are booked as the member they are.
+     who shares a name with one of the member's dependants is refused: if it is
+     that dependant, add them with **+ Add a member**, so they are booked as the
+     member they are; if it is a different person with the same name, this
+     entry can't add them, so leave them off and say so in your explanation.
    - **The figures you approve are the figures charged.** **Approve and apply**
      sends the figures you checked. If anything moved since — a season rate, a
      payment, the lodge's capacity — nothing is applied and you are asked to

@@ -285,6 +285,11 @@ describe("officer-entered guests on a free-text request (#4030 Part B)", () => {
   it("refuses a typed guest named like one of the member's dependants, pointing at the finder (review M4)", async () => {
     mocks.memberFindMany.mockResolvedValue([{ id: "dep-1", firstName: "Bo", lastName: "Example" }]);
     expect(await run()).toEqual({ outcome: "keptPending", message: OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE });
+    // Both readings of the name are answered (re-review of 72c933ffc).
+    expect(OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE).toMatch(/If it is that dependant, add them with \+ Add a member/);
+    expect(OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE).toMatch(
+      /If it is a different person who shares the name, this entry can't add them/,
+    );
     expect(mocks.updateMany).not.toHaveBeenCalled();
     expect(mocks.modifyBookingBatch).not.toHaveBeenCalled();
     // The OWNER's dependants were read, never the officer's.

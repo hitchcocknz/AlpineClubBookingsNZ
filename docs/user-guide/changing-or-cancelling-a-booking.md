@@ -58,7 +58,10 @@ the nights they are staying; the card shows an estimate of what they will cost
 (adding guests carries no change fee). Use the note for anything else the
 officer should know. A note on its own can't be sent: the request has to say
 who or what changes, so the officer can apply it and you are emailed the change
-and anything to pay.
+and anything to pay. If someone you add there has the same name as one of your
+own dependants, the card stops you: add your dependant with their own button
+(your family), or, if it is a different person who shares the name, take them
+off the request and contact the club about them.
 
 If your club has **member guests** turned on, the Guests heading carries two
 buttons — **+ Add Member Guest** and **+ Add Non-Member Guest** — exactly as it

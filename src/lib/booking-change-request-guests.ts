@@ -74,11 +74,17 @@ export const CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE =
  * the same `checkOwnDependantIdentityForParty` every booking door runs, rather
  * than reaching the officer as a request the approval would then refuse. Said
  * to the member, and to the officer entering guests for them.
+ *
+ * Each message answers both readings of the name (#4030 re-review of
+ * 72c933ffc), because neither surface takes the "different person, same name"
+ * declaration the booking wizard and editor do: if it is the dependant, the
+ * member path; if it is somebody else who shares the name, this surface cannot
+ * add them, so they come off it.
  */
 export const CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE =
-  "Someone you are adding has the same name as one of your dependants. Add them with their own button above (your family), so they are booked as the member they are.";
+  "Someone you are adding has the same name as one of your dependants. If it is your dependant, add them with their own button above (your family), so they are booked as the member they are. If it is a different person who shares the name, this request can't add them: take them off it and contact the club about them.";
 export const OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE =
-  "A guest you entered has the same name as one of the member's dependants. Add them with + Add a member (the member finder) instead, so they are booked as the member they are. Nothing has been changed; the request is still pending.";
+  "A guest you entered has the same name as one of the member's dependants. If it is that dependant, add them with + Add a member (the member finder) instead, so they are booked as the member they are. If it is a different person who shares the name, this entry can't add them: leave them off it and say so in your explanation to the member. Nothing has been changed; the request is still pending.";
 
 /**
  * The stay a request's added guests must fall inside. `checkIn` / `checkOut` are

@@ -231,6 +231,10 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
     expect(response.status).toBe(409);
     const body = await response.json();
     expect(body.error).toMatch(/same name as one of your dependants/);
+    // Both readings of the name are answered (re-review of 72c933ffc): the
+    // dependant goes on the member path, a namesake comes off the request.
+    expect(body.error).toMatch(/If it is your dependant, add them with their own button above/);
+    expect(body.error).toMatch(/If it is a different person who shares the name, this request can't add them/);
     expect(body.code).toBe("DEPENDANT_IDENTITY_UNRESOLVED");
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
   });
