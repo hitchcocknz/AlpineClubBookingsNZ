@@ -34,7 +34,8 @@
   change would charge anything different. Changing the guests they entered
   clears the figures and any overbooking confirmation. A guest named like one
   of the member's dependants must be added as that member, on both the member's
-  request and the officer's entry. The member's estimate counts member guests
+  request and the officer's entry; the message says that a different person who
+  shares the name can't be added there. The member's estimate counts member guests
   toward group sizes and says when everyone listed is priced on approval; it is
   rate-limited. A stay range that changes nothing no longer counts as a
   request. The change email marks a member guest who has not yet accepted.
