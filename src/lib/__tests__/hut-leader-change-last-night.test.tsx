@@ -50,7 +50,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("hut-leader stay refusal offers the last night stayed (#3817)", () => {
+// The whole Hut Leaders page renders in jsdom, and its own findBy waits allow
+// 10,000ms; the first test absorbs the page's first render (1,914ms alone on a
+// warm machine) and went past vitest's 5,000ms default under CI shard load
+// (#4085). The same budget as the other full-page admin render
+// (admin-view-only-controls.test.tsx).
+describe("hut-leader stay refusal offers the last night stayed (#3817)", { timeout: 30_000 }, () => {
   it("shows the refusal, and Change last night keeps the member and moves only the end date", async () => {
     const posts: unknown[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

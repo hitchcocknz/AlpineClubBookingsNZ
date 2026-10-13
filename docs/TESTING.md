@@ -1392,6 +1392,13 @@ re-verify an entry.
   problem rather than a load artefact, and it is the first candidate if the
   class is ever fixed at the suite rather than in this list.
 
+- [`src/lib/__tests__/hut-leader-change-last-night.test.tsx`](../src/lib/__tests__/hut-leader-change-last-night.test.tsx)
+  — isolated 15.1s wall, its first test **1,914ms** alone (it absorbs the
+  Hut Leaders page's first jsdom render). It timed out at 5,000ms in CI's
+  `Test shard (2/4)` on 13 October 2026, twice on PR #4077's head `31e771fde`
+  and once on PR #4063, and passed alone each time. It is the one entry fixed
+  at the suite: its `describe` carries a 30,000ms budget (#4085).
+
 The two 2026-09-19 batches produced no timeout, so their figures show how close
 each suite runs to the budget under a batch of that size, not a red. The reds
 came later, on 20 September 2026 at `6ca8f179d`, from a smaller and therefore
