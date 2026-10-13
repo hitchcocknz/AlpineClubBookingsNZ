@@ -133,22 +133,34 @@ export function OrganiserRefundConfirmation({
 }
 
 /**
- * #4084: the confirmation after a cancel whose refund to the member's own card
- * Stripe did not make (the cancel's `ownCardRefund` says `card_pending`): the
- * "Booking Cancelled" email's own sentence, as information, never "has been
- * processed". An officer cancelling on the member's behalf reads "the member's".
+ * The confirmation after a cancel refunded to the member's own card. #4084:
+ * when Stripe did not make that refund (the cancel's `ownCardRefund` says
+ * `card_pending`, so `pending`), it is the "Booking Cancelled" email's own
+ * sentence, as information, never "has been processed"; an officer cancelling
+ * on the member's behalf reads "the member's". A made refund keeps its wording.
  */
-export function OwnCardRefundPendingConfirmation({
+export function OwnCardRefundConfirmation({
   amountCents,
+  pending,
   format,
   emailNote,
   onBehalfOfMember,
 }: {
   amountCents: number;
+  pending: boolean;
   format: ClubFormat;
   emailNote: string;
   onBehalfOfMember: boolean;
 }) {
-  const sentence = ownCardRefundPendingSentence(formatCents(amountCents, format), onBehalfOfMember ? "the member's" : "your");
-  return <p className="text-sm text-info-11">{sentence + emailNote}</p>;
+  const amount = formatCents(amountCents, format);
+  if (pending) {
+    return <p className="text-sm text-info-11">{ownCardRefundPendingSentence(amount, onBehalfOfMember ? "the member's" : "your") + emailNote}</p>;
+  }
+  return (
+    <p className="text-sm text-success-11">
+      {onBehalfOfMember
+        ? `The refund of ${amount} has been processed to the member's original payment method.${emailNote}`
+        : `Your refund of ${amount} has been processed to your original payment method.${emailNote}`}
+    </p>
+  );
 }

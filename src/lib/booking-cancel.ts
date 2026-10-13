@@ -2313,8 +2313,7 @@ async function performBookingCancellation(
   // ── Card branch: Stripe refund ────────────────────────────────────
   if (branch === "card") {
     let stripeRefundId: string | undefined;
-    // #4084: made only when Stripe's answer says so (`ownCardRefundMade`); a throw, `failed` or `canceled` is on its way.
-    let refundMade = false;
+    let refundMade = false; // #4084: only when Stripe's answer says so (`ownCardRefundMade`); a throw, `failed` or `canceled` is on its way
 
     // The refund debt was persisted INSIDE the claim transaction (F2, #1349):
     // a recovery operation carrying the frozen per-transaction plan committed

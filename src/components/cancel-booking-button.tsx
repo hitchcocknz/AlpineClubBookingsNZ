@@ -21,7 +21,7 @@ import {
 import { formatCents } from "@/lib/utils";
 import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { useClubFormat } from "@/components/club-format-provider";
-import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundPendingConfirmation } from "@/components/cancel-booking-payment-notes";
+import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundConfirmation } from "@/components/cancel-booking-payment-notes";
 
 interface CancelPreview {
   refundAmountCents: number;
@@ -362,18 +362,12 @@ export function CancelBookingButton({
           </p>
         ) : result?.organiserRefund ? (
           <OrganiserRefundConfirmation organiserRefund={result.organiserRefund} format={format} emailNote={emailNote} />
-        ) : result?.ownCardRefund?.method === "card_pending" ? (
-          <OwnCardRefundPendingConfirmation amountCents={result.ownCardRefund.amountCents} format={format} emailNote={emailNote} onBehalfOfMember={onBehalfOfMember} />
         ) : refund > 0 && isCredit ? (
           <p className="text-sm text-success-11">
             A credit of {formatCents(refund, format)} has been added to {onBehalfOfMember ? "the member's" : "your"} account for future bookings.
           </p>
         ) : refund > 0 ? (
-          <p className="text-sm text-success-11">
-            {onBehalfOfMember
-              ? `The refund of ${formatCents(refund, format)} has been processed to the member's original payment method.${emailNote}`
-              : `Your refund of ${formatCents(refund, format)} has been processed to your original payment method.${emailNote}`}
-          </p>
+          <OwnCardRefundConfirmation amountCents={refund} pending={result?.ownCardRefund?.method === "card_pending"} format={format} emailNote={emailNote} onBehalfOfMember={onBehalfOfMember} />
         ) : emailSuppressed ? null : (
           <p className="text-sm text-success-11">
             {onBehalfOfMember
