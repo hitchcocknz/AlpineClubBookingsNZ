@@ -1110,6 +1110,22 @@ describe("#4042: the reaper retries group organiser hand-back alerts, keyed on t
     expect(result.resentHandBackAlerts).toBe(2);
   });
 
+  it("runs the sweep even when an earlier step throws, then lets that error through", async () => {
+    mocks.settlementFindMany.mockRejectedValueOnce(new Error("settlement read failed"));
+
+    await expect(reapStaleGroupSettlements(NOW)).rejects.toThrow("settlement read failed");
+
+    expect(handBackAlerts.resendUnsentGroupOrganiserHandBackAlerts).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the sweep even when the resume phase's read throws", async () => {
+    mocks.groupBookingFindMany.mockRejectedValueOnce(new Error("resume read failed"));
+
+    await expect(reapStaleGroupSettlements(NOW)).rejects.toThrow("resume read failed");
+
+    expect(handBackAlerts.resendUnsentGroupOrganiserHandBackAlerts).toHaveBeenCalledTimes(1);
+  });
+
   it("a failed sweep never fails the reap", async () => {
     handBackAlerts.resendUnsentGroupOrganiserHandBackAlerts.mockRejectedValueOnce(new Error("db down"));
 

@@ -81,14 +81,19 @@ export type GroupOrganiserHandBackShares = {
   alertSentAt?: string;
   /** When a run claimed the right to send it (ISO): a lease no other run sends under until it expires. */
   alertClaimedAt?: string;
+  /** How many sends reached nobody; at `GROUP_HAND_BACK_ALERT_MAX_UNDELIVERED` no run sends again. */
+  alertUndeliveredCount?: number;
 };
+
+/** #4042: after this many sends that reached nobody, the alert stops; the task on the queue stays the record. */
+export const GROUP_HAND_BACK_ALERT_MAX_UNDELIVERED = 3;
 
 /** The shares a group organiser's hand-back recorded, or null for any other row. */
 export function readGroupOrganiserHandBackShares(reviewContext: unknown): GroupOrganiserHandBackShares | null {
   if (!reviewContext || typeof reviewContext !== "object" || Array.isArray(reviewContext)) return null;
   const value = (reviewContext as Record<string, unknown>).groupOrganiserHandBack;
   if (!value || typeof value !== "object") return null;
-  const { settlementId, shares, alertSentAt, alertClaimedAt } = value as Record<string, unknown>;
+  const { settlementId, shares, alertSentAt, alertClaimedAt, alertUndeliveredCount } = value as Record<string, unknown>;
   if (typeof settlementId !== "string" || !Array.isArray(shares)) return null;
   const parsed = shares.flatMap((share: unknown) => {
     const { bookingId, name, cents } = (share ?? {}) as Record<string, unknown>;
@@ -101,16 +106,30 @@ export function readGroupOrganiserHandBackShares(reviewContext: unknown): GroupO
     shares: parsed,
     ...(typeof alertSentAt === "string" ? { alertSentAt } : {}),
     ...(typeof alertClaimedAt === "string" ? { alertClaimedAt } : {}),
+    ...(Number.isInteger(alertUndeliveredCount) && (alertUndeliveredCount as number) > 0 ? { alertUndeliveredCount: alertUndeliveredCount as number } : {}),
   };
 }
 
-/** #4042: is this task a group organiser's hand-back (`INV-PAY-123`)? */
+/**
+ * #4042 (`INV-PAY-123`): THE one definition of a group organiser's hand-back -
+ * the kind and the key prefix - as a where fragment for a query and, below, as
+ * the predicate for a row (`INV-SSOT`). A cancellation's hand-back, so a read
+ * by this fragment needs no `NOT_NON_CANCELLATION_HAND_BACK_WHERE`: its prefix
+ * is none of the non-cancellation prefixes. A read that ALSO names the kind
+ * literally is policed by `edit-refund-hand-back-readers-census.test.ts`.
+ */
+export const GROUP_ORGANISER_HAND_BACK_WHERE = {
+  kind: "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskKind,
+  occurrenceKey: { startsWith: GROUP_ORGANISER_HAND_BACK_KEY_PREFIX },
+} as const;
+
+/** #4042: is this task a group organiser's hand-back (`INV-PAY-123`)? The fragment above, for a row. */
 export function isGroupOrganiserHandBackTask(task: {
   kind: ManualRefundTaskKind | string | null;
   occurrenceKey: string | null;
 }): boolean {
   return (
-    task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
-    (task.occurrenceKey?.startsWith(GROUP_ORGANISER_HAND_BACK_KEY_PREFIX) ?? false)
+    task.kind === GROUP_ORGANISER_HAND_BACK_WHERE.kind &&
+    (task.occurrenceKey?.startsWith(GROUP_ORGANISER_HAND_BACK_WHERE.occurrenceKey.startsWith) ?? false)
   );
 }

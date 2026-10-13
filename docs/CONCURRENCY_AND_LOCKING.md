@@ -3092,12 +3092,17 @@ provider call. **Its alert adds one `lock(1)` participant,
 `updateGroupHandBackAlertRecord`** (registered as
 `updateGroupHandBackAlertRecord#1`, `INV-LOCK-003`). Once the children loop
 ends - and from the reaper's own task-keyed sweep of OPEN group tasks older
-than the resume grace with no alert sent - a run CLAIMS each unsent alert: a
-short transaction takes `lock(1)` first, re-reads the task and writes a lease
+than the resume grace (by `updatedAt`, which every growth moves) with no alert
+sent, skipping a group that still has an active organiser-settled joiner - a
+run CLAIMS each unsent alert: a short transaction takes `lock(1)` first, reads
+the database's time, re-reads the task and writes a 30-minute lease
 (`alertClaimedAt`), but only on an OPEN, unsent task with no unexpired lease.
-Only the winning run sends, after that commit; it then records the send
-(`alertSentAt`, lease cleared) through the same writer, or, when the send
-reached nobody, gives the lease back. Every write to `reviewContext` - the
+Only the winning run sends, after that commit, so two runs never send at once;
+it then records the send (`alertSentAt`, lease cleared, retried three times)
+through the same writer, or, when the send reached nobody, gives the lease back
+and counts it (three and no run tries again). The guarantee is AT LEAST ONCE:
+a crash, or a record that never lands, between the send and the record lets
+the lease expire and the alert repeat. Every write to `reviewContext` - the
 lease, its release, the record and a claim's growth of the task - takes
 `lock(1)` and re-reads first, so none drops another's fields; the growth's
 `updateMany` is fenced on status only, since a fence miss there would raise a

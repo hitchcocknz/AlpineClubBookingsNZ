@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   taskFindUniqueOrThrow: vi.fn(),
   prismaTaskFindMany: vi.fn(),
   txExecuteRaw: vi.fn(),
+  txQueryRaw: vi.fn(),
+  bookingCount: vi.fn(),
   txTaskFindUniqueOrThrow: vi.fn(),
   txTaskUpdate: vi.fn(),
   sendAdminManualRefundTaskAlert: vi.fn(),
@@ -29,11 +31,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    booking: { findUniqueOrThrow: mocks.organiserFindUniqueOrThrow },
+    booking: { findUniqueOrThrow: mocks.organiserFindUniqueOrThrow, count: mocks.bookingCount },
     manualRefundTask: { findUniqueOrThrow: mocks.taskFindUniqueOrThrow, findMany: mocks.prismaTaskFindMany },
     // The alert record's one writer: lock(1) first, then a re-read and a write.
     $transaction: async (cb: (tx: unknown) => unknown) =>
-      cb({ $executeRaw: mocks.txExecuteRaw, manualRefundTask: { findUniqueOrThrow: mocks.txTaskFindUniqueOrThrow, update: mocks.txTaskUpdate } }),
+      cb({ $executeRaw: mocks.txExecuteRaw, $queryRaw: mocks.txQueryRaw, manualRefundTask: { findUniqueOrThrow: mocks.txTaskFindUniqueOrThrow, update: mocks.txTaskUpdate } }),
   },
 }));
 vi.mock("@/lib/email", () => ({ sendAdminManualRefundTaskAlert: mocks.sendAdminManualRefundTaskAlert }));
@@ -50,6 +52,7 @@ import {
   NOT_NON_CANCELLATION_HAND_BACK_WHERE,
 } from "@/lib/manual-refund-task-settlement-rules";
 import {
+  GROUP_ORGANISER_HAND_BACK_WHERE,
   groupOrganiserHandBackOccurrenceKey,
   isGroupOrganiserHandBackTask,
   readGroupOrganiserHandBackShares,
@@ -215,6 +218,8 @@ describe("the hand-back's marker", () => {
     expect(isNonCancellationHandBackTask(task)).toBe(false);
     expect(isGroupOrganiserHandBackTask({ kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: null })).toBe(false);
     expect(isGroupOrganiserHandBackTask({ kind: "EDIT_FINANCIAL_REVIEW", occurrenceKey: task.occurrenceKey })).toBe(false);
+    // ONE definition: the predicate is the where fragment, for a row.
+    expect(GROUP_ORGANISER_HAND_BACK_WHERE).toEqual({ kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: { startsWith: "group-organiser-hand-back:" } });
     // The query fragment the cancellation readers spread keeps it (a NOT on the two other prefixes).
     expect(JSON.stringify(NOT_NON_CANCELLATION_HAND_BACK_WHERE)).not.toContain("group-organiser-hand-back:");
   });
@@ -222,6 +227,8 @@ describe("the hand-back's marker", () => {
 
 describe("alertUnsentGroupOrganiserHandBacks", () => {
   const SHARES = [share("child-a", 4500), share("child-b", 3000)];
+  /** The database's clock, which the lease and the record are stamped with (not the app's). */
+  const DB_NOW = "2026-07-01T10:00:00.000Z";
   const INPUT_SWEEP = { settlementId: "settle-1", organiserBookingId: "org-booking", format: CLUB_FORMAT_TEST };
   /** One task row, written only through the locked transaction, as the database would hold it. */
   let row: { status: ManualRefundTaskStatus; amountCents: number; reason: string; reviewContext: unknown };
@@ -241,6 +248,7 @@ describe("alertUnsentGroupOrganiserHandBacks", () => {
       organisation: null,
     });
     mocks.sendAdminManualRefundTaskAlert.mockResolvedValue("sent");
+    mocks.txQueryRaw.mockImplementation(async () => [{ now: new Date(DB_NOW) }]);
   });
 
   it("claims under lock(1), sends with the amount and reason read in the claim, then records the send and drops the lease", async () => {
@@ -271,7 +279,7 @@ describe("alertUnsentGroupOrganiserHandBacks", () => {
     // Every write took lock(1) first: the claim and the record.
     expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(2);
     expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txTaskFindUniqueOrThrow.mock.invocationCallOrder[0]!);
-    expect(record()).toEqual({ settlementId: "settle-1", shares: SHARES, alertSentAt: expect.any(String) });
+    expect(record()).toEqual({ settlementId: "settle-1", shares: SHARES, alertSentAt: DB_NOW });
   });
 
   it("RESUME: a task whose creating run died before its alert is sent by the next run - and once recorded, never again", async () => {
@@ -280,33 +288,64 @@ describe("alertUnsentGroupOrganiserHandBacks", () => {
     expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
   });
 
-  it("OVERLAP: a run that finds another run's unexpired lease does not send; an expired lease is taken over", async () => {
-    row.reviewContext = { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES, alertClaimedAt: new Date(Date.now() - 60 * 1000).toISOString() } };
+  it("OVERLAP: a run that finds another run's lease, measured on the database's clock, does not send until the 30 minutes are up", async () => {
+    const leasedAt = (minutesBefore: number) => new Date(Date.parse(DB_NOW) - minutesBefore * 60 * 1000).toISOString();
+    row.reviewContext = { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES, alertClaimedAt: leasedAt(29) } };
     expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
     expect(mocks.sendAdminManualRefundTaskAlert).not.toHaveBeenCalled();
 
-    row.reviewContext = { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES, alertClaimedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString() } };
+    row.reviewContext = { groupOrganiserHandBack: { settlementId: "settle-1", shares: SHARES, alertClaimedAt: leasedAt(31) } };
     expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
   });
 
-  it("a send that reached nobody gives the lease back and records nothing, so a later sweep retries", async () => {
+  it("a send that reached nobody gives the lease back and counts it, so a later sweep retries", async () => {
     mocks.sendAdminManualRefundTaskAlert.mockResolvedValueOnce("undelivered");
 
     expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
-    expect(record()).toEqual({ settlementId: "settle-1", shares: SHARES });
+    expect(record()).toEqual({ settlementId: "settle-1", shares: SHARES, alertUndeliveredCount: 1 });
 
     expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
     expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(2);
   });
 
-  it("a record that fails after the send is logged with its task id, and its lease holds a resend off", async () => {
-    mocks.txTaskUpdate.mockImplementationOnce(async ({ data }: { data: { reviewContext: unknown } }) => {
+  it("after three sends that reached nobody it stops, logs once, and no run sends again", async () => {
+    mocks.sendAdminManualRefundTaskAlert.mockResolvedValue("undelivered");
+
+    for (let run = 0; run < 5; run += 1) await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP);
+
+    expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(3);
+    expect(record()?.alertUndeliveredCount).toBe(3);
+    const gaveUp = mocks.loggerError.mock.calls.filter(([, message]) => String(message).includes("reached nobody after every attempt"));
+    expect(gaveUp).toEqual([[expect.objectContaining({ manualRefundTaskId: "task-1", attempts: 3 }), expect.any(String)]]);
+  });
+
+  it("a record write that fails is retried, up to three times", async () => {
+    const write = async ({ data }: { data: { reviewContext: unknown } }) => {
       row = { ...row, reviewContext: data.reviewContext };
-    }).mockRejectedValueOnce(new Error("db down"));
+    };
+    mocks.txTaskUpdate.mockImplementationOnce(write).mockRejectedValueOnce(new Error("blip")).mockImplementationOnce(write);
+
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
+    expect(record()?.alertSentAt).toBe(DB_NOW);
+    expect(mocks.loggerError).not.toHaveBeenCalled();
+  });
+
+  it("AT LEAST ONCE: a record that never lands is logged with its task id; its lease holds a resend off, then expires and the alert repeats", async () => {
+    mocks.txTaskUpdate
+      .mockImplementationOnce(async ({ data }: { data: { reviewContext: unknown } }) => {
+        row = { ...row, reviewContext: data.reviewContext };
+      })
+      .mockRejectedValueOnce(new Error("db down"))
+      .mockRejectedValueOnce(new Error("db down"))
+      .mockRejectedValueOnce(new Error("db down"));
 
     expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
     expect(mocks.loggerError).toHaveBeenCalledWith(expect.objectContaining({ manualRefundTaskId: "task-1" }), expect.stringContaining("could not record it"));
     expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(0);
+
+    mocks.txQueryRaw.mockImplementation(async () => [{ now: new Date(Date.parse(DB_NOW) + 31 * 60 * 1000) }]);
+    expect(await alertUnsentGroupOrganiserHandBacks(INPUT_SWEEP)).toBe(1);
+    expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(2);
   });
 
   it("one task's failure never stops the next", async () => {
@@ -326,32 +365,53 @@ describe("alertUnsentGroupOrganiserHandBacks", () => {
 });
 
 describe("resendUnsentGroupOrganiserHandBackAlerts (the reaper's task-keyed retry)", () => {
-  it("sweeps each settlement with an OPEN group task older than the cutoff and no alert sent, once", async () => {
-    const cutoff = new Date("2026-07-01T00:00:00.000Z");
-    const unsent = { groupOrganiserHandBack: { settlementId: "settle-1", shares: [share("child-a", 4500)] } };
+  const cutoff = new Date("2026-07-01T00:00:00.000Z");
+  const unsent = (settlementId: string) => ({ groupOrganiserHandBack: { settlementId, shares: [share("child-a", 4500)] } });
+
+  beforeEach(() => {
+    mocks.bookingCount.mockResolvedValue(0);
+    // Each settlement's own sweep finds nothing left to send (asserted by its query, not its sends).
+    mocks.prismaTaskFindMany.mockResolvedValue([]);
+  });
+
+  it("reads OPEN group tasks untouched since the cutoff by the one group definition, and sweeps each unsent settlement once", async () => {
     const sent = { groupOrganiserHandBack: { settlementId: "settle-2", shares: [share("child-a", 4500)], alertSentAt: "2026-06-30T00:00:00.000Z" } };
-    mocks.prismaTaskFindMany
-      .mockResolvedValueOnce([
-        { bookingId: "org-1", reviewContext: unsent },
-        { bookingId: "org-1", reviewContext: unsent },
-        { bookingId: "org-2", reviewContext: sent },
-      ])
-      // The sweep's own read for settle-1: nothing left to send (a parallel run sent it).
-      .mockResolvedValueOnce([]);
+    const givenUp = { groupOrganiserHandBack: { settlementId: "settle-3", shares: [share("child-a", 4500)], alertUndeliveredCount: 3 } };
+    mocks.prismaTaskFindMany.mockResolvedValueOnce([
+      { bookingId: "org-1", reviewContext: unsent("settle-1") },
+      { bookingId: "org-1", reviewContext: unsent("settle-1") },
+      { bookingId: "org-2", reviewContext: sent },
+      { bookingId: "org-3", reviewContext: givenUp },
+    ]);
 
     expect(await resendUnsentGroupOrganiserHandBackAlerts(cutoff, CLUB_FORMAT_TEST)).toBe(0);
 
     expect(mocks.prismaTaskFindMany.mock.calls[0]![0]).toEqual({
       where: {
-        status: ManualRefundTaskStatus.OPEN,
+        kind: "CANCELLED_BOOKING_HAND_BACK",
         occurrenceKey: { startsWith: "group-organiser-hand-back:" },
-        createdAt: { lt: cutoff },
+        ...NOT_NON_CANCELLATION_HAND_BACK_WHERE,
+        status: ManualRefundTaskStatus.OPEN,
+        // Every growth moves updatedAt, so a cancel still growing the task is never swept.
+        updatedAt: { lt: cutoff },
       },
       select: { bookingId: true, reviewContext: true },
     });
-    // settle-1 swept once, settle-2 (already sent) not at all.
+    // settle-1 swept once; the sent and the given-up ones not at all.
     expect(mocks.prismaTaskFindMany).toHaveBeenCalledTimes(2);
     expect((mocks.prismaTaskFindMany.mock.calls[1]![0] as { where: unknown }).where).toMatchObject({ OR: [{ occurrenceKey: KEY }, { occurrenceKey: { startsWith: `${KEY}:` } }] });
+  });
+
+  it("MID-CANCEL: skips a group that still has an active organiser-settled joiner, as the resume does", async () => {
+    mocks.prismaTaskFindMany.mockResolvedValueOnce([{ bookingId: "org-1", reviewContext: unsent("settle-1") }]);
+    mocks.bookingCount.mockResolvedValueOnce(1);
+
+    expect(await resendUnsentGroupOrganiserHandBackAlerts(cutoff, CLUB_FORMAT_TEST)).toBe(0);
+
+    expect(mocks.bookingCount).toHaveBeenCalledWith({
+      where: { parentBookingId: "org-1", organiserSettled: true, deletedAt: null, status: { in: ["PAYMENT_PENDING", "CONFIRMED", "PAID"] } },
+    });
+    expect(mocks.prismaTaskFindMany).toHaveBeenCalledTimes(1);
   });
 });
 

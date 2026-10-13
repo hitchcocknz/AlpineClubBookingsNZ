@@ -3063,8 +3063,9 @@ _Split from `INV-PAY-057` (#3220)._
   later ones set it while OPEN, by a status-guarded update. After it closes, a
   supplementary task keyed per joiner carries only what no task covers. The
   shares are data on the row.
-  - Its alert goes at most once: a run claims a lease under `lock(1)`, sends
-    after commit and records `alertSentAt`; the reaper retries unsent ones.
+  - Its alert goes at least once; a crash between sending and recording can
+    repeat it. A lease claimed under `lock(1)` lets one run send at a time;
+    the reaper retries unsent ones, stopping after three that reach nobody.
   - A cancel straddling the release folds in joiners old code refunded on the
     ledger; a cancel made entirely before it raises no task.
   - **No `paymentId`, so completion moves nothing**: no allocation, ledger

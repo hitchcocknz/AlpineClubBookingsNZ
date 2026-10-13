@@ -511,7 +511,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     }
   }
 
-  // #4042 (`INV-PAY-123`): the organiser's hand-back is alerted once the loop ends (finally), at most once.
+  // #4042 (`INV-PAY-123`): the organiser's hand-back is alerted once the loop ends (finally), at least once.
   try {
   for (const child of children) {
     const refundForChild = refundByChildId.get(child.id) ?? 0;

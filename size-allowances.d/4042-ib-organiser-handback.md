@@ -35,8 +35,10 @@ reason: the "Manual refund needed" message's two required tokens get the
   two guidance tables that live here beside the check that reads them.
 
 file: src/lib/cron-group-settlement-reaper.ts
-lines: 1052
+lines: 1067
 reason: the reaper gains its task-keyed retry of a group organiser hand-back
   alert left unsent after a group's last claim (the sweep itself is
   `group-organiser-hand-back.ts`): one import, the result's counter and its
-  zero, and the call beside the resume phase whose grace it reuses.
+  zero, and an entry point that runs the reap and the resume and then the
+  sweep, which runs even when a step before it throws; it reuses the resume's
+  grace, so it has to sit beside it.

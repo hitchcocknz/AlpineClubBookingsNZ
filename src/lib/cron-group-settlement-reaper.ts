@@ -190,6 +190,23 @@ export async function reapStaleGroupSettlements(
   // The club's format (#3565), resolved once, before any transaction or
   // lock below — never per amount and never inside a transaction.
   const format = await clubFormatValues();
+  // #4042 (`INV-PAY-123`): keyed on the TASK, so an alert left unsent after a
+  // group's last claim is retried - and run even when a step below throws.
+  const resendAlerts = () =>
+    resendUnsentGroupOrganiserHandBackAlerts(new Date(now.getTime() - GROUP_CANCEL_RESUME_GRACE_MINUTES * 60 * 1000), format)
+      .catch((err: unknown) => { logger.error({ err }, "Failed to resend unsent group organiser hand-back alerts"); return 0; });
+  let result: GroupSettlementReapResult;
+  try {
+    result = await reapAndResume(now, format);
+  } catch (err) {
+    await resendAlerts();
+    throw err;
+  }
+  result.resentHandBackAlerts = await resendAlerts();
+  return result;
+}
+
+async function reapAndResume(now: Date, format: ClubFormat): Promise<GroupSettlementReapResult> {
   const candidates = await prisma.groupBookingSettlement.findMany({
     where: { status: { in: [...REAPABLE_SETTLEMENT_STATUSES] } },
     select: {
@@ -301,8 +318,6 @@ export async function reapStaleGroupSettlements(
   result.startedStayAlerts = leftBehind.startedStayAlerts;
 
   await resumeInterruptedOrganiserCancels(now, result, format);
-  // #4042 (`INV-PAY-123`): keyed on the TASK, so an alert left unsent after a group's last claim is still retried.
-  result.resentHandBackAlerts = await resendUnsentGroupOrganiserHandBackAlerts(new Date(now.getTime() - GROUP_CANCEL_RESUME_GRACE_MINUTES * 60 * 1000), format).catch((err: unknown) => { logger.error({ err }, "Failed to resend unsent group organiser hand-back alerts"); return 0; });
 
   return result;
 }
