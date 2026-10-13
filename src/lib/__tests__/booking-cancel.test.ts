@@ -1966,6 +1966,8 @@ describe("cancelBooking credit refunds", () => {
       totalRefundedAmountCents: 50,
     });
     mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 0 });
+    // The row is there to read: only the lost fence may stop the alert.
+    mocks.recoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_cancel", paymentIntentId: "pi_1" });
 
     await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
