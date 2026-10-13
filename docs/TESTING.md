@@ -1333,8 +1333,8 @@ first entry below was added (#3395) rather than left to be rediscovered.
 cannot show both is a claim rather than evidence:
 
 1. The failure text is vitest's own `Test timed out in Nms` — the per-test
-   budget, 5,000ms unless the `it()` carries an inline one. Nothing else
-   qualifies. A suite that fails on an **assertion** is never in this class,
+   budget, 5,000ms unless the `it()` or its `describe` carries an inline one.
+   Nothing else qualifies. A suite that fails on an **assertion** is never in this class,
    whatever the machine: `page-content-starter-backfill.test.ts` (seed-copy
    drift, the known-environmental failure this section is the home of) is a different
    class, and #2886 removed two suites that had been excused as
@@ -1389,26 +1389,29 @@ re-verify an entry.
   that mapper the only production season mapping", ran **2,589ms** alone, over
   half the budget with the machine otherwise idle. Under the smaller batch it
   **timed out**. This is the entry closest to being a real per-test budget
-  problem rather than a load artefact, and it is the first candidate if the
-  class is ever fixed at the suite rather than in this list.
-
+  problem rather than a load artefact, and it is a candidate for an inline
+  budget like the next entry's.
 - [`src/lib/__tests__/hut-leader-change-last-night.test.tsx`](../src/lib/__tests__/hut-leader-change-last-night.test.tsx)
-  — isolated 15.1s wall, its first test **1,914ms** alone (it absorbs the
-  Hut Leaders page's first jsdom render). It timed out at 5,000ms in CI's
-  `Test shard (2/4)` on 13 October 2026, twice on PR #4077's head `31e771fde`
-  and once on PR #4063, and passed alone each time. It is the one entry fixed
-  at the suite: its `describe` carries a 30,000ms budget (#4085).
+  — measured 13 October 2026 (vitest 5.0.3, Node 24, WSL2): run alone its
+  first test, which absorbs the Hut Leaders page's first jsdom render, took
+  427ms on an idle machine and 1,914ms beside two other lanes' builds. In CI's
+  `Test shard (2/4)` the file took 6,873ms and its first test hit "Test timed
+  out in 5000ms", twice on PR #4077's head `31e771fde` and once on PR #4063;
+  it passed alone each time. Fixed at the suite rather than left in this list:
+  its `describe` carries a 30,000ms budget (#4085), so a real miss now
+  surfaces RTL's own message from its 10,000ms `findBy` instead.
 
-The two 2026-09-19 batches produced no timeout, so their figures show how close
-each suite runs to the budget under a batch of that size, not a red. The reds
-came later, on 20 September 2026 at `6ca8f179d`, from a smaller and therefore
-harsher-per-file batch: the 141 files vitest selects for the filters `census`,
-`contract` and `guard`, 2,068 tests in 220s, run beside nothing else. All three
-of `client-server-boundary-census`, `identity-ordering-census` and
-`in-progress-edit-sold-price-census` timed out in that one run and all three
-passed alone immediately afterwards. That is the evidence of the limit being
-crossed; a lane running any such batch beside another lane's tests, a build, or
-a typecheck is where it will be crossed again.
+Of the entries above, the two 2026-09-19 batches covered the first five; they
+produced no timeout, so their figures show how close each suite runs to the
+budget under a batch of that size, not a red. The reds came later, on 20
+September 2026 at `6ca8f179d`, from a smaller and therefore harsher-per-file
+batch: the 141 files vitest selects for the filters `census`, `contract` and
+`guard`, 2,068 tests in 220s, run beside nothing else. All three of `client-
+server-boundary-census`, `identity-ordering-census` and `in-progress-edit-sold-
+price-census` timed out in that one run and all three passed alone immediately
+afterwards. That is the evidence of the limit being crossed; a lane running any
+such batch beside another lane's tests, a build, or a typecheck is where it will
+be crossed again.
 
 ## Mocking a money seam: never in a test that asserts its money
 
