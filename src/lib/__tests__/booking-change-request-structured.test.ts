@@ -259,6 +259,21 @@ describe("POST /api/bookings/[id]/change-requests — a structured change is req
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
   });
 
+  it("refuses an in-progress check-out move plus a card guest, naming the two-request way forward (round 8)", async () => {
+    // A stay in progress sends the new check-out with no existing-guest ranges,
+    // but the added-guest card always sends its guest's nights, which switches
+    // the planner to range mode; the member's editor can't set the others'.
+    const response = await post({
+      checkOut: "2026-07-02",
+      addGuests: [grandchild("Ari", { stayStart: "2026-06-30", stayEnd: "2026-07-02" })],
+    });
+    expect(response.status).toBe(400);
+    const error = (await response.json()).error as string;
+    expect(error).toBe(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE);
+    expect(error).toMatch(/send the date change on its own and add the guests in a second request/);
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
   it("accepts a date move the guests' nights reach, and one that names no nights (round 7, F2)", async () => {
     const reached = await post({
       checkIn: "2026-06-29",

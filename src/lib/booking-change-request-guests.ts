@@ -170,7 +170,7 @@ export function guestStayRangesRefusal(
 }
 
 export const CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE =
-  "The new check-in or check-out date doesn't match the nights your guests are staying. Set each guest's nights to the dates you want; the stay's dates follow from them.";
+  "The new check-in or check-out date doesn't match the nights your guests are staying. Set each guest's nights to the dates you want, or, if you can't change their nights here, send the date change on its own and add the guests in a second request once the club has dealt with it.";
 
 /**
  * #4030 round 7 (F2): a request that moves check-in or check-out while also
@@ -178,7 +178,9 @@ export const CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE =
  * from them (`resolveModificationStayRanges`, range mode) and ignores the
  * requested ones, so a moved date the nights do not reach would be dropped
  * without a word. Refused instead, with `null` when the dates are where the
- * nights put them, or the request moves no date.
+ * nights put them, or the request moves no date. The message names both ways
+ * forward: a stay in progress shows no editable nights for existing guests, and
+ * its added-guest card caps nights at the original check-out (#4030 round 8).
  */
 export function requestedDatesIgnoredByNightsRefusal(args: {
   booking: { checkIn: Date; checkOut: Date };
