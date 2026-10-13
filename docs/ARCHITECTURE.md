@@ -1797,8 +1797,9 @@ the LIST owns the focus return there: it calls `useEditorFocusReturn`'s
 save and a save conflict that closes the stale editor, so focus goes back to the
 control that opened the editor (#4087). A row's direct write (Activate/Deactivate,
 Delete) unmounts or disables the button pressed, so it returns focus through
-`useRowActionFocusReturn` — the row's toggle, a neighbouring row's Delete, or the
-card — which keeps its own anchor so the write never consumes the open editor's
+`useRowActionFocusReturn` — the row's toggle after a toggle, an Edit after a
+delete (never a button that writes by itself), or the card. Each action keeps its
+own anchor, so neither an overlapping write nor an open editor loses its return
 (#4116). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
 carry the first-save exception: count the draft as dirty so committing the

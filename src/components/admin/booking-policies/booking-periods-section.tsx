@@ -1,8 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { useEditorFocusReturn } from "@/hooks/use-scroll-to-feedback"
-import { useRowActionFocusReturn } from "./use-row-action-focus-return"
+import { useEditorFocusReturn, useRowActionFocusReturn } from "@/hooks/use-scroll-to-feedback"
+import { rowKey, toggleKey, useRowHeadings } from "./list-row-focus"
 import { normalizeCancellationRule } from "@/lib/cancellation-rules"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -238,6 +238,7 @@ export function BookingPeriodsSection() {
   // where focus goes when it closes: back to Add or the row's Edit (#4087).
   const editorFocus = useEditorFocusReturn()
   const rowFocus = useRowActionFocusReturn(editorFocus)
+  const rowHeadings = useRowHeadings()
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -325,7 +326,7 @@ export function BookingPeriodsSection() {
 
   function startEditPeriod(period: BookingPeriod) {
     if (!policyScopeReady) return
-    editorFocus.capture(`row-${period.id}`)
+    editorFocus.capture(rowKey(period.id))
     setEditingPeriodId(period.id)
     setEditingDraft(toDraft(period))
     setEditorInstance((n) => n + 1)
@@ -408,25 +409,28 @@ export function BookingPeriodsSection() {
 
   /**
    * A delete removes the row, and the Delete holding focus with it (#4116), so
-   * focus returns to the next row's Delete — the previous row's for the last
-   * one — or, with the list now empty, the card. The refresh is awaited so the
-   * return lands on the list it re-read.
+   * once it succeeds focus goes to the next row's Edit — the previous row's for
+   * the last one — or, with the list now empty, the card: never a button that
+   * writes by itself. A failed delete returns to the row it was pressed on. The
+   * refresh is awaited so the return lands on the list it re-read.
    */
   async function handleDeletePeriod(id: string) {
     if (!policyScopeReady) return
     if (!confirm("Delete this booking period?")) return
-    const index = periods.findIndex((period) => period.id === id)
-    const neighbour = periods[index + 1] ?? periods[index - 1]
-    rowFocus.capture(`delete-${neighbour?.id ?? ""}`)
+    const focusAnchor = rowFocus.capture(rowKey(id))
+    let nextKey: string | null | undefined
     try {
       const res = await fetch(`/api/admin/booking-policies/periods/${id}`, { method: "DELETE" })
       if (!res.ok) throw new Error("Failed to delete")
+      const index = periods.findIndex((period) => period.id === id)
+      const neighbour = periods[index + 1] ?? periods[index - 1]
+      nextKey = neighbour ? rowKey(neighbour.id) : null
       await fetchPeriods()
       setSuccess("Period deleted")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
-      rowFocus.close()
+      rowFocus.close(focusAnchor, nextKey)
     }
   }
 
@@ -451,7 +455,7 @@ export function BookingPeriodsSection() {
 
   async function handleTogglePeriod(period: BookingPeriod) {
     if (!policyScopeReady || togglingRef.current) return
-    rowFocus.capture(`toggle-${period.id}`)
+    const focusAnchor = rowFocus.capture(toggleKey(period.id))
     togglingRef.current = true
     setTogglingId(period.id)
     try {
@@ -467,7 +471,7 @@ export function BookingPeriodsSection() {
     } finally {
       togglingRef.current = false
       setTogglingId(null)
-      rowFocus.close()
+      rowFocus.close(focusAnchor)
     }
   }
 
@@ -616,7 +620,7 @@ export function BookingPeriodsSection() {
                         <div className="flex items-start justify-between mb-3">
                           <div>
                             <div className="flex items-center gap-2">
-                              <h4 className="font-semibold">{period.name}</h4>
+                              <h4 className="font-semibold" {...rowHeadings.headingProps(period.id)}>{period.name}</h4>
                               <Badge variant={period.active ? "default" : "outline"}>
                                 {period.active ? "Active" : "Inactive"}
                               </Badge>
@@ -641,15 +645,16 @@ export function BookingPeriodsSection() {
                               variant="outline"
                               size="sm"
                               disabled={togglingId === period.id}
-                              {...editorFocus.triggerProps(`toggle-${period.id}`)}
+                              {...editorFocus.triggerProps(toggleKey(period.id))}
+                              {...rowHeadings.describedBy(period.id)}
                               onClick={() => void handleTogglePeriod(period)}
                             >
                               {period.active ? "Deactivate" : "Activate"}
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" {...editorFocus.triggerProps(`row-${period.id}`)} onClick={() => startEditPeriod(period)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" {...editorFocus.triggerProps(rowKey(period.id))} {...rowHeadings.describedBy(period.id)} onClick={() => startEditPeriod(period)}>
                               Edit
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" {...editorFocus.triggerProps(`delete-${period.id}`)} onClick={() => void handleDeletePeriod(period.id)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" {...rowHeadings.describedBy(period.id)} onClick={() => void handleDeletePeriod(period.id)}>
                               Delete
                             </ViewOnlyActionButton>
                           </div>

@@ -27,7 +27,8 @@ import { MinimumNightStaySection } from "../minimum-night-stay-section";
 // a booking period's Delete removes its row, and a toggle is disabled for the
 // round trip, which a browser answers by dropping focus to the page. Each
 // returns focus to a control in the list, or to the card, through
-// `useRowActionFocusReturn`.
+// `useRowActionFocusReturn` — after a delete, to an Edit, never to a button
+// that writes by itself.
 
 const POLICY = {
   id: "m1",
@@ -97,6 +98,47 @@ async function settleAfter(wrote: () => boolean) {
   }
 }
 
+/** A browser's focus fixup: jsdom will not blur a disabled control itself. */
+function dropFocusToPage() {
+  const parked = document.body.appendChild(document.createElement("button"));
+  parked.focus();
+  parked.remove();
+  expect(document.activeElement).toBe(document.body);
+}
+
+/**
+ * A stateful list: each write waits for its own `release`, then changes the
+ * rows the next GET answers with, so two writes can overlap in either order.
+ */
+function stubRows(initial: Array<{ id: string; active: boolean }>) {
+  let rows = [...initial];
+  const holds = new Map<string, () => void>();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const id = url.split("/").pop() ?? "";
+      if (init?.method) {
+        await new Promise<void>((resolve) => holds.set(init.method!, resolve));
+        rows =
+          init.method === "DELETE"
+            ? rows.filter((row) => row.id !== id)
+            : rows.map((row) =>
+                row.id === id ? { ...row, active: !row.active } : row,
+              );
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      return new Response(JSON.stringify(rows), { status: 200 });
+    }),
+  );
+  return {
+    release: async (method: string) => {
+      await waitFor(() => expect(holds.has(method)).toBe(true));
+      holds.get(method)!();
+      holds.delete(method);
+    },
+  };
+}
+
 /** Operate a control the way a keyboard user does: it holds focus first. */
 function press(control: HTMLElement) {
   control.focus();
@@ -133,7 +175,7 @@ describe("MinimumNightStaySection returns focus after a row write (#4116)", () =
     );
   });
 
-  it("returns to the row's toggle after Delete, which leaves the row inactive", async () => {
+  it("returns to the row's Edit after Delete, never to the toggle that would undo it", async () => {
     const deleted = { ...POLICY, active: false, version: 5 };
     const { release } = stubWrite([POLICY], [deleted], { policy: deleted });
     render(<MinimumNightStaySection />);
@@ -148,9 +190,7 @@ describe("MinimumNightStaySection returns focus after a row write (#4116)", () =
       "Minimum stay policy deleted — it is listed as inactive",
     );
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
-    await expectToHoldFocus(
-      await screen.findByRole("button", { name: "Activate" }),
-    );
+    await expectToHoldFocus(await screen.findByRole("button", { name: "Edit" }));
   });
 
   it("falls back to the card when the row is gone after the refresh", async () => {
@@ -165,6 +205,43 @@ describe("MinimumNightStaySection returns focus after a row write (#4116)", () =
       await screen.findByRole("region", { name: "Minimum Night Stay" }),
     );
   });
+
+  it("lands on the could-not-load card when the refresh after a write fails", async () => {
+    let wrote = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method) {
+          wrote = true;
+          return new Response(JSON.stringify({ policy: null }), { status: 200 });
+        }
+        return wrote
+          ? new Response("{}", { status: 500 })
+          : new Response(JSON.stringify([POLICY]), { status: 200 });
+      }),
+    );
+    render(<MinimumNightStaySection />);
+    press(await screen.findByRole("button", { name: "Delete" }));
+
+    await expectToHoldFocus(
+      await screen.findByRole("region", {
+        name: "Could not load the minimum-stay policies for the club",
+      }),
+    );
+  });
+
+  it("names each row button by its row's heading", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify([POLICY]), { status: 200 })),
+    );
+    render(<MinimumNightStaySection />);
+    for (const name of ["Deactivate", "Edit", "Delete"]) {
+      expect(
+        await screen.findByRole("button", { name, description: "Winter Saturdays" }),
+      ).toBeTruthy();
+    }
+  });
 });
 
 describe("BookingPeriodsSection returns focus after a row write (#4116)", () => {
@@ -178,16 +255,11 @@ describe("BookingPeriodsSection returns focus after a row write (#4116)", () => 
     const deactivate = await screen.findByRole("button", { name: "Deactivate" });
     press(deactivate);
 
-    // jsdom keeps focus on a disabled button (and will not blur one); a
-    // browser's focus fixup drops it to the page. Model that by parking focus
-    // on a throwaway control and removing it.
+    // jsdom keeps focus on a disabled button; a browser drops it to the page.
     await waitFor(() =>
       expect((deactivate as HTMLButtonElement).disabled).toBe(true),
     );
-    const parked = document.body.appendChild(document.createElement("button"));
-    parked.focus();
-    parked.remove();
-    expect(document.activeElement).toBe(document.body);
+    dropFocusToPage();
     release();
 
     await expectToHoldFocus(
@@ -195,7 +267,7 @@ describe("BookingPeriodsSection returns focus after a row write (#4116)", () => 
     );
   });
 
-  it("returns to the next row's Delete after a Delete", async () => {
+  it("returns to the next row's Edit after a Delete", async () => {
     const { release, wrote } = stubWrite([A, B, C], [A, C], {});
     render(<BookingPeriodsSection />);
     await screen.findByText("Term Two");
@@ -208,10 +280,12 @@ describe("BookingPeriodsSection returns focus after a row write (#4116)", () => 
 
     await waitFor(() => expect(screen.queryByText("Term Two")).toBeNull());
     expect(del.isConnected).toBe(false);
-    await expectToHoldFocus(buttons("Delete")[1]);
+    await expectToHoldFocus(
+      screen.getByRole("button", { name: "Edit", description: "Term Three" }),
+    );
   });
 
-  it("returns to the previous row's Delete after deleting the last row", async () => {
+  it("returns to the previous row's Edit after deleting the last row", async () => {
     const { release } = stubWrite([A, B], [A], {});
     render(<BookingPeriodsSection />);
     await screen.findByText("Term Two");
@@ -219,7 +293,9 @@ describe("BookingPeriodsSection returns focus after a row write (#4116)", () => 
     release();
 
     await waitFor(() => expect(screen.queryByText("Term Two")).toBeNull());
-    await expectToHoldFocus(buttons("Delete")[0]);
+    await expectToHoldFocus(
+      screen.getByRole("button", { name: "Edit", description: "Term One" }),
+    );
   });
 
   it("falls back to the card when the last period is deleted", async () => {
@@ -231,6 +307,44 @@ describe("BookingPeriodsSection returns focus after a row write (#4116)", () => 
     await screen.findByText(/No date-specific periods configured/);
     await expectToHoldFocus(
       screen.getByRole("region", { name: "Date-Specific Periods" }),
+    );
+  });
+
+  it("returns to the pressed row after a failed Delete, not to its neighbour", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method
+          ? new Response("{}", { status: 500 })
+          : new Response(JSON.stringify([A, B, C]), { status: 200 }),
+      ),
+    );
+    render(<BookingPeriodsSection />);
+    await screen.findByText("Term Two");
+    const del = screen.getByRole("button", { name: "Delete", description: "Term Two" });
+    press(del);
+    dropFocusToPage();
+
+    await screen.findByText("Failed to delete");
+    await expectToHoldFocus(del);
+  });
+
+  it("keeps each overlapping write's own return", async () => {
+    // A toggle captured first and finishing first must not take the delete's
+    // return with it: the delete still lands on its neighbour's Edit.
+    const { release } = stubRows([A, B, C]);
+    render(<BookingPeriodsSection />);
+    await screen.findByText("Term Two");
+    press(screen.getByRole("button", { name: "Deactivate", description: "Term One" }));
+    press(screen.getByRole("button", { name: "Delete", description: "Term Two" }));
+
+    await release("PUT");
+    await screen.findByRole("button", { name: "Activate", description: "Term One" });
+    await release("DELETE");
+
+    await waitFor(() => expect(screen.queryByText("Term Two")).toBeNull());
+    await expectToHoldFocus(
+      screen.getByRole("button", { name: "Edit", description: "Term Three" }),
     );
   });
 
