@@ -30,11 +30,7 @@ import {
   refundPaymentTransactions,
 } from "@/lib/payment-transactions";
 import { inlineRefundAfterAttempt } from "@/lib/refused-card-refund-retry";
-import {
-  NO_CARD_REFUND_OWED,
-  queueUnmadeRefundRequestCardRefund,
-  refundRequestCardRefundAnswer,
-} from "@/lib/refund-request-card-refund";
+import { NO_CARD_REFUND_OWED, queueUnmadeRefundRequestCardRefund, refundRequestCardRefundAnswer } from "@/lib/refund-request-card-refund";
 import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatStayDate } from "@/lib/club-time";
@@ -110,8 +106,7 @@ export async function PUT(
   const booking = refundRequest.booking;
   const payment = booking.payment;
 
-  // #4117: what the approval's card refund still owes, whether it is queued for retry, and why.
-  let cardRefund = NO_CARD_REFUND_OWED;
+  let cardRefund = NO_CARD_REFUND_OWED; // #4117: what its card refund left unmade, queued or not, and why
   if (status === "APPROVED") {
     if (!approvedAmountCents || approvedAmountCents <= 0) {
       return NextResponse.json(
@@ -480,8 +475,7 @@ export async function PUT(
     // (`enqueueXeroRefundRequestCreditNoteOperation`). Nor does an
     // organiser-card refund (#3956): the executor queues its note with the
     // refund row, once Stripe has answered.
-    // #4117: a card part no retry was queued for is not refunded, so not noted.
-    const unqueuedCents = cardRefund.cardRefundQueued ? 0 : cardRefund.cardRefundOwedCents;
+    const unqueuedCents = cardRefund.cardRefundQueued ? 0 : cardRefund.cardRefundOwedCents; // #4117: not refunded, so not noted
     const cardNoteCents = organiserChildDebtId ? 0 : approvedAmountCents - bankTransferCents - unqueuedCents;
     try {
       const queuedCreditNote =
@@ -541,9 +535,7 @@ export async function PUT(
         ...(organiserChildDebtId
           ? { organiserCardRefundOperationId: organiserChildDebtId, organiserCardRefundMade: organiserCardRefundMade }
           : {}),
-        // #4117: the card refund not made - queued, or not and why - the
-        // durable record the list reads when no retry row could be written.
-        ...cardRefund,
+        ...cardRefund, // #4117: what the card refund left unmade; the list reads it when no row was written
         ...notifyAuditFields,
       },
       ipAddress: req.headers.get("x-forwarded-for") ?? "unknown",

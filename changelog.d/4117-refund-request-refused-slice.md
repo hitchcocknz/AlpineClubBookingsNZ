@@ -9,8 +9,11 @@
   automatically, each retry a fresh request so the provider does not just
   repeat its refusal. A part the provider did refund is never asked for again,
   and is never counted as owed by this or any other refund. If the retry could
-  not be queued after the card provider was asked, the approval now stands and
-  the officers are emailed to refund the rest another way, rather than the
-  request going back for a second approval that could refund the same money
-  twice. The refund appeals screen now says when part of an approved refund is
-  queued for retry, and its **Refunded** figure is what was actually refunded.
+  not be queued after the card provider was asked, the approval now stands,
+  rather than the request going back for a second approval that could refund
+  the same money twice: the officers are emailed, and the request's notes say,
+  which part the provider refused (refund it another way) and which got no
+  answer (it may have gone back, so check the payment with the card provider
+  first). The refund appeals screen says what an approved refund still owes -
+  queued for retry, out of retries, not queued, or by bank transfer - and its
+  **Refunded** figure is what was actually refunded.

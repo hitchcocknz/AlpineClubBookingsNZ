@@ -1237,7 +1237,7 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
   - **A cancellation** re-plans its pre-persisted row, only while PENDING with
     no attempt.
   - **A refund request** queues its whole plan; once Stripe was asked, the
-    approval stands (#4117).
+    approval stands; unqueued cents split refused/unanswered (#4117).
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
     it holds and fails it.
   - **A slice made beside a refusal stays, marked** (`madeRefundId`): never
@@ -1253,7 +1253,7 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
     refusal (#4103); a refund accepted (`pending`) and failed later is not
     re-owed.
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
-    the doors' `own-card-refund-outcome` states, `booking-cancel.test.ts`,
+    `own-card-refund-outcome`, `booking-cancel.test.ts`,
     `admin-refund-request-review-route.test.ts`,
     `refunds-and-credits-owed.test.ts` and
     `refused-card-refund-retry.realdb.test.ts`.

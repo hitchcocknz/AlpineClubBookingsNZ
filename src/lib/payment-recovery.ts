@@ -1222,9 +1222,7 @@ async function alertPaymentRecoveryFailure(
   await alertPaymentRecoveryOfficers({
     bookingId: operation.bookingId,
     operationId: operation.id,
-    // #4117: a card refund's slices Stripe already made (marked in its plan)
-    // are not part of what failed; the amount keeps them.
-    amountCents: cardRefundOperationUnmadeCents(operation),
+    amountCents: cardRefundOperationUnmadeCents(operation), // #4117: not a card refund's slices Stripe made
     errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempts: ${message}`,
     paymentIntentId: operation.paymentIntentId,
   }, format);
