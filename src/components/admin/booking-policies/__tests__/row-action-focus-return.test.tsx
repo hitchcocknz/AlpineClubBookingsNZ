@@ -86,7 +86,15 @@ function stubWrite(before: unknown[], after: unknown[], written: unknown) {
       });
     }),
   );
-  return { release: () => release() };
+  return { release: () => release(), wrote: () => wrote };
+}
+
+/** Let the write's own response, and everything it schedules, finish first. */
+async function settleAfter(wrote: () => boolean) {
+  await waitFor(() => expect(wrote()).toBe(true));
+  for (let turn = 0; turn < 3; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 /** Operate a control the way a keyboard user does: it holds focus first. */
@@ -188,11 +196,14 @@ describe("BookingPeriodsSection returns focus after a row write (#4116)", () => 
   });
 
   it("returns to the next row's Delete after a Delete", async () => {
-    const { release } = stubWrite([A, B, C], [A, C], {});
+    const { release, wrote } = stubWrite([A, B, C], [A, C], {});
     render(<BookingPeriodsSection />);
     await screen.findByText("Term Two");
     const del = buttons("Delete")[1];
     press(del);
+    // The refresh lands well after the delete: a return that did not wait for
+    // it would fire while the deleted row was still on screen.
+    await settleAfter(wrote);
     release();
 
     await waitFor(() => expect(screen.queryByText("Term Two")).toBeNull());
