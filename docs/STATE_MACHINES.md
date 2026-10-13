@@ -2125,6 +2125,16 @@ refunds are booked as made, so not repaying is the treasurer's correction.
 See
 [`INV-PAY-124`](invariants/payment-and-settlement.md#inv-pay-124).
 
+**#4097: so does a card cancellation's refund shortfall.** An own-card cancel
+whose frozen card refund plan carries less than the refund due raises the task
+OPEN for the difference inside its claim, keyed one per booking. It is a
+cancellation's own hand-back: completed or dismissed as the cash cancel's, with
+no `lock(1)`, except that its completion posts its `BANK_REFUND` line on the
+card payment, which no refund row will post. A zero plan raises the whole
+refund; where the payment's ledger has nothing left to allocate, COMPLETED is
+refused and the treasurer dismisses it with a note. See
+[`INV-PAY-129`](invariants/payment-and-settlement.md#inv-pay-129).
+
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row
 cannot. Nothing about the RAISE changed with it - the raise still never reopens,

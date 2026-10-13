@@ -3181,6 +3181,16 @@ raise also matches this task's `lateCaptureApprovalIntentId`, so whichever write
 second finds the first's row. From the cron it runs after the operation's claim and
 outside any other transaction, so it composes with nothing.
 
+**#4097 adds a second create inside the paid cancel's own claim, and no key.**
+When an own-card cancel's frozen card refund plan carries less than the refund
+due, `raiseCancelCardShortfallHandBack` inserts the hand-back for the rest in
+the claim transaction, after the plan's recovery row, under the locks the claim
+already holds (`lock(1)`, the lodge key, the member's credit-ledger key, the
+`Payment` row), in that order. It is an insert on no conflict under a unique
+`occurrenceKey`, not a find-then-create, and the claim's status flip is already
+single-flight, so it needs nothing more. Its completion is a cancellation
+hand-back's, taking no key (`INV-PAY-129`).
+
 The middle read is a **refund fence**, and it is why the read must be inside
 this lock rather than beside it. The transaction row for this intent is re-read
 under the key and the raise is skipped when Stripe has already refunded the
