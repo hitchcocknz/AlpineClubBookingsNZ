@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 
 import logger from "@/lib/logger";
+import { bookingOwner } from "@/lib/booking-owner";
 import { prisma } from "@/lib/prisma";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { getDefaultLodgeId } from "@/lib/lodges";
@@ -356,7 +357,7 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
         // before anything is written. The officer is pointed at the finder.
         if (
           await checkOwnDependantIdentityForParty(tx, {
-            bookerMemberId: booking.memberId,
+            bookerMemberId: bookingOwner(booking).memberId,
             party: officerGuests,
             memberPathMemberIds: claimedMemberPathIds(officerGuests),
           })
