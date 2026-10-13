@@ -2130,7 +2130,8 @@ whose frozen card refund plan carries less than the refund due raises the task
 OPEN for the difference inside its claim, keyed one per booking. It is a
 cancellation's own hand-back: completed or dismissed as the cash cancel's, with
 no `lock(1)`, except that its completion posts its `BANK_REFUND` line on the
-card payment, which no refund row will post. A zero plan raises the whole
+card payment, which no refund row will post, and queues one Xero refund note
+of its own, keyed on the task, instead of the payment-wide one. A zero plan raises the whole
 refund; where the payment's ledger has nothing left to allocate, COMPLETED is
 refused and the treasurer dismisses it with a note. See
 [`INV-PAY-129`](invariants/payment-and-settlement.md#inv-pay-129).

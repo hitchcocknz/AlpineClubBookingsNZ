@@ -1600,9 +1600,9 @@ export function ManualRefundTaskQueue() {
                 because the payment&apos;s records disagree. The member has been
                 told the club will refund the rest by bank transfer. Check the
                 payment in Stripe first: if the member has not had the money,
-                pay it and mark it paid back; if it was refunded another way,
-                dismiss it with a note saying how. Record the bank transfer in
-                Xero by hand.
+                pay it and mark it paid back, which also raises its Xero refund
+                credit note; if it was refunded another way, dismiss it with a
+                note saying how.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (

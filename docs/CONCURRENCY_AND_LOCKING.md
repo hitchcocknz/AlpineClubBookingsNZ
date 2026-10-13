@@ -3189,7 +3189,9 @@ already holds (`lock(1)`, the lodge key, the member's credit-ledger key, the
 `Payment` row), in that order. It is an insert on no conflict under a unique
 `occurrenceKey`, not a find-then-create, and the claim's status flip is already
 single-flight, so it needs nothing more. Its completion is a cancellation
-hand-back's, taking no key (`INV-PAY-129`).
+hand-back's, taking no key; its own Xero refund note is an outbox row queued
+inside the completion transaction, after the `Payment` row lock, with no
+provider call (`INV-PAY-129`).
 
 The middle read is a **refund fence**, and it is why the read must be inside
 this lock rather than beside it. The transaction row for this intent is re-read

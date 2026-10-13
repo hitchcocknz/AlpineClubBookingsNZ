@@ -1260,14 +1260,13 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
 **`INV-PAY-128`** (a card refund Stripe refuses).
 
 - **What an own-card cancel's card refund plan cannot carry is owed by hand**
-  (#4097). The plan covers what the payment's captured Stripe charges can
-  still refund; the policy's refund comes from the payment record. Where they
-  disagree, the rest is not only logged.
+  (#4097). The plan covers what the captured Stripe charges can still
+  refund; the policy's refund comes from the payment record.
   - **The claim raises one `CANCELLED_BOOKING_HAND_BACK`** for the
     difference, beside the plan's recovery row and under the claim's locks,
     keyed `cancel-card-shortfall:<bookingId>` and inserted on no conflict
-    (`raiseCancelCardShortfallHandBack`). Its amount is fixed at creation. A
-    zero plan raises the whole refund.
+    (`raiseCancelCardShortfallHandBack`), its amount fixed. A zero plan raises
+    the whole refund.
   - **While OPEN it is owed**: "Refunds owed", off Net Collected, the
     money-to-settle queue. Officers are alerted once after the commit
     (`card-refund-shortfall`).
@@ -1280,14 +1279,17 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
     `BANK_REFUND` posts on the card payment, which no refund row will post
     (`INV-MONEY-035`). Where the ledger has nothing left to allocate, the
     completion is refused; the treasurer dismisses it with a note.
-  - **Stated limit**: on a card payment the completion's Xero note is sized by
-    Stripe's cash evidence, so a bank-transfer remainder usually gets none and
-    is recorded in Xero by hand.
+  - **Its Xero note is its own**: one bank-transfer refund note for exactly
+    the task's amount, keyed on the task as a "Paid another way" close's
+    (`INV-PAY-122`), never the payment-wide one; none without an invoice. The
+    note pipeline reads it as that close's bank cash, so no card note answers
+    it.
   - Proven by `booking-cancel.test.ts`,
     `booking-cancelled-card-shortfall-email.test.ts`,
     `cancel-booking-button.test.tsx`, `refunds-and-credits-owed.test.ts`,
     `booking-ledger-hand-back.test.ts`, `manual-refund-task.test.ts`,
-    `booking-ledger-projection-census.test.ts` and
+    `booking-ledger-projection-census.test.ts`,
+    `stripe-cash-refund-evidence.test.ts` and
     `cancel-card-refund-shortfall.realdb.test.ts`.
 
 ## INV-PAY-031

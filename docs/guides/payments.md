@@ -272,9 +272,11 @@ the member has not had that money back, pay it by bank transfer and mark the
 task paid back, which records the refund on the payment and the booking
 ledger. If it was already refunded another way (for example from the Stripe
 dashboard), dismiss it with a note saying how; the app also refuses to mark it
-paid back when the payment's records show nothing left to refund. The app
-does not raise a Xero refund credit note for this bank transfer: record that
-refund in Xero by hand.
+paid back when the payment's records show nothing left to refund. Marking it
+paid back also queues one Xero refund credit note for exactly the task's
+amount, worded as a bank transfer, beside the card refund's own note; nothing
+needs recording in Xero by hand. A booking with no Xero invoice to credit gets
+no note.
 
 A club that has customised the **Manual refund needed** message keeps its own
 wording for this email too. Add `{{handBackNote}}` to the body (and keep

@@ -9,9 +9,10 @@
   "Refunds owed", and the treasurer is emailed once. The email and the cancel
   screen name what went to the card and say the club will refund the rest by
   bank transfer. The card refund's booking history and its Xero refund credit
-  note are for what the card actually refunded.
+  note are for what the card actually refunded. Marking the task paid back
+  raises one Xero refund credit note for exactly that amount, worded as a bank
+  transfer, so Xero shows both parts of the refund.
 
   For treasurers: check the payment in Stripe. If the member has not had the
-  money, pay it by bank transfer, mark the task paid back, and record that
-  refund in Xero by hand (the app raises no Xero note for it). If it was
+  money, pay it by bank transfer and mark the task paid back. If it was
   already refunded another way, dismiss the task with a note.
