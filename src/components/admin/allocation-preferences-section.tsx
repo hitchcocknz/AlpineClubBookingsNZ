@@ -325,7 +325,8 @@ export function AllocationPreferencesSection({
       />
       {/* The reveal target, so it is a NAMED region rather than a bare card: a
           keyboard or screen-reader user who presses Edit is moved here, and
-          without a role and a name all they are told is "group". The name is
+          without a role and a name all they are told is "group". The role and
+          the name come from the hook's `sectionRegionProps` / `titleProps`:
           `aria-labelledby` on the visible title rather than an `aria-label`
           repeating its words, so the two cannot drift (`INV-SSOT-001`), and
           `tabIndex` is declarative so React owns it instead of the primitive
@@ -336,14 +337,13 @@ export function AllocationPreferencesSection({
           definition of it. Declare one only to OVERRIDE the default, as the
           taller Xero section cards do. */}
       <Card
+        {...section.sectionRegionProps}
         ref={cardRef}
-        role="region"
-        aria-labelledby="allocation-preferences-title"
         tabIndex={-1}
         className="focus:outline-none"
       >
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle id="allocation-preferences-title" className="text-base">
+          <CardTitle {...section.titleProps} className="text-base">
             Allocation preferences
           </CardTitle>
           {draft && !section.editing ? (
@@ -353,6 +353,7 @@ export function AllocationPreferencesSection({
               variant="outline"
               size="sm"
               onClick={section.startEditing}
+              {...section.editTriggerProps}
             >
               Edit
             </ViewOnlyActionButton>

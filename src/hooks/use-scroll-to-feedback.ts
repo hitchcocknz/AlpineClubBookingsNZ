@@ -1,11 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 
 /**
  * THE ONE HOME FOR "WHERE DOES THE ADMIN'S ATTENTION GO AFTER AN ACTION" (#2934).
  *
- * An admin action ends in one of three places, and each has one primitive here:
+ * An admin action ends in one of four places, and each has one primitive here:
  *
  *  - **failure** → `scrollToError`: the actionable message or invalid control
  *    takes focus and comes into view. Failure always wins over success.
@@ -15,12 +23,20 @@ import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
  *  - **success / step transition** → `scrollToTop`: the resulting page, card or
  *    step is positioned at its top and takes focus, so the confirmation and the
  *    new state are what a keyboard or screen-reader user lands on.
+ *  - **return** → `returnFocus`: closing an editor (Save, Cancel) or failing a
+ *    save in a way that dropped focus to the page hands it back to where the
+ *    action started — the Edit button, the re-enabled Save, or the section
+ *    around them — and moves nothing otherwise (#4087). It acts only while
+ *    focus is on the page, so a failure or success position taken in the same
+ *    commit still wins.
  *
  * Passive updates — a background refresh, a poll, a re-render with the same
  * message — move nothing. The hooks below encode that: `useActionAttention` fires
  * only when a message ARRIVES and refuses the success position while a failure
  * is showing; `useRevealAttention` fires only when its explicit-action key
- * changes.
+ * changes; `useReturnAttention` (and `useEditorFocusReturn`, which wraps it for
+ * a surface that opens and closes its own editor) fires only when its close
+ * key changes, and consumes what it was given.
  *
  * Every scroll in this module honours `prefers-reduced-motion` through
  * `resolveScrollBehavior`, and every focus is applied with `preventScroll` first
@@ -52,8 +68,11 @@ type ElementRef = RefObject<HTMLElement | null>;
 type ScrollContainerTarget = HTMLElement | ElementRef | null | undefined;
 type ScrollErrorTarget = HTMLElement | ElementRef | string | null | undefined;
 
-/** Where the target lands in the viewport: under the sticky header, or centred. */
-export type AttentionBlock = "start" | "center";
+/**
+ * Where the target lands in the viewport: under the sticky header, centred, or
+ * — for a return to where the admin already was — wherever it moves least.
+ */
+export type AttentionBlock = "start" | "center" | "nearest";
 
 export interface AttentionOptions {
   /** Defaults to `"start"`; the recovery alerts centre themselves. */
@@ -159,15 +178,17 @@ function ensureFocusable(element: HTMLElement) {
  *    because their collapsible header is taller than the ordinary one, and
  *    `use-xero-connection.ts` reveals exactly those cards. Ask for the COMPUTED
  *    value, which a class reaches.
- *  - The margin is sticky-header clearance, which only means anything for
- *    `block: "start"`. Under `block: "center"` it shifts the centre up by half
- *    of itself, so every centred recovery alert would land lower than it asked.
+ *  - The margin is sticky-header clearance, which means something for
+ *    `block: "start"` and for `"nearest"` (a target scrolled DOWN into view
+ *    lands at the top edge, under the header). Under `block: "center"` it
+ *    shifts the centre up by half of itself, so every centred recovery alert
+ *    would land lower than it asked.
  */
 function applyStickyHeaderClearance(
   element: HTMLElement,
   block: AttentionBlock,
 ) {
-  if (block !== "start") return;
+  if (block === "center") return;
   const declared =
     (typeof window !== "undefined" &&
     typeof window.getComputedStyle === "function"
@@ -280,6 +301,146 @@ export function revealEditor(target: ScrollContainerTarget) {
   const element = resolveElement(target);
   if (!element) return;
   focusAndReveal(element, "start");
+}
+
+/**
+ * The data attributes that let a return find its target again after a render
+ * replaced it (#4087). A staged section renders Edit only while read-only, so
+ * the button that opened the editor is gone by the time it closes; the one
+ * rendered in its place carries the same per-instance marker. Each value comes
+ * from `useId`, so two sections — or two open at once — never share one.
+ */
+export const RETURN_FOCUS_TRIGGER_ATTRIBUTE = "data-return-focus-trigger";
+export const RETURN_FOCUS_REGION_ATTRIBUTE = "data-return-focus-region";
+
+/**
+ * Where a return falls back to when its trigger is gone: a marked section, a
+ * landmark, or the page's main region. Shared with the bed-allocation dialogs,
+ * which fall back to the same places when their trigger chip has gone.
+ */
+export const MAIN_REGION_SELECTOR = 'main, [role="main"]';
+export const RETURN_FOCUS_REGION_SELECTOR = `[${RETURN_FOCUS_REGION_ATTRIBUTE}], section, [role="region"], ${MAIN_REGION_SELECTOR}`;
+
+/** What {@link captureFocusReturn} recorded when an editor was opened. */
+export interface FocusReturnAnchor {
+  /** The element focused at capture, or `null` when nothing was. */
+  trigger: HTMLElement | null;
+  /** The marker the trigger's re-rendered replacement carries. */
+  triggerId?: string;
+  /** The marker on the section to fall back to. */
+  regionId?: string;
+  /** The nearest {@link RETURN_FOCUS_REGION_SELECTOR} around the trigger at capture. */
+  region: HTMLElement | null;
+}
+
+function isPageRoot(element: Element | null) {
+  return (
+    !element ||
+    element === document.body ||
+    element === document.documentElement
+  );
+}
+
+function byMarker(attribute: string, id: string | undefined) {
+  if (!id) return null;
+  const match = Array.from(document.querySelectorAll(`[${attribute}]`)).find(
+    (element) => element.getAttribute(attribute) === id,
+  );
+  return isHTMLElement(match) ? match : null;
+}
+
+/**
+ * Focus `target` if it is mounted, and report whether focus actually LANDED —
+ * a disabled, `inert` or hidden element silently refuses it, and the caller's
+ * next fallback is only reached by asking.
+ *
+ * By default a non-focusable target gets `tabindex="-1"` only for the call
+ * (the bed-allocation dialogs' behaviour, which leaves no attribute behind).
+ * `keepTabIndex` leaves it in place, as every other primitive here does, so a
+ * region keeps the focus it was given.
+ */
+export function focusConnectedTarget(
+  target: HTMLElement | null | undefined,
+  { keepTabIndex = false }: { keepTabIndex?: boolean } = {},
+): boolean {
+  if (!target?.isConnected) return false;
+  const hadTabIndex = target.hasAttribute("tabindex");
+  ensureFocusable(target);
+  target.focus({ preventScroll: true });
+  if (!hadTabIndex && !keepTabIndex) target.removeAttribute("tabindex");
+  return document.activeElement === target;
+}
+
+/**
+ * Record the focused element, and the markers to find its replacement and its
+ * section by, as the place to return to. Call it from the explicit action that
+ * opens the editor (or starts a save), before the render that unmounts the
+ * control holding focus.
+ *
+ * With nothing focused — a mouse click in a browser that does not focus
+ * buttons — the markers alone still lead back to the section's Edit; with no
+ * markers either there is nothing to return to, and it returns `null`.
+ */
+// test seam
+export function captureFocusReturn(
+  markers: { triggerId?: string; regionId?: string } = {},
+): FocusReturnAnchor | null {
+  if (typeof document === "undefined") return null;
+  const active = document.activeElement;
+  const trigger = isHTMLElement(active) && !isPageRoot(active) ? active : null;
+  if (!trigger && !markers.triggerId && !markers.regionId) return null;
+  const region = trigger?.closest(RETURN_FOCUS_REGION_SELECTOR) ?? null;
+  return {
+    trigger,
+    triggerId: markers.triggerId,
+    regionId: markers.regionId,
+    region: isHTMLElement(region) ? region : null,
+  };
+}
+
+function focusAndKeepInView(target: HTMLElement | null) {
+  if (!target?.isConnected) return false;
+  applyStickyHeaderClearance(target, "nearest");
+  if (!focusConnectedTarget(target, { keepTabIndex: true })) return false;
+  if (typeof target.scrollIntoView === "function") {
+    target.scrollIntoView({ behavior: resolveScrollBehavior(), block: "nearest" });
+  }
+  return true;
+}
+
+/**
+ * RETURN. Hand focus back to where an editor was opened from when closing it
+ * dropped focus to the page. Each candidate is tried in turn and the first
+ * that actually TAKES focus wins: the original trigger if it is still mounted,
+ * its marked replacement, the marked section, then the section around the
+ * trigger at capture. A disabled Edit (a view-only admin) refuses focus, so the
+ * section takes it — a region named by its own title, which the section
+ * declares through `regionProps` / `titleProps` rather than this module
+ * writing names into the DOM.
+ *
+ * It moves nothing while focus is anywhere else — a failure or success
+ * position another primitive already took, or a control the admin moved to
+ * while a save was in flight — and nothing when the page itself is all that
+ * is left. The scroll is `block: "nearest"`: the target is where the admin
+ * left it, so it moves only as far as it must to be on screen.
+ */
+// test seam
+export function returnFocus(anchor: FocusReturnAnchor | null) {
+  if (!anchor || typeof document === "undefined") return;
+  if (!isPageRoot(document.activeElement)) return;
+  if (focusAndKeepInView(anchor.trigger)) return;
+  if (
+    focusAndKeepInView(byMarker(RETURN_FOCUS_TRIGGER_ATTRIBUTE, anchor.triggerId))
+  ) {
+    return;
+  }
+  for (const region of [
+    byMarker(RETURN_FOCUS_REGION_ATTRIBUTE, anchor.regionId),
+    anchor.region,
+  ]) {
+    if (!region?.isConnected || isPageRoot(region)) continue;
+    if (focusAndKeepInView(region)) return;
+  }
 }
 
 export function useScrollToFeedback() {
@@ -410,4 +571,82 @@ export function useRevealAttention(
     if (!revealKey) return;
     revealEditor(target);
   }, [revealKey, target]);
+}
+
+/**
+ * Return focus when — and only when — an explicit action closed an editor.
+ *
+ * The counterpart of {@link useRevealAttention}: `anchorRef` holds what
+ * {@link captureFocusReturn} recorded when the editor opened, and `returnKey`
+ * counts the closes. Each close CONSUMES the anchor, so a later close with no
+ * fresh open behind it moves nothing.
+ */
+export function useReturnAttention(
+  anchorRef: RefObject<FocusReturnAnchor | null>,
+  returnKey: number,
+) {
+  useEffect(() => {
+    if (!returnKey) return;
+    const recorded = anchorRef.current;
+    anchorRef.current = null;
+    returnFocus(recorded);
+  }, [anchorRef, returnKey]);
+}
+
+/**
+ * Everything a surface needs to return focus from an editor it opens and
+ * closes itself — `useSectionEditState` uses it for Edit, and a list section
+ * whose per-row editor is its own component uses it directly.
+ *
+ *  - `capture(key)` from the action that opens the editor;
+ *  - `close()` from every user action that closes it (Cancel, a successful
+ *    save, a save conflict that closes the stale editor) — never from a scope
+ *    change or a background refresh, which are not the admin leaving it;
+ *  - `triggerProps(key)` on an opening control that is NOT mounted while the
+ *    editor is open (Edit, Add), so its replacement can be found; a control
+ *    that stays mounted (a per-row Edit) is returned to directly;
+ *  - `regionProps` on the section's card, the fallback when the trigger is
+ *    gone or disabled. It makes the card a `region` named by `titleProps`,
+ *    which goes on the card's visible title, so a keyboard user who lands on
+ *    the card hears its name rather than "group" (#2934) — or, for a card with
+ *    no visible title of its own, by `regionLabel`.
+ */
+export function useEditorFocusReturn({
+  regionLabel,
+}: { regionLabel?: string } = {}) {
+  const id = useId();
+  const titleId = `${id}title`;
+  const anchorRef = useRef<FocusReturnAnchor | null>(null);
+  const [closeKey, setCloseKey] = useState(0);
+  useReturnAttention(anchorRef, closeKey);
+
+  const capture = useCallback(
+    (key = "edit") => {
+      anchorRef.current = captureFocusReturn({
+        triggerId: `${id}${key}`,
+        regionId: id,
+      });
+    },
+    [id],
+  );
+  const close = useCallback(() => setCloseKey((count) => count + 1), []);
+  const triggerProps = useCallback(
+    (key = "edit") => ({ [RETURN_FOCUS_TRIGGER_ATTRIBUTE]: `${id}${key}` }),
+    [id],
+  );
+  const regionProps = useMemo(
+    () => ({
+      [RETURN_FOCUS_REGION_ATTRIBUTE]: id,
+      role: "region" as const,
+      ...(regionLabel
+        ? { "aria-label": regionLabel }
+        : { "aria-labelledby": titleId }),
+    }),
+    [id, regionLabel, titleId],
+  );
+  const titleProps = useMemo(() => ({ id: titleId }), [titleId]);
+  return useMemo(
+    () => ({ capture, close, triggerProps, regionProps, titleProps }),
+    [capture, close, triggerProps, regionProps, titleProps],
+  );
 }

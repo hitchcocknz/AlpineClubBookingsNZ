@@ -413,9 +413,9 @@ export function PublicBookingRequestsSection() {
     property the module-toggle cards on `/admin/security` have. Be precise about
     what does and does not follow from it:
 
-      - `startEditing` is `setEditing(true)` and NOTHING else. Opening a card
-        does not re-fetch, so clicking Edit does not resolve the staleness. The
-        boxes an admin starts typing into can already be out of date.
+      - `startEditing` opens the card (and notes focus for #4087) and NOTHING
+        else. Opening a card does not re-fetch, so clicking Edit does not
+        resolve the staleness. The boxes an admin types into may be stale.
       - What keeps that from becoming a WRITE is the per-field patch: a stale
         box the admin never touched is not in the PUT body at all, so it cannot
         revert anyone. Only a field they actually changed is written, and that
@@ -541,10 +541,10 @@ export function PublicBookingRequestsSection() {
         <div className="text-center py-8">Loading...</div>
       ) : (
       <div className="space-y-6">
-        <Card>
+        <Card {...pricing.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>Indicative Pricing</CardTitle>
+              <CardTitle {...pricing.titleProps}>Indicative Pricing</CardTitle>
               <CardDescription>
                 Control whether the public booking request form shows indicative pricing to non-members.
               </CardDescription>
@@ -569,7 +569,7 @@ export function PublicBookingRequestsSection() {
                 variant="outline"
                 size="sm"
                 aria-label="Edit indicative pricing"
-                onClick={pricing.startEditing}
+                onClick={pricing.startEditing} {...pricing.editTriggerProps}
                 disabled={busy}
               >
                 Edit
@@ -625,10 +625,10 @@ export function PublicBookingRequestsSection() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card {...quoteTiming.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>Quote Response Window &amp; Reminders</CardTitle>
+              <CardTitle {...quoteTiming.titleProps}>Quote Response Window &amp; Reminders</CardTitle>
               <CardDescription>
                 Set how long a quote link stays valid after you send it, and when the requester is reminded
                 before it expires.
@@ -642,7 +642,7 @@ export function PublicBookingRequestsSection() {
                 variant="outline"
                 size="sm"
                 aria-label="Edit quote timing"
-                onClick={quoteTiming.startEditing}
+                onClick={quoteTiming.startEditing} {...quoteTiming.editTriggerProps}
                 disabled={busy}
               >
                 Edit
@@ -731,10 +731,10 @@ export function PublicBookingRequestsSection() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card {...attendeeTiming.sectionRegionProps}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>School Attendee Confirmation</CardTitle>
+              <CardTitle {...attendeeTiming.titleProps}>School Attendee Confirmation</CardTitle>
               <CardDescription>
                 Before a school group arrives, the school contact is emailed a secure link to replace the
                 placeholder attendee names and confirm who is coming. The chore roster uses the confirmed
@@ -749,7 +749,7 @@ export function PublicBookingRequestsSection() {
                 variant="outline"
                 size="sm"
                 aria-label="Edit attendee prompts"
-                onClick={attendeeTiming.startEditing}
+                onClick={attendeeTiming.startEditing} {...attendeeTiming.editTriggerProps}
                 disabled={busy}
               >
                 Edit

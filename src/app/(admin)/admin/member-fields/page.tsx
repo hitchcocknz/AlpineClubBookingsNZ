@@ -174,11 +174,11 @@ export default function AdminMemberFieldsPage() {
   return (
     <div>
       {viewOnlyBanner}
-      <div ref={pageRef} className="space-y-8">
+      <div {...section.sectionRegionProps} ref={pageRef} className="space-y-8">
         <BackLink href="/admin/membership-setup" label="Membership & Members" />
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Member fields</h1>
+            <h1 {...section.titleProps} className="text-2xl font-bold text-foreground">Member fields</h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               Choose which optional member fields the club collects and displays.
               Turn a field off to avoid collecting data the club does not need.
@@ -203,6 +203,7 @@ export default function AdminMemberFieldsPage() {
                 variant="outline"
                 aria-label="Edit member fields"
                 onClick={section.startEditing}
+                {...section.editTriggerProps}
                 disabled={draft === null}
               >
                 <Pencil className="mr-2 h-4 w-4" />

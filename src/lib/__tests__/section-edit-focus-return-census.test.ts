@@ -1,0 +1,156 @@
+// Every staged section wires its focus return (#4087, `INV-SSOT-001`).
+//
+// `useSectionEditState` returns focus after Save or Cancel by itself, but the
+// Edit it returns to is unmounted while the editor is open, so the one rendered
+// in its place is found by the per-instance marker in `editTriggerProps`; the
+// section to fall back to is marked, and made a named region, by
+// `sectionRegionProps`; and that name comes from the title carrying
+// `titleProps` (or from `regionLabel`, for a card with no visible title). A
+// section that forgets any of them still works — focus falls back to the
+// nearest landmark, or lands on an unnamed region — so nothing else would
+// notice. This census does. A list whose per-row editor is its own component
+// owns the return through `useEditorFocusReturn` instead, and is held to the
+// same wiring.
+//
+// The adopter lists are PINNED: a new adopter fails here until it is added,
+// which is the moment to check its wiring by eye as well as by this scan.
+//
+// It reads the tree from disk, so `pnpm run test:related` cannot reach it — run
+// it by name (`pnpm run test:named`) when a section adopts either hook.
+
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+import { stripComments } from "@/lib/__tests__/support/strip-comments";
+
+const SECTION_EDIT_ADOPTERS = [
+  "src/app/(admin)/admin/backups/backups-client.tsx",
+  "src/app/(admin)/admin/backups/local-backup-card.tsx",
+  "src/app/(admin)/admin/lodges/[id]/_components/lodge-roster-settings-card.tsx",
+  "src/app/(admin)/admin/member-fields/page.tsx",
+  "src/app/(admin)/admin/video-meetings/setup/video-meetings-setup.tsx",
+  "src/components/admin/allocation-preferences-section.tsx",
+  "src/components/admin/analytics-integration-card.tsx",
+  "src/components/admin/booking-policies/adult-member-hosting-section.tsx",
+  "src/components/admin/booking-policies/default-cancellation-policy-section.tsx",
+  "src/components/admin/booking-policies/group-discount-section.tsx",
+  "src/components/admin/booking-policies/public-booking-requests-section.tsx",
+  "src/components/admin/club-identity-panel.tsx",
+  "src/components/admin/club-posts/club-post-retention-section.tsx",
+  "src/components/admin/google-security-card.tsx",
+  "src/components/admin/magic-link-security-card.tsx",
+  "src/components/admin/maintenance/maintenance-questions-section.tsx",
+  "src/components/admin/maintenance/maintenance-settings-section.tsx",
+  "src/components/admin/member-guest-settings-card.tsx",
+  "src/components/admin/roster-editor.tsx",
+  "src/components/admin/school-hut-leader-kinds-card.tsx",
+  "src/components/admin/security/password-policy-card.tsx",
+];
+
+const LIST_EDITOR_ADOPTERS = [
+  "src/components/admin/booking-policies/booking-periods-section.tsx",
+  "src/components/admin/booking-policies/minimum-night-stay-section.tsx",
+];
+
+const FAILURE =
+  "INV-SSOT-001 / #4087: focus after Save or Cancel goes through the one " +
+  "return primitive in `src/hooks/use-scroll-to-feedback.ts`. Spread " +
+  "`editTriggerProps` on the section's Edit, `sectionRegionProps` on its card " +
+  "and `titleProps` on the card's title (or pass `regionLabel` when the card " +
+  "has no visible title); a list editor wires `useEditorFocusReturn`'s " +
+  "`capture`, `close`, `triggerProps`, `regionProps` and `titleProps`.";
+
+function trackedSources(): string[] {
+  const listing = execFileSync("git", ["ls-files", "-z", "src"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return listing
+    .split("\0")
+    .filter(Boolean)
+    .filter((file) => file.endsWith(".tsx"))
+    .filter((file) => !file.includes("__tests__/") && !/\.test\.tsx$/.test(file))
+    .sort();
+}
+
+function read(file: string) {
+  return stripComments(fs.readFileSync(path.join(process.cwd(), file), "utf8"));
+}
+
+function escape(name: string) {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function uses(source: string, name: string, member: string) {
+  return new RegExp(`\\b${escape(name)}\\.${member}\\b`).test(source);
+}
+
+/** Each `const x = useSectionEditState…` whose editor the section opens. */
+function editableInstances(source: string): string[] {
+  return [...source.matchAll(/const\s+(\w+)\s*=\s*useSectionEditState\b/g)]
+    .map((match) => match[1])
+    .filter((name) => uses(source, name, "startEditing"));
+}
+
+/** Each `const x = useEditorFocusReturn(…)`. */
+function listEditorInstances(source: string): string[] {
+  return [...source.matchAll(/const\s+(\w+)\s*=\s*useEditorFocusReturn\b/g)].map(
+    (match) => match[1],
+  );
+}
+
+describe("staged sections wire their focus return (#4087)", () => {
+  const sources = trackedSources().map((file) => ({ file, source: read(file) }));
+
+  const sectionAdopters = sources.filter(
+    ({ source }) => editableInstances(source).length > 0,
+  );
+  // `.tsx` only: the hook's own use of it (`use-section-edit-state.ts`) is the
+  // shared implementation, not an adopter.
+  const listAdopters = sources.filter(
+    ({ source }) => listEditorInstances(source).length > 0,
+  );
+
+  it("finds exactly the pinned useSectionEditState adopters", () => {
+    expect(
+      sectionAdopters.map(({ file }) => file),
+      `${FAILURE} A new adopter belongs in SECTION_EDIT_ADOPTERS.`,
+    ).toEqual(SECTION_EDIT_ADOPTERS);
+  });
+
+  it("finds exactly the pinned useEditorFocusReturn list editors", () => {
+    expect(
+      listAdopters.map(({ file }) => file),
+      `${FAILURE} A new list editor belongs in LIST_EDITOR_ADOPTERS.`,
+    ).toEqual(LIST_EDITOR_ADOPTERS);
+  });
+
+  it("spreads the trigger, region and title props for every section instance that opens an editor", () => {
+    const missing = sectionAdopters.flatMap(({ file, source }) =>
+      editableInstances(source).flatMap((name) => {
+        const gaps = ["editTriggerProps", "sectionRegionProps"].filter(
+          (member) => !uses(source, name, member),
+        );
+        if (!uses(source, name, "titleProps") && !/\bregionLabel\s*:/.test(source)) {
+          gaps.push("titleProps (or regionLabel)");
+        }
+        return gaps.map((gap) => `${file}: ${name}.${gap}`);
+      }),
+    );
+    expect(missing, FAILURE).toEqual([]);
+  });
+
+  it("wires capture, close and every prop for each list editor", () => {
+    const missing = listAdopters.flatMap(({ file, source }) =>
+      listEditorInstances(source).flatMap((name) =>
+        ["capture", "close", "triggerProps", "regionProps", "titleProps"]
+          .filter((member) => !uses(source, name, member))
+          .map((member) => `${file}: ${name}.${member}`),
+      ),
+    );
+    expect(missing, FAILURE).toEqual([]);
+  });
+});
