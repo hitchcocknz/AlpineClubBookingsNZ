@@ -2551,7 +2551,6 @@ export async function modifyBookingBatch({
       format,
       bookingId,
       result,
-      metadataReason: "batch_modification",
       idempotencyKeyPrefix: `mod_batch_refund_${bookingId}`,
       failureMessage: "Stripe refund failed after batch modification - enqueueing recovery",
       recoveryFailureMessage:

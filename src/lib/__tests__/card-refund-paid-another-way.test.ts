@@ -1030,6 +1030,11 @@ describe("#3924 round 4 (M7): a failure that may have reached Stripe is flagged"
     "statusCode: 503 Service Unavailable",
     "Charge ch_123 has already been refunded.",
     "Refund amount ($150.00) is greater than unrefunded amount on charge ($0.00)",
+    // #4101: Stripe's answer to a reused key with other parameters - the first
+    // request under it reached Stripe - as the worker records it, and wrapped.
+    "Keys for idempotent requests can only be used with the same parameters they were first used with. Try using a key other than 'guest_accept_refund_bk_mod_txn_4000' if you meant to execute a different request.",
+    "Refund failed after $10.00 was refunded and recorded: Keys for idempotent requests can only be used with the same parameters they were first used with.",
+    "idempotency_error",
   ])("%s", (lastError) => {
     expect(lastErrorSuggestsStripeMayHaveRefunded(lastError)).toBe(true);
   });
@@ -1042,6 +1047,8 @@ describe("#3924 round 4 (M7): a failure that may have reached Stripe is flagged"
     // F5: an amount is not a server error.
     "Refund of $500.00 failed: card_declined",
     "Refund of 512 cents declined",
+    // A different request error is not a sign the refund went through.
+    "Invalid request: parameters missing",
   ])(
     "not %s",
     (lastError) => {
