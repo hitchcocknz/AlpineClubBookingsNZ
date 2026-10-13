@@ -191,7 +191,7 @@ export function resolveBookingDetailPayment({
     booking.payment?.status !== "SUCCEEDED";
   // #3750: through the one home, so a change fee recorded on the payment is
   // part of what the page says is due.
-  const amountDueAfterCreditCents = Math.max(amountOwed.dueCents, 0);
+  const amountDueAfterCreditCents = amountOwed.dueCents; // floored at zero
   // #3955 review F8: a change fee recorded on an unpaid booking's payment is
   // owed with the price, so the card shows it as its own row and the
   // breakdown adds up to the amount due.

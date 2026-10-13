@@ -71,7 +71,7 @@ function project(booking: ReturnType<typeof cancelledMarkedPaid>, viewer = OFFIC
     party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
     // #3991: the page's one read of what is owed. No credit or fee is applied
     // to these bookings, so it is the price; the retained line does not read it.
-    amountOwed: { dueCents: booking.finalPriceCents, appliedCreditCents: 0 },
+    amountOwed: { owedCents: booking.finalPriceCents, dueCents: booking.finalPriceCents, appliedCreditCents: 0 },
   });
 }
 

@@ -38,12 +38,14 @@ function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }
       creditAppliedCents: payment.creditAppliedCents + 999,
     },
   };
+  const owedCents = bookingAmountOwedCents({
+    finalPriceCents: booking.finalPriceCents,
+    changeFeeCents: payment.changeFeeCents,
+    appliedCreditCents: payment.creditAppliedCents,
+  });
   const amountOwed = {
-    dueCents: bookingAmountOwedCents({
-      finalPriceCents: booking.finalPriceCents,
-      changeFeeCents: payment.changeFeeCents,
-      appliedCreditCents: payment.creditAppliedCents,
-    }),
+    owedCents,
+    dueCents: Math.max(0, owedCents),
     appliedCreditCents: payment.creditAppliedCents,
   };
   return resolveBookingDetailPayment({

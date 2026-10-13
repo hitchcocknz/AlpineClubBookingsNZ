@@ -1321,6 +1321,40 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
     read-only. Home: `organiser-child-refund.ts` and its executor; proven by
     `organiser-child-refund.realdb.test.ts`.
 
+## INV-PAY-123
+
+**Related: `INV-PAY-114`** (the combined-payment refund) and
+**`INV-PAY-118`** (the appeal approval it extends).
+
+- **An approved refund appeal on a booking the group organiser paid for by
+  card is refunded out of the organiser's combined payment, to the
+  organiser's card** (#3956; owner decision 13 Oct 2026). Such a booking has
+  no transaction of its own, so the ordinary appeal refunded $0 while
+  queuing a full Xero note and promising the money.
+  - **One cap** (`organiserCardAppealCap`): the room a child refund debt may
+    take, less what is already handed back; zero while the group cancel's
+    own combined refund is unmade. The approval reads it under `lock(1)`;
+    screens read it as advice (`organiserCardAppealCeilingFor`).
+  - **Refused past it, never clamped**: a 409 naming what can still be
+    refunded, or saying to decline, before the request is claimed.
+  - **The debt is written in the approval's transaction**, after the claim:
+    keyed `organiser_card_appeal_refund_<request>` (a prefix older workers
+    fail safe on), amount frozen. A taken key refuses; the claim rolls back.
+  - **Then `INV-PAY-114`'s executor runs it** after commit; a failure leaves
+    it owed for the recovery runner. The route plans no card refund and
+    queues no Xero note: the executor queues one once Stripe answers. No
+    booking event is written, as for any card appeal refund.
+  - **Both are emailed**, under the one notify choice: the joiner that the
+    refund went, or is on its way, to the organiser's card; the organiser
+    (`group-organiser-joiner-refund`) that it is being refunded to theirs,
+    unless the organiser is the joiner.
+  - **The ledger's kept figure stays the cancel's**: the group child planner
+    takes these debts back out of the child's refunds
+    (`organiserCardAppealRefundsFromRows`).
+  - Proven by `admin-refund-request-organiser-card.test.ts`,
+    `organiser-card-appeal-refund-key.test.ts` and
+    `organiser-child-refund.realdb.test.ts`.
+
 ## INV-PAY-105
 
 **Related: `INV-PAY-031`** (children total at apply) and **`INV-PAY-035`**
@@ -3015,20 +3049,19 @@ _Split from `INV-PAY-057` (#3220)._
 
 ## INV-PAY-119
 
-- **What a booking owes has one home: its worth less applied credit** (#3750;
-  owner decision of 7 Oct 2026, "Add fee to amount owed"). Worth is
-  `finalPriceCents` plus the payment's recorded change fee
+- **What a booking owes has one home: its worth less applied credit** (#3750).
+  Worth is `finalPriceCents` plus the payment's recorded change fee
   (`bookingWorthCents`, `recordedChangeFeeCents`). Every pay step reads
-  `bookingAmountOwedCents` or worth: the payment page, card intent, payment
-  link, its page and the booking page (nothing to pay at or below zero),
-  saved-card charge, internet-banking switch, confirm-payment and webhook
-  checks, settle,
-  officer's manual payment, a stored credit election's cap, a review share's
-  covered test and invoice reduction, and each joiner's group share and
-  invoice; confirmation emails quote worth. An edit's credit clamp,
-  zero-dollar decision and stale-intent comparison read worth; a guest's
-  acceptance nets credit to the price, its return route admitting only credit
-  and cash summing to it.
+  `bookingAmountOwedCents` or worth: saved-card charge, internet-banking
+  switch, confirm-payment and webhook checks, settle, officer's manual
+  payment, a stored credit election's cap, a review share's covered test and
+  invoice reduction, and each joiner's group share and invoice; confirmation
+  emails quote worth. Both card intents, the pay-link and booking pages
+  (nothing to pay at or below zero) and emails quoting what is owed
+  (exception-approved, pay-link) read `readBookingAmountOwed` (#4058, #3991).
+  An edit's credit clamp, zero-dollar decision and stale-intent comparison
+  read worth; a guest's acceptance nets credit to the price, its return route
+  admitting only credit and cash summing to it.
 - A fee a finished-stay correction keeps on a stay with nothing captured is
   recorded on the payment, claimed against the invoice link the edit read, and
   posts its `CHANGE_FEE` line under its modification's key at the settle,

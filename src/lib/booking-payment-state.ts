@@ -567,11 +567,18 @@ export function recordedChangeFeeCents(
 }
 
 /**
- * What a booking owes at its pay step (`bookingAmountOwedCents`, unclamped) and
- * the ledger credit that figure is net of — read by `readBookingAmountOwed`
- * (`booking-amount-owed.ts`, #3991) and handed to the narrative as data.
+ * What `readBookingAmountOwed` (`booking-amount-owed.ts`, #4058, #3991) reads
+ * for one booking. Its own pure type, here, so the narrative can take it as
+ * data without importing a module that reads the database.
+ *
+ * - `owedCents`: `bookingAmountOwedCents`, UNFLOORED — at or below zero means
+ *   credit covers it all. Every decision reads this one (is anything owed? what
+ *   does the card charge?).
+ * - `dueCents`: `owedCents` floored at zero, for a line that says what to pay.
+ * - `appliedCreditCents`: the ledger credit `owedCents` is net of.
  */
 export interface BookingAmountOwed {
+  owedCents: number;
   dueCents: number;
   appliedCreditCents: number;
 }

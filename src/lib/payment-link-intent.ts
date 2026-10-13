@@ -147,9 +147,10 @@ export async function createPaymentIntentForPaymentLink(
   // #3750 (#3955 review F2, `INV-PAY-119`): what the link charges is what the
   // booking owes — its price plus a change fee recorded on its payment, less
   // applied credit — read from the one home, never the bare price. Every
-  // intent comparison, mint and row below uses this one figure (#3991: the
-  // same read as the link's page, `readBookingAmountOwed`).
-  const owedCents = (await readBookingAmountOwed(booking)).dueCents;
+  // intent comparison, mint and row below uses this one figure — UNFLOORED
+  // (`owedCents`), so the `<= 0` refusal below still sees a credit-covered
+  // booking (#3991: the same read as the link's page).
+  const { owedCents } = await readBookingAmountOwed(booking);
 
   // Reuse or reconcile an existing PaymentIntent before creating a new one
   // (same behaviour as the session payment-intent route).

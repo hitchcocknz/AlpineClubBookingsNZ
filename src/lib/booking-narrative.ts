@@ -103,7 +103,7 @@ export interface NarrativeEvent {
 export interface NarrativeBooking {
   status: string;
   finalPriceCents: number;
-  /** `INV-PAY-119` (#3955, #3991): what its pay step charges (`bookingAmountOwedCents`) and the ledger credit applied. Required: a payable narrative has no bare-price fallback. */
+  /** `INV-PAY-119` (#3955, #3991, #4058): `readBookingAmountOwed`'s reading — `owedCents` decides whether anything is owed, `dueCents` is quoted. Required: no bare-price fallback. */
   amountOwed: BookingAmountOwed;
   checkIn: Date;
   checkOut: Date;
@@ -336,9 +336,8 @@ function buildPayableNarrative(
   now: Date, format: ClubFormat, ownerCreditHidden: boolean,
 ): BookingNarrative {
   const range = dateRange(booking, format);
-  const due = booking.amountOwed.dueCents;
-  if (due <= 0) return nothingToPayNarrative(range, !ownerCreditHidden && booking.amountOwed.appliedCreditCents > 0);
-  const amountDue = formatCents(due, format);
+  if (booking.amountOwed.owedCents <= 0) return nothingToPayNarrative(range, !ownerCreditHidden && booking.amountOwed.appliedCreditCents > 0);
+  const amountDue = formatCents(booking.amountOwed.dueCents, format);
 
   const linkUnusable =
     link != null &&

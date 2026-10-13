@@ -243,7 +243,7 @@ describe("booking page history narrative for a linked guest (#3991)", () => {
     ledgerCredit(5000);
     const history = await historyFor(bookingWith({ changeFeeCents: 2500 }), LINKED_GUEST);
     expect(history.bookingNarrative.message).toContain("$175.00 is due");
-    expect(history.amountOwed).toEqual({ dueCents: 17500, appliedCreditCents: 5000 });
+    expect(history.amountOwed).toEqual({ owedCents: 17500, dueCents: 17500, appliedCreditCents: 5000 });
   });
 });
 

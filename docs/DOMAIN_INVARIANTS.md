@@ -145,11 +145,13 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-020` | One expander turns a stay into nights; its envelope branch stays half-open |
 | `INV-DATE-021` | Kiosk attendance is one current state per stay, re-read per segment |
 | `INV-DATE-022` | SQL stay filters are coarse; kiosk writes decide over night rows |
+| `INV-DATE-031` | A hut-leader night is covered only when its leader is staying |
 | `INV-DATE-006` | The lobby wall is deliberately mixed, on its own fenced path |
 | `INV-DATE-023` | The lobby wall's night count is derived independently of what it shows |
 | `INV-DATE-007` | Departing lodge A and arriving at lodge B same date is legal |
 | `INV-DATE-008` | Zero-night bookings expand to no nights and every route refuses them |
 | `INV-DATE-009` | Six areas sit deliberately outside the boundary and must not be aligned |
+| `INV-DATE-030` | Hut-leader rows claim only stayed nights; sign-in runs `[start-1, end+1]` |
 | `INV-DATE-010` | `@db.Date` holds a club calendar date; UTC midnight is encoding only |
 | `INV-DATE-011` | Lodge bookings use NZ date-only nights, not arbitrary timestamps |
 | `INV-DATE-012` | `BookingGuest.stayStart`/`stayEnd` are date-only occupancy in the envelope |
@@ -335,6 +337,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-036` | Each group-cancel child's refund credit-note enqueue commits inside that child's cancel transaction |
 | `INV-PAY-037` | Failed settlement refunds stay durably owed; no child mirror applies twice |
 | `INV-PAY-114` | An organiser child's refund: one recorded Stripe refund from the combined payment |
+| `INV-PAY-123` | An organiser-card child's appeal refunds from the combined payment |
 | `INV-PAY-105` | Group settlements stay bound to their emailed invoice until paid or voided |
 | `INV-PAY-109` | Joiners a paid organiser bill does not cover pay for themselves |
 

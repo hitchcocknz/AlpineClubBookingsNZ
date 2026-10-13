@@ -636,6 +636,17 @@ const CENSUS_CEILING = {
    * `@db.Date` day `checkLodgeAuth` already judged, the same window
    * `getKioskAccessTier` uses. Re-measured by RUNNING this suite on this tree.
    *
+   * 227 -> 226 (#3817): `member-dietary.ts` stops importing it. Every
+   * hut-leader access reader now asks the one window in
+   * `hut-leader-access-window.ts`, which steps its stored days with the
+   * club-time kernel (`addCalendarDays`), as does the new stay check in
+   * `hut-leader-stayed-nights.ts`; neither imports this adapter. Re-measured by
+   * RUNNING this suite on this tree.
+   *
+   * 226 -> 227 (#3413, composed with #3817): `booking-request-pending-adult-reservations.ts`
+   * uses only zone-free lodge-night helpers. Re-measured by RUNNING this suite
+   * on the composed tree.
+   *
    * 228 -> 229 (#50, composed with main): one importer, `src/lib/other-lodges.ts`, and the
    * zone-free direction again. The other-lodges registry gains two `@db.Date`
    * season-start columns that travel as `yyyy-MM-dd` strings, so the shared
@@ -644,10 +655,12 @@ const CENSUS_CEILING = {
    * takes a `timeZone`, and the file consults no zone anywhere else; the one
    * comparison it makes between two stored days goes through `storedDateOnly`.
    * Re-measured by RUNNING this suite on this tree.
+   *
+   * 227/229 -> 228 (sync of `main` f1ecdb5ff into epic #3789): #3817's removal
+   * (`member-dietary.ts`) and #50's addition (`other-lodges.ts`) are disjoint.
+   * Re-measured by RUNNING this suite on the composed tree, never added.
    */
-  // #3413: booking-request-pending-adult-reservations uses only zone-free
-  // lodge-night helpers. Re-measured by this suite on the composed branch.
-  dateOnlyImporters: 229,
+  dateOnlyImporters: 228,
   /**
    * `new Date(y, m, d)` — local midnight in the HOST's zone.
    *

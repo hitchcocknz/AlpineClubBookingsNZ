@@ -421,7 +421,7 @@ function emailParams(overrides: Record<string, unknown> = {}) {
     refundByBankTransfer: false,
     appliedCreditGivenBackCents: 0,
     unpaidAskCancelled: false,
-    refundReturnedToOrganiser: false,
+    refundDestination: "own" as const,
     ...overrides,
   };
 }

@@ -38,7 +38,7 @@ function ceiling(manualRefundTasks: { amountCents: number | null }[]) {
     viewer: { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false, canSeeOwnerCredit: true } as never,
     access: { isDeleted: false } as never,
     party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
-    amountOwed: { dueCents: 15000, appliedCreditCents: 0 },
+    amountOwed: { owedCents: 15000, dueCents: 15000, appliedCreditCents: 0 },
   }).maxRefundableCents;
 }
 

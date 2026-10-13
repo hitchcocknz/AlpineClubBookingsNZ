@@ -151,9 +151,10 @@ export async function getPaymentLinkContext(
   // recorded on its payment, less applied credit — read from the one home.
   // At or below zero the narrative says there is nothing to pay, and the page
   // offers neither a payment nor a fresh link.
-  // #3991: the one read, shared with the link's intent and the booking page.
+  // #3991: the narrative takes the whole reading (it decides on `owedCents`
+  // and quotes `dueCents`); the payable figure below is the unfloored `owedCents`.
   const amountOwed = await readBookingAmountOwed(booking);
-  const owedCents = amountOwed.dueCents;
+  const { owedCents } = amountOwed;
 
   const narrativeInput = {
     club,

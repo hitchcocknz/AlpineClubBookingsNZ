@@ -40,7 +40,7 @@ const CLUB = bindClubTime(requireClubTimeZone("Pacific/Auckland"), CLUB_FORMAT_T
 const PAYABLE_BOOKING = {
   status: "CONFIRMED",
   finalPriceCents: 12000,
-  amountOwed: { dueCents: 12000, appliedCreditCents: 0 },
+  amountOwed: { owedCents: 12000, dueCents: 12000, appliedCreditCents: 0 },
   checkIn: new Date("2026-08-01T00:00:00.000Z"),
   checkOut: new Date("2026-08-03T00:00:00.000Z"),
   firstName: "Tara",

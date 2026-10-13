@@ -26,7 +26,7 @@ function booking(overrides: Partial<NarrativeBooking> = {}): NarrativeBooking {
   return {
     status: "PENDING",
     finalPriceCents: 12000,
-    amountOwed: { dueCents: 12000, appliedCreditCents: 0 },
+    amountOwed: { owedCents: 12000, dueCents: 12000, appliedCreditCents: 0 },
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
     firstName: "Sam",
@@ -853,7 +853,7 @@ describe("resolveBookingNarrative with the owner's credit hidden (#3991)", () =>
   });
 
   it("says a credit-covered booking has nothing to pay without naming the credit", () => {
-    const covered = booking({ status: "PENDING", amountOwed: { dueCents: 0, appliedCreditCents: 12000 } });
+    const covered = booking({ status: "PENDING", amountOwed: { owedCents: -3000, dueCents: 0, appliedCreditCents: 15000 } });
     expect(resolve([], false, covered).message).toMatch(/credit/);
     const hidden = resolve([], true, covered);
     expect(hidden.state).toBe("nothing_to_pay");

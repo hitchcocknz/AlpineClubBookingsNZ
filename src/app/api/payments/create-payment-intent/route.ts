@@ -413,7 +413,7 @@ export async function POST(request: NextRequest) {
             // "<= 0 effective price" guard below, which 400s — leaving the
             // member with a booking that had left DRAFT and could never be paid.
             // #3991: the one read (ledger credit, recorded fee), under this tx.
-            const { dueCents: settledEffectivePriceCents, appliedCreditCents } =
+            const { owedCents: settledEffectivePriceCents, appliedCreditCents } =
               await readBookingAmountOwed(freshBooking, tx);
 
             let superseded: SupersededPrimaryPaymentIntent[] = [];
@@ -548,7 +548,7 @@ export async function POST(request: NextRequest) {
     // mint / reconcile every intent against the effective amount.
     // #3750/#3991: through the one read, so a change fee recorded on an unpaid
     // booking's payment is collected with the rest.
-    const { dueCents: effectivePriceCents, appliedCreditCents } =
+    const { owedCents: effectivePriceCents, appliedCreditCents } =
       await readBookingAmountOwed(booking);
 
     // A fully credit-covered booking is confirmed at $0 by the booking-create
