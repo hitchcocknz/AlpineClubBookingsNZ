@@ -105,13 +105,37 @@ are listed on the booking for you to relay.
      at the moment you approve, nothing is applied and you are asked to
      approve again. The member can still ask the committee to refund a fee
      through a refund request.
+   - **A request that names nobody.** A member's request has to say who or
+     what changes (#4030), but older ones were a note alone ("can we add these
+     three grandchildren"), which nothing can be applied or charged from. On a
+     finished stay such a card shows **Guests the member asked to add**: enter
+     each person the member described — name and age, or a member found by
+     email (or by name, if you can see the membership list) — with the nights
+     they stayed, inside the stay's dates. Then check the figures as below; they
+     are worked out for exactly the guests you entered, and change if you change
+     the list. Approving records the guests on the request as entered by you on
+     the member's behalf (the audit log names you and lists them), then applies
+     them exactly as if the member had named them: no change fee for adding,
+     the member guest rules, the overbooking confirmation, and the usual change
+     email with the amount due. If the approval is refused at any step, nothing
+     you entered is kept on the request. To decline instead, **Reject** with a
+     note; a rejection never carries the guests. Changing the list clears the
+     figures (and any overbooking confirmation), so check them again. A guest
+     who shares a name with one of the member's dependants is refused: if it is
+     that dependant, add them with **+ Add a member**, so they are booked as the
+     member they are; if it is a different person with the same name, this
+     entry can't add them, so leave them off and say so in your explanation.
+   - **The figures you approve are the figures charged.** **Approve and apply**
+     sends the figures you checked. If anything moved since — a season rate, a
+     payment, the lodge's capacity — nothing is applied and you are asked to
+     check the figures again.
    - **Check the figures first.** **Check the figures** works out exactly what
      approving will do — the change fee, and the refund, credit or amount due —
      without changing anything, and **Approve and apply** stays off until it
      has. Under **If the change lowers the price** the default is the way the
      booking was paid; you can choose card or account credit instead.
    - **When nothing is applied.** If the booking has changed since the member
-     asked, the season for those nights has been switched off, a guest cannot
+     asked (its dates, its guests, or a guest's nights), the season for those nights has been switched off, a guest cannot
      be booked, nothing
      is applied and the request stays pending with the reason. If the change
      moves the stay's dates on an unpaid booking whose invoice was issued in a

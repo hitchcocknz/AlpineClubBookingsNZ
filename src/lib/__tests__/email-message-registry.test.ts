@@ -472,6 +472,21 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
     );
   });
 
+  it("keeps the bank-transfer settlement alert admin-audience, delivery-locked and pinned to its note and invoice link (#3979)", () => {
+    // A wrong recorded bank-transfer figure sizes every later refund and credit;
+    // this mail is what pulls a person to check it. MUTATION PROOF: drop it from
+    // LOCKED_DELIVERY_TEMPLATE_NAMES and this fails.
+    const definition = getEmailTemplateDefinition("admin-bank-transfer-settlement-figure");
+    if (!definition) throw new Error("missing admin-bank-transfer-settlement-figure");
+    expect(definition.audience).toBe("admin");
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("admin-bank-transfer-settlement-figure")).toBe("always");
+    expect(definition.defaultSubject).toBe("Bank transfer amount needs checking: {{memberName}}");
+    expect(definition.requiredTokens).toEqual(
+      expect.arrayContaining(["settlementFigureNote", "xeroObjectUrl", "memberName", "reviewUrl"]),
+    );
+  });
+
   it("classifies admin-school-manual-invoice as an admin alert but keeps it delivery-locked", () => {
     // It ships via sendToAdmins, so it must classify as an admin alert like its
     // siblings (audience "admin") rather than "member". It stays in

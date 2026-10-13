@@ -548,24 +548,26 @@ async function syncEditReviewChargeRequestUnderClaim(
       // #3181: carried, not re-read. See this function's parameter docblock.
       hasIssuedXeroInvoice,
     },
-    // #3170: the request's identity in the ledger. A later share finds this row
-    // by exact match on it, which is why it is built rather than spelled.
-    reason,
-    // EDIT-scoped on both keys, which INVERTS the first #3170 round - see
-    // `payment-recovery-keys.ts` for the full reasoning and for which of the two
-    // (request vs share) each key belongs to. In short: the request is the thing
-    // being identified, there is one per edit, and a replay converging on the
-    // first intent is now the point rather than the hazard. #3371 adds THE
-    // AMOUNT, because this figure is RE-DERIVED on every attempt and a fixed key
-    // would then answer `idempotency_error` for ever - see that helper.
-    idempotencyKey: stripeIdempotencyKeyForAskAmount(
-      buildEditFinancialReviewAdditionalIntentStripeKey(bookingModificationId),
-      ask.amountCents,
-    ),
-    recoveryIdempotencyKey:
-      buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey(
-        bookingModificationId,
+    reviewCharge: {
+      // #3170: the request's identity in the ledger. A later share finds this row
+      // by exact match on it, which is why it is built rather than spelled.
+      reason,
+      // EDIT-scoped on both keys, which INVERTS the first #3170 round - see
+      // `payment-recovery-keys.ts` for the full reasoning and for which of the two
+      // (request vs share) each key belongs to. In short: the request is the thing
+      // being identified, there is one per edit, and a replay converging on the
+      // first intent is now the point rather than the hazard. #3371 adds THE
+      // AMOUNT, because this figure is RE-DERIVED on every attempt and a fixed key
+      // would then answer `idempotency_error` for ever - see that helper.
+      idempotencyKey: stripeIdempotencyKeyForAskAmount(
+        buildEditFinancialReviewAdditionalIntentStripeKey(bookingModificationId),
+        ask.amountCents,
       ),
+      recoveryIdempotencyKey:
+        buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey(
+          bookingModificationId,
+        ),
+    },
     failureMessage:
       "Failed to create the additional PaymentIntent for a completed edit financial review - the persisted recovery operation will replay it",
   });

@@ -52,9 +52,15 @@ vi.mock("@/lib/club-time/server", () => ({
 vi.mock("@/lib/club-format-server", () => ({
   clubFormatValues: async () => CLUB_FORMAT_TEST,
 }));
-vi.mock("@/lib/booking-change-request-execution", () => ({
+vi.mock("@/lib/booking-change-request-execution", async (importActual) => ({
+  // The real error class (#4030 review C4), so the route's mapping is the real one.
+  FinishedStayFiguresChangedError: (
+    (await importActual()) as typeof import("@/lib/booking-change-request-execution")
+  ).FinishedStayFiguresChangedError,
   approveAndExecuteLockedPeriodChangeRequest: (...args: unknown[]) => mocks.execute(...args),
 }));
+// #4030 review C4: the figures an applying approval says it was shown.
+const FIGS = { additionalAmountCents: 4_500, refundAmountCents: 0, accountCreditAmountCents: 0 };
 vi.mock("@/lib/booking-batch-modification-service", () => ({
   prepareBatchModificationForCallerTransaction: (...args: unknown[]) => mocks.prepare(...args),
 }));
@@ -119,7 +125,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
 
     const response = await patch({
       status: "APPROVED",
-      execute: true,
+      execute: true, expectedFigures: FIGS,
       adminNotes: "  Added the guest who stayed.  ",
       internalNotes: "Warden confirmed.",
       confirmOverCapacity: true,
@@ -158,7 +164,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
         preRead({ checkOut: new Date("2026-06-30T00:00:00.000Z"), status: "PAID" }),
       )
       .mockResolvedValueOnce({ id: "cr-1" });
-    expect((await patch({ execute: true, status: "APPROVED", adminNotes: "ok" })).status).toBe(200);
+    expect((await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" })).status).toBe(200);
     expect(mocks.execute).toHaveBeenCalledTimes(1);
   });
 
@@ -195,7 +201,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     const response = await patch({
       status: "APPROVED",
-      execute: true,
+      execute: true, expectedFigures: FIGS,
       adminNotes: "ok",
       linkedModificationId: "mod-1",
     });
@@ -207,7 +213,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
     mocks.requestFindUnique
       .mockResolvedValueOnce(preRead(FINISHED))
       .mockResolvedValueOnce({ id: "cr-1" });
-    await patch({ execute: true, status: "APPROVED", adminNotes: "Added.", internalNotes: "secret" });
+    await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "Added.", internalNotes: "secret" });
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     const [row] = mocks.logAudit.mock.calls[0] as [Record<string, unknown>];
     expect(row).toMatchObject({
@@ -233,7 +239,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
         { date: "2026-06-11", available: -1 },
       ] as never),
     );
-    const response = await patch({ execute: true, status: "APPROVED", adminNotes: "ok" });
+    const response = await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
       status: "REQUESTED",
@@ -247,7 +253,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
   it("refuses a whole-lodge hold outright", async () => {
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     mocks.execute.mockRejectedValue(new WholeLodgeHoldBlockedError(["2026-06-11"]));
-    const response = await patch({ execute: true, status: "APPROVED", adminNotes: "ok", confirmOverCapacity: true });
+    const response = await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok", confirmOverCapacity: true });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ code: "WHOLE_LODGE_HOLD_BLOCKED" });
   });
@@ -255,7 +261,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
   it("explains a past season that has been switched off, and keeps the request pending", async () => {
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     mocks.execute.mockRejectedValue(new ApiError(NO_SEASON_RATE_MESSAGE, 400));
-    const response = await patch({ execute: true, status: "APPROVED", adminNotes: "ok" });
+    const response = await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" });
     expect(response.status).toBe(409);
     const body = await response.json();
     expect(body).toMatchObject({ code: "NO_ACTIVE_SEASON", keptPending: true });
@@ -265,7 +271,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
   it("passes any other canonical refusal through with its own status", async () => {
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     mocks.execute.mockRejectedValue(new ApiError("Locked in Xero", 409));
-    const response = await patch({ execute: true, status: "APPROVED", adminNotes: "ok" });
+    const response = await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: "Locked in Xero", status: "REQUESTED" });
   });
@@ -278,7 +284,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
   ])("maps %o to %i with no audit row", async (outcome, status) => {
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     mocks.execute.mockResolvedValue(outcome);
-    expect((await patch({ execute: true, status: "APPROVED", adminNotes: "ok" })).status).toBe(status);
+    expect((await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" })).status).toBe(status);
     expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 
@@ -304,7 +310,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
     mocks.requestFindUnique.mockResolvedValue(
       preRead({ checkOut: new Date("2026-07-03T00:00:00.000Z"), status: "PAID" }),
     );
-    const other = await patch({ execute: true, status: "APPROVED", adminNotes: "ok" });
+    const other = await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" });
     expect(other.status).toBe(409);
     expect(await other.json()).toMatchObject({ executesOnApproval: false });
     expect(mocks.execute).not.toHaveBeenCalled();
@@ -359,7 +365,7 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
   ])("explains %s, keeps the request pending, and does not log it as a fault", async (_name, make, status) => {
     mocks.requestFindUnique.mockResolvedValueOnce(preRead(FINISHED));
     mocks.execute.mockRejectedValue(make());
-    const response = await patch({ execute: true, status: "APPROVED", adminNotes: "ok" });
+    const response = await patch({ execute: true, expectedFigures: FIGS, status: "APPROVED", adminNotes: "ok" });
     expect(response.status).toBe(status);
     const body = await response.json();
     expect(body).toMatchObject({ status: "REQUESTED", keptPending: true });
@@ -408,6 +414,8 @@ describe("PATCH booking change request — finished stay (#3750)", () => {
     expect(mocks.execute).toHaveBeenCalledWith(
       expect.objectContaining({ dryRun: true, expectedVersion: 2, settlementMethod: "card" }),
     );
+    // A dry run carries no figures: it is how they are produced.
+    expect(mocks.execute.mock.calls[0]![0]).not.toHaveProperty("expectedFigures");
     expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 });

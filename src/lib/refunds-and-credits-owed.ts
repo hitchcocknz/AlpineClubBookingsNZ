@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { netCollectedBookingSelect, netCollectedPaymentSelect } from "@/lib/additional-ledger-gap";
 import { openTaskOwedCents } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import {
   readMemberCreditBalances,
   sumOutstandingCreditCents,
@@ -96,7 +97,9 @@ export function legacyGroupSettlementRefundOwedCents(
  *   (#3924 money review, F5) - a soft-deleted booking's included, which Net
  *   Collected leaves out of its scope but whose refund is still owed. Plus open
  *   tasks on a booking with no payment, or on a payment that shows no capture
- *   (round 4, M7), which nothing caps; and, as ONE club-wide amount against no
+ *   (round 4, M7), which nothing caps; an open group organiser's hand-back
+ *   (#4042), at its own amount and never through the organiser's payment; and,
+ *   as ONE club-wide amount against no
  *   booking (owner, 8 Oct 2026: "Separate club-wide line"), what the unclosed
  *   group settlement card refunds from before #3653 still have to send
  *   (`legacyGroupSettlementRefundOwedCents`).
@@ -119,6 +122,14 @@ export async function readRefundsAndCreditsOwed(
   const owingPayments = new Map<string, Prisma.PaymentGetPayload<{ select: typeof OWING_PAYMENT_SELECT }>>();
   let uncappedTaskOwedCents = 0;
   for (const task of openTasks) {
+    // #4042 (`INV-PAY-124`): a group organiser's hand-back is money the club
+    // still owes the organiser, and the joiners' payments already read
+    // refunded, so it counts once, at its own amount - never through the
+    // organiser's payment, whose Net Collected leaves it out.
+    if (isGroupOrganiserHandBackTask(task)) {
+      uncappedTaskOwedCents += openTaskOwedCents([task], task.booking).handBackCents;
+      continue;
+    }
     const payment = task.booking.payment;
     // #3924 round 4 (M7): a task on a payment that shows no capture
     // (`netCollectedPaymentTookMoney`) is still promised back. Net Collected

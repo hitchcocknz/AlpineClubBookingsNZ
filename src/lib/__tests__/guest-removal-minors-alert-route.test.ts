@@ -46,6 +46,8 @@ const mocks = vi.hoisted(() => ({
   stripeFindOrCreateCustomer: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
+  // #4036: the door's after-commit owner read, with no stored customer.
+  paymentFindUnique: vi.fn(),
 }));
 
 // #3582: an edit's and a review closure's ledger lines are posted by one sync,
@@ -66,6 +68,7 @@ vi.mock("@/lib/prisma", () => ({
     // The supersede the real minter runs reads the ledger for other live
     // ADDITIONAL intents; this booking has none.
     paymentTransaction: { findMany: mocks.paymentTransactionFindMany },
+    payment: { findUnique: mocks.paymentFindUnique },
   },
 }));
 // #3245: PARTIAL, through `importOriginal`. This used to replace the whole
@@ -841,6 +844,16 @@ describe("DELETE guest removal - a credit-paid ($0) booking whose price RISES (#
       guests: [{ perNightCents: [10000], nightDates: [CHECK_IN], priceCents: 10000 }],
     });
     mocks.stripeFindOrCreateCustomer.mockResolvedValue({ id: "cus_removal" });
+    // #4036: no stored customer, so the door resolves the owner's as the
+    // recovery runner does (`readAskMintPayment`, `resolveAskCustomerId`).
+    mocks.paymentFindUnique.mockResolvedValue({
+      ...zeroDollarPayment(xeroInvoiceId),
+      booking: {
+        organisationId: null,
+        member: { id: "m1", email: "owner@example.com", firstName: "Pat", lastName: "Owner" },
+        organisation: null,
+      },
+    });
     mocks.stripeCreatePaymentIntent.mockResolvedValue({
       id: "pi_removal",
       client_secret: "pi_removal_secret",

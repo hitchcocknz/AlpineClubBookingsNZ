@@ -779,9 +779,13 @@ request stays `REQUESTED` at its old `version`.
 LOCKED_PERIOD request, stay finished -> officer approves
   -> pg_advisory_xact_lock(1) -> lodge capacity lock -> fresh-role reauthorisation
   -> re-read: REQUESTED, LOCKED_PERIOD, expected version   (else claim lost, no effect)
-  -> drift: booking dates + guest set still the request's original   (else stays REQUESTED)
-  -> CAS claim REQUESTED -> APPROVED, version + 1
+  -> drift: booking dates + guest set still the request's original, and each guest's
+       nights where the request stored them (#4030)   (else stays REQUESTED)
+  -> request names no change: the officer's entered guests (#4030), else stays REQUESTED
+       entry on a request that names a change, or nights outside the stay -> stays REQUESTED
+  -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry)
   -> modifyBookingBatch(finishedStayCorrection) on the same transaction
+       figures differ from the officer's check -> refused, rolled back (#4030)
        over-capacity past night -> refused until the officer confirms (whole-lodge hold: always refused)
        no active season / member-night clash / a guest who cannot be booked -> refused
        dates moved on an unpaid booking whose invoice is in a Xero-locked period -> refused
@@ -790,6 +794,12 @@ LOCKED_PERIOD request, stay finished -> officer approves
   -> COMMIT, then the ordinary post-commit settlement (ask, refund, Xero, email, audit)
   (a dry run of the same sequence, rolled back before COMMIT, is the officer's quote)
 ```
+
+A member's request must name a structured change — dates, guests added or
+removed, or a guest's nights (#4030); a note alone is refused at submit. For an
+older free-text request the officer enters the guests the member described, and
+the claim stores them on the request as officer-entered on the member's behalf
+(`INV-REQ-011`), so a refusal after it rolls the entry back with the approval.
 
 The booking keeps its status (a `COMPLETED` stay stays `COMPLETED`); the money
 moves on the ordinary edit paths above.
@@ -1533,10 +1543,12 @@ REFUNDED/PARTIALLY_REFUNDED -> (repay, #1765) fresh PRIMARY transaction on the
 Booking cancellation honors these transitions (#1473): only a never-captured
 payment flips to FAILED at cancel, decided on transaction-ledger capture
 evidence — the aggregate mirror alone can lie, because inbound reconciliation
-folds modification credit notes into `refundedAmountCents` /
+folds modification credit notes worded as refunds into `refundedAmountCents` /
 `PARTIALLY_REFUNDED` on never-captured Internet Banking payments (see
-`docs/DOMAIN_INVARIANTS.md`). Genuinely captured payments survive the cancel
-unchanged — no *transaction* ever leaves the refunded states.
+`docs/DOMAIN_INVARIANTS.md`). Since #3979 a note worded as an *invoice
+correction* never folds: it lowered an invoice nobody had paid, so it is a price
+correction, not a refund (`INV-PAY-126`). Genuinely captured payments survive
+the cancel unchanged — no *transaction* ever leaves the refunded states.
 
 Repay-after-refund (#1765): a booking that was paid, then deliberately
 refunded, then left (or re-put) in a payable status legitimately owes a fresh
@@ -1771,6 +1783,52 @@ retire path own it — so a late `payment_intent.canceled` for an old intent can
 no longer null a card the member has just re-saved; without a SetupIntent the
 ledger row's pm is followed, except that a Stripe row recording no pm never
 nulls a card that is set; an Internet Banking latest PRIMARY still yields null.
+
+### Internet Banking settle from the invoice's cash (#3979)
+
+When Xero reports a booking's PRIMARY invoice paid in cash, the inbound settle
+moves the payment `PENDING/FAILED -> SUCCEEDED` and records the receipt at the
+cash that invoice collected, not the figure the payment was born with
+(`INV-PAY-125`, `settle-from-cash.ts`):
+
+```text
+no captured IB PRIMARY row, cash complete, one matched payment, no
+  refund-worded modification note applied to the invoice, no folded refund the
+  invoice's no-cash notes do not exactly explain, one uncaptured IB PRIMARY
+  row, no second instrument
+  -> PRIMARY row := invoice cash (reason xero_invoice_paid_cash)
+  -> Payment amount / refunded / status := the ledger's projection of the rows
+     (cash + other captures; an exactly explained correction fold cleared)
+  -> ledger BANK_RECEIPT
+any of those not true
+  -> stored figure kept -> receipt at it -> marker + unmuteable alert (live booking)
+PRIMARY row already captured (a replay)
+  -> no amount decided again (an unsent marker's alert is sent again)
+cash != bookingAmountOwedCents (INV-PAY-119), beyond what supplementary
+  invoices bill (INV-PAY-047)
+  -> figure still written -> marker + unmuteable alert
+```
+
+The marker is an admin-only `SETTLEMENT_MARKERS` event written in the settle's
+transaction; the alert follows the commit and is recorded on it once sent. The
+cancel arms (a cancelled booking's late cash, the late capacity cancel) size
+their credit from the receipt's figure, measure a mixed invoice against its
+total less the member's own applied credit, and alert on their own.
+
+An invoice-correction note refunds nothing (`INV-PAY-126`): a $300 invoice
+corrected by $100 and paid $200 settles as $200 paid, $0 refunded, and
+`reconcilePaymentAggregates` keeps it. Against a receipt recorded at the stored
+figure (settled before #3979, or kept) the correction still counts, so the net
+stays the cash, and the refunded-total repair finds a bank-transfer payment's
+modification notes by its invoice, so a later note's recount never drops one.
+The repair writes through a claim on the row it read (status, totals and
+`updatedAt`, which the settle touches at every transition), re-runs once from
+scratch when it loses that claim, and never un-refunds a payment whose PRIMARY
+rows show nothing captured to `SUCCEEDED`. A receipt counts a correction only
+while it carries a reason it was born with; a part payment recognised at cancel
+is cash-sized.
+Settles before #3979 are listed by `pnpm run payments:audit-ib-settled-cash`,
+never rewritten.
 
 ### Manual mark-paid (cash / off-Xero bank transfer), B5 #2262
 
@@ -2051,6 +2109,21 @@ queues that request's own Xero refund credit note for the amount paid back
 though the booking is cancelled, because the cancel came first and never
 counted it. See
 [`INV-PAY-118`](invariants/payment-and-settlement.md#inv-pay-118).
+
+**#4042: so does a group organiser's, except that it cannot be dismissed.** An
+organiser's cancel of a group paid by Internet Banking raises the task OPEN on
+the organiser's booking, inside the first per-child claim that books a
+joiner's refund, under `lock(1)`, keyed one per settlement; each later claim
+sets its total, derived from the joiners the ledger proves refunded, while it
+is OPEN (a share booked after it closed raises a supplementary task keyed per
+joiner for what nothing covers). It carries no `paymentId`: the cancel
+already booked those refunds on the joiners' own payments, so COMPLETED
+records only that the officer repaid the organiser and writes no allocation,
+ledger line, Xero note or `REFUNDED` event. COMPLETED takes `lock(1)` and
+must name the total the screen showed; a missing or grown total is refused. DISMISSED is refused: the
+refunds are booked as made, so not repaying is the treasurer's correction.
+See
+[`INV-PAY-124`](invariants/payment-and-settlement.md#inv-pay-124).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

@@ -17,14 +17,17 @@ export const stripeRaceHooks: {
   get: null | ((id: string) => Promise<unknown>);
   create: null | ((args: Parameters<Stripe["createPaymentIntent"]>[0]) => Promise<unknown>);
   findByMetadata: null | ((args: Parameters<Stripe["findRecentPaymentIntentByMetadata"]>[0]) => Promise<unknown>);
+  /** #4036: the recent intents an ordinary ask's refused replay looks through. */
+  list: null | ((args: Parameters<Stripe["listRecentPaymentIntentsMatching"]>[0]) => Promise<unknown>);
   cancel: null | ((id: string) => Promise<unknown>);
-} = { update: null, get: null, create: null, findByMetadata: null, cancel: null };
+} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null };
 
 export function resetStripeRaceHooks(): void {
   stripeRaceHooks.update = null;
   stripeRaceHooks.get = null;
   stripeRaceHooks.create = null;
   stripeRaceHooks.findByMetadata = null;
+  stripeRaceHooks.list = null;
   stripeRaceHooks.cancel = null;
 }
 
@@ -43,6 +46,10 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
       stripeRaceHooks.findByMetadata
         ? stripeRaceHooks.findByMetadata(args)
         : actual.findRecentPaymentIntentByMetadata(args)) as Stripe["findRecentPaymentIntentByMetadata"],
+    listRecentPaymentIntentsMatching: ((args: Parameters<Stripe["listRecentPaymentIntentsMatching"]>[0]) =>
+      stripeRaceHooks.list
+        ? stripeRaceHooks.list(args)
+        : actual.listRecentPaymentIntentsMatching(args)) as Stripe["listRecentPaymentIntentsMatching"],
     cancelPaymentIntentIfCancellableWithResult: ((...args: Parameters<Stripe["cancelPaymentIntentIfCancellableWithResult"]>) =>
       stripeRaceHooks.cancel
         ? stripeRaceHooks.cancel(args[0])

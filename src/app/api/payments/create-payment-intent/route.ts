@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { bookingPromoEmailFields } from "@/lib/booking-promo-email-options";
 import {
   bookingOwner,
@@ -39,7 +39,6 @@ import {
 import { drainSupersededPrimaryIntents } from "@/lib/booking-modification-settlement";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
-import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import {
   consumeStoredCreditElection,
   settleFullyCreditCoveredBooking,
@@ -57,7 +56,8 @@ import {
 } from "@/lib/payment-recovery-contract";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { chargeCurrencyRefusal, stripeChargeCurrency, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE as CURRENCY_REFUSED, UnsupportedChargeCurrencyError } from "@/lib/stripe-charge-currency";
-import { intentCurrencyDiffers, staleIntentAction } from "@/lib/additional-intent-currency";
+import { intentCurrencyDiffers } from "@/lib/additional-intent-currency";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 
 class PaymentIntentCapacityError extends Error {
   constructor() {
@@ -413,15 +413,9 @@ export async function POST(request: NextRequest) {
             // committed DRAFT -> PAYMENT_PENDING first and only then hit the
             // "<= 0 effective price" guard below, which 400s — leaving the
             // member with a booking that had left DRAFT and could never be paid.
-            const appliedCreditCents = await deriveBookingAppliedCreditCents(
-              bookingId,
-              tx,
-            );
-            const settledEffectivePriceCents = bookingAmountOwedCents({
-              finalPriceCents: freshBooking.finalPriceCents,
-              changeFeeCents: freshBooking.payment?.changeFeeCents ?? null,
-              appliedCreditCents,
-            });
+            // #3991: the one read (ledger credit, recorded fee), under this tx.
+            const { owedCents: settledEffectivePriceCents, appliedCreditCents } =
+              await readBookingAmountOwed(freshBooking, tx);
 
             let superseded: SupersededPrimaryPaymentIntent[] = [];
             let settledAtZero = false;
@@ -553,14 +547,10 @@ export async function POST(request: NextRequest) {
     // the member double-pays by the applied slice. Derive the applied total from the
     // ledger (the authoritative source; the booking row keeps the full price) and
     // mint / reconcile every intent against the effective amount.
-    const appliedCreditCents = await deriveBookingAppliedCreditCents(booking.id);
-    // #3750: through the one home, so a change fee recorded on an unpaid
+    // #3750/#3991: through the one read, so a change fee recorded on an unpaid
     // booking's payment is collected with the rest.
-    const effectivePriceCents = bookingAmountOwedCents({
-      finalPriceCents: booking.finalPriceCents,
-      changeFeeCents: booking.payment?.changeFeeCents ?? null,
-      appliedCreditCents,
-    });
+    const { owedCents: effectivePriceCents, appliedCreditCents } =
+      await readBookingAmountOwed(booking);
 
     // A fully credit-covered booking is confirmed at $0 by the booking-create
     // zero-dollar path before any intent is ever requested; it never legitimately

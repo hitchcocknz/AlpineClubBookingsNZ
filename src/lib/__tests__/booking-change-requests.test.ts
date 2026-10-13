@@ -296,6 +296,8 @@ describe("booking change requests", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          // #4030: a structured change, so the refusal is the edit window's.
+          checkOut: "2026-05-21",
           requestedEffectiveDate: "2026-05-24",
           reason: "Late correction.",
         }),
@@ -307,6 +309,7 @@ describe("booking change requests", () => {
     });
 
     expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/no future nights/i);
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
   });
 

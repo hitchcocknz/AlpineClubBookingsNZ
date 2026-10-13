@@ -45,6 +45,7 @@ import {
 import { AccountCreditCard } from "@/components/edit-booking/account-credit-card";
 import { AdminOverrideCard } from "@/components/edit-booking/admin-override-card";
 import { ChangeRequestCard } from "@/components/edit-booking/change-request-card";
+import type { ChangeRequestAddGuest } from "@/lib/booking-change-request-guests";
 import { EditDatesCard } from "@/components/edit-booking/edit-dates-card";
 import { EditGuestsCard } from "@/components/edit-booking/edit-guests-card";
 import { EditDependantIdentityQuestion } from "@/components/edit-booking/edit-dependant-identity-question";
@@ -63,11 +64,7 @@ import {
   exceptionProposalSignature,
   exceptionRequestPayloadFromModification,
 } from "@/components/edit-booking/exception-request-payload";
-import {
-  eachNightKey,
-  previousDateOnly,
-  shiftDateKey,
-} from "@/components/edit-booking/stay-nights";
+import { eachNightKey, shiftDateKey } from "@/components/edit-booking/stay-nights";
 import type {
   BookingData,
   FamilyMember,
@@ -1570,16 +1567,16 @@ export function EditBookingPanel({
     }
   }
 
-  async function handleSubmitChangeRequest() {
+  async function handleSubmitChangeRequest(cardAddGuests: ChangeRequestAddGuest[]) {
     setRequestError("");
     setRequestSuccess("");
     setRequestSubmitting(true);
 
     try {
       const body = buildModificationPayload();
-      if (!hasChanges) {
-        body.requestedEffectiveDate =
-          previousDateOnly(booking.editPolicy.editableFrom) ?? today;
+      // #4030: the card's guests join the editor's; a note alone is refused.
+      if (cardAddGuests.length > 0) {
+        body.addGuests = [...((body.addGuests as unknown[] | undefined) ?? []), ...cardAddGuests];
       }
 
       const res = await fetch(`/api/bookings/${booking.id}/change-requests`, {
@@ -1593,13 +1590,15 @@ export function EditBookingPanel({
       const data = await res.json();
       if (!res.ok) {
         setRequestError(data.error || "Failed to submit request");
-        return;
+        return false;
       }
 
       setRequestReason("");
       setRequestSuccess("Request sent to admins");
+      return true;
     } catch {
       setRequestError("Failed to submit request");
+      return false;
     } finally {
       setRequestSubmitting(false);
     }
@@ -1879,7 +1878,8 @@ export function EditBookingPanel({
           submitting={requestSubmitting}
           error={requestError}
           success={requestSuccess}
-          submitDisabled={requestSubmitting || (!hasChanges && !requestReason.trim())}
+          hasEditorChanges={hasChanges}
+          guestContext={{ booking, ageTierOptions, familyMembers }}
           onReasonChange={setRequestReason}
           onSubmit={handleSubmitChangeRequest}
         />

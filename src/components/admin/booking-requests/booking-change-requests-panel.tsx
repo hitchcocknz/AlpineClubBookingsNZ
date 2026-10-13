@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { bookingOwner } from "@/lib/booking-owner";
 import { ChangeRequestPaymentLine } from "@/components/admin/booking-requests/change-request-payment-line";
@@ -24,17 +24,23 @@ import { useClubTime } from "@/components/club-time-provider";
 import { formatStayDate } from "@/lib/club-time";
 import { formatCents } from "@/lib/utils";
 import { useClubFormat } from "@/components/club-format-provider";
+import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import {
   decisionToastMessage,
   FinishedStayApprovalNotice,
   FinishedStaySettlementField,
   FinishedStayQuoteSummary,
-  FinishedStayUnlinkedNote,
+  expectedFiguresOf,
+  OfficerGuestEntry,
+  officerGuestsKey,
+  officerGuestsPayload,
   OverCapacityConfirmation,
   quoteIsCurrent,
+  requestStay,
   RequestedGuestAdds,
   useFinishedStayQuotes,
 } from "@/components/admin/booking-requests/booking-change-request-finished-stay";
+import { DecidedChangeRequestSummary } from "@/components/admin/booking-requests/booking-change-request-decided";
 import {
   EMPTY_DECISION_DRAFT,
   statusBadgeClass,
@@ -159,6 +165,19 @@ export function BookingChangeRequestsPanel({
   // #3750 (P2 on #3955): each finished-stay card's dry-run figures, and any
   // over-capacity night its officer has to confirm, keyed by request id.
   const quotes = useFinishedStayQuotes(setError);
+  // #4030 Part B: the officer's guest entry — its age tiers, and the member
+  // finder's reach as the list route answered it.
+  const ageTierOptions = useAgeTierOptions();
+  const [memberGuestFind, setMemberGuestFind] = useState<{ openSearchEnabled: boolean } | null>(null);
+  // #4030 review S6: the officer entry's buttons are this section's view-only button.
+  const OfficerEntryButton = useCallback((props: ButtonProps) => (
+    <ViewOnlyActionButton canEdit={canEdit} describeReason={false} {...props} />
+  ), [canEdit]);
+  /** This row's officer-entered guests as sent, or null (#4030). */
+  const officerGuestsFor = (request: BookingChangeRequestData) =>
+    request.acceptsOfficerGuests
+      ? officerGuestsPayload(decisionDraftFor(request.id).officerGuests, requestStay(request.booking))
+      : null;
   const currentPath = buildBookingChangeRequestsPath(
     basePath,
     searchParams.toString(),
@@ -181,6 +200,7 @@ export function BookingChangeRequestsPanel({
         throw new Error(data.error || "Failed to load booking change requests");
       }
       setRequests(Array.isArray(data?.data) ? data.data : []);
+      setMemberGuestFind(data?.memberGuestFind ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load booking change requests");
     } finally {
@@ -188,7 +208,7 @@ export function BookingChangeRequestsPanel({
     }
     // setState functions are referentially stable; they are listed so the
     // manual dependencies match what the React Compiler infers.
-  }, [filter, setError, setLoading, setRequests]);
+  }, [filter, setError, setLoading, setRequests, setMemberGuestFind]);
 
   useEffect(() => {
     fetchRequests();
@@ -236,6 +256,9 @@ export function BookingChangeRequestsPanel({
                 ...(quotes.quoteFor(request.id)?.confirmOverCapacity
                   ? { confirmOverCapacity: true }
                   : {}),
+                ...(officerGuestsFor(request) ? { officerGuests: officerGuestsFor(request) } : {}),
+                // #4030 review C4: the figures this approval was shown.
+                expectedFigures: expectedFiguresOf(quotes.quoteFor(request.id)),
               }
             : {}),
         }),
@@ -244,6 +267,9 @@ export function BookingChangeRequestsPanel({
       if (!response.ok) {
         // #3750 decision 3: over-capacity past nights warn, and the officer
         // confirms on this card before the change is applied.
+        // #4030 review C4: the figures moved under the officer; drop the stale
+        // ones so Approve stays off until they are checked again.
+        if (data.code === "FIGURES_CHANGED") quotes.clear(request.id);
         if (data.needsCapacityConfirmation === true) {
           quotes.needsCapacity(
             request.id,
@@ -362,14 +388,17 @@ export function BookingChangeRequestsPanel({
             // #3750: the nights this card's approval is waiting to have confirmed.
             const quote = quotes.quoteFor(request.id);
             const overCapacityNights = quote?.overCapacityNights ?? null;
+            const officerGuests = officerGuestsFor(request);
             const quoteCurrent = quoteIsCurrent(
               quote,
               decisionDraftFor(request.id).settlementMethod,
+              officerGuestsKey(officerGuests),
             );
 
             return (
               <Card
                 key={request.id}
+                data-testid={`change-request-${request.id}`}
                 className={request.id === requestId ? "border-warning-6" : undefined}
               >
                 <CardHeader>
@@ -516,6 +545,25 @@ export function BookingChangeRequestsPanel({
                           placeholder="Context for the next officer. The member never reads this."
                         />
                       </div>
+                      {request.acceptsOfficerGuests ? (
+                        <OfficerGuestEntry
+                          requestId={request.id}
+                          bookingId={request.booking.id}
+                          stay={requestStay(request.booking)}
+                          guests={decisionDraftFor(request.id).officerGuests}
+                          onChange={(officerGuests) => {
+                            updateDecisionDraft(request.id, { officerGuests });
+                            quotes.clear(request.id); // #4030 review M1: figures belong to their list
+                          }}
+                          ageTierOptions={ageTierOptions}
+                          memberGuestFind={memberGuestFind}
+                          existingMemberIds={(request.booking.guests ?? []).flatMap((guest) =>
+                            guest.memberId ? [guest.memberId] : [],
+                          )}
+                          canEdit={canEdit}
+                          ActionButton={OfficerEntryButton}
+                        />
+                      ) : null}
                       {request.executesOnApproval ? (
                         <FinishedStaySettlementField
                           requestId={request.id}
@@ -535,7 +583,8 @@ export function BookingChangeRequestsPanel({
                           onCheck={() =>
                             quotes.requestQuote(request.id, {
                               settlementMethod: decisionDraftFor(request.id).settlementMethod,
-                              confirmOverCapacity: quote?.confirmOverCapacity === true,
+                              confirmOverCapacity: quote?.confirmOverCapacity === true, // a list change clears it (M1)
+                              officerGuests,
                             })
                           }
                         />
@@ -571,6 +620,7 @@ export function BookingChangeRequestsPanel({
                                 quotes.requestQuote(request.id, {
                                   settlementMethod: decisionDraftFor(request.id).settlementMethod,
                                   confirmOverCapacity: true,
+                                  officerGuests,
                                 })
                               }
                               disabled={quote?.loading === true}
@@ -628,60 +678,11 @@ export function BookingChangeRequestsPanel({
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
-                      {request.status === "APPROVED" ? "Approved" : "Rejected"}
-                      {reviewedAt ? ` on ${reviewedAt}` : ""}
-                      {request.reviewedBy
-                        ? ` by ${request.reviewedBy.firstName} ${request.reviewedBy.lastName}`
-                        : ""}
-                      {/* #2562: after the decision the two notes stay visually
-                          separated and labelled, so an officer reading a
-                          colleague's decision knows which half the member has
-                          already read. */}
-                      {request.adminNotes ? (
-                        <div className="mt-2 rounded-md border border-border bg-background p-2">
-                          <p className="text-xs font-semibold text-foreground">
-                            Explanation the member can see
-                          </p>
-                          <p className="mt-1 whitespace-pre-wrap">
-                            {request.adminNotes}
-                          </p>
-                        </div>
-                      ) : null}
-                      {request.internalNotes ? (
-                        <div className="mt-2 rounded-md border border-dashed border-border bg-background p-2">
-                          <p className="text-xs font-semibold text-foreground">
-                            Internal note — admins only, never shown to the member
-                          </p>
-                          <p className="mt-1 whitespace-pre-wrap">
-                            {request.internalNotes}
-                          </p>
-                        </div>
-                      ) : null}
-                      {request.linkedModification ? (
-                        <p className="mt-2 text-muted-foreground">
-                          Linked booking modification:{" "}
-                          <span className="font-mono">
-                            {request.linkedModification.id}
-                          </span>{" "}
-                          ({request.linkedModification.modificationType},{" "}
-                          {formatCents(request.linkedModification.priceDiffCents, format)}{" "}
-                          delta)
-                        </p>
-                      ) : request.status === "APPROVED" &&
-                        request.executesOnApproval ? (
-                        // #3750: never point at the booking page for a finished stay.
-                        <FinishedStayUnlinkedNote />
-                      ) : request.status === "APPROVED" ? (
-                        <p className="mt-2 text-warning-11">
-                          No booking modification linked. The booking edit may
-                          still be outstanding — apply it from the booking page
-                          (using the admin override control for locked or
-                          fully-past dates); a date-only request links back here
-                          automatically when the applied dates match.
-                        </p>
-                      ) : null}
-                    </div>
+                    <DecidedChangeRequestSummary
+                      request={request}
+                      reviewedAt={reviewedAt}
+                      format={format}
+                    />
                   )}
                 </CardContent>
               </Card>

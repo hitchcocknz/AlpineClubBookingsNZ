@@ -93,6 +93,7 @@ import {
   adminXeroSyncErrorTemplate,
 } from "@/lib/email-templates/admin-finance";
 import { adminInternetBankingHoldKeptTemplate } from "@/lib/email-templates/admin-internet-banking";
+import { adminBankTransferSettlementFigureTemplate } from "@/lib/email-templates/admin-bank-transfer-settlement";
 import {
   adminAccountDeletionRequestedTemplate,
   adminFamilyGroupRequestTemplate,
@@ -669,6 +670,21 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
         "organiser_by_hand",
       ),
   },
+  {
+    // #4084: a refund to the member's own card Stripe did not make is on its
+    // way, in an info box. Its own pin, so the made case (`:minimal`) stays byte-identical.
+    id: "bookingCancelledTemplate:refund-own-card-pending",
+    fn: "bookingCancelledTemplate",
+    render: () =>
+      bookingCancelledTemplate(
+        "Ada",
+        FIXED_DATE("2026-07-04T00:00:00.000Z"),
+        FIXED_DATE("2026-07-06T00:00:00.000Z"),
+        12000,
+        CLUB_FORMAT_TEST,
+        "card_pending",
+      ),
+  },
 ];
 
 /** Generated from the exported signatures; see the module docblock. */
@@ -805,10 +821,17 @@ const GENERATED_CASES: EmailRenderCase[] = [
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "settled", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: null, xeroInvoiceNumber: null, xeroInvoiceUrl: null, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminSecondInstrumentSettlementConflictTemplate:full", fn: "adminSecondInstrumentSettlementConflictTemplate", render: () =>
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "cancelledAfterCard", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: "cardPaymentIntentId-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  { id: "adminBankTransferSettlementFigureTemplate:kept", fn: "adminBankTransferSettlementFigureTemplate", render: () =>
+    adminBankTransferSettlementFigureTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", keptReason: "folded-refund", owed: null, hasSupplementaryInvoice: false, recordedCents: 105, cashCents: 106, owedCents: null, xeroInvoiceNumber: null, xeroInvoiceUrl: null, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  { id: "adminBankTransferSettlementFigureTemplate:owed", fn: "adminBankTransferSettlementFigureTemplate", render: () =>
+    adminBankTransferSettlementFigureTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", keptReason: null, owed: "underpaid", hasSupplementaryInvoice: true, recordedCents: 105, cashCents: 106, owedCents: 107, xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminSecondInstrumentSettlementConflictTemplate:refund-history", fn: "adminSecondInstrumentSettlementConflictTemplate", render: () =>
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "cancelledAfterRefund", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: "cardPaymentIntentId-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminManualRefundTaskTemplate:minimal", fn: "adminManualRefundTaskTemplate", render: () =>
     adminManualRefundTaskTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), refundAmountCents: 104, bookingId: "bookingId-5", reason: "reason-6", reviewUrl: "reviewUrl-7" }, CLUB_FORMAT_TEST) },
+  // #4042: an organiser's Internet Banking group cancel, whose refunds are already booked.
+  { id: "adminManualRefundTaskTemplate:group-organiser", fn: "adminManualRefundTaskTemplate", render: () =>
+    adminManualRefundTaskTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), refundAmountCents: 104, bookingId: "bookingId-5", reason: "reason-6", reviewUrl: "reviewUrl-7", situation: "group-organiser-internet-banking" }, CLUB_FORMAT_TEST) },
   { id: "adminLateCaptureHeldTemplate:minimal", fn: "adminLateCaptureHeldTemplate", render: () =>
     adminLateCaptureHeldTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, bookingId: "bookingId-5", reviewUrl: "reviewUrl-6" }, CLUB_FORMAT_TEST) },
   { id: "adminPendingDeadlineTemplate:minimal", fn: "adminPendingDeadlineTemplate", render: () =>
@@ -844,15 +867,18 @@ const GENERATED_CASES: EmailRenderCase[] = [
   { id: "adminCreditSyncDriftTemplate:full", fn: "adminCreditSyncDriftTemplate", render: () =>
     adminCreditSyncDriftTemplate(CREDIT_DRIFT_FULL, CLUB_FORMAT_TEST) },
   { id: "bookingModificationSummaryRows:minimal", fn: "bookingModificationSummaryRows", render: () =>
-    json(bookingModificationSummaryRows({ oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109 }, CLUB_FORMAT_TEST)) },
+    json(bookingModificationSummaryRows({ addedGuests: [], oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109 }, CLUB_FORMAT_TEST)) },
   { id: "bookingModificationSummaryRows:full", fn: "bookingModificationSummaryRows", render: () =>
-    json(bookingModificationSummaryRows({ oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109, promoCoverageNote: "promoCoverageNote-10" }, CLUB_FORMAT_TEST)) },
+    json(bookingModificationSummaryRows({ addedGuests: [], oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109, promoCoverageNote: "promoCoverageNote-10" }, CLUB_FORMAT_TEST)) },
+  // #4030: a change that added guests names them; one staying part of the stay carries its own nights.
+  { id: "bookingModificationSummaryRows:addedGuests", fn: "bookingModificationSummaryRows", render: () =>
+    json(bookingModificationSummaryRows({ addedGuests: [{ firstName: "Ari", lastName: "Grandchild", stayStart: new Date("2026-03-04T00:00:00.000Z"), stayEnd: new Date("2026-03-06T00:00:00.000Z") }, { firstName: "Bo", lastName: "Grandchild", stayStart: new Date("2026-03-05T00:00:00.000Z"), stayEnd: new Date("2026-03-06T00:00:00.000Z"), consentStatus: "PENDING" }], oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-06T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-06T00:00:00.000Z"), oldGuestCount: 1, newGuestCount: 3, oldFinalPriceCents: 9000, newFinalPriceCents: 18500, changeFeeCents: 0 }, CLUB_FORMAT_TEST)) },
   { id: "bookingModificationTypeLabel:minimal", fn: "bookingModificationTypeLabel", render: () =>
     bookingModificationTypeLabel("modificationType-1") },
   { id: "bookingModifiedTemplate:minimal", fn: "bookingModifiedTemplate", render: () =>
-    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 113, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 113, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
   { id: "bookingModifiedTemplate:full", fn: "bookingModifiedTemplate", render: () =>
-    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, accountCreditAmountCents: 113, additionalAmountCents: 114, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", promoCoverageNote: "promoCoverageNote-17", appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, accountCreditAmountCents: 113, additionalAmountCents: 114, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", promoCoverageNote: "promoCoverageNote-17", appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
   /*
     #3032: the review note is a rendered shape of its own, so it gets its own
     pin rather than riding on `:full`. Deliberately COMPOSED - review pending
@@ -863,23 +889,33 @@ const GENERATED_CASES: EmailRenderCase[] = [
   */
   // #3827 (D-3813-6): an internet-banking refund is promised, not reported.
   { id: "bookingModifiedTemplate:refundByBankTransfer", fn: "bookingModifiedTemplate", render: () =>
-    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: true, refundDestination: "own" }, CLUB_FORMAT_TEST) },
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: true, refundDestination: "own" }, CLUB_FORMAT_TEST) },
   { id: "bookingModifiedTemplate:financialReviewPendingWithPayment", fn: "bookingModifiedTemplate", render: () =>
-    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 0, accountCreditAmountCents: 0, additionalAmountCents: 114, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", promoCoverageNote: "promoCoverageNote-17", appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: true, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 0, accountCreditAmountCents: 0, additionalAmountCents: 114, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", promoCoverageNote: "promoCoverageNote-17", appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: true, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
+  // #4030: a change that added guests names each one, with their own nights when they differ.
+  { id: "bookingModifiedTemplate:addedGuests", fn: "bookingModifiedTemplate", render: () =>
+    bookingModifiedTemplate({ addedGuests: [{ firstName: "Ari", lastName: "Grandchild", stayStart: new Date("2026-03-04T00:00:00.000Z"), stayEnd: new Date("2026-03-06T00:00:00.000Z") }, { firstName: "Bo", lastName: "Grandchild", stayStart: new Date("2026-03-05T00:00:00.000Z"), stayEnd: new Date("2026-03-06T00:00:00.000Z"), consentStatus: "PENDING" }], firstName: "firstName-1", modificationType: "BATCH_MODIFY", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-06T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-06T00:00:00.000Z"), oldGuestCount: 1, newGuestCount: 3, oldFinalPriceCents: 9000, newFinalPriceCents: 18500, changeFeeCents: 0, refundAmountCents: 0, additionalAmountCents: 9500, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own" }, CLUB_FORMAT_TEST) },
   /*
     #3916: a joiner's reduction refunded to the group organiser's card (#3653)
     names that card, not "your original payment method". Its own pin, so the
     others stay byte-identical: the own-card sentence did not move.
   */
   { id: "bookingModifiedTemplate:refundToOrganiser", fn: "bookingModifiedTemplate", render: () =>
-    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "organiser_card" }, CLUB_FORMAT_TEST) },
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "organiser_card" }, CLUB_FORMAT_TEST) },
   /*
     #4057: that refund not made yet - its debt failed, was not claimed, or could
     not be re-read - is on its way, in an info box. Its own pin, so the made
     case above stays byte-identical.
   */
   { id: "bookingModifiedTemplate:refundToOrganiserPending", fn: "bookingModifiedTemplate", render: () =>
-    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "organiser_card_pending" }, CLUB_FORMAT_TEST) },
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "organiser_card_pending" }, CLUB_FORMAT_TEST) },
+  /*
+    #4070: a refund to the member's own card that Stripe did not make, queued
+    for the recovery runner, is on its way, in an info box. Its own pin, so the
+    made case (`:minimal`) stays byte-identical.
+  */
+  { id: "bookingModifiedTemplate:refundToOwnCardPending", fn: "bookingModifiedTemplate", render: () =>
+    bookingModifiedTemplate({ addedGuests: [], firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskCancelled: false, financialReviewPending: false, refundByBankTransfer: false, refundDestination: "own_card_pending" }, CLUB_FORMAT_TEST) },
   { id: "accountDeletionApprovedTemplate:minimal", fn: "accountDeletionApprovedTemplate", render: () =>
     accountDeletionApprovedTemplate("firstName-1") },
   { id: "familyGroupInvitationTemplate:minimal", fn: "familyGroupInvitationTemplate", render: () =>

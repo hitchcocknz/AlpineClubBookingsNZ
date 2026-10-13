@@ -287,6 +287,7 @@ import { cancelBooking } from "@/lib/booking-cancel";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { lockedPaymentReReadDouble } from "./support/locked-payment-reread-double";
+import { OWN_CARD_REFUND_STATES, primeOwnCardRefund } from "./support/own-card-refund-outcome";
 
 /** The club's zone, named rather than taken from a helper default (#3123). */
 const CLUB_ZONE = "Pacific/Auckland";
@@ -2558,6 +2559,42 @@ describe("cancelBooking credit refunds", () => {
     });
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
     expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+  });
+
+  describe("#4084: an own-card refund is reported made only once Stripe has made it", () => {
+    // The states the Booking Modified doors are driven through (#4070); the
+    // cancel's email and confirmation take the same answer (`ownCardRefundMade`).
+    // Only a thrown call records an inline error on the pre-persisted recovery
+    // operation; the cancel queues nothing new, the debt committed with the claim.
+    it.each(OWN_CARD_REFUND_STATES)("$label", async ({ answer, queued, destination }) => {
+      primeOwnCardRefund(mocks.refundPaymentTransactions, answer);
+      const method = destination === "own" ? "card" : "card_pending";
+
+      const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+      expect(result.status).toBe(200);
+      expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][5]).toBe(5000);
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe(method);
+      // The result and the audit row still say "card"; only the wording follows Stripe's answer.
+      expect(result).toMatchObject({
+        data: { refundAmountCents: 5000, refundMethod: "card", ownCardRefund: { method, amountCents: 5000 } },
+      });
+      expect(result).toMatchObject({ data: { message: expect.stringContaining(method === "card" ? "processed" : "on its way") } });
+      expect(mocks.logAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ refundMethod: "card" }) }),
+      );
+      expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledTimes(queued ? 1 : 0);
+    });
+
+    it("a partial refund that threw is on its way, not processed", async () => {
+      mocks.refundPaymentTransactions.mockRejectedValueOnce(new mocks.PartialRefundError(4000));
+
+      const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+      expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("card_pending");
+      expect(result).toMatchObject({ data: { ownCardRefund: { method: "card_pending", amountCents: 5000 } } });
+    });
   });
 
   describe("the cancellation's ledger lines post inside the claim (#3611)", () => {

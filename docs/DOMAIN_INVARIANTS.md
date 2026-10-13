@@ -286,6 +286,9 @@ Prefix `INV-PAY`.
 | `INV-PAY-120` | A reduction first cancels or shrinks the unpaid card ask |
 | `INV-PAY-121` | An unpaid card refund is owed until paid or closed another way |
 | `INV-PAY-122` | A paid-another-way close records a hand-back and ends the refund |
+| `INV-PAY-124` | An organiser's Internet Banking group cancel raises one repay task |
+| `INV-PAY-125` | A bank transfer settles at its invoice's cash, never silently kept |
+| `INV-PAY-126` | An invoice correction refunds nothing, except against a stored-figure receipt |
 | `INV-PAY-111` | A refund note's own operation completes only with its payment or skip |
 | `INV-PAY-070` | Xero leg bills the total on one invoice per edit, anchor-locked |
 | `INV-PAY-063` | Recorded shortfalls are billed on a second invoice; sent invoices only |
@@ -446,6 +449,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-057` | Cancellable statuses have one home; member doors read a named subset |
 | `INV-MOD-058` | An edit stores its delta as lines; every reader reads those rows |
 | `INV-MOD-059` | A guest's dietary value is seeded once, then carried by identity |
+| `INV-MOD-060` | An ordinary price ask's door and replay send one Stripe request |
 
 ### Adult-member hosting
 
@@ -529,6 +533,7 @@ File:
 | `INV-REQ-008` | A correction re-opens the request; an accepted quote refuses it outright |
 | `INV-REQ-009` | A corrected school name is stored only against the confirmed record |
 | `INV-REQ-010` | A corrected request never keeps beds held for its old shape |
+| `INV-REQ-011` | A request names a structured change; officers enter guests atomically |
 
 ### Subscription-lockout pricing, admin date overrides and member-facing email
 

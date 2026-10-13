@@ -239,6 +239,7 @@ vi.mock("@/lib/member-credit", () => {
 
 import { resolveManualRefundTask } from "@/lib/manual-refund-task-resolution";
 import { EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE } from "@/lib/manual-refund-task-settlement-rules";
+import { GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE } from "@/lib/group-organiser-hand-back-rules";
 import { completionMessage } from "@/lib/manual-refund-task-copy";
 import { loadCancellationPolicy } from "@/lib/cancellation";
 import logger from "@/lib/logger";
@@ -2402,6 +2403,83 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       await dismiss();
 
       expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalled();
+    });
+  });
+
+  // #4042 (`INV-PAY-124`): a group organiser's hand-back. The cancel already
+  // booked the joiners' refunds, so it is paid, never dismissed, and paying it
+  // moves nothing; it closes under lock(1), which each later share grows it under.
+  describe("a group organiser's hand-back (#4042)", () => {
+    function groupTask() {
+      mocks.manualRefundTaskFindUnique.mockResolvedValue({
+        id: "task-g",
+        bookingId: "org-booking",
+        paymentId: null,
+        payment: null,
+        amountCents: 7500,
+        raisedAmountCents: 7500,
+        kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+        occurrenceKey: "group-organiser-hand-back:settle-1",
+        lateCaptureApprovalIntentId: null,
+        partPaymentReviewPaymentId: null,
+        status: ManualRefundTaskStatus.OPEN,
+        booking: {
+          memberId: "member-1",
+          lodgeId: "lodge-1",
+          status: "CANCELLED",
+          payment: { id: "payment-org", status: "PARTIALLY_REFUNDED", xeroInvoiceId: "inv-org" },
+        },
+      });
+    }
+
+    it("refuses a dismissal, under lock(1), before any claim, and tells the officer to take it to the treasurer", async () => {
+      groupTask();
+
+      await expect(
+        resolveManualRefundTask({ taskId: "task-g", resolution: "dismissed", note: "organiser said keep it", actingMemberId: "admin-1", recordedNightPrices: null }, CLUB_FORMAT_TEST),
+      ).rejects.toMatchObject({ status: 409, message: GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE });
+      expect(GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE).toContain("take it to the treasurer");
+      expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("marking it paid back closes it under lock(1) and writes no ledger line, allocation, Xero note or REFUNDED event", async () => {
+      groupTask();
+      mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 1 });
+
+      await resolveManualRefundTask({ taskId: "task-g", resolution: "completed", note: null, actingMemberId: "admin-1", confirmedAmountCents: 7500, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST);
+
+      expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+      expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "task-g", status: ManualRefundTaskStatus.OPEN }, data: expect.objectContaining({ status: ManualRefundTaskStatus.COMPLETED, amountCents: 7500 }) }),
+      );
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+      expect(postHandBackLedgerLine).not.toHaveBeenCalled();
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+      expect(mocks.enqueueXeroRefundRequestCreditNoteOperation).not.toHaveBeenCalled();
+      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mocks.recordBookingEvent).not.toHaveBeenCalled();
+    });
+
+    it("a total that grew since the screen loaded is refused before the claim, naming the new total", async () => {
+      groupTask();
+
+      await expect(
+        resolveManualRefundTask({ taskId: "task-g", resolution: "completed", note: null, actingMemberId: "admin-1", confirmedAmountCents: 4500, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: "Another joiner's share was added; the organiser is now owed $75.00. Repay the difference, then mark it paid back.",
+      });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a completion that does not say the total it was shown is refused before the claim", async () => {
+      groupTask();
+
+      await expect(
+        resolveManualRefundTask({ taskId: "task-g", resolution: "completed", note: null, actingMemberId: "admin-1", confirmedAmountCents: null, direction: null, recordedNightPrices: null }, CLUB_FORMAT_TEST),
+      ).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Refresh the page and try again") });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
     });
   });
 

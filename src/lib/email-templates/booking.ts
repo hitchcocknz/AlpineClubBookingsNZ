@@ -11,10 +11,9 @@
  * with the admin alerts about the same booking).
  */
 import {
-  type AppliedCreditSummary,
+  type AppliedCreditSummary, type BookingModificationAddedGuest,
   appliedCreditSummaryRows,
-  bookingModificationSummaryRows,
-  bookingModificationTypeLabel,
+  bookingModificationSummaryRows, bookingModificationTypeLabel,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
   resolveUnpaidCreditNetting,
@@ -460,6 +459,7 @@ export function bookingModifiedTemplate(params: {
   // saved without. One more change row, so the HTML and the flat body cannot be
   // the ones to disagree about what the member asked for.
   promoChangeNotAppliedNote?: string | null;
+  addedGuests: ReadonlyArray<BookingModificationAddedGuest>; // #4030: named in the shared rows; `[]` = nobody
   /**
    * #3033 (epic #2797): this change saved and its refund or credit could not be
    * worked out from what the booking has stored, so the club is deciding it.
@@ -523,7 +523,7 @@ export function bookingModifiedTemplate(params: {
     newFinalPriceCents,
     changeFeeCents,
     promoCoverageNote,
-    promoChangeNotAppliedNote,
+    promoChangeNotAppliedNote, addedGuests: params.addedGuests,
   }, format).map((row) => ({
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),
@@ -567,7 +567,7 @@ export function bookingModifiedTemplate(params: {
   if (refundAmountCents > 0) {
     settlementNote = alertBox(
       bookingModifiedRefundSentence(formatCents(refundAmountCents, format), params.refundByBankTransfer, params.refundDestination),
-      // #4057: an organiser-card refund still on its way is information, not a success.
+      // #4057, #4070: a card refund still on its way is information, not a success.
       bookingModifiedRefundPending(params.refundDestination) ? "info" : "success"
     );
     // #3827 (D-3813-5): a split payment's reduction goes back partly as cash and
