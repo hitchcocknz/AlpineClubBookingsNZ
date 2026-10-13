@@ -1,6 +1,6 @@
 "use client";
 
-import { useId } from "react";
+import { useId, useRef } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { useRevealAttention } from "@/hooks/use-scroll-to-feedback";
 import {
   ForbiddenSaveError,
   useSectionEditState,
@@ -109,6 +110,7 @@ export function ClubIdentityPanel() {
   const canEdit = useAdminAreaEditAccess("content");
   const viewOnlyReasonId = useId();
 
+  const cardRef = useRef<HTMLDivElement>(null);
   const section = useSectionEditState<Draft>({
     load: async (signal) => {
       const response = await fetch(ENDPOINT, { signal });
@@ -137,6 +139,9 @@ export function ClubIdentityPanel() {
     saveErrorFallback: SAVE_ERROR,
     isDirty: identityChanged,
   });
+  // Edit unmounts the focused button, so move focus to the section, as
+  // ARCHITECTURE.md's reveal rule asks (#3990 review).
+  useRevealAttention(cardRef, section.editRequestKey);
 
   const { draft, editing, saving, dirty, error, success } = section;
 
@@ -196,7 +201,13 @@ export function ClubIdentityPanel() {
   }
 
   return (
-    <div>
+    <div
+      ref={cardRef}
+      role="region"
+      aria-label="Club identity"
+      tabIndex={-1}
+      className="focus:outline-none"
+    >
       {viewOnlyBanner}
       {feedback}
       <div className="space-y-4">
@@ -249,7 +260,12 @@ export function ClubIdentityPanel() {
             <Button
               variant="outline"
               disabled={saving}
-              onClick={section.cancelEditing}
+              onClick={() => {
+                // A failed save's message describes edits Cancel discards.
+                section.setSuccess("");
+                section.setError("");
+                section.cancelEditing();
+              }}
             >
               Cancel
             </Button>

@@ -40,7 +40,10 @@ function escapeRegExp(value: string): string {
 async function setClubNameOverride(page: Page, value: string): Promise<void> {
   const nameInput = page.locator("#club-identity-name");
   await expect(nameInput).toBeVisible();
-  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Club identity" })
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
   await expect(nameInput).toBeEnabled();
   await nameInput.fill(value);
   await expect(nameInput).toHaveValue(value);

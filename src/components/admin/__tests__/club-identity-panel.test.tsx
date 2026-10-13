@@ -283,6 +283,38 @@ describe("ClubIdentityPanel — staged Edit → Save/Cancel (#3976)", () => {
     expect(field("Facebook URL")).toBeEnabled();
   });
 
+  it("Cancel after a failed save clears the message about the discarded edits", async () => {
+    render(<ClubIdentityPanel />);
+    await screen.findByDisplayValue("Alpine Sports Club");
+    fetchMock.mockImplementationOnce(
+      async () => new Response("{}", { status: 400 }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(field("Facebook URL"), { target: { value: "not a url" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save club identity" }));
+    await screen.findByText("Could not update club identity.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByText("Could not update club identity."),
+    ).not.toBeInTheDocument();
+    expect(field("Facebook URL")).toHaveValue("");
+  });
+
+  it("moves focus to the section when Edit replaces the focused button", async () => {
+    render(<ClubIdentityPanel />);
+    await screen.findByDisplayValue("Alpine Sports Club");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("region", { name: "Club identity" }),
+      ),
+    );
+  });
+
   it("maps a 403 to the shared forbidden-save reason", async () => {
     render(<ClubIdentityPanel />);
     await screen.findByDisplayValue("Alpine Sports Club");
