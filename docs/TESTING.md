@@ -1397,9 +1397,14 @@ re-verify an entry.
   427ms on an idle machine and 1,914ms beside two other lanes' builds. In CI's
   `Test shard (2/4)` the file took 6,873ms and its first test hit "Test timed
   out in 5000ms", twice on PR #4077's head `31e771fde` and once on PR #4063;
-  it passed alone each time. Fixed at the suite rather than left in this list:
-  its `describe` carries a 30,000ms budget (#4085), so a real miss now
-  surfaces RTL's own message from its 10,000ms `findBy` instead.
+  it passed alone each time. **The timeout hid an ordering bug**, the case the
+  section above warns about: with the budget raised, CI showed RTL's own
+  "Unable to find … Sam Stayer". The page clears the picked dates when its
+  lodge scope settles, and the test typed them before the lodge list loaded,
+  so on a slow runner they were wiped and no member was ever fetched. A 400ms
+  delay on the mocked lodge list reproduces it locally every time. The suite
+  now waits for the settled scope before typing (#4085), and keeps the
+  30,000ms `describe` budget for the full-page render itself.
 
 Of the entries above, the two 2026-09-19 batches covered the first five; they
 produced no timeout, so their figures show how close each suite runs to the
