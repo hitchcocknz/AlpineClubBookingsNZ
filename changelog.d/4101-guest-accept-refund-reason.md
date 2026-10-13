@@ -4,7 +4,7 @@
   the card. If that refund was interrupted after the card provider had already
   made it (a timeout, for example), the background retry sent a slightly
   different request under the same reference, the provider refused it, and the
-  retry never finished, so the refund stayed listed as owed although the money
-  had gone back. The retry now sends exactly the original request, so it picks up
+  retry never finished, leaving an officer to reconcile by hand a refund that
+  had in fact been made. The retry now sends exactly the original request, so it picks up
   the refund already made and records it. No member is refunded twice. The other
   refund retries were checked and already matched their original requests.
