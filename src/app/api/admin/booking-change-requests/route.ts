@@ -96,19 +96,23 @@ export async function GET(req: NextRequest) {
   // finished — answered here from the same `isFinishedStay` the decision route
   // asks, so the panel's wording and the route's behaviour cannot disagree.
   const today = await clubTodayDateOnlyInstant();
-  const data = requests.map((request) => {
-    const executesOnApproval = isFinishedStay(request.booking, today);
+  const data = requests.map(({ booking: { guests, ...booking }, ...request }) => {
+    const executesOnApproval = isFinishedStay(booking, today);
+    // #4030 Part B: a pending request on a finished stay that names no change
+    // (a member's free-text note) — the officer may enter the guests it
+    // describes. Asked through the executor's own mapping, so the card never
+    // offers an entry the approval would refuse.
+    const acceptsOfficerGuests =
+      executesOnApproval &&
+      request.status === "REQUESTED" &&
+      storedRequestNamesNoChange(request.requestedChanges, booking);
     return {
       ...request,
+      // #4030 review S7: the guests' member ids reach the screen only where
+      // the officer's finder uses them.
+      booking: acceptsOfficerGuests ? { ...booking, guests } : booking,
       executesOnApproval,
-      // #4030 Part B: a pending request on a finished stay that names no change
-      // (a member's free-text note) — the officer may enter the guests it
-      // describes. Asked through the executor's own mapping, so the card never
-      // offers an entry the approval would refuse.
-      acceptsOfficerGuests:
-        executesOnApproval &&
-        request.status === "REQUESTED" &&
-        storedRequestNamesNoChange(request.requestedChanges, request.booking),
+      acceptsOfficerGuests,
     };
   });
 

@@ -20,6 +20,7 @@ import type {
   ChangeRequestStay,
 } from "@/lib/booking-change-request-guests";
 import { formatCents } from "@/lib/utils";
+import { shiftDateOnly } from "@/components/edit-booking/stay-nights";
 
 /**
  * Ask an admin to make a change this member is not allowed to make themselves.
@@ -38,7 +39,7 @@ import { formatCents } from "@/lib/utils";
  */
 export interface ChangeRequestGuestContext {
   /** The booking: its stay, who is already on it, and the member-guest finder's reach. */
-  booking: Pick<BookingData, "id" | "checkIn" | "checkOut" | "guests" | "memberGuest">;
+  booking: Pick<BookingData, "id" | "checkIn" | "checkOut" | "guests" | "memberGuest" | "editPolicy">;
   ageTierOptions: AgeTierOption[];
   familyMembers: readonly FamilyMember[];
 }
@@ -74,6 +75,13 @@ export function ChangeRequestCard({
   const [guests, setGuests] = useState<NewGuest[]>([]);
   const [estimateState, setEstimateState] = useState<EstimateState | null>(null);
   const { booking } = guestContext;
+  const inProgress = booking.editPolicy.mode === "in-progress";
+  // #4030 review S3: the last night the member can no longer book themselves
+  // (the night before the edit window opens), so Date In never offers a night
+  // the request would refuse as an ordinary edit.
+  const lastLockedNight = booking.editPolicy.editableFrom
+    ? shiftDateOnly(booking.editPolicy.editableFrom, -1)
+    : booking.editPolicy.today;
   const bookingId = booking.id;
   const stay: ChangeRequestStay = { checkIn: booking.checkIn, checkOut: booking.checkOut };
   const payload = changeRequestGuestsPayload(guests, stay);
@@ -123,10 +131,20 @@ export function ChangeRequestCard({
         <CardTitle>Admin Request</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          A change to tonight or earlier needs the booking officer. Add anybody
-          staying who is not on the booking, with the nights they are here.
-        </p>
+        {inProgress ? (
+          <p className="text-sm text-muted-foreground">
+            A change to tonight or earlier needs the booking officer. Add anybody
+            staying who is not on the booking, with the nights they are here.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            This change needs the booking officer&rsquo;s approval. Send it with a
+            note and they will review it.
+          </p>
+        )}
+        {/* #4030 review S4: guests are entered here only on a stay under way;
+            before it starts, the guest editor above adds them directly. */}
+        {inProgress ? (
         <ChangeRequestGuestEntry
           idPrefix="change-request-guest"
           guests={guests}
@@ -144,7 +162,9 @@ export function ChangeRequestCard({
               : null
           }
           disabled={submitting}
+          stayStartMax={lastLockedNight}
         />
+        ) : null}
         {payload.length > 0 ? (
           <ChangeRequestEstimateSummary
             state={current}
@@ -162,8 +182,10 @@ export function ChangeRequestCard({
         </div>
         {!hasStructuredChange ? (
           <p className="text-xs text-muted-foreground">
-            Add the guests (or change the dates above) to send a request. A note
-            on its own can&rsquo;t be applied to your booking.
+            {inProgress
+              ? "Add the guests (or change the dates above) to send a request."
+              : "Make the change above to send a request."}{" "}
+            A note on its own can&rsquo;t be applied to your booking.
           </p>
         ) : null}
         <Button

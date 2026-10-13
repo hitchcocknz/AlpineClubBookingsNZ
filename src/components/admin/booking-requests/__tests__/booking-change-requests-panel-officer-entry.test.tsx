@@ -239,4 +239,53 @@ describe("change-request panel — the officer enters the guests (#4030)", () =>
     await waitFor(() => expect(approve).toBeDisabled());
     expect(screen.queryByRole("list", { name: /What approving will do/i })).toBeNull();
   });
+
+  it("an overbooking confirmed for one list is not sent for another (review M1)", async () => {
+    const base = fetchMock.getMockImplementation() as (input: unknown, init?: RequestInit) => Promise<Response>;
+    let quoteCalls = 0;
+    fetchMock.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (String(input).endsWith("/quote")) {
+        quoteCalls += 1;
+        if (quoteCalls === 1) {
+          return jsonResponse(
+            {
+              id: "req-1",
+              status: "REQUESTED",
+              keptPending: true,
+              needsCapacityConfirmation: true,
+              nightDetails: [{ date: "2026-06-11", availableBeds: -1 }],
+              error: "Some of this stay's nights are over the lodge's capacity.",
+            },
+            409,
+          );
+        }
+      }
+      return base(input, init);
+    });
+    render(<BookingChangeRequestsPanel />);
+    fireEvent.change(await screen.findByLabelText(/Explanation for the member/i), { target: { value: "ok" } });
+    await enterGuest("Ari");
+    fireEvent.click(screen.getByRole("button", { name: /Check the figures/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Confirm overbooking/i }));
+    await screen.findByRole("list", { name: /What approving will do/i });
+    expect(quoteBodies()[1]).toMatchObject({ confirmOverCapacity: true });
+
+    // A different list: the confirmation (and the stale warning) go with the old one.
+    await enterGuest("Bo");
+    expect(screen.queryByRole("button", { name: /Confirm overbooking/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Check the figures/i }));
+    await screen.findByRole("list", { name: /What approving will do/i });
+    expect(quoteBodies()[2]).not.toHaveProperty("confirmOverCapacity");
+    expect(quoteBodies()[2].officerGuests).toHaveLength(2);
+  });
+
+  it("follows the queue's view-only pattern for an admin who cannot edit (review S6)", async () => {
+    render(<BookingChangeRequestsPanel canEdit={false} />);
+    const firstName = await screen.findByLabelText("First name");
+    expect(firstName).toBeDisabled();
+    expect(firstName).toHaveAttribute("title", expect.stringMatching(/.+/));
+    const add = screen.getByRole("button", { name: "Add guest" });
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute("title", firstName.getAttribute("title"));
+  });
 });

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { Label } from "@/components/ui/label";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { calendarDateOfDateOnlyInstant, formatStayDate } from "@/lib/club-time";
@@ -233,9 +234,18 @@ export function OfficerGuestEntry({
             : null
         }
         disabled={!canEdit}
+        // #4030 review S6: the queue's own view-only pattern - the section
+        // banner explains, each control carries the reason as its title.
+        ActionButton={canEdit ? Button : ViewOnlyEntryButton}
+        inputTitle={ADMIN_VIEW_ONLY_ACTION_REASON}
       />
     </div>
   );
+}
+
+/** #4030 review S6: a guest-entry button for a view-only admin. */
+function ViewOnlyEntryButton(props: ButtonProps) {
+  return <ViewOnlyActionButton canEdit={false} describeReason={false} title={ADMIN_VIEW_ONLY_ACTION_REASON} {...props} />;
 }
 
 /** #4030: the officer's rows as the approval sends them, or null when none. */

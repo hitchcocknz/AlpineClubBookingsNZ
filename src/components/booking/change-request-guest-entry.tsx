@@ -1,9 +1,9 @@
 "use client";
 
 import type { AgeTier } from "@prisma/client";
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AddedGuestRow } from "@/components/edit-booking/added-guest-row";
@@ -45,6 +45,9 @@ export function ChangeRequestGuestEntry({
   familyMembers = [],
   memberFind,
   disabled = false,
+  stayStartMax,
+  ActionButton = Button,
+  inputTitle,
 }: {
   /** Distinguishes this entry's field ids from any other on the page. */
   idPrefix: string;
@@ -59,6 +62,20 @@ export function ChangeRequestGuestEntry({
   /** The member-guest finder, when the club's module offers it to this viewer. */
   memberFind?: { openSearchEnabled: boolean; endpoints?: MemberGuestFindEndpoints } | null;
   disabled?: boolean;
+  /**
+   * #4030 review S3: the latest night a guest may start on — the last night
+   * the member can no longer book themselves — so the card never prices an add
+   * the request would then refuse as an ordinary edit.
+   */
+  stayStartMax?: string;
+  /**
+   * #4030 review S6: the button the entry renders. The officer's card passes
+   * its view-only button, so a view-only admin sees the queue's own disabled
+   * pattern; the member card keeps the plain one.
+   */
+  ActionButton?: ComponentType<ButtonProps>;
+  /** #4030 review S6: the explanation a disabled field carries (the officer's view-only reason). */
+  inputTitle?: string;
 }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -98,7 +115,7 @@ export function ChangeRequestGuestEntry({
   return (
     <div className="space-y-3">
       {guests.length > 0 ? (
-        <div className="space-y-1" aria-label="Guests to add">
+        <div className="space-y-1" role="group" aria-label="Guests to add">
           {guests.map((guest) => (
             <AddedGuestRow
               key={guest.key}
@@ -107,6 +124,7 @@ export function ChangeRequestGuestEntry({
               perGuestDatesEnabled
               checkIn={stay.checkIn}
               checkOut={stay.checkOut}
+              stayStartMax={stayStartMax}
               onUpdateRange={(field, value) => updateRange(guest.key, field, value)}
               onRemove={() => onChange(guests.filter((other) => other.key !== guest.key))}
             />
@@ -115,9 +133,9 @@ export function ChangeRequestGuestEntry({
       ) : null}
 
       {quickAdds.length > 0 ? (
-        <div className="flex flex-wrap gap-2" aria-label="Add a family member">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Add a family member">
           {quickAdds.map((member) => (
-            <Button
+            <ActionButton
               key={member.id}
               type="button"
               size="sm"
@@ -126,7 +144,7 @@ export function ChangeRequestGuestEntry({
               onClick={() => addMember({ ...member, memberId: member.id })}
             >
               + {member.firstName} {member.lastName}
-            </Button>
+            </ActionButton>
           ))}
         </div>
       ) : null}
@@ -145,7 +163,7 @@ export function ChangeRequestGuestEntry({
             onCancel={() => setFinderOpen(false)}
           />
         ) : (
-          <Button
+          <ActionButton
             type="button"
             size="sm"
             variant="outline"
@@ -153,7 +171,7 @@ export function ChangeRequestGuestEntry({
             onClick={() => setFinderOpen(true)}
           >
             + Add a member
-          </Button>
+          </ActionButton>
         )
       ) : null}
 
@@ -164,6 +182,7 @@ export function ChangeRequestGuestEntry({
             id={`${idPrefix}-first-name`}
             value={firstName}
             disabled={disabled}
+            title={disabled ? inputTitle : undefined}
             maxLength={100}
             onChange={(event) => setFirstName(event.target.value)}
           />
@@ -174,6 +193,7 @@ export function ChangeRequestGuestEntry({
             id={`${idPrefix}-last-name`}
             value={lastName}
             disabled={disabled}
+            title={disabled ? inputTitle : undefined}
             maxLength={100}
             onChange={(event) => setLastName(event.target.value)}
           />
@@ -185,6 +205,7 @@ export function ChangeRequestGuestEntry({
             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             value={ageTier}
             disabled={disabled}
+            title={disabled ? inputTitle : undefined}
             onChange={(event) => setAgeTier(event.target.value as AgeTier)}
           >
             {ageTierOptions.map((option) => (
@@ -194,14 +215,14 @@ export function ChangeRequestGuestEntry({
             ))}
           </select>
         </div>
-        <Button
+        <ActionButton
           type="button"
           variant="outline"
           disabled={disabled || !firstName.trim() || !lastName.trim()}
           onClick={addNonMember}
         >
           Add guest
-        </Button>
+        </ActionButton>
       </div>
     </div>
   );

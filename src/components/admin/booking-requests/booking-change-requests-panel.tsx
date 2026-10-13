@@ -547,9 +547,12 @@ export function BookingChangeRequestsPanel({
                           bookingId={request.booking.id}
                           stay={requestStay(request.booking)}
                           guests={decisionDraftFor(request.id).officerGuests}
-                          onChange={(officerGuests) =>
-                            updateDecisionDraft(request.id, { officerGuests })
-                          }
+                          onChange={(officerGuests) => {
+                            updateDecisionDraft(request.id, { officerGuests });
+                            // #4030 review M1: figures and any overbooking
+                            // confirmation belong to the list they were given for.
+                            quotes.clear(request.id);
+                          }}
                           ageTierOptions={ageTierOptions}
                           memberGuestFind={memberGuestFind}
                           existingMemberIds={(request.booking.guests ?? []).flatMap((guest) =>
@@ -577,7 +580,10 @@ export function BookingChangeRequestsPanel({
                           onCheck={() =>
                             quotes.requestQuote(request.id, {
                               settlementMethod: decisionDraftFor(request.id).settlementMethod,
-                              confirmOverCapacity: quote?.confirmOverCapacity === true,
+                              // #4030 review M1: carried only for the same list.
+                              confirmOverCapacity:
+                                quote?.confirmOverCapacity === true &&
+                                quote.forOfficerGuests === officerGuestsKey(officerGuests),
                               officerGuests,
                             })
                           }

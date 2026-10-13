@@ -39,6 +39,7 @@ function renderCard(overrides: Partial<Parameters<typeof ChangeRequestCard>[0]> 
         checkOut: "2026-07-03",
         guests: [{ memberId: "m-1" }] as never,
         memberGuest: undefined,
+        editPolicy: { mode: "in-progress", today: "2026-07-01", editableFrom: "2026-07-02", checkInEditable: false },
       },
       ageTierOptions: AGE_TIERS,
       familyMembers: [
@@ -87,6 +88,8 @@ describe("ChangeRequestCard — structured guests (#4030)", () => {
     addNonMember("Ari", "Example");
     const dateIn = screen.getByLabelText("Date In");
     expect(dateIn).toHaveAttribute("min", "2026-06-30");
+    // #4030 review S3: no later than the last locked night (today).
+    expect(dateIn).toHaveAttribute("max", "2026-07-01");
     expect(screen.getByLabelText("Date Out")).toHaveAttribute("max", "2026-07-03");
     fireEvent.change(dateIn, { target: { value: "2026-07-01" } });
 
@@ -155,5 +158,41 @@ describe("ChangeRequestCard — structured guests (#4030)", () => {
       await screen.findByText("Members are priced at their membership rate when the officer approves."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/\$0\.00/)).toBeNull();
+  });
+
+  it("offers the guest entry only on a stay under way, and words a future stay's request plainly (review S4)", () => {
+    render(
+      <ChangeRequestCard
+        reason=""
+        submitting={false}
+        error=""
+        success=""
+        hasEditorChanges
+        guestContext={{
+          booking: {
+            id: "bk-1",
+            checkIn: "2026-08-10",
+            checkOut: "2026-08-12",
+            guests: [] as never,
+            memberGuest: undefined,
+            editPolicy: { mode: "future", today: "2026-07-01", editableFrom: "2026-08-10", checkInEditable: true },
+          },
+          ageTierOptions: AGE_TIERS,
+          familyMembers: [],
+        }}
+        onReasonChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText("First name")).toBeNull();
+    expect(screen.queryByText(/tonight or earlier/)).toBeNull();
+    expect(screen.getByText(/needs the booking officer.s approval/)).toBeInTheDocument();
+  });
+
+  it("groups the added rows and the family buttons for assistive tech (review S5)", () => {
+    renderCard();
+    expect(screen.getByRole("group", { name: "Add a family member" })).toBeInTheDocument();
+    addNonMember("Ari", "Example");
+    expect(screen.getByRole("group", { name: "Guests to add" })).toBeInTheDocument();
   });
 });

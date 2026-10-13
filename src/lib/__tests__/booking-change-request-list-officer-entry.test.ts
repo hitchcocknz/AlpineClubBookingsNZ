@@ -118,4 +118,18 @@ describe("GET /api/admin/booking-change-requests — acceptsOfficerGuests (#4030
       select: { memberId: true },
     });
   });
+
+  it("returns the guests' member ids only on rows that take an officer's entry (review S7)", async () => {
+    const withGuests = (booking: object) => ({ ...booking, guests: [{ memberId: "member-7" }] });
+    mocks.findMany.mockResolvedValue([
+      row("free-finished", freeText, withGuests(finished)),
+      row("structured-finished", structured, withGuests(finished)),
+    ]);
+    const body = await list();
+    const byId = Object.fromEntries(
+      body.data.map((r: { id: string; booking: Record<string, unknown> }) => [r.id, r.booking]),
+    );
+    expect(byId["free-finished"].guests).toEqual([{ memberId: "member-7" }]);
+    expect(byId["structured-finished"]).not.toHaveProperty("guests");
+  });
 });
