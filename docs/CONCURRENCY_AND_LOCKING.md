@@ -5016,7 +5016,24 @@ credited twice (listed as over-coverage). Subscribing to `refund.failed` only
 once the new release alone serves keeps that event's rows out of the window;
 it does not close it, because the new release raises a row from any refund
 status it reads - `charge.refunded`, the cron's read-back, a door's replay
-(`DEPLOYMENT.md`).
+(`DEPLOYMENT.md`). In the same window an old release's "Resolved" on a
+paid-twice task writes that close record's `reviewContext` whole, dropping the
+card-note cover a new close kept there, and an old release's card-note
+executor does not subtract the closes' uncovered cash. Either way Xero's total
+can drift from the refunds by that close's amount; the Xero reconciliation
+report lists the difference for the treasurer to correct.
+
+**Stated limits: the close's card-note cover and the card note's sizing**
+(delta review 2). The cover is what the failed refund's card note answered when
+the close was planned, kept on the record. It is not re-read: if an officer
+later voids or reduces that note in Xero, the close still counts it as covered,
+and the reconciliation report shows the gap rather than any note filling it. A
+card note the outbox is already *sending* while the close plans is not yet a
+link, so the close notes its full share too and Xero is credited twice for that
+refund; the report lists it as over-coverage. The card note sizes itself from
+two unlocked reads (eligible cash and the closes' uncovered cash) and re-reads
+the closes' figure either side of the cash until both agree, so a close that
+commits between them is counted on both sides or neither.
 
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 

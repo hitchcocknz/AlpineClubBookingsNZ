@@ -63,7 +63,7 @@ reason: the refund-note enqueue sizes a paid-another-way close's note, and it
   comment, in the one sizing branch that ignored the requested amount.
 
 file: src/lib/xero-credit-notes.ts
-lines: 1350
+lines: 1370
 reason: the refund-note executor's card-note branch is the one place a queued
   card note is sized at execution time, so it alone can leave out a "Paid
   another way" close's bank cash that the close's own note answers (#4104 delta

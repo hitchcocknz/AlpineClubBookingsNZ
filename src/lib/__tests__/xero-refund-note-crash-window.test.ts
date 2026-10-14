@@ -34,6 +34,10 @@ const state = vi.hoisted(() => ({
   closes: {} as Record<string, number>,
   /** #4104 (A-F1): what a card note already in Xero answers of a close, kept on its record. */
   closeCovers: {} as Record<string, number>,
+  /** #4104: runs once before the next eligible-cash read - a close committing mid-sizing. */
+  beforeEligibleRead: null as (() => void) | null,
+  /** #4104: runs once after the next eligible-cash read. */
+  afterEligibleRead: null as (() => void) | null,
   resolved: { coveredCents: 0, correlationKeys: [] as string[], operationIds: [] as string[], unreadableOperationIds: [] as string[] },
   /** Read the officer's resolved rows off the ledger through the real reader. */
   realResolved: false,
@@ -226,11 +230,20 @@ vi.mock("@/lib/xero-resolved-in-xero-fences", async (importOriginal) => {
 });
 
 vi.mock("@/lib/refund-note-eligible-cash", () => ({
-  resolveRefundNoteEligibleCash: vi.fn(async () => ({
-    evidence: { cashRefundCents: state.eligibleCents, source: "provider-ledger" },
-    lateCaptureExcludedCents: 0,
-    eligibleCashCents: state.eligibleCents,
-  })),
+  resolveRefundNoteEligibleCash: vi.fn(async () => {
+    const hook = state.beforeEligibleRead;
+    state.beforeEligibleRead = null;
+    hook?.();
+    const read = {
+      evidence: { cashRefundCents: state.eligibleCents, source: "provider-ledger" },
+      lateCaptureExcludedCents: 0,
+      eligibleCashCents: state.eligibleCents,
+    };
+    const after = state.afterEligibleRead;
+    state.afterEligibleRead = null;
+    after?.();
+    return read;
+  }),
 }));
 
 vi.mock("@/lib/late-capture-xero-receipt", async (importOriginal) => ({
@@ -514,6 +527,8 @@ beforeEach(() => {
   state.eligibleCents = 5000;
   state.closes = {};
   state.closeCovers = {};
+  state.beforeEligibleRead = null;
+  state.afterEligibleRead = null;
   state.resolved = { coveredCents: 0, correlationKeys: [], operationIds: [], unreadableOperationIds: [] };
   state.realResolved = false;
   state.onFailedPayment = null;
@@ -976,6 +991,42 @@ describe("#3880: one refund note in flight per payment, from coverage read to re
     await dispatch("op_close");
 
     expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([25]);
+  });
+
+  // #4104 delta review 2 (F1): a close that commits while a card note is being
+  // sized must not be read on one side only: its cash counted as eligible but
+  // not subtracted would bill the close's bank cash on the card note too.
+  it("MUTATION (#4104 F1): a close committing mid-sizing is read on both sides, so the card note bills none of it", async () => {
+    seedPayment();
+    // The failed refund no longer counts and no close exists yet.
+    state.eligibleCents = 0;
+    state.closes = {};
+    queueRefundNote("op_card", 2500, 2500);
+    state.beforeEligibleRead = () => {
+      state.closes = { close_1: 2500 };
+      state.eligibleCents = 2500;
+    };
+
+    await dispatch("op_card");
+
+    expect(row("op_card").responsePayload).toMatchObject({ skippedNothingUncovered: true, paidAnotherWayUncoveredCents: 2500 });
+    expect(state.xero.notes.size).toBe(0);
+  });
+
+  it("MUTATION (#4104 F1): a close committing just after the cash read does not short a later card refund's note", async () => {
+    seedPayment();
+    // A later card refund of 3000 counts; the close's 2500 lands mid-sizing.
+    state.eligibleCents = 3000;
+    state.closes = {};
+    queueRefundNote("op_later", 3000, 3000);
+    state.afterEligibleRead = () => {
+      state.closes = { close_1: 2500 };
+      state.eligibleCents = 5500;
+    };
+
+    await dispatch("op_later");
+
+    expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([30]);
   });
 
   // #4104 delta review (A-F1): a close a card note in Xero partly answers keeps

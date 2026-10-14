@@ -1402,7 +1402,11 @@ way**, and the Xero reconciliation report lists the difference). Adding
 `refund.failed` only after the new release alone serves keeps the event's rows
 out of that window, but not every row: the new release raises one from any
 refund status it reads - a `charge.refunded` event, its cron's read-back, a
-door's replay - so finish the switch-over promptly.
+door's replay - so finish the switch-over promptly. In the same window an old
+release's "Resolved" on a paid-twice task overwrites the close record where a
+new close keeps its card-note cover, and an old release's card-note executor
+does not subtract a close's cash; the Xero reconciliation report lists any
+resulting difference.
 
 **Refunds Stripe created before the upgrade are not re-sent.** The release
 ships a marker migration (`20261115010000_card_refund_failed_later_cutoff`, no
