@@ -2591,10 +2591,16 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
     });
 
-    it("SSOT: the non-card charges are exactly those the card plan's own predicate rejects", async () => {
+    it("MUTATION (SSOT): the non-card charges are exactly those the card plan's own predicate rejects", async () => {
       shortfallTask();
+      // A Stripe-sourced charge with no intent the card refund plan cannot refund: non-card, as the plan sees it.
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        { id: "txn-card", source: "STRIPE", stripePaymentIntentId: "pi_1", amountCents: 3000, refundedAmountCents: 3000 },
+        { id: "txn-legacy", source: "STRIPE", stripePaymentIntentId: null, amountCents: 1000, refundedAmountCents: 0 },
+        { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 2000, refundedAmountCents: 0 },
+      ]);
       await complete();
-      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ preferTransactionIds: ["txn-bank"] }));
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ preferTransactionIds: ["txn-legacy", "txn-bank"] }));
     });
 
     it("completes when the cancel made no card refund at all (no recovery row)", async () => {
