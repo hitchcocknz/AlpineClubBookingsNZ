@@ -16,9 +16,9 @@
  * plan (`plannedCardRefundCents: refundAmountCents`) and every short-plan case
  * fails; drop the in-memory fold and "a partly refunded mirror" fails; drop the
  * legacy rows and "a pre-ledger payment" fails; drop the branch gate and
- * "only where the cancel raises the parts" fails; drop the `id` tiebreak from
- * `CAPTURED_ROWS_OLDEST_FIRST` and "rows created together" fails; drop the
- * snapshot's isolation level and "one read-only snapshot" fails.
+ * "only where the cancel raises the parts" fails; load the ledger in another
+ * order and "in the claim's order" fails; drop the snapshot's isolation level
+ * and "one read-only snapshot" fails.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -69,8 +69,7 @@ function bank(cents: number, refunded = 0, day = 20): Txn {
  * One payment and its ledger, read the way the planner (`payment.findUnique`
  * with its transactions) and the non-card headroom (`paymentTransaction.findMany`
  * over captured rows) read them; a backfill `create` appends a row and counts.
- * The transactions come back in the order asked for, `createdAt` then `id`
- * only where `id` is asked for, else as stored - as PostgreSQL may.
+ * The transactions come back oldest first, ties in stored (insertion) order.
  */
 function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
   const rows = transactions.map((row) => ({ ...row }));
@@ -87,17 +86,15 @@ function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
     ...payment,
   };
   const tasks: Record<string, { id: string; status: string; amountCents: number }> = {};
-  type OrderBy = ReadonlyArray<Record<string, "asc" | "desc">>;
-  const ordered = (orderBy: OrderBy = []) =>
-    [...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (orderBy.some((key) => key.id === "asc") ? a.id.localeCompare(b.id) : 0));
+  const ordered = () => [...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const db = {
     rows,
     $executeRaw: vi.fn(async () => 0),
     $transaction: vi.fn<(run: (tx: unknown) => unknown, options?: unknown) => Promise<unknown>>(async (run): Promise<unknown> => run(db)),
     payment: {
-      findUnique: vi.fn(async (args?: { include?: { transactions?: { orderBy?: OrderBy } } }) => ({
+      findUnique: vi.fn(async () => ({
         ...row,
-        transactions: ordered(args?.include?.transactions?.orderBy).map((txn) => ({ ...txn })),
+        transactions: ordered().map((txn) => ({ ...txn })),
       })),
     },
     paymentTransaction: {
@@ -183,15 +180,12 @@ describe("the cancel preview sizes the card line as the cancel does (#4119)", ()
   });
 });
 
-describe("rows created together fold in one order (#4119)", () => {
-  it("breaks a createdAt tie by id, as the cancel's claim reads them", async () => {
-    // Stored card first, but "txn-bank-1" sorts first: the record's $60.00
-    // folds onto the bank part, leaving the card all $140.00 of the refund.
-    const tied = [{ ...card(14_000, 0, 1) }, { ...bank(6_000, 0, 1) }];
-    const db = store(tied, { status: "PARTIALLY_REFUNDED", refundedAmountCents: 6_000 });
-    expect(await previewCancelCardRefundSplit(db as never, { paymentId: "payment-1", refundAmountCents: 14_000 })).toBeNull();
-    expect(db.payment.findUnique).toHaveBeenCalledWith(expect.objectContaining({ include: { transactions: { orderBy: [...CAPTURED_ROWS_OLDEST_FIRST] } } }));
-    expect(CAPTURED_ROWS_OLDEST_FIRST).toEqual([{ createdAt: "asc" }, { id: "asc" }]);
+describe("the preview and the claim read the ledger in one order (#4119)", () => {
+  it("loads the capture ledger in the claim's order, oldest first", async () => {
+    const db = store([card(14_000), bank(6_000, 0, 2)]);
+    await previewCancelCardRefundSplit(db as never, { paymentId: "payment-1", refundAmountCents: 14_000 });
+    expect(db.payment.findUnique).toHaveBeenCalledWith(expect.objectContaining({ include: { transactions: { orderBy: CAPTURED_ROWS_OLDEST_FIRST } } }));
+    expect(CAPTURED_ROWS_OLDEST_FIRST).toEqual({ createdAt: "asc" });
   });
 });
 

@@ -1587,7 +1587,7 @@ async function performBookingCancellation(
       payment,
       () => tx.paymentTransaction.findMany({
         where: { paymentId: payment.id, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
-        orderBy: [...CAPTURED_ROWS_OLDEST_FIRST],
+        orderBy: CAPTURED_ROWS_OLDEST_FIRST,
         select: { id: true, amountCents: true, refundedAmountCents: true },
       }),
       (row, amountCents) => foldIntoTransactionRefundedAmount({ paymentTransactionId: row.id, amountCents, store: tx }),

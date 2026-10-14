@@ -120,7 +120,7 @@ export async function loadPaymentWithTransactions(store: PaymentStore, paymentId
     where: { id: paymentId },
     include: {
       transactions: {
-        orderBy: [...CAPTURED_ROWS_OLDEST_FIRST],
+        orderBy: CAPTURED_ROWS_OLDEST_FIRST,
       },
     },
   });

@@ -489,18 +489,6 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           split: { cardCents: CARD_CENTS - 3_000, bankCents: BANK_CENTS, checkCents: 0 },
         },
         {
-          // Created together: the fold breaks the tie by id, the bank row's
-          // first, in the preview and the claim alike (`CAPTURED_ROWS_OLDEST_FIRST`).
-          shape: "a partly refunded record on rows created together, folded in id order",
-          payment: { status: "PARTIALLY_REFUNDED" as const, refundedAmountCents: 3_000 },
-          ledger: [
-            { id: CARD_TXN, kind: "PRIMARY" as const, source: "STRIPE" as const, stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-05-01") },
-            { id: BANK_TXN, kind: "ADDITIONAL" as const, source: "INTERNET_BANKING" as const, amountCents: BANK_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-05-01") },
-          ],
-          due: PRICE_CENTS - 3_000,
-          split: { cardCents: CARD_CENTS, bankCents: BANK_CENTS - 3_000, checkCents: 0 },
-        },
-        {
           shape: "a zero plan",
           payment: {},
           ledger: [

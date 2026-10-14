@@ -1338,8 +1338,8 @@ short).
   part, the bank-transfer part and the part the club will be in touch about,
   in the one wording home's sentence, said before anything is asked of the card.
   - **Sized by the cancel's own steps, in its order**: the claim's mirror fold
-    (one walk, `foldMirrorRefundIntoLedger`, over rows in one order with an
-    `id` tiebreak, `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
+    (one walk, `foldMirrorRefundIntoLedger`, over rows read in one order,
+    `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
     charges as its backfill would write them (`legacyBackfillRows`), the
     claim's planner (`planCardRefundFromLedger`), and the split
     (`sizeCancelCardShortfall`). Asked only behind the cancel's own gate

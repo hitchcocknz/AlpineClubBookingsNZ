@@ -3,14 +3,15 @@ import { PaymentStatus, type Prisma } from "@prisma/client";
 /**
  * #4119: the order the fold walks a payment's captured rows, and the order the
  * capture ledger loads in (`loadPaymentWithTransactions`), so the cancel's
- * claim and the cancel preview fold onto the same rows. `id` breaks a
- * `createdAt` tie, which would otherwise come back in whatever order
- * PostgreSQL returns it.
+ * claim and the cancel preview fold onto the same rows. Deliberately no `id`
+ * tiebreak: rows written in one transaction can share a `createdAt`, and the
+ * ledger's readers rely on them coming back in insertion order, which a cuid
+ * `id` does not follow (an `id` tiebreak broke the #3954 real-PostgreSQL race
+ * proof). A deterministic tiebreak needs a monotonic column (#4132).
  */
-export const CAPTURED_ROWS_OLDEST_FIRST = [
-  { createdAt: "asc" },
-  { id: "asc" },
-] as const satisfies readonly Prisma.PaymentTransactionOrderByWithRelationInput[];
+export const CAPTURED_ROWS_OLDEST_FIRST = {
+  createdAt: "asc",
+} as const satisfies Prisma.PaymentTransactionOrderByWithRelationInput;
 
 /**
  * #1491 (review): the part of a PARTIALLY_REFUNDED payment mirror's refunded
