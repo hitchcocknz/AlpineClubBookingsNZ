@@ -40,9 +40,10 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * gives the new charge a fresh idempotency key. Keeping the claims would leave a
  * reversed member silently unbillable, and without the bump a re-bill would
  * collapse onto this closed charge's key and raise nothing. A PER_FAMILY charge
- * is the exception: the preview still counts the closed row as the family's
- * charge (FAMILY_ALREADY_BILLED), because a second family charge would collide
- * with the family/type/season unique index (#4110).
+ * re-bills the same way (owner decision on #4098, 15 Oct 2026): the preview's
+ * existing-family-charge filter skips a NOT_REQUIRED row, and the
+ * family/type/season unique index covers only live charges (#4110), so the
+ * reversed member's new family charge sits beside this retained row.
  *
  * GUARDS AND RACES. No advisory lock, like the void release and the family
  * markers: every write is guarded in its own WHERE. The charge claim is a
@@ -53,15 +54,24 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * first makes it fall short and the whole transaction rolls back, and one that
  * arrives later waits on the row and then finds the member re-billable. The
  * close is refused while an invoice operation for the charge is live (queued,
- * running or awaiting payment): a worker mid-Xero-call writes back after the
- * provider responds without a status guard, and during a rollout an old pod's
- * worker does not know the closed status at all. What remains is a Retry or
- * enqueue that creates or re-pends an operation concurrently with the close. It
- * cannot reopen the charge: the enqueue's status write, the worker's own
- * already-paid conflict write and the outbox failure handler's write all
- * exclude `NOT_REQUIRED`, and a new worker skips a `NOT_REQUIRED` charge. An
- * old pod during a rollout could still process that operation; that is a
- * stated limit.
+ * running or awaiting payment), chiefly because during a rollout an old pod's
+ * worker does not know the closed status at all. Against a new worker the
+ * close is safe even without that refusal: every charge-status write the
+ * invoice pipeline makes — the enqueue's, the worker's conflict, INVOICE_CREATED,
+ * EMAILED and EMAIL_FAILED writes, and the outbox failure handler's — matches
+ * only live charges, so none can reopen a closed one. A worker whose Xero call
+ * was already in flight when the close landed loses its INVOICE_CREATED write:
+ * it links nothing, downgrades nothing, sends no email, and leaves
+ * STRAY_INVOICE_AFTER_CLOSE on the closed charge naming the invoice to void. A
+ * Retry that loses its status write to a close reports no work. An old pod
+ * during a rollout could still process an operation queued concurrently with
+ * the close; that is a stated limit.
+ *
+ * AUDIT SUBJECT. The row names the officer (memberId) and the charge (entity),
+ * and lists the covered member ids in its details, but sets no
+ * subjectMemberId: that column holds ONE member, so on a family charge it would
+ * put the close on one arbitrary member's timeline, and a row per member would
+ * multiply one act and widen what members read (INV-PRIV) beyond the decision.
  */
 
 export class CloseAlreadyPaidChargeError extends Error {

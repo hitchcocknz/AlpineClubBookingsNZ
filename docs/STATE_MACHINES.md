@@ -2379,7 +2379,13 @@ outbox claim -> a covered subscription already PAID, no invoice yet -> CONFLICT 
 CONFLICT (SUBSCRIPTION_ALREADY_PAID) -> officer "Close: already paid" (finance edit, required reason) -> NOT_REQUIRED (#4098)
   only while EVERY covered subscription is still PAID (re-checked in the guarded write); releases the
   charge's ACTIVE coverage claims and bumps each voidGeneration; audited; a repeat is a no-op success;
-  refused (409, no write) while an invoice operation for the charge is queued or running
+  refused (409, no write) while an invoice operation for the charge is queued or running, or while
+  any covered subscription is unpaid (advice: pay the rest then close, or unpay every one then Retry);
+  Close is offered only where every active covered subscription is PAID
+NOT_REQUIRED (closed) or VOIDED family charge -> a reversed member re-billed by the next preview -> a NEW
+  family charge beside the retained row (#4110; the family/type/season unique index covers live charges only)
+invoice attempt in Xero when the close lands -> guarded INVOICE_CREATED write matches nothing -> no link,
+  no downgrade, no email; the closed charge carries STRAY_INVOICE_AFTER_CLOSE naming the invoice to void
 provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
 stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDUAL_MODE exception (no invoice; basis must change)
@@ -2407,9 +2413,15 @@ writes `NOT_REQUIRED` only for `NO_INVOICE`. The close releases the claims
 (rather than keeping them, as a `NO_INVOICE` charge does) so the subscription is
 left exactly as a member marked paid before billing: skipped while PAID, and
 re-billable with a fresh idempotency key if the manual payment is later
-reversed. It takes no advisory lock — the charge claim and the PAID check are
-each a guarded write, so two closes close once and a reversal that commits first
-rolls the close back.
+reversed — on a per-family charge too: the preview's existing-family-charge
+filter and the family/type/season partial unique index both exclude the
+no-invoice statuses (#4110), so the re-bill's new family charge sits beside the
+retained closed or voided row. It takes no advisory lock — the charge claim and
+the PAID check are each a guarded write, so two closes close once and a
+reversal that commits first rolls the close back. Every charge-status write the
+invoice pipeline makes is guarded to live charges, so none can reopen a closed
+charge; an attempt already in Xero when the close lands leaves its invoice as a
+stray the officer voids, named on the closed charge.
 
 ## Member Subscription Status Transitions
 
@@ -2462,10 +2474,11 @@ marks the covering `MembershipSubscriptionCharge` `VOIDED` (kept for audit, neve
 re-enqueued), releases its coverage claim (`releasedAt` set — row kept), and
 bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
 fresh idempotency key. Closing a charge as already paid (#4098) releases its
-claims and bumps the generation the same way, leaving the row `PAID`. A
-closed per-family charge still counts as the family's charge in the preview
-(`FAMILY_ALREADY_BILLED`): a second family charge would hit the
-family/type/season unique index, which #4110 tracks.
+claims and bumps the generation the same way, leaving the row `PAID`. Neither a
+closed nor a voided per-family charge counts as the family's charge in the
+preview, and the family/type/season unique index covers live charges only
+(#4110), so a reversed member of a closed family is billed again on a new family
+charge, as the owner decided on 15 Oct 2026.
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
 sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero
