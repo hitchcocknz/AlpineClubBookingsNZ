@@ -1164,7 +1164,13 @@ model MembershipSubscriptionCharge {
   @@index([seasonYear, status, createdAt])
   @@index([recipientMemberId, seasonYear])
   @@index([familyGroupId, seasonYear])
-  @@unique([seasonYear, membershipTypeId, familyGroupId], map: "MembershipCharge_family_type_year_key")
+  // #4110: at most one LIVE family charge per (seasonYear, membershipTypeId,
+  // familyGroupId) is enforced by the raw-SQL partial unique index
+  // MembershipCharge_family_type_year_live_key (prisma/partial-unique-indexes.tsv),
+  // which excludes the terminal no-invoice statuses NOT_REQUIRED and VOIDED so a
+  // family whose charge was voided (#2147) or closed as already paid (#4098) can
+  // be billed again beside the retained row. Prisma cannot express it, which is
+  // why the plain @@unique was dropped.
 }
 
 // Frozen per-line snapshot of an annual-fee component at the moment the charge
@@ -1201,8 +1207,8 @@ model MembershipSubscriptionChargeCoverage {
   memberName     String
   // #2147: null while the claim is ACTIVE. Set (never cleared, row never
   // deleted) when the membership sync observes the charge's Xero invoice
-  // VOIDED/DELETED, releasing the claim so a fresh preview can re-bill the
-  // member. The dedup skip-set and the confirm coveredAlready check count only
+  // VOIDED/DELETED, or (#4098) when an officer closes the charge as already
+  // paid, releasing the claim so a fresh preview can re-bill the member. The dedup skip-set and the confirm coveredAlready check count only
   // active (releasedAt IS NULL) claims. "One active claim per subscription" is
   // enforced by the raw-SQL partial unique index
   // MembershipSubscriptionChargeCoverage_active_subscription_unique

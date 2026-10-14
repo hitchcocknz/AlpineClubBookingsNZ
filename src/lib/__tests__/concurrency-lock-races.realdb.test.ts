@@ -312,6 +312,12 @@ import "./xero-refund-note-void-pointer.realdb.test";
 // subscription row rolls the close back whole. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4098-` fixtures.
 import "./membership-subscription-charge-close.realdb.test";
+// #4110 reuses it to prove a family whose per-family charge was closed as
+// already paid or voided is billed again end to end (close or void -> reverse
+// -> preview -> confirm -> a new charge), under the partial family/type/season
+// index that still refuses a second LIVE family charge. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4110-` fixtures.
+import "./membership-family-rebill.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

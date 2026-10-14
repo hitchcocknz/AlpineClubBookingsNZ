@@ -34,6 +34,7 @@ import { defaultMembershipTypeKeyForRole, storedRoleDefaultMembershipTypeWhere }
 import { getResolvedAccountMapping } from "@/lib/xero-mappings";
 import { subscriptionInvoiceOutboxRow } from "@/lib/xero-operation-outbox-payload";
 import { buildXeroIdempotencyKey, startXeroSyncOperation } from "@/lib/xero-sync";
+import { MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES } from "@/lib/subscription-charge-already-paid";
 
 export class SubscriptionBillingError extends Error {
   constructor(message: string) {
@@ -391,8 +392,10 @@ export async function buildSubscriptionBillingPreview(input: {
     getFamilyBillingMode(db),
     db.membershipSubscriptionChargeCoverage.findMany({
       where: {
-        // #2147: only ACTIVE claims block re-billing. A released claim (its Xero
-        // invoice was voided/deleted) must not keep a member un-billable forever.
+        // #2147: only ACTIVE claims block re-billing. A released claim must not
+        // keep a member un-billable forever. Two writers release one: the void
+        // sync (its Xero invoice was voided/deleted, #2147) and an officer's
+        // close of a charge already paid (#4098).
         releasedAt: null,
         subscription: {
           seasonYear: input.seasonYear,
@@ -431,14 +434,15 @@ export async function buildSubscriptionBillingPreview(input: {
         seasonYear: input.seasonYear,
         billingBasis: "PER_FAMILY",
         familyGroupId: { not: null },
-        // #2147: a VOIDED family charge (its Xero invoice was voided/deleted and
-        // its coverage released) must NOT keep the family un-billable forever.
-        // The void handler (releaseVoidedSubscriptionInvoice) retains the charge
-        // row with status VOIDED + familyGroupId intact for audit; without this
-        // filter it would still populate billedFamilyTypes and fire
-        // FAMILY_ALREADY_BILLED, permanently blocking the family's re-bill and
-        // contradicting the void→re-bill design.
-        status: { not: "VOIDED" },
+        // #2147 / #4110: a family charge that will never be invoiced — VOIDED
+        // (its Xero invoice was voided/deleted) or NOT_REQUIRED (an officer
+        // closed it as already paid, #4098) — has released its coverage and
+        // must NOT keep the family un-billable forever. Both keep the charge row
+        // with familyGroupId intact for audit; without this filter it would
+        // still populate billedFamilyTypes and fire FAMILY_ALREADY_BILLED. The
+        // family/type/season unique index excludes the same statuses (#4110),
+        // so the re-bill's new charge can be created beside the old row.
+        status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] },
       },
       select: {
         id: true,
