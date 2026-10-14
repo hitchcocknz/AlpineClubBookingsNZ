@@ -281,11 +281,23 @@ async function enqueueLedgerRefundRecovery({
     skipDuplicates: true,
   });
   if (inserted.count === 0) {
+    // #4103 review C2: a fresh plan with no refusal in it never resets a row a
+    // refusal already re-planned (a slice on a later key, or marked made): a
+    // redelivery would send the cached refusal's key again, and re-alert. Read,
+    // then written compare-and-set on what was read.
+    const progressed = (slices: ReadonlyArray<RefundAllocationSlice> | null | undefined) =>
+      (slices ?? []).some((slice) => slice.stripeKeySuffix || slice.madeRefundId);
+    let planFence: Prisma.PaymentRecoveryOperationWhereInput = {};
+    if (allocationPlanJson !== undefined && !progressed(allocationPlan)) {
+      const held = (await store.paymentRecoveryOperation.findUnique({ where: { idempotencyKey }, select: { allocationPlan: true } }))?.allocationPlan ?? null;
+      if (progressed(parseRefundAllocationPlan(held))) return { created: false, paymentIntentId: representativePaymentIntentId };
+      planFence = { allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue } };
+    }
     // #4083: a repeat enqueue refreshes only a row no worker has picked up
     // (PENDING). One a worker has claimed, failed or closed keeps its amount,
     // prefix and plan: those slices may already have been sent under their keys.
     await store.paymentRecoveryOperation.updateMany({
-      where: { idempotencyKey, status: PaymentRecoveryOperationStatus.PENDING },
+      where: { idempotencyKey, status: PaymentRecoveryOperationStatus.PENDING, ...planFence },
       data: {
         bookingId,
         paymentId,
@@ -1957,28 +1969,54 @@ async function processRefundSupersededPaymentOperation(
     return;
   }
 
-  const refund = await processRefund({
-    paymentIntentId: operation.paymentIntentId,
-    amountCents: outstandingCents,
-    reason: "requested_by_customer",
-    metadata: {
-      bookingId: operation.bookingId,
-      reason: "zero_dollar_batch_modification_superseded",
-    },
-    idempotencyKey: operation.idempotencyKey,
-  });
+  const metadata = {
+    bookingId: operation.bookingId,
+    reason: "zero_dollar_batch_modification_superseded",
+  };
+  // #4103 (`INV-PAY-130`): a refusal is never closed or reported. The first ask
+  // keeps the row's own key, so a refund made but unrecorded is replayed; a
+  // refusal moves to a one-slice plan on a fresh key, which later attempts send.
+  const persistedPlan = parseRefundAllocationPlan(operation.allocationPlan);
+  const plan = persistedPlan ?? [{ paymentTransactionId: refreshedTransaction.id, amountCents: outstandingCents }];
+  await refundPlanOrRetryRefusals({
+    operation,
+    plan,
+    format,
+    refund: async (allocation) => {
+      if (persistedPlan) {
+        return refundPaymentTransactions({
+          format,
+          paymentId: operation.paymentId,
+          amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
+          allocation,
+          metadata,
+          idempotencyKeyPrefix: operation.idempotencyKey,
+        });
+      }
+      const refund = await processRefund({
+        paymentIntentId: operation.paymentIntentId,
+        amountCents: outstandingCents,
+        reason: "requested_by_customer",
+        metadata,
+        idempotencyKey: operation.idempotencyKey,
+      });
 
-  // Idempotent by the ledger (#3640, the one writer every card refund uses):
-  // a retry that Stripe answers with the same refund records nothing new and
-  // adds nothing. The ledger row, the transaction row and the payment aggregate
-  // commit together. A row an older attempt left behind still lifts a mirror
-  // with no credit on it to the card refunds on record (the ledger floor); with
-  // a credit it cannot, and the refunded-total audit lists it.
-  await recordStripeRefundsAgainstTransaction({
-    paymentId: operation.paymentId,
-    paymentTransactionId: refreshedTransaction.id,
-    refunds: [refund],
-    fallbackPaymentIntentId: operation.paymentIntentId,
+      // Idempotent by the ledger (#3640, the one writer every card refund uses):
+      // a retry that Stripe answers with the same refund records nothing new and
+      // adds nothing. The ledger row, the transaction row and the payment aggregate
+      // commit together. A row an older attempt left behind still lifts a mirror
+      // with no credit on it to the card refunds on record (the ledger floor); with
+      // a credit it cannot, and the refunded-total audit lists it.
+      await recordStripeRefundsAgainstTransaction({
+        paymentId: operation.paymentId,
+        paymentTransactionId: refreshedTransaction.id,
+        refunds: [refund],
+        fallbackPaymentIntentId: operation.paymentIntentId,
+      });
+      return {
+        refunds: [{ status: refund.status ?? null, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
+      };
+    },
   });
 
   /**
@@ -2019,7 +2057,7 @@ async function processRefundSupersededPaymentOperation(
     bookingId: operation.bookingId,
     paymentId: operation.paymentId,
     paymentIntentId: operation.paymentIntentId,
-    refundedAmountCents: outstandingCents,
+    refundedAmountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
   });
 }
 

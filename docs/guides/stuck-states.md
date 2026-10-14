@@ -78,6 +78,17 @@ run out, the row carries no **Stripe may have refunded** warning: Stripe sent
 nothing. Once the Stripe dashboard shows that refund as failed or cancelled,
 you can pay the member another way and close it here.
 
+The same holds for a reviewed change's card refund, an approved late card
+charge's, a duplicate charge's and a refund after the dates filled up (#4103).
+Two cases are different. An automatic refund of a late card charge on a
+cancelled booking that Stripe refuses is held on the payments board for a
+treasurer to approve, whatever the club's setting, and approving it asks
+Stripe again as a fresh request. A late-charge refund from the booking repair
+tool that Stripe refuses fails, and running the repair again asks Stripe
+afresh. An old group organiser's refund, or the refund of a stale group
+payment, fails and is retried automatically as a fresh request; if the
+officers' alert says it failed for good, refund it in the Stripe dashboard.
+
 **A refund Stripe accepted and failed later** (#4104). Stripe can accept a card
 refund as pending and report it failed days later, for example when the card
 has been closed. The app then takes it back out of the refunded total and owes

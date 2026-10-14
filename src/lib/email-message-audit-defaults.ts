@@ -297,7 +297,7 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   },
   "admin-late-capture-held": {
     "defaultSubject": "Late payment held for approval: {{memberName}}",
-    "defaultBody": "Late Payment Held for Approval\n\nA card payment went through after its booking was cancelled. Your club has a treasurer approve these refunds, so it has NOT been refunded - the money is still with the club.\n\nOpen the refund tasks on the payments board and either refund it to the card (through Stripe) or close it without refunding, with a note - for example, when the cancellation was a mistake.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount held: {{amount}}\n\nView Payments: {{reviewUrl}}"
+    "defaultBody": "Late Payment Held for Approval\n\nA card payment went through after its booking was cancelled and has NOT been refunded - your club has a treasurer approve these refunds, or the card provider refused the automatic refund - so the money is still with the club.\n\nOpen the refund tasks on the payments board and either refund it to the card (through Stripe) or close it without refunding, with a note - for example, when the cancellation was a mistake.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount held: {{amount}}\n\nView Payments: {{reviewUrl}}"
   },
   "admin-second-instrument-settlement-conflict": {
     "defaultSubject": "Booking may have been paid twice — card and Xero: {{memberName}}",

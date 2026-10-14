@@ -2375,6 +2375,11 @@ FAILED operation -> Xero Operations Retry -> same row PENDING, same correlation 
   refused (409, no write) when the charge already has a Xero invoice, needs none (VOIDED/NOT_REQUIRED/NO_INVOICE),
   another attempt for it is live, or a sibling was resolved in Xero after the row was queued
 provider reference exists but snapshot differs -> CONFLICT (no provider rewrite)
+outbox claim -> a covered subscription already PAID, no invoice yet -> CONFLICT (SUBSCRIPTION_ALREADY_PAID; no provider call)
+CONFLICT (SUBSCRIPTION_ALREADY_PAID) -> officer "Close: already paid" (finance edit, required reason) -> NOT_REQUIRED (#4098)
+  only while EVERY covered subscription is still PAID (re-checked in the guarded write); releases the
+  charge's ACTIVE coverage claims and bumps each voidGeneration; audited; a repeat is a no-op success;
+  refused (409, no write) while an invoice operation for the charge is queued or running
 provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
 stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDUAL_MODE exception (no invoice; basis must change)
@@ -2391,6 +2396,20 @@ coverage row; fee/family changes do not mutate history; invoice identity commits
 before email; email retry never calls create for a persisted invoice; exact
 existing invoices are adopted; amount/contact/account mismatch becomes visible
 `CONFLICT`; automatic post-approval failures never roll back approval.
+
+`NOT_REQUIRED` and `VOIDED` are the no-invoice statuses
+(`MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES`): the enqueue (and so Retry), the
+outbox worker, its failure handler and Xero Operations Retry never invoice or
+reopen a charge in either, and the worker skips an operation queued for one in
+a race. A `NOT_REQUIRED` charge on any basis but
+`NO_INVOICE` is one an officer closed as already paid, because confirmation
+writes `NOT_REQUIRED` only for `NO_INVOICE`. The close releases the claims
+(rather than keeping them, as a `NO_INVOICE` charge does) so the subscription is
+left exactly as a member marked paid before billing: skipped while PAID, and
+re-billable with a fresh idempotency key if the manual payment is later
+reversed. It takes no advisory lock — the charge claim and the PAID check are
+each a guarded write, so two closes close once and a reversal that commits first
+rolls the close back.
 
 ## Member Subscription Status Transitions
 
@@ -2442,7 +2461,11 @@ member (PAID, null invoice link) is still skipped. On a void/delete the sync
 marks the covering `MembershipSubscriptionCharge` `VOIDED` (kept for audit, never
 re-enqueued), releases its coverage claim (`releasedAt` set — row kept), and
 bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
-fresh idempotency key.
+fresh idempotency key. Closing a charge as already paid (#4098) releases its
+claims and bumps the generation the same way, leaving the row `PAID`. A
+closed per-family charge still counts as the family's charge in the preview
+(`FAMILY_ALREADY_BILLED`): a second family charge would hit the
+family/type/season unique index, which #4110 tracks.
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
 sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero
@@ -3497,8 +3520,24 @@ row still owes once it is marked failed, netting the refunds its final attempt
 recorded. The officers are alerted once per refused slice - by the write that
 first moves it off the key it was planned under (a cancellation's re-plan, the
 runner's, or an edit's or refund request's row when it is written), or by the
-edit door when no row could be written - and again if the retries run out. Other
-card refund doors still close on a refusal (#4103).
+edit door when no row could be written - and again if the retries run out.
+
+Every other card refund door keeps a refusal owed too (#4103, `INV-PAY-130`). A
+door whose row is written before its attempt - the edit financial review, the
+treasurer-approved late capture, the duplicate capture and the capacity race,
+as the cancellation does - re-plans that row while it is `PENDING` with no
+attempt, once per refusal (compare-and-set on the row's plan), including a
+refusal before a later slice threw, and never closes it. The superseded-payment
+runner asks under its row's key first and moves a refusal to a one-slice plan on
+its next key. The late-capture webhooks hold a refused capture for a treasurer
+(an `OPEN` approval task) whatever the setting, so they write no "refunded"
+record; the approval asks on the key generation the recorded refusals count to.
+The Xero repair pass fails on a refusal and records only what Stripe made; a
+re-run moves each slice to the key generation its recorded refusals count to,
+so it asks afresh. The legacy group settlement refund (plans frozen before
+#3653) and the superseded group intent's webhook refund fail on a refusal as on
+a throw; each retry's key moves past the refusals Stripe holds on the intent
+for that refund, so it asks afresh.
 
 A refund Stripe accepted (`pending`) and failed later is owed again (#4104,
 `INV-PAY-128`), by one row. The one writer of a charge's refund rows

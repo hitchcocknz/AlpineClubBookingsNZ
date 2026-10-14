@@ -117,16 +117,18 @@ export type OwnCardShortfallParts = { bankCents: number; checkCents: number; for
  * part the club will be in touch about - built from the one card clause and the
  * one bank-transfer clause (`INV-SSOT`). The email and the cancel dialog's
  * confirmation, where an officer cancelling on the member's behalf reads "the
- * member's" (`whose`).
+ * member's" (`whose`). #4119: `"planned"` is the cancel preview's, before
+ * anything is asked of the card, so the card's part "will be processed".
  */
 export function ownCardRefundWithShortfallSentence(
   cardCents: number,
   { bankCents, checkCents, formatAmount }: OwnCardShortfallParts,
-  pending: boolean,
+  pending: boolean | "planned",
   whose: OwnCardWhose = "your",
 ): string {
   const recipient = whose === "your" ? "you" : "the member";
-  const card = cardCents <= 0 ? null : pending ? ownCardRefundPendingClause(formatAmount(cardCents), whose) : ownCardRefundClause(formatAmount(cardCents), whose);
+  const cardClause = pending === "planned" ? ownCardRefundPlannedClause : pending ? ownCardRefundPendingClause : ownCardRefundClause;
+  const card = cardCents <= 0 ? null : cardClause(formatAmount(cardCents), whose);
   const remaining = (cents: number) => `the remaining ${formatAmount(cents)}`;
   if (bankCents > 0 && checkCents > 0) {
     const rest = `${bankTransferRefundClause(formatAmount(bankCents), recipient)} and will be in touch about ${remaining(checkCents)}`;
@@ -203,6 +205,11 @@ function ownCardRefundClause(amount: string, whose: OwnCardWhose = "your"): stri
 /** A card refund back to what the member paid with; Booking Modified and Booking Cancelled alike. */
 function ownCardRefundSentence(amount: string): string {
   return `${ownCardRefundClause(amount)}.`;
+}
+
+/** #3827, #4119: the card refund not yet asked for (an approved appeal's, the cancel preview's), as a clause (`INV-SSOT`). */
+function ownCardRefundPlannedClause(amount: string, whose: OwnCardWhose = "your"): string {
+  return `A refund of ${amount} will be processed to ${whose} original payment method`;
 }
 
 /** #4097: the card refund not made yet, as a clause (`INV-SSOT`). */
@@ -311,8 +318,8 @@ export function refundRequestApprovedRefundSentence(
   }
   const cardCents = approvedCents - bankTransferCents;
   if (bankTransferCents <= 0) {
-    return `A refund of ${formatAmount(approvedCents)} will be processed to your original payment method.`;
+    return `${ownCardRefundPlannedClause(formatAmount(approvedCents))}.`;
   }
   if (cardCents <= 0) return bankTransferRefundSentence(formatAmount(bankTransferCents));
-  return `A refund of ${formatAmount(cardCents)} will be processed to your original payment method, and ${bankTransferRefundClause(`the remaining ${formatAmount(bankTransferCents)}`)}.`;
+  return `${ownCardRefundPlannedClause(formatAmount(cardCents))}, and ${bankTransferRefundClause(`the remaining ${formatAmount(bankTransferCents)}`)}.`;
 }

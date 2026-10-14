@@ -72,6 +72,8 @@ const mocks = vi.hoisted(() => ({
   // refund debt, the happy-path close, the Xero correction and its audit entry.
   paymentTransactionFindUnique: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
+  // #4103: the refusals recorded on the payment, which move the approval's key on.
+  paymentRefundFindMany: vi.fn().mockResolvedValue([]),
   // #4097: the card refund shortfall's preflight - the Payment row, and the cancel's card refund row.
   lockPaymentForRefundedTotal: vi.fn().mockResolvedValue(undefined),
   paymentRecoveryOperationFindUnique: vi.fn().mockResolvedValue(null),
@@ -273,6 +275,7 @@ const tx = {
     // #3639: the #2700 hand-back's capture, found by its frozen reason sentence.
     findMany: (...a: unknown[]) => mocks.paymentTransactionFindMany(...a),
   },
+  paymentRefund: { findMany: (...a: unknown[]) => mocks.paymentRefundFindMany(...a) },
   manualRefundTask: {
     findUnique: (...a: unknown[]) => mocks.manualRefundTaskFindUnique(...a),
     updateMany: (...a: unknown[]) => mocks.manualRefundTaskUpdateMany(...a),
@@ -4448,6 +4451,24 @@ describe("#3639 - approving a held late-capture refund", () => {
     });
     expect(result.stripeRefundId).toBe("re_late");
     expect(result.settlementRoute).toMatchObject({ kind: "late-capture-refund" });
+  });
+
+  // #4103 (`INV-PAY-130`): the webhook's automatic refund of this capture was
+  // refused and held here. Stripe answers that slice's key with the refusal for
+  // 24 hours, so the approval asks on the next key generation, persisted too.
+  it("after a recorded refusal of the same slice, asks Stripe on a key it has never seen (#4103)", async () => {
+    armHeldLateCapture();
+    mocks.paymentRefundFindMany.mockResolvedValueOnce([
+      { paymentTransactionId: "txn-late", amountCents: 2500, status: "failed" },
+      { paymentTransactionId: "txn-other", amountCents: 2500, status: "failed" },
+      { paymentTransactionId: "txn-late", amountCents: 900, status: "canceled" },
+    ]);
+
+    await approve();
+
+    const slice = [{ paymentTransactionId: "txn-late", amountCents: 2500, stripeKeySuffix: "refused1" }];
+    expect(mocks.enqueueLateCaptureApprovalRefundRecovery).toHaveBeenCalledWith(expect.objectContaining({ allocationPlan: slice }));
+    expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ allocation: slice }));
   });
 
   it("refuses, before the claim, a capture already refunded outside the task - the task stays OPEN", async () => {

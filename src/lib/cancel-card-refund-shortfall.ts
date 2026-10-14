@@ -9,6 +9,7 @@ import {
   type CancelCardShortfallPart,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
+import type { PaidCancellationBranch } from "@/lib/paid-cancellation-event";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -49,6 +50,42 @@ export type CancelCardShortfall = {
 export function splitCardShortfall(shortfallCents: number, nonCardHeadroomCents: number): Record<CancelCardShortfallPart, number> {
   const bank = Math.max(0, Math.min(shortfallCents, nonCardHeadroomCents));
   return { bank, check: Math.max(0, shortfallCents - bank) };
+}
+
+/** What the card refund carries, and the rest by part. */
+export type CancelCardRefundSplit = { cardCents: number; bankCents: number; checkCents: number };
+
+/**
+ * #4097, #4119 (`INV-PAY-129`, `INV-PAY-131`): THE sizing of a card cancel's refund against
+ * its card refund plan - the cancel's hand-back tasks and the cancel preview's
+ * card line both ask here, so the preview cannot promise the card more than
+ * the cancel sends it. Null when the plan carries the whole refund; the
+ * non-card charges' headroom is read only when it does not.
+ */
+export async function sizeCancelCardShortfall(
+  params: { refundAmountCents: number; plannedCardRefundCents: number },
+  readNonCardHeadroomCents: () => Promise<number> | number,
+): Promise<CancelCardRefundSplit | null> {
+  const cardCents = Math.max(0, params.plannedCardRefundCents);
+  const shortfallCents = params.refundAmountCents - cardCents;
+  if (shortfallCents <= 0) return null;
+  const { bank, check } = splitCardShortfall(shortfallCents, await readNonCardHeadroomCents());
+  return { cardCents, bankCents: bank, checkCents: check };
+}
+
+/**
+ * #4097, #4119 (`INV-PAY-129`, `INV-PAY-131`): THE gate for that sizing - an
+ * own-card refund on the paid cancel's card branch, not one to the group
+ * organiser's card. The cancel asks it before raising the parts and the cancel
+ * preview before quoting them, so the preview splits only where the cancel will.
+ */
+export function cancelRaisesCardShortfall(params: { branch: PaidCancellationBranch; organiserCard: boolean }): boolean {
+  return params.branch === "card" && !params.organiserCard;
+}
+
+/** The headroom of charges the card refund cannot carry, summed. */
+export function sumHeadroomCents(charges: ReadonlyArray<{ headroomCents: number }>): number {
+  return charges.reduce((sum, row) => sum + row.headroomCents, 0);
 }
 
 function shortfallReason(part: CancelCardShortfallPart, bookingId: string, figures: { card: string; due: string; part: string }): string {
@@ -107,11 +144,10 @@ export async function raiseCancelCardShortfallHandBack(
   },
 ): Promise<CancelCardShortfall | null> {
   const { bookingId, paymentId, refundAmountCents, format } = params;
-  const cardCents = Math.max(0, params.plannedCardRefundCents);
-  const shortfallCents = refundAmountCents - cardCents;
-  if (shortfallCents <= 0) return null;
-  const headroomCents = (await nonCardCapturedCharges(tx, paymentId)).reduce((sum, row) => sum + row.headroomCents, 0);
-  const sizes = splitCardShortfall(shortfallCents, headroomCents);
+  const split = await sizeCancelCardShortfall(params, async () => sumHeadroomCents(await nonCardCapturedCharges(tx, paymentId)));
+  if (!split) return null;
+  const { cardCents } = split;
+  const sizes: Record<CancelCardShortfallPart, number> = { bank: split.bankCents, check: split.checkCents };
   const figures = (cents: number) => ({ card: formatCents(cardCents, format), due: formatCents(refundAmountCents, format), part: formatCents(cents, format) });
   const raise = (part: CancelCardShortfallPart) =>
     raisePart(tx, { bookingId, paymentId, part, cents: sizes[part], reason: shortfallReason(part, bookingId, figures(sizes[part])), format });

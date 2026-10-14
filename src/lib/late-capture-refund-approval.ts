@@ -22,6 +22,7 @@ import {
 } from "@/lib/payment-transactions";
 import { captureRefundState } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
+import { keepRefusedPrePersistedRefundOwed, sliceAfterRecordedRefusals } from "@/lib/refused-card-refund-retry";
 
 /**
  * #3639 (owner decision 26 Sep 2026, `INV-PAY-106`): what a treasurer's
@@ -33,7 +34,8 @@ import { prisma } from "@/lib/prisma";
  * the same Stripe idempotency prefix and body
  * (`buildLateCaptureRefundStripeKeyPrefix` / `buildLateCaptureRefundMetadata`),
  * so if both ever run for one capture Stripe answers the second with the first.
- * Dismissing the task keeps the money, with a note, and moves nothing.
+ * Only a refusal Stripe recorded moves the key on (#4103). Dismissing the task
+ * keeps the money, with a note, and moves nothing.
  */
 
 /** How a completed approval sends the money back. A `EditReviewSettlementRoute` arm. */
@@ -100,6 +102,13 @@ export async function planLateCaptureApprovalRefund({
       409,
     );
   }
+  // #4103 (`INV-PAY-130`): the webhook's refund of this slice that Stripe refused
+  // is cached under its key for 24 hours, so the approval asks on the key
+  // generation its recorded refusals count to - a request Stripe has never seen.
+  const recorded = await store.paymentRefund.findMany({
+    where: { paymentId: transaction.paymentId },
+    select: { paymentTransactionId: true, amountCents: true, status: true },
+  });
   return {
     kind: "late-capture-refund",
     paymentId: transaction.paymentId,
@@ -107,7 +116,7 @@ export async function planLateCaptureApprovalRefund({
     captureKind:
       transaction.kind === PaymentTransactionKind.PRIMARY ? "primary" : "modification",
     bookingModificationId: null,
-    allocation: [{ paymentTransactionId: transaction.id, amountCents }],
+    allocation: [sliceAfterRecordedRefusals({ paymentTransactionId: transaction.id, amountCents }, recorded)],
   };
 }
 
@@ -236,8 +245,25 @@ export async function executeLateCaptureApprovalRefund({
         route.paymentIntentId,
       ),
     });
+    // #4103 (`INV-PAY-130`): a refusal (failed/canceled) is not a refund: the
+    // row stays open, re-planned on fresh keys, and nothing is recorded or noted.
+    const refused = await keepRefusedPrePersistedRefundOwed({
+      bookingId,
+      idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(route.paymentIntentId),
+      attempt: result,
+      format,
+    });
+    if (refused) throw refused;
     refundId = result.refunds[0]?.refundId ?? null;
   } catch (err) {
+    // #4103: a slice refused before a later one threw is re-planned now.
+    await keepRefusedPrePersistedRefundOwed({
+      bookingId,
+      idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(route.paymentIntentId),
+      plan: route.allocation,
+      attempt: { error: err },
+      format,
+    });
     logger.error(
       { err, bookingId, taskId, paymentIntentId: route.paymentIntentId },
       "Stripe refund failed after a treasurer approved a late-capture refund - the persisted recovery operation will replay it",
