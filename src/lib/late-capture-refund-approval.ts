@@ -22,7 +22,7 @@ import {
 } from "@/lib/payment-transactions";
 import { captureRefundState } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
-import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed, sliceAfterRecordedRefusals } from "@/lib/refused-card-refund-retry";
 
 /**
  * #3639 (owner decision 26 Sep 2026, `INV-PAY-106`): what a treasurer's
@@ -34,7 +34,8 @@ import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-ret
  * the same Stripe idempotency prefix and body
  * (`buildLateCaptureRefundStripeKeyPrefix` / `buildLateCaptureRefundMetadata`),
  * so if both ever run for one capture Stripe answers the second with the first.
- * Dismissing the task keeps the money, with a note, and moves nothing.
+ * Only a refusal Stripe recorded moves the key on (#4103). Dismissing the task
+ * keeps the money, with a note, and moves nothing.
  */
 
 /** How a completed approval sends the money back. A `EditReviewSettlementRoute` arm. */
@@ -101,6 +102,13 @@ export async function planLateCaptureApprovalRefund({
       409,
     );
   }
+  // #4103 (`INV-PAY-130`): the webhook's refund of this slice that Stripe refused
+  // is cached under its key for 24 hours, so the approval asks on the key
+  // generation its recorded refusals count to - a request Stripe has never seen.
+  const recorded = await store.paymentRefund.findMany({
+    where: { paymentId: transaction.paymentId },
+    select: { paymentTransactionId: true, amountCents: true, status: true },
+  });
   return {
     kind: "late-capture-refund",
     paymentId: transaction.paymentId,
@@ -108,7 +116,7 @@ export async function planLateCaptureApprovalRefund({
     captureKind:
       transaction.kind === PaymentTransactionKind.PRIMARY ? "primary" : "modification",
     bookingModificationId: null,
-    allocation: [{ paymentTransactionId: transaction.id, amountCents }],
+    allocation: [sliceAfterRecordedRefusals({ paymentTransactionId: transaction.id, amountCents }, recorded)],
   };
 }
 
