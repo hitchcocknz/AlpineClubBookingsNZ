@@ -4,8 +4,8 @@
 // slices move, and that a persisted plan keeps the generation it was moved to.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const updateMany = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ count: 1 })));
-const findUnique = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ id: "op_row", paymentIntentId: "pi_row" })));
+const updateMany = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: 1 })));
+const findUnique = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string; paymentIntentId: string }>>(async () => ({ id: "op_row", paymentIntentId: "pi_row" })));
 vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique } } }));
 const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));

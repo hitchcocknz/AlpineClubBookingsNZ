@@ -9,31 +9,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const updateMany = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ count: 1 })));
-const findUnique = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ id: "op_row", paymentIntentId: "pi_row" })));
+const updateMany = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: 1 })));
+const findUnique = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string; paymentIntentId: string }>>(async () => ({ id: "op_row", paymentIntentId: "pi_row" })));
 vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique } } }));
 
 const refundPaymentTransactions = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/payment-transactions")>()),
+  ...((await importOriginal()) as typeof import("@/lib/payment-transactions")),
   refundPaymentTransactions,
 }));
 
-const markEditFinancialReviewRefundRecoverySucceeded = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ count: 1 })));
+const markEditFinancialReviewRefundRecoverySucceeded = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: 1 })));
 vi.mock("@/lib/payment-recovery", () => ({
   markEditFinancialReviewRefundRecoverySucceeded,
   buildBookingModificationRefundMetadata: (bookingId: string, reason: string) => ({ bookingId, reason }),
   enqueueLateCaptureApprovalRefundRecovery: vi.fn(),
 }));
 
-const recordBookingEvent = vi.hoisted(() => vi.fn(async (_args?: unknown) => undefined));
+const recordBookingEvent = vi.hoisted(() => vi.fn<(args: unknown) => Promise<void>>(async () => undefined));
 vi.mock("@/lib/booking-events", () => ({ recordBookingEvent }));
 vi.mock("@/lib/edit-financial-review-xero-leg", () => ({ dispatchEditReviewXeroSettlement: vi.fn(async () => undefined) }));
 
-const finishApprovedLateCaptureRefund = vi.hoisted(() => vi.fn(async (_args?: unknown) => undefined));
+const finishApprovedLateCaptureRefund = vi.hoisted(() => vi.fn<(args: unknown) => Promise<void>>(async () => undefined));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({ finishApprovedLateCaptureRefund }));
 
-const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async (_args?: unknown, _format?: unknown) => undefined));
+const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn<(args: unknown, format: unknown) => Promise<void>>(async () => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
 
 import { executeEditReviewSettlement } from "@/lib/edit-financial-review-settlement";
