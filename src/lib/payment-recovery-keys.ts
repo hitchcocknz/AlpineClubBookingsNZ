@@ -58,6 +58,11 @@ export function buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId: 
   return `${REFUND_REQUEST_REFUND_RECOVERY_PREFIX}${refundRequestId}`;
 }
 
+/** #4120: is this an approved refund appeal's card refund (`buildRefundRequestRefundRecoveryIdempotencyKey`)? */
+export function isRefundRequestRefundRecoveryKey(key: string) {
+  return key.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX);
+}
+
 // Capacity-race auto-refund durability: the recovery-operation dedup key for a
 // payment that succeeded AFTER the final capacity claim failed (the booking was
 // cancelled inside the reconciliation transaction and the full charge must be

@@ -33,7 +33,7 @@ import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-ru
 import { isCancelCardShortfallTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOperationUnmadeCents } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
-import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, isRefundRequestRefundRecoveryKey } from "@/lib/payment-recovery-keys";
 import {
   LEGACY_BACKFILL_REASONS,
   isCapturedTransactionStatus,
@@ -584,7 +584,9 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     .filter(
       (operation) =>
         (operation.type === "REFUND_BOOKING_MODIFICATION" || operation.type === "REFUND_SUPERSEDED_PAYMENT") &&
-        isPaymentRecoveryOperationInFlight(operation),
+        isPaymentRecoveryOperationInFlight(operation) &&
+        // #4120: an appeal's card refund is not the cancel's: still to make, it moved nothing.
+        !isRefundRequestRefundRecoveryKey(operation.idempotencyKey),
     )
     // #4117: less the slices its plan marks made - those are on the ledger already.
     .reduce((sum, operation) => sum + cardRefundOperationUnmadeCents(operation), 0);

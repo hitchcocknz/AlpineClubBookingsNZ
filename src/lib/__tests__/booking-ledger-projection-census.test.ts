@@ -32,7 +32,11 @@ import type { ModificationPricingSide } from "@/lib/booking-modification-lines";
 import type { ReversibleChargeLine } from "@/lib/booking-ledger-charge-line";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
 import { editReviewHandBackLinesWhere, isEditReviewHandBackLine } from "@/lib/edit-financial-review-charge-shape";
-import { buildBookingCancellationRefundIdempotencyKey, buildEditFinancialReviewRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import {
+  buildBookingCancellationRefundIdempotencyKey,
+  buildEditFinancialReviewRefundRecoveryIdempotencyKey,
+  buildRefundRequestRefundRecoveryIdempotencyKey,
+} from "@/lib/payment-recovery-keys";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const B = "bk-3583";
@@ -2249,6 +2253,33 @@ describe("#4120: a paid refund appeal on a cancelled booking is REFUND_APPEAL_PA
         { name: "REFUND_APPEAL_PAID", cents: -4_000 },
       ],
     });
+  });
+
+  it("MUTATION: part made, part still retrying - the appeal's own card refund is not the cancel's in-flight refund", () => {
+    // $50 approved; Stripe made $40 and refused $10, which its recovery row retries.
+    const subject = cardAppeal(4_000);
+    const retrying: BookingLedgerCensusRow = {
+      ...subject,
+      recoveryOperations: [
+        ...subject.recoveryOperations,
+        {
+          type: "REFUND_BOOKING_MODIFICATION",
+          status: "PENDING",
+          attempts: 1,
+          nextRetryAt: LATER,
+          amountCents: 5_000,
+          allocationPlan: [
+            { paymentTransactionId: "t1", amountCents: 4_000, madeRefundId: "r-appeal" },
+            { paymentTransactionId: "t1", amountCents: 1_000, stripeKeySuffix: "refused1" },
+          ],
+          idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey("rr1"),
+          paymentId: "pay-3583",
+          paymentIntentId: "pi-3583",
+        },
+      ],
+    };
+    expect(identity(retrying, "PRICE")).toMatchObject({ status: "CLASSIFIED", explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -4_000 }] });
+    expect(disagreements(retrying)).toEqual([]);
   });
 
   it("two appeals sum: each by what its outcome says went back", () => {
