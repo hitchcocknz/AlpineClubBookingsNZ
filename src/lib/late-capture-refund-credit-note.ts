@@ -9,6 +9,7 @@ import {
 import { hasXeroReceiptForLateCapture, readLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
+import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { lateCaptureRefundPaymentIntentId } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
@@ -307,7 +308,7 @@ export async function finishApprovedLateCaptureRefund(refund: {
           ? null
           : refund.captureKind === "primary"
             ? "primary"
-            : "modification_additional",
+            : ADDITIONAL_ASK_INTENT_TYPE,
       approvedByMemberId: refund.approvedByMemberId,
       manualRefundTaskId: refund.manualRefundTaskId,
     }),

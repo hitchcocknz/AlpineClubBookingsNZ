@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BookingStatus } from "@prisma/client";
+import { BookingStatus, Prisma } from "@prisma/client";
 import { normalizeDateOnlyForTimeZone, parseDateOnly } from "@/lib/date-only";
 
 /**
@@ -85,8 +85,14 @@ vi.mock("@/lib/prisma", () => ({
     payment: {
       updateMany: (...args: unknown[]) => mocks.paymentUpdateMany(...args),
     },
+    // #4103 — a refusal's re-plan of the pre-persisted row, outside the claim.
+    paymentRecoveryOperation: {
+      updateMany: (...args: unknown[]) => refusalReplan.updateMany(...args),
+      findUnique: async () => null,
+    },
   },
 }));
+const refusalReplan = vi.hoisted(() => ({ updateMany: vi.fn<(...args: unknown[]) => Promise<{ count: number }>>(async () => ({ count: 1 })) }));
 
 vi.mock("@/lib/payment-transactions", () => ({
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
@@ -182,6 +188,7 @@ import {
 } from "@/lib/payment-reconciliation";
 import logger from "@/lib/logger";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { buildCapacityClaimFailedRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 
 const tx = {
   $executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
@@ -1115,6 +1122,98 @@ describe("markBookingPaymentSucceeded", () => {
         mocks.recordCapacityClaimFailedRefundRecoveryInlineError
       ).not.toHaveBeenCalled();
       expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+
+    // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
+    // without throwing. The pre-persisted row stays open, re-planned on the
+    // refused slice's next key; the door reports a failure (no close, so no
+    // REFUNDED event after it), and its own failure alert is the one alert.
+    describe("a capacity-race refund Stripe refuses (#4103)", () => {
+      const a = { paymentTransactionId: "txn-1", amountCents: 6000 };
+      const b = { paymentTransactionId: "txn-2", amountCents: 4000 };
+      const answer = (slice: typeof a, status: string) => ({
+        status,
+        slice,
+        refundId: `re_${slice.paymentTransactionId}`,
+        paymentIntentId: "pi_race",
+        amountCents: slice.amountCents,
+      });
+      const settle = () =>
+        markBookingPaymentSucceeded({
+          format: CLUB_FORMAT_TEST,
+          bookingId: "booking-1",
+          paymentIntentId: "pi_race",
+          amountCents: 10000,
+          paymentMethodId: "pm_123",
+        });
+      const replanned = () => (refusalReplan.updateMany.mock.calls[0]?.[0] as { where: unknown; data: { allocationPlan: unknown } } | undefined);
+
+      beforeEach(() => {
+        primeCapacityRaceLoss();
+        refusalReplan.updateMany.mockReset().mockResolvedValue({ count: 1 });
+        mocks.planStripeRefundAllocation.mockResolvedValue({ slices: [a, b], plannedAmountCents: 10000, totalRefundableCents: 10000 });
+      });
+
+      it("a clean refusal: not closed, re-planned on the next key, reported failed and alerted once", async () => {
+        mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "failed"), answer(b, "canceled")] });
+
+        const result = await settle();
+
+        expect(result.outcome).toBe("cancelled_refund_failed");
+        expect(result.refundError).toMatch(/Stripe refused \$100\.00 .*still owed/);
+        expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).not.toHaveBeenCalled();
+        expect(replanned()).toEqual({
+          where: {
+            idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey("booking-1", "pi_race"),
+            status: "PENDING",
+            attempts: 0,
+            allocationPlan: { equals: Prisma.DbNull },
+          },
+          data: { allocationPlan: [{ ...a, stripeKeySuffix: "refused1" }, { ...b, stripeKeySuffix: "refused1" }], lastError: result.refundError },
+        });
+        expect(mocks.recordCapacityClaimFailedRefundRecoveryInlineError).toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringMatching(/Stripe refused/) }),
+        );
+        expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      });
+
+      it("one made beside one refused: the made slice is marked, never sent again; the alert names only the refusal", async () => {
+        mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "failed")] });
+
+        const result = await settle();
+
+        expect(result.outcome).toBe("cancelled_refund_failed");
+        expect(replanned()?.data.allocationPlan).toEqual([{ ...a, madeRefundId: "re_txn-1" }, { ...b, stripeKeySuffix: "refused1" }]);
+        expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+          expect.objectContaining({ errorMessage: expect.stringMatching(/Stripe refused \$40\.00/) }),
+          CLUB_FORMAT_TEST,
+        );
+        expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      });
+
+      it("refused then thrown: the refusal moves, the slice that threw keeps its key, and the alert names both", async () => {
+        mocks.refundPaymentTransactions.mockRejectedValue(
+          Object.assign(new Error("Refund failed after $0.00 was refunded and recorded: network"), { refunds: [answer(a, "failed")] }),
+        );
+
+        const result = await settle();
+
+        expect(result.outcome).toBe("cancelled_refund_failed");
+        expect(replanned()?.data.allocationPlan).toEqual([{ ...a, stripeKeySuffix: "refused1" }, b]);
+        expect(result.refundError).toMatch(/Stripe refused \$60\.00.*network/);
+        expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      });
+
+      it("a replay whose row a worker already holds moves nothing and stays quiet: the worker alerts as it moves the slice", async () => {
+        mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "failed"), answer(b, "failed")] });
+        refusalReplan.updateMany.mockResolvedValue({ count: 0 });
+
+        const result = await settle();
+
+        expect(result.outcome).toBe("cancelled_refund_failed");
+        expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).not.toHaveBeenCalled();
+        expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+      });
     });
   });
 

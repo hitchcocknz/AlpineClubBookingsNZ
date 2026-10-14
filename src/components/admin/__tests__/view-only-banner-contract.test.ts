@@ -383,8 +383,10 @@ const FIGURES = {
    * 375 -> 376 (#4030 review S6, on top of main's #3976): the
    * change-request panel's officer guest entry button, rendered through the
    * panel's own view-only button. MEASURED on the composed tree after merging main at aaedc5481.
+   * 376 -> 377 (#4098): the subscription charge queue's "Close: already paid".
+   * MEASURED by re-running this census.
    */
-  callSites: 376,
+  callSites: 377,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -436,8 +438,9 @@ const FIGURES = {
    * 320 -> 321 (#4030 review S6, on top of main's #3976): the officer
    * guest entry's button, under the change-request panel's banner. MEASURED
    * on the composed tree.
+   * 321 -> 322 (#4098): "Close: already paid", under the billing panel's banner.
    */
-  optOuts: 321,
+  optOuts: 322,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -521,8 +524,10 @@ const FIGURES = {
    * 284 -> 285 (#4030 review S6, on top of main's #3976): the officer
    * guest entry's button is defined in the change-request panel, beside that
    * panel's own banner. MEASURED on the composed tree after merging main at aaedc5481.
+   * 285 -> 286 (#4098): "Close: already paid" sits in the same file as the
+   * subscription billing panel's own banner. MEASURED by re-running this census.
    */
-  staticOptOuts: 285,
+  staticOptOuts: 286,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
