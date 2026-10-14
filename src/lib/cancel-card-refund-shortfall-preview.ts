@@ -1,31 +1,32 @@
 import "server-only";
 
-import type { PaymentSource } from "@prisma/client";
+import type { PaymentSource, PrismaClient } from "@prisma/client";
 
-import { sizeCancelCardShortfall, sumHeadroomCents, type CancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall";
+import { cancelRaisesCardShortfall, sizeCancelCardShortfall, sumHeadroomCents, type CancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall";
 import { nonCardChargeHeadroom } from "@/lib/cancel-card-refund-shortfall-settle";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
 import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
 import { paidCancellationBranch } from "@/lib/paid-cancellation-event";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import {
-  buildRefundAllocationSlices,
   legacyBackfillRows,
   loadPaymentWithTransactions,
+  planCardRefundFromLedger,
   refundHeadroomIncrementCents,
   type PaymentStore,
 } from "@/lib/payment-transactions";
 
 /**
- * #4119 (`INV-PAY-129`): the card refund plan a card cancel would freeze right
+ * #4119 (`INV-PAY-131`): the card refund plan a card cancel would freeze right
  * now, and its split, WITHOUT writing. The claim's steps, each from its one
  * home, in its order, on an in-memory copy of the payment's ledger:
  *
  * 1. a partly refunded mirror's unattributed refund is folded onto the captured
- *    rows (`foldMirrorRefundIntoLedger`, capped by `refundHeadroomIncrementCents`);
+ *    rows (`foldMirrorRefundIntoLedger`, capped by `refundHeadroomIncrementCents`),
+ *    in the claim's row order (`CAPTURED_ROWS_OLDEST_FIRST`, through the loader);
  * 2. a pre-ledger payment's charges are read as its backfill would write them
  *    (`legacyBackfillRows`) - a GET must not write them, racing the cancel's own;
- * 3. the card plan is the newest-first Stripe slices (`buildRefundAllocationSlices`);
+ * 3. the card plan is the claim's own planner (`planCardRefundFromLedger`);
  * 4. the rest is split by the non-card charges' headroom (`nonCardChargeHeadroom`,
  *    `sizeCancelCardShortfall`).
  *
@@ -47,8 +48,7 @@ export async function previewCancelCardRefundSplit(
   });
   // A backfilled row is the newest; only the planned total is read here, and it does not depend on the order.
   const ledger = [...rows, ...legacyBackfillRows(payment).map((row, index) => ({ ...row, id: `legacy-backfill-${index}`, createdAt: new Date() }))];
-  const { slices } = buildRefundAllocationSlices(ledger, params.refundAmountCents);
-  const plannedCardRefundCents = slices.reduce((sum, slice) => sum + slice.amountCents, 0);
+  const { plannedAmountCents: plannedCardRefundCents } = planCardRefundFromLedger(ledger, params.refundAmountCents);
   return sizeCancelCardShortfall(
     { refundAmountCents: params.refundAmountCents, plannedCardRefundCents },
     () => sumHeadroomCents(nonCardChargeHeadroom(ledger.filter((row) => isCapturedTransactionStatus(row.status)))),
@@ -56,21 +56,24 @@ export async function previewCancelCardRefundSplit(
 }
 
 /**
- * #4119 (`INV-PAY-129`): the cancel preview's card line, sized as the cancel
+ * #4119 (`INV-PAY-131`): the cancel preview's card line, sized as the cancel
  * will size it. Since #4097 a card cancel refunds to the card only what its
  * card refund plan carries and owes the rest by hand, so a preview quoting the
  * policy's whole refund as "to card" promised more than the cancel sends.
  *
- * Asked only where the cancel raises those parts: a card refund on the card
- * branch (`paidCancellationBranch`), not forced to account credit or to the
- * group organiser's card (`forcedCancelRefundMethod`). Advisory, like the rest
- * of the preview: the cancel re-plans under its locks.
+ * Asked only where the cancel raises those parts (`cancelRaisesCardShortfall`,
+ * on the branch `paidCancellationBranch` gives the method the cancel would be
+ * forced to, `forcedCancelRefundMethod`). Read in ONE read-only `RepeatableRead`
+ * snapshot, so the payment's record and its ledger rows - two statements - are
+ * read as of one moment; it takes no lock, writes nothing and calls no
+ * provider. Advisory, like the rest of the preview: the cancel re-plans under
+ * its locks.
  *
  * Returns `{ cardShortfall }` to spread into the preview's answer when the plan
  * is short, or nothing when the card carries the whole refund.
  */
 export async function cancelPreviewCardShortfall(
-  db: PaymentStore,
+  client: Pick<PrismaClient, "$transaction">,
   params: {
     payment: { id: string; source: PaymentSource | string | null; manuallyMarkedPaidAt: Date | null };
     /** The joiner's booking the group organiser paid by card (`organiserChildCancelBasis` answered). */
@@ -80,9 +83,16 @@ export async function cancelPreviewCardShortfall(
   },
 ): Promise<{ cardShortfall?: CancelCardRefundSplit }> {
   const { payment, organiserCard, refundAmountCents } = params;
-  if (forcedCancelRefundMethod(payment.source, organiserCard) !== null) return {};
+  const refundMethod = forcedCancelRefundMethod(payment.source, organiserCard) === "credit" ? "credit" : "card";
   const manualDisposition = !organiserCard && Boolean(payment.manuallyMarkedPaidAt);
-  if (paidCancellationBranch({ manualDisposition, refundMethod: "card", refundAmountCents }) !== "card") return {};
-  const cardShortfall = await previewCancelCardRefundSplit(db, { paymentId: payment.id, refundAmountCents });
+  const branch = paidCancellationBranch({ manualDisposition, refundMethod, refundAmountCents });
+  if (!cancelRaisesCardShortfall({ branch, organiserCard })) return {};
+  const cardShortfall = await client.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      return previewCancelCardRefundSplit(tx, { paymentId: payment.id, refundAmountCents });
+    },
+    { isolationLevel: "RepeatableRead" },
+  );
   return cardShortfall ? { cardShortfall } : {};
 }

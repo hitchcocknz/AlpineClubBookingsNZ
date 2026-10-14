@@ -19,6 +19,7 @@ import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence
 import { z } from "zod";
 import type { ClubFormat } from "@/lib/club-format";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
+import { CAPTURED_ROWS_OLDEST_FIRST } from "@/lib/mirror-refund-fold";
 // Moved to a leaf so the booking ledger's settlement sync can share them
 // without an import cycle (#3581); re-exported so existing importers stand.
 import {
@@ -113,13 +114,13 @@ function applyRefundStatus(
   return baseStatus;
 }
 
-/** The payment and its capture ledger, oldest first. Read-only. */
+/** The payment and its capture ledger, oldest first (`CAPTURED_ROWS_OLDEST_FIRST`). Read-only. */
 export async function loadPaymentWithTransactions(store: PaymentStore, paymentId: string) {
   return store.payment.findUnique({
     where: { id: paymentId },
     include: {
       transactions: {
-        orderBy: { createdAt: "asc" },
+        orderBy: [...CAPTURED_ROWS_OLDEST_FIRST],
       },
     },
   });
@@ -1181,7 +1182,7 @@ type RefundableStripeTransaction = {
  * the original refunds instead of minting new ones. Slices are capped at what
  * the ledger shows refundable; callers decide whether a shortfall throws.
  */
-export function buildRefundAllocationSlices<T extends RefundableStripeTransaction>(
+function buildRefundAllocationSlices<T extends RefundableStripeTransaction>(
   transactions: readonly T[],
   amountCents: number
 ): {
@@ -1247,16 +1248,28 @@ export async function planStripeRefundAllocation({
     throw new Error("Payment not found");
   }
 
+  return planCardRefundFromLedger(payment.transactions, amountCents);
+}
+
+/**
+ * THE card refund plan a capture ledger carries for `amountCents`: its
+ * newest-first slices and their total. Pure - the plan the cancel's claim
+ * freezes (`planStripeRefundAllocation`) and the one the cancel preview quotes
+ * from its in-memory ledger (#4119, `INV-PAY-131`), so the two cannot differ
+ * on the same rows.
+ */
+export function planCardRefundFromLedger(
+  transactions: readonly RefundableStripeTransaction[],
+  amountCents: number
+) {
   const { slices, totalRefundableCents } = buildRefundAllocationSlices(
-    payment.transactions,
+    transactions,
     amountCents
   );
-
-  const plan = slices.map((slice) => ({
+  const plan: RefundAllocationSlice[] = slices.map((slice) => ({
     paymentTransactionId: slice.transaction.id,
     amountCents: slice.amountCents,
   }));
-
   return {
     slices: plan,
     plannedAmountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),

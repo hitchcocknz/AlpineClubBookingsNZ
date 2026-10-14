@@ -104,8 +104,8 @@ import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
 import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
-import { alertCancelCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
-import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { alertCancelCardShortfall, cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
+import { CAPTURED_ROWS_OLDEST_FIRST, foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -1587,7 +1587,7 @@ async function performBookingCancellation(
       payment,
       () => tx.paymentTransaction.findMany({
         where: { paymentId: payment.id, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
-        orderBy: { createdAt: "asc" },
+        orderBy: [...CAPTURED_ROWS_OLDEST_FIRST],
         select: { id: true, amountCents: true, refundedAmountCents: true },
       }),
       (row, amountCents) => foldIntoTransactionRefundedAmount({ paymentTransactionId: row.id, amountCents, store: tx }),
@@ -1928,7 +1928,7 @@ async function performBookingCancellation(
         });
       }
       // #4097 (`INV-PAY-129`): what the plan cannot carry is recorded with the claim, card branch only.
-      if (branch === "card") {
+      if (cancelRaisesCardShortfall({ branch, organiserCard: organiserCard !== null })) {
         cardShortfall = await raiseCancelCardShortfallHandBack(tx, { bookingId, paymentId: payment.id, refundAmountCents, plannedCardRefundCents, format });
       }
     }

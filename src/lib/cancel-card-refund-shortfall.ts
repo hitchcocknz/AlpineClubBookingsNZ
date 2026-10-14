@@ -9,6 +9,7 @@ import {
   type CancelCardShortfallPart,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
+import type { PaidCancellationBranch } from "@/lib/paid-cancellation-event";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -55,7 +56,7 @@ export function splitCardShortfall(shortfallCents: number, nonCardHeadroomCents:
 export type CancelCardRefundSplit = { cardCents: number; bankCents: number; checkCents: number };
 
 /**
- * #4097, #4119 (`INV-PAY-129`): THE sizing of a card cancel's refund against
+ * #4097, #4119 (`INV-PAY-129`, `INV-PAY-131`): THE sizing of a card cancel's refund against
  * its card refund plan - the cancel's hand-back tasks and the cancel preview's
  * card line both ask here, so the preview cannot promise the card more than
  * the cancel sends it. Null when the plan carries the whole refund; the
@@ -70,6 +71,16 @@ export async function sizeCancelCardShortfall(
   if (shortfallCents <= 0) return null;
   const { bank, check } = splitCardShortfall(shortfallCents, await readNonCardHeadroomCents());
   return { cardCents, bankCents: bank, checkCents: check };
+}
+
+/**
+ * #4097, #4119 (`INV-PAY-129`, `INV-PAY-131`): THE gate for that sizing - an
+ * own-card refund on the paid cancel's card branch, not one to the group
+ * organiser's card. The cancel asks it before raising the parts and the cancel
+ * preview before quoting them, so the preview splits only where the cancel will.
+ */
+export function cancelRaisesCardShortfall(params: { branch: PaidCancellationBranch; organiserCard: boolean }): boolean {
+  return params.branch === "card" && !params.organiserCard;
 }
 
 /** The headroom of charges the card refund cannot carry, summed. */

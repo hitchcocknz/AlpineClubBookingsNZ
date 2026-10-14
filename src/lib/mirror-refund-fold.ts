@@ -1,4 +1,16 @@
-import { PaymentStatus } from "@prisma/client";
+import { PaymentStatus, type Prisma } from "@prisma/client";
+
+/**
+ * #4119: the order the fold walks a payment's captured rows, and the order the
+ * capture ledger loads in (`loadPaymentWithTransactions`), so the cancel's
+ * claim and the cancel preview fold onto the same rows. `id` breaks a
+ * `createdAt` tie, which would otherwise come back in whatever order
+ * PostgreSQL returns it.
+ */
+export const CAPTURED_ROWS_OLDEST_FIRST = [
+  { createdAt: "asc" },
+  { id: "asc" },
+] as const satisfies readonly Prisma.PaymentTransactionOrderByWithRelationInput[];
 
 /**
  * #1491 (review): the part of a PARTIALLY_REFUNDED payment mirror's refunded
@@ -9,7 +21,7 @@ import { PaymentStatus } from "@prisma/client";
  *
  * ONE walk for the paid cancel's claim, which writes each step
  * (`foldIntoTransactionRefundedAmount`, capped at the row's headroom), and the
- * cancel preview (#4119, `INV-PAY-129`), which applies the same steps to its
+ * cancel preview (#4119, `INV-PAY-131`), which applies the same steps to its
  * read in memory (`refundHeadroomIncrementCents`), so both plan the card refund
  * from the same ledger. `readCapturedRowsOldestFirst` is asked only for a
  * partly refunded payment; `apply` returns what the row actually took, and the

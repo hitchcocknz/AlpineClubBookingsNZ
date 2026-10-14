@@ -1,7 +1,8 @@
 /**
- * #4119 (`INV-PAY-129`): the cancel preview's card line is sized as the cancel
- * sizes it - the cancel's card refund plan, then its split - and the preview
- * never writes.
+ * #4119 (`INV-PAY-131`): the cancel preview's card line is sized as the cancel
+ * sizes it - the cancel's card refund plan (`planCardRefundFromLedger`), then
+ * its split, behind the cancel's own gate (`cancelRaisesCardShortfall`) - read
+ * in one read-only `RepeatableRead` snapshot, and the preview never writes.
  *
  * The parity cases run the cancel's own planner (`planStripeRefundAllocation`)
  * and hand-back raise (`raiseCancelCardShortfallHandBack`) beside the preview
@@ -15,7 +16,9 @@
  * plan (`plannedCardRefundCents: refundAmountCents`) and every short-plan case
  * fails; drop the in-memory fold and "a partly refunded mirror" fails; drop the
  * legacy rows and "a pre-ledger payment" fails; drop the branch gate and
- * "only where the cancel raises the parts" fails.
+ * "only where the cancel raises the parts" fails; drop the `id` tiebreak from
+ * `CAPTURED_ROWS_OLDEST_FIRST` and "rows created together" fails; drop the
+ * snapshot's isolation level and "one read-only snapshot" fails.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -24,9 +27,10 @@ vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
-import { raiseCancelCardShortfallHandBack } from "@/lib/cancel-card-refund-shortfall";
+import { cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack } from "@/lib/cancel-card-refund-shortfall";
 import { cancelPreviewCardShortfall, previewCancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall-preview";
-import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { CAPTURED_ROWS_OLDEST_FIRST, foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { paidCancellationBranch } from "@/lib/paid-cancellation-event";
 import { planStripeRefundAllocation } from "@/lib/payment-transactions";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
@@ -65,6 +69,8 @@ function bank(cents: number, refunded = 0, day = 20): Txn {
  * One payment and its ledger, read the way the planner (`payment.findUnique`
  * with its transactions) and the non-card headroom (`paymentTransaction.findMany`
  * over captured rows) read them; a backfill `create` appends a row and counts.
+ * The transactions come back in the order asked for, `createdAt` then `id`
+ * only where `id` is asked for, else as stored - as PostgreSQL may.
  */
 function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
   const rows = transactions.map((row) => ({ ...row }));
@@ -81,10 +87,18 @@ function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
     ...payment,
   };
   const tasks: Record<string, { id: string; status: string; amountCents: number }> = {};
-  return {
+  type OrderBy = ReadonlyArray<Record<string, "asc" | "desc">>;
+  const ordered = (orderBy: OrderBy = []) =>
+    [...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (orderBy.some((key) => key.id === "asc") ? a.id.localeCompare(b.id) : 0));
+  const db = {
     rows,
+    $executeRaw: vi.fn(async () => 0),
+    $transaction: vi.fn<(run: (tx: unknown) => unknown, options?: unknown) => Promise<unknown>>(async (run): Promise<unknown> => run(db)),
     payment: {
-      findUnique: vi.fn(async () => ({ ...row, transactions: [...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).map((txn) => ({ ...txn })) })),
+      findUnique: vi.fn(async (args?: { include?: { transactions?: { orderBy?: OrderBy } } }) => ({
+        ...row,
+        transactions: ordered(args?.include?.transactions?.orderBy).map((txn) => ({ ...txn })),
+      })),
     },
     paymentTransaction: {
       findMany: vi.fn(async ({ where }: { where: { status: { in: string[] } } }) => rows.filter((txn) => where.status.in.includes(txn.status)).map((txn) => ({ ...txn }))),
@@ -104,6 +118,7 @@ function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
       findUnique: vi.fn(async ({ where }: { where: { occurrenceKey: string } }) => tasks[where.occurrenceKey] ?? null),
     },
   };
+  return db;
 }
 
 /** What the cancel's claim does with the same inputs: plan, then raise what the plan cannot carry. */
@@ -168,6 +183,18 @@ describe("the cancel preview sizes the card line as the cancel does (#4119)", ()
   });
 });
 
+describe("rows created together fold in one order (#4119)", () => {
+  it("breaks a createdAt tie by id, as the cancel's claim reads them", async () => {
+    // Stored card first, but "txn-bank-1" sorts first: the record's $60.00
+    // folds onto the bank part, leaving the card all $140.00 of the refund.
+    const tied = [{ ...card(14_000, 0, 1) }, { ...bank(6_000, 0, 1) }];
+    const db = store(tied, { status: "PARTIALLY_REFUNDED", refundedAmountCents: 6_000 });
+    expect(await previewCancelCardRefundSplit(db as never, { paymentId: "payment-1", refundAmountCents: 14_000 })).toBeNull();
+    expect(db.payment.findUnique).toHaveBeenCalledWith(expect.objectContaining({ include: { transactions: { orderBy: [...CAPTURED_ROWS_OLDEST_FIRST] } } }));
+    expect(CAPTURED_ROWS_OLDEST_FIRST).toEqual([{ createdAt: "asc" }, { id: "asc" }]);
+  });
+});
+
 describe("the mirror fold is one walk (#1491, #4119)", () => {
   const rows = () => [
     { id: "a", amountCents: 3_000, refundedAmountCents: 1_000 },
@@ -207,8 +234,38 @@ describe("the preview asks only where the cancel raises the parts (#4119)", () =
   const ask = (payment: { source: string; manuallyMarkedPaidAt: Date | null }, organiserCard = false, refundAmountCents = 20_000) =>
     cancelPreviewCardShortfall(store(short) as never, { payment: { id: "payment-1", ...payment }, organiserCard, refundAmountCents });
 
-  it("a card refund on the card branch: the split", async () => {
-    expect(await ask({ source: "STRIPE", manuallyMarkedPaidAt: null })).toEqual({ cardShortfall: { cardCents: 14_000, bankCents: 6_000, checkCents: 0 } });
+  it("a card refund on the card branch: the split, read in one read-only RepeatableRead snapshot", async () => {
+    const db = store(short);
+    expect(await cancelPreviewCardShortfall(db as never, { payment: { id: "payment-1", source: "STRIPE", manuallyMarkedPaidAt: null }, organiserCard: false, refundAmountCents: 20_000 })).toEqual({
+      cardShortfall: { cardCents: 14_000, bankCents: 6_000, checkCents: 0 },
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "RepeatableRead" });
+    expect(String((db.$executeRaw.mock.calls[0] as unknown[])[0])).toContain("SET TRANSACTION READ ONLY");
+    // Its first statement, before the payment is read.
+    expect(db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(db.payment.findUnique.mock.invocationCallOrder[0]!);
+  });
+
+  it("splits exactly where the cancel's own gate on the cancel's own branch raises the parts", async () => {
+    for (const source of ["STRIPE", "INTERNET_BANKING"]) {
+      for (const manuallyMarkedPaidAt of [null, new Date("2026-06-01T00:00:00.000Z")]) {
+        for (const organiserCard of [false, true]) {
+          for (const cents of [0, 20_000]) {
+            // As the cancel's claim resolves them: the forced method, then the branch.
+            const refundMethod = source === "INTERNET_BANKING" && !organiserCard ? "credit" : "card";
+            const branch = paidCancellationBranch({ manualDisposition: !organiserCard && manuallyMarkedPaidAt !== null, refundMethod, refundAmountCents: cents });
+            const raises = cancelRaisesCardShortfall({ branch, organiserCard });
+            expect(Boolean((await ask({ source, manuallyMarkedPaidAt }, organiserCard, cents)).cardShortfall), JSON.stringify({ source, manuallyMarkedPaidAt, organiserCard, cents })).toBe(raises);
+          }
+        }
+      }
+    }
+  });
+
+  it("the gate: the card branch only, and never the organiser's card", () => {
+    expect(cancelRaisesCardShortfall({ branch: "card", organiserCard: false })).toBe(true);
+    expect(cancelRaisesCardShortfall({ branch: "card", organiserCard: true })).toBe(false);
+    for (const branch of ["manual", "credit", "none"] as const) expect(cancelRaisesCardShortfall({ branch, organiserCard: false })).toBe(false);
   });
 
   it.each([
