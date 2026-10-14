@@ -88,7 +88,7 @@ import { PUT } from "@/app/api/admin/refund-requests/[id]/route";
 import { OrganiserChildRefundRefusedError } from "@/lib/organiser-child-refund";
 
 const SETTLEMENT = { id: "settlement_1", stripePaymentIntentId: "pi_group", amountCents: 20_000 };
-const LOCKED_PAYMENT = { id: "payment_child", source: "STRIPE", status: "PARTIALLY_REFUNDED", amountCents: 10_000, refundedAmountCents: 5_000 };
+const LOCKED_PAYMENT = { id: "payment_child", source: "STRIPE", status: "PARTIALLY_REFUNDED", amountCents: 10_000, refundedAmountCents: 5_000, recoveryOperations: [], refunds: [] };
 
 /** A joiner's booking the organiser paid for by card, cancelled by the organiser at 50%. */
 function joinerAppeal() {

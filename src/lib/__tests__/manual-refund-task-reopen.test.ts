@@ -75,7 +75,9 @@ const tx = {
   payment: {
     findUnique: async () => {
       const task = (await mocks.findUnique.getMockImplementation()?.()) ?? null;
-      return (task as { payment?: unknown } | null)?.payment ?? null;
+      const payment = (task as { payment?: object } | null)?.payment ?? null;
+      // #4124: the appeal cap's card-debt read sees no open card-refund debt.
+      return payment && { recoveryOperations: [], refunds: [], ...payment };
     },
   },
 };

@@ -16,6 +16,8 @@ import {
   refundRequestHandBackOccurrenceKey,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
+import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
+import { openCardRefundOwedCents } from "@/lib/open-card-refund-owed";
 import { sumInternetBankingMintedCentsForBookings } from "@/lib/internet-banking-late-cash-credit";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
@@ -225,7 +227,7 @@ export async function assertByHandReviewRefundWithinUnpromisedCash(
 }
 
 /** What a refund appeal's cap reads: hand-back tasks and member credit. */
-export type RefundAppealCapDb = Pick<PrismaClient, "manualRefundTask" | "memberCredit">;
+export type RefundAppealCapDb = Pick<PrismaClient, "manualRefundTask" | "memberCredit" | "payment">;
 
 /**
  * #3827 (`INV-PAY-118`): the sum of EVERY open hand-back on one payment - any
@@ -265,8 +267,26 @@ export async function refundAppealHandedBackCents(
 ): Promise<number> {
   return (
     (await openHandBackCentsForRefundAppeal(db, payment.id)) +
-    (await sumInternetBankingMintedCentsForBookings(db, [payment.bookingId]))
+    (await sumInternetBankingMintedCentsForBookings(db, [payment.bookingId])) +
+    (await openCardRefundDebtCents(db, payment.id))
   );
+}
+
+/**
+ * #4124 (`INV-PAY-118`): the card refunds the payment still OWES - a recovery
+ * row's slices Stripe refused or never answered, or a refund it failed later -
+ * the same figure "Refunds owed" counts (`openCardRefundOwedCents`). That money
+ * is out of `refundedAmountCents` (it never went back) yet a row is set to send
+ * it, so an appeal approved against it would return it twice. Read with the
+ * other promised sums, before the payment: a debt made in between is counted
+ * twice and the ceiling errs low, never high.
+ */
+async function openCardRefundDebtCents(db: Pick<PrismaClient, "payment">, paymentId: string): Promise<number> {
+  const payment = await db.payment.findUnique({
+    where: { id: paymentId },
+    select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+  });
+  return payment ? openCardRefundOwedCents(payment) : 0;
 }
 
 /**

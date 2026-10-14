@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT } from "@/lib/manual-refund-task-settlement-rules";
+import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT, refundAppealCeiling } from "@/lib/manual-refund-task-settlement-rules";
+import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
 import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
 import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
 
@@ -70,6 +71,8 @@ export async function GET(req: NextRequest) {
                 refundedAmountCents: true,
                 stripePaymentIntentId: true,
                 manualRefundTasks: OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT,
+                // #4124: the open card-refund debts the ceiling also nets.
+                ...netCollectedCardRefundSelect,
               },
             },
           },
@@ -99,10 +102,19 @@ export async function GET(req: NextRequest) {
   // so the screen offers the figure the approval will accept.
   const data = await Promise.all(
     requests.map(async (listed) => {
-      const request = { ...listed, ...outcomes.get(listed.id) };
-      const payment = request.booking.payment;
+      // #4124: the ceiling is worked out here, where the card-refund rows are
+      // Dates, and only the figure goes to the screen, never the rows.
+      const { payment: loadedPayment, ...bookingRest } = listed.booking;
+      const appealCeilingCents = refundAppealCeiling(loadedPayment, listed.booking.creditsFromCancellation);
+      const { recoveryOperations: _operations, refunds: _refunds, ...paymentRest } = loadedPayment ?? { recoveryOperations: [], refunds: [] };
+      const request = {
+        ...listed,
+        ...outcomes.get(listed.id),
+        booking: { ...bookingRest, payment: loadedPayment ? paymentRest : null, appealCeilingCents },
+      };
+      const payment = loadedPayment;
       if (request.status !== "PENDING" || !payment) return request;
-      const organiserCard = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
+      const organiserCard = await organiserCardAppealCeilingFor(prisma, listed.booking, payment);
       if (organiserCard === null) return request;
       return {
         ...request,

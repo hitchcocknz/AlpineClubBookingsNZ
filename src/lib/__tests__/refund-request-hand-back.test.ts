@@ -225,7 +225,8 @@ describe("the refund appeal ceiling (INV-PAY-118)", () => {
     return {
       manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: openCents } })) },
       memberCredit: { aggregate: vi.fn(async () => ({ _sum: { amountCents: creditCents } })) },
-      payment: { findUnique: vi.fn(async () => fresh) },
+      // #4124: the card-debt read and the payment read; no open card-refund debt.
+      payment: { findUnique: vi.fn(async () => fresh && { recoveryOperations: [], refunds: [], ...fresh }) },
     };
   }
 
@@ -264,12 +265,44 @@ describe("the refund appeal ceiling (INV-PAY-118)", () => {
   it("screen: the same figure from the loaded rows, counting only the late-cash credit", () => {
     expect(
       refundAppealCeiling(
-        { ...payment, manualRefundTasks: [{ amountCents: 4000 }, { amountCents: null }] },
+        { ...payment, recoveryOperations: [], refunds: [], manualRefundTasks: [{ amountCents: 4000 }, { amountCents: null }] },
         [lateCash, cancellationCredit],
       ),
     ).toBe(3000);
-    expect(refundAppealCeiling({ ...payment, manualRefundTasks: [] }, null)).toBe(10000);
+    expect(refundAppealCeiling({ ...payment, recoveryOperations: [], refunds: [], manualRefundTasks: [] }, null)).toBe(10000);
     expect(refundAppealCeiling(null, [lateCash])).toBe(0);
+  });
+
+  // #4124: a card refund Stripe refused (or that failed later) is out of
+  // `refundedAmountCents` while a recovery row is set to send it; an appeal
+  // approved against it would return it twice. Server and screen both net it.
+  const owingOperation = {
+    id: "op-refused",
+    type: "REFUND_BOOKING_MODIFICATION" as const,
+    status: "FAILED" as const,
+    idempotencyKey: "refund_request_refund_rr0",
+    amountCents: 2500,
+    allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 2500, stripeKeySuffix: "refused1" }],
+    paymentTransactionId: null,
+    createdAt: new Date("2026-06-20T00:00:00.000Z"),
+    succeededAt: null,
+  };
+
+  it("#4124 server: an open card-refund debt comes off the appeal ceiling, read before the payment", async () => {
+    const store = {
+      manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
+      memberCredit: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
+      payment: { findUnique: vi.fn(async () => ({ ...payment, recoveryOperations: [owingOperation], refunds: [] })) },
+    };
+    await expect(refundableCashForRefundAppeal(store as never, payment)).resolves.toBe(7500);
+  });
+
+  it("#4124 screen: the same figure from the loaded rows", () => {
+    expect(refundAppealCeiling({ ...payment, recoveryOperations: [owingOperation], refunds: [], manualRefundTasks: [] }, null)).toBe(7500);
+    // Made since: the debt is gone and the cap is whole again.
+    expect(
+      refundAppealCeiling({ ...payment, recoveryOperations: [{ ...owingOperation, status: "SUCCEEDED" as const }], refunds: [], manualRefundTasks: [] }, null),
+    ).toBe(10000);
   });
 
   it("the late-cash predicate keys on the pipeline's prefix and type, never on amount", () => {

@@ -28,7 +28,6 @@ import {
 } from "@/hooks/use-admin-area-edit-access"
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice"
 import { getCancellationSettlementBreakdown, type CancellationCreditEntry } from "@/lib/payment-status-display"
-import { refundAppealCeiling } from "@/lib/manual-refund-task-settlement-rules"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { useClubTime } from "@/components/club-time-provider"
 import { parseInstant, type BoundClubTime, formatStayDateOrNull } from "@/lib/club-time"
@@ -92,6 +91,9 @@ interface RefundRequestData {
       // #3827: every hand-back still promised back by bank transfer.
       manualRefundTasks?: Array<{ amountCents: number | null }>
     } | null
+    // #4124: `refundAppealCeiling`, worked out by the list route from the
+    // payment's hand-backs, late-cash credit and open card-refund debts.
+    appealCeilingCents: number
     // #3956 (`INV-PAY-123`): on a pending appeal for a booking the group
     // organiser paid for by card, the server's `organiserCardAppealCap` - the
     // most the organiser's combined payment can still return. Null otherwise.
@@ -115,8 +117,7 @@ interface RefundRequestData {
  */
 function appealCeiling(req: RefundRequestData): number {
   return (
-    req.booking.organiserCardMaxRefundableCents ??
-    refundAppealCeiling(req.booking.payment, req.booking.creditsFromCancellation)
+    req.booking.organiserCardMaxRefundableCents ?? req.booking.appealCeilingCents
   )
 }
 

@@ -1,10 +1,8 @@
 import type { ManualRefundTaskKind, ManualRefundTaskStatus } from "@prisma/client";
 
-import {
-  getRemainingRefundableCentsNetOf,
-  type BookingPaymentState,
-} from "@/lib/booking-payment-state";
+import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { sumInternetBankingLateCashCreditCents } from "@/lib/internet-banking-late-cash-credit";
+import { openCardRefundOwedCents, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
 
 /**
  * #3213 (epic #2797): WHICH FINANCE-QUEUE ITEMS CAN BE SETTLED AT ALL, and the
@@ -445,10 +443,15 @@ export const OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT = {
   select: { amountCents: true },
 } as const;
 
-/** A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads. */
+/**
+ * A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads and
+ * (#4124) the payment's open card-refund debts, loaded with
+ * `netCollectedCardRefundSelect` - as `refundAppealHandedBackCents` nets them on
+ * the server, so the ceiling a screen offers is the one the route enforces.
+ */
 export function refundAppealCeiling(
   payment:
-    | (BookingPaymentState & { manualRefundTasks?: readonly { amountCents: number | null }[] })
+    | (CardRefundOwedPaymentRow & { manualRefundTasks?: readonly { amountCents: number | null }[] })
     | null
     | undefined,
   creditsFromCancellation:
@@ -459,7 +462,8 @@ export function refundAppealCeiling(
   return getRemainingRefundableCentsNetOf(
     payment,
     sumOpenNonCancellationHandBackCents(payment?.manualRefundTasks) +
-      sumInternetBankingLateCashCreditCents(creditsFromCancellation),
+      sumInternetBankingLateCashCreditCents(creditsFromCancellation) +
+      (payment ? openCardRefundOwedCents(payment) : 0),
   );
 }
 

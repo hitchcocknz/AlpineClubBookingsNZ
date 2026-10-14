@@ -36,6 +36,8 @@ vi.mock("@/lib/prisma", () => ({
     memberCredit: {
       aggregate: (...args: unknown[]) => mocks.memberCreditAggregate(...args),
     },
+    // #4124: no open card-refund debt on the payment.
+    payment: { findUnique: async () => null },
   },
 }));
 
