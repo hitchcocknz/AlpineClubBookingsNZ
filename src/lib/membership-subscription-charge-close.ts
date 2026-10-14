@@ -2,6 +2,7 @@ import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import {
   CLOSE_ALREADY_PAID_REASON_MAX,
+  everyActiveCoveredSubscriptionPaid,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
   PARTLY_PAID_CHARGE_ADVICE,
@@ -125,8 +126,8 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         409,
       );
     }
-    const unpaid = charge.coverage.filter((row) => row.subscription.status !== "PAID");
-    if (unpaid.length > 0) {
+    if (!everyActiveCoveredSubscriptionPaid(charge.coverage)) {
+      const unpaid = charge.coverage.filter((row) => row.subscription.status !== "PAID");
       throw new CloseAlreadyPaidChargeError(
         `Still unpaid: ${unpaid.map((row) => row.memberName).join(", ")}. ${PARTLY_PAID_CHARGE_ADVICE}`,
         409,
@@ -176,7 +177,7 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
     });
     if (stillPaid.count !== subscriptionIds.length) {
       throw new CloseAlreadyPaidChargeError(
-        "A covered subscription is no longer paid. Refresh, then Retry the charge to invoice it.",
+        `A covered subscription stopped being paid while you were closing this charge. ${PARTLY_PAID_CHARGE_ADVICE}`,
         409,
       );
     }

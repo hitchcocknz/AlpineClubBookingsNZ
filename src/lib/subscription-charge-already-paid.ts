@@ -43,12 +43,16 @@ const REVERSE_PAYMENT_HOW = "Mark as unpaid on the subscription, or void it in X
 
 /**
  * What to do with an already-paid conflict whose covered subscriptions are not
- * all paid: it can't be closed as paid. Shared with the close's refusal.
+ * all paid: it can't be closed as paid, and Retry alone loops, because the
+ * worker conflicts again while ANY covered subscription is PAID. So the two
+ * paths that work are named: pay the rest and close, or unpay every one and
+ * Retry. Shared by the worker's conflict message and both of the close's
+ * refusals (#4098 review: money F1 / security F1).
  */
 export const PARTLY_PAID_CHARGE_ADVICE =
-  "Not every covered subscription is paid, so it can't be closed as paid: " +
-  `reverse the payment (${REVERSE_PAYMENT_HOW}) and Retry to invoice the whole charge, ` +
-  "or record the remaining payments and then close it.";
+  "Not every covered subscription is paid, so it can't be closed as paid. Either record " +
+  "the remaining payments and then close it, or reverse every payment recorded for it " +
+  `(${REVERSE_PAYMENT_HOW}) and then Retry to invoice the whole charge.`;
 
 /**
  * The conflict message the invoice worker stores, naming the real choices
@@ -85,6 +89,20 @@ export function isChargeClosableAsAlreadyPaid(charge: {
     charge.lastErrorCode === SUBSCRIPTION_ALREADY_PAID_CODE &&
     charge.xeroInvoiceId === null
   );
+}
+
+/**
+ * True when the charge's ACTIVE coverage is non-empty and every subscription in
+ * it is PAID — the second half of what the close needs, after
+ * `isChargeClosableAsAlreadyPaid`. A row without `releasedAt` is read as
+ * active (the close selects only active rows). The panel offers Close only when
+ * this holds, and the close refuses when it does not.
+ */
+export function everyActiveCoveredSubscriptionPaid(
+  coverage: ReadonlyArray<{ releasedAt?: Date | string | null; subscription: { status: string } }>,
+): boolean {
+  const active = coverage.filter((row) => row.releasedAt == null);
+  return active.length > 0 && active.every((row) => row.subscription.status === "PAID");
 }
 
 /**

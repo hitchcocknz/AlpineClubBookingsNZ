@@ -169,6 +169,9 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
       ],
     }));
     await expectRefusal(409, /Still unpaid: Ben Reversed\. Not every covered subscription is paid/);
+    // Both paths that work are named; Retry alone would loop (money F1).
+    await expectRefusal(409, /record the remaining payments and then close it/);
+    await expectRefusal(409, /reverse every payment recorded for it .* and then Retry/);
     expectNoWrites();
   });
 
@@ -188,7 +191,8 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
 
   it("rolls back when a reversal lands between the read and the guarded write", async () => {
     mocks.subscriptionUpdateMany.mockResolvedValue({ count: 1 });
-    await expectRefusal(409, /no longer paid/);
+    await expectRefusal(409, /stopped being paid while you were closing this charge\. Not every covered subscription is paid/);
+    await expectRefusal(409, /record the remaining payments and then close it/);
     // The throw is what rolls the claim back; nothing after it runs.
     expect(mocks.coverageUpdateMany).not.toHaveBeenCalled();
     expect(mocks.audit).not.toHaveBeenCalled();
@@ -222,5 +226,19 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
     await expectRefusal(409, /changed while you were closing it/);
     expect(mocks.subscriptionUpdateMany).not.toHaveBeenCalled();
     expect(mocks.audit).not.toHaveBeenCalled();
+  });
+});
+
+describe("everyActiveCoveredSubscriptionPaid (#4098)", () => {
+  it.each([
+    ["every active row PAID", [{ releasedAt: null, subscription: { status: "PAID" } }], true],
+    ["a row without releasedAt is read as active", [{ subscription: { status: "PAID" } }], true],
+    ["one active row unpaid", [{ releasedAt: null, subscription: { status: "PAID" } }, { releasedAt: null, subscription: { status: "UNPAID" } }], false],
+    ["only released rows", [{ releasedAt: "2026-06-01T00:00:00.000Z", subscription: { status: "PAID" } }], false],
+    ["a released unpaid row is ignored", [{ releasedAt: null, subscription: { status: "PAID" } }, { releasedAt: "2026-06-01T00:00:00.000Z", subscription: { status: "NOT_INVOICED" } }], true],
+    ["no coverage", [], false],
+  ])("%s", async (_label, coverage, expected) => {
+    const { everyActiveCoveredSubscriptionPaid } = await import("@/lib/subscription-charge-already-paid");
+    expect(everyActiveCoveredSubscriptionPaid(coverage as never)).toBe(expected);
   });
 });

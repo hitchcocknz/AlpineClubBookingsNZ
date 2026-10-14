@@ -430,7 +430,7 @@ describe("subscription billing panel", () => {
         xeroInvoiceNumber: null,
         lastErrorCode: "SUBSCRIPTION_ALREADY_PAID",
         lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created.",
-        coverage: [{ memberName: "Cash Payer" }],
+        coverage: [{ memberName: "Cash Payer", releasedAt: null, subscription: { status: "PAID" } }],
         ...charge,
       }],
     };
@@ -478,6 +478,7 @@ describe("subscription billing panel", () => {
     const reasonInput = screen.getByLabelText(/Reason \(required\)/);
     expect(document.activeElement).toBe(reasonInput);
     expect(reasonInput.getAttribute("aria-describedby")).toBe("close-reason-help-charge-paid");
+    expect(reasonInput.getAttribute("aria-required")).toBe("true");
     expect(document.getElementById("close-reason-help-charge-paid")?.textContent).toMatch(/^Closing records/);
     fireEvent.change(reasonInput, { target: { value: "Paid in cash at the AGM" } });
     fireEvent.click(screen.getByRole("button", { name: /Confirm.*close as already paid/ }));
@@ -503,6 +504,18 @@ describe("subscription billing panel", () => {
     ["a conflict whose charge has a Xero invoice", { xeroInvoiceId: "xero-invoice-1" }],
     ["an email failure", { status: "EMAIL_FAILED", lastErrorCode: "EMAIL_FAILED" }],
     ["a queued charge", { status: "QUEUED", lastErrorCode: null }],
+    // Money F1 / security F1: the close would refuse, so it is not offered; the
+    // conflict message names the paths that work.
+    ["a partly paid family", {
+      coverage: [
+        { memberName: "Cash Payer", releasedAt: null, subscription: { status: "PAID" } },
+        { memberName: "Still Owing", releasedAt: null, subscription: { status: "NOT_INVOICED" } },
+      ],
+    }],
+    ["a charge with no active coverage", {
+      coverage: [{ memberName: "Cash Payer", releasedAt: "2026-06-01T00:00:00.000Z", subscription: { status: "PAID" } }],
+    }],
+    ["an older payload without subscription statuses", { coverage: [{ memberName: "Cash Payer" }] }],
   ])("offers no close for %s (#4098)", async (_label, charge) => {
     mocks.canEdit.mockReturnValue(true);
     servePayload(chargePayload(charge));

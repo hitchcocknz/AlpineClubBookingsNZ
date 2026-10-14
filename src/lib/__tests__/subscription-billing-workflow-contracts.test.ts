@@ -288,7 +288,7 @@ describe("subscription invoice delivery behavior", () => {
     expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         status: "CONFLICT",
-        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Not every covered subscription is paid, so it can't be closed as paid: reverse the payment (Mark as unpaid on the subscription, or void it in Xero) and Retry to invoice the whole charge, or record the remaining payments and then close it.",
+        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Not every covered subscription is paid, so it can't be closed as paid. Either record the remaining payments and then close it, or reverse every payment recorded for it (Mark as unpaid on the subscription, or void it in Xero) and then Retry to invoice the whole charge.",
       }),
     }));
   });

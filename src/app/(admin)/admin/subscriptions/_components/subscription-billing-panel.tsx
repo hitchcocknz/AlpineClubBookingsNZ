@@ -19,6 +19,7 @@ import { useClubTime } from "@/components/club-time-provider";
 import { useClubFormat } from "@/components/club-format-provider";
 import {
   CLOSE_ALREADY_PAID_REASON_MAX,
+  everyActiveCoveredSubscriptionPaid,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
 } from "@/lib/subscription-charge-already-paid";
@@ -97,7 +98,9 @@ type BillingData = {
     xeroInvoiceNumber: string | null;
     lastErrorCode: string | null;
     lastErrorMessage: string | null;
-    coverage: Array<{ memberName: string }>;
+    // #4098: an older cached payload may omit releasedAt/subscription; the
+    // close is then not offered, and the server would refuse it anyway.
+    coverage: Array<{ memberName: string; releasedAt?: string | null; subscription?: { status: string } }>;
   }>;
   exceptions: Array<{ id: string; fingerprint: string; message: string }>;
   settings: { invoiceDueDays: number; familyBillingMode: FamilyBillingMode };
@@ -213,6 +216,16 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
     setMarkNote("");
     await post({ action: "MARK_FAMILY_INVOICED", seasonYear, familyGroupId, ...(note ? { note } : {}) });
   }
+
+  // #4098: Close is offered only where the close can succeed — an already-paid
+  // conflict whose every active covered subscription is PAID. A partly paid
+  // charge shows its conflict message, which names the paths that work.
+  const canOfferClose = (charge: BillingData["charges"][number]) =>
+    isChargeClosableAsAlreadyPaid(charge) &&
+    charge.coverage.every((row) => row.subscription !== undefined) &&
+    everyActiveCoveredSubscriptionPaid(
+      charge.coverage.map((row) => ({ releasedAt: row.releasedAt ?? null, subscription: row.subscription! })),
+    );
 
   // #4098: the inline reason editor IS the confirm step, as for the family
   // marker; the reason is required and the server refuses a blank one. A
@@ -440,13 +453,13 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                     <div className="flex items-center gap-2">
                       <Badge variant="secondary">{charge.status.replaceAll("_", " ")}</Badge>
                       {charge.status === "EMAIL_FAILED" || charge.status === "CONFLICT" || charge.status === "QUEUED" || charge.status === "INVOICE_CREATED" ? <ViewOnlyActionButton canEdit={canEditFinance} describeReason={false} size="sm" variant="outline" disabled={working} onClick={() => void post({ action: "RETRY_CHARGE", chargeId: charge.id })}>{charge.status === "EMAIL_FAILED" ? <MailWarning className="mr-1 h-4 w-4" /> : charge.status === "CONFLICT" ? <AlertTriangle className="mr-1 h-4 w-4" /> : <CheckCircle2 className="mr-1 h-4 w-4" />} Retry</ViewOnlyActionButton> : null}
-                      {isChargeClosableAsAlreadyPaid(charge) && closingChargeId !== charge.id ? <ViewOnlyActionButton canEdit={canEditFinance} describeReason={false} type="button" size="sm" variant="outline" disabled={working} onClick={() => { setClosingChargeId(charge.id); setCloseReason(""); }}>Close: already paid</ViewOnlyActionButton> : null}
+                      {canOfferClose(charge) && closingChargeId !== charge.id ? <ViewOnlyActionButton canEdit={canEditFinance} describeReason={false} type="button" size="sm" variant="outline" disabled={working} onClick={() => { setClosingChargeId(charge.id); setCloseReason(""); }}>Close: already paid</ViewOnlyActionButton> : null}
                     </div>
-                    {isChargeClosableAsAlreadyPaid(charge) && closingChargeId === charge.id ? (
+                    {canOfferClose(charge) && closingChargeId === charge.id ? (
                       <div className="basis-full space-y-2 rounded-md border border-dashed p-2">
                         <p id={`close-reason-help-${charge.id}`} className="text-muted-foreground">Closing records that every member on this charge has already paid. No Xero invoice will be raised for it, and Retry is no longer offered. If a payment was recorded by mistake, reverse it and Retry instead.</p>
                         <Label htmlFor={`close-reason-${charge.id}`}>Reason (required) — e.g. how and when they paid</Label>
-                        <Input id={`close-reason-${charge.id}`} autoFocus aria-describedby={`close-reason-help-${charge.id}`} value={closeReason} onChange={(event) => setCloseReason(event.target.value)} maxLength={CLOSE_ALREADY_PAID_REASON_MAX} />
+                        <Input id={`close-reason-${charge.id}`} autoFocus required aria-required="true" aria-describedby={`close-reason-help-${charge.id}`} value={closeReason} onChange={(event) => setCloseReason(event.target.value)} maxLength={CLOSE_ALREADY_PAID_REASON_MAX} />
                         <div className="flex flex-wrap gap-2">
                           <Button type="button" size="sm" disabled={working || !closeReason.trim()} onClick={() => void closeAlreadyPaid(charge.id)}>Confirm — close as already paid</Button>
                           <Button type="button" size="sm" variant="outline" disabled={working} onClick={() => { setClosingChargeId(null); setCloseReason(""); }}>Cancel</Button>
