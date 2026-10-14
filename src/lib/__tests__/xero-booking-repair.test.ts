@@ -496,7 +496,8 @@ function createDependencies(state: {
         // would rather than returning one list to both.
         findMany: vi.fn().mockImplementation(async ({ where }: any) => {
           // #3924 round 7: the approval refund rows, by their exact keys.
-          const askedKeys: string[] = where?.idempotencyKey?.in ?? [];
+          // #4104: asked as an OR with the failed-later rows on the captures' intents.
+          const askedKeys: string[] = where?.idempotencyKey?.in ?? where?.OR?.[0]?.idempotencyKey?.in ?? [];
           if (where?.type === undefined && askedKeys.some((key) => key.startsWith("late_capture_approval_refund"))) {
             return (state.lateCaptureApprovalRefunds ?? []).filter((row) => askedKeys.includes(row.idempotencyKey));
           }

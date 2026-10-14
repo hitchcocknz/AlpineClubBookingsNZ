@@ -287,14 +287,16 @@ export async function markCancellationAttempt({
   plan: ReadonlyArray<RefundAllocationSlice>;
   answered: ReadonlyArray<Pick<AnsweredRefund, "status" | "slice" | "refundId">>;
 }): Promise<void> {
-  const known = answered.filter((answer) => answer?.slice);
+  const known = (answered ?? []).filter((answer) => answer?.slice);
   if (known.length === 0) return;
-  await prisma.paymentRecoveryOperation
-    .updateMany({
+  try {
+    await prisma.paymentRecoveryOperation.updateMany({
       where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), status: PaymentRecoveryOperationStatus.PENDING, attempts: 0 },
       data: { allocationPlan: planAfterAttempt(plan, known) as unknown as Prisma.InputJsonValue },
-    })
-    .catch((err: unknown) => logger.error({ err, bookingId }, "Could not mark a cancellation refund's made slices (#4104)"));
+    });
+  } catch (err) {
+    logger.error({ err, bookingId }, "Could not mark a cancellation refund's made slices (#4104)");
+  }
 }
 
 /**

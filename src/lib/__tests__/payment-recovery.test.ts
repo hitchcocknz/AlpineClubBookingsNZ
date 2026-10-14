@@ -987,6 +987,9 @@ describe("payment recovery worker", () => {
         where: expect.objectContaining({
           status: PaymentRecoveryOperationStatus.PENDING,
           createdAt: expect.objectContaining({ lt: expect.any(Date) }),
+          // #4104 (ops 7): a dead row - attempts spent, or no retry time - is never a stalled cron.
+          attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS },
+          nextRetryAt: { not: null },
         }),
       }),
     );
