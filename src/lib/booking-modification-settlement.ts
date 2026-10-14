@@ -256,7 +256,7 @@ export async function executeBookingModificationRefund({
       const queued = await keepOwed(refusedCents, planAfterRefusals(refused, refused));
       // Alerted when this wrote the row, and when no row could be written: then the alert is the only record.
       if (queued === null || queued?.created) {
-        const paymentIntentId = queued?.paymentIntentId ?? refusedAnswers(refundResult.refunds)[0]?.paymentIntentId ?? "";
+        const paymentIntentId = refusedAnswers(refundResult.refunds)[0]?.paymentIntentId || queued?.paymentIntentId || "";
         await alertRefusedCardRefund({ bookingId, paymentIntentId, refusedCents }, format);
       }
     }

@@ -1936,12 +1936,12 @@ describe("cancelBooking credit refunds", () => {
       // The amount is not written: it stays the plan's total.
       data: {
         allocationPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50, stripeKeySuffix: "refused1" }],
-        lastError: "Stripe refused $0.50 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+        lastError: "Stripe refused $0.50 of this card refund (failed or cancelled), so that $0.50 did not go back and is still owed.",
       },
     });
     expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledWith({
       bookingId: "booking_1",
-      message: "Stripe refused $0.50 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+      message: "Stripe refused $0.50 of this card refund (failed or cancelled), so that $0.50 did not go back and is still owed.",
     });
     expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
     expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(

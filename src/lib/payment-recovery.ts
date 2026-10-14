@@ -34,6 +34,7 @@ import {
 } from "@/lib/payment-transactions";
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
 import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
@@ -1214,15 +1215,11 @@ async function completePaymentRecoveryOperation(
   return closed.count === 1;
 }
 
-async function alertPaymentRecoveryFailure(
-  operation: PaymentRecoveryOperation,
-  message: string,
-  format: ClubFormat,
-) {
+async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, message: string, format: ClubFormat) {
   await alertPaymentRecoveryOfficers({
     bookingId: operation.bookingId,
     operationId: operation.id,
-    amountCents: operation.amountCents,
+    amountCents: await cardRefundStillOwedCents(operation), // #4117: read after the final attempt
     errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempts: ${message}`,
     paymentIntentId: operation.paymentIntentId,
   }, format);

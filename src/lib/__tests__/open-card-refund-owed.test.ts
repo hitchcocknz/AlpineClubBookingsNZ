@@ -29,8 +29,9 @@ function operation(overrides: Partial<CardRefundOperationRow>): CardRefundOperat
   };
 }
 
+let refundSeq = 0;
 function refund(overrides: Partial<RecordedCardRefundRow>): RecordedCardRefundRow {
-  return { paymentTransactionId: "txn-a", amountCents: 0, status: "succeeded", createdAt: at(20), ...overrides };
+  return { stripeRefundId: `re-${(refundSeq += 1)}`, paymentTransactionId: "txn-a", amountCents: 0, status: "succeeded", createdAt: at(20), ...overrides };
 }
 
 function payment(
@@ -344,7 +345,7 @@ describe("a slice made beside a refusal stays its row's (#4083)", () => {
       allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000 }],
       createdAt: at(1),
     });
-  const madeRefund = refund({ paymentTransactionId: "txn-a", amountCents: 5_000, createdAt: at(20) });
+  const madeRefund = refund({ stripeRefundId: "re_made", paymentTransactionId: "txn-a", amountCents: 5_000, createdAt: at(20) });
 
   it("the made refund fills the marked slice of the row that made it; the older row's slice stays owed", () => {
     const retried = operation({
@@ -362,6 +363,40 @@ describe("a slice made beside a refusal stays its row's (#4083)", () => {
 
     expect(owed.get("op-retried")).toBe(3_000);
     expect(owed.get("op-older")).toBe(5_000);
+  });
+
+  // #4117 (money F1): a refund request raises its row AFTER its inline attempt,
+  // so a slice it made predates the row - outside the row's window. It is filled
+  // by its refund id all the same, and that refund fills nothing else.
+  it("a marked slice made BEFORE its row was raised is filled by that refund, and the older row's same slice stays owed", () => {
+    const raisedAfter = operation({
+      id: "op-appeal",
+      status: "PENDING",
+      amountCents: 8_000,
+      allocationPlan: [
+        { paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_made" },
+        { paymentTransactionId: "txn-b", amountCents: 3_000, stripeKeySuffix: "refused1" },
+      ],
+      createdAt: at(30),
+    });
+
+    const owed = openCardRefundOwedByOperation(payment([older(), raisedAfter], [madeRefund], { refundedAmountCents: 5_000 }));
+
+    expect(owed.get("op-appeal")).toBe(3_000);
+    expect(owed.get("op-older")).toBe(5_000);
+  });
+
+  it("a marked slice takes only its own refund: one of the same transaction and amount under another id leaves it owed", () => {
+    const marked = operation({
+      id: "op-marked",
+      status: "PENDING",
+      amountCents: 5_000,
+      allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_made" }],
+      createdAt: at(10),
+    });
+    const someoneElses = refund({ stripeRefundId: "re_other", paymentTransactionId: "txn-a", amountCents: 5_000, createdAt: at(20) });
+
+    expect(openCardRefundOwedByOperation(payment([marked], [someoneElses], { refundedAmountCents: 5_000 })).get("op-marked")).toBe(5_000);
   });
 
   it("CONTROL: had the made slice been dropped from the plan, the older row would have taken its refund", () => {

@@ -87,7 +87,7 @@ const CENSUS_SELECT = {
   },
   paymentRecoveryOperations: {
     orderBy: ASC,
-    select: { type: true, status: true, attempts: true, nextRetryAt: true, amountCents: true, idempotencyKey: true, paymentId: true, paymentIntentId: true },
+    select: { type: true, status: true, attempts: true, nextRetryAt: true, amountCents: true, allocationPlan: true, idempotencyKey: true, paymentId: true, paymentIntentId: true },
   },
   // #3854: a group child's settlement, through its organiser's booking.
   parentBooking: {

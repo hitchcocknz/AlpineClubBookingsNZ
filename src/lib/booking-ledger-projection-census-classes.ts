@@ -31,6 +31,7 @@ import { internetBankingSettlementEvidence, type InternetBankingSettlementEviden
 import { isCreditAppliedToBooking, isCreditIssuedFromBooking } from "@/lib/member-credit-booking-rows";
 import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import { isCancelCardShortfallTask } from "@/lib/manual-refund-task-settlement-rules";
+import { cardRefundOperationUnmadeCents } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
 import {
@@ -576,7 +577,8 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
         (operation.type === "REFUND_BOOKING_MODIFICATION" || operation.type === "REFUND_SUPERSEDED_PAYMENT") &&
         isPaymentRecoveryOperationInFlight(operation),
     )
-    .reduce((sum, operation) => sum + operation.amountCents, 0);
+    // #4117: less the slices its plan marks made - those are on the ledger already.
+    .reduce((sum, operation) => sum + cardRefundOperationUnmadeCents(operation), 0);
   // V5: the card refund plan paid less than the policy refund the snapshot froze.
   const cancelRefundKey = buildBookingCancellationRefundIdempotencyKey(row.booking.id);
   const plannedCents = row.recoveryOperations

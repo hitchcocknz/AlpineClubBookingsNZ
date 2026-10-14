@@ -314,7 +314,7 @@ describe("DELETE guest removal on the member's own card: the email's refund dest
         expect.objectContaining({
           amountCents: 2000,
           paymentIntentId: "pi_original",
-          errorMessage: "Stripe refused $20.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+          errorMessage: "Stripe refused $20.00 of this card refund (failed or cancelled), so that $20.00 did not go back and is still owed; it will be retried automatically.",
         }),
         expect.anything(),
       );
