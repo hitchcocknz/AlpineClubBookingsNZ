@@ -4874,7 +4874,7 @@ not stopped by any lock either, so the request carries the card figure the
 dialog showed (`expectedRefundedByCardCents`, round 8) and a different figure
 is a 409: a refund the treasurer never saw is never marked resolved.
 
-## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096)
+## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103)
 
 A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds four
 writes to a `PaymentRecoveryOperation`, all lock-free and each fenced in its
@@ -4886,9 +4886,11 @@ Stripe call:
   (never the amount) only while the row is `PROCESSING` under the attempt's
   own `processingStartedAt` - the reaper's fence. A lost fence moves nothing; the
   next attempt reads the same refusal back and moves it then.
-- **The cancellation's re-plan** (`keepRefusedCancellationRefundOwed`) writes
-  only while its pre-persisted row is `PENDING` with `attempts` 0, so it never
-  races a worker that has claimed the row.
+- **A pre-persisted door's re-plan** (`keepRefusedPrePersistedRefundOwed`:
+  the cancellation, and since #4103 the edit financial review, the
+  late-capture approval, the duplicate capture and the capacity race) writes
+  only while its row is `PENDING` with `attempts` 0, so it never races a worker
+  that has claimed the row; that worker reads the refusal and moves it itself.
 - **The ledger refund enqueue** inserts if absent (`createMany`,
   `skipDuplicates`) and refreshes only a `PENDING` row, so a repeat enqueue
   never re-plans a row a worker has picked up.

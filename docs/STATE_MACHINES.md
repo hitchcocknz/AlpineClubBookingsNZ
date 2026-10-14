@@ -3474,8 +3474,19 @@ row still owes once it is marked failed, netting the refunds its final attempt
 recorded. The officers are alerted once per refused slice - by the write that
 first moves it off the key it was planned under (a cancellation's re-plan, the
 runner's, or an edit's or refund request's row when it is written), or by the
-edit door when no row could be written - and again if the retries run out. Other
-card refund doors still close on a refusal (#4103).
+edit door when no row could be written - and again if the retries run out.
+
+Every other card refund door keeps a refusal owed too (#4103, `INV-PAY-129`). A
+door whose row is written before its attempt - the edit financial review, the
+treasurer-approved late capture, the duplicate capture and the capacity race,
+as the cancellation does - re-plans that row while it is `PENDING` with no
+attempt, and never closes it. The superseded-payment runner asks under its
+row's key first and moves a refusal to a one-slice plan on its next key. The
+late-capture webhooks hold a refused capture for a treasurer (an `OPEN`
+approval task) whatever the setting, so they write no "refunded" record. The
+legacy group settlement refund, the superseded group intent's webhook refund
+and the Xero repair pass fail on a refusal as on a throw; they keep one fixed
+key, so a retry within 24 hours reads the same refusal back.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row
