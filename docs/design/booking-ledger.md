@@ -597,8 +597,9 @@ cancel: it returns more than the cancel kept and no charge line says so. It is
 sized from each approved appeal's own outcome as the refund-requests screen
 reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by card
 or by its own completed hand-back, and never from the lines. An appeal's
-hand-back is never the cancel's in-flight or dismissed one, because the cancel
-never netted it. An unpaid, dismissed or declined appeal explains nothing, nor
+hand-back is never the cancel's in-flight or dismissed one, nor is its card
+refund still retrying the cancel's in-flight refund, because the cancel never
+netted either. An unpaid, dismissed or declined appeal explains nothing, nor
 does one paid for a different amount than the ledger shows. A
 refund is in flight while the recovery runner will still make it — pending,
 processing, or failed with a retry scheduled and attempts left

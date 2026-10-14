@@ -7,6 +7,8 @@
   refunded: the same figure the refund-requests screen shows as "Refunded". An
   appeal not yet paid, dismissed or declined explains nothing, and nor does one
   paid for a different amount than the ledger shows, so those still read as
-  differences. An appeal's own bank-transfer task is also no longer counted as
-  the cancellation's own refund in flight or kept. The census reads only; no
-  money, ledger line or Xero note changes.
+  differences. An appeal's own bank-transfer task, and its card refund while
+  Stripe retries it, are also no longer counted as the cancellation's own
+  refund in flight or kept. Because the census now agrees, the ledger
+  back-post can post such a booking's history instead of refusing it. The
+  census reads only; no money or Xero note changes.
