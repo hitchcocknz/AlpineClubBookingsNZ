@@ -462,6 +462,32 @@ describe("subscription billing panel", () => {
     expect(await screen.findByText("Charge closed as already paid. No Xero invoice will be raised for it.")).toBeTruthy();
   });
 
+  it("keeps the reason editor and the typed reason after a refused close (#4098)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    const body = chargePayload({});
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (_input, init) => {
+      const request = init as RequestInit | undefined;
+      if (request?.method !== "POST") return { ok: true, json: async () => body } as Response;
+      return JSON.parse(String(request.body)).action === "CLOSE_ALREADY_PAID"
+        ? ({ ok: false, json: async () => ({ error: "A Xero invoice attempt for this charge is still queued or running." }) } as Response)
+        : ({ ok: true, json: async () => ({ message: "Preview refreshed." }) } as Response);
+    });
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Close: already paid" }));
+    const reasonInput = screen.getByLabelText(/Reason \(required\)/);
+    expect(document.activeElement).toBe(reasonInput);
+    expect(reasonInput.getAttribute("aria-describedby")).toBe("close-reason-help-charge-paid");
+    expect(document.getElementById("close-reason-help-charge-paid")?.textContent).toMatch(/^Closing records/);
+    fireEvent.change(reasonInput, { target: { value: "Paid in cash at the AGM" } });
+    fireEvent.click(screen.getByRole("button", { name: /Confirm.*close as already paid/ }));
+    expect(await screen.findByText("A Xero invoice attempt for this charge is still queued or running.")).toBeTruthy();
+    // The failed action clears the preview, as every failed action does; once it
+    // is reloaded the editor is still open with the reason as typed.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh preview" }));
+    expect(((await screen.findByLabelText(/Reason \(required\)/)) as HTMLInputElement).value).toBe("Paid in cash at the AGM");
+  });
+
   it("cancelling the reason editor posts nothing (#4098)", async () => {
     mocks.canEdit.mockReturnValue(true);
     const fetchMock = servePayload(chargePayload({}));
