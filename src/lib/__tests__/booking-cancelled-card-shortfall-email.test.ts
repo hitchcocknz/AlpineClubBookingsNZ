@@ -125,6 +125,23 @@ describe("#4097: the Booking Cancelled refund line names the card's part and wha
     );
   });
 
+  it("#4119: the cancel preview says each part before anything is asked of the card, from the same clauses", () => {
+    const fmtParts = (bankCents: number, checkCents: number) => ({ bankCents, checkCents, formatAmount: fmt });
+    expect(ownCardRefundWithShortfallSentence(3000, fmtParts(1500, 0), "planned")).toBe(
+      "A refund of $30.00 will be processed to your original payment method, and the club will refund the remaining $15.00 to you by bank transfer.",
+    );
+    // The planned card clause is the approved appeal's own.
+    expect(ownCardRefundWithShortfallSentence(3000, fmtParts(1500, 0), "planned")).toBe(refundRequestApprovedRefundSentence(4500, 1500, fmt));
+    expect(ownCardRefundWithShortfallSentence(3000, fmtParts(1000, 500), "planned", "the member's")).toBe(
+      "A refund of $30.00 will be processed to the member's original payment method; the club will refund $10.00 to the member by bank transfer and will be in touch about the remaining $5.00.",
+    );
+    expect(ownCardRefundWithShortfallSentence(3000, fmtParts(0, 1500), "planned")).toBe(
+      "A refund of $30.00 will be processed to your original payment method, and the club will be in touch about the remaining $15.00.",
+    );
+    // No card part: the same sentences as the cancel's own.
+    expect(ownCardRefundWithShortfallSentence(0, fmtParts(4500, 0), "planned")).toBe(ownCardRefundWithShortfallSentence(0, fmtParts(4500, 0), false));
+  });
+
   it("only an own-card refund takes a shortfall, and none reads as made", () => {
     expect(bookingCancelledRefundSentence(4500, "$45.00", "credit", { bankCents: 1500, checkCents: 0, formatAmount: fmt })).toBe(
       "A credit of $45.00 has been added to your account for future bookings.",
