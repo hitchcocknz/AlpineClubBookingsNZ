@@ -2133,8 +2133,9 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     linked as `REFUND_REQUEST_CREDIT_NOTE`, outside `INV-ADDPAY-020`'s one note.
   - **An appeal's ceiling nets everything already handed back**
     (`refundableCashForRefundAppeal`; screens `refundAppealCeiling`): every
-    OPEN hand-back on the payment, any kind, and the member credit minted
-    from late cash (`internet-banking-late-cash-credit.ts`). Neither moves
+    OPEN hand-back on the payment, any kind, the member credit minted
+    from late cash (`internet-banking-late-cash-credit.ts`), and (#4124) the
+    card refunds still owed (`openCardRefundOwedCents`). None moves
     `refundedAmountCents`. Edits and cancels still exclude the
     cancellation's own task.
   - **Dismissal stays open**, unlike an edit's after a cancel: an appeal

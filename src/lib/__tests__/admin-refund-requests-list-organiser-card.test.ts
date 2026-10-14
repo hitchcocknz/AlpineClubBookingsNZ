@@ -37,7 +37,7 @@ function request(id: string, status = "PENDING") {
   return {
     id,
     status,
-    booking: { id: `b-${id}`, payment: { id: `p-${id}`, source: "STRIPE" } },
+    booking: { id: `b-${id}`, payment: { id: `p-${id}`, source: "STRIPE", recoveryOperations: [], refunds: [] } },
   };
 }
 
@@ -125,5 +125,55 @@ describe("GET /api/admin/refund-requests, an approved appeal's card refund still
     // One read of the approved appeals' payments, none for a pending one.
     expect(mocks.paymentFindMany).toHaveBeenCalledTimes(1);
     expect(mocks.paymentFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ["p-rq-1", "p-rq-other"] } } }));
+  });
+});
+
+describe("GET /api/admin/refund-requests, a pending appeal's ceiling (#4124)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.requireAdmin.mockResolvedValue({ ok: true });
+    mocks.count.mockResolvedValue(1);
+    mocks.organiserCardAppealCeilingFor.mockResolvedValue(null);
+  });
+
+  it("nets a card refund still owed on the payment, and sends the figure, never the rows", async () => {
+    const pending = {
+      id: "rq-1",
+      status: "PENDING",
+      booking: {
+        id: "b-rq-1",
+        creditsFromCancellation: [],
+        payment: {
+          id: "p-rq-1",
+          source: "STRIPE",
+          status: "PARTIALLY_REFUNDED",
+          amountCents: 10_000,
+          refundedAmountCents: 0,
+          manualRefundTasks: [],
+          recoveryOperations: [
+            {
+              id: "op-refused",
+              type: "REFUND_BOOKING_MODIFICATION",
+              status: "FAILED",
+              idempotencyKey: "refund_request_refund_rq-0",
+              amountCents: 2_500,
+              allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 2_500, stripeKeySuffix: "refused1" }],
+              paymentTransactionId: null,
+              createdAt: new Date("2026-06-20T00:00:00.000Z"),
+              succeededAt: null,
+            },
+          ],
+          refunds: [],
+        },
+      },
+    };
+    mocks.findMany.mockResolvedValue([pending]);
+
+    const response = await GET(new NextRequest("http://localhost/api/admin/refund-requests?status=PENDING"));
+    const { data } = (await response.json()) as { data: Array<{ booking: { appealCeilingCents: number; payment: Record<string, unknown> } }> };
+
+    expect(data[0].booking.appealCeilingCents).toBe(7_500);
+    expect(data[0].booking.payment).not.toHaveProperty("recoveryOperations");
+    expect(data[0].booking.payment).not.toHaveProperty("refunds");
   });
 });
