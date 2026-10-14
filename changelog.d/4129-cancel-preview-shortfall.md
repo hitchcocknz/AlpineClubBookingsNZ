@@ -7,5 +7,6 @@
   cannot carry the whole refund, the summary now shows the card's part, the
   part the club will refund by bank transfer and the part the club will be in
   touch about, worked out exactly as the cancellation works them out, in the
-  same words the cancellation email uses. Nothing changes where the card
-  carries the whole refund, or for account credit.
+  cancellation email's wording put in the future tense. The refund option
+  names where each part goes. Nothing changes where the card carries the
+  whole refund, or for account credit.

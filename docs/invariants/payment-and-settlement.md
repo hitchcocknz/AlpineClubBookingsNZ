@@ -1338,14 +1338,17 @@ short).
   part, the bank-transfer part and the part the club will be in touch about,
   in the one wording home's sentence, said before anything is asked of the card.
   - **Sized by the cancel's own steps, in its order**: the claim's mirror fold
-    (one walk, `foldMirrorRefundIntoLedger`), a pre-ledger payment's charges as
-    its backfill would write them (`legacyBackfillRows`), the newest-first
-    Stripe plan (`buildRefundAllocationSlices`), and the split
-    (`sizeCancelCardShortfall`, which the cancel's hand-back also uses). Asked
-    only where the cancel would raise the parts: the card branch, not forced
-    to account credit or to the organiser's card.
+    (one walk, `foldMirrorRefundIntoLedger`, over rows in one order with an
+    `id` tiebreak, `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
+    charges as its backfill would write them (`legacyBackfillRows`), the
+    claim's planner (`planCardRefundFromLedger`), and the split
+    (`sizeCancelCardShortfall`). Asked only behind the cancel's own gate
+    (`cancelRaisesCardShortfall`): the card branch, not forced to account
+    credit or to the organiser's card.
   - **The preview writes nothing.** A GET that backfilled ledger rows could
-    collide with the cancel's own backfill on the unique intent id.
+    collide with the cancel's own backfill on the unique intent id. Its reads
+    are one read-only `RepeatableRead` snapshot, with no lock and no provider
+    call.
   - Advisory, like the rest of the preview: the cancel re-plans under its
     locks, so the two differ only if the payment's records move in between.
   - Proven by `cancel-card-refund-shortfall-preview.test.ts`, the route's

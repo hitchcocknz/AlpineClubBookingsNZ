@@ -275,9 +275,9 @@ still give back. When that is less than the refund the cancellation policy
 gives, usually because the payment's records disagree, the cancel records the
 rest as up to two of these tasks, and admins are emailed once ("card refund
 short on a cancelled booking"). The cancel dialog says so before anyone
-confirms (#4119): its summary shows only the card's part as "Refund to card",
-then the bank-transfer part and the part the club will be in touch about,
-worked out the same way the cancel works them out.
+confirms (#4119): its refund option and summary show only the card's part as
+going to the card, then the bank-transfer part and the part "To be confirmed
+by the club", worked out the same way the cancel works them out.
 
 - **The part to refund by bank transfer** is what the payment's other
   (non-card) charges still hold. The member is told the club will refund it by
