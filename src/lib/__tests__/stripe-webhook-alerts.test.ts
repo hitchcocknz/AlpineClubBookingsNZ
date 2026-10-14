@@ -2707,6 +2707,84 @@ describe("Stripe webhook Xero alerting", () => {
         }),
       );
     });
+
+    // #4103 (`INV-PAY-128`): Stripe answers the automatic refund `failed` or
+    // `canceled` without throwing. Nothing went back, so nothing may say it did:
+    // no "refunded" record, audit row, alert or Xero note. The capture is held
+    // for a treasurer instead, whatever the setting says; the task is the
+    // record, and its once-ever alert the one alert.
+    describe("a refund Stripe refuses (#4103)", () => {
+      function armRefusal(status: string) {
+        mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent(`evt_add_refused_${status}`));
+        mockFindPaymentTransactionByIntentId.mockResolvedValue({
+          id: "txn-9",
+          paymentId: "payment-9",
+          kind: "ADDITIONAL",
+          amountCents: 2500,
+          status: "FAILED",
+        });
+        armCancelledBooking("inv-9", null);
+        // A club on automatic refunds.
+        mockBookingDefaultsFindUnique.mockResolvedValue({ lateCaptureRefundNeedsApproval: false });
+        mockRefundPaymentTransactions.mockResolvedValue({
+          refunds: [
+            {
+              paymentIntentId: "pi_additional_late",
+              refundId: "re_refused_9",
+              amountCents: 2500,
+              status,
+              slice: { paymentTransactionId: "txn-9", amountCents: 2500 },
+            },
+          ],
+          totalRefundedAmountCents: 2500,
+        });
+      }
+
+      it.each([["failed"], ["canceled"]])("answered %s: held for a treasurer, nothing says refunded", async (status) => {
+        armRefusal(status);
+
+        const response = await POST(makeRequest());
+
+        expect(response.status).toBe(200);
+        expect(mockRefundPaymentTransactions).toHaveBeenCalledTimes(1);
+        expect(mockManualRefundTaskCreate).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            amountCents: 2500,
+            kind: "DELETED_BOOKING_LATE_CAPTURE",
+            lateCaptureApprovalIntentId: "pi_additional_late",
+            status: "OPEN",
+          }),
+          select: { id: true },
+        });
+        expect(mockLogAudit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "booking.payment.late_capture_refund_held",
+            details: expect.stringContaining('"stripeRefusedAutomaticRefund":true'),
+          }),
+        );
+        expect(mockSendAdminLateCaptureHeldAlert).toHaveBeenCalledTimes(1);
+        expect(mockRecordAutomaticCancelledBookingRefundTask).not.toHaveBeenCalled();
+        expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
+        expect(mockEnqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+        expect(mockLogAudit).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "booking.payment.refunded_after_cancellation" }),
+        );
+      });
+
+      it("a replay finds the task its refusal raised: nothing new is raised, and still nothing says refunded", async () => {
+        armRefusal("failed");
+        mockManualRefundTaskFindUnique.mockResolvedValue({ id: "task-held", status: "OPEN" });
+
+        const response = await POST(makeRequest());
+
+        expect(response.status).toBe(200);
+        expect(mockManualRefundTaskCreate).not.toHaveBeenCalled();
+        expect(mockRecordAutomaticCancelledBookingRefundTask).not.toHaveBeenCalled();
+        expect(mockLogAudit).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "booking.payment.refunded_after_cancellation" }),
+        );
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -2821,6 +2899,59 @@ describe("Stripe webhook Xero alerting", () => {
           details: expect.stringContaining('"kind":"primary"'),
         }),
       );
+    });
+
+    // #4103 (`INV-PAY-128`): the booking's own late payment, refunded newest
+    // first, may span slices. A refused slice is held; a made one stays made.
+    describe("a refund Stripe refuses (#4103)", () => {
+      const answer = (transactionId: string, amountCents: number, status: string) => ({
+        paymentIntentId: "pi_primary_late",
+        refundId: `re_${transactionId}`,
+        amountCents,
+        status,
+        slice: { paymentTransactionId: transactionId, amountCents },
+      });
+
+      it("one slice made beside one refused: only the refused amount is held, and nothing says refunded", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_refused_part"));
+        armCancelledBooking("inv-7", null);
+        mockRefundPaymentTransactions.mockResolvedValue({
+          refunds: [answer("txn-7", 9000, "succeeded"), answer("txn-6", 3000, "canceled")],
+          totalRefundedAmountCents: 12000,
+        });
+
+        const response = await POST(makeRequest());
+
+        expect(response.status).toBe(200);
+        expect(mockManualRefundTaskCreate).toHaveBeenCalledWith({
+          data: expect.objectContaining({ amountCents: 3000, lateCaptureApprovalIntentId: "pi_primary_late", status: "OPEN" }),
+          select: { id: true },
+        });
+        expect(mockRecordAutomaticCancelledBookingRefundTask).not.toHaveBeenCalled();
+        expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
+        expect(mockLogAudit).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "booking.payment.refunded_after_cancellation" }),
+        );
+      });
+
+      it("refused then thrown: the webhook fails for Stripe to redeliver, and nothing is recorded or held", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_refused_thrown"));
+        armCancelledBooking("inv-7", null);
+        mockRefundPaymentTransactions.mockRejectedValue(
+          Object.assign(new Error("Refund failed after $0.00 was refunded and recorded: network"), {
+            refunds: [answer("txn-7", 9000, "failed")],
+          }),
+        );
+
+        const response = await POST(makeRequest());
+
+        expect(response.status).toBe(500);
+        expect(mockManualRefundTaskCreate).not.toHaveBeenCalled();
+        expect(mockRecordAutomaticCancelledBookingRefundTask).not.toHaveBeenCalled();
+        expect(mockLogAudit).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "booking.payment.refunded_after_cancellation" }),
+        );
+      });
     });
 
     it("holds the booking's own late payment for a treasurer when the club asks for approval (#3639)", async () => {
