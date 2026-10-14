@@ -16,6 +16,9 @@
  *   `netCollectedCardRefundSelect`) counts the queued row at what Stripe
  *   refused, keeps counting it through a second refusal, and stops once a
  *   refund of that slice is made after the row was raised.
+ * - An approved refund request's row (#4102, #4117), raised after its attempt:
+ *   its made slice is filled by its own refund id, and that refund fills no
+ *   older row's slice of the same transaction and amount.
  * - The REAL `cancelBooking`, with a Stripe double answering the refund
  *   `failed`: the booking is cancelled, its pre-persisted refund row stays
  *   PENDING, re-planned to the refused slice on its next key, and "Refunds owed"
@@ -85,6 +88,9 @@ function assertSafeRaceDbUrl(url: string): void {
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let enqueueBookingModificationRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueBookingModificationRefundRecovery"];
 let refundPlanOrRetryRefusals: (typeof import("@/lib/refused-card-refund-retry"))["refundPlanOrRetryRefusals"];
+let inlineRefundAfterAttempt: (typeof import("@/lib/refused-card-refund-retry"))["inlineRefundAfterAttempt"];
+let openCardRefundOwedByOperation: (typeof import("@/lib/open-card-refund-owed"))["openCardRefundOwedByOperation"];
+let enqueueRefundRequestRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueRefundRequestRefundRecovery"];
 let parseRefundAllocationPlan: (typeof import("@/lib/open-card-refund-owed"))["parseRefundAllocationPlan"];
 let openCardRefundOwedCents: (typeof import("@/lib/open-card-refund-owed"))["openCardRefundOwedCents"];
 let netCollectedCardRefundSelect: (typeof import("@/lib/additional-ledger-gap"))["netCollectedCardRefundSelect"];
@@ -182,9 +188,9 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       assertSafeRaceDbUrl(RACE_DB_URL);
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
-      ({ enqueueBookingModificationRefundRecovery } = await import("@/lib/payment-recovery"));
-      ({ refundPlanOrRetryRefusals } = await import("@/lib/refused-card-refund-retry"));
-      ({ parseRefundAllocationPlan, openCardRefundOwedCents } = await import("@/lib/open-card-refund-owed"));
+      ({ enqueueBookingModificationRefundRecovery, enqueueRefundRequestRefundRecovery } = await import("@/lib/payment-recovery"));
+      ({ refundPlanOrRetryRefusals, inlineRefundAfterAttempt } = await import("@/lib/refused-card-refund-retry"));
+      ({ parseRefundAllocationPlan, openCardRefundOwedCents, openCardRefundOwedByOperation } = await import("@/lib/open-card-refund-owed"));
       ({ netCollectedCardRefundSelect } = await import("@/lib/additional-ledger-gap"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
 
@@ -306,6 +312,50 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       expect(await owedNow()).toBe(0);
     });
 
+    // #4102, #4117 (money F1): an approved refund request raises its row AFTER
+    // its inline attempt, so a refund that attempt made predates the row. The
+    // row marks that slice with its refund, and "Refunds owed" fills it by that
+    // id - so it is never counted owed here, and never taken as an OLDER open
+    // row's unsent slice of the same transaction and amount.
+    it("an approved refund request's row: its made slice, made before the row, is filled by its own refund and by nothing else", async () => {
+      // An older open row with an unsent slice exactly like the made one.
+      await queueRefusedSlice([{ paymentTransactionId: ADDITIONAL_TXN, amountCents: MADE_CENTS }], MADE_CENTS);
+      await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: OPERATION_KEY }, data: { createdAt: new Date("2026-06-19T00:00:00.000Z") } });
+
+      const made = { paymentTransactionId: ADDITIONAL_TXN, amountCents: MADE_CENTS };
+      const answers = [
+        { status: "succeeded", refundId: "re_race_4083_made", paymentIntentId: "pi_race_4083_additional" },
+        { status: "failed", refundId: "re_race_4083_refused", paymentIntentId: "pi_race_4083_primary" },
+      ];
+      const read = inlineRefundAfterAttempt([made, REFUSED_SLICE], { refunds: answers });
+      expect(read.plan).toEqual([{ ...made, madeRefundId: "re_race_4083_made" }, QUEUED_SLICE]);
+      expect(
+        await enqueueRefundRequestRefundRecovery({
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          refundRequestId: "race-4102-request",
+          amountCents: MADE_CENTS + REFUSED_CENTS,
+          allocationPlan: read.plan,
+        }),
+      ).toMatchObject({ created: true });
+      const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: "refund_request_refund_race-4102-request" } });
+      // Raised a second after the attempt's refunds were recorded, as the route raises it.
+      await prisma.paymentRecoveryOperation.update({ where: { id: row.id }, data: { createdAt: new Date("2026-06-20T00:00:01.000Z") } });
+      expect(parseRefundAllocationPlan(row.allocationPlan)).toEqual(read.plan);
+
+      const payment = await prisma.payment.findUniqueOrThrow({
+        where: { id: PAYMENT_ID },
+        select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+      });
+      const owed = openCardRefundOwedByOperation(payment);
+      // Only the refused $40.00 is the request's to send.
+      expect(owed.get(row.id)).toBe(REFUSED_CENTS);
+      // The older row's $60.00 is still owed: the request's made refund is not its.
+      const older = await queuedRow();
+      expect(owed.get(older.id)).toBe(MADE_CENTS);
+      expect(await owedNow()).toBe(MADE_CENTS + REFUSED_CENTS);
+    });
+
     it("the runner moves a refused slice only on the attempt it holds, and never skips a generation", async () => {
       await queueRefusedSlice();
       const queued = await queuedRow();
@@ -418,7 +468,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
           status: "PENDING",
           attempts: 0,
           amountCents: CANCEL_CENTS,
-          lastError: "Stripe refused $200.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+          lastError: "Stripe refused $200.00 of this card refund (failed or cancelled), so that $200.00 did not go back and is still owed.",
         });
         expect(parseRefundAllocationPlan(row.allocationPlan)).toEqual([
           { paymentTransactionId: CANCEL_TXN, amountCents: CANCEL_CENTS, stripeKeySuffix: "refused1" },

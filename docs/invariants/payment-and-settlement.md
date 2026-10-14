@@ -1223,33 +1223,37 @@ one, check the other.
 **Related: `INV-PAY-114`** (an organiser child's refund) and
 **`INV-PAY-122`** (closing a dead card refund).
 
-- **A card refund Stripe answers `failed` or `canceled` on a booking edit or a
-  cancellation, or accepts (`pending`) and fails later, is still owed**
-  (#4083, #4096, #4104). It is never counted as made (`completedRefundCents`).
+- **A card refund Stripe answers `failed` or `canceled` on an edit, a
+  cancellation or a refund request, or accepts (`pending`) and fails later, is
+  still owed** (#4083, #4096, #4102, #4104), never counted as made.
   - **Whoever reads a refusal moves that slice to a fresh key**
     (`refused1`, `refused2`, ...; `refundSliceStripeIdempotencyKey`): Stripe
-    replays a key's answer for 24 hours. A slice never read refused keeps its key.
-  - **The four edit doors** (`executeBookingModificationRefund`) queue exactly
-    the refused slices when Stripe answered every slice; else the remainder.
+    replays a key's refusal for 24 hours. A slice never read refused keeps its key.
+  - **The four edit doors** queue exactly the refused slices when Stripe
+    answered every slice; else the remainder.
   - **A cancellation** re-plans its pre-persisted row while PENDING with no attempt.
+  - **A refund request** queues its whole plan; once Stripe was asked, the
+    approval stands; unqueued cents split refused/unanswered (#4117).
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
-    it holds and fails it. A slice made beside a refusal stays, marked
-    (`madeRefundId`), never re-sent; the amount stays.
+    it holds and fails it.
+  - **A slice made beside a refusal stays, marked** (`madeRefundId`): never
+    re-sent, filled only by that refund; the amount stays.
   - **Failed later**: the refund-row writer sees it once, under the Payment row
-    lock - via `refund.failed` or the payments cron's read-back - and in that
-    transaction re-plans an open row that marked it made, else raises one row
-    per Stripe refund on a new key. A retry failing too is raised dead. Only
-    refunds naming their booking.
-  - **Officers are alerted once, and again when the retries run out**; the
-    row then dies owed, for "Paid another way".
-  - **Deploy window**: an older release closes a refused row as paid, and
-    replays a moved slice's first key; check rows it closed against Stripe.
+    lock - from `refund.failed` or the cron's read-back - and there
+    re-plans an open row that marked it made, else raises one row per Stripe
+    refund on a new key; a retry failing too is raised dead. Only refunds
+    naming their booking.
+  - **Officers hear once per refused slice or failed-later row**, and again if
+    retries run out.
+  - **Deploy window**: an older release closes a refused row as paid; check
+    its closes against Stripe.
   - **Stated limits**: the late-capture approval and webhook, the edit
     financial-review settlement, duplicate-capture reconciliation, the
     superseded-payment runner and the group-settlement replay still close on a
-    refusal (#4103); a refund request drops a refused slice (#4102).
+    refusal (#4103).
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
-    the doors' `own-card-refund-outcome` states, `booking-cancel.test.ts`,
+    `own-card-refund-outcome`, `booking-cancel.test.ts`,
+    `admin-refund-request-review-route.test.ts`,
     `refunds-and-credits-owed.test.ts`, `card-refund-failed-later.test.ts` and
     both suites' `.realdb.test.ts`.
 

@@ -2187,6 +2187,103 @@ describe("payment recovery worker", () => {
     );
   });
 
+  // #4117: a card refund's slices Stripe already made stay in its plan, marked,
+  // and its amount keeps them (the cancellation's, the runner's and a refund
+  // request's rows). The retries-exhausted alert names only what failed.
+  it("alerts the officers for the unmade part only when a card refund with a made slice exhausts its retries", async () => {
+    const exhaustedOperation = makeOperation({
+      id: "recovery-made-slice-fail",
+      type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+      idempotencyKey: "refund_request_refund_rq-made",
+      attempts: 5,
+      amountCents: 4000,
+      paymentTransactionId: null,
+      allocationPlan: [
+        { paymentTransactionId: "txn-made", amountCents: 2500, madeRefundId: "re_made" },
+        { paymentTransactionId: "txn-owed", amountCents: 1500, stripeKeySuffix: "refused1" },
+      ],
+    });
+    mockPaymentRecoveryFindUnique.mockResolvedValue(exhaustedOperation);
+    mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+      Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...exhaustedOperation, status: "PENDING" }]),
+    );
+    mockRefundPaymentTransactions.mockRejectedValue(new Error("Stripe is unavailable"));
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+    expect(result.failed).toBe(1);
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 1500, errorMessage: expect.stringContaining("failed after 5 attempts") }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  // #4117: the final attempt itself may make slices. The alert reads what the
+  // dead row still owes AFTER it is marked failed - netting the refunds
+  // recorded since, as "Refunds owed" does - never the claim-time copy.
+  describe("the retries-exhausted alert reads what the final attempt left owed (#4117)", () => {
+    const made = { paymentTransactionId: "txn-made", amountCents: 2500 };
+    const owed = { paymentTransactionId: "txn-owed", amountCents: 1500 };
+    const exhausted = () =>
+      makeOperation({
+        id: "recovery-final",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        idempotencyKey: "refund_request_refund_rq-final",
+        attempts: 5,
+        amountCents: 4000,
+        paymentTransactionId: null,
+        allocationPlan: [made, owed],
+        createdAt: new Date("2026-05-23T00:00:00.000Z"),
+      });
+    // The payment as it stands after the final attempt: the made slice recorded.
+    const afterFinalAttempt = (plan: unknown) => ({
+      status: "PARTIALLY_REFUNDED",
+      amountCents: 10000,
+      refundedAmountCents: 2500,
+      recoveryOperations: [{ ...exhausted(), status: "FAILED", allocationPlan: plan, succeededAt: null }],
+      refunds: [
+        { stripeRefundId: "re_final_made", paymentTransactionId: "txn-made", amountCents: 2500, status: "succeeded", createdAt: new Date("2026-05-23T00:05:00.000Z"), stripeCreatedAt: new Date("2026-05-23T00:05:00.000Z") },
+      ],
+    });
+    const arm = (plan: unknown) => {
+      const operation = exhausted();
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
+      );
+      mockPaymentFindUnique.mockImplementation(async (args?: { select?: { recoveryOperations?: unknown } }) =>
+        args?.select?.recoveryOperations ? afterFinalAttempt(plan) : null,
+      );
+    };
+    const alertedCents = () => (mockSendAdminPaymentFailureAlert.mock.calls.at(-1)?.[0] as { amountCents: number }).amountCents;
+
+    it("one slice made and the other refused: only the refused $15.00", async () => {
+      arm([{ ...made, madeRefundId: "re_final_made" }, { ...owed, stripeKeySuffix: "refused1" }]);
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [
+          { status: "succeeded", slice: made, refundId: "re_final_made", paymentIntentId: "pi_made", amountCents: 2500 },
+          { status: "failed", slice: owed, refundId: "re_final_refused", paymentIntentId: "pi_owed", amountCents: 1500 },
+        ],
+      });
+
+      expect((await processPaymentRecoveryOperations({ limit: 1 })).failed).toBe(1);
+      expect(alertedCents()).toBe(1500);
+    });
+
+    it("one slice made and the next threw: only the unmade $15.00, though the plan was never re-planned", async () => {
+      arm([made, owed]);
+      // A partial failure's shape: the slice answered before the throw rides along.
+      mockRefundPaymentTransactions.mockRejectedValue(
+        Object.assign(new Error("Stripe is unavailable"), {
+          refunds: [{ status: "succeeded", slice: made, refundId: "re_final_made", paymentIntentId: "pi_made", amountCents: 2500 }],
+        }),
+      );
+
+      expect((await processPaymentRecoveryOperations({ limit: 1 })).failed).toBe(1);
+      expect(alertedCents()).toBe(1500);
+    });
+  });
+
   // #4083 (`INV-PAY-128`): a replay Stripe answered `failed` or `canceled`
   // returns normally from `refundPaymentTransactions`. The row must stay owed,
   // and its retry must not replay the refused key - Stripe answers a repeated
@@ -2248,7 +2345,7 @@ describe("payment recovery worker", () => {
       expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
         expect.objectContaining({
           amountCents: 1500,
-          errorMessage: "Stripe refused $15.00 of this card refund (failed or cancelled), so no money went back and it is still owed.",
+          errorMessage: "Stripe refused $15.00 of this card refund (failed or cancelled), so that $15.00 did not go back and is still owed; it will be retried automatically.",
         }),
         CLUB_FORMAT_TEST,
       );
