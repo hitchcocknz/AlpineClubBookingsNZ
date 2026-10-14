@@ -123,18 +123,18 @@ export function BookingStatusBanners({
             "border-border bg-muted text-foreground"
           }`}
         >
-          <p className="font-medium">{bookingNarrative.headline}</p>
-          <p>{bookingNarrative.message}</p>
+          <p className="font-medium">{!viewer.canSeeOwnerCredit && ["paid", "financial_review_pending"].includes(bookingNarrative.state) ? "Booking confirmed" : bookingNarrative.headline}</p>
+          <p>{!viewer.canSeeOwnerCredit && ["paid", "financial_review_pending"].includes(bookingNarrative.state) ? "This stay is confirmed." : bookingNarrative.message}</p>
           {/* #3033: the club's configurable explanation, inside the banner and
               between the facts and the next step, which is where a member reads
               it as part of one message rather than as a second notice. */}
-          {bookingNarrative.state === "financial_review_pending" &&
+          {viewer.canSeeOwnerCredit && bookingNarrative.state === "financial_review_pending" &&
           financialReviewPendingDescription ? (
             <p data-testid="booking-financial-review-description">
               {financialReviewPendingDescription}
             </p>
           ) : null}
-          <p className="opacity-80">{bookingNarrative.nextStep}</p>
+          {viewer.canSeeOwnerCredit || !["paid", "financial_review_pending"].includes(bookingNarrative.state) ? <p className="opacity-80">{bookingNarrative.nextStep}</p> : null}
         </div>
       ) : null}
 

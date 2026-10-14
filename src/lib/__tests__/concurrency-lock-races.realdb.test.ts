@@ -230,6 +230,8 @@ import "./ib-capacity-cancel-credit-restore.realdb.test";
 // `race-3979-` fixtures, and its email and Xero doubles pass through for every
 // other suite.
 import "./ib-settle-from-cash.realdb.test";
+// #4047: read-only invoice discovery and post-provider audience/lifecycle fences.
+import "./booking-outstanding-observation.realdb.test";
 // #3864 reuses it to prove an edit's stored credit election is never spent on top
 // of an old full-price card intent: the REAL edit, pay-step route and webhook,
 // with the old intent captured and its webhook delivered at each point, end with

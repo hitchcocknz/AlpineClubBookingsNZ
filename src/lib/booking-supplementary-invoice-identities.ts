@@ -8,6 +8,9 @@ import { getOperationQueueTypeHint, isAdmissibleRepairOperation } from "@/lib/xe
 import { xeroObjectLinkSelect, xeroOperationSelect, type XeroOperationRecord } from "@/lib/xero-booking-repair-types";
 import { asRecord } from "@/lib/xero-json";
 import { stableDigest } from "@/lib/stable-digest";
+import { compareOrdinal } from "@/lib/ordinal-order";
+import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
+import { isXeroSupplementaryInvoiceKeyForAnchor } from "@/lib/xero-supplementary-invoice-key";
 
 export type SupplementaryInvoiceIdentities = {
   invoiceIds: string[];
@@ -55,10 +58,18 @@ export async function readBookingSupplementaryInvoiceIdentities(bookingId: strin
     prisma.xeroObjectLink.findMany({ where: { OR: anchors, xeroObjectType: "INVOICE", role: "SUPPLEMENTARY_INVOICE" }, select: xeroObjectLinkSelect }),
     prisma.xeroSyncOperation.findMany({ where: { OR: anchors, direction: "OUTBOUND", entityType: "INVOICE", operationType: "CREATE" }, select: xeroOperationSelect }),
   ]);
+  // Database row order is not a financial revision. Stabilise every hashed population.
+  links.sort((a, b) => compareOrdinal(a.id, b.id));
+  operations.sort((a, b) => compareOrdinal(a.id, b.id));
+  eligibleTasks.sort((a, b) => compareOrdinal(a.id, b.id));
+  const primaryKey = buildXeroBookingInvoiceCorrelationKey(bookingId);
   const supplementaryOperations = operations.filter((row) =>
     isAdmissibleRepairOperation(row, XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE) &&
-    (getOperationQueueTypeHint(row) !== null || links.some((link) => link.localModel === row.localModel && link.localId === row.localId && link.xeroObjectId === row.xeroObjectId) ||
-      collectionKind(row, bookingId) !== "unknown"));
+    // A positively identified primary is excluded; an unclassified, scoped
+    // legacy CREATE remains unknown rather than disappearing into all-clear.
+    !(row.localModel === "Booking" && getOperationQueueTypeHint(row) === null &&
+      [row.correlationKey, row.idempotencyKey].includes(primaryKey) &&
+      ![row.correlationKey, row.idempotencyKey].some((key) => isXeroSupplementaryInvoiceKeyForAnchor(key, row.localModel, row.localId))));
   const bankIds = new Set<string>();
   const receiptIds = new Set<string>();
   let incomplete = tasks.length !== eligibleTasks.length;
@@ -79,11 +90,6 @@ export async function readBookingSupplementaryInvoiceIdentities(bookingId: strin
       else incomplete = true;
     }
     for (const row of ownOperations) {
-      const hint = getOperationQueueTypeHint(row);
-      // A no-hint legacy CREATE on the Booking anchor may also be the primary;
-      // only a supplementary link or a canonical execution result establishes it.
-      if (hint === null && !ownLinks.some((link) => link.xeroObjectId === row.xeroObjectId) &&
-          collectionKind(row, bookingId) === "unknown") continue;
       if (collectionKind(row, bookingId) !== "receipt" && (!row.xeroObjectId || !ids.includes(row.xeroObjectId))) incomplete = true;
     }
     if (ownLinks.some((row) => !row.active && !ids.includes(row.xeroObjectId))) incomplete = true;

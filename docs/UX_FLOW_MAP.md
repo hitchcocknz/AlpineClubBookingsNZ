@@ -793,6 +793,22 @@ record is replaced by that same kind of line. See `INV-ADDPAY-036`,
 in
 [`STATE_MACHINES.md`](STATE_MACHINES.md).
 
+## Outstanding additions on the booking confirmation (#4047)
+
+The booking detail page streams its additional-payment information separately.
+The owner sees each current card ask or dated remaining supplementary bank
+invoice amount with how to pay. Officers see the read-only audience; a plain
+linked guest sees neutral stay confirmation. Known or uncertain extras suppress
+whole-booking no-payment reassurance while historical payment receipts and the
+canonical financial-review clauses remain visible to the financial audience.
+
+A user presses **Check more invoices** to reach subsequent bounded batches.
+Each invoice retains its own timestamp and instructions; batches are never
+combined into a current total. Incomplete evidence says amounts/instructions
+cannot yet be confirmed and offers re-entry. Cancelled/bumped/deleted bookings
+suppress collection. See [the member guide](user-guide/booking-a-stay.md#additional-money-after-a-booking-change)
+and [the provider reader contract](xero/ARCHITECTURE.md#booking-page-supplementary-invoice-observations-4047).
+
 ## A booking change whose money is still being worked out (#3033, epic #2797)
 
 When an edit to an existing booking is valid but its refund or credit cannot be
