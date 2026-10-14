@@ -4993,6 +4993,31 @@ webhook's own Stripe payload, and the cron's read-back
 (`reconcilePendingCardRefunds`) - run outside the transaction, and the officers'
 alert after its commit.
 
+**Stated limit: a failure seen before the refund was ever recorded** (delta
+review B-2). `recordRefusedCardRefund` writes a refund it has never seen as
+refused, and owes nothing for it: the door that asked for it, told `pending`,
+then reads the row refused and keeps its own debt (`INV-PAY-128`'s refusal
+path). A first-seen failure cannot tell that door, merely slower than the
+webhook, from one that crashed between Stripe and its record; owing it there
+would owe it twice whenever the door lives. So a door with no row persisted
+before its call that crashes there, its refund then failing, leaves no debt -
+as the same crash before the call would. Its booking's state, not this event,
+is what an officer reconciles.
+
+**The deploy window** (delta review B-1): the previous release's runner claims
+any due card refund row, and knows neither the failed-later key's Stripe reason
+(`bookingModificationRefundReasonForKeyPrefix`) nor a slice's `failedRefundIds`
+(`parseRefundAllocationPlan`). A failed-later row it claims is re-sent under
+the old reason - so if that re-send fails later too it is asked for once more,
+not raised dead - and a re-planned row's plan it rewrites loses the failed
+refunds it recorded,
+so a later "Paid another way" close reads no card-note cover and Xero is
+credited twice (listed as over-coverage). Subscribing to `refund.failed` only
+once the new release alone serves keeps that event's rows out of the window;
+it does not close it, because the new release raises a row from any refund
+status it reads - `charge.refunded`, the cron's read-back, a door's replay
+(`DEPLOYMENT.md`).
+
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 
 `applyStripeRefundNoteLinkRepairs` (`src/lib/xero-refund-note-link-repair.ts`,

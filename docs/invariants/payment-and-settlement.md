@@ -1242,8 +1242,8 @@ one, check the other.
     else one row per Stripe refund owes it. A retry failing too, or a refund no
     open row owes that Stripe created before the cutoff migration, is raised
     dead; one naming no booking only alerts and is audited.
-  - **Paid another way** notes only what its card note, still in Xero, does not
-    cover (`failedLaterCardNoteCoverCents`).
+  - **Paid another way** notes only what a card note still in Xero does not
+    cover, kept on its record (`failedLaterCardNoteCoverCents`).
   - **Officers hear once per refused slice or failed-later decision**, and
     again if retries run out.
   - **Deploy window**: an older release closes a refused row as paid and drops

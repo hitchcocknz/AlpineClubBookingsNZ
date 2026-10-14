@@ -1392,7 +1392,17 @@ through this event. `refund.updated` and `charge.refund.updated` are also
 understood if an endpoint already sends them; neither is needed. Add it once
 the new release is the only one serving: an older release acknowledges an
 event it does not know and drops it. Such a refund is still recorded pending,
-so the new release's read-back finds it within a run or two.
+so the new release's read-back finds it within a run or two. While old and new
+releases both run, an old release's payments cron can claim a row the new
+release raised or re-planned for a refund that failed later: it re-sends the refund under the old metadata reason,
+so a re-send that fails later too is asked for once more rather than raised
+dead, and a plan it rewrites drops the failed refunds it recorded (their Xero
+card note then reads as uncovered when that row is closed as **Paid another
+way**, and the Xero reconciliation report lists the difference). Adding
+`refund.failed` only after the new release alone serves keeps the event's rows
+out of that window, but not every row: the new release raises one from any
+refund status it reads - a `charge.refunded` event, its cron's read-back, a
+door's replay - so finish the switch-over promptly.
 
 **Refunds Stripe created before the upgrade are not re-sent.** The release
 ships a marker migration (`20261115010000_card_refund_failed_later_cutoff`, no

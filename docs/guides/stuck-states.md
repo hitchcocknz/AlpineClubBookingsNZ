@@ -118,7 +118,11 @@ dashboard, or an older group refund - that fails is not asked for again and is
 not counted under Refunds owed. The officers are emailed with its Stripe refund
 id, and the [audit log](audit-log.md) records it under **Payment**. Find it in
 the Stripe dashboard: if the member is still owed, refund them again there, or
-pay them another way and record that in Xero by hand.
+pay them another way. Raise no refund note for it in Xero: the card refund
+credit note raised while Stripe counted it, if there is one, already records
+it, and a second note would credit them twice. If they are no longer owed, the Xero
+reconciliation report lists that note as refund coverage above the refunded
+total, for you to correct in Xero.
 
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
