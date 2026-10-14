@@ -2378,7 +2378,8 @@ provider reference exists but snapshot differs -> CONFLICT (no provider rewrite)
 outbox claim -> a covered subscription already PAID, no invoice yet -> CONFLICT (SUBSCRIPTION_ALREADY_PAID; no provider call)
 CONFLICT (SUBSCRIPTION_ALREADY_PAID) -> officer "Close: already paid" (finance edit, required reason) -> NOT_REQUIRED (#4098)
   only while EVERY covered subscription is still PAID (re-checked in the guarded write); releases the
-  charge's ACTIVE coverage claims and bumps each voidGeneration; audited; a repeat is a no-op success
+  charge's ACTIVE coverage claims and bumps each voidGeneration; audited; a repeat is a no-op success;
+  refused (409, no write) while an invoice operation for the charge is queued or running
 provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
 stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDUAL_MODE exception (no invoice; basis must change)
@@ -2398,8 +2399,9 @@ existing invoices are adopted; amount/contact/account mismatch becomes visible
 
 `NOT_REQUIRED` and `VOIDED` are the no-invoice statuses
 (`MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES`): the enqueue (and so Retry), the
-outbox worker, its failure handler and Xero Operations Retry never queue,
-invoice or reopen a charge in either. A `NOT_REQUIRED` charge on any basis but
+outbox worker, its failure handler and Xero Operations Retry never invoice or
+reopen a charge in either, and the worker skips an operation queued for one in
+a race. A `NOT_REQUIRED` charge on any basis but
 `NO_INVOICE` is one an officer closed as already paid, because confirmation
 writes `NOT_REQUIRED` only for `NO_INVOICE`. The close releases the claims
 (rather than keeping them, as a `NO_INVOICE` charge does) so the subscription is

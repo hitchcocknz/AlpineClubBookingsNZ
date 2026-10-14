@@ -8,6 +8,15 @@
   charge. It asks for a short reason, checks that every member the charge covers
   is still paid, and then marks the charge **Not required**: no invoice is
   raised for it, and the close is recorded in the audit log, under the payment
-  category, with who did it and why. Closing twice does nothing more. If a payment was recorded by mistake,
-  use **Mark as unpaid** and then **Retry** instead. The conflict message now
-  names those two choices rather than an action that did not exist.
+  category, with who did it and why. Closing twice does nothing more, and the
+  close waits until no Xero invoice attempt for the charge is still queued or
+  running. If a payment was recorded by mistake, reverse it instead (**Mark as
+  unpaid** on the subscription, or void it in Xero) and then **Retry**. If the
+  payment is reversed after a close, the member is billed again in the next
+  preview, family charge or not.
+
+  Conflicts raised from now on name those real choices rather than an action
+  that did not exist, and a charge only some of whose members have paid says
+  so: reverse the payment and Retry, or record the remaining payments and then
+  close it. A charge already in conflict keeps its stored message until it is
+  retried.
