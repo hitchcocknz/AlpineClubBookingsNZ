@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import {
   Invoice,
   LineAmountTypes,
@@ -158,6 +159,30 @@ export function subscriptionInvoiceMatchesSnapshot(input: {
     && invoice.status === Invoice.StatusEnum.AUTHORISED;
 }
 
+function subscriptionInvoiceCorrelationKey(chargeId: string) {
+  return buildXeroIdempotencyKey("membership-charge", chargeId, "invoice-and-email", "v1");
+}
+
+/**
+ * The newest live (queued, running or awaiting payment) invoice operation for a
+ * subscription charge, or null. The enqueue reuses it rather than queueing a
+ * second; the already-paid close (#4098) refuses while one exists. Takes a
+ * transaction client so the close reads it inside its own transaction.
+ */
+export async function findLiveSubscriptionInvoiceOperation(
+  db: Prisma.TransactionClient | typeof prisma,
+  chargeId: string,
+) {
+  return db.xeroSyncOperation.findFirst({
+    where: {
+      correlationKey: subscriptionInvoiceCorrelationKey(chargeId),
+      status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+}
+
 export async function enqueueMembershipSubscriptionChargeOperation(
   chargeId: string,
   options?: { createdByMemberId?: string },
@@ -174,13 +199,9 @@ export async function enqueueMembershipSubscriptionChargeOperation(
   if (membershipChargeNeedsNoInvoice(charge) || charge.emailSentAt) {
     return { queueOperationId: null, message: "No subscription invoice work is required." };
   }
-  const correlationKey = buildXeroIdempotencyKey("membership-charge", chargeId, "invoice-and-email", "v1");
-  const active = await prisma.xeroSyncOperation.findFirst({
-    where: { correlationKey, status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] } },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
+  const active = await findLiveSubscriptionInvoiceOperation(prisma, chargeId);
   if (active) return { queueOperationId: active.id, message: "Subscription invoice is already queued." };
+  const correlationKey = subscriptionInvoiceCorrelationKey(chargeId);
   const operation = await startXeroSyncOperation({
     ...subscriptionInvoiceOutboxRow(chargeId), // #3971: no id in the payload
     status: "PENDING",
@@ -249,8 +270,9 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
     return null;
   }
   // #2147: skip a VOIDED charge if a stale queued op is drained after the void,
-  // and (#4098) a charge an officer closed as already paid.
-  if (charge.status === "VOIDED" || charge.status === "NOT_REQUIRED") {
+  // and (#4098) a charge an officer closed as already paid. NO_INVOICE returned
+  // above, so only the no-invoice statuses reach this skip.
+  if (membershipChargeNeedsNoInvoice(charge)) {
     await completeXeroSyncOperation(input.syncOperationId, { responsePayload: { skipped: true, reason: charge.status } });
     return null;
   }

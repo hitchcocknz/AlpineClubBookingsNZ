@@ -6,6 +6,7 @@ import {
   isChargeClosedAsAlreadyPaid,
   SUBSCRIPTION_ALREADY_PAID_CODE,
 } from "@/lib/subscription-charge-already-paid";
+import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-invoices";
 
 /**
  * #4098: an officer closes a membership subscription charge the invoice worker
@@ -45,10 +46,17 @@ import {
  * nothing and reads the charge already closed. The subscription write matches
  * only PAID rows and must touch every one; a manual reversal that committed
  * first makes it fall short and the whole transaction rolls back, and one that
- * arrives later waits on the row and then finds the member re-billable. A
- * Retry racing the close cannot reopen it: the enqueue's status write, the
- * worker's own already-paid conflict write and the outbox failure handler's
- * write all exclude `NOT_REQUIRED`, and the worker skips a `NOT_REQUIRED` charge.
+ * arrives later waits on the row and then finds the member re-billable. The
+ * close is refused while an invoice operation for the charge is live (queued,
+ * running or awaiting payment): a worker mid-Xero-call writes back after the
+ * provider responds without a status guard, and during a rollout an old pod's
+ * worker does not know the closed status at all. What remains is a Retry or
+ * enqueue that creates or re-pends an operation concurrently with the close. It
+ * cannot reopen the charge: the enqueue's status write, the worker's own
+ * already-paid conflict write and the outbox failure handler's write all
+ * exclude `NOT_REQUIRED`, and a new worker skips a `NOT_REQUIRED` charge. An
+ * old pod during a rollout could still process that operation; that is a
+ * stated limit.
  */
 
 export class CloseAlreadyPaidChargeError extends Error {
@@ -117,6 +125,15 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
     if (unpaid.length > 0) {
       throw new CloseAlreadyPaidChargeError(
         `Not every covered subscription is paid (${unpaid.map((row) => row.memberName).join(", ")}). Retry the charge to invoice it instead.`,
+        409,
+      );
+    }
+
+    // A live invoice operation may be a worker mid-Xero-call, whose writes after
+    // the provider responds are not status-guarded; let it finish first.
+    if (await findLiveSubscriptionInvoiceOperation(tx, charge.id)) {
+      throw new CloseAlreadyPaidChargeError(
+        "A Xero invoice attempt for this charge is still queued or running. Wait for it to finish (see Xero Operations), then close the charge.",
         409,
       );
     }

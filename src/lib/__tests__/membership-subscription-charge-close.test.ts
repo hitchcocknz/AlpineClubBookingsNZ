@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   subscriptionUpdateMany: vi.fn(),
   coverageUpdateMany: vi.fn(),
   audit: vi.fn(),
+  findLiveOperation: vi.fn(),
+  tx: {} as Record<string, unknown>,
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -21,9 +23,13 @@ vi.mock("@/lib/prisma", () => {
     memberSubscription: { updateMany: mocks.subscriptionUpdateMany },
     membershipSubscriptionChargeCoverage: { updateMany: mocks.coverageUpdateMany },
   };
+  mocks.tx = tx;
   return { prisma: { $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)) } };
 });
 vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.audit }));
+vi.mock("@/lib/xero-subscription-invoices", () => ({
+  findLiveSubscriptionInvoiceOperation: mocks.findLiveOperation,
+}));
 
 import {
   CloseAlreadyPaidChargeError,
@@ -69,6 +75,7 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
     mocks.chargeUpdateMany.mockResolvedValue({ count: 1 });
     mocks.subscriptionUpdateMany.mockResolvedValue({ count: 2 });
     mocks.coverageUpdateMany.mockResolvedValue({ count: 2 });
+    mocks.findLiveOperation.mockResolvedValue(null);
   });
 
   it("closes the charge, re-checks PAID in a guarded write, releases the claims and audits the officer and reason", async () => {
@@ -162,6 +169,14 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
       ],
     }));
     await expectRefusal(409, /Ben Reversed/);
+    expectNoWrites();
+  });
+
+  it("refuses, writing nothing, while an invoice operation for the charge is queued or running", async () => {
+    mocks.findLiveOperation.mockResolvedValue({ id: "op-live" });
+    await expectRefusal(409, /still queued or running/);
+    // Read inside the close's own transaction, for this charge.
+    expect(mocks.findLiveOperation).toHaveBeenCalledWith(mocks.tx, "charge-1");
     expectNoWrites();
   });
 
