@@ -214,4 +214,22 @@ describe("the treasurer-approved late-capture refund (#4103)", () => {
     expect(closed()).toBe(true);
     expect(finishApprovedLateCaptureRefund).toHaveBeenCalledTimes(1);
   });
+
+  it("#4126: the close claims only the row this approval left - PENDING, never attempted, on the plan it sent", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+
+    await approve();
+    const close = updateMany.mock.calls.find(([args]) => (args as { data?: { status?: string } }).data?.status === "SUCCEEDED");
+    expect(close?.[0]).toMatchObject({
+      where: { idempotencyKey: key, status: "PENDING", attempts: 0, allocationPlan: { equals: [a, b] } },
+    });
+  });
+
+  it("#4126: a row another writer moved on (claimed, tried or re-planned) is not closed, and the approval is left to its replay", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+
+    expect(await approve()).toBe("re_txn_a");
+    expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+  });
 });

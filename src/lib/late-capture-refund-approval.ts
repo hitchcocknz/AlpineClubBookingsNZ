@@ -190,12 +190,22 @@ export async function persistLateCaptureApprovalRefundDebt({
  * Best-effort happy-path close of the debt above, as the edit-review one is: a
  * lost close leaves a PENDING operation whose replay Stripe answers with the
  * original refund under the same keys.
+ *
+ * #4126: it closes only the row as this approval left it - PENDING, never
+ * attempted, on the plan it just sent. A row the runner has claimed or tried,
+ * or one another writer re-planned, belongs to that writer: its replay of these
+ * keys reads this refund back and closes it, writing the record once.
  */
-async function markLateCaptureApprovalRefundRecoverySucceeded(paymentIntentId: string) {
+async function markLateCaptureApprovalRefundRecoverySucceeded(
+  paymentIntentId: string,
+  sentPlan: ReadonlyArray<RefundAllocationSlice>,
+) {
   return prisma.paymentRecoveryOperation.updateMany({
     where: {
       idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(paymentIntentId),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+      status: PaymentRecoveryOperationStatus.PENDING,
+      attempts: 0,
+      allocationPlan: { equals: sentPlan as unknown as Prisma.InputJsonValue },
     },
     data: {
       status: PaymentRecoveryOperationStatus.SUCCEEDED,
@@ -273,7 +283,7 @@ export async function executeLateCaptureApprovalRefund({
   // The record is written by whichever of this and the cron replay moves the
   // debt to SUCCEEDED - exactly once (delta D6). A lost close here leaves it
   // PENDING, and the replay, answered by Stripe with this refund, writes it.
-  const closed = await markLateCaptureApprovalRefundRecoverySucceeded(route.paymentIntentId).catch(
+  const closed = await markLateCaptureApprovalRefundRecoverySucceeded(route.paymentIntentId, route.allocation).catch(
     (err) => {
       logger.error(
         { err, bookingId, taskId },

@@ -434,6 +434,55 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual([QUEUED_SLICE]);
     });
 
+    // #4126: the late-capture approval's happy-path close claims only the row as
+    // the approval left it. One another writer re-planned while the refund was in
+    // flight is not marked SUCCEEDED from under it, and nothing is finished.
+    it("an approval's inline close leaves a row another writer re-planned mid-flight open, and closes an untouched one (#4126)", async () => {
+      const { persistLateCaptureApprovalRefundDebt, executeLateCaptureApprovalRefund } = await import("@/lib/late-capture-refund-approval");
+      const { buildLateCaptureApprovalRefundRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      const route = {
+        kind: "late-capture-refund" as const,
+        paymentId: PAYMENT_ID,
+        paymentIntentId: "pi_race_4083_primary",
+        captureKind: "modification" as const,
+        bookingModificationId: null,
+        allocation: [REFUSED_SLICE],
+      };
+      const key = buildLateCaptureApprovalRefundRecoveryIdempotencyKey(route.paymentIntentId);
+      const rowNow = () => prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: key } });
+      const approve = () =>
+        executeLateCaptureApprovalRefund({ bookingId: BOOKING_ID, taskId: "race-4126-task", actingMemberId: MEMBER_ID, route, amountCents: REFUSED_CENTS, format: CLUB_FORMAT_TEST });
+      const made = (args: { amountCents: number; paymentIntentId: string; metadata?: Record<string, string> }) => ({
+        id: "re_race_4126_made",
+        object: "refund",
+        amount: args.amountCents,
+        currency: "nzd",
+        status: "succeeded",
+        reason: "requested_by_customer",
+        created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+        charge: "ch_race_4126",
+        payment_intent: args.paymentIntentId,
+        metadata: args.metadata ?? {},
+      });
+
+      await prisma.$transaction((tx) => persistLateCaptureApprovalRefundDebt({ bookingId: BOOKING_ID, route, amountCents: REFUSED_CENTS, store: tx }));
+      // Another writer moves the row on while the refund is in flight.
+      stripeRaceHooks.refund = async (args) => {
+        await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: key }, data: { allocationPlan: [QUEUED_SLICE] } });
+        return made(args);
+      };
+      await approve();
+      expect(await rowNow()).toMatchObject({ status: "PENDING", succeededAt: null });
+      expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual([QUEUED_SLICE]);
+
+      // Untouched, the same close claims it.
+      await prisma.paymentRecoveryOperation.deleteMany({ where: { idempotencyKey: key } });
+      await prisma.$transaction((tx) => persistLateCaptureApprovalRefundDebt({ bookingId: BOOKING_ID, route, amountCents: REFUSED_CENTS, store: tx }));
+      stripeRaceHooks.refund = async (args) => made(args);
+      await approve();
+      expect(await rowNow()).toMatchObject({ status: "SUCCEEDED" });
+    });
+
     // #4103 (`INV-PAY-130`): the superseded-payment runner's row carries no plan
     // until Stripe refuses it; the refusal writes a one-slice plan on its next key,
     // on the attempt held, and "Refunds owed" keeps counting it as that slice.

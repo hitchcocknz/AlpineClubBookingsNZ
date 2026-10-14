@@ -4914,6 +4914,12 @@ Stripe call:
   never re-plans a row a worker has picked up. A fresh plan with no refusal in
   it never replaces one a refusal moved, and is written compare-and-set on the
   plan it read (#4103).
+- **The late-capture approval's happy-path close**
+  (`markLateCaptureApprovalRefundRecoverySucceeded`) claims its row only while
+  it is `PENDING`, with `attempts` 0, on the plan the approval just sent
+  (#4126). A row a worker has claimed or tried, or another writer re-planned, is
+  left to that writer, whose replay of the same keys reads the refund back and
+  closes it, writing the record once.
 - **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
   the attempt's `attempts` and a live claim, so an attempt the reaper gave up
   on cannot write `FAILED` over a reclaimed one. Not on the claim time: an
