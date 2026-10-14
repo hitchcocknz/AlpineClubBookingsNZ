@@ -19,25 +19,39 @@ reason: the duplicate-capture and capacity-race refunds each gain a one-line
   refactor of that function, not this fix.
 
 file: src/lib/payment-recovery.ts
-lines: 3469
+lines: 3481
 reason: the superseded-payment refund processor routes its one Stripe call
   through `refundPlanOrRetryRefusals`, keeping its legacy first key and sending
   a moved slice through `refundPaymentTransactions` after a refusal. The call
-  and its callback belong in the processor that owns the row.
+  and its callback belong in the processor that owns the row. The ledger
+  refund enqueue keeps a plan a refusal moved (review C2): a read and a
+  compare-and-set fence in the one function every pre-persisted door enqueues
+  through.
 
 file: src/lib/group-cancel.ts
-lines: 969
+lines: 973
 reason: the legacy group settlement refund, inline and in the replay, fails on
   a refusal as on a throw: one line each, a one- or two-line comment, and two
-  imports.
+  imports; the replay's key moves past Stripe's recorded refusals
+  (`keyAfterStripeRefusals`, review C3), four lines in the call.
 
 file: src/lib/stripe-webhook-service.ts
-lines: 1848
+lines: 1865
 reason: each late-capture handler gains one line handing a refused refund to
-  the hold (`holdLateCaptureRefusedByStripe`), the superseded group intent's
-  refund one refusal line with a two-line comment, and two imports.
+  the hold (`holdLateCaptureRefusedByStripe`), the primary one also noting a
+  slice made beside the refusal; the superseded group intent's refund a
+  refusal check, its key moved past Stripe's recorded refusals and one alert
+  per refusal (review C3, d); and two imports.
 
 file: src/lib/booking-cancel.ts
-lines: 2836
+lines: 2865
 reason: the cancellation's call moves to the generalised helper, which needs
-  the row's key spelled out (four lines where there were three, and one import).
+  the row's key spelled out (four lines where there were three, and one import),
+  and its catch re-plans a refusal that came before a throw (two lines, review
+  g).
+
+file: src/lib/payment-transactions.ts
+lines: 1580
+reason: `PartialRefundError.refunds` names the status and slice each answer
+  already carries (review f), so the repair pass reads them typed instead of
+  through a cast. Three lines on the error's own type.
