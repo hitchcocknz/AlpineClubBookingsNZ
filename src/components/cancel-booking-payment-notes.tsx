@@ -9,11 +9,13 @@ import {
   ownCardRefundPendingSentence,
   ownCardRefundWithShortfallSentence,
 } from "@/lib/booking-modified-email-copy";
+import type { CancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall";
 
 /**
  * #3643: the two cancel-dialog lines internet banking needs, and the
  * confirmations of an organiser-paid refund (#3973) and of an own-card refund
  * not made yet (#4084), split out of `cancel-booking-button.tsx` for size.
+ * #4119: the preview's card line when the card refund plan is short.
  */
 
 /** No payment the app can refund: none taken, or one settled by hand (DECISION 2). */
@@ -176,5 +178,50 @@ export function OwnCardRefundConfirmation({
         ? `The refund of ${amount} has been processed to the member's original payment method.${emailNote}`
         : `Your refund of ${amount} has been processed to your original payment method.${emailNote}`}
     </p>
+  );
+}
+
+/**
+ * #4119 (`INV-PAY-129`): the cancel preview's card line when the card refund
+ * plan cannot carry the policy's whole refund - the card's part, the part the
+ * club refunds by bank transfer and the part it will be in touch about, sized
+ * by the cancel's own sizing (`cancelPreviewCardShortfall`), then the one
+ * sentence for them all from the wording home, said before anything is asked
+ * of the card ("planned").
+ */
+export function CardRefundShortfallPreview({
+  split,
+  format,
+  onBehalfOfMember,
+}: {
+  split: CancelCardRefundSplit;
+  format: ClubFormat;
+  onBehalfOfMember: boolean;
+}) {
+  const formatAmount = (cents: number) => formatCents(cents, format);
+  // The part to check is not promised as a refund, so it does not read as one.
+  const rows: Array<[string, number, string]> = [
+    ["Refund to card:", split.cardCents, "text-success-11"],
+    ["Refund by bank transfer:", split.bankCents, "text-success-11"],
+    ["The club will be in touch about:", split.checkCents, "text-muted-foreground"],
+  ];
+  const sentence = ownCardRefundWithShortfallSentence(
+    split.cardCents,
+    { bankCents: split.bankCents, checkCents: split.checkCents, formatAmount },
+    "planned",
+    onBehalfOfMember ? "the member's" : "your",
+  );
+  return (
+    <>
+      {rows
+        .filter(([, cents]) => cents > 0)
+        .map(([label, cents, tone]) => (
+          <div key={label} className="flex justify-between">
+            <span className="text-muted-foreground">{label}</span>
+            <span className={`font-medium ${tone}`}>{formatAmount(cents)}</span>
+          </div>
+        ))}
+      <p className="text-sm text-info-11" data-testid="cancel-preview-card-shortfall">{sentence}</p>
+    </>
   );
 }

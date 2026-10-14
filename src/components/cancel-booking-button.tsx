@@ -21,7 +21,8 @@ import {
 import { formatCents } from "@/lib/utils";
 import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { useClubFormat } from "@/components/club-format-provider";
-import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundConfirmation } from "@/components/cancel-booking-payment-notes";
+import { CardRefundShortfallPreview, ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundConfirmation } from "@/components/cancel-booking-payment-notes";
+import type { CancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall";
 
 interface CancelPreview {
   refundAmountCents: number;
@@ -53,6 +54,7 @@ interface CancelPreview {
   paymentSettledByHand?: boolean;
   /** #3653: the organiser's cancellation of the group already refunds this booking; the cancel's own sentence. */
   groupCancellationRefundNote?: string;
+  cardShortfall?: CancelCardRefundSplit; // #4119: the card refund plan carries less than refundAmountCents
 }
 
 export function CancelBookingButton({
@@ -491,7 +493,7 @@ export function CancelBookingButton({
                   />
                   <span>
                     <span className="font-medium text-foreground">
-                      Refund {formatCents(preview.refundAmountCents, format)} to original payment method
+                      Refund {formatCents(preview.refundAmountCents, format)}{preview.cardShortfall ? "" : " to original payment method"}
                     </span>
                     <span className="text-muted-foreground ml-1">({preview.refundPercentage}% refund)</span>
                   </span>
@@ -552,7 +554,9 @@ export function CancelBookingButton({
                     </span>
                   </div>
                 )}
-              {hasCardRefund && !preview.manualRefund && (
+              {hasCardRefund && !preview.manualRefund && refundMethod === "card" && preview.cardShortfall ? (
+                <CardRefundShortfallPreview split={preview.cardShortfall} format={format} onBehalfOfMember={onBehalfOfMember} />
+              ) : hasCardRefund && !preview.manualRefund && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
                     {refundMethod === "credit" ? "Credit to account:" : "Refund to card:"}

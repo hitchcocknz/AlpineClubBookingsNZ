@@ -113,7 +113,8 @@ function applyRefundStatus(
   return baseStatus;
 }
 
-async function loadPaymentWithTransactions(store: PaymentStore, paymentId: string) {
+/** The payment and its capture ledger, oldest first. Read-only. */
+export async function loadPaymentWithTransactions(store: PaymentStore, paymentId: string) {
   return store.payment.findUnique({
     where: { id: paymentId },
     include: {
@@ -141,21 +142,20 @@ export function isStripeTransaction<
   );
 }
 
-async function ensurePaymentTransactionsBackfilled(
-  store: PaymentStore,
-  paymentId: string
-) {
-  const payment = await loadPaymentWithTransactions(store, paymentId);
-  if (!payment) {
-    return null;
-  }
-
+/**
+ * The rows a pre-ledger payment's backfill writes, derived from the payment
+ * alone. Pure, so the write (`ensurePaymentTransactionsBackfilled`) and the
+ * cancel preview's read-only plan (#4119) see the same legacy charges.
+ */
+export function legacyBackfillRows(
+  payment: NonNullable<Awaited<ReturnType<typeof loadPaymentWithTransactions>>>
+): Array<Prisma.PaymentTransactionUncheckedCreateInput & Omit<RefundableStripeTransaction, "id" | "createdAt">> {
   const knownIntentIds = new Set(
     payment.transactions.flatMap((transaction) =>
       transaction.stripePaymentIntentId ? [transaction.stripePaymentIntentId] : []
     )
   );
-  const createOperations: Array<Promise<unknown>> = [];
+  const rows: ReturnType<typeof legacyBackfillRows> = [];
 
   if (payment.stripePaymentIntentId && !knownIntentIds.has(payment.stripePaymentIntentId)) {
     const additionalCapturedAmountCents =
@@ -172,25 +172,21 @@ async function ensurePaymentTransactionsBackfilled(
       primaryAmountCents
     );
 
-    createOperations.push(
-      store.paymentTransaction.create({
-        data: {
-          paymentId: payment.id,
-          kind: PaymentTransactionKind.PRIMARY,
-          source: PaymentSource.STRIPE,
-          stripePaymentIntentId: payment.stripePaymentIntentId,
-          amountCents: primaryAmountCents,
-          refundedAmountCents: primaryRefundedAmountCents,
-          status: applyRefundStatus(
-            payment.status,
-            primaryAmountCents,
-            primaryRefundedAmountCents
-          ),
-          paymentMethodId: payment.stripePaymentMethodId ?? undefined,
-          reason: LEGACY_PRIMARY_BACKFILL_REASON,
-        },
-      })
-    );
+    rows.push({
+      paymentId: payment.id,
+      kind: PaymentTransactionKind.PRIMARY,
+      source: PaymentSource.STRIPE,
+      stripePaymentIntentId: payment.stripePaymentIntentId,
+      amountCents: primaryAmountCents,
+      refundedAmountCents: primaryRefundedAmountCents,
+      status: applyRefundStatus(
+        payment.status,
+        primaryAmountCents,
+        primaryRefundedAmountCents
+      ),
+      paymentMethodId: payment.stripePaymentMethodId ?? undefined,
+      reason: LEGACY_PRIMARY_BACKFILL_REASON,
+    });
   }
 
   if (
@@ -215,31 +211,34 @@ async function ensurePaymentTransactionsBackfilled(
           )
         : 0;
 
-    createOperations.push(
-      store.paymentTransaction.create({
-        data: {
-          paymentId: payment.id,
-          kind: PaymentTransactionKind.ADDITIONAL,
-          source: PaymentSource.STRIPE,
-          stripePaymentIntentId: payment.additionalPaymentIntentId,
-          amountCents: payment.additionalAmountCents,
-          refundedAmountCents: additionalRefundedAmountCents,
-          status: applyRefundStatus(
-            baseStatus,
-            payment.additionalAmountCents,
-            additionalRefundedAmountCents
-          ),
-          reason: LEGACY_ADDITIONAL_BACKFILL_REASON,
-        },
-      })
-    );
+    rows.push({
+      paymentId: payment.id,
+      kind: PaymentTransactionKind.ADDITIONAL,
+      source: PaymentSource.STRIPE,
+      stripePaymentIntentId: payment.additionalPaymentIntentId,
+      amountCents: payment.additionalAmountCents,
+      refundedAmountCents: additionalRefundedAmountCents,
+      status: applyRefundStatus(
+        baseStatus,
+        payment.additionalAmountCents,
+        additionalRefundedAmountCents
+      ),
+      reason: LEGACY_ADDITIONAL_BACKFILL_REASON,
+    });
   }
 
-  if (createOperations.length === 0) {
-    return payment;
-  }
+  return rows;
+}
 
-  await Promise.all(createOperations);
+async function ensurePaymentTransactionsBackfilled(
+  store: PaymentStore,
+  paymentId: string
+) {
+  const payment = await loadPaymentWithTransactions(store, paymentId);
+  if (!payment) return null;
+  const rows = legacyBackfillRows(payment);
+  if (rows.length === 0) return payment;
+  await Promise.all(rows.map((data) => store.paymentTransaction.create({ data })));
   return loadPaymentWithTransactions(store, paymentId);
 }
 
@@ -579,15 +578,15 @@ async function addWithinHeadroom(
   const { previousCents, nextCents } = await compareAndSetRefundedAmount(
     db,
     paymentTransactionId,
-    (row) =>
-      row.refundedAmountCents +
-      Math.min(
-        Math.max(row.amountCents - row.refundedAmountCents, 0),
-        Math.max(amountCents, 0)
-      ),
+    (row) => row.refundedAmountCents + refundHeadroomIncrementCents(row, amountCents),
     options
   );
   return nextCents - previousCents;
+}
+
+/** What of `amountCents` a captured row's refunded total can still take: capped at its headroom. Pure (#4119: the cancel preview's in-memory fold). */
+export function refundHeadroomIncrementCents(row: { amountCents: number; refundedAmountCents: number }, amountCents: number): number {
+  return Math.min(Math.max(row.amountCents - row.refundedAmountCents, 0), Math.max(amountCents, 0));
 }
 
 /**
@@ -1182,7 +1181,7 @@ type RefundableStripeTransaction = {
  * the original refunds instead of minting new ones. Slices are capped at what
  * the ledger shows refundable; callers decide whether a shortfall throws.
  */
-function buildRefundAllocationSlices<T extends RefundableStripeTransaction>(
+export function buildRefundAllocationSlices<T extends RefundableStripeTransaction>(
   transactions: readonly T[],
   amountCents: number
 ): {
