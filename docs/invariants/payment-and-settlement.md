@@ -1355,6 +1355,25 @@ short).
     `card-refund-shortfall.test.ts`, `cancel-booking-button.test.tsx` and
     `cancel-card-refund-shortfall.realdb.test.ts`.
 
+## INV-PAY-132
+
+- **No write of a Stripe intent's ledger row lowers a captured status** (#4081).
+  A webhook can mark the row captured (`CAPTURED_TRANSACTION_STATUS_LIST`)
+  before a door's, a recovery's or a card attach's PENDING or PROCESSING write
+  lands, and a refund can move it on before a late SUCCEEDED write. Each such
+  write (`upsertPaymentIntentTransaction`, through
+  `writePaymentIntentTransaction`) keeps a captured row's status and writes the
+  rest; the refund writers own a captured row's moves. A row not captured,
+  FAILED included, takes the write's status as before: a declined intent stays
+  payable, and a card attach retries it.
+  - **Atomic, with no lock**: two guarded `updateMany`s split on the row's
+    status, so a capture committing while the first waits on the row's lock
+    fails its re-checked WHERE and lands in the second; else an insert with
+    `skipDuplicates`, then the update again. An edit's write also lands only on
+    its own or an unattributed row (`INV-MOD-060`).
+  - Proven by `payment-intent-transaction-write.test.ts` and, on PostgreSQL,
+    `additional-ask-reduction.realdb.test.ts` ("#4081").
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the
@@ -3097,6 +3116,12 @@ _Split from `INV-PAY-056` (#3220)._
   the repair tool stops deferring at the first failure rather than at death.
   Anyone reading the two-readings rule into that query will predict a deferral
   that is not there; `INV-PAY-057` states what follows from the gap.
+- **A terminal row is always at the attempt ceiling**, so "attempts spent" stays
+  exact for every reader, the stuck-state page and health check included. A
+  failure no retry can fix ends the recovery on its first attempt (#4081,
+  `unretryableRecoveryCause`): today, an edit's ask write refused because its
+  intent is another edit's (`INV-MOD-060`). The cause goes on `lastError` and in
+  the officers' one alert; the debt stays on the row.
 
 ## INV-PAY-057
 

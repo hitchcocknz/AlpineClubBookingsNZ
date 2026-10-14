@@ -3034,7 +3034,9 @@ that no ledger row took the adopted intent, and it leaves the payment's customer
 as it was. Every ask write that names its edit, the door's and the runner's,
 refuses atomically a ledger row already naming another edit
 (`AdditionalAskAttributionConflictError`), so one intent is never recorded as
-two edits' asks. It skips itself if a later edit already minted a newer
+two edits' asks; the runner ends its recovery on that refusal at once and alerts
+an officer, since a retry would meet the same row (#4081). No such write lowers
+a captured row's status (`INV-PAY-132`). It skips itself if a later edit already minted a newer
 additional intent, and settles the Xero half two ways: it points any
 supplementary invoice operation still WAITING_PAYMENT at the recovered intent,
 and it raises the supplementary invoice outright for the edits that queued none
