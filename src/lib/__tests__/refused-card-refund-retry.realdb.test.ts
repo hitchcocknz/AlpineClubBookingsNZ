@@ -89,6 +89,9 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let enqueueBookingModificationRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueBookingModificationRefundRecovery"];
 let refundPlanOrRetryRefusals: (typeof import("@/lib/refused-card-refund-retry"))["refundPlanOrRetryRefusals"];
 let inlineRefundAfterAttempt: (typeof import("@/lib/refused-card-refund-retry"))["inlineRefundAfterAttempt"];
+let keepRefusedPrePersistedRefundOwed: (typeof import("@/lib/refused-card-refund-retry"))["keepRefusedPrePersistedRefundOwed"];
+let enqueueEditFinancialReviewRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueEditFinancialReviewRefundRecovery"];
+let buildEditFinancialReviewRefundRecoveryIdempotencyKey: (typeof import("@/lib/payment-recovery-keys"))["buildEditFinancialReviewRefundRecoveryIdempotencyKey"];
 let openCardRefundOwedByOperation: (typeof import("@/lib/open-card-refund-owed"))["openCardRefundOwedByOperation"];
 let enqueueRefundRequestRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueRefundRequestRefundRecovery"];
 let parseRefundAllocationPlan: (typeof import("@/lib/open-card-refund-owed"))["parseRefundAllocationPlan"];
@@ -188,10 +191,11 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       assertSafeRaceDbUrl(RACE_DB_URL);
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
-      ({ enqueueBookingModificationRefundRecovery, enqueueRefundRequestRefundRecovery } = await import("@/lib/payment-recovery"));
-      ({ refundPlanOrRetryRefusals, inlineRefundAfterAttempt } = await import("@/lib/refused-card-refund-retry"));
+      ({ enqueueBookingModificationRefundRecovery, enqueueRefundRequestRefundRecovery, enqueueEditFinancialReviewRefundRecovery } = await import("@/lib/payment-recovery"));
+      ({ refundPlanOrRetryRefusals, inlineRefundAfterAttempt, keepRefusedPrePersistedRefundOwed } = await import("@/lib/refused-card-refund-retry"));
       ({ parseRefundAllocationPlan, openCardRefundOwedCents, openCardRefundOwedByOperation } = await import("@/lib/open-card-refund-owed"));
       ({ netCollectedCardRefundSelect } = await import("@/lib/additional-ledger-gap"));
+      ({ buildEditFinancialReviewRefundRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
 
       await deleteFixtures();
@@ -392,6 +396,85 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
         refundPlanOrRetryRefusals({ operation: held(reclaimedAt), plan: [twice], format: CLUB_FORMAT_TEST, refund: refusedAnswer(twice) }),
       ).rejects.toThrow(/still owed/);
       expect(await planNow()).toEqual([twice]);
+    });
+
+    // #4103 (`INV-PAY-130`): a door whose row is written BEFORE its attempt - here
+    // the edit financial review's - re-plans that row on a refusal only while no
+    // worker has touched it, and "Refunds owed" counts the refused slice.
+    it("an edit review's pre-persisted row is re-planned on a refusal only while PENDING with no attempt, and counts as owed (#4103)", async () => {
+      await enqueueEditFinancialReviewRefundRecovery({
+        bookingId: BOOKING_ID,
+        paymentId: PAYMENT_ID,
+        taskId: "race-4103-task",
+        amountCents: REFUSED_CENTS,
+        allocationPlan: [REFUSED_SLICE],
+      });
+      const key = buildEditFinancialReviewRefundRecoveryIdempotencyKey("race-4103-task");
+      const rowNow = () => prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: key } });
+      const refused = (slice: typeof REFUSED_SLICE) => ({
+        refunds: [{ status: "failed", slice, refundId: "re_race_4103_refused", paymentIntentId: "pi_race_4083_primary" }],
+      });
+
+      const error = await keepRefusedPrePersistedRefundOwed({ bookingId: BOOKING_ID, idempotencyKey: key, attempt: refused(REFUSED_SLICE), format: CLUB_FORMAT_TEST });
+      expect(error?.replanned).toBe(true);
+      const moved = await rowNow();
+      expect(moved).toMatchObject({ status: "PENDING", attempts: 0, amountCents: REFUSED_CENTS, lastError: error?.message });
+      expect(parseRefundAllocationPlan(moved.allocationPlan)).toEqual([QUEUED_SLICE]);
+      expect(openCardRefundOwedByOperation(
+        await prisma.payment.findUniqueOrThrow({
+          where: { id: PAYMENT_ID },
+          select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+        }),
+      ).get(moved.id)).toBe(REFUSED_CENTS);
+
+      // A worker claims it. A replay of the door reads the refusal again and moves nothing.
+      await prisma.paymentRecoveryOperation.update({ where: { id: moved.id }, data: { status: "PROCESSING", attempts: 1, processingStartedAt: RETRIED_AT } });
+      const replay = await keepRefusedPrePersistedRefundOwed({ bookingId: BOOKING_ID, idempotencyKey: key, attempt: refused(REFUSED_SLICE), format: CLUB_FORMAT_TEST });
+      expect(replay?.replanned).toBe(false);
+      expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual([QUEUED_SLICE]);
+    });
+
+    // #4103 (`INV-PAY-130`): the superseded-payment runner's row carries no plan
+    // until Stripe refuses it; the refusal writes a one-slice plan on its next key,
+    // on the attempt held, and "Refunds owed" keeps counting it as that slice.
+    it("a superseded payment's refusal moves to a one-slice plan on the attempt held, still owed (#4103)", async () => {
+      const claimedAt = new Date("2026-06-20T00:05:00.000Z");
+      const row = await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_SUPERSEDED_PAYMENT",
+          status: "PROCESSING",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentIntentId: "pi_race_4083_primary",
+          paymentTransactionId: PRIMARY_TXN,
+          amountCents: REFUSED_CENTS,
+          idempotencyKey: "payment_recovery_refund_race-4103-superseded",
+          attempts: 1,
+          processingStartedAt: claimedAt,
+          nextRetryAt: claimedAt,
+        },
+      });
+      const owed = async () =>
+        openCardRefundOwedByOperation(
+          await prisma.payment.findUniqueOrThrow({
+            where: { id: PAYMENT_ID },
+            select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+          }),
+        ).get(row.id);
+      expect(await owed()).toBe(REFUSED_CENTS);
+
+      await expect(
+        refundPlanOrRetryRefusals({
+          operation: { id: row.id, bookingId: BOOKING_ID, paymentIntentId: row.paymentIntentId, processingStartedAt: claimedAt },
+          plan: [REFUSED_SLICE],
+          format: CLUB_FORMAT_TEST,
+          refund: async () => ({ refunds: [{ status: "canceled", slice: REFUSED_SLICE, refundId: "re_race_4103_superseded", paymentIntentId: row.paymentIntentId }] }),
+        }),
+      ).rejects.toThrow(/still owed/);
+      const after = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: row.id } });
+      expect(after.status).toBe("PROCESSING");
+      expect(parseRefundAllocationPlan(after.allocationPlan)).toEqual([QUEUED_SLICE]);
+      expect(await owed()).toBe(REFUSED_CENTS);
     });
 
     describe("the REAL cancelBooking, Stripe answering the card refund refused (#4096)", () => {

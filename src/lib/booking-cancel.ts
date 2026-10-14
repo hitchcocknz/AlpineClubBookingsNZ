@@ -64,7 +64,7 @@ import {
   organiserChildRefundMade,
   reserveOrganiserChildRefund,
 } from "@/lib/organiser-child-refund";
-import { buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
 import { releaseBookingPromoRedemptions } from "@/lib/promo";
 import {
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
@@ -90,7 +90,7 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
-import { keepRefusedCancellationRefundOwed, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -2365,9 +2365,13 @@ async function performBookingCancellation(
         // #4083/#4096 (`INV-PAY-128`): a slice Stripe refused (failed/canceled)
         // is still owed: the pre-persisted debt stays open, re-planned to the
         // refused slices on fresh keys, and the catch records why.
-        if (refusedRefundSlices(refundResult.refunds).length > 0) {
-          throw await keepRefusedCancellationRefundOwed({ bookingId, answered: refundResult.refunds, format });
-        }
+        const refused = await keepRefusedPrePersistedRefundOwed({
+          bookingId,
+          idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId),
+          attempt: refundResult,
+          format,
+        });
+        if (refused) throw refused;
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
@@ -2390,6 +2394,8 @@ async function performBookingCancellation(
         // remainder moves money. Do NOT rethrow.
         const completedRefundCents =
           err instanceof PartialRefundError ? err.completedRefundCents : 0;
+        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door.
+        await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
         await recordBookingCancellationRefundRecoveryInlineError({
           bookingId,
           message: err instanceof Error ? err.message : String(err),

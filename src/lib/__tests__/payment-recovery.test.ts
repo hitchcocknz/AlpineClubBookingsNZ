@@ -2441,6 +2441,124 @@ describe("payment recovery worker", () => {
     });
   });
 
+  // #4103 (`INV-PAY-130`): the superseded-payment refund (`REFUND_SUPERSEDED_PAYMENT`)
+  // is asked under the row's own key first, as it always was. A refusal must not
+  // close the row or tell the member "we have refunded you": it moves to a
+  // one-slice plan on a fresh key, which every later attempt sends.
+  describe("#4103: a superseded-payment refund Stripe refuses is still owed", () => {
+    const slice = { paymentTransactionId: "txn-1", amountCents: 6000 };
+    function queueSuperseded(overrides: Record<string, unknown> = {}) {
+      const operation = makeOperation({ type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, ...overrides });
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
+      );
+      mockPaymentTransactionFindUnique.mockResolvedValue({
+        id: "txn-1",
+        paymentId: "payment-1",
+        stripePaymentIntentId: "pi_superseded",
+        amountCents: 6000,
+        refundedAmountCents: 0,
+        status: PaymentStatus.SUCCEEDED,
+      });
+      return operation;
+    }
+    const stripeRefund = (status: string) => ({ id: `re_${status}`, amount: 6000, currency: "nzd", status, payment_intent: "pi_superseded" });
+    const planWrites = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => "allocationPlan" in args.data);
+    const closed = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls.some(
+        ([args]) => (args as { data: { status?: string } }).data.status === PaymentRecoveryOperationStatus.SUCCEEDED,
+      );
+
+    it.each([["failed"], ["canceled"]])("answered %s: not closed, no 'refunded' notice; moved to a fresh key on the attempt held, alerted once", async (status) => {
+      const operation = queueSuperseded();
+      mockProcessRefund.mockResolvedValue(stripeRefund(status));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      // The first ask is the row's own key, as before this release.
+      expect(mockProcessRefund).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 6000, idempotencyKey: operation.idempotencyKey }));
+      expect(closed()).toBe(false);
+      expect(mockReportSupersededPaymentRefund).not.toHaveBeenCalled();
+      expect(planWrites()).toEqual([
+        {
+          where: { id: operation.id, status: PaymentRecoveryOperationStatus.PROCESSING, processingStartedAt: operation.processingStartedAt },
+          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }] },
+        },
+      ]);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 6000, errorMessage: expect.stringContaining("will be retried automatically") }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+
+    it("the retry sends the moved slice under the row's key and its generation, then closes and reports once Stripe makes it", async () => {
+      const moved = { ...slice, stripeKeySuffix: "refused1" };
+      const operation = queueSuperseded({ allocationPlan: [moved], attempts: 2 });
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [{ paymentIntentId: "pi_superseded", refundId: "re_made", amountCents: 6000, status: "succeeded", slice: moved }],
+        totalRefundedAmountCents: 6000,
+      });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 1 });
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
+        expect.objectContaining({ allocation: [moved], amountCents: 6000, idempotencyKeyPrefix: operation.idempotencyKey }),
+      );
+      expect(closed()).toBe(true);
+      expect(mockReportSupersededPaymentRefund).toHaveBeenCalledWith(expect.objectContaining({ refundedAmountCents: 6000 }));
+    });
+
+    it("a second refusal moves it on again, never back to a refused key, and is not alerted twice", async () => {
+      const moved = { ...slice, stripeKeySuffix: "refused1" };
+      queueSuperseded({ allocationPlan: [moved], attempts: 2 });
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [{ paymentIntentId: "pi_superseded", refundId: "re_again", amountCents: 6000, status: "failed", slice: moved }],
+        totalRefundedAmountCents: 6000,
+      });
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...slice, stripeKeySuffix: "refused2" }] });
+      expect(closed()).toBe(false);
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it("a refused attempt whose answer was lost (it threw) keeps its key: the next attempt asks the same", async () => {
+      const operation = queueSuperseded();
+      mockProcessRefund.mockRejectedValue(new Error("Stripe is unavailable"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      expect(planWrites()).toEqual([]);
+      expect(closed()).toBe(false);
+      expect(mockReportSupersededPaymentRefund).not.toHaveBeenCalled();
+      expect(mockProcessRefund).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: operation.idempotencyKey }));
+    });
+
+    it("a replay whose re-plan lost the attempt's fence moves nothing and alerts nobody; the next attempt reads the refusal again", async () => {
+      queueSuperseded();
+      mockProcessRefund.mockResolvedValue(stripeRefund("failed"));
+      mockPaymentRecoveryUpdateMany.mockImplementation((args: { data?: Record<string, unknown> }) =>
+        Promise.resolve({ count: args?.data && "allocationPlan" in args.data ? 0 : 1 }),
+      );
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(closed()).toBe(false);
+      expect(mockReportSupersededPaymentRefund).not.toHaveBeenCalled();
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+  });
+
   // #4083 review: a repeat enqueue refreshes only a row no worker has picked up.
   // One claimed, failed or closed keeps its plan, amount and prefix - its slices
   // may already have been sent under their keys.
@@ -2465,6 +2583,50 @@ describe("payment recovery worker", () => {
         stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
         allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, stripeKeySuffix: "refused1" }],
       }),
+    });
+  });
+
+  // #4103 review C2: a redelivery's fresh plan carries no refusal; it must not
+  // put a row a refusal re-planned back on the key Stripe answers with that
+  // refusal, nor overwrite a plan another writer moves meanwhile.
+  describe("a repeat enqueue with a fresh plan, over a row a refusal re-planned (#4103)", () => {
+    const enqueueFresh = () =>
+      enqueueBookingModificationRefundRecovery({
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        bookingModificationId: "mod-7",
+        amountCents: 4000,
+        stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
+      });
+
+    it.each([
+      ["a slice moved to its next key", { stripeKeySuffix: "refused1" }],
+      ["a slice marked made", { madeRefundId: "re_1" }],
+    ])("keeps the held plan when it carries %s", async (_label, progress) => {
+      mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+      mockPaymentRecoveryFindUnique.mockResolvedValueOnce({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, ...progress }] });
+
+      await expect(enqueueFresh()).resolves.toMatchObject({ created: false });
+
+      expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("refreshes an untouched row compare-and-set on the plan it read", async () => {
+      const held = [{ paymentTransactionId: "txn-1", amountCents: 4000 }];
+      mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+      mockPaymentRecoveryFindUnique.mockResolvedValueOnce({ allocationPlan: held });
+
+      await enqueueFresh();
+
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith({
+        where: {
+          idempotencyKey: "payment_recovery_modification_refund_mod-7",
+          status: PaymentRecoveryOperationStatus.PENDING,
+          allocationPlan: { equals: held },
+        },
+        data: expect.objectContaining({ allocationPlan: held }),
+      });
     });
   });
 

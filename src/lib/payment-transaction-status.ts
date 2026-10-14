@@ -162,6 +162,11 @@ export function isRefusedRefundStatus(status: string | null | undefined): boolea
   return !isRecordedRefundStatus(status ?? "unknown");
 }
 
+/** #4103: what Stripe's answers refused, in cents - the one sum the late-capture hold and the repair pass read. */
+export function refusedRefundAnswerCents(refunds: ReadonlyArray<{ status?: string | null; amountCents: number }>): number {
+  return refunds.filter((refund) => isRefusedRefundStatus(refund.status)).reduce((sum, refund) => sum + refund.amountCents, 0);
+}
+
 /**
  * #4070, #4084: a refund to the member's own card, sent after commit by
  * `refundPaymentTransactions`, is made when that call returned (every slice

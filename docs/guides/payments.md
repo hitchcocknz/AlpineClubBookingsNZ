@@ -692,6 +692,14 @@ stays with the club and the payment appears in **Money to settle**, with a
 line saying it went through after the booking was cancelled. It counts towards the
 waiting-items badge in the sidebar like any other refund task.
 
+**A refund Stripe refuses when the payment arrives always waits for approval,
+whichever way the club is set** (#4103). If the automatic refund is answered as
+failed or cancelled, nothing went back, so the payment is held here exactly as
+above, and the item says it has not been refunded. **Refund to card** then asks
+Stripe again, as a fresh request; a refusal after that is retried
+automatically. A change payment that replaced an earlier one is refunded by the
+payments cron instead, which retries a refusal itself.
+
 1. **Refund to card** sends the payment back to the card it came from, through
    Stripe, straight away. It is exactly the refund the automatic setting would have
    made, so it can never be paid twice, even if the setting is changed later or

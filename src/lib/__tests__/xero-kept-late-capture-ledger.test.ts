@@ -948,6 +948,8 @@ describe("C2: the repair tool's refund of a late capture Xero never received", (
       },
       recordAndNoteRepairedLateCaptureRefunds,
       enqueueXeroRefundCreditNoteOperation,
+      // #4103: the repair reads the refunds recorded for each slice's key generation.
+      prisma: h.db,
     };
 
     await applyActionsForPass(
