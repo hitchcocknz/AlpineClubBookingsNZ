@@ -186,6 +186,19 @@ function comp(overrides: Record<string, unknown> = {}) {
   return { label: "Component", amountCents: 0, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0, ...overrides };
 }
 
+/**
+ * A filter-aware family-charge mock that mirrors the real DB: applies the
+ * query's `where.status` (`not` or `notIn`) to the fixture rows.
+ */
+function statusFilteredCharges(rows: Array<{ status: string }>) {
+  return (args?: { where?: { status?: { not?: string; notIn?: string[] } } }) => {
+    const status = args?.where?.status;
+    return Promise.resolve(rows.filter((row) =>
+      (status?.not === undefined || row.status !== status.not)
+      && (status?.notIn === undefined || !status.notIn.includes(row.status))));
+  };
+}
+
 function familyMembershipFor(familyGroupId: string, recipientOverrides: Record<string, unknown> = {}) {
   return {
     familyGroupId,
@@ -683,10 +696,7 @@ describe("membership subscription billing", () => {
     // Filter-aware mock mirrors the real DB: apply the where.status filter to a
     // fixture holding one VOIDED family charge.
     const voidedCharge = { id: "charge-voided", familyGroupId: "family-1", membershipTypeId: "type-1", status: "VOIDED" };
-    mocks.charges.findMany.mockImplementation((args?: { where?: { status?: { not?: string } } }) => {
-      const notStatus = args?.where?.status?.not;
-      return Promise.resolve([voidedCharge].filter((charge) => (notStatus ? charge.status !== notStatus : true)));
-    });
+    mocks.charges.findMany.mockImplementation(statusFilteredCharges([voidedCharge]));
     mocks.coverage.findMany.mockResolvedValue([]); // released by the void
     mocks.subscriptions.findMany.mockResolvedValue([]); // link nulled by the void
     mocks.members.findMany.mockResolvedValue([
@@ -704,10 +714,35 @@ describe("membership subscription billing", () => {
       recipient: { id: "billing-1" },
     });
     expect(preview.exceptions.some((row) => row.code === "FAMILY_ALREADY_BILLED")).toBe(false);
-    // The query must carry the VOIDED filter that makes this correct.
+    // The query must carry the no-invoice filter that makes this correct.
     expect(mocks.charges.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ status: { not: "VOIDED" } }),
+      where: expect.objectContaining({ status: { notIn: ["NOT_REQUIRED", "VOIDED"] } }),
     }));
+  });
+
+  it("re-bills a PER_FAMILY member whose family charge was closed as already paid, once the payment is reversed (#4098)", async () => {
+    // The close (closeAlreadyPaidSubscriptionCharge) leaves the charge row
+    // NOT_REQUIRED with familyGroupId intact, releases its coverage and bumps
+    // voidGeneration. If the manual payment is then reversed, the closed charge
+    // must not populate billedFamilyTypes, or FAMILY_ALREADY_BILLED would keep
+    // the reversed member unbillable.
+    const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    mocks.effectiveFee.mockResolvedValue(annual);
+    const closedCharge = { id: "charge-closed", familyGroupId: "family-1", membershipTypeId: "type-1", status: "NOT_REQUIRED" };
+    mocks.charges.findMany.mockImplementation(statusFilteredCharges([closedCharge]));
+    mocks.coverage.findMany.mockResolvedValue([]); // released by the close
+    mocks.subscriptions.findMany.mockResolvedValue([]); // payment reversed: no longer PAID
+    mocks.members.findMany.mockResolvedValue([
+      member("reversed", { familyGroupMemberships: [familyMembership()] }),
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-08-01T00:00:00.000Z"),
+      memberIds: ["reversed"],
+    });
+    expect(preview.exceptions.some((row) => row.code === "FAMILY_ALREADY_BILLED")).toBe(false);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0]).toMatchObject({ billingBasis: "PER_FAMILY", familyGroupId: "family-1" });
   });
 
   it("control: a live (non-VOIDED) PER_FAMILY charge still blocks with FAMILY_ALREADY_BILLED (#2147)", async () => {
@@ -717,10 +752,7 @@ describe("membership subscription billing", () => {
     const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
     mocks.effectiveFee.mockResolvedValue(annual);
     const liveCharge = { id: "charge-live", familyGroupId: "family-1", membershipTypeId: "type-1", status: "UNPAID" };
-    mocks.charges.findMany.mockImplementation((args?: { where?: { status?: { not?: string } } }) => {
-      const notStatus = args?.where?.status?.not;
-      return Promise.resolve([liveCharge].filter((charge) => (notStatus ? charge.status !== notStatus : true)));
-    });
+    mocks.charges.findMany.mockImplementation(statusFilteredCharges([liveCharge]));
     mocks.members.findMany.mockResolvedValue([
       member("late", { familyGroupMemberships: [familyMembership()] }),
     ]);

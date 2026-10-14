@@ -28,6 +28,7 @@ import {
 } from "@/lib/financial-year";
 import { refreshFinancialYearConfig } from "@/lib/financial-year-server";
 import { seasonYearsLabel } from "@/lib/season-label";
+import { MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES } from "@/lib/subscription-charge-already-paid";
 import { requiresPaidSubscriptionForAgeTier } from "@/lib/member-subscription-eligibility";
 import { prisma } from "@/lib/prisma";
 import { defaultMembershipTypeKeyForRole, storedRoleDefaultMembershipTypeWhere } from "@/lib/membership-types";
@@ -431,14 +432,13 @@ export async function buildSubscriptionBillingPreview(input: {
         seasonYear: input.seasonYear,
         billingBasis: "PER_FAMILY",
         familyGroupId: { not: null },
-        // #2147: a VOIDED family charge (its Xero invoice was voided/deleted and
-        // its coverage released) must NOT keep the family un-billable forever.
-        // The void handler (releaseVoidedSubscriptionInvoice) retains the charge
-        // row with status VOIDED + familyGroupId intact for audit; without this
-        // filter it would still populate billedFamilyTypes and fire
-        // FAMILY_ALREADY_BILLED, permanently blocking the family's re-bill and
-        // contradicting the void→re-bill design.
-        status: { not: "VOIDED" },
+        // #2147 + #4098: a VOIDED family charge (invoice voided in Xero) or one
+        // an officer closed as already paid (NOT_REQUIRED) keeps its row and
+        // familyGroupId for audit with its coverage released. Without this filter
+        // it would still fill billedFamilyTypes and fire FAMILY_ALREADY_BILLED,
+        // blocking the void→re-bill design and the re-bill of a member whose
+        // manual payment was reversed after the close.
+        status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] },
       },
       select: {
         id: true,
