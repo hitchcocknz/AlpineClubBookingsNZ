@@ -286,7 +286,7 @@ let observerClient: import("@prisma/client").PrismaClient;
       release();
       await reversal;
 
-      await expect(closing).rejects.toMatchObject({ status: 409, message: expect.stringContaining("no longer paid") });
+      await expect(closing).rejects.toMatchObject({ status: 409, message: expect.stringContaining("stopped being paid while you were closing this charge") });
       const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
       expect(charge).toMatchObject({ status: "CONFLICT", lastErrorCode: "SUBSCRIPTION_ALREADY_PAID" });
       const subscriptions = await prisma.memberSubscription.findMany({
