@@ -16,7 +16,7 @@ reason: `recordStripeRefundLedgerEntry`'s guarded counted -> refused write is
   transition it alone can see.
 
 file: src/lib/payment-recovery.ts
-lines: 3450
+lines: 3447
 reason: the payments cron's isolated read-back block gains the sibling call
   for ordinary card refunds beside the organiser children's (three lines and a
   comment), so one option still turns both on and a failure in either fails
