@@ -394,8 +394,9 @@ const NOTHING = { disagreements: [], coverage: [], integrity: [], classes: [] };
     await prisma.refundRequest.update({ where: { id: request.id }, data: { approvedAmountCents: 5_001 } });
     expect(about(await census(), APPEAL).disagreements.map((row) => [row.identity, row.deltaCents])).toEqual([["PRICE", -4_000]]);
 
-    // Declined: no approved appeal stands behind the refund, so it disagrees too.
-    await prisma.refundRequest.update({ where: { id: request.id }, data: { approvedAmountCents: 5_000, status: "REJECTED" } });
+    // Declined: no approved appeal stands behind the refund, so it disagrees too - even with an
+    // amount on the row that would match (the store reads APPROVED requests only).
+    await prisma.refundRequest.update({ where: { id: request.id }, data: { approvedAmountCents: 4_000, status: "REJECTED" } });
     expect(about(await census(), APPEAL).disagreements.map((row) => [row.identity, row.deltaCents])).toEqual([["PRICE", -4_000]]);
   }, 120_000);
 });
