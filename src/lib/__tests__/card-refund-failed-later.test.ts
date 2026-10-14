@@ -21,7 +21,7 @@ import {
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import { bookingModificationRefundReasonForKeyPrefix } from "@/lib/payment-recovery-keys";
 
-type Row = { id: string; status: string; allocationPlan: unknown; bookingId: string; paymentIntentId: string };
+type Row = { id: string; status: string; attempts?: number; allocationPlan: unknown; bookingId: string; paymentIntentId: string };
 
 function fakeTx({
   bookingId = "booking-1",
@@ -171,6 +171,11 @@ describe("a refund an open row marked made beside a refusal (#4083)", () => {
     ]);
   });
 
+  it("re-planned on a row whose retries are spent, it says so: still owed, for Paid another way", async () => {
+    const tx = fakeTx({ open: [{ ...openRow("FAILED"), attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS }] });
+    expect(await keep(tx, CANCEL_REFUND)).toMatchObject({ outcome: "re-planned-dead" });
+  });
+
   it("never touches a row a worker holds: the caller fails and is retried", async () => {
     const tx = fakeTx({ open: [openRow("PROCESSING")] });
     await expect(keep(tx, CANCEL_REFUND)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
@@ -203,9 +208,14 @@ describe("the officers' alert", () => {
     expect((alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage).toMatch(/will be asked for again automatically/);
   });
 
-  it("says a dead one will not be asked for again", async () => {
-    await alertFailedLaterCardRefunds([{ ...debt, outcome: "raised-dead" }]);
+  it.each(["raised-dead", "re-planned-dead"] as const)("says a %s one will not be asked for again", async (outcome) => {
+    await alertFailedLaterCardRefunds([{ ...debt, outcome }]);
     expect((alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage).toMatch(/will not be asked for again automatically/);
+  });
+
+  it("says a re-planned live one will be", async () => {
+    await alertFailedLaterCardRefunds([{ ...debt, outcome: "re-planned" }]);
+    expect((alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage).toMatch(/will be asked for again automatically/);
   });
 
   it("sends nothing for nothing, and never throws", async () => {

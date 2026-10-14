@@ -66,7 +66,8 @@ export type FailedLaterRefundInput = {
 
 /** A row raised or re-planned for a refund that failed later, for the alert after commit. */
 export type FailedLaterCardRefundDebt = {
-  outcome: "raised" | "raised-dead" | "re-planned";
+  /** `re-planned-dead`: re-planned on a row whose retries are already spent. */
+  outcome: "raised" | "raised-dead" | "re-planned" | "re-planned-dead";
   operationId: string;
   bookingId: string;
   paymentIntentId: string;
@@ -138,7 +139,7 @@ export async function keepFailedLaterCardRefundOwed(
       type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
       status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
     },
-    select: { id: true, status: true, allocationPlan: true, bookingId: true, paymentIntentId: true },
+    select: { id: true, status: true, attempts: true, allocationPlan: true, bookingId: true, paymentIntentId: true },
   });
   for (const row of open) {
     const plan = parseRefundAllocationPlan(row.allocationPlan);
@@ -159,7 +160,7 @@ export async function keepFailedLaterCardRefundOwed(
     });
     if (moved.count !== 1) throw new FailedLaterRefundHeldError(refund.id, row.id);
     return {
-      outcome: "re-planned",
+      outcome: row.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS ? "re-planned-dead" : "re-planned",
       operationId: row.id,
       bookingId: row.bookingId,
       paymentIntentId: row.paymentIntentId,
@@ -248,10 +249,15 @@ export async function alertFailedLaterCardRefunds(debts: ReadonlyArray<FailedLat
           operationId: debt.operationId,
           amountCents: debt.amountCents,
           paymentIntentId: debt.paymentIntentId,
-          errorMessage:
+          errorMessage: `${
             debt.outcome === "raised-dead"
-              ? `Stripe accepted a retried card refund of ${amount} and later reported it failed too, so no money went back. It is still owed and will not be asked for again automatically: pay the member another way and close it under Refunds owed.`
-              : `Stripe accepted a card refund of ${amount} and later reported it failed, so no money went back. It is owed again and will be asked for again automatically.`,
+              ? `Stripe accepted a retried card refund of ${amount} and later reported it failed too`
+              : `Stripe accepted a card refund of ${amount} and later reported it failed`
+          }, so no money went back. ${
+            debt.outcome === "raised-dead" || debt.outcome === "re-planned-dead"
+              ? "It is still owed and will not be asked for again automatically: pay the member another way and close it under Refunds owed."
+              : "It is owed again and will be asked for again automatically."
+          }`,
         },
         format,
       ).catch((err: unknown) =>
