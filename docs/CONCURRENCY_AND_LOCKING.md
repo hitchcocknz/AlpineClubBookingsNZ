@@ -3190,6 +3190,22 @@ capture — `refundedAmountCents >= amountCents`, which is the field that surviv
 interleaving it exists to catch: a webhook refund committing between the check
 and the create.
 
+**#4097 adds creates inside the paid cancel's own claim, and no key.** When an
+own-card cancel's frozen card refund plan carries less than the refund due,
+`raiseCancelCardShortfallHandBack` reads the payment's captured non-card
+charges and inserts up to two hand-backs for the rest in the claim
+transaction, after the plan's recovery row, under the locks the claim already
+holds (`lock(1)`, the lodge key, the member's credit-ledger key, the `Payment`
+row), in that order. Each is an insert on no conflict under a unique
+`occurrenceKey`, not a find-then-create, and the claim's status flip is already
+single-flight. Completing one takes no advisory key, as a cancellation
+hand-back's never has; before its claim it takes the `Payment` row
+(`lockPaymentForRefundedTotal`) and reads the cancel's card refund recovery
+row, refusing while that row is not SUCCEEDED, so a completion and the card
+refund's recording are serialised by the row every refunded-total writer takes
+first. Its Xero refund note is an outbox row queued inside the completion
+transaction, with no provider call (`INV-PAY-129`).
+
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
 holds nothing. Until #2760 it was
@@ -4873,6 +4889,44 @@ column of a close's record. A Stripe refund recorded after the dialog opened is
 not stopped by any lock either, so the request carries the card figure the
 dialog showed (`expectedRefundedByCardCents`, round 8) and a different figure
 is a 409: a refund the treasurer never saw is never marked resolved.
+
+## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096)
+
+A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds four
+writes to a `PaymentRecoveryOperation`, all lock-free and each fenced in its
+own `where`, because none moves booking status, capacity or a payment's
+refunded total (`INV-LOCK-001`), and none runs inside a transaction with the
+Stripe call:
+
+- **The runner's re-plan** (`refundPlanOrRetryRefusals`) writes the plan
+  (never the amount) only while the row is `PROCESSING` under the attempt's
+  own `processingStartedAt` - the reaper's fence. A lost fence moves nothing; the
+  next attempt reads the same refusal back and moves it then.
+- **The cancellation's re-plan** (`keepRefusedCancellationRefundOwed`) writes
+  only while its pre-persisted row is `PENDING` with `attempts` 0, so it never
+  races a worker that has claimed the row.
+- **The ledger refund enqueue** inserts if absent (`createMany`,
+  `skipDuplicates`) and refreshes only a `PENDING` row, so a repeat enqueue
+  never re-plans a row a worker has picked up.
+- **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
+  the attempt's `attempts` and a live claim, so an attempt the reaper gave up
+  on cannot write `FAILED` over a reclaimed one. Not on the claim time: an
+  attempt may re-stamp that itself (`holdAdditionalIntentRecoveryClaim`, the
+  worker's own superseded hand-off). The reaper's write takes both fences, each
+  its own clause. Every claim therefore counts an attempt: the worker's claim,
+  and the webhook's superseded hand-off
+  (`queueSupersededPaymentIntentRefundRecovery`), which takes the row from
+  outside any attempt and so spends one of its five.
+
+The "Paid another way" close above claims only `PENDING|FAILED` rows with
+their attempts spent, so it never meets the runner's re-plan.
+
+**Deploy window.** An older release still draining knows no refusal: its
+worker closes a refused row as paid, and drops a slice's key generation, so it
+replays the slice's first key and reads Stripe's cached refusal. Nothing is
+refunded twice within Stripe's 24-hour key window; a row it closed is found by
+a recorded `failed` or `canceled` refund with no later one, and checked against
+the Stripe dashboard.
 
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 

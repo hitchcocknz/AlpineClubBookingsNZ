@@ -387,14 +387,22 @@ Two consequences worth knowing before you edit one:
   and `{{amountOwing}}` (what the booking owes, or "as recorded"). The message is
   locked to always send.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
-  says where the refund went: the member's original payment method, account
-  credit, or a refund the club will arrange directly. Otherwise it says no
-  refund applied. A card refund to the member's own card reads "has been
+  says where the refund went or is going: the member's original payment method,
+  account credit, or a refund the club will arrange directly. Otherwise it says
+  no refund applied. A refund to the member's own card reads "has been
   processed" only once the card refund has gone through; until then — when it
   failed, timed out or was not made — it reads "A refund of $X is on its way to
-  your original payment method.", shown as information (#4084). On a group booking the organiser paid for by card, it names
-  the organiser instead: the refund has been processed to the group organiser's
-  card, or is on its way there when the card refund has not gone through yet.
+  your original payment method.", shown as information (#4084). When the card
+  refund can carry only part of the refund due, the sentence names what went
+  (or is on its way) to the card, then "the club will refund the remaining $Y
+  to you by bank transfer" for the part the payment's other charges hold, and
+  "the club will be in touch about the remaining $Z" for anything the club has
+  to check first, shown as information; with nothing on the card it begins
+  "The club will refund..." or reads "The club will be in touch about the $X
+  refund." (#4097). On a group
+  booking the organiser paid for by card, it names the organiser instead: the
+  refund has been processed to the group organiser's card, or is on its way
+  there when the card refund has not gone through yet.
   If the organiser had already cancelled the whole group, it says that
   cancellation is refunding, or has refunded, the booking to the organiser's
   card. When the organiser cancels a group they paid for by Internet Banking,

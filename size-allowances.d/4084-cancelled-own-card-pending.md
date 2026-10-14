@@ -7,9 +7,9 @@ home `src/lib/booking-modified-email-copy.ts`, and the on-screen confirmation in
 only the carrying of Stripe's answer.
 
 file: src/lib/booking-cancel.ts
-lines: 2823
+lines: 2825
 reason: the card branch records whether the inline refund call's answer was a
-  made refund, and hands that one answer to the Booking Cancelled email and to
+  made refund (a zero plan, which makes no call, counts as made), and hands that one answer to the Booking Cancelled email and to
   the cancel's result, whose type gains the field the confirmation screen
   reads; the refund call, the email call and the result all live in this
   branch, so the answer cannot move without splitting the branch from the

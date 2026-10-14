@@ -13,6 +13,7 @@ const {
   mockPaymentRecoveryUpdateMany,
   mockPaymentRecoveryUpdate,
   mockPaymentRecoveryUpsert,
+  mockPaymentRecoveryCreateMany,
   mockAlertCooldownUpdateMany,
   mockAlertCooldownCreate,
   mockPaymentTransactionUpdateMany,
@@ -52,6 +53,7 @@ const {
   mockPaymentRecoveryUpdateMany: vi.fn(),
   mockPaymentRecoveryUpdate: vi.fn(),
   mockPaymentRecoveryUpsert: vi.fn(),
+  mockPaymentRecoveryCreateMany: vi.fn(),
   mockAlertCooldownUpdateMany: vi.fn(),
   mockAlertCooldownCreate: vi.fn(),
   mockPaymentTransactionUpdateMany: vi.fn(),
@@ -136,6 +138,7 @@ vi.mock("@/lib/prisma", () => {
       updateMany: (...args: unknown[]) => mockPaymentRecoveryUpdateMany(...args),
       update: (...args: unknown[]) => mockPaymentRecoveryUpdate(...args),
       upsert: (...args: unknown[]) => mockPaymentRecoveryUpsert(...args),
+      createMany: (...args: unknown[]) => mockPaymentRecoveryCreateMany(...args),
     },
     alertCooldown: {
       updateMany: (...args: unknown[]) => mockAlertCooldownUpdateMany(...args),
@@ -442,6 +445,7 @@ describe("payment recovery worker", () => {
     );
     mockPaymentRecoveryUpdate.mockResolvedValue({});
     mockPaymentRecoveryUpsert.mockResolvedValue({});
+    mockPaymentRecoveryCreateMany.mockResolvedValue({ count: 1 });
     // Default: no cooldown row exists yet, so the conditional claim matches
     // nothing and the create path wins (first alert ever).
     mockAlertCooldownUpdateMany.mockResolvedValue({ count: 0 });
@@ -591,6 +595,9 @@ describe("payment recovery worker", () => {
             PaymentRecoveryOperationStatus.FAILED,
           ],
         },
+        // #4083: only the attempt the worker holds.
+        attempts: 1,
+        processingStartedAt: { not: null },
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -628,6 +635,9 @@ describe("payment recovery worker", () => {
             PaymentRecoveryOperationStatus.FAILED,
           ],
         },
+        // #4083: only the attempt the worker holds.
+        attempts: 5,
+        processingStartedAt: { not: null },
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -722,8 +732,11 @@ describe("payment recovery worker", () => {
         id: "recovery-stale-2",
         status: { in: [PaymentRecoveryOperationStatus.PROCESSING] },
         // #3220 fix round: the exact attempt the sweep read. Status alone would
-        // also match a row that has since been re-claimed.
-        processingStartedAt: new Date("2026-05-01T00:00:00.000Z"),
+        // also match a row that has since been re-claimed. #4083: both fences, ANDed.
+        AND: [
+          { processingStartedAt: new Date("2026-05-01T00:00:00.000Z") },
+          { attempts: 2, processingStartedAt: { not: null } },
+        ],
       },
       data: {
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -758,7 +771,10 @@ describe("payment recovery worker", () => {
         status: { in: [PaymentRecoveryOperationStatus.PROCESSING] },
         // #3220 fix round: as above - the read and the write are fenced to one
         // attempt, so a re-claimed row falls out instead of being killed.
-        processingStartedAt: new Date("2026-05-01T00:00:00.000Z"),
+        AND: [
+          { processingStartedAt: new Date("2026-05-01T00:00:00.000Z") },
+          { attempts: 5, processingStartedAt: { not: null } },
+        ],
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -1253,6 +1269,54 @@ describe("payment recovery worker", () => {
     ]);
   });
 
+  // #4101: one row per Stripe key prefix a refund recovery stores, pinning the
+  // request the REPLAY sends under it to a literal reason rather than to the map
+  // under test. This proves the replay side only. That the inline sender stamps
+  // the same literal is proved elsewhere: for the four booking-edit callers by
+  // modification-refund-replay-reason.test.ts (INV-MOD-061), and for the other
+  // four by their own senders' tests (payment-reconciliation, manual-refund-task
+  // and the late-capture tests above). A prefix added to the map is not listed
+  // here until someone adds its row.
+  it.each([
+    ["mod_dates_refund_booking-1_mod-1", "date_change_price_decrease"],
+    ["mod_batch_refund_booking-1_mod-1", "batch_modification"],
+    ["guest_remove_refund_booking-1_mod-1", "guest_removed_price_decrease"],
+    ["guest_accept_refund_booking-1_mod-1", "guest_accepted_promo_reprice"],
+    ["capacity_claim_failed_booking-1_pi_1", "capacity_claim_failed"],
+    ["duplicate_capture_refund_booking-1_pi_1", "duplicate_capture"],
+    ["edit_financial_review_refund_task-1", "edit_financial_review"],
+    ["late_cancel_refund_booking-1_pi_1", "cancelled_booking_late_capture"],
+  ])(
+    "replays a refund stored under %s with the inline reason %s (#4101)",
+    async (stripeKeyPrefix, inlineReason) => {
+      const crashed = makeOperation({
+        id: "recovery-replay-reason",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        amountCents: 4000,
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
+        idempotencyKey: "payment_recovery_modification_refund_replay-reason",
+        stripeKeyPrefix,
+        paymentTransactionId: null,
+      });
+      mockPaymentRecoveryFindUnique.mockResolvedValue(crashed);
+      mockPaymentRecoveryFindMany.mockImplementation(
+        (args?: { where?: { attempts?: { gte?: number } } }) =>
+          Promise.resolve(
+            isStaleWorkerSweep(args) ? [] : [{ ...crashed, status: "PENDING" }],
+          ),
+      );
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      const [refundArgs] = mockRefundPaymentTransactions.mock.calls[0];
+      expect(refundArgs.idempotencyKeyPrefix).toBe(stripeKeyPrefix);
+      expect(refundArgs.metadata).toEqual({
+        bookingId: "booking-1",
+        reason: inlineReason,
+      });
+    },
+  );
+
   it("replays a treasurer-approved late-capture refund under the webhook's own prefix and body, then queues the Xero correction (#3639)", async () => {
     // The approval persisted this debt inside its claim and the inline refund
     // did not finish. The replay must send exactly what the webhook's automatic
@@ -1375,11 +1439,10 @@ describe("payment recovery worker", () => {
   });
 
   it("derives every inline modification-refund reason from its stored key prefix (#1507 freeze)", () => {
-    // Freezes the derivation against the exact (idempotencyKeyPrefix, reason)
-    // pairs the three inline callers pass to executeBookingModificationRefund. A
-    // new modification refund path (or a renamed prefix/reason) breaks this until
-    // its prefix is added to bookingModificationRefundReasonForKeyPrefix, keeping
-    // the recovery replay byte-identical to the inline refund.
+    // Freezes the map's answer for the four executeBookingModificationRefund
+    // callers' prefixes, and a few others, against fixed literals: a changed
+    // reason for one of these prefixes breaks it. It cannot see a NEW caller;
+    // modification-refund-replay-reason.test.ts finds every caller (INV-MOD-061).
     expect(
       bookingModificationRefundReasonForKeyPrefix("mod_dates_refund_bk_mod"),
     ).toBe("date_change_price_decrease");
@@ -1389,6 +1452,10 @@ describe("payment recovery worker", () => {
     expect(
       bookingModificationRefundReasonForKeyPrefix("guest_remove_refund_bk_mod"),
     ).toBe("guest_removed_price_decrease");
+    // #4101: the guest-acceptance re-price, missing until then.
+    expect(
+      bookingModificationRefundReasonForKeyPrefix("guest_accept_refund_bk_mod"),
+    ).toBe("guest_accepted_promo_reprice");
     // #3639: a treasurer-approved late-capture refund replays the webhook's body.
     expect(
       bookingModificationRefundReasonForKeyPrefix("late_cancel_refund_bk_pi"),
@@ -1587,21 +1654,18 @@ describe("payment recovery worker", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { idempotencyKey: "refund_request_refund_refund-1" },
-        create: expect.objectContaining({
+        skipDuplicates: true,
+        data: [expect.objectContaining({
+          idempotencyKey: "refund_request_refund_refund-1",
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
           paymentId: "payment-1",
           amountCents: 4000,
           allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
-        update: expect.objectContaining({
-          amountCents: 4000,
-          allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
+        })],
       }),
     );
   });
@@ -1773,21 +1837,18 @@ describe("payment recovery worker", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
-        create: expect.objectContaining({
+        skipDuplicates: true,
+        data: [expect.objectContaining({
+          idempotencyKey: "booking_cancel_refund_recovery_booking-1",
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
           paymentId: "payment-1",
           amountCents: 4000,
           allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
-        update: expect.objectContaining({
-          amountCents: 4000,
-          allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
-        }),
+        })],
       }),
     );
   });
@@ -1801,13 +1862,11 @@ describe("payment recovery worker", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 10000 }],
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          idempotencyKey:
-            "capacity_claim_failed_refund_recovery_booking-1_pi_original",
-        },
-        create: expect.objectContaining({
+        skipDuplicates: true,
+        data: [expect.objectContaining({
+          idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_original",
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
@@ -1817,14 +1876,7 @@ describe("payment recovery worker", () => {
           allocationPlan: [
             { paymentTransactionId: "txn-1", amountCents: 10000 },
           ],
-        }),
-        update: expect.objectContaining({
-          amountCents: 10000,
-          stripeKeyPrefix: "capacity_claim_failed_booking-1_pi_original",
-          allocationPlan: [
-            { paymentTransactionId: "txn-1", amountCents: 10000 },
-          ],
-        }),
+        })],
       }),
     );
   });
@@ -2116,6 +2168,306 @@ describe("payment recovery worker", () => {
     );
   });
 
+  // #4117: a card refund's slices Stripe already made stay in its plan, marked,
+  // and its amount keeps them (the cancellation's, the runner's and a refund
+  // request's rows). The retries-exhausted alert names only what failed.
+  it("alerts the officers for the unmade part only when a card refund with a made slice exhausts its retries", async () => {
+    const exhaustedOperation = makeOperation({
+      id: "recovery-made-slice-fail",
+      type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+      idempotencyKey: "refund_request_refund_rq-made",
+      attempts: 5,
+      amountCents: 4000,
+      paymentTransactionId: null,
+      allocationPlan: [
+        { paymentTransactionId: "txn-made", amountCents: 2500, madeRefundId: "re_made" },
+        { paymentTransactionId: "txn-owed", amountCents: 1500, stripeKeySuffix: "refused1" },
+      ],
+    });
+    mockPaymentRecoveryFindUnique.mockResolvedValue(exhaustedOperation);
+    mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+      Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...exhaustedOperation, status: "PENDING" }]),
+    );
+    mockRefundPaymentTransactions.mockRejectedValue(new Error("Stripe is unavailable"));
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+    expect(result.failed).toBe(1);
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 1500, errorMessage: expect.stringContaining("failed after 5 attempts") }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  // #4117: the final attempt itself may make slices. The alert reads what the
+  // dead row still owes AFTER it is marked failed - netting the refunds
+  // recorded since, as "Refunds owed" does - never the claim-time copy.
+  describe("the retries-exhausted alert reads what the final attempt left owed (#4117)", () => {
+    const made = { paymentTransactionId: "txn-made", amountCents: 2500 };
+    const owed = { paymentTransactionId: "txn-owed", amountCents: 1500 };
+    const exhausted = () =>
+      makeOperation({
+        id: "recovery-final",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        idempotencyKey: "refund_request_refund_rq-final",
+        attempts: 5,
+        amountCents: 4000,
+        paymentTransactionId: null,
+        allocationPlan: [made, owed],
+        createdAt: new Date("2026-05-23T00:00:00.000Z"),
+      });
+    // The payment as it stands after the final attempt: the made slice recorded.
+    const afterFinalAttempt = (plan: unknown) => ({
+      status: "PARTIALLY_REFUNDED",
+      amountCents: 10000,
+      refundedAmountCents: 2500,
+      recoveryOperations: [{ ...exhausted(), status: "FAILED", allocationPlan: plan, succeededAt: null }],
+      refunds: [
+        { stripeRefundId: "re_final_made", paymentTransactionId: "txn-made", amountCents: 2500, status: "succeeded", createdAt: new Date("2026-05-23T00:05:00.000Z"), stripeCreatedAt: new Date("2026-05-23T00:05:00.000Z") },
+      ],
+    });
+    const arm = (plan: unknown) => {
+      const operation = exhausted();
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
+      );
+      mockPaymentFindUnique.mockImplementation(async (args?: { select?: { recoveryOperations?: unknown } }) =>
+        args?.select?.recoveryOperations ? afterFinalAttempt(plan) : null,
+      );
+    };
+    const alertedCents = () => (mockSendAdminPaymentFailureAlert.mock.calls.at(-1)?.[0] as { amountCents: number }).amountCents;
+
+    it("one slice made and the other refused: only the refused $15.00", async () => {
+      arm([{ ...made, madeRefundId: "re_final_made" }, { ...owed, stripeKeySuffix: "refused1" }]);
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [
+          { status: "succeeded", slice: made, refundId: "re_final_made", paymentIntentId: "pi_made", amountCents: 2500 },
+          { status: "failed", slice: owed, refundId: "re_final_refused", paymentIntentId: "pi_owed", amountCents: 1500 },
+        ],
+      });
+
+      expect((await processPaymentRecoveryOperations({ limit: 1 })).failed).toBe(1);
+      expect(alertedCents()).toBe(1500);
+    });
+
+    it("one slice made and the next threw: only the unmade $15.00, though the plan was never re-planned", async () => {
+      arm([made, owed]);
+      // A partial failure's shape: the slice answered before the throw rides along.
+      mockRefundPaymentTransactions.mockRejectedValue(
+        Object.assign(new Error("Stripe is unavailable"), {
+          refunds: [{ status: "succeeded", slice: made, refundId: "re_final_made", paymentIntentId: "pi_made", amountCents: 2500 }],
+        }),
+      );
+
+      expect((await processPaymentRecoveryOperations({ limit: 1 })).failed).toBe(1);
+      expect(alertedCents()).toBe(1500);
+    });
+  });
+
+  // #4083 (`INV-PAY-128`): a replay Stripe answered `failed` or `canceled`
+  // returns normally from `refundPaymentTransactions`. The row must stay owed,
+  // and its retry must not replay the refused key - Stripe answers a repeated
+  // key with the original refusal for 24 hours.
+  describe("#4083: a refund Stripe refused is still owed and is retried under a fresh key", () => {
+    const refusedRefund = (slice: Record<string, unknown>, status: string) => ({
+      paymentIntentId: "pi_original",
+      refundId: `re_${status}`,
+      amountCents: slice.amountCents,
+      status,
+      slice,
+    });
+
+    function queueOperation(overrides: Record<string, unknown>) {
+      const operation = makeOperation({
+        id: "recovery-refused",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        paymentTransactionId: null,
+        ...overrides,
+      });
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
+      );
+      return operation;
+    }
+
+    const planWrites = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => "allocationPlan" in args.data);
+    const closed = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls.some(
+        ([args]) => (args as { data: { status?: string } }).data.status === PaymentRecoveryOperationStatus.SUCCEEDED,
+      );
+
+    it.each([
+      ["an edit's refund", "booking_modification_refund_mod-1", "failed"],
+      ["an edit's refund", "booking_modification_refund_mod-1", "canceled"],
+      ["a cancellation's refund", "booking_cancel_refund_recovery_booking-1", "failed"],
+      ["an approved refund request's refund", "refund_request_refund_rq-1", "canceled"],
+    ])("%s answered %s: not closed; the slice moves to its next key on the attempt held; the attempt is retried", async (_label, idempotencyKey, status) => {
+      const slice = { paymentTransactionId: "txn-1", amountCents: 1500 };
+      const operation = queueOperation({ idempotencyKey, amountCents: 1500, allocationPlan: [slice] });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(slice, status)], totalRefundedAmountCents: 1500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1, failed: 0 });
+      expect(closed()).toBe(false);
+      expect(planWrites()).toEqual([
+        {
+          where: { id: operation.id, status: PaymentRecoveryOperationStatus.PROCESSING, processingStartedAt: operation.processingStartedAt },
+          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }] },
+        },
+      ]);
+      // The officers hear of it once, from the write that moved the row off its first keys.
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: 1500,
+          errorMessage: "Stripe refused $15.00 of this card refund (failed or cancelled), so that $15.00 did not go back and is still owed; it will be retried automatically.",
+        }),
+        CLUB_FORMAT_TEST,
+      );
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: PaymentRecoveryOperationStatus.FAILED,
+            lastError: expect.stringContaining("still owed"),
+            nextRetryAt: expect.any(Date),
+          }),
+        }),
+      );
+    });
+
+    it("the retry sends the refused slice under its fresh key generation, and closes once Stripe makes it", async () => {
+      const moved = { paymentTransactionId: "txn-1", amountCents: 1500, stripeKeySuffix: "refused1" };
+      queueOperation({
+        idempotencyKey: "booking_modification_refund_mod-1",
+        stripeKeyPrefix: "mod_dates_refund_booking-1_mod-1",
+        amountCents: 1500,
+        allocationPlan: [moved],
+        attempts: 2,
+      });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(moved, "succeeded")], totalRefundedAmountCents: 1500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 1, retried: 0 });
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
+        expect.objectContaining({ allocation: [moved], idempotencyKeyPrefix: "mod_dates_refund_booking-1_mod-1" }),
+      );
+      expect(planWrites()).toEqual([]);
+      expect(closed()).toBe(true);
+    });
+
+    it("a slice marked made is never sent again: the retry sends only the refused one, and closes once Stripe makes it", async () => {
+      const made = { paymentTransactionId: "txn-2", amountCents: 1000, madeRefundId: "re_made" };
+      const moved = { paymentTransactionId: "txn-1", amountCents: 500, stripeKeySuffix: "refused1" };
+      queueOperation({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", amountCents: 1500, allocationPlan: [made, moved], attempts: 2 });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(moved, "succeeded")], totalRefundedAmountCents: 500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 1 });
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 500, allocation: [moved] }));
+      expect(planWrites()).toEqual([]);
+      expect(closed()).toBe(true);
+    });
+
+    it("a second refusal moves the slice on again, never back to a key already refused", async () => {
+      const moved = { paymentTransactionId: "txn-1", amountCents: 1500, stripeKeySuffix: "refused1" };
+      queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [moved], attempts: 2 });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(moved, "failed")], totalRefundedAmountCents: 1500 });
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...moved, stripeKeySuffix: "refused2" }] });
+      // Once per row: it was already off its first keys, so no second alert.
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it("one slice made, one refused: the made slice is marked and never sent again, the refused one moves, and the amount stays the plan's", async () => {
+      const made = { paymentTransactionId: "txn-2", amountCents: 1000 };
+      const refused = { paymentTransactionId: "txn-1", amountCents: 500 };
+      queueOperation({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", amountCents: 1500, allocationPlan: [made, refused] });
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [refusedRefund(made, "succeeded"), refusedRefund(refused, "failed")],
+        totalRefundedAmountCents: 1500,
+      });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      // #4083 review: the made slice stays this row's - the owed figure fills it
+      // with its refund, and the census reads the amount as the plan's total.
+      expect(planWrites()[0]?.data).toEqual({
+        allocationPlan: [{ ...made, madeRefundId: "re_succeeded" }, { ...refused, stripeKeySuffix: "refused1" }],
+      });
+      expect(closed()).toBe(false);
+    });
+
+    it("a slice refused before a later slice threw moves on in place; the rest keep their keys, and the attempt fails with the thrown error", async () => {
+      const refused = { paymentTransactionId: "txn-2", amountCents: 1000 };
+      const unsent = { paymentTransactionId: "txn-1", amountCents: 500 };
+      queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [refused, unsent] });
+      mockRefundPaymentTransactions.mockRejectedValue(
+        Object.assign(new Error("Stripe is unavailable"), { completedRefundCents: 0, refunds: [refusedRefund(refused, "failed")], refusedSlices: [refused] }),
+      );
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      expect(planWrites()[0]?.data).toEqual({ allocationPlan: [{ ...refused, stripeKeySuffix: "refused1" }, unsent] });
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ lastError: "Stripe is unavailable" }) }),
+      );
+    });
+
+    it("spent retries: the row dies owed and the treasurer is alerted, never closed as paid", async () => {
+      const slice = { paymentTransactionId: "txn-1", amountCents: 1500 };
+      queueOperation({ idempotencyKey: "booking_modification_refund_mod-1", amountCents: 1500, allocationPlan: [slice], attempts: 5 });
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [refusedRefund(slice, "failed")], totalRefundedAmountCents: 1500 });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, failed: 1 });
+      expect(closed()).toBe(false);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 1500, errorMessage: expect.stringContaining("still owed") }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+  });
+
+  // #4083 review: a repeat enqueue refreshes only a row no worker has picked up.
+  // One claimed, failed or closed keeps its plan, amount and prefix - its slices
+  // may already have been sent under their keys.
+  it("a repeat ledger refund enqueue updates only a PENDING row, never one a worker holds (#4083)", async () => {
+    mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await enqueueBookingModificationRefundRecovery({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      bookingModificationId: "mod-7",
+      amountCents: 4000,
+      stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
+      allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, stripeKeySuffix: "refused1" }],
+    });
+
+    expect(result).toMatchObject({ created: false });
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith({
+      where: { idempotencyKey: "payment_recovery_modification_refund_mod-7", status: PaymentRecoveryOperationStatus.PENDING },
+      data: expect.objectContaining({
+        amountCents: 4000,
+        stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, stripeKeySuffix: "refused1" }],
+      }),
+    });
+  });
+
   it("enqueueBookingModificationRefundRecovery picks the latest captured PaymentIntent", async () => {
     mockPaymentFindUnique.mockResolvedValueOnce({
       id: "payment-1",
@@ -2148,12 +2500,11 @@ describe("payment recovery worker", () => {
       stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
     });
 
-    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
+        skipDuplicates: true,
+        data: [expect.objectContaining({
           idempotencyKey: "payment_recovery_modification_refund_mod-7",
-        },
-        create: expect.objectContaining({
           type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
           status: PaymentRecoveryOperationStatus.PENDING,
           bookingId: "booking-1",
@@ -2161,7 +2512,7 @@ describe("payment recovery worker", () => {
           paymentIntentId: "pi_additional",
           amountCents: 4000,
           stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
-        }),
+        })],
       }),
     );
   });
@@ -3358,6 +3709,36 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
     expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
   });
 
+  // #4083 review: the webhook takes a row from outside any worker's attempt, so
+  // its claim counts an attempt - the worker it took the row from cannot then
+  // write FAILED over it (the failure write is fenced on the attempt).
+  it("#4083 — the webhook's hand-off claim counts an attempt; a worker's own hand-off does not", async () => {
+    const op = makeOperation({ status: PaymentRecoveryOperationStatus.PROCESSING });
+    mockPaymentRecoveryFindFirst.mockResolvedValue(op);
+    const handOffClaims = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { data: Record<string, unknown> })
+        .filter((args) => args.data.status === PaymentRecoveryOperationStatus.PROCESSING && "processingStartedAt" in args.data && !("lastError" in args.data));
+
+    await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: "pi_superseded", amountCents: 6000, paymentMethodId: "pm_1" });
+    expect(handOffClaims()).toEqual([expect.objectContaining({ data: expect.objectContaining({ attempts: { increment: 1 } }) })]);
+
+    vi.clearAllMocks();
+    mockPaymentRecoveryUpdateMany.mockImplementation(({ where }: { where?: { id?: string } }) => Promise.resolve({ count: where?.id ? 1 : 0 }));
+    mockPaymentRecoveryFindMany.mockImplementation((args?: unknown) => Promise.resolve(isStaleWorkerSweep(args) ? [] : [makeOperation({ status: "PENDING" })]));
+    mockPaymentRecoveryFindUnique.mockResolvedValue(makeOperation());
+    mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      canceled: false,
+      paymentIntent: { id: "pi_superseded", status: "succeeded", amount: 6000, payment_method: "pm_123" },
+    });
+    await processPaymentRecoveryOperations({ limit: 1 });
+    const workerHandOff = mockPaymentRecoveryUpdateMany.mock.calls
+      .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+      .find((args) => args.data.status === PaymentRecoveryOperationStatus.PROCESSING && !("attempts" in args.where));
+    expect(workerHandOff).toBeDefined();
+    expect(workerHandOff?.data).not.toHaveProperty("attempts");
+  });
+
   it("#3639 — a hand-off the club holds for a treasurer moves no money: no superseded refund, the cancel op completes", async () => {
     const op = makeOperation({ status: PaymentRecoveryOperationStatus.PENDING });
     mockPaymentRecoveryFindFirst.mockResolvedValue(op);
@@ -3546,6 +3927,9 @@ describe("#2262 L3 — the recovery dispatcher is exhaustive", () => {
             PaymentRecoveryOperationStatus.FAILED,
           ],
         },
+        // #4083: only the attempt the worker holds.
+        attempts: 1,
+        processingStartedAt: { not: null },
       },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.FAILED,
@@ -4592,8 +4976,10 @@ describe("#3220 - the stale-worker reaper cannot kill a re-claimed attempt", () 
           id: "recovery-stale-fence",
           status: { in: [PaymentRecoveryOperationStatus.PROCESSING] },
           // Without this the reaper matches a row that has since been failed,
-          // re-armed and re-claimed - and kills the live attempt.
-          processingStartedAt: readAt,
+          // re-armed and re-claimed - and kills the live attempt. #4083: the
+          // attempt fence joins it as its own clause, so neither overwrites the
+          // other's `processingStartedAt`.
+          AND: [{ processingStartedAt: readAt }, { attempts: 1, processingStartedAt: { not: null } }],
         },
       }),
     );

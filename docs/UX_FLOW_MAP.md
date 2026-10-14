@@ -1634,9 +1634,14 @@ establishes:
   (`src/hooks/use-scroll-to-feedback.ts`) decides where focus and the viewport go
   once an action has a result — a failure brings the actionable message or
   invalid control into view and beats any success positioning, an editor the
-  admin explicitly opened is revealed and focused, a save or step transition
-  that changed the screen positions at the top of the resulting page or card,
-  and a passive update moves nothing. The rule, its two hooks and what the
+  admin explicitly opened is revealed and focused (a staged section's Edit, Add
+  or row Edit lands in the section — on the first control it opened, or on the
+  section's named region — with no reveal wiring of its own — #4115), a save
+  or step transition that changed the screen positions at the top of the
+  resulting page or card, closing a staged section (Save, Cancel) that dropped focus hands it back to
+  its Edit button or the section, unless a success position took it first
+  (#4087), and a passive update moves nothing. The rule, its
+  three hooks and what the
   census does and does not hold are written out ONCE, in that module's docblock;
   do not restate them here. `admin-attention-primitive-contract.test.ts` fails a
   direct `scrollIntoView` / `scrollTo` or a `requestAnimationFrame` focus in an

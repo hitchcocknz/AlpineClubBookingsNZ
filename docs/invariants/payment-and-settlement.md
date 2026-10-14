@@ -982,7 +982,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `xeroCreditNoteId`. When credit is applied to an IB booking (create-time or
   switch-to-IB), the raise-path engine (`xero-applied-credit-allocation.ts`, an
   outbox op enqueued after the invoice op) allocates those notes oldest-first
-  against the new invoice, up to the applied amount; only the noteless remainder
+  ([INV-PAY-127]) against the new invoice, up to the applied amount; only the noteless remainder
   is freshly minted. Per-note
   remaining balances live in `MemberCreditNoteAllocation`. The `payment` mirror holds
   `amountCents + creditAppliedCents = finalPriceCents` (net of
@@ -1000,7 +1000,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   lot's remaining balance EXCLUDING this booking's own committed rows. A FAILED
   op has no auto FAILED→PENDING reaper; recovery runs through
   `xero-operation-retry.ts`. Cancellation is
-  UNCHANGED and still conserves: the 100% restore + `finalPrice − allocated`
+  UNCHANGED and conserves: the 100% restore + `finalPrice − allocated`
   clearing note void the invoice while returning the credit LOCALLY. After a
   cancel of an allocated-credit booking the restored credit is local-only (the
   cancelled invoice consumed its funding note); the local ledger is the source
@@ -1009,6 +1009,34 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   to `hutFeeRefunds` while unset, `INV-INT-021`); every other share, restored
   credit included, is the member's own money and stays on `hutFeeRefunds`.
   Noteless is not the accounting question.
+
+## INV-PAY-127
+
+**Related: `INV-PAY-023`** (the engine that uses the lots).
+
+- **A member's credit lots are used in one order: oldest first, and between two
+  lots stamped with the same instant, the lower `id` first** (#4013, owner
+  decision 14 Oct 2026). `createdAt` alone is not an order. Lots written in one
+  transaction, or under the frozen test clock, carry the same instant, and
+  PostgreSQL returns tied rows in whatever order its plan meets them. Which lot
+  comes first decides whether the allocation engine allocates an existing
+  floating note or mints a remainder, so a tie left to the database made the
+  same ledger allocate on one run and mint on the next.
+- The order has one home, `CREDIT_LOT_USE_ORDER` in
+  `xero-applied-credit-plan.ts`, and every read that hands lots to the planner
+  orders by it and by nothing else. Today that is the engine's lot loader alone.
+  `credit-lot-use-order-census.test.ts` fails a `memberCredit` read ordered by
+  `createdAt` without it, unless it is declared as a read that uses no lot
+  (a history listing, a refuse-if-two read), with the reason.
+- The tie-break changes no lot's eligibility, no amount, no transaction and no
+  lock. It reorders only lots whose `createdAt` is exactly equal, and among
+  those the engine's total is unchanged: conservation never depended on lot
+  order (`INV-PAY-023`). What it fixes is which of two equal lots goes first,
+  and so whether a note is allocated or minted, the same way every time.
+- A retry keeps the slices its earlier attempt committed. One whose plan no
+  longer matches them (another order across the deploy, a hand-back in
+  between) is refused before any write (`assertPlanKeepsCommittedSlices`):
+  the operation fails visibly, never allocating a second lot beside it.
 
 ## INV-PAY-024
 
@@ -1189,6 +1217,80 @@ call, so reading it as the money rule twice over drops that coverage. Change
 one, check the other.
 
 - External provider side effects require clear retry and idempotency behavior.
+
+## INV-PAY-128
+
+**Related: `INV-PAY-114`** (an organiser child's refund, which reopens one
+Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
+
+- **A card refund Stripe answers `failed` or `canceled` on an edit, a
+  cancellation or a refund request is still owed** (#4083, #4096, #4102).
+  `refundPaymentTransactions` records it, never counted as made
+  (`completedRefundCents`), and returns.
+  - **Whoever reads a refusal moves that slice to a fresh key**
+    (`refused1`, `refused2`, ...; `refundSliceStripeIdempotencyKey`): Stripe
+    replays a key's refusal for 24 hours. A slice never read refused keeps its
+    key, so a refund made but not recorded is answered with the original.
+  - **The four edit doors** (`executeBookingModificationRefund`) queue exactly
+    the refused slices, when Stripe answered every slice; on a partial
+    failure, the remainder, planned by the runner.
+  - **A cancellation** re-plans its pre-persisted row, only while PENDING with
+    no attempt.
+  - **A refund request** queues its whole plan; once Stripe was asked, the
+    approval stands; unqueued cents split refused/unanswered (#4117).
+  - **The runner never closes a row on a refusal**: it re-plans on the attempt
+    it holds and fails it.
+  - **A slice made beside a refusal stays, marked** (`madeRefundId`): never
+    re-sent, filled only by that refund; the amount stays.
+  - **Officers hear once per refused slice**, on leaving its first key, and
+    again if retries run out.
+  - **Deploy window**: an older release closes a refused row as paid, and
+    replays a moved slice's first key, reading the cached refusal - nothing is
+    refunded twice within 24 hours. Check rows it closed against Stripe.
+  - **Stated limits**: the late-capture approval and webhook, the edit
+    financial-review settlement, duplicate-capture reconciliation, the
+    superseded-payment runner and the group-settlement replay still close on a
+    refusal (#4103); a refund accepted (`pending`) and failed later is not
+    re-owed.
+  - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
+    `own-card-refund-outcome`, `booking-cancel.test.ts`,
+    `admin-refund-request-review-route.test.ts`,
+    `refunds-and-credits-owed.test.ts` and
+    `refused-card-refund-retry.realdb.test.ts`.
+
+## INV-PAY-129
+
+**Related: `INV-PAY-101`** (a hand-back's wording and Xero note) and
+**`INV-PAY-122`** (a card refund paid another way).
+
+- **What an own-card cancel's card refund plan cannot carry is recorded, split
+  by what can hold it** (#4097). The plan covers what the captured Stripe
+  charges can still refund; the policy's refund comes from the payment record.
+  - **On the card branch only, the claim raises up to two
+    `CANCELLED_BOOKING_HAND_BACK`s**, under its locks, inserted on no conflict
+    (a replay must find the same OPEN row and amount, or the claim throws):
+    `bank`, up to what the captured non-card charges hold, and `check`, the
+    rest - already refunded on the records, or held by nothing.
+  - **While OPEN both are owed** ("Refunds owed", Net Collected, the queue).
+    Admins are emailed once, straight after the commit.
+  - **The member is promised a bank transfer only for `bank`**; for `check`,
+    that the club will be in touch. The cancel confirmation says the same,
+    from the one wording home's card and bank clauses.
+  - **The card's records are what the card refund carries**: its REFUNDED
+    event says so, and its Xero note.
+  - **Marked paid back**, a part settles on the non-card charges first, never
+    while the card refund recovery is unsettled (409 under the `Payment` row
+    lock, naming the next step by its state), and `check` only after `bank`.
+    Its `BANK_REFUND` posts on the card payment (`INV-MONEY-035`) and it takes
+    ONE Xero note of its own, keyed on the task. Where the ledger holds nothing
+    for it, the refusal says to dismiss it.
+  - **The booking and payment-link pages name each part and where it stands**,
+    from the CANCELLED snapshot and live status.
+  - Proven by `booking-cancel.test.ts`, `cancel-card-refund-shortfall.test.ts`,
+    `booking-cancelled-card-shortfall-email.test.ts`,
+    `manual-refund-task.test.ts`, `stripe-cash-refund-evidence.test.ts`,
+    `booking-narrative-card-shortfall.test.ts` and
+    `cancel-card-refund-shortfall.realdb.test.ts`.
 
 ## INV-PAY-031
 

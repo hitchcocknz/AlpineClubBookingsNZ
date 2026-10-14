@@ -1515,7 +1515,6 @@ export async function modifyBookingDates({
     format,
     bookingId,
     result,
-    metadataReason: "date_change_price_decrease",
     idempotencyKeyPrefix: `mod_dates_refund_${bookingId}`,
     failureMessage: "Stripe refund failed after date change - enqueueing recovery",
     recoveryFailureMessage:

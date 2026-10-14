@@ -102,17 +102,62 @@ export type OwnCardRefundMethod = "card" | "card_pending";
 export type BookingCancelledRefundMethod = OwnCardRefundMethod | "credit" | "manual" | "organiser_by_hand" | OrganiserRefundMethod;
 
 /**
+ * #4097 (`INV-PAY-129`): the parts of an own-card cancel's refund its card
+ * refund plan could not carry, inside `refundCents`. `bankCents`: what the
+ * payment's non-card charges hold, which the club refunds by bank transfer.
+ * `checkCents`: the rest, which the club checks first, so the member is told
+ * only that the club will be in touch. `formatAmount` formats cents in the
+ * club's format.
+ */
+export type OwnCardShortfallParts = { bankCents: number; checkCents: number; formatAmount: (cents: number) => string };
+
+/**
+ * #4097 (`INV-PAY-129`): an own-card cancel's refund split between the card
+ * (made, or on its way when `pending`), a part refunded by bank transfer, and a
+ * part the club will be in touch about - built from the one card clause and the
+ * one bank-transfer clause (`INV-SSOT`). The email and the cancel dialog's
+ * confirmation, where an officer cancelling on the member's behalf reads "the
+ * member's" (`whose`).
+ */
+export function ownCardRefundWithShortfallSentence(
+  cardCents: number,
+  { bankCents, checkCents, formatAmount }: OwnCardShortfallParts,
+  pending: boolean,
+  whose: OwnCardWhose = "your",
+): string {
+  const recipient = whose === "your" ? "you" : "the member";
+  const card = cardCents <= 0 ? null : pending ? ownCardRefundPendingClause(formatAmount(cardCents), whose) : ownCardRefundClause(formatAmount(cardCents), whose);
+  const remaining = (cents: number) => `the remaining ${formatAmount(cents)}`;
+  if (bankCents > 0 && checkCents > 0) {
+    const rest = `${bankTransferRefundClause(formatAmount(bankCents), recipient)} and will be in touch about ${remaining(checkCents)}`;
+    return card ? `${card}; ${rest}.` : `${capitalise(rest)}.`;
+  }
+  if (bankCents > 0) {
+    return card ? `${card}, and ${bankTransferRefundClause(remaining(bankCents), recipient)}.` : bankTransferRefundSentence(formatAmount(bankCents), recipient);
+  }
+  return card
+    ? `${card}, and the club will be in touch about ${remaining(checkCents)}.`
+    : `The club will be in touch about the ${formatAmount(checkCents)} refund.`;
+}
+
+/**
  * #3973: the refund line of a "Booking Cancelled" email, ONE wording for the
  * HTML template, the admin-editable body's `{{refundMessage}}` and the cancel
  * dialog's organiser-paid confirmation (`INV-SSOT`). `amount` is `refundCents`
- * formatted in the club's format.
+ * formatted in the club's format. #4097: `shortfall`, on an own-card refund, is
+ * the part its card refund could not carry.
  */
 export function bookingCancelledRefundSentence(
   refundCents: number,
   amount: string,
   refundMethod: BookingCancelledRefundMethod,
+  shortfall?: OwnCardShortfallParts,
 ): string {
   if (refundCents <= 0) return "No refund was applicable based on the cancellation policy.";
+  const restCents = shortfall ? shortfall.bankCents + shortfall.checkCents : 0;
+  if (shortfall && restCents > 0 && (refundMethod === "card" || refundMethod === "card_pending")) {
+    return ownCardRefundWithShortfallSentence(refundCents - restCents, shortfall, refundMethod === "card_pending");
+  }
   switch (refundMethod) {
     case "manual":
       return `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${amount} directly and will be in touch.`;
@@ -138,16 +183,31 @@ export function bookingCancelledRefundSentence(
 /**
  * #3973: a refund already made reads as a success; a hand-back, a refund still
  * on its way (#4084: `card_pending` too), or no refund at all reads as
- * information. The email's box and the confirmation screen both ask here.
+ * information. #4097: so does a card refund with a part its card refund could
+ * not carry (`shortfallCents`, both parts). The email's box and the
+ * confirmation screen both ask here.
  */
-export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod): boolean {
-  if (refundCents <= 0) return false;
+export function bookingCancelledRefundMade(refundCents: number, refundMethod: BookingCancelledRefundMethod, shortfallCents = 0): boolean {
+  if (refundCents <= 0 || shortfallCents > 0) return false;
   return refundMethod === "card" || refundMethod === "credit" || refundMethod === "organiser_card" || refundMethod === "group_cancel_refunded";
+}
+
+/** Whose payment method a card refund sentence names: the member's own, or an officer's "the member's". */
+type OwnCardWhose = "your" | "the member's";
+
+/** #4097: the card refund made, as a clause the sentences below finish (`INV-SSOT`). */
+function ownCardRefundClause(amount: string, whose: OwnCardWhose = "your"): string {
+  return `A refund of ${amount} has been processed to ${whose} original payment method`;
 }
 
 /** A card refund back to what the member paid with; Booking Modified and Booking Cancelled alike. */
 function ownCardRefundSentence(amount: string): string {
-  return `A refund of ${amount} has been processed to your original payment method.`;
+  return `${ownCardRefundClause(amount)}.`;
+}
+
+/** #4097: the card refund not made yet, as a clause (`INV-SSOT`). */
+function ownCardRefundPendingClause(amount: string, whose: OwnCardWhose = "your"): string {
+  return `A refund of ${amount} is on its way to ${whose} original payment method`;
 }
 
 /**
@@ -156,8 +216,21 @@ function ownCardRefundSentence(amount: string): string {
  * alike, and the cancel dialog's confirmation, where an officer cancelling on
  * the member's behalf reads "the member's" (`whose`).
  */
-export function ownCardRefundPendingSentence(amount: string, whose: "your" | "the member's" = "your"): string {
-  return `A refund of ${amount} is on its way to ${whose} original payment method.`;
+export function ownCardRefundPendingSentence(amount: string, whose: OwnCardWhose = "your"): string {
+  return `${ownCardRefundPendingClause(amount, whose)}.`;
+}
+
+/** #3827, #4097: the club's bank-transfer refund, as a clause and as a sentence (`INV-SSOT`). */
+function bankTransferRefundClause(amount: string, recipient: "you" | "the member" = "you"): string {
+  return `the club will refund ${amount} to ${recipient} by bank transfer`;
+}
+
+function capitalise(clause: string): string {
+  return clause.charAt(0).toUpperCase() + clause.slice(1);
+}
+
+function bankTransferRefundSentence(amount: string, recipient: "you" | "the member" = "you"): string {
+  return `${capitalise(bankTransferRefundClause(amount, recipient))}.`;
 }
 
 /**
@@ -198,9 +271,7 @@ export function bookingModifiedRefundSentence(
     case "own_card_pending":
       return ownCardRefundPendingSentence(amount);
     case "own":
-      return refundByBankTransfer
-        ? `The club will refund ${amount} to you by bank transfer.`
-        : ownCardRefundSentence(amount);
+      return refundByBankTransfer ? bankTransferRefundSentence(amount) : ownCardRefundSentence(amount);
   }
 }
 
@@ -242,8 +313,6 @@ export function refundRequestApprovedRefundSentence(
   if (bankTransferCents <= 0) {
     return `A refund of ${formatAmount(approvedCents)} will be processed to your original payment method.`;
   }
-  if (cardCents <= 0) {
-    return `The club will refund ${formatAmount(bankTransferCents)} to you by bank transfer.`;
-  }
-  return `A refund of ${formatAmount(cardCents)} will be processed to your original payment method, and the club will refund the remaining ${formatAmount(bankTransferCents)} to you by bank transfer.`;
+  if (cardCents <= 0) return bankTransferRefundSentence(formatAmount(bankTransferCents));
+  return `A refund of ${formatAmount(cardCents)} will be processed to your original payment method, and ${bankTransferRefundClause(`the remaining ${formatAmount(bankTransferCents)}`)}.`;
 }

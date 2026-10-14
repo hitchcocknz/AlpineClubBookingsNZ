@@ -94,7 +94,7 @@ export function CancelBookingButton({
   const format = useClubFormat();
   const [step, setStep] = useState<"idle" | "loading" | "preview" | "cancelling" | "success" | "error">("idle");
   const [preview, setPreview] = useState<CancelPreview | null>(null);
-  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number; organiserRefund?: { method: OrganiserRefundMethod; amountCents: number }; ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number } } | null>(null);
+  const [result, setResult] = useState<{ refundAmountCents: number; refundMethod: string; creditAmountCents?: number; creditRestoredCents?: number; organiserRefund?: { method: OrganiserRefundMethod; amountCents: number }; ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number; byHandCents?: number; toCheckCents?: number } } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [refundMethod, setRefundMethod] = useState<"card" | "credit">("card");
   // Issue #1705: the admin's explicit email choice dialog, and the choice that
@@ -367,7 +367,7 @@ export function CancelBookingButton({
             A credit of {formatCents(refund, format)} has been added to {onBehalfOfMember ? "the member's" : "your"} account for future bookings.
           </p>
         ) : refund > 0 ? (
-          <OwnCardRefundConfirmation amountCents={refund} pending={result?.ownCardRefund?.method === "card_pending"} format={format} emailNote={emailNote} onBehalfOfMember={onBehalfOfMember} />
+          <OwnCardRefundConfirmation amountCents={result?.ownCardRefund?.amountCents ?? refund} byHandCents={result?.ownCardRefund?.byHandCents} toCheckCents={result?.ownCardRefund?.toCheckCents} pending={result?.ownCardRefund?.method === "card_pending"} format={format} emailNote={emailNote} onBehalfOfMember={onBehalfOfMember} />
         ) : emailSuppressed ? null : (
           <p className="text-sm text-success-11">
             {onBehalfOfMember

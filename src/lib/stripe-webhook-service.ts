@@ -41,6 +41,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import Stripe from "stripe";
 import logger from "@/lib/logger";
+import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { logAudit } from "@/lib/audit";
 import {
   findPaymentTransactionByIntentId,
@@ -469,7 +470,7 @@ async function handlePaymentIntentSucceeded(
   }
 
   // Check if this is an additional modification payment
-  if (paymentIntent.metadata?.type === "modification_additional") {
+  if (paymentIntent.metadata?.type === ADDITIONAL_ASK_INTENT_TYPE) {
     await handleAdditionalModificationPaymentSucceeded(paymentIntent, bookingId, format);
     return;
   }
@@ -1603,7 +1604,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
       paymentIntentId: paymentIntent.id,
       refundId,
       amountCents: paymentIntent.amount,
-      kind: "modification_additional",
+      kind: ADDITIONAL_ASK_INTENT_TYPE,
     }),
   });
 

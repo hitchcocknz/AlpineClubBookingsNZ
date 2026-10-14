@@ -107,6 +107,9 @@ interface ManualRefundTask {
   refundRequestHandBack?: boolean;
   /** #4042: an organiser's Internet Banking group cancel, repaid to the organiser. Optional, as above. */
   groupOrganiserHandBack?: boolean;
+  /** #4097: what a card cancellation's card refund could not carry - by bank transfer, or checked first. Optional, as above. */
+  cardShortfallHandBack?: boolean;
+  cardShortfallCheck?: boolean;
   /**
    * #3643 (`INV-PAY-108`): Xero reported the review's invoice paid after the
    * cancel, and the invoice's cash then. Optional, as above.
@@ -1497,6 +1500,8 @@ export function ManualRefundTaskQueue() {
   const hasEditRefundRows = openTasks.some(isEditRefundHandBack);
   const hasRefundRequestRows = openTasks.some(isRefundRequestHandBack);
   const hasGroupOrganiserRows = openTasks.some((task) => task.groupOrganiserHandBack === true);
+  const hasCardShortfallRows = openTasks.some((task) => task.cardShortfallHandBack === true);
+  const hasCardShortfallCheckRows = openTasks.some((task) => task.cardShortfallCheck === true);
   const hasHandBackRows = openTasks.some(
     (task) =>
       !isFinancialReview(task) &&
@@ -1505,7 +1510,9 @@ export function ManualRefundTaskQueue() {
       !isPartPaymentReview(task) &&
       !isEditRefundHandBack(task) &&
       !isRefundRequestHandBack(task) &&
-      task.groupOrganiserHandBack !== true,
+      task.groupOrganiserHandBack !== true &&
+      task.cardShortfallHandBack !== true &&
+      task.cardShortfallCheck !== true,
   );
   if (
     !showQueue &&
@@ -1584,6 +1591,37 @@ export function ManualRefundTaskQueue() {
                 club sends the approved amount by bank transfer; the member has
                 been told it is coming. Mark a refund as paid back once the
                 money has actually gone.
+              </p>
+            ) : null}
+            {hasCardShortfallRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-card-shortfall-intro"
+              >
+                Some of these are from card cancellations whose card refund could
+                not carry all of the refund due; each is the part the
+                payment&apos;s other (non-card) charges hold. The member is told
+                (on their booking page, and by email unless emails were turned
+                off) that the club will refund it by bank transfer: pay it by bank
+                transfer, then mark it paid back, which also raises its Xero
+                refund credit note. None can be marked until the card refund
+                itself has gone through.
+              </p>
+            ) : null}
+            {hasCardShortfallCheckRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-card-shortfall-check-intro"
+              >
+                Some of these are the rest of a card cancellation&apos;s refund
+                that the payment&apos;s records show already refunded, or that
+                nothing holds. The member is told (on their booking page, and by
+                email unless emails were turned off) only that the club will be
+                in touch. Check Stripe and the bank before paying anything, then
+                contact the member with what you found. If they were refunded,
+                dismiss it with a note saying how; if it really is owed, pay it
+                by bank transfer and mark it paid back, once the bank-transfer
+                part and the card refund are done.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (

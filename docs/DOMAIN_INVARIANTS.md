@@ -324,6 +324,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-022` | Unpaid confirmation with applied credit states the netting, from the ledger |
 | `INV-PAY-059` | Netted figure is not the allocation gate; pay the smaller |
 | `INV-PAY-023` | Applied credit reduces Internet Banking invoices by allocating existing floating credit notes |
+| `INV-PAY-127` | Credit lots are used oldest first, ties by lower id |
 | `INV-PAY-024` | Applied credit also reduces the card charge; intent mints effective amount |
 | `INV-PAY-025` | Payment on a cancelled booking's stale invoice needs cash evidence before crediting |
 | `INV-PAY-026` | The same cash-evidence rule gates Internet Banking settlement on both inbound surfaces |
@@ -332,6 +333,8 @@ Prefix `INV-PAY`.
 | `INV-PAY-029` | A FAILED Stripe payment keeps its WAITING_PAYMENT Xero op for 24h |
 | `INV-PAY-104` | Waiting invoice retired only when the pay door closes; captures never silent |
 | `INV-PAY-030` | External provider side effects require clear retry and idempotency behaviour |
+| `INV-PAY-128` | Edit, cancel and refund-request card refunds Stripe refuses stay owed |
+| `INV-PAY-129` | A cancel's card refund shortfall is split: bank transfer, or check first |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -450,6 +453,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-058` | An edit stores its delta as lines; every reader reads those rows |
 | `INV-MOD-059` | A guest's dietary value is seeded once, then carried by identity |
 | `INV-MOD-060` | An ordinary price ask's door and replay send one Stripe request |
+| `INV-MOD-061` | An edit's card refund and its replay send one Stripe request |
 
 ### Adult-member hosting
 

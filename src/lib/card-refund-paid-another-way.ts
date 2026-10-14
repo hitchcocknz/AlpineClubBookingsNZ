@@ -250,10 +250,16 @@ export interface DeadCardRefundRow {
  * #3924 round 5 (money F5, concurrency F3): a 5xx is matched only beside a
  * status word ("status 502", "statusCode: 503"), never any three digits
  * starting with 5 - "$500.00" is an amount, not a server error.
+ *
+ * #4101: Stripe refusing a reused idempotency key ("Keys for idempotent requests
+ * can only be used with the same parameters...", `idempotency_error`) means an
+ * earlier request under that key reached Stripe, and a refund replay's earlier
+ * request is the refund itself. A guest-acceptance re-price refund's replay
+ * died this way before #4101 although Stripe had made the refund.
  */
 export function lastErrorSuggestsStripeMayHaveRefunded(lastError: string | null): boolean {
   if (!lastError) return false;
-  return /time[- ]?out|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network|connection (?:error|reset|closed|refused)|StripeConnectionError|StripeAPIError|status(?:Code)?\D{0,3}5\d\d\b|has already been refunded|greater than (?:the )?unrefunded amount/i.test(
+  return /time[- ]?out|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network|connection (?:error|reset|closed|refused)|StripeConnectionError|StripeAPIError|status(?:Code)?\D{0,3}5\d\d\b|has already been refunded|greater than (?:the )?unrefunded amount|idempotent requests can only be used with the same parameters|idempotency_error/i.test(
     lastError,
   );
 }

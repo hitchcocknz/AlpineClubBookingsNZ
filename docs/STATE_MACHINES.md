@@ -2125,6 +2125,20 @@ refunds are booked as made, so not repaying is the treasurer's correction.
 See
 [`INV-PAY-124`](invariants/payment-and-settlement.md#inv-pay-124).
 
+**#4097: so does a card cancellation's refund shortfall.** An own-card cancel
+whose frozen card refund plan carries less than the refund due raises up to two
+tasks OPEN inside its claim, keyed per booking: the part the payment's non-card
+charges hold (owed by bank transfer) and the rest (checked before paying). Each
+is a cancellation's own hand-back: completed or dismissed as the cash cancel's,
+with no `lock(1)`, except that COMPLETED is refused (409) while the cancel's
+card refund recovery is not SUCCEEDED and, for the part to check, while its
+bank-transfer sibling is OPEN; it settles on the non-card charges first,
+posts its `BANK_REFUND` line on the card payment, which no refund row will
+post, and queues one Xero refund note of its own, keyed on the task. Where the
+payment's ledger has nothing left to allocate, COMPLETED is refused with a
+message naming DISMISSED, which the treasurer then uses. See
+[`INV-PAY-129`](invariants/payment-and-settlement.md#inv-pay-129).
+
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row
 cannot. Nothing about the RAISE changed with it - the raise still never reopens,
@@ -3452,6 +3466,8 @@ close it is money paid twice, listed on the stuck-states page.
 ```text
 PENDING -> PROCESSING (worker claim, attempts < MAX) -> SUCCEEDED (Stripe refunded every slice)
 PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
+PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
+                       held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
@@ -3464,6 +3480,34 @@ DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        COMPLETED hand-back task and its BANK_REFUND line record
                        it; audited under `payment`)
 ```
+
+A refund Stripe answers `failed` or `canceled` on a booking edit, a cancellation
+or an approved refund request never closes its row (#4083, #4096, #4102,
+`INV-PAY-128`). Stripe answers a repeated key with the original refusal for 24
+hours, so whoever reads a refusal moves that slice to a fresh idempotency key
+(`refused1`, `refused2`, ...). An edit queues a row whose plan is exactly the
+refused slices, when Stripe answered every slice; on a partial failure, the
+remainder, planned by the runner. A cancellation re-plans its pre-persisted row
+the same way while it is still `PENDING` with no attempt. An approved refund
+request queues its whole plan after the attempt: refused slices on their next
+key, unanswered ones keep their key, made ones marked with their refund
+(`madeRefundId`). If no row can be written once Stripe was asked, its approval
+stands, and the officers' alert and its audit row split what is not made into
+what Stripe refused (refund it another way) and what got no answer (it may have
+been made: check Stripe first); the Xero credit note covers only what went back.
+Only an attempt that never reached Stripe releases the claim back to `PENDING`
+(#4117). The runner re-plans only on the attempt it holds (`PROCESSING` under
+its own `processingStartedAt`) and then fails it; a slice it made beside a
+refusal stays in the plan, marked with its refund, never sent again. A marked
+slice is filled in "Refunds owed" by exactly that refund, whenever Stripe made
+it, and the row's amount stays the plan's total; the ledger census's in-flight
+refund reads only its unmade slices, and the retries-exhausted alert what the
+row still owes once it is marked failed, netting the refunds its final attempt
+recorded. The officers are alerted once per refused slice - by the write that
+first moves it off the key it was planned under (a cancellation's re-plan, the
+runner's, or an edit's or refund request's row when it is written), or by the
+edit door when no row could be written - and again if the retries run out. Other
+card refund doors still close on a refusal (#4103).
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

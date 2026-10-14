@@ -32,7 +32,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import {
   EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE,
-  isEditRefundHandBackTask,
+  isCancelCardShortfallTask, isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
   isPartPaymentReviewTask,
@@ -408,7 +408,7 @@ export async function resolveManualRefundTask(
           await applyLocalRefundAllocation({
             paymentId: settlementRoute.paymentId,
             amountCents: settlementRoute.refundCents,
-            store: tx,
+            store: tx, preferTransactionIds: settlementRoute.cardShortfall?.preferTransactionIds, // #4097
           });
         }
         // `account-credit` is written by the closure's re-price below, once the
@@ -453,7 +453,7 @@ export async function resolveManualRefundTask(
           });
         }
       } catch (error) {
-        throw settlementWriteRefusal(error);
+        throw settlementWriteRefusal(error, settlementRoute);
       }
       // #3599: the money the club handed back by hand, on the booking ledger.
       if (settlementRoute.kind === "local-allocation" && settlementRoute.refundCents > 0) {
@@ -463,7 +463,7 @@ export async function resolveManualRefundTask(
           manualRefundTaskId: task.id,
           amountCents: settlementRoute.refundCents,
           refundMethod: refundMethodForEditReviewRoute(settlementRoute),
-          paymentSource: task.payment?.source ?? null,
+          paymentSource: task.payment?.source ?? null, cardShortfall: isCancelCardShortfallTask(task), // #4097
           officerMemberId: actingMemberId,
           store: tx,
         });

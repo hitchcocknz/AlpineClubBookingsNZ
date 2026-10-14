@@ -76,6 +76,78 @@ export function refundRequestHandBackOccurrenceKey(refundRequestId: string): str
 }
 
 /**
+ * #4097 (`INV-PAY-129`): THE OCCURRENCE-KEY PREFIX of a cancellation's card
+ * refund shortfall - the part of an own-card cancel's refund that its frozen
+ * card refund plan could not carry, raised in the cancel's claim so the
+ * treasurer pays it by bank transfer. A cancellation's OWN hand-back, so it is
+ * deliberately not in the non-cancellation list below. One per booking (a
+ * booking is cancelled once): the key is the duplicate fence and, with the
+ * kind, the marker.
+ */
+export const CANCEL_CARD_SHORTFALL_KEY_PREFIX = "cancel-card-shortfall:";
+
+/**
+ * #4097 (`INV-PAY-129`): the two parts a cancellation's card refund shortfall
+ * is split into when it is raised. `bank`: what the payment's captured
+ * non-card charges still hold, owed by bank transfer. `check`: anything
+ * beyond that - the payment's records show it already refunded, or nothing
+ * holds it - which an officer checks before paying.
+ */
+export type CancelCardShortfallPart = "bank" | "check";
+const CANCEL_CARD_SHORTFALL_CHECK_SUFFIX = ":check";
+
+/** The one occurrence key of one part of one cancellation's card refund shortfall (`INV-PAY-129`). */
+export function cancelCardShortfallOccurrenceKey(bookingId: string, part: CancelCardShortfallPart = "bank"): string {
+  return `${CANCEL_CARD_SHORTFALL_KEY_PREFIX}${bookingId}${part === "check" ? CANCEL_CARD_SHORTFALL_CHECK_SUFFIX : ""}`;
+}
+
+/**
+ * #4097: where a card refund shortfall's cancel stands, read by the booking and
+ * payment-link pages and handed to the pure narrative: each part's task status,
+ * and the card part's own refund - settled, still on its way, or closed as
+ * "Paid another way" (`INV-PAY-122`).
+ */
+export type CardShortfallTaskStatuses = Partial<Record<CancelCardShortfallPart, "OPEN" | "COMPLETED" | "DISMISSED">> & {
+  card?: "settled" | "on-its-way" | "paid-another-way";
+};
+
+/** Which part of a card refund shortfall this task is, or null for any other task. */
+export function cancelCardShortfallPart(task: {
+  kind: ManualRefundTaskKind | string | null;
+  occurrenceKey: string | null;
+}): CancelCardShortfallPart | null {
+  if (!isCancelCardShortfallTask(task)) return null;
+  return task.occurrenceKey?.endsWith(CANCEL_CARD_SHORTFALL_CHECK_SUFFIX) ? "check" : "bank";
+}
+
+/**
+ * #4097 (`INV-PAY-129`): IS THIS TASK A CANCELLATION'S CARD REFUND SHORTFALL?
+ * Its money goes back by bank transfer on a card payment that has no refund
+ * row for it, so its completion posts the booking ledger's `BANK_REFUND` line
+ * itself (`postHandBackLedgerLine`, `INV-MONEY-035`).
+ */
+export function isCancelCardShortfallTask(task: {
+  kind: ManualRefundTaskKind | string | null;
+  occurrenceKey: string | null;
+}): boolean {
+  return (
+    task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+    (task.occurrenceKey?.startsWith(CANCEL_CARD_SHORTFALL_KEY_PREFIX) ?? false)
+  );
+}
+
+/**
+ * #4097: a COMPLETED card refund shortfall, as a where fragment. Its bank
+ * transfer has no refund row, so the Xero refund-note pipeline reads it as it
+ * reads a "Paid another way" close (`card-refund-paid-another-way-cash.ts`).
+ */
+export const COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE = {
+  kind: "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskKind,
+  status: "COMPLETED" satisfies ManualRefundTaskStatus,
+  occurrenceKey: { startsWith: CANCEL_CARD_SHORTFALL_KEY_PREFIX },
+} as const;
+
+/**
  * #3372 (owner, 7 Oct 2026: "Count + add close action"; #3924 round 4, M2,
  * `INV-PAY-122`): THE OCCURRENCE-KEY PREFIX of the record a "Paid another way"
  * close writes - a card refund Stripe gave up on, which the treasurer paid back
