@@ -1582,7 +1582,7 @@ describe("Stripe webhook Xero alerting", () => {
     expect(mockMarkBookingPaymentSucceeded).not.toHaveBeenCalled();
   });
 
-  // #4103 (`INV-PAY-129`): Stripe answers the refund `failed` or `canceled`
+  // #4103 (`INV-PAY-130`): Stripe answers the refund `failed` or `canceled`
   // without throwing. Nothing went back: the settlement is never marked
   // REFUNDED, the alert says the refund failed, and the webhook fails so Stripe
   // redelivers, exactly as for a thrown refund.
@@ -2731,7 +2731,7 @@ describe("Stripe webhook Xero alerting", () => {
       );
     });
 
-    // #4103 (`INV-PAY-129`): Stripe answers the automatic refund `failed` or
+    // #4103 (`INV-PAY-130`): Stripe answers the automatic refund `failed` or
     // `canceled` without throwing. Nothing went back, so nothing may say it did:
     // no "refunded" record, audit row, alert or Xero note. The capture is held
     // for a treasurer instead, whatever the setting says; the task is the
@@ -2924,7 +2924,7 @@ describe("Stripe webhook Xero alerting", () => {
       );
     });
 
-    // #4103 (`INV-PAY-129`): the booking's own late payment, refunded newest
+    // #4103 (`INV-PAY-130`): the booking's own late payment, refunded newest
     // first, may span slices. A refused slice is held; a made one stays made.
     describe("a refund Stripe refuses (#4103)", () => {
       const answer = (transactionId: string, amountCents: number, status: string) => ({

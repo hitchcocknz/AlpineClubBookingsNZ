@@ -4,7 +4,7 @@ import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 
 /**
- * #4103 (`INV-PAY-129`): the refunds Stripe made. A refused one (`failed` or
+ * #4103 (`INV-PAY-130`): the refunds Stripe made. A refused one (`failed` or
  * `canceled`) sent nothing back, so it is never recorded or noted as refunded.
  * Each refund carries Stripe's status (`refundPaymentTransactions`), untyped on
  * a `PartialRefundError`; one with none counts as made, as the ledger counts it.

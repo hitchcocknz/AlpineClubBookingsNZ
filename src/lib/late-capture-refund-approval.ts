@@ -237,7 +237,7 @@ export async function executeLateCaptureApprovalRefund({
         route.paymentIntentId,
       ),
     });
-    // #4103 (`INV-PAY-129`): a refusal (failed/canceled) is not a refund: the
+    // #4103 (`INV-PAY-130`): a refusal (failed/canceled) is not a refund: the
     // row stays open, re-planned on fresh keys, and nothing is recorded or noted.
     const refused = await keepRefusedPrePersistedRefundOwed({
       bookingId,

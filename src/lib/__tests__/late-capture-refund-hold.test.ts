@@ -255,7 +255,7 @@ describe("holdSupersededLateCaptureIfRequired", () => {
  * day would never be tried again.
  */
 /**
- * #4103 (`INV-PAY-129`): a late-capture webhook's automatic refund that Stripe
+ * #4103 (`INV-PAY-130`): a late-capture webhook's automatic refund that Stripe
  * answered `failed` or `canceled` sent nothing back. The capture is held for a
  * treasurer whatever the setting says - the task is the record and its
  * once-ever alert the one alert - and the webhook writes nothing that says

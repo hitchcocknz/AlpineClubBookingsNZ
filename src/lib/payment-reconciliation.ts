@@ -2089,7 +2089,7 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
-      // #4103 (`INV-PAY-129`): a refusal stays owed, re-planned; the failure branch alerts once.
+      // #4103 (`INV-PAY-130`): a refusal stays owed, re-planned; the failure branch alerts once.
       const refused = await keepRefusalOwed(refundResult);
       if (refused) throw refused;
 
@@ -2269,7 +2269,7 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
-      // #4103 (`INV-PAY-129`): a refusal stays owed, re-planned, no REFUNDED event; the failure branch alerts once.
+      // #4103 (`INV-PAY-130`): a refusal stays owed, re-planned, no REFUNDED event; the failure branch alerts once.
       const refused = await keepRefusalOwed(refundResult);
       if (refused) throw refused;
 

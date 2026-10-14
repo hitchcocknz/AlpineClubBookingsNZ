@@ -398,7 +398,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       expect(await planNow()).toEqual([twice]);
     });
 
-    // #4103 (`INV-PAY-129`): a door whose row is written BEFORE its attempt - here
+    // #4103 (`INV-PAY-130`): a door whose row is written BEFORE its attempt - here
     // the edit financial review's - re-plans that row on a refusal only while no
     // worker has touched it, and "Refunds owed" counts the refused slice.
     it("an edit review's pre-persisted row is re-planned on a refusal only while PENDING with no attempt, and counts as owed (#4103)", async () => {
@@ -434,7 +434,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual([QUEUED_SLICE]);
     });
 
-    // #4103 (`INV-PAY-129`): the superseded-payment runner's row carries no plan
+    // #4103 (`INV-PAY-130`): the superseded-payment runner's row carries no plan
     // until Stripe refuses it; the refusal writes a one-slice plan on its next key,
     // on the attempt held, and "Refunds owed" keeps counting it as that slice.
     it("a superseded payment's refusal moves to a one-slice plan on the attempt held, still owed (#4103)", async () => {

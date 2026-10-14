@@ -1247,7 +1247,7 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
   - **Deploy window**: an older release closes a refused row as paid, and
     replays a moved slice's first key, reading the cached refusal - nothing is
     refunded twice within 24 hours. Check rows it closed against Stripe.
-  - **Every other door** follows the same rule: `INV-PAY-129` (#4103).
+  - **Every other door** follows the same rule: `INV-PAY-130` (#4103).
   - **Stated limit**: a refund accepted (`pending`) and failed later is not
     re-owed.
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
@@ -1256,7 +1256,7 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
     `refunds-and-credits-owed.test.ts` and
     `refused-card-refund-retry.realdb.test.ts`.
 
-## INV-PAY-129
+## INV-PAY-130
 
 **Related: `INV-PAY-128`**, whose rule this carries to the other card refund
 doors (#4103).
@@ -1271,9 +1271,10 @@ doors (#4103).
     `PENDING` with no attempt, else the worker holding it does. No close, no
     REFUNDED event, no refund id. A door with its own failure alert raises it
     only when its write moved the row (`RefusedCardRefundError.replanned`).
-  - **The late-capture webhooks** hold a refused capture for a treasurer,
-    whatever the club's setting (`holdLateCaptureRefusedByStripe`): the task is
-    the record; its approval retries the refund on a fresh key.
+  - **A late-capture refusal always waits for approval**: the webhooks hold
+    it for a treasurer whatever the club's setting
+    (`holdLateCaptureRefusedByStripe`); the task is the record, and its
+    approval retries the refund on a fresh key.
   - **The superseded-payment runner** asks under its row's own key first; a
     refusal moves it to a one-slice plan on its next key.
   - **The legacy group settlement refund** (inline and replay), **the

@@ -59,4 +59,13 @@ describe("LateCaptureRefundSetting", () => {
     ).toBeDisabled();
     expect(screen.getByText(/Only someone with finance edit access/)).toBeInTheDocument();
   });
+
+  // #4103 (`INV-PAY-130`): a refused automatic refund is held whatever the setting says.
+  it("says a refund the card provider refuses always waits for approval, under either choice", () => {
+    for (const needsApproval of [false, true]) {
+      const { unmount } = render(<LateCaptureRefundSetting needsApproval={needsApproval} editing canChange onChange={() => {}} />);
+      expect(screen.getByText(/a refund the card provider refuses always waits for approval/)).toBeInTheDocument();
+      unmount();
+    }
+  });
 });

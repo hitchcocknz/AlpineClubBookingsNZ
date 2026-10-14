@@ -297,7 +297,7 @@ async function applyLateCaptureRefundRepair(
   // capture only against a receipt the app recorded in Xero. Never the
   // payment-wide note: for a late capture that names the invoice the cancel
   // already cleared and posts a Stripe-account refund of money Xero never had.
-  // #4103 (`INV-PAY-129`): a refused slice is never recorded or noted, and the action fails.
+  // #4103 (`INV-PAY-130`): a refused slice is never recorded or noted, and the action fails.
   const xero = await deps.recordAndNoteRepairedLateCaptureRefunds({
     bookingId,
     paymentId,

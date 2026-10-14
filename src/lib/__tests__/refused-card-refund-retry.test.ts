@@ -267,7 +267,7 @@ describe("the runner's refusal alert", () => {
 });
 
 
-// #4103 (`INV-PAY-129`): every door whose row is written BEFORE its attempt -
+// #4103 (`INV-PAY-130`): every door whose row is written BEFORE its attempt -
 // the cancellation, the edit review, the late-capture approval, the duplicate
 // capture, the capacity race - re-plans that row through one helper.
 describe("a pre-persisted row after a refusal (#4103)", () => {

@@ -26,7 +26,7 @@ import { keepRefusedPrePersistedRefundOwed, type RefundAttempt } from "@/lib/ref
  * was persisted inside the completion's transaction, so a crash here loses
  * nothing: the recovery cron replays exactly what this sends.
  *
- * #4103 (`INV-PAY-129`): a slice Stripe answers `failed` or `canceled` is a
+ * #4103 (`INV-PAY-130`): a slice Stripe answers `failed` or `canceled` is a
  * refusal, not a refund. The row stays open, re-planned on fresh keys
  * (`keepRefusedPrePersistedRefundOwed`), and no refund id is returned, so no
  * REFUNDED event and no receipt. A slice refused before a later one threw is

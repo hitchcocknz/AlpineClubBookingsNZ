@@ -3476,7 +3476,7 @@ first moves it off the key it was planned under (a cancellation's re-plan, the
 runner's, or an edit's or refund request's row when it is written), or by the
 edit door when no row could be written - and again if the retries run out.
 
-Every other card refund door keeps a refusal owed too (#4103, `INV-PAY-129`). A
+Every other card refund door keeps a refusal owed too (#4103, `INV-PAY-130`). A
 door whose row is written before its attempt - the edit financial review, the
 treasurer-approved late capture, the duplicate capture and the capacity race,
 as the cancellation does - re-plans that row while it is `PENDING` with no

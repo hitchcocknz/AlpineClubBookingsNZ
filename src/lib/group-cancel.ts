@@ -450,7 +450,7 @@ export async function settleGroupBookingOnOrganiserCancel(
         // failure (Stripe refunded, response lost) is replayed, not repeated.
         idempotencyKey: `group_cancel_refund_${settlement.id}`,
       });
-      // #4103 (`INV-PAY-129`): a refusal fails like a throw - no flip, no mirrors, re-armed below.
+      // #4103 (`INV-PAY-130`): a refusal fails like a throw - no flip, no mirrors, re-armed below.
       if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(totalRefundCents, format));
       await prisma.groupBookingSettlement.update({
         where: { id: settlement.id },
@@ -839,7 +839,7 @@ export async function executeGroupSettlementRefundPlan(
       },
       idempotencyKey: `group_cancel_refund_${settlement.id}`,
     });
-    // #4103 (`INV-PAY-129`): a refusal fails the attempt, never closing the row; its
+    // #4103 (`INV-PAY-130`): a refusal fails the attempt, never closing the row; its
     // one fixed key reads the refusal back for 24 hours (a stated limit).
     if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(totalRefundCents, format));
     await prisma.groupBookingSettlement.update({

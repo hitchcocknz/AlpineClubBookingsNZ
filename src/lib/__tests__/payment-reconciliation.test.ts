@@ -1124,7 +1124,7 @@ describe("markBookingPaymentSucceeded", () => {
       expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
-    // #4103 (`INV-PAY-129`): Stripe answers a slice `failed` or `canceled`
+    // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
     // without throwing. The pre-persisted row stays open, re-planned on the
     // refused slice's next key; the door reports a failure (no close, so no
     // REFUNDED event after it), and its own failure alert is the one alert.

@@ -1961,7 +1961,7 @@ async function processRefundSupersededPaymentOperation(
     bookingId: operation.bookingId,
     reason: "zero_dollar_batch_modification_superseded",
   };
-  // #4103 (`INV-PAY-129`): a refusal is never closed or reported. The first ask
+  // #4103 (`INV-PAY-130`): a refusal is never closed or reported. The first ask
   // keeps the row's own key, so a refund made but unrecorded is replayed; a
   // refusal moves to a one-slice plan on a fresh key, which later attempts send.
   const persistedPlan = parseRefundAllocationPlan(operation.allocationPlan);
