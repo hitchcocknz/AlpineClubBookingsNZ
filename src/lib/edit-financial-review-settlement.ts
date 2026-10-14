@@ -31,7 +31,8 @@ import {
   buildBookingModificationRefundMetadata,
   markEditFinancialReviewRefundRecoverySucceeded,
 } from "@/lib/payment-recovery";
-import { buildEditFinancialReviewRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
+import { buildEditFinancialReviewRefundRecoveryIdempotencyKey, buildEditFinancialReviewRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
+import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
 import {
   planStripeRefundAllocation,
   refundPaymentTransactions,
@@ -578,6 +579,16 @@ export async function executeEditReviewSettlement({
         // cron replay send byte-identical requests.
         allocation: route.allocation,
       });
+      // #4103 (`INV-PAY-128`): a slice Stripe refused (failed/canceled) is still
+      // owed: the row stays open, re-planned on fresh keys, and no refund id is
+      // returned, so no REFUNDED event and no receipt.
+      const refused = await keepRefusedPrePersistedRefundOwed({
+        bookingId,
+        idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),
+        attempt: refundResult,
+        format,
+      });
+      if (refused) throw refused;
       stripeRefundId = refundResult.refunds[0]?.refundId ?? null;
       // Best-effort close, exactly as #1349's is: a lost close leaves the
       // operation PENDING and the cron replays the identical frozen slices, which
@@ -592,6 +603,14 @@ export async function executeEditReviewSettlement({
     } catch (err) {
       // The debt is already durable, so there is nothing to enqueue here and
       // nothing is lost: the operation stays PENDING and the cron replays it.
+      // #4103: a slice refused before a later one threw is re-planned now.
+      await keepRefusedPrePersistedRefundOwed({
+        bookingId,
+        idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),
+        plan: route.allocation,
+        attempt: { error: err },
+        format,
+      });
       logger.error(
         { err, bookingId, taskId, amountCents: refundAmountCents },
         "Stripe refund failed after an edit financial review was completed - the persisted recovery operation will replay it",

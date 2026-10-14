@@ -11,6 +11,7 @@ import {
   type CancelledBookingLateCaptureKind,
 } from "@/lib/deleted-booking-modification-payment";
 import logger from "@/lib/logger";
+import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -41,6 +42,8 @@ import { sendAdminLateCaptureHeldAlert } from "@/lib/email";
  * EVERY AUTOMATIC REFUND OF A LATE CAPTURE ASKS: both webhook late-capture
  * handlers, and the superseded-intent hand-off (webhook and cron) that refunds a
  * change payment a cancel had marked for cancellation but which captured anyway.
+ * And a webhook refund Stripe refused is held whatever the setting says (#4103,
+ * `holdLateCaptureRefusedByStripe`).
  */
 
 /** The club's answer, read outside any transaction (`INV-LOCK-004`). */
@@ -98,6 +101,15 @@ export function heldLateCaptureReason(capture: HeldLateCapture): string {
  */
 export async function holdLateCaptureForTreasurerIfRequired(
   capture: HeldLateCapture,
+  /**
+   * #4103 (`INV-PAY-128`): Stripe refused the automatic refund (failed or
+   * canceled), so nothing went back. The capture is held whatever the setting
+   * says: the task is the durable record of money still owed, and its approval
+   * asks Stripe again under a fresh key (`keepRefusedPrePersistedRefundOwed`).
+   * A held task completes only as a card refund or a dismissal, so an open #2700
+   * question cannot be completed as a hand-back while a retry is in flight.
+   */
+  { afterStripeRefused = false }: { afterStripeRefused?: boolean } = {},
 ): Promise<boolean> {
   const marker = { lateCaptureApprovalIntentId: capture.paymentIntentId };
   const owned = await prisma.manualRefundTask.findUnique({
@@ -122,7 +134,7 @@ export async function holdLateCaptureForTreasurerIfRequired(
     }
     return true;
   }
-  if (!(await readLateCaptureRefundNeedsApproval())) return false;
+  if (!afterStripeRefused && !(await readLateCaptureRefundNeedsApproval())) return false;
 
   const raised = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
@@ -184,9 +196,34 @@ export async function holdLateCaptureForTreasurerIfRequired(
       manualRefundTaskId: raised.taskId,
       taskRaised: raised.created,
       refundSent: false,
+      ...(afterStripeRefused ? { stripeRefusedAutomaticRefund: true } : {}),
     }),
   });
   await announceHeldLateCapture(capture);
+  return true;
+}
+
+/**
+ * #4103 (`INV-PAY-128`): a late-capture webhook's automatic refund that Stripe
+ * answered `failed` or `canceled` without throwing. Nothing refused went back,
+ * so the record, audit row, alert and Xero note that say "refunded" would each
+ * be false: the refused amount is held for a treasurer instead
+ * (`afterStripeRefused`), whose task and once-ever alert are the record, and the
+ * handler stops. Returns false when Stripe refused nothing.
+ */
+export async function holdLateCaptureRefusedByStripe(
+  capture: HeldLateCapture,
+  refunds: ReadonlyArray<{ status: string | null; amountCents: number }>,
+): Promise<boolean> {
+  const refusedCents = refunds
+    .filter((refund) => isRefusedRefundStatus(refund.status))
+    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  if (refusedCents <= 0) return false;
+  logger.error(
+    { bookingId: capture.bookingId, paymentIntentId: capture.paymentIntentId, refusedCents },
+    "Stripe refused the automatic refund of a late capture on a cancelled booking; holding it for a treasurer (#4103)",
+  );
+  await holdLateCaptureForTreasurerIfRequired({ ...capture, amountCents: refusedCents }, { afterStripeRefused: true });
   return true;
 }
 

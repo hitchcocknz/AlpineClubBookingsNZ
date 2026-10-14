@@ -9,6 +9,12 @@ import { keptLateCaptureDocumentDate } from "@/lib/xero-kept-late-capture-invoic
 import { editReviewChargeRequestCriteria } from "@/lib/edit-financial-review-charge-shape";
 import logger from "@/lib/logger";
 import { PartialRefundError } from "@/lib/payment-transactions";
+import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import {
+  refusedRefundCents,
+  refusedRefundMessage,
+  refusedRefundSlices,
+} from "@/lib/refused-card-refund-retry";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { classifyEditReviewChargeCapture } from "./xero-booking-repair-payments";
 import type {
@@ -273,18 +279,24 @@ async function applyLateCaptureRefundRepair(
     // before rethrowing, so Xero stays consistent with what actually moved;
     // the operator's re-run refunds the rest, and the per-capture sizing
     // (`noteLateCaptureRefunds`) never notes a slice twice.
-    if (error instanceof PartialRefundError && error.refunds.length > 0) {
+    // #4103: only the slices Stripe made: a refused one sent nothing back.
+    // Each answer carries Stripe's status (`refundPaymentTransactions`), untyped on the error.
+    const madeBefore =
+      error instanceof PartialRefundError
+        ? madeRefunds(error.refunds as ReadonlyArray<PartialRefundError["refunds"][number] & { status?: string | null }>)
+        : [];
+    if (madeBefore.length > 0) {
       try {
         await deps.recordAndNoteRepairedLateCaptureRefunds({
           bookingId,
           paymentId,
-          refunds: error.refunds,
+          refunds: madeBefore,
           format,
         });
       } catch (recordError) {
         // Best-effort: never let it mask the refund error the operator needs.
         logger.error(
-          { err: recordError, bookingId, paymentId, completedRefundCents: error.completedRefundCents },
+          { err: recordError, bookingId, paymentId },
           "Failed to record the completed slices of a partially-failed late-capture refund"
         );
       }
@@ -296,15 +308,38 @@ async function applyLateCaptureRefundRepair(
   // capture only against a receipt the app recorded in Xero. Never the
   // payment-wide note: for a late capture that names the invoice the cancel
   // already cleared and posts a Stripe-account refund of money Xero never had.
+  //
+  // #4103 (`INV-PAY-128`): a slice Stripe refused (failed/canceled) sent nothing
+  // back, so it is never recorded or noted as refunded, and the action fails
+  // saying so: the capture is still held. STATED LIMIT: the repair has no row to
+  // move the slice to a fresh key, so a re-run within Stripe's 24-hour key window
+  // reads the same refusal back.
+  const made = madeRefunds(refundResult.refunds);
+  const refusedCents = refusedRefundCents(refusedRefundSlices(refundResult.refunds));
   const xero = await deps.recordAndNoteRepairedLateCaptureRefunds({
     bookingId,
     paymentId,
-    refunds: refundResult.refunds,
+    refunds: made,
     format,
   });
 
+  if (refusedCents > 0) {
+    action.status = "failed";
+    action.resultMessage = [
+      made.length > 0 ? describeRepairedLateCaptureRefund(made, xero) : "",
+      `${refusedRefundMessage(refusedCents, format)} The capture is still held: re-run the repair after 24 hours, or refund it in Stripe.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return;
+  }
   action.status = xero.noted.length > 0 ? "queued" : "applied";
   action.resultMessage = describeRepairedLateCaptureRefund(refundResult.refunds, xero);
+}
+
+/** The refunds Stripe made: a refused one (`failed`/`canceled`) is not among them. */
+function madeRefunds<T extends { status?: string | null }>(refunds: ReadonlyArray<T>): T[] {
+  return refunds.filter((refund) => !isRefusedRefundStatus(refund.status));
 }
 
 /**

@@ -32,7 +32,7 @@ import {
   type CancelledBookingLateCapture,
 } from "@/lib/cancelled-booking-late-capture";
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
-import { holdLateCaptureForTreasurerIfRequired } from "@/lib/late-capture-refund-hold";
+import { holdLateCaptureForTreasurerIfRequired, holdLateCaptureRefusedByStripe } from "@/lib/late-capture-refund-hold";
 import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
@@ -62,7 +62,8 @@ import {
 } from "@/lib/group-settlement";
 import { adoptSavedCardChargeAttemptForIntent } from "@/lib/saved-card-charge-settle";
 import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
-import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
+import { isCapturedTransactionStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -1294,6 +1295,9 @@ async function refundSupersededGroupSettlementIntent(
       },
       idempotencyKey: `group_settlement_superseded_refund_${paymentIntent.id}`,
     });
+    // #4103 (`INV-PAY-128`): a refusal (failed/canceled) refunded nothing, so it
+    // fails like a thrown refund: alerted, rethrown, never marked REFUNDED.
+    if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(paymentIntent.amount, format));
     refundId = refund.id;
   } catch (refundErr) {
     logger.error(
@@ -1548,6 +1552,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) return;
   const refundId = refundResult.refunds[0]?.refundId;
 
   // #2700 — if the browser confirm won the race to this capture, it recorded the
@@ -1796,6 +1801,7 @@ async function handleCancelledBookingPaymentSucceeded(
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) return;
   const refundId = refundResult.refunds[0]?.refundId;
 
   // #2773: the record this path never had. Awaited, and its failure audited rather

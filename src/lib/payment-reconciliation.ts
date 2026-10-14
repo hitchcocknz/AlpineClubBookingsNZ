@@ -31,10 +31,12 @@ import {
 } from "@/lib/payment-recovery";
 import {
   buildBookingModificationRefundMetadata,
+  buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
   buildCapacityClaimFailedRefundStripeKeyPrefix,
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
+import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -2064,7 +2066,7 @@ export async function markBookingPaymentSucceeded({
     // PaymentRecoveryOperation row, the PaymentRefund ledger entries, this log
     // line and the admin alert below.
     try {
-      await refundPaymentTransactions({
+      const refundResult = await refundPaymentTransactions({
         format,
         paymentId: reconciliation.paymentId,
         amountCents: plannedRefundCents,
@@ -2085,6 +2087,17 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
+      // #4103 (`INV-PAY-128`): a slice Stripe refused (failed/canceled) is still
+      // owed: the row stays open, re-planned on fresh keys, and the failure
+      // branch below says so - its alert is the refusal's one alert.
+      const refused = await keepRefusedPrePersistedRefundOwed({
+        bookingId,
+        idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        attempt: refundResult,
+        format,
+        alertOfficers: false,
+      });
+      if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
@@ -2151,13 +2164,22 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund a duplicate capture; the pre-persisted recovery operation will replay the refund"
       );
+      // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
+      const refusedBefore = await keepRefusedPrePersistedRefundOwed({
+        bookingId,
+        idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        plan: refundPlan,
+        attempt: { error: refundError },
+        format,
+        alertOfficers: false,
+      });
+      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)]
+        .filter(Boolean)
+        .join(" ");
       await recordDuplicateCaptureRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
-        message:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        message: refundErrorMessage,
       }).catch((recordErr) =>
         logger.error(
           { err: recordErr, bookingId, paymentIntentId },
@@ -2175,10 +2197,7 @@ export async function markBookingPaymentSucceeded({
           bookingId,
           paymentIntentId
         ),
-        errorMessage:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        errorMessage: refundErrorMessage,
         refundFailed: true,
       }, format).catch((alertErr) =>
         logger.error(
@@ -2191,10 +2210,7 @@ export async function markBookingPaymentSucceeded({
         outcome: "duplicate_capture_refund_failed",
         bookingId,
         bumpedBookingIds: [],
-        refundError:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        refundError: refundErrorMessage,
       };
     }
   }
@@ -2242,7 +2258,7 @@ export async function markBookingPaymentSucceeded({
         );
       }
 
-      await refundPaymentTransactions({
+      const refundResult = await refundPaymentTransactions({
         format,
         paymentId: reconciliation.paymentId,
         amountCents: plannedRefundCents,
@@ -2264,6 +2280,17 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
+      // #4103 (`INV-PAY-128`): a slice Stripe refused (failed/canceled) is still
+      // owed: the row stays open, re-planned on fresh keys, no REFUNDED event is
+      // written, and the failure branch's alert is the refusal's one alert.
+      const refused = await keepRefusedPrePersistedRefundOwed({
+        bookingId,
+        idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        attempt: refundResult,
+        format,
+        alertOfficers: false,
+      });
+      if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
@@ -2303,13 +2330,22 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund booking after final capacity claim failed; the pre-persisted recovery operation will replay the refund"
       );
+      // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
+      const refusedBefore = await keepRefusedPrePersistedRefundOwed({
+        bookingId,
+        idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        plan: refundPlan,
+        attempt: { error: refundError },
+        format,
+        alertOfficers: false,
+      });
+      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)]
+        .filter(Boolean)
+        .join(" ");
       await recordCapacityClaimFailedRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
-        message:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        message: refundErrorMessage,
       }).catch((recordErr) =>
         logger.error(
           { err: recordErr, bookingId, paymentIntentId },
@@ -2321,15 +2357,14 @@ export async function markBookingPaymentSucceeded({
         booking: reconciliation.booking,
         paymentIntentId,
         amountCents,
-        error: refundError,
+        error: refundErrorMessage,
       });
 
       return {
         outcome: "cancelled_refund_failed",
         bookingId,
         bumpedBookingIds: [],
-        refundError:
-          refundError instanceof Error ? refundError.message : String(refundError),
+        refundError: refundErrorMessage,
       };
     }
   }
