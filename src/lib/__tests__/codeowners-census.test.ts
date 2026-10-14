@@ -62,8 +62,14 @@ const OWNER = "@thatskiff33";
  * `xero-booking-repair-applied-credit.ts`) and the one in-flight refund credit
  * note per payment (`xero-refund-note-in-flight.ts`): 208 of 1290, 16.1%, so
  * the ceiling moves to 17%.
+ *
+ * And (#4104, on main at 234 of 1377, 16.99%): two new money modules, each
+ * owned by the existing `*refund*` glob rather than a widened one - a card
+ * refund Stripe failed later kept owed (`card-refund-failed-later.ts`) and its
+ * cron read-back (`card-refund-status-sync.ts`): 236 of 1381, 17.1%, so the
+ * ceiling moves to 18%.
  */
-const MAX_OWNED_SRC_LIB_SHARE = 0.17;
+const MAX_OWNED_SRC_LIB_SHARE = 0.18;
 
 /**
  * Outside `src/lib`, a share of one directory bounds nothing, so every pattern
