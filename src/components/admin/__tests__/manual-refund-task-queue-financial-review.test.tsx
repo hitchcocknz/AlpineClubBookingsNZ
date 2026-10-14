@@ -155,6 +155,43 @@ describe("an approved appeal's refund hand-back has its own sentence (#3827, D-3
   });
 });
 
+describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY-129`)", () => {
+  it("prints the card-shortfall sentence, never the cash one, and offers paid back and dismiss", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, cardShortfallHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    const intro = screen.getByTestId("manual-refund-task-card-shortfall-intro");
+    expect(intro.textContent).toMatch(/card refund could not carry all of the refund due/);
+    expect(intro.textContent).toMatch(/pay it by bank transfer/);
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+  });
+
+  it("a part to check prints its own sentence, which never says to pay it", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, cardShortfallCheck: true }],
+      viewerCanViewBookings: true,
+    });
+    const intro = screen.getByTestId("manual-refund-task-card-shortfall-check-intro");
+    expect(intro.textContent).toMatch(/Check Stripe and the bank before paying anything, then\s+contact the member with what you found/);
+    expect(intro.textContent).toMatch(/dismiss it with a note/);
+    // Paying it is only the answer once the check shows it is owed.
+    expect(intro.textContent).toMatch(/if it really is owed, pay it\s+by bank transfer/);
+    expect(intro.textContent).toMatch(/on their booking page, and by\s+email unless emails were turned off/);
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+  });
+
+  it("a cash hand-back does not print it", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
+  });
+});
+
 describe("a group organiser's Internet Banking hand-back has its own sentence (#4042)", () => {
   it("prints the group sentence, never the cash one or a Xero claim, is marked paid back and offers no Dismiss", async () => {
     await renderQueue({

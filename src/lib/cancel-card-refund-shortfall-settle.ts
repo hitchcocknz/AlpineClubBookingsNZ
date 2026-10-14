@@ -1,0 +1,113 @@
+import "server-only";
+
+import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
+
+import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
+import { isPaymentRecoveryOperationInFlight, MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
+import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+
+/**
+ * #4097 (`INV-PAY-129`, coordinator decisions on PR #4122): HOW A CANCEL'S CARD
+ * REFUND SHORTFALL IS MARKED PAID BACK.
+ *
+ * - **Its money settles on the payment's non-card charges first**
+ *   (`preferTransactionIds`), as a "Paid another way" close places it on the
+ *   charges its card refund was for - the bank part was sized from exactly
+ *   their headroom, so its allocation can succeed.
+ * - **Never while the card part is still being refunded.** Under the `Payment`
+ *   row lock (`lockPaymentForRefundedTotal`, which every refunded-total writer
+ *   takes first), a completion is refused while the cancel's card refund
+ *   recovery (`booking_cancel_refund_recovery_<bookingId>`) is not SUCCEEDED:
+ *   the card's slices and this hand-back must never be read off one ledger
+ *   while one of them is still moving. The refusal names the next step by the
+ *   row's state - running, failed and waiting to retry, or stopped (close it
+ *   as Paid another way) - on the recovery module's own rules.
+ * - **A part to check waits for its bank-transfer sibling**, which was sized on
+ *   the same non-card charges: completed first, the check part would use that
+ *   money and leave the bank part told to dismiss. Once the bank part is
+ *   closed, a check part settles only on whatever headroom is left.
+ * - **A refusal names the dismiss route** where the payment's records hold
+ *   nothing for it (`cardShortfallSettlementRefusal`).
+ *
+ * Asked by `chooseEditReviewSettlementRoute` before the status claim, inside the
+ * completion's transaction, so a refusal leaves the task OPEN.
+ */
+/** The card refund recovery is running, or queued to run. */
+export const CARD_SHORTFALL_CARD_STILL_REFUNDING_MESSAGE =
+  "The card part of this cancellation's refund is still being refunded; mark this once it settles.";
+
+/** The card refund failed and its runner will try again. */
+export const CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE =
+  "The card part of this cancellation's refund failed and is waiting to retry: wait for its retry to go through, then mark this. If its retries run out, close it as Paid another way on the payments board first.";
+
+/** The card refund's retries are spent (`deadCardRefundOperationWhere`'s rule). */
+export const CARD_SHORTFALL_CARD_STOPPED_MESSAGE =
+  "The card part of this cancellation's refund has stopped retrying: close it as Paid another way on the payments board (once the member has had that money back another way), then mark this.";
+
+/** A part to check, while its sibling bank-transfer part is still open. */
+export const CARD_SHORTFALL_BANK_PART_FIRST_MESSAGE =
+  "Mark the bank-transfer part of this cancellation's refund first: it is settled on the money this part would otherwise use. Then mark this, if the check shows it is really owed.";
+
+export const CARD_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE =
+  "The payment's records show nothing left to refund for this - it may already have gone back. Check Stripe and the bank: if the member has been refunded, dismiss this task with a note saying how.";
+
+/**
+ * The payment's captured charges the card refund cannot carry, newest first:
+ * every captured charge that is not a Stripe one (`isStripeTransaction`, the
+ * rule the card refund plan itself uses - its complement, so the two cannot
+ * disagree about a charge). What a bank-transfer part is sized on and settles on.
+ */
+export async function nonCardCapturedCharges(
+  db: Pick<Prisma.TransactionClient, "paymentTransaction">,
+  paymentId: string,
+): Promise<Array<{ id: string; headroomCents: number }>> {
+  const rows = await db.paymentTransaction.findMany({
+    where: { paymentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, source: true, stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
+  });
+  return (rows ?? [])
+    .filter((row) => !isStripeTransaction(row))
+    .map((row) => ({ id: row.id, headroomCents: Math.max(0, row.amountCents - row.refundedAmountCents) }));
+}
+
+/** Why the card refund recovery is not settled, as the refusal says it - or null when it is (or there is none). */
+function cardRefundRefusal(cardRefund: { status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null; lastError: string | null } | null): string | null {
+  if (!cardRefund || cardRefund.status === PaymentRecoveryOperationStatus.SUCCEEDED) return null;
+  if (cardRefund.status !== PaymentRecoveryOperationStatus.PROCESSING && cardRefund.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS) {
+    return CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
+  }
+  // A raw-string READ: the enum member stays in the recovery module (INV-PAY-056's census).
+  if (cardRefund.status === "FAILED" || (cardRefund.status === PaymentRecoveryOperationStatus.PENDING && cardRefund.lastError)) {
+    return isPaymentRecoveryOperationInFlight(cardRefund) ? CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE : CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
+  }
+  return CARD_SHORTFALL_CARD_STILL_REFUNDING_MESSAGE;
+}
+
+/** Null for any other task; for a shortfall, its settlement's preferred charges, or the refusal. */
+export async function cardShortfallSettlement(
+  task: { kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null },
+  store: Prisma.TransactionClient,
+): Promise<{ preferTransactionIds: string[] } | null> {
+  const part = cancelCardShortfallPart(task);
+  if (part === null || task.paymentId === null) return null;
+  await lockPaymentForRefundedTotal(store, task.paymentId);
+  const cardRefund = await store.paymentRecoveryOperation.findUnique({
+    where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(task.bookingId) },
+    select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
+  });
+  const refusal = cardRefundRefusal(cardRefund);
+  if (refusal) throw new ManualBookingPaymentError(refusal, 409);
+  // A part to check settles only on what the bank-transfer part leaves (coordinator, PR #4122).
+  if (part === "check") {
+    const bank = await store.manualRefundTask.findUnique({
+      where: { occurrenceKey: cancelCardShortfallOccurrenceKey(task.bookingId, "bank") },
+      select: { status: true },
+    });
+    if (bank?.status === ManualRefundTaskStatus.OPEN) throw new ManualBookingPaymentError(CARD_SHORTFALL_BANK_PART_FIRST_MESSAGE, 409);
+  }
+  return { preferTransactionIds: (await nonCardCapturedCharges(store, task.paymentId)).map((row) => row.id) };
+}
