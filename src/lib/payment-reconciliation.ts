@@ -2210,9 +2210,7 @@ export async function markBookingPaymentSucceeded({
       type: BookingEventType.CANCELLED,
       actorMemberId: bookingOwner(reconciliation.booking).memberId,
       amountCents,
-      // #4125: written BEFORE the refund is attempted, so it says the refund is
-      // under way; the REFUNDED event below records it once it is made.
-      reason:
+      reason: // #4125: written before the attempt, so "being refunded"; REFUNDED records it made.
         "These dates filled up before payment could be secured, so the booking was cancelled and the full amount is being refunded.",
       snapshot: {
         policySummary:
