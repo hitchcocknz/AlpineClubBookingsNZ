@@ -1,4 +1,40 @@
+import type { ClubFormat } from "@/lib/club-format";
 import type { RepairedLateCaptureXeroOutcome } from "@/lib/late-capture-repair-refund-record";
+import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { refusedRefundMessage } from "@/lib/refused-card-refund-retry";
+
+/**
+ * #4103 (`INV-PAY-129`): the refunds Stripe made. A refused one (`failed` or
+ * `canceled`) sent nothing back, so it is never recorded or noted as refunded.
+ * Each refund carries Stripe's status (`refundPaymentTransactions`), untyped on
+ * a `PartialRefundError`; one with none counts as made, as the ledger counts it.
+ */
+export function madeRepairRefunds<T extends { paymentIntentId: string }>(refunds: ReadonlyArray<T>): T[] {
+  return refunds.filter((refund) => !isRefusedRefundStatus((refund as { status?: string | null }).status));
+}
+
+/**
+ * #4103: the failed action's message when Stripe refused part of the repair's
+ * refund - what was made and recorded, then what was refused - or null when
+ * nothing was refused. STATED LIMIT: the repair has no row to move a refused
+ * slice to a fresh key, so a re-run within Stripe's 24-hour key window reads
+ * the same refusal back.
+ */
+export function describeRefusedRepairedLateCaptureRefund(
+  refunds: ReadonlyArray<{ paymentIntentId: string; refundId?: string | null; amountCents: number; status?: string | null }>,
+  xero: RepairedLateCaptureXeroOutcome,
+  format: ClubFormat,
+): string | null {
+  const refusedCents = refunds.filter((refund) => isRefusedRefundStatus(refund.status)).reduce((sum, refund) => sum + refund.amountCents, 0);
+  if (refusedCents <= 0) return null;
+  const made = madeRepairRefunds(refunds);
+  return [
+    made.length > 0 ? describeRepairedLateCaptureRefund(made, xero) : "",
+    `${refusedRefundMessage(refusedCents, format)} The capture is still held: re-run the repair after 24 hours, or refund it in Stripe.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 /**
  * #3635 (N4): the operator's result message for a repaired late-capture
