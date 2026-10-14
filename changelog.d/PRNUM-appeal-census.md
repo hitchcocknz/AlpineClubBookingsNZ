@@ -10,5 +10,7 @@
   differences. An appeal's own bank-transfer task, and its card refund while
   Stripe retries it, are also no longer counted as the cancellation's own
   refund in flight or kept. Because the census now agrees, the ledger
-  back-post can post such a booking's history instead of refusing it. The
-  census reads only; no money or Xero note changes.
+  back-post can post such a booking's history instead of refusing it. As the
+  owner decided on #4075, an appeal paid back exactly as recorded is listed
+  only and needs no sign-off before the ledger switch-over. The census reads
+  only; no money or Xero note changes.

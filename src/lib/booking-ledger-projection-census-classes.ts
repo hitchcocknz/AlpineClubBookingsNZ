@@ -42,7 +42,7 @@ import {
 } from "@/lib/payment-transaction-status";
 
 // ---------------------------------------------------------------------------
-// The owner's two decisions on #3583 (3 Oct 2026, both A). Each is ONE line.
+// The owner's decisions on #3583 (3 Oct 2026) and #4075 (15 Oct 2026). Each is ONE line.
 // ---------------------------------------------------------------------------
 
 export const BOOKING_LEDGER_CENSUS_GATE_POLICY = {
@@ -64,6 +64,13 @@ export const BOOKING_LEDGER_CENSUS_GATE_POLICY = {
    * outright (#3854 F1); any other is `GROUP_SETTLEMENT_UNPOSTABLE`, a coverage gap.
    */
   groupSettlementOffLedgerHoldsGate: false,
+  /**
+   * Owner decision, #4075 (15 Oct 2026): a paid refund appeal on a cancelled
+   * booking is a separate, named give-back (the kept fee stays as charged), and
+   * one that matches its recorded outcome to the cent agrees: `REFUND_APPEAL_PAID`
+   * is listed, never acknowledged one by one. A mismatch still disagrees.
+   */
+  refundAppealPaidHoldsGate: false,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -127,13 +134,15 @@ export type BookingLedgerCoverageKind = (typeof BOOKING_LEDGER_COVERAGE_KINDS)[n
  *   expected state — an in-flight refund included — is signed off, never
  *   waved through, and one that moves goes stale.
  * - `OPEN`: `GROUP_SETTLEMENT_OFF_LEDGER` (owner decision 2), listed only — a
- *   child the poster will post and the census will then agree on (#3854 F1).
+ *   child the poster will post and the census will then agree on (#3854 F1) —
+ *   and `REFUND_APPEAL_PAID` (#4075), an appeal paid back exactly as recorded.
  */
 export type BookingLedgerClassGateRule = "HOLDS" | "ACKNOWLEDGE" | "OPEN";
 
 export function classGateRule(name: BookingLedgerCensusClass): BookingLedgerClassGateRule {
   if (name === "KNOWN_DEFECT_HISTORY") return BOOKING_LEDGER_CENSUS_GATE_POLICY.knownDefectHistoryHoldsGate ? "HOLDS" : "ACKNOWLEDGE";
   if (name === "GROUP_SETTLEMENT_OFF_LEDGER") return BOOKING_LEDGER_CENSUS_GATE_POLICY.groupSettlementOffLedgerHoldsGate ? "HOLDS" : "OPEN";
+  if (name === "REFUND_APPEAL_PAID") return BOOKING_LEDGER_CENSUS_GATE_POLICY.refundAppealPaidHoldsGate ? "HOLDS" : "OPEN";
   return "ACKNOWLEDGE";
 }
 

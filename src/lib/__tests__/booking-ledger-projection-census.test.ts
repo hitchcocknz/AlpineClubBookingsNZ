@@ -1837,7 +1837,7 @@ describe("the verdict", () => {
   });
 
   it("the owner's two decisions on #3583 (both A) are the policy: KNOWN_DEFECT_HISTORY holds, GROUP_SETTLEMENT_OFF_LEDGER is listed only", () => {
-    expect(BOOKING_LEDGER_CENSUS_GATE_POLICY).toEqual({ knownDefectHistoryHoldsGate: true, groupSettlementOffLedgerHoldsGate: false });
+    expect(BOOKING_LEDGER_CENSUS_GATE_POLICY).toEqual({ knownDefectHistoryHoldsGate: true, groupSettlementOffLedgerHoldsGate: false, refundAppealPaidHoldsGate: false });
     const summary = report([offLedgerChild()]);
     expect(summary.classes.GROUP_SETTLEMENT_OFF_LEDGER).toMatchObject({ gateRule: "OPEN", holdsGate: false, bookings: 1, unacknowledged: 0 });
     expect(summary.unacknowledgedClassInstances).toBe(0);
@@ -2205,6 +2205,18 @@ describe("#4120: a paid refund appeal on a cancelled booking is REFUND_APPEAL_PA
     expect(identity(subject, "PRICE")).toMatchObject({ status: "CLASSIFIED", deltaCents: -4_000, explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -4_000 }] });
     expect(disagreements(subject)).toEqual([]);
     expect(evaluateBookingLedgerIdentities(subject).integrity).toEqual([]);
+  });
+
+  it("owner decision #4075: an appeal paid back exactly as recorded is listed, never acknowledged one by one; a cent off still holds the gate", () => {
+    // The internet-banking fixture's own cancel hand-back is a separate class to sign off, so only the appeal's class is read there.
+    const bank = report([bankAppeal("COMPLETED", 4_000)]);
+    expect(bank.classes.REFUND_APPEAL_PAID).toMatchObject({ gateRule: "OPEN", holdsGate: false, bookings: 1, unacknowledged: 0 });
+    expect(bank.gateClosedBecause.join(" ")).not.toContain("REFUND_APPEAL_PAID");
+    const card = report([cardAppeal(4_000)]);
+    expect(card.classes.REFUND_APPEAL_PAID).toMatchObject({ gateRule: "OPEN", holdsGate: false, bookings: 1, unacknowledged: 0 });
+    expect(card).toMatchObject({ verdict: "GATE_OPEN", gateClosedBecause: [] });
+    expect(report([cardAppeal(4_001)]).verdict).toBe("GATE_CLOSED");
+    expect(report([cardAppeal(3_999)]).verdict).toBe("GATE_CLOSED");
   });
 
   it("by card, refunded through Stripe: PRICE is REFUND_APPEAL_PAID and nothing disagrees", () => {

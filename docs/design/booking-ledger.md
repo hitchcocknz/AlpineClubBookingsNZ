@@ -645,7 +645,8 @@ coverage gaps, zero integrity findings and no booking in a class that holds
 the gate, every other class acknowledged by the owner on #3583 — instance by
 instance, to the cent, in the acknowledgement file, save
 `GROUP_SETTLEMENT_OFF_LEDGER`, which the owner decided is listed only (and
-which names only a child whose planned lines agree) — because a
+which names only a child whose planned lines agree), and `REFUND_APPEAL_PAID`,
+listed only too (owner decision on #4075) — because a
 literal zero is not reachable on a live history (in-flight refunds and the
 classes above are expected states). A disagreement is a poster bug, fixed and
 re-run. It
