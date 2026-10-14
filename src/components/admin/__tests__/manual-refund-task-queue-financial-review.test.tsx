@@ -176,9 +176,11 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
       viewerCanViewBookings: true,
     });
     const intro = screen.getByTestId("manual-refund-task-card-shortfall-check-intro");
-    expect(intro.textContent).toMatch(/Check Stripe and the\s+bank before paying anything/);
-    expect(intro.textContent).toMatch(/dismiss it\s+with a note/);
-    expect(intro.textContent).not.toMatch(/pay it by bank transfer/);
+    expect(intro.textContent).toMatch(/Check Stripe and the bank before paying anything, then\s+contact the member with what you found/);
+    expect(intro.textContent).toMatch(/dismiss it with a note/);
+    // Paying it is only the answer once the check shows it is owed.
+    expect(intro.textContent).toMatch(/if it really is owed, pay it\s+by bank transfer/);
+    expect(intro.textContent).toMatch(/on their booking page, and by\s+email unless emails were turned off/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
   });

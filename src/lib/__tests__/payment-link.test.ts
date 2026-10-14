@@ -33,6 +33,14 @@ vi.mock("@/lib/prisma", () => ({
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
     },
+    // #4097: a cancelled booking's card refund shortfall tasks; none here.
+    manualRefundTask: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    paymentRecoveryOperation: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
   },
@@ -557,6 +565,29 @@ describe("getPaymentLinkContext", () => {
 
     expect(context.state).toBe("cancelled_pre_payment");
     expect(context.narrative.message).toMatch(/cancelled/i);
+  });
+
+  // #4097 (`INV-PAY-129`): the parts of a card refund shortfall that are done read as done here too.
+  it("MUTATION: reads a cancelled booking's card refund shortfall parts, so a part paid back says so", async () => {
+    mockedFindUnique.mockResolvedValue(baseLink({ booking: baseBooking({ status: BookingStatus.CANCELLED }) }) as never);
+    mockedBookingEventFindMany.mockResolvedValue([
+      { type: BookingEventType.MEMBER_PAID, occurredAt: new Date("2026-05-02T00:00:00.000Z"), amountCents: 12000, reason: null, snapshot: null },
+      {
+        type: BookingEventType.CANCELLED,
+        occurredAt: new Date("2026-05-05T00:00:00.000Z"),
+        amountCents: 12000,
+        reason: null,
+        snapshot: { refundMethod: "card", refundPercentage: 100, paidAmountCents: 12000, settledAmountCents: 12000, retainedAmountCents: 0, cardShortfall: { cardCents: 8000, bankCents: 4000, checkCents: 0 } },
+      },
+      { type: BookingEventType.REFUNDED, occurredAt: new Date("2026-05-05T01:00:00.000Z"), amountCents: 8000, reason: null, snapshot: null },
+    ] as never);
+    vi.mocked(prisma.manualRefundTask.findMany).mockResolvedValueOnce([
+      { kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", status: "COMPLETED" },
+    ] as never);
+
+    const context = await getPaymentLinkContext(RAW_TOKEN, noReview());
+
+    expect(context.narrative.message).toContain("$40.00 was refunded to you by bank transfer");
   });
 });
 

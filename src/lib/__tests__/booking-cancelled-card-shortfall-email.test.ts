@@ -164,7 +164,9 @@ describe("#4097: the officers' alert names a card refund shortfall", () => {
     expect(html).not.toContain("settled in cash");
     // It says nothing about what the member was told: only the reason line can know.
     expect(html).not.toContain("has been told");
-    expect(CARD_REFUND_SHORTFALL_ALERT_BODY).toMatch(/check Stripe and the bank before paying it/);
+    expect(CARD_REFUND_SHORTFALL_ALERT_BODY).toMatch(/check Stripe and the bank, then contact the member with what you found/);
+    expect(CARD_REFUND_SHORTFALL_ALERT_BODY).toMatch(/until the card refund itself has gone through/);
+    expect(CARD_REFUND_SHORTFALL_ALERT_LEAD).toMatch(/has not been refunded by the card refund\.$/);
   });
 
   it.each(["cash-cancellation", "group-organiser-internet-banking", "card-refund-shortfall"] as const)(

@@ -2080,4 +2080,49 @@ describe("#4097 (`INV-PAY-129`): a cancellation's card refund shortfall is a han
     const refunded = identity(cardShortfall("COMPLETED", false), "REFUNDED");
     expect(refunded.status).toBe("DISAGREE");
   });
+
+  /**
+   * Two parts (round 4): card $55.00, a $20.00 bank part and a $20.00 part to
+   * check. One closed, the other not: V5 is short by only the part not yet
+   * paid back by bank, so neither order reads as a disagreement.
+   */
+  type PartState = "OPEN" | "COMPLETED" | "DISMISSED";
+  function twoParts(bank: PartState, check: PartState): BookingLedgerCensusRow {
+    const planned = cardCancelled(5_500, true);
+    const handBack = new Ledger();
+    const parts = [
+      { id: "task-bank", key: "cancel-card-shortfall:" + B, status: bank },
+      { id: "task-check", key: "cancel-card-shortfall:" + B + ":check", status: check },
+    ];
+    for (const part of parts.filter((each) => each.status === "COMPLETED")) {
+      handBack.post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: part.id, amountCents: 2_000, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+    }
+    const paidBack = parts.filter((each) => each.status === "COMPLETED").length * 2_000;
+    return {
+      ...planned,
+      lines: [...planned.lines, ...handBack.lines.map((line) => ({ ...line, id: `handback-${line.id}` }))],
+      transactions: [txn("t1", 19_000, { refundedAmountCents: 5_500 + paidBack })],
+      payment: payment({ refundedAmountCents: 5_500 + paidBack }),
+      tasks: parts.map((part) => ({ id: part.id, kind: "CANCELLED_BOOKING_HAND_BACK", status: part.status, amountCents: 2_000, settlementDirection: null, paymentId: "pay-3583", lateCaptureApprovalIntentId: null, occurrenceKey: part.key })),
+      cancellation: { refundMethod: "card", settledAmountCents: 9_500, keptCents: 9_500 },
+    };
+  }
+
+  it.each([
+    ["bank paid back, check open", "COMPLETED", "OPEN"],
+    ["bank paid back, check dismissed", "COMPLETED", "DISMISSED"],
+    ["check paid back, bank open", "OPEN", "COMPLETED"],
+    ["check paid back, bank dismissed", "DISMISSED", "COMPLETED"],
+  ] as const)("MUTATION: %s - V5 is the part not paid back, and nothing disagrees", (_label, bank, check) => {
+    const subject = twoParts(bank, check);
+    const results = evaluateBookingLedgerIdentities(subject);
+    expect(results.identities.filter((each) => each.status === "DISAGREE")).toEqual([]);
+    expect(identity(subject, "PRICE").explainedBy).toEqual([{ name: "V5_PLANNED_REFUND_SHORT", cents: 2_000 }]);
+    expect(identity(subject, "REFUNDED").explainedBy).toEqual([{ name: "REFUND_MIRROR_HAND_BACK", cents: 2_000 }]);
+  });
+
+  it("both parts paid back: nothing left short, nothing disagrees", () => {
+    const results = evaluateBookingLedgerIdentities(twoParts("COMPLETED", "COMPLETED"));
+    expect(results.identities.filter((each) => each.status === "DISAGREE")).toEqual([]);
+  });
 });

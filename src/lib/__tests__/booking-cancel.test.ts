@@ -231,7 +231,9 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
-vi.mock("@/lib/payment-transactions", () => ({
+vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
+  // #4097: the card plan's own predicate, real: a shortfall's non-card charges are its complement.
+  isStripeTransaction: (await importOriginal<typeof import("@/lib/payment-transactions")>()).isStripeTransaction,
   PartialRefundError: mocks.PartialRefundError,
   applyLocalRefundAllocation: mocks.applyLocalRefundAllocation,
   foldIntoTransactionRefundedAmount: mocks.foldIntoTransactionRefundedAmount,
@@ -2775,8 +2777,10 @@ describe("cancelBooking credit refunds", () => {
         });
       /** The payment's captured non-card charges, as the raise reads them; every other read sees none. */
       const nonCardCharges = (headroomCents: number) =>
-        mocks.txPaymentTransactionFindMany.mockImplementation(async (args: { where?: { source?: unknown } }) =>
-          args?.where?.source ? [{ id: "txn_bank", amountCents: headroomCents, refundedAmountCents: 0 }] : [],
+        mocks.txPaymentTransactionFindMany.mockImplementation(async (args: { select?: { stripePaymentIntentId?: unknown } }) =>
+          args?.select?.stripePaymentIntentId
+            ? [{ id: "txn_bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: headroomCents, refundedAmountCents: 0 }]
+            : [],
         );
 
       it("a partial plan whose rest the non-card charges hold raises ONE bank task, inside the claim, and promises a bank transfer", async () => {
@@ -2867,7 +2871,8 @@ describe("cancelBooking credit refunds", () => {
           CLUB_FORMAT_TEST,
         );
         expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].reason).toContain("$20.00 to check before paying");
-        expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].reason).toContain("The member's cancellation email names");
+        expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].reason).toContain("The member is being sent a cancellation email");
+        expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].reason).toContain("may still be going through");
         // Before the promo cleanup, the first thing after the commit.
         expect(mocks.sendAdminManualRefundTaskAlert.mock.invocationCallOrder[0]).toBeLessThan(
           mocks.refundPaymentTransactions.mock.invocationCallOrder[0],

@@ -132,7 +132,9 @@ vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   finishApprovedLateCaptureRefund: (...a: unknown[]) =>
     mocks.queueLateCaptureRefundCreditNote(...a),
 }));
-vi.mock("@/lib/payment-transactions", () => ({
+vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
+  // #4097: the card plan's own predicate, real, so the non-card charges are its complement.
+  isStripeTransaction: (await importOriginal<typeof import("@/lib/payment-transactions")>()).isStripeTransaction,
   applyLocalRefundAllocation: (...a: unknown[]) =>
     mocks.applyLocalRefundAllocation(...a),
   lockPaymentForRefundedTotal: (...a: unknown[]) => mocks.lockPaymentForRefundedTotal(...a),
@@ -2515,9 +2517,19 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
         booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId } },
       });
       // The payment's captured non-card charges, as the preflight reads them; no card refund row unless a case says so.
-      mocks.paymentTransactionFindMany.mockResolvedValue([{ id: "txn-bank", amountCents: 2000, refundedAmountCents: 0 }]);
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        { id: "txn-card", source: "STRIPE", stripePaymentIntentId: "pi_1", amountCents: 3000, refundedAmountCents: 3000 },
+        { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 2000, refundedAmountCents: 0 },
+      ]);
       mocks.paymentRecoveryOperationFindUnique.mockResolvedValue(null);
+      // The task itself, and (for a part to check) its bank-transfer sibling, already closed unless a case says so.
+      siblingBankStatus = "COMPLETED";
+      const task = mocks.manualRefundTaskFindUnique.getMockImplementation();
+      mocks.manualRefundTaskFindUnique.mockImplementation(async (args: { where: { id?: string; occurrenceKey?: string } }) =>
+        args.where.occurrenceKey === "cancel-card-shortfall:booking-1" ? { status: siblingBankStatus } : task?.(args),
+      );
     }
+    let siblingBankStatus = "COMPLETED";
     const complete = () =>
       resolveManualRefundTask({
         taskId: "task-9", resolution: "completed", note: null, actingMemberId: "admin-1",
@@ -2526,14 +2538,14 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
     it("completes on the non-card charges first, posts its line on the card payment, and queues ONE note of its own", async () => {
       shortfallTask();
-      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue({ status: "SUCCEEDED" });
+      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue({ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, lastError: null });
 
       await complete();
 
       expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(tx, "payment-1");
       expect(mocks.paymentRecoveryOperationFindUnique).toHaveBeenCalledWith({
         where: { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
-        select: { status: true },
+        select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
       });
       expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-bank"] });
       expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(
@@ -2551,20 +2563,39 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       });
     });
 
-    it.each(["PENDING", "PROCESSING", "FAILED"])(
-      "MUTATION: is refused, before its claim, while the card part's refund is %s",
-      async (status) => {
-        shortfallTask();
-        mocks.paymentRecoveryOperationFindUnique.mockResolvedValue({ status });
+    const LATER = new Date("2026-07-01T00:05:00.000Z");
+    it.each([
+      ["queued", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: null }, /still being refunded; mark this once it settles/],
+      ["running", { status: "PROCESSING", attempts: 1, nextRetryAt: null, lastError: null }, /still being refunded; mark this once it settles/],
+      ["refused inline, waiting for the runner", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: "Stripe refused" }, /failed and is waiting to retry: wait for its retry/],
+      ["failed, retry scheduled", { status: "FAILED", attempts: 2, nextRetryAt: LATER, lastError: "Stripe refused" }, /failed and is waiting to retry: wait for its retry/],
+      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way/],
+      ["stranded, no retry scheduled", { status: "FAILED", attempts: 2, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way/],
+    ] as const)("MUTATION: is refused, before its claim, while the card part's refund is %s - naming the next step", async (_label, row, message) => {
+      shortfallTask();
+      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue(row);
 
-        await expect(complete()).rejects.toMatchObject({
-          status: 409,
-          message: "The card part of this cancellation's refund is still being refunded; mark this once it settles.",
-        });
-        expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
-        expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
-      },
-    );
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: a part to check is refused while its bank-transfer part is open, and completes once it is closed", async () => {
+      shortfallTask("check");
+      siblingBankStatus = "OPEN";
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^Mark the bank-transfer part of this cancellation's refund first/) });
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+
+      siblingBankStatus = "DISMISSED";
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
+    });
+
+    it("SSOT: the non-card charges are exactly those the card plan's own predicate rejects", async () => {
+      shortfallTask();
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ preferTransactionIds: ["txn-bank"] }));
+    });
 
     it("completes when the cancel made no card refund at all (no recovery row)", async () => {
       shortfallTask("check");

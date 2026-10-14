@@ -64,7 +64,7 @@ describe("#4097: the booking page names each part of a card refund shortfall and
   it.each([
     ["owed", "OPEN", "$40.00 is being refunded to you by bank transfer"],
     ["paid back", "COMPLETED", "$40.00 was refunded to you by bank transfer"],
-    ["dismissed", "DISMISSED", "the club checked the $40.00 it was to refund by bank transfer and closed it"],
+    ["dismissed", "DISMISSED", "the club has recorded the $40.00 as settled"],
   ] as const)("the bank-transfer part, %s", (_label, status, clause) => {
     expect(narrate({ cardCents: 6000, bankCents: 4000, checkCents: 0 }, { bank: status })).toBe(
       `${LEAD}$60.00 was refunded to your card on 5 May 2026, ${clause} and $20.00 was retained. No further payment is required.`,
@@ -78,6 +78,22 @@ describe("#4097: the booking page names each part of a card refund shortfall and
   ] as const)("the part to check, %s", (_label, status, clause) => {
     expect(narrate({ cardCents: 6000, bankCents: 0, checkCents: 4000 }, { check: status })).toBe(
       `${LEAD}$60.00 was refunded to your card on 5 May 2026, ${clause} and $20.00 was retained. No further payment is required.`,
+    );
+  });
+
+  it.each([
+    ["still on its way", "on-its-way", "$60.00 is on its way to your card"],
+    ["paid back another way", "paid-another-way", "$60.00 could not go back to your card and was paid back to you another way"],
+    ["settled", "settled", "$60.00 was refunded to your card on 5 May 2026"],
+  ] as const)("MUTATION: the card's part, %s, as its own refund stands", (_label, card, clause) => {
+    expect(narrate({ cardCents: 6000, bankCents: 4000, checkCents: 0 }, { bank: "OPEN", card })).toBe(
+      `${LEAD}${clause}, $40.00 is being refunded to you by bank transfer and $20.00 was retained. No further payment is required.`,
+    );
+  });
+
+  it("a zero plan's part to check is the whole refund, never 'the remaining'", () => {
+    expect(narrate({ cardCents: 0, bankCents: 0, checkCents: 10000 }, { check: "OPEN" })).toBe(
+      `${LEAD}the club will be in touch about the $100.00 refund and $20.00 was retained. No further payment is required.`,
     );
   });
 

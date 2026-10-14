@@ -64,6 +64,7 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("a partial plan: the card refunds what it carries, and the rest is ONE task");
     expect(suite).toContain("a zero plan: no card refund, the whole refund owed");
     expect(suite).toContain("the card part still being refunded");
+    expect(suite).toContain("both parts: check-then-bank is refused, bank-then-check settles both");
   });
 
   // #3793: the paid cancel's read-under-lock proof rides the same harness.

@@ -286,8 +286,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await handBackOwedNow()).toBe(0);
       expect(await refundsOwedNow()).toBe(owedBefore);
       // The booking page reads the part's status for its narrative.
-      const { readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall");
-      expect(await readCardShortfallTaskStatuses(BOOKING_ID)).toEqual({ bank: "COMPLETED" });
+      const { readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status");
+      expect(await readCardShortfallTaskStatuses(BOOKING_ID)).toEqual({ bank: "COMPLETED", card: "settled" });
 
       // Xero: the card's own note from the cancel, and ONE bank-transfer note
       // for exactly the task's amount, keyed on the task - nothing payment-wide.
@@ -419,10 +419,13 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         if (refuseFirst) {
           expect(await cardRefund()).toMatchObject({ status: "PENDING" });
           // The card part is still owed: the shortfall cannot be marked yet, and nothing moved.
+          // Refused inline, so it says to wait for the retry.
           await expect(resolve("completed", task.id)).rejects.toMatchObject({
             status: 409,
-            message: "The card part of this cancellation's refund is still being refunded; mark this once it settles.",
+            message: expect.stringMatching(/failed and is waiting to retry: wait for its retry to go through, then mark this/),
           });
+          const { readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status");
+          expect(await readCardShortfallTaskStatuses(BOOKING_ID)).toEqual({ bank: "OPEN", card: "on-its-way" });
           expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: task.id }, select: { status: true } })).toEqual({ status: "OPEN" });
           // The card retry makes it.
           const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
@@ -444,6 +447,49 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           notes: [BANK_CENTS],
         });
       });
+    });
+
+    // Round 4 (coordinator decision 1): a part to check settles only on what
+    // its bank-transfer part leaves, so it waits for that part.
+    it("both parts: check-then-bank is refused, bank-then-check settles both", async () => {
+      const LATE_TXN = "race-4097-txn-late";
+      await prisma.paymentTransaction.createMany({
+        data: [
+          { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, status: "SUCCEEDED", createdAt: new Date("2026-05-01T00:00:00.000Z") },
+          { id: BANK_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "INTERNET_BANKING", amountCents: 2_000, status: "SUCCEEDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+        ],
+      });
+      stripeRaceHooks.refund = async (args) => ({
+        id: "re_race_4097_both", object: "refund", amount: args.amountCents, currency: "nzd", status: "succeeded",
+        reason: "requested_by_customer", created: Math.floor(Date.UTC(2026, 6, 1) / 1000), charge: "ch_race_4097",
+        payment_intent: args.paymentIntentId, metadata: args.metadata ?? {},
+      });
+
+      expect(await cancel()).toMatchObject({ status: 200, data: { ownCardRefund: { amountCents: CARD_CENTS, byHandCents: 2_000, toCheckCents: 4_000 } } });
+      const bank = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: TASK_KEY } });
+      const check = await prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: CHECK_KEY } });
+      expect([bank.amountCents, check.amountCents]).toEqual([2_000, 4_000]);
+      // The check finds the rest really is owed, and a later bank receipt now holds it.
+      await prisma.paymentTransaction.create({
+        data: { id: LATE_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "INTERNET_BANKING", amountCents: 4_000, status: "SUCCEEDED", createdAt: new Date("2026-06-20T00:00:00.000Z") },
+      });
+
+      // Check first: refused, and nothing moved.
+      await expect(resolve("completed", check.id)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^Mark the bank-transfer part of this cancellation's refund first/) });
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CARD_CENTS });
+
+      // Bank, then check: both settle, on the non-card charges.
+      await resolve("completed", bank.id);
+      await resolve("completed", check.id);
+      expect(await prisma.manualRefundTask.findMany({ where: { bookingId: BOOKING_ID }, orderBy: { occurrenceKey: "asc" }, select: { status: true } })).toEqual([
+        { status: "COMPLETED" },
+        { status: "COMPLETED" },
+      ]);
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: PRICE_CENTS });
+      const nonCard = await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID, source: "INTERNET_BANKING" }, select: { refundedAmountCents: true } });
+      expect(nonCard.reduce((sum, row) => sum + row.refundedAmountCents, 0)).toBe(6_000);
+      const { readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status");
+      expect(await readCardShortfallTaskStatuses(BOOKING_ID)).toEqual({ bank: "COMPLETED", check: "COMPLETED", card: "settled" });
     });
   },
 );
