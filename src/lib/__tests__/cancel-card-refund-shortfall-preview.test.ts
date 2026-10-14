@@ -53,8 +53,6 @@ type PaymentRow = {
   additionalAmountCents: number;
 };
 
-const CAPTURED = new Set(["SUCCEEDED", "PARTIALLY_REFUNDED", "REFUNDED"]);
-
 function card(cents: number, refunded = 0, day = 1): Txn {
   return { id: `txn-card-${day}`, paymentId: "payment-1", source: "STRIPE", stripePaymentIntentId: `pi_${day}`, status: "SUCCEEDED", amountCents: cents, refundedAmountCents: refunded, createdAt: new Date(Date.UTC(2026, 4, day)) };
 }

@@ -527,7 +527,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
 
         const result = await cancel();
         expect(result).toMatchObject({ status: 200, data: { refundAmountCents: due } });
-        const own = (result.data as { ownCardRefund: { amountCents: number; byHandCents?: number; toCheckCents?: number } }).ownCardRefund;
+        const own = (result as unknown as { data: { ownCardRefund: { amountCents: number; byHandCents?: number; toCheckCents?: number } } }).data.ownCardRefund;
         expect({ cardCents: own.amountCents, bankCents: own.byHandCents ?? 0, checkCents: own.toCheckCents ?? 0 }).toEqual(split ?? { cardCents: due, bankCents: 0, checkCents: 0 });
         const tasks = await prisma.manualRefundTask.findMany({ where: { bookingId: BOOKING_ID }, select: { occurrenceKey: true, amountCents: true } });
         expect(Object.fromEntries(tasks.map((task) => [task.occurrenceKey, task.amountCents]))).toEqual({
