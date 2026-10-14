@@ -4,7 +4,7 @@
 // stalled cron.
 import { describe, expect, it, vi } from "vitest";
 
-const count = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 0));
+const count = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<number>>(async () => 0));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $queryRaw: vi.fn(async () => [{ "?column?": 1 }]),

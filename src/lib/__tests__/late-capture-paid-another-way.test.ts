@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   findOperation: vi.fn(),
   findOperations: vi.fn(),
-  lateIntents: vi.fn(async (..._args: unknown[]) => new Set<string>()),
+  lateIntents: vi.fn<(...args: unknown[]) => Promise<Set<string>>>(async () => new Set<string>()),
   findClose: vi.fn(),
   readLateCaptureXeroReceipt: vi.fn(),
   enqueueXeroRefundCreditNoteOperation: vi.fn(),

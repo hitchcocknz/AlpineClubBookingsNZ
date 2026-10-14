@@ -5,7 +5,7 @@
 // commit. The real-database proof is `card-refund-failed-later.realdb.test.ts`.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
 vi.mock("@/lib/club-format-server", async () => ({
   clubFormatValues: async () => (await import("./support/club-format-fixture")).CLUB_FORMAT_TEST,

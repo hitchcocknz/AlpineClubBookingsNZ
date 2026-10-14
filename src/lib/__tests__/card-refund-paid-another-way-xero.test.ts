@@ -6,12 +6,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  coveredCents: vi.fn(async (..._args: unknown[]) => 0),
+  coveredCents: vi.fn<(...args: unknown[]) => Promise<number>>(async () => 0),
   unreadable: vi.fn((): string[] => []),
-  eligibleCashCents: vi.fn(async (..._args: unknown[]) => 0),
-  lateCaptureIntent: vi.fn(async (..._args: unknown[]): Promise<string | null> => null),
-  receipt: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ kind: "recorded", invoiceId: "inv-receipt" })),
-  enqueueNote: vi.fn(async (..._args: unknown[]) => ({ queueOperationId: "xop-1" })),
+  eligibleCashCents: vi.fn<(...args: unknown[]) => Promise<number>>(async () => 0),
+  lateCaptureIntent: vi.fn<(...args: unknown[]) => Promise<string | null>>(async () => null),
+  receipt: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ kind: "recorded", invoiceId: "inv-receipt" })),
+  enqueueNote: vi.fn<(...args: unknown[]) => Promise<{ queueOperationId: string }>>(async () => ({ queueOperationId: "xop-1" })),
 }));
 
 vi.mock("server-only", () => ({}));

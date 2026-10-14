@@ -4,7 +4,7 @@
 // slices move, and that a persisted plan keeps the generation it was moved to.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const updateMany = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ count: 1 })));
+const updateMany = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{ count: number }>>(async () => ({ count: 1 })));
 vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany } } }));
 const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
