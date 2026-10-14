@@ -3190,6 +3190,22 @@ capture — `refundedAmountCents >= amountCents`, which is the field that surviv
 interleaving it exists to catch: a webhook refund committing between the check
 and the create.
 
+**#4097 adds creates inside the paid cancel's own claim, and no key.** When an
+own-card cancel's frozen card refund plan carries less than the refund due,
+`raiseCancelCardShortfallHandBack` reads the payment's captured non-card
+charges and inserts up to two hand-backs for the rest in the claim
+transaction, after the plan's recovery row, under the locks the claim already
+holds (`lock(1)`, the lodge key, the member's credit-ledger key, the `Payment`
+row), in that order. Each is an insert on no conflict under a unique
+`occurrenceKey`, not a find-then-create, and the claim's status flip is already
+single-flight. Completing one takes no advisory key, as a cancellation
+hand-back's never has; before its claim it takes the `Payment` row
+(`lockPaymentForRefundedTotal`) and reads the cancel's card refund recovery
+row, refusing while that row is not SUCCEEDED, so a completion and the card
+refund's recording are serialised by the row every refunded-total writer takes
+first. Its Xero refund note is an outbox row queued inside the completion
+transaction, with no provider call (`INV-PAY-129`).
+
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
 holds nothing. Until #2760 it was

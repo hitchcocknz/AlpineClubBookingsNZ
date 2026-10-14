@@ -32,9 +32,10 @@ vi.mock("@/lib/prisma", () => ({
     },
     memberCredit: { aggregate: async () => ({ _sum: { amountCents: 0 } }) },
     manualRefundTask: {
-      // #3924 round 4: the cash evidence's paid-another-way read (by key prefix) finds none here.
-      findMany: async ({ where }: { where: { occurrenceKey?: unknown; OR: [{ lateCaptureApprovalIntentId: { in: string[] } }, { reason: { in: string[] } }] } }) =>
-        where.occurrenceKey !== undefined ? [] :
+      // #3924 round 4: the cash evidence's paid-another-way read (on the payment, by key prefix; #4097,
+      // with a paid-back card refund shortfall beside it) finds none here.
+      findMany: async ({ where }: { where: { paymentId?: string; OR: [{ lateCaptureApprovalIntentId: { in: string[] } }, { reason: { in: string[] } }] } }) =>
+        where.paymentId !== undefined ? [] :
         state.tasks.filter(
           (t) =>
             (t.lateCaptureApprovalIntentId && where.OR[0].lateCaptureApprovalIntentId.in.includes(t.lateCaptureApprovalIntentId)) ||

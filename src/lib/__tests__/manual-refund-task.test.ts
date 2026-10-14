@@ -72,6 +72,9 @@ const mocks = vi.hoisted(() => ({
   // refund debt, the happy-path close, the Xero correction and its audit entry.
   paymentTransactionFindUnique: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
+  // #4097: the card refund shortfall's preflight - the Payment row, and the cancel's card refund row.
+  lockPaymentForRefundedTotal: vi.fn().mockResolvedValue(undefined),
+  paymentRecoveryOperationFindUnique: vi.fn().mockResolvedValue(null),
   paymentFindUnique: vi.fn(),
   // #3827 (`INV-PAY-117`): the by-hand review route's pre-claim cap reads the
   // payment and the open hand-backs on the completion's own transaction.
@@ -129,9 +132,12 @@ vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   finishApprovedLateCaptureRefund: (...a: unknown[]) =>
     mocks.queueLateCaptureRefundCreditNote(...a),
 }));
-vi.mock("@/lib/payment-transactions", () => ({
+vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
+  // #4097: the card plan's own predicate, real, so the non-card charges are its complement.
+  isStripeTransaction: ((await importOriginal()) as typeof import("@/lib/payment-transactions")).isStripeTransaction,
   applyLocalRefundAllocation: (...a: unknown[]) =>
     mocks.applyLocalRefundAllocation(...a),
+  lockPaymentForRefundedTotal: (...a: unknown[]) => mocks.lockPaymentForRefundedTotal(...a),
   planStripeRefundAllocation: (...a: unknown[]) =>
     mocks.planStripeRefundAllocation(...a),
   refundPaymentTransactions: (...a: unknown[]) =>
@@ -280,6 +286,7 @@ const tx = {
     // #3924 round 4 (M7): the siblings' refund debts, read row by row so a
     // paid-another-way close for less counts only what it paid back.
     findMany: vi.fn().mockResolvedValue([]),
+    findUnique: (...a: unknown[]) => mocks.paymentRecoveryOperationFindUnique(...a),
   },
   // #3032: the anchor-taken check (owner decision D-3032-1) reads this inside
   // the same transaction, before the claim.
@@ -2213,6 +2220,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       amountCents: 9000,
       refundMethod: "internet-banking",
       paymentSource: null,
+      cardShortfall: false,
       officerMemberId: "admin-1",
       store: tx,
     });
@@ -2487,6 +2495,138 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
   // appeal's bank-transfer task. Always on a CANCELLED booking (appeals exist
   // only after the cancel), with the paid invoice the cancellation hand-back
   // leg would otherwise write a refund note against.
+  // #4097 (`INV-PAY-129`): a cancellation's card refund shortfall completes as a
+  // cancellation's hand-back, and its BANK_REFUND posts on the card payment it
+  // sits on - the poster declines a card payment's hand-back otherwise.
+  // #4097 (`INV-PAY-129`): a cancellation's card refund shortfall completes as a
+  // cancellation's hand-back: on the non-card charges first, only once the card
+  // part has settled, its BANK_REFUND on the card payment, and ONE Xero note of
+  // its own.
+  describe("a cancellation's card refund shortfall (#4097)", () => {
+    function shortfallTask(part: "bank" | "check" = "bank", xeroInvoiceId: string | null = "inv-1") {
+      mocks.manualRefundTaskFindUnique.mockResolvedValue({
+        id: "task-9",
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        amountCents: 2000,
+        raisedAmountCents: 2000,
+        kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+        occurrenceKey: part === "bank" ? "cancel-card-shortfall:booking-1" : "cancel-card-shortfall:booking-1:check",
+        status: ManualRefundTaskStatus.OPEN,
+        payment: { source: "STRIPE" },
+        booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId } },
+      });
+      // The payment's captured non-card charges, as the preflight reads them; no card refund row unless a case says so.
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        { id: "txn-card", source: "STRIPE", stripePaymentIntentId: "pi_1", amountCents: 3000, refundedAmountCents: 3000 },
+        { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 2000, refundedAmountCents: 0 },
+      ]);
+      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue(null);
+      // The task itself, and (for a part to check) its bank-transfer sibling, already closed unless a case says so.
+      siblingBankStatus = "COMPLETED";
+      const task = mocks.manualRefundTaskFindUnique.getMockImplementation();
+      mocks.manualRefundTaskFindUnique.mockImplementation(async (args: { where: { id?: string; occurrenceKey?: string } }) =>
+        args.where.occurrenceKey === "cancel-card-shortfall:booking-1" ? { status: siblingBankStatus } : task?.(args),
+      );
+    }
+    let siblingBankStatus = "COMPLETED";
+    const complete = () =>
+      resolveManualRefundTask({
+        taskId: "task-9", resolution: "completed", note: null, actingMemberId: "admin-1",
+        confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null,
+      }, CLUB_FORMAT_TEST);
+
+    it("completes on the non-card charges first, posts its line on the card payment, and queues ONE note of its own", async () => {
+      shortfallTask();
+      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue({ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, lastError: null });
+
+      await complete();
+
+      expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(tx, "payment-1");
+      expect(mocks.paymentRecoveryOperationFindUnique).toHaveBeenCalledWith({
+        where: { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
+        select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
+      });
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-bank"] });
+      expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(
+        expect.objectContaining({ manualRefundTaskId: "task-9", amountCents: 2000, paymentSource: "STRIPE", cardShortfall: true }),
+      );
+      // A cancellation's own hand-back: no lock(1), as the cash cancel's.
+      expect(mocks.executeRaw).not.toHaveBeenCalled();
+      expect(mocks.recordBookingEvent).toHaveBeenCalledWith(expect.objectContaining({ type: BookingEventType.REFUNDED, amountCents: 2000 }));
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledTimes(1);
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-1", 2000, {
+        createdByMemberId: "admin-1",
+        refundMethod: "internet-banking",
+        paidAnotherWayTaskId: "task-9",
+        store: tx,
+      });
+    });
+
+    const LATER = new Date("2026-07-01T00:05:00.000Z");
+    it.each([
+      ["queued", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: null }, /still being refunded; mark this once it settles/],
+      ["running", { status: "PROCESSING", attempts: 1, nextRetryAt: null, lastError: null }, /still being refunded; mark this once it settles/],
+      ["refused inline, waiting for the runner", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: "Stripe refused" }, /failed and is waiting to retry: wait for its retry/],
+      ["failed, retry scheduled", { status: "FAILED", attempts: 2, nextRetryAt: LATER, lastError: "Stripe refused" }, /failed and is waiting to retry: wait for its retry/],
+      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way/],
+      ["stranded, no retry scheduled", { status: "FAILED", attempts: 2, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way/],
+    ] as const)("MUTATION: is refused, before its claim, while the card part's refund is %s - naming the next step", async (_label, row, message) => {
+      shortfallTask();
+      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue(row);
+
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: a part to check is refused while its bank-transfer part is open, and completes once it is closed", async () => {
+      shortfallTask("check");
+      siblingBankStatus = "OPEN";
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^Mark the bank-transfer part of this cancellation's refund first/) });
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+
+      siblingBankStatus = "DISMISSED";
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
+    });
+
+    it("MUTATION (SSOT): the non-card charges are exactly those the card plan's own predicate rejects", async () => {
+      shortfallTask();
+      // A Stripe-sourced charge with no intent the card refund plan cannot refund: non-card, as the plan sees it.
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        { id: "txn-card", source: "STRIPE", stripePaymentIntentId: "pi_1", amountCents: 3000, refundedAmountCents: 3000 },
+        { id: "txn-legacy", source: "STRIPE", stripePaymentIntentId: null, amountCents: 1000, refundedAmountCents: 0 },
+        { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 2000, refundedAmountCents: 0 },
+      ]);
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ preferTransactionIds: ["txn-legacy", "txn-bank"] }));
+    });
+
+    it("completes when the cancel made no card refund at all (no recovery row)", async () => {
+      shortfallTask("check");
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
+    });
+
+    it("MUTATION: where the ledger holds nothing for it, the refusal names dismissing it", async () => {
+      shortfallTask("check");
+      mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
+
+      await expect(complete()).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/dismiss this task with a note/),
+      });
+    });
+
+    it("queues no Xero note on a booking with no invoice to credit", async () => {
+      shortfallTask("bank", null);
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
+  });
+
   describe("an approved refund appeal's hand-back (D-3813-7)", () => {
     function appealTask() {
       mocks.manualRefundTaskFindUnique.mockResolvedValue({
