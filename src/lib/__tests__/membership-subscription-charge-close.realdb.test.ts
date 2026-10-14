@@ -144,17 +144,28 @@ let observerClient: import("@prisma/client").PrismaClient;
     const close = () =>
       closeAlreadyPaidSubscriptionCharge({ chargeId: CHARGE_ID, reason: REASON, actorMemberId: OFFICER_ID });
 
-    async function waitForBlockedBy(blockerPid: number) {
+    /**
+     * Waits until `minimumBlocked` backends queue behind `blockerPid`, directly
+     * or one step removed: a second writer on the same row waits on the tuple
+     * lock the first waiter holds, so `pg_blocking_pids` names that waiter, not
+     * the holder.
+     */
+    async function waitForBlockedBy(blockerPid: number, minimumBlocked = 1) {
       const startedAt = process.hrtime.bigint();
       while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
         const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+          WITH direct AS (
+            SELECT pid FROM pg_stat_activity
+            WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
+          )
           SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
-          WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
+          WHERE datname = current_database()
+            AND (${blockerPid}::int = ANY(pg_blocking_pids(pid)) OR pg_blocking_pids(pid) && ARRAY(SELECT pid FROM direct))
         `;
-        if ((rows[0]?.count ?? 0) >= 1) return;
+        if ((rows[0]?.count ?? 0) >= minimumBlocked) return;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      throw new Error(`Timed out waiting for the close to queue behind the subscription row held by pid ${blockerPid}.`);
+      throw new Error(`Timed out waiting for ${minimumBlocked} backend(s) to queue behind the row lock held by pid ${blockerPid}.`);
     }
 
     beforeAll(async () => {
@@ -191,7 +202,39 @@ let observerClient: import("@prisma/client").PrismaClient;
     });
 
     it("closes once when two closes race: one audit row, every generation bumped once, the claims released", async () => {
-      const outcomes = await Promise.all([close(), close()]);
+      // Hold the charge row so both closes read it as CONFLICT and then queue on
+      // their claim. On release one wins; the other's claim re-evaluates against
+      // the committed close, matches nothing and takes the claim-lost path,
+      // rather than the early already-closed return an unforced race usually hits.
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let locked!: () => void;
+      const lockedInHolder = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      let holderPid = 0;
+      const holder = lockHolderClient.$transaction(
+        async (tx) => {
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+          holderPid = pid;
+          await tx.$queryRaw`SELECT id FROM "MembershipSubscriptionCharge" WHERE id = ${CHARGE_ID} FOR UPDATE`;
+          locked();
+          await released;
+        },
+        { timeout: 15_000 },
+      );
+      await lockedInHolder;
+
+      const closing = Promise.all([close(), close()]);
+      try {
+        await waitForBlockedBy(holderPid, 2);
+      } finally {
+        release();
+      }
+      await holder;
+      const outcomes = await closing;
 
       expect(outcomes.map((outcome) => outcome.closed).sort()).toEqual([false, true]);
       const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
