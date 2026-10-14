@@ -5439,6 +5439,23 @@ describe("runBookingXeroRepair", () => {
       expect(action?.status).toBe("failed");
     });
 
+    it("one made, one refused, then a throw: only the made slice is recorded", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockRejectedValue(
+          new PartialRefundError({
+            format: CLUB_FORMAT_TEST,
+            completedRefundCents: 3000,
+            refunds: [answer("pi_additional_captured", "txn_additional", 3000, "succeeded"), answer("pi_primary_captured", "txn_primary", 10000, "canceled")],
+            refusedSlices: [{ paymentTransactionId: "txn_primary", amountCents: 10000 }],
+            cause: new Error("network"),
+          }),
+        ),
+      );
+
+      expect(recorded).toEqual(["pi_additional_captured"]);
+      expect(action?.status).toBe("failed");
+    });
+
     it("a re-run that Stripe answers with the same refusal records nothing, again", async () => {
       const refusal = () =>
         vi.fn().mockResolvedValue({
