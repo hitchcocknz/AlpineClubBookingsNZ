@@ -1191,6 +1191,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     isLateCaptureRefundStripeKeyPrefix: "predicate over a Stripe key prefix",
     isOrganiserChildAppealRefundKey: "predicate over a mapped key",
     isOrganiserChildRefundKey: "predicate over mapped keys",
+    isRefundRequestRefundRecoveryKey: "predicate over a mapped key",
     isRefusedRefundKeySuffix: "predicate over a Stripe idempotency key suffix",
     lateCaptureIntentOfApprovalRefundRecoveryKey: "parser of a mapped key",
     lateCaptureRefundPaymentIntentId: "parser of a Stripe key prefix",
