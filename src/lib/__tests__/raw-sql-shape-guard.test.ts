@@ -89,6 +89,12 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // with each replica's clock would let a skewed one take over a live lease.
   // Its one timestamp is schema-decoded through `decodeRawRows`.
   "src/lib/group-organiser-hand-back.ts": 1,
+  // #4104: the cutoff for re-sending a card refund Stripe failed later is when
+  // its marker migration finished on this install - the same two reads as the
+  // refund ledger's start (`payment-transactions.ts`): `_prisma_migrations` has
+  // no Prisma model, and a `db push` database has no such table at all. Both
+  // rows are schema-decoded through `decodeRawRows`.
+  "src/lib/card-refund-failed-later.ts": 2,
   // The hosting coverage participant protocol's fail-fast lock reads the boolean
   // returned by `pg_try_advisory_xact_lock` and schema-decodes it before deciding
   // whether the outer transaction must retry.
