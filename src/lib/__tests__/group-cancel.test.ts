@@ -1514,10 +1514,10 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
   it("asks past the refusals Stripe holds for this refund, on a key it has never seen (#4103)", async () => {
     mocks.settlementFindUnique.mockResolvedValue(settlement());
     mocks.listRefundsForPaymentIntent.mockResolvedValueOnce([
-      { id: "re_1", status: "failed", amount: 9000, metadata: { reason: "organiser_cancellation" } },
-      { id: "re_2", status: "canceled", amount: 9000, metadata: { reason: "organiser_cancellation" } },
-      { id: "re_3", status: "failed", amount: 4000, metadata: { reason: "organiser_cancellation" } },
-      { id: "re_4", status: "failed", amount: 9000, metadata: { reason: "something_else" } },
+      { id: "re_1", status: "failed", amount: 9000, metadata: { groupBookingId: GROUP_ID, reason: "organiser_cancellation" } },
+      { id: "re_2", status: "canceled", amount: 9000, metadata: { groupBookingId: GROUP_ID, reason: "organiser_cancellation" } },
+      { id: "re_3", status: "failed", amount: 4000, metadata: { groupBookingId: GROUP_ID, reason: "organiser_cancellation" } },
+      { id: "re_4", status: "failed", amount: 9000, metadata: { groupBookingId: GROUP_ID, reason: "something_else" } },
     ]);
 
     await executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST);

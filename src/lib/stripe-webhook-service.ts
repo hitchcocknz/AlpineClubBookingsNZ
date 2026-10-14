@@ -1289,19 +1289,20 @@ async function refundSupersededGroupSettlementIntent(
   let repeatedRefusal = false;
   try {
     const baseKey = `group_settlement_superseded_refund_${paymentIntent.id}`;
+    const metadata = {
+      ...(groupBookingId ? { groupBookingId } : {}),
+      reason: "group_settlement_superseded",
+    };
     // #4103 (`INV-PAY-130`): moved on past each refusal Stripe holds, so a redelivery asks afresh.
     const idempotencyKey = keyAfterStripeRefusals(baseKey, await listRefundsForPaymentIntent(paymentIntent.id), {
       amountCents: paymentIntent.amount,
-      reason: "group_settlement_superseded",
+      metadata,
     });
     const refund = await processRefund({
       paymentIntentId: paymentIntent.id,
       amountCents: paymentIntent.amount,
       reason: "requested_by_customer",
-      metadata: {
-        ...(groupBookingId ? { groupBookingId } : {}),
-        reason: "group_settlement_superseded",
-      },
+      metadata,
       idempotencyKey,
     });
     // A refusal (failed/canceled) refunded nothing, so it fails like a thrown
@@ -1815,7 +1816,7 @@ async function handleCancelledBookingPaymentSucceeded(
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
   if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) {
-    // #4103: this plan can span charges, so a slice made beside the refusal is still noted (sized by what was made).
+    // #4103: a slice made beside the refusal on this capture's own charge is still noted (sized by what was made there); one made on an older charge is in the audit only.
     await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
     return;
   }

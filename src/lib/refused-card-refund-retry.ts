@@ -152,20 +152,28 @@ export function sliceAfterRecordedRefusals(
  * #4103 review C3: the Stripe key of a refund that has one fixed key and no
  * plan to carry a generation - the legacy group settlement refund's replay and
  * the superseded group intent's webhook refund. Moved on once for each refusal
- * Stripe itself holds on the intent for the same amount and reason
- * (`listRefundsForPaymentIntent`, read before the ask, outside any
+ * Stripe itself holds on the intent for the same amount and exactly the same
+ * metadata (`listRefundsForPaymentIntent`, read before the ask, outside any
  * transaction), so a retry inside Stripe's 24 hours is a request it has never
  * seen, while a refund made - or one whose answer was lost - keeps its key and
- * is answered with the original.
+ * is answered with the original. Exact metadata, not just the reason: another
+ * writer's refusal on the same intent (an organiser child refund carries its
+ * own `bookingId` and `organiserChildRefundKey`) must never move this key, or a
+ * refund already made under it could be asked for again.
  */
 export function keyAfterStripeRefusals(
   baseKey: string,
   onIntent: ReadonlyArray<{ status: string | null; amount: number; metadata?: Record<string, string> | null }>,
-  match: { amountCents: number; reason: string },
+  match: { amountCents: number; metadata: Readonly<Record<string, string>> },
 ): string {
+  const wanted = Object.entries(match.metadata);
   let suffix: string | undefined;
   for (const refund of onIntent) {
-    const same = refund.amount === match.amountCents && refund.metadata?.reason === match.reason;
+    const metadata = refund.metadata ?? {};
+    const same =
+      refund.amount === match.amountCents &&
+      Object.keys(metadata).length === wanted.length &&
+      wanted.every(([key, value]) => metadata[key] === value);
     if (same && isRefusedRefundStatus(refund.status)) suffix = nextRefusedRefundKeySuffix(suffix);
   }
   return suffix ? `${baseKey}_${suffix}` : baseKey;

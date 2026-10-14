@@ -1617,7 +1617,7 @@ describe("Stripe webhook Xero alerting", () => {
     mockConstructWebhookEvent.mockReturnValue(groupSettlementSucceededEvent("evt_group_refused_again", "pi_group_mismatch"));
     mockApplyGroupSettlementSucceeded.mockResolvedValue({ outcome: "amount_mismatch", settledBookingIds: [] });
     mockListRefundsForPaymentIntent.mockResolvedValueOnce([
-      { id: "re_refused", status: "failed", amount: 50000, metadata: { reason: "group_settlement_superseded" } },
+      { id: "re_refused", status: "failed", amount: 50000, metadata: { groupBookingId: "group-1", reason: "group_settlement_superseded" } },
     ]);
     mockProcessRefund.mockResolvedValueOnce({ id: "re_refused_again", status: "failed" });
 

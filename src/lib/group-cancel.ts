@@ -831,17 +831,18 @@ export async function executeGroupSettlementRefundPlan(
       // reconciliation is operator-driven and never enqueues this operation.
       return { outcome: "not_refundable", mirroredChildren: 0 };
     }
+    const metadata = {
+      groupBookingId: settlement.groupBookingId,
+      reason: "organiser_cancellation",
+    };
     const refund = await processRefund({
       paymentIntentId: settlement.stripePaymentIntentId,
       amountCents: totalRefundCents,
-      metadata: {
-        groupBookingId: settlement.groupBookingId,
-        reason: "organiser_cancellation",
-      },
+      metadata,
       // #4103 (`INV-PAY-130`): moved on past each refusal Stripe holds, so a retry asks afresh.
       idempotencyKey: keyAfterStripeRefusals(`group_cancel_refund_${settlement.id}`, await listRefundsForPaymentIntent(settlement.stripePaymentIntentId), {
         amountCents: totalRefundCents,
-        reason: "organiser_cancellation",
+        metadata,
       }),
     });
     // #4103: a refusal fails the attempt, never closing the row; the backoff asks again.

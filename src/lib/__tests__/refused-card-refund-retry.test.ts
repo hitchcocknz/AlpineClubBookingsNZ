@@ -278,8 +278,11 @@ describe("the runner's refusal alert", () => {
 // #4103 review C3: a fixed-key refund's key moves on once per refusal Stripe
 // holds for it; a refund made (or one whose answer was lost) keeps its key.
 describe("keyAfterStripeRefusals", () => {
-  const match = { amountCents: 9000, reason: "organiser_cancellation" };
-  const refund = (status: string | null, amount = 9000, reason = "organiser_cancellation") => ({ status, amount, metadata: { reason } });
+  const metadata = { groupBookingId: "gb_1", reason: "organiser_cancellation" };
+  const match = { amountCents: 9000, metadata };
+  const refund = (status: string | null, amount = 9000, reason = "organiser_cancellation") => ({
+    status, amount, metadata: { groupBookingId: "gb_1", reason },
+  });
 
   it("no refusal: the key it has always been sent under", () => {
     expect(keyAfterStripeRefusals("k", [], match)).toBe("k");
@@ -293,6 +296,21 @@ describe("keyAfterStripeRefusals", () => {
 
   it("a refund made after a refusal keeps the key that made it, so its replay is answered with it", () => {
     expect(keyAfterStripeRefusals("k", [refund("failed"), refund("succeeded")], match)).toBe("k_refused1");
+  });
+
+  it("another writer's refusal on the same intent never moves the key, even for the same amount and reason", () => {
+    // An organiser child refund on the shared settlement intent: same reason, its own extra metadata.
+    const childRefusal = {
+      status: "failed", amount: 9000,
+      metadata: { bookingId: "b_1", groupBookingSettlementId: "s_1", organiserChildRefundKey: "ock_1", reason: "organiser_cancellation" },
+    };
+    expect(keyAfterStripeRefusals("k", [childRefusal], match)).toBe("k");
+    expect(keyAfterStripeRefusals("k", [{ status: "failed", amount: 9000, metadata: { groupBookingId: "gb_2", reason: "organiser_cancellation" } }], match)).toBe("k");
+    expect(keyAfterStripeRefusals("k", [{ status: "failed", amount: 9000, metadata: null }], match)).toBe("k");
+    // A superseded intent with no group id sends only its reason: a refusal carrying more keys is still another writer's.
+    const reasonOnly = { amountCents: 9000, metadata: { reason: "organiser_cancellation" } };
+    expect(keyAfterStripeRefusals("k", [childRefusal], reasonOnly)).toBe("k");
+    expect(keyAfterStripeRefusals("k", [{ status: "failed", amount: 9000, metadata: { reason: "organiser_cancellation" } }], reasonOnly)).toBe("k_refused1");
   });
 });
 

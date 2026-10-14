@@ -29,14 +29,14 @@ reason: the superseded-payment refund processor routes its one Stripe call
   through.
 
 file: src/lib/group-cancel.ts
-lines: 973
+lines: 974
 reason: the legacy group settlement refund, inline and in the replay, fails on
   a refusal as on a throw: one line each, a one- or two-line comment, and two
   imports; the replay's key moves past Stripe's recorded refusals
   (`keyAfterStripeRefusals`, review C3), four lines in the call.
 
 file: src/lib/stripe-webhook-service.ts
-lines: 1865
+lines: 1866
 reason: each late-capture handler gains one line handing a refused refund to
   the hold (`holdLateCaptureRefusedByStripe`), the primary one also noting a
   slice made beside the refusal; the superseded group intent's refund a
