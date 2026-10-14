@@ -107,7 +107,7 @@ export async function mintOrdinaryAskIntent({
  * and the retry's lookup finds no unrecorded match and fails closed.
  *
  * The ask write itself refuses a row naming ANOTHER EDIT, atomically
- * (`writePaymentIntentTransaction`, `payment-intent-transaction-write.ts`); this check
+ * (`writePaymentIntentTransaction`, `intent-ledger-row-write.ts`); this check
  * is what still refuses an adopted intent whose row names NO edit - a review
  * charge's, a webhook's, or one written before rows named their edit - which
  * that write would claim, as it must for the key's own intent.

@@ -22,7 +22,7 @@
  */
 import { PaymentRecoveryOperationType, type PaymentRecoveryOperation } from "@prisma/client";
 
-import { AdditionalAskAttributionConflictError } from "@/lib/payment-intent-transaction-write";
+import { AdditionalAskAttributionConflictError } from "@/lib/intent-ledger-row-write";
 
 /** The officer-facing cause when `error` ends `operation` now, else null (retry as usual). */
 export function unretryableRecoveryCause(

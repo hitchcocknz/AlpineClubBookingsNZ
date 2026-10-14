@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   AdditionalAskAttributionConflictError,
   writePaymentIntentTransaction,
-} from "@/lib/payment-intent-transaction-write";
+} from "@/lib/intent-ledger-row-write";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 
 /**

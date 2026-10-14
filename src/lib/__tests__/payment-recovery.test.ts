@@ -2906,7 +2906,7 @@ describe("payment recovery worker", () => {
 
     it("#4081: an ask write refused for another edit's row ends the recovery at once - one alert naming the cause, no retry", async () => {
       primeQueue(additionalIntentOperation({ attempts: 1 }));
-      const { AdditionalAskAttributionConflictError } = await import("@/lib/payment-intent-transaction-write");
+      const { AdditionalAskAttributionConflictError } = await import("@/lib/intent-ledger-row-write");
       mockUpsertPaymentIntentTransaction.mockRejectedValueOnce(
         new AdditionalAskAttributionConflictError("pi_recovered", "mod-9"),
       );

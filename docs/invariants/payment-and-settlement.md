@@ -1371,7 +1371,7 @@ short).
     fails its re-checked WHERE and lands in the second; else an insert with
     `skipDuplicates`, then the update again. An edit's write also lands only on
     its own or an unattributed row (`INV-MOD-060`).
-  - Proven by `payment-intent-transaction-write.test.ts` and, on PostgreSQL,
+  - Proven by `intent-ledger-row-write.test.ts` and, on PostgreSQL,
     `additional-ask-reduction.realdb.test.ts` ("#4081").
 
 ## INV-PAY-031
