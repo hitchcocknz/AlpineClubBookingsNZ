@@ -672,7 +672,7 @@ describe("membership subscription billing", () => {
 
   // Filter-aware mock: applies the query's where.status.notIn to a fixture, as
   // the real database would, so a test sees exactly the rows the filter keeps.
-  function chargesMatchingStatusFilter(fixture: Array<{ status: string }>) {
+  function chargesMatchingStatusFilter<T extends { status: string }>(fixture: T[]) {
     return (args?: { where?: { status?: { notIn?: string[] } } }) => {
       const excluded = args?.where?.status?.notIn ?? [];
       return Promise.resolve(fixture.filter((charge) => !excluded.includes(charge.status)));
@@ -692,7 +692,7 @@ describe("membership subscription billing", () => {
     mocks.effectiveFee.mockResolvedValue(annual);
     mocks.charges.findMany.mockImplementation(chargesMatchingStatusFilter([
       { id: "charge-retained", familyGroupId: "family-1", membershipTypeId: "type-1", status },
-    ] as Array<{ status: string }>));
+    ]));
     mocks.coverage.findMany.mockResolvedValue([]); // released by the void or the close
     mocks.subscriptions.findMany.mockResolvedValue([]); // not paid: the payment was reversed
     mocks.members.findMany.mockResolvedValue([
@@ -725,7 +725,7 @@ describe("membership subscription billing", () => {
     mocks.effectiveFee.mockResolvedValue(annual);
     mocks.charges.findMany.mockImplementation(chargesMatchingStatusFilter([
       { id: "charge-live", familyGroupId: "family-1", membershipTypeId: "type-1", status },
-    ] as Array<{ status: string }>));
+    ]));
     mocks.members.findMany.mockResolvedValue([
       member("late", { familyGroupMemberships: [familyMembership()] }),
     ]);
