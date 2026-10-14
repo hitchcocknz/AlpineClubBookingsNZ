@@ -107,6 +107,8 @@ function stripeRefund(id: string, status: string, metadata: Record<string, strin
 }
 
 const failedLaterKey = (refundId: string) => `card_refund_failed_later_${refundId}`;
+const CUTOFF_MIGRATION = "20261115010000_card_refund_failed_later_cutoff";
+let markerFinishedAt: Date | null = null;
 
 (RUN ? describe : describe.skip)(
   "a card refund Stripe accepted and failed later is owed again — real PostgreSQL (#4104)",
@@ -124,6 +126,10 @@ const failedLaterKey = (refundId: string) => `card_refund_failed_later_${refundI
       await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
       await prisma.bookingGuest.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.booking.deleteMany({ where: { id: BOOKING_ID } });
+    }
+
+    async function setCutoff(at: Date) {
+      await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "finished_at" = ${at} WHERE "migration_name" = ${CUTOFF_MIGRATION}`;
     }
 
     async function deleteFixtures() {
@@ -181,6 +187,14 @@ const failedLaterKey = (refundId: string) => `card_refund_failed_later_${refundI
       ({ netCollectedCardRefundSelect } = await import("@/lib/additional-ledger-gap"));
       ({ deadCardRefundOperationWhere } = await import("@/lib/card-refund-paid-another-way"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
+
+      // The cutoff marker (ops 8): finished well before these fixtures' refunds,
+      // as on an install that took this release long ago; restored after.
+      const [marker] = await prisma.$queryRaw<Array<{ finished_at: Date }>>`
+        SELECT "finished_at" FROM "_prisma_migrations" WHERE "migration_name" = ${CUTOFF_MIGRATION}`;
+      if (!marker) throw new Error(`The race database lacks ${CUTOFF_MIGRATION}: run prisma migrate deploy against it first.`);
+      markerFinishedAt = marker.finished_at;
+      await setCutoff(new Date("2026-01-01T00:00:00.000Z"));
 
       await deleteFixtures();
       await prisma.member.create({
@@ -240,6 +254,7 @@ const failedLaterKey = (refundId: string) => `card_refund_failed_later_${refundI
       resetStripeRaceHooks();
       if (!prisma) return;
       await deleteFixtures();
+      if (markerFinishedAt) await setCutoff(markerFinishedAt);
     });
 
     it.each([
@@ -396,13 +411,13 @@ const failedLaterKey = (refundId: string) => `card_refund_failed_later_${refundI
         await doorRecords(stripeRefund("re_race_4104_made", "pending", metadata));
       });
 
-      it("re-plans that row - the slice unmarked, on its next key - and raises no second row", async () => {
+      it("re-plans that row - the slice unmarked, on its next key, recording the failure - and raises no second row", async () => {
         expect(await owedNow()).toBe(1_000);
         await recordRefusedCardRefund(stripeRefund("re_race_4104_made", "failed", metadata));
         const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: OPEN_KEY } });
         expect(row).toMatchObject({ status: "FAILED", attempts: 1, amountCents: REFUND_CENTS + 1_000 });
         expect(parseRefundAllocationPlan(row.allocationPlan)).toEqual([
-          { paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS, stripeKeySuffix: "refused1" },
+          { paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS, stripeKeySuffix: "refused1", failedRefundIds: ["re_race_4104_made"] },
           plan[1],
         ]);
         expect(await failedLaterRows()).toHaveLength(0);
@@ -418,6 +433,130 @@ const failedLaterKey = (refundId: string) => `card_refund_failed_later_${refundI
         expect(parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: OPEN_KEY } })).allocationPlan)).toEqual(plan);
       });
     });
+
+    describe("an open row whose UNMARKED slice the refund filled (#4104 review, money 1 and concurrency A)", () => {
+      const OPEN_KEY = "booking_cancel_refund_recovery_race-4104-booking";
+      const metadata = { bookingId: BOOKING_ID, reason: "cancellation" };
+
+      beforeEach(async () => {
+        // A cancellation whose close was lost: open, claimed once, every slice made.
+        await prisma.paymentRecoveryOperation.create({
+          data: {
+            type: "REFUND_BOOKING_MODIFICATION",
+            status: "FAILED",
+            attempts: 1,
+            bookingId: BOOKING_ID,
+            paymentId: PAYMENT_ID,
+            paymentIntentId: INTENT_ID,
+            amountCents: REFUND_CENTS,
+            idempotencyKey: OPEN_KEY,
+            allocationPlan: [{ paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS }],
+            createdAt: new Date("2026-06-20T00:00:00.000Z"),
+            nextRetryAt: new Date("2026-06-20T00:10:00.000Z"),
+          },
+        });
+        await doorRecords(stripeRefund("re_race_4104_unmarked", "pending", metadata));
+      });
+
+      it("MUTATION: that row owes it again on its next key - one row, owed once - and a second observer writes nothing", async () => {
+        expect(await owedNow()).toBe(0);
+        await recordRefusedCardRefund(stripeRefund("re_race_4104_unmarked", "failed", metadata));
+        expect(await failedLaterRows()).toHaveLength(0);
+        const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: OPEN_KEY } });
+        expect(parseRefundAllocationPlan(row.allocationPlan)).toEqual([
+          { paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS, stripeKeySuffix: "refused1", failedRefundIds: ["re_race_4104_unmarked"] },
+        ]);
+        expect(await owedNow()).toBe(REFUND_CENTS);
+
+        // A late charge.refunded snapshot still carrying it pending, then failed again (concurrency A).
+        await doorRecords(stripeRefund("re_race_4104_unmarked", "pending", metadata));
+        await recordRefusedCardRefund(stripeRefund("re_race_4104_unmarked", "failed", metadata));
+        expect(await failedLaterRows()).toHaveLength(0);
+        expect(parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: OPEN_KEY } })).allocationPlan)).toEqual([
+          { paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS, stripeKeySuffix: "refused1", failedRefundIds: ["re_race_4104_unmarked"] },
+        ]);
+        expect(await owedNow()).toBe(REFUND_CENTS);
+        expect(await refundedTotal()).toBe(0);
+      });
+
+      it("a row no worker has claimed yet is left to its door: the failure is refused, and nothing commits", async () => {
+        await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: OPEN_KEY }, data: { status: "PENDING", attempts: 0 } });
+        await expect(recordRefusedCardRefund(stripeRefund("re_race_4104_unmarked", "failed", metadata))).rejects.toThrow(/not yet claimed/);
+        expect(await refundedTotal()).toBe(REFUND_CENTS);
+        expect(await failedLaterRows()).toHaveLength(0);
+      });
+    });
+
+    it("MUTATION (concurrency B): the failure before the door writes its marks - one row of its own, the door's marked slice read filled - owed once", async () => {
+      const metadata = { bookingId: BOOKING_ID, reason: "refund_appeal_approved", refundRequestId: "rr-4104-b" };
+      // The refund request's inline attempt: A made (pending), B refused.
+      await doorRecords(stripeRefund("re_race_4104_a", "pending", metadata));
+      await doorRecords(stripeRefund("re_race_4104_b", "failed", metadata, 1_000));
+      // Stripe fails A before the door writes its row.
+      await recordRefusedCardRefund(stripeRefund("re_race_4104_a", "failed", metadata));
+      expect(await failedLaterRows()).toHaveLength(1);
+      // The door now writes its row: A marked made, B on its next key.
+      const { enqueueRefundRequestRefundRecovery } = await import("@/lib/payment-recovery");
+      await enqueueRefundRequestRefundRecovery({
+        bookingId: BOOKING_ID,
+        paymentId: PAYMENT_ID,
+        refundRequestId: "rr-4104-b",
+        amountCents: REFUND_CENTS + 1_000,
+        allocationPlan: [
+          { paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS, madeRefundId: "re_race_4104_a" },
+          { paymentTransactionId: TXN_ID, amountCents: 1_000, stripeKeySuffix: "refused1" },
+        ],
+      });
+      // A once (its own row), B once (the door's row) - never A twice.
+      expect(await owedNow()).toBe(REFUND_CENTS + 1_000);
+    });
+
+    it("MUTATION (ops 8): a refund Stripe created before the cutoff is raised dead, never re-sent", async () => {
+      const metadata = { bookingId: BOOKING_ID, reason: "cancellation" };
+      await doorRecords(stripeRefund("re_race_4104_backlog", "pending", metadata));
+      await setCutoff(new Date("2026-06-21T00:00:00.000Z"));
+      try {
+        await recordRefusedCardRefund(stripeRefund("re_race_4104_backlog", "failed", metadata));
+      } finally {
+        await setCutoff(new Date("2026-01-01T00:00:00.000Z"));
+      }
+      const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: failedLaterKey("re_race_4104_backlog") } });
+      expect(row).toMatchObject({ status: "PENDING", attempts: 5 });
+      expect(await prisma.paymentRecoveryOperation.count({ where: { id: row.id, ...deadCardRefundOperationWhere } })).toBe(1);
+      expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("not-claimed");
+      expect(await owedNow()).toBe(REFUND_CENTS);
+    });
+
+    it("the REAL cancelBooking marks a slice made before a later one threw (money 1), so its later failure is that row's", async () => {
+      const SECOND_TXN = "race-4104-txn-second";
+      const SECOND_INTENT = "pi_race_4104_second";
+      await prisma.paymentTransaction.update({ where: { id: TXN_ID }, data: { amountCents: PAID_CENTS - 6_000 } });
+      await prisma.paymentTransaction.create({
+        data: { id: SECOND_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: SECOND_INTENT, amountCents: 6_000, status: "SUCCEEDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+      });
+      // Newest first: the top-up's slice is made (pending), the primary's throws.
+      stripeRaceHooks.refund = async (args) => {
+        if (args.paymentIntentId !== SECOND_INTENT) throw new Error("Stripe timed out");
+        return { ...stripeRefund("re_race_4104_partial", "pending", args.metadata ?? null, args.amountCents), payment_intent: SECOND_INTENT, created: Math.floor(Date.now() / 1000) };
+      };
+      const { cancelBooking } = await import("@/lib/booking-cancel");
+      expect((await cancelBooking(BOOKING_ID, MEMBER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card")).status).toBe(200);
+      const key = `booking_cancel_refund_recovery_${BOOKING_ID}`;
+      expect(parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: key } })).allocationPlan)).toEqual([
+        { paymentTransactionId: SECOND_TXN, amountCents: 6_000, madeRefundId: "re_race_4104_partial" },
+        { paymentTransactionId: TXN_ID, amountCents: PAID_CENTS - 6_000 },
+      ]);
+      // Claimed once and waiting: the made slice's later failure moves it on this row.
+      await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: key }, data: { status: "FAILED", attempts: 1 } });
+      await recordRefusedCardRefund({ ...stripeRefund("re_race_4104_partial", "failed", { bookingId: BOOKING_ID, reason: "cancellation" }, 6_000), payment_intent: SECOND_INTENT } as Stripe.Refund);
+      expect(await failedLaterRows()).toHaveLength(0);
+      expect(parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: key } })).allocationPlan)?.[0]).toEqual({
+        paymentTransactionId: SECOND_TXN,
+        amountCents: 6_000,
+        stripeKeySuffix: "refused1",
+        failedRefundIds: ["re_race_4104_partial"],
+      });
+    }, 60_000);
 
     it("the payments cron's read-back finds a failure no event delivered, and stamps one still pending", async () => {
       const metadata = { bookingId: BOOKING_ID, reason: "refund_appeal_approved", refundRequestId: "rr-4104" };
