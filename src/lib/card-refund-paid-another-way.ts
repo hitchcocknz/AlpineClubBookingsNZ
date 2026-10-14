@@ -11,6 +11,7 @@ import { formatBookingReference } from "@/lib/booking-reference";
 import {
   PaidAnotherWayXeroChangedError,
   paidAnotherWayXeroAuditFollowUp,
+  paidAnotherWayCardNoteCoversCents,
   paidAnotherWayXeroPlan,
   paidAnotherWayXeroPromise,
   queuePaidAnotherWayXero,
@@ -23,6 +24,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX, normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
+import { paidAnotherWayCardNoteCoverContext } from "@/lib/card-refund-paid-another-way-cash";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import {
   CARD_REFUND_OPERATION_WHERE,
@@ -424,6 +426,12 @@ async function postPaidAnotherWayLine(
   await writeBookingLedgerRows(tx, rows);
 }
 
+/** The record's `reviewContext` for a card-note cover, or nothing (A-F1). */
+function cardNoteCoverReviewContext(cardNoteCoversCents: number): { reviewContext?: Prisma.InputJsonObject } {
+  const reviewContext = paidAnotherWayCardNoteCoverContext(cardNoteCoversCents);
+  return reviewContext ? { reviewContext } : {};
+}
+
 /** Close one dead card refund as paid another way. See the module comment. */
 export async function closeCardRefundPaidAnotherWay(
   input: CardRefundPaidAnotherWayInput,
@@ -583,6 +591,9 @@ export async function closeCardRefundPaidAnotherWay(
         completedByMemberId: input.actingMemberId,
         note,
         reason: paidAnotherWayReason(booking.id, input.paidBack),
+        // #4104 delta review (A-F1): what a card note already in Xero answers
+        // of the close, so its share counts it covered.
+        ...cardNoteCoverReviewContext(paidAnotherWayCardNoteCoversCents(xeroPlan, input.amountCents)),
       },
       select: { id: true },
     });

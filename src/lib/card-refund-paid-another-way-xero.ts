@@ -307,6 +307,15 @@ export function paidAnotherWayXeroAuditFollowUp(queued: PaidAnotherWayXeroQueued
 }
 
 /**
+ * #4104: how much of a close of `amountCents` the plan's card note answers -
+ * what the close's record keeps (`paidAnotherWayCardNoteCoverContext`) and its
+ * own note leaves out (`queuePaidAnotherWayXero`). 0 for any other plan.
+ */
+export function paidAnotherWayCardNoteCoversCents(plan: PaidAnotherWayXeroPlan, amountCents: number): number {
+  return plan.xeroRefundNote === "now" ? Math.min(amountCents, plan.cardNoteCoversCents ?? 0) : 0;
+}
+
+/**
  * Queue what the plan says, on the close's transaction, after its record:
  *
  * - `now` (M3 / round 5): the bank-transfer refund note, for exactly the amount
@@ -342,7 +351,7 @@ export async function queuePaidAnotherWayXero(
 ): Promise<PaidAnotherWayXeroQueued> {
   if (plan.xeroRefundNote === "now") {
     // #4104: what a card note already in Xero answers takes no second note.
-    const coveredCents = Math.min(close.amountCents, plan.cardNoteCoversCents ?? 0);
+    const coveredCents = paidAnotherWayCardNoteCoversCents(plan, close.amountCents);
     if (coveredCents >= close.amountCents) return "covered-by-card-note";
     const queued = await enqueueXeroRefundCreditNoteOperation(close.paymentId, close.amountCents - coveredCents, {
       createdByMemberId: close.actingMemberId,

@@ -37,7 +37,7 @@ import { prisma } from "./prisma";
 import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
-import { readPaidAnotherWayCloseShare } from "@/lib/card-refund-paid-another-way-cash";
+import { readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -386,8 +386,12 @@ export async function createXeroCreditNote(
         bookingId: payment.bookingId,
         refundedAmountCents: payment.refundedAmountCents,
       });
-      uncoveredCents = Math.max(0, eligibleCashCents - coveredCents);
-      evidenceLog = { cashRefundCents: evidence.cashRefundCents, cashEvidenceSource: evidence.source };
+      // #4104 (A-F2): less the closes' cash their own notes do not cover yet,
+      // as the self-heal sizes a card note: a card note queued before its
+      // refund failed later never bills a close's cash.
+      const closesUncoveredCents = await readPaidAnotherWayUncoveredCents(prisma, paymentId);
+      uncoveredCents = Math.max(0, eligibleCashCents - coveredCents - closesUncoveredCents);
+      evidenceLog = { cashRefundCents: evidence.cashRefundCents, cashEvidenceSource: evidence.source, paidAnotherWayUncoveredCents: closesUncoveredCents };
     }
 
     if (uncoveredCents <= 0) {

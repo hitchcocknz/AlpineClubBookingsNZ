@@ -444,6 +444,15 @@ describe("closing a dead card refund as paid another way", () => {
     expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("p-1", 10_000, expect.objectContaining({ paidAnotherWayTaskId: "task-1" }));
     expect(result.xeroQueued).toBe("refund-note-beyond-card-note");
     expect(mocks.kick).toHaveBeenCalledTimes(1);
+    // A-F1: the record keeps what the card note answers, so its share counts it covered.
+    expect(mocks.createRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ reviewContext: { paidAnotherWayCardNoteCover: 5_000 } }) }),
+    );
+  });
+
+  it("MUTATION (A-F1): a close no card note answers keeps nothing in its record's review context", async () => {
+    await close(15_000);
+    expect(mocks.createRecord.mock.calls[0]?.[0]?.data).not.toHaveProperty("reviewContext");
   });
 
   it("M3: says honestly when no note was queued", async () => {

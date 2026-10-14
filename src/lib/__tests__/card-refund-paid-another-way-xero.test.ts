@@ -39,6 +39,7 @@ vi.mock("@/lib/xero-operation-outbox", () => ({ enqueueXeroRefundCreditNoteOpera
 
 import {
   paidAnotherWayXeroPlan,
+  paidAnotherWayCardNoteCoversCents,
   paidAnotherWayXeroPromise,
   queuePaidAnotherWayXero,
 } from "@/lib/card-refund-paid-another-way-xero";
@@ -109,6 +110,9 @@ describe("a failed-later row closed as paid another way (#4104, money 2; delta M
     const xeroPlan = await plan();
     expect(await queue(xeroPlan, 1_000)).toBe("covered-by-card-note");
     expect(mocks.enqueueNote).not.toHaveBeenCalled();
+    // A-F1: the close's record keeps only what it paid back, never the whole cover.
+    expect(paidAnotherWayCardNoteCoversCents(xeroPlan, 1_000)).toBe(1_000);
+    expect(paidAnotherWayCardNoteCoversCents({ xeroRefundNote: "none" }, 1_000)).toBe(0);
     // D4: the dialog says so before the close, for a part close as for a full one.
     const promise = xeroRefundNotePromise("covered-by-card-note", "Bank transfer", "$40.00");
     expect(promise).toMatch(/card refund credit note for \$40\.00 of this refund/);

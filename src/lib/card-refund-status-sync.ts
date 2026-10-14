@@ -35,6 +35,12 @@ export type RefusedCardRefundOutcome = "not-refused" | "not-a-card-payment" | "r
  * recorded it: the row is written refused, and that writer, told by Stripe the
  * refund counts, reads the row and keeps it owed. Throws when the write fails,
  * so the webhook answers 500 and Stripe sends it again.
+ *
+ * STATED LIMIT (delta review B-2): a first-seen failure owes nothing, because
+ * it cannot tell a door still on its way from one that crashed before recording
+ * - owing it would owe it twice whenever the door lives. A door with no row
+ * persisted before its call that crashes there leaves no debt, as the same
+ * crash before the call would (`docs/CONCURRENCY_AND_LOCKING.md`).
  */
 export async function recordRefusedCardRefund(refund: Stripe.Refund): Promise<RefusedCardRefundOutcome> {
   if (!isRefusedRefundStatus(refund.status)) return "not-refused";

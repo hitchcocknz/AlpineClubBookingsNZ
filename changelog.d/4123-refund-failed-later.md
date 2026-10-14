@@ -11,7 +11,7 @@
   what the card refund note already there does not cover, and the dialog says
   how much that note covers. A refund made by hand in the card provider's
   dashboard, or an older group refund, is not re-sent; the officers are emailed
-  with its refund id, and the audit log records it under **Payment** (one more
+  with its refund id (and told not to raise a second Xero note for it), and the audit log records it under **Payment** (one more
   `payment` audit writer: 503 in all). A cancellation's card refund shortfall
   can no longer be marked paid back while such a refund is still owed.
   **Operators:** once the new release alone is serving, add the `refund.failed`

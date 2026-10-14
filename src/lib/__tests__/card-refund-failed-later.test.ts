@@ -401,7 +401,7 @@ describe("the officers' alert", () => {
     ["raised-dead", /will not be asked for again automatically: pay the member another way and close it under "Card refunds Stripe gave up on"/],
     ["raised-backlog", /before this release .* check whether the member has already been paid back, and close it under "Card refunds Stripe gave up on"/],
     // #4104 review (D2): which refund, and what to do about it.
-    ["not-resent", /card refund re_1 of \$40\.00 .*did not make it for this booking .* not asked for again .*refund them again there or pay them another way/],
+    ["not-resent", /card refund re_1 of \$40\.00 .*did not make it for this booking .* not asked for again .*refund them again there or pay them another way\. Raise no refund note for it in Xero: the card refund credit note raised while Stripe counted it, if there is one, already records it/],
   ] as const)("says what a %s decision means, once", async (outcome, words) => {
     await alertFailedLaterCardRefunds([{ ...debt, outcome } as FailedLaterCardRefundDebt]);
     expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);

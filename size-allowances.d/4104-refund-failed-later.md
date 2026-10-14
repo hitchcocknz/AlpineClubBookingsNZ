@@ -61,3 +61,13 @@ reason: the refund-note enqueue sizes a paid-another-way close's note, and it
   now caps that at what the close asks for - a close a card note already in
   Xero partly answers asks for less (#4104 review ML1). One `Math.min` and its
   comment, in the one sizing branch that ignored the requested amount.
+
+file: src/lib/xero-credit-notes.ts
+lines: 1350
+reason: the refund-note executor's card-note branch is the one place a queued
+  card note is sized at execution time, so it alone can leave out a "Paid
+  another way" close's bank cash that the close's own note answers (#4104 delta
+  review A-F2) - a card note queued before its refund failed later would
+  otherwise credit Xero a second time. One read through the existing helper
+  (`readPaidAnotherWayUncoveredCents`), one subtraction and its comment, the
+  same rule the self-heal and the repair tool already apply.
