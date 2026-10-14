@@ -1286,6 +1286,9 @@ export class PartialRefundError extends Error {
     paymentIntentId: string;
     refundId: string;
     amountCents: number;
+    /** #4070, #4083: Stripe's answer and the slice as sent; `refundPaymentTransactions` always sets both. */
+    status?: string | null;
+    slice?: RefundAllocationSlice;
   }>;
   /** #4083: slices Stripe answered but refused before the failure; still owed. */
   refusedSlices: RefundAllocationSlice[];

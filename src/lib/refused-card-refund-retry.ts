@@ -148,6 +148,29 @@ export function sliceAfterRecordedRefusals(
   return stripeKeySuffix ? { ...slice, stripeKeySuffix } : slice;
 }
 
+/**
+ * #4103 review C3: the Stripe key of a refund that has one fixed key and no
+ * plan to carry a generation - the legacy group settlement refund's replay and
+ * the superseded group intent's webhook refund. Moved on once for each refusal
+ * Stripe itself holds on the intent for the same amount and reason
+ * (`listRefundsForPaymentIntent`, read before the ask, outside any
+ * transaction), so a retry inside Stripe's 24 hours is a request it has never
+ * seen, while a refund made - or one whose answer was lost - keeps its key and
+ * is answered with the original.
+ */
+export function keyAfterStripeRefusals(
+  baseKey: string,
+  onIntent: ReadonlyArray<{ status: string | null; amount: number; metadata?: Record<string, string> | null }>,
+  match: { amountCents: number; reason: string },
+): string {
+  let suffix: string | undefined;
+  for (const refund of onIntent) {
+    const same = refund.amount === match.amountCents && refund.metadata?.reason === match.reason;
+    if (same && isRefusedRefundStatus(refund.status)) suffix = nextRefusedRefundKeySuffix(suffix);
+  }
+  return suffix ? `${baseKey}_${suffix}` : baseKey;
+}
+
 /** A refusal, with the intent it was asked of: the alert names it. */
 type RefusedAnswer = { slice: RefundAllocationSlice; paymentIntentId: string };
 

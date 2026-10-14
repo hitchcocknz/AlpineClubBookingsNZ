@@ -72,7 +72,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { prisma } from "./prisma";
-import { processRefund, cancelPaymentIntentIfCancellable } from "./stripe";
+import { processRefund, cancelPaymentIntentIfCancellable, listRefundsForPaymentIntent } from "./stripe";
 import {
   calculateRefundAmount,
   daysUntilDate,
@@ -116,7 +116,7 @@ import { clubToday } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import type { ClubFormat } from "@/lib/club-format";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
-import { refusedRefundMessage } from "@/lib/refused-card-refund-retry";
+import { keyAfterStripeRefusals, refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 
 // F3 (#1351): the recovery operation is enqueued BEFORE the inline Stripe
 // refund, so the cron must not claim it while this run is still executing.
@@ -784,7 +784,8 @@ export type GroupSettlementRefundReplayResult = {
  * Idempotency:
  * - The Stripe refund reuses the inline `group_cancel_refund_<settlementId>`
  *   key, so an ambiguous inline failure (Stripe refunded, response lost) is
- *   answered with the original refund, never repeated.
+ *   answered with the original refund, never repeated - moved on past each
+ *   refusal Stripe holds on the intent (#4103, `keyAfterStripeRefusals`).
  * - The settlement flip is guarded on SUCCEEDED; a crash-after-flip replay
  *   lands in the already_refunded branch and only completes the mirrors.
  * - Per-child refundedAmountCents mirrors are applied only to plan children
@@ -837,10 +838,13 @@ export async function executeGroupSettlementRefundPlan(
         groupBookingId: settlement.groupBookingId,
         reason: "organiser_cancellation",
       },
-      idempotencyKey: `group_cancel_refund_${settlement.id}`,
+      // #4103 (`INV-PAY-130`): moved on past each refusal Stripe holds, so a retry asks afresh.
+      idempotencyKey: keyAfterStripeRefusals(`group_cancel_refund_${settlement.id}`, await listRefundsForPaymentIntent(settlement.stripePaymentIntentId), {
+        amountCents: totalRefundCents,
+        reason: "organiser_cancellation",
+      }),
     });
-    // #4103 (`INV-PAY-130`): a refusal fails the attempt, never closing the row; its
-    // one fixed key reads the refusal back for 24 hours (a stated limit).
+    // #4103: a refusal fails the attempt, never closing the row; the backoff asks again.
     if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(totalRefundCents, format));
     await prisma.groupBookingSettlement.update({
       where: { id: settlement.id },

@@ -1,16 +1,16 @@
 import type { ClubFormat } from "@/lib/club-format";
 import type { RepairedLateCaptureXeroOutcome } from "@/lib/late-capture-repair-refund-record";
-import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { isRefusedRefundStatus, refusedRefundAnswerCents } from "@/lib/payment-transaction-status";
 import { refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 
 /**
  * #4103 (`INV-PAY-130`): the refunds Stripe made. A refused one (`failed` or
  * `canceled`) sent nothing back, so it is never recorded or noted as refunded.
- * Each refund carries Stripe's status (`refundPaymentTransactions`), untyped on
- * a `PartialRefundError`; one with none counts as made, as the ledger counts it.
+ * Each refund carries Stripe's status (`refundPaymentTransactions`); one with
+ * none counts as made, as the ledger counts it.
  */
-export function madeRepairRefunds<T extends { paymentIntentId: string }>(refunds: ReadonlyArray<T>): T[] {
-  return refunds.filter((refund) => !isRefusedRefundStatus((refund as { status?: string | null }).status));
+export function madeRepairRefunds<T extends { paymentIntentId: string; status?: string | null }>(refunds: ReadonlyArray<T>): T[] {
+  return refunds.filter((refund) => !isRefusedRefundStatus(refund.status));
 }
 
 /**
@@ -24,12 +24,12 @@ export function describeRefusedRepairedLateCaptureRefund(
   xero: RepairedLateCaptureXeroOutcome,
   format: ClubFormat,
 ): string | null {
-  const refusedCents = refunds.filter((refund) => isRefusedRefundStatus(refund.status)).reduce((sum, refund) => sum + refund.amountCents, 0);
+  const refusedCents = refusedRefundAnswerCents(refunds);
   if (refusedCents <= 0) return null;
   const made = madeRepairRefunds(refunds);
   return [
     made.length > 0 ? describeRepairedLateCaptureRefund(made, xero) : "",
-    `${refusedRefundMessage(refusedCents, format)} The capture is still held: re-run the repair to ask again, or refund it in Stripe.`,
+    `${refusedRefundMessage(refusedCents, format)} That money is still with the club: run the repair again to ask Stripe again, or refund it in the Stripe dashboard.`,
   ]
     .filter(Boolean)
     .join(" ");

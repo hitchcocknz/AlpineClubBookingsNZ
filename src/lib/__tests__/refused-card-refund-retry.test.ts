@@ -26,6 +26,7 @@ import {
   firstRefusals,
   inlineRefundAfterAttempt,
   keepRefusedPrePersistedRefundOwed,
+  keyAfterStripeRefusals,
   type RefundAttempt,
   sliceAfterRecordedRefusals,
   planAfterRefusals,
@@ -274,6 +275,27 @@ describe("the runner's refusal alert", () => {
 // #4103 (`INV-PAY-130`): every door whose row is written BEFORE its attempt -
 // the cancellation, the edit review, the late-capture approval, the duplicate
 // capture, the capacity race - re-plans that row through one helper.
+// #4103 review C3: a fixed-key refund's key moves on once per refusal Stripe
+// holds for it; a refund made (or one whose answer was lost) keeps its key.
+describe("keyAfterStripeRefusals", () => {
+  const match = { amountCents: 9000, reason: "organiser_cancellation" };
+  const refund = (status: string | null, amount = 9000, reason = "organiser_cancellation") => ({ status, amount, metadata: { reason } });
+
+  it("no refusal: the key it has always been sent under", () => {
+    expect(keyAfterStripeRefusals("k", [], match)).toBe("k");
+    expect(keyAfterStripeRefusals("k", [refund("succeeded"), refund("pending")], match)).toBe("k");
+  });
+
+  it("one generation per refusal of this refund, and none for another amount or reason", () => {
+    expect(keyAfterStripeRefusals("k", [refund("failed")], match)).toBe("k_refused1");
+    expect(keyAfterStripeRefusals("k", [refund("failed"), refund("canceled"), refund("failed", 100), refund("failed", 9000, "other")], match)).toBe("k_refused2");
+  });
+
+  it("a refund made after a refusal keeps the key that made it, so its replay is answered with it", () => {
+    expect(keyAfterStripeRefusals("k", [refund("failed"), refund("succeeded")], match)).toBe("k_refused1");
+  });
+});
+
 describe("a pre-persisted row after a refusal (#4103)", () => {
   const a = { paymentTransactionId: "txn_a", amountCents: 1000 };
   const b = { paymentTransactionId: "txn_b", amountCents: 500 };

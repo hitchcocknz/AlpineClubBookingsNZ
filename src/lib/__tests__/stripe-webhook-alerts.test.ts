@@ -35,6 +35,7 @@ const {
   mockMarkBookingPaymentSucceeded,
   mockMarkBookingSetupIntentSucceeded,
   mockListRefundsForCharge,
+  mockListRefundsForPaymentIntent,
   mockProcessRefund,
   mockGetPaymentMethod,
   mockApplyGroupSettlementSucceeded,
@@ -147,6 +148,8 @@ const {
   }),
   mockMarkBookingSetupIntentSucceeded: vi.fn().mockResolvedValue({ stamped: true }),
   mockListRefundsForCharge: vi.fn().mockResolvedValue([]),
+  // #4103 review C3: the refusals Stripe holds on a superseded group intent.
+  mockListRefundsForPaymentIntent: vi.fn().mockResolvedValue([]),
   mockProcessRefund: vi.fn().mockResolvedValue({ id: "re_1" }),
   // #3266 — read by `setup-intent-card.ts`, which is left REAL so the "is the
   // card still attached" verdict runs for real over this double.
@@ -205,6 +208,7 @@ vi.mock("@/lib/deleted-booking-modification-payment", () => ({
 vi.mock("@/lib/stripe", () => ({
   constructWebhookEvent: (...args: unknown[]) => mockConstructWebhookEvent(...args),
   listRefundsForCharge: (...args: unknown[]) => mockListRefundsForCharge(...args),
+  listRefundsForPaymentIntent: (...args: unknown[]) => mockListRefundsForPaymentIntent(...args),
   processRefund: (...args: unknown[]) => mockProcessRefund(...args),
   getPaymentMethod: (...args: unknown[]) => mockGetPaymentMethod(...args),
 }));
@@ -458,6 +462,7 @@ describe("Stripe webhook Xero alerting", () => {
     });
     mockMarkBookingSetupIntentSucceeded.mockResolvedValue({ stamped: true });
     mockListRefundsForCharge.mockResolvedValue([]);
+    mockListRefundsForPaymentIntent.mockResolvedValue([]);
     mockProcessRefund.mockResolvedValue({ id: "re_1" });
     mockApplyGroupSettlementSucceeded.mockResolvedValue({
       outcome: "settled",
@@ -1603,6 +1608,27 @@ describe("Stripe webhook Xero alerting", () => {
     expect(mockLogAudit).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "group.settlement.superseded_intent_refunded" }),
     );
+  });
+
+  // #4103 review C3/(d): the redelivery after a refusal asks on a key Stripe
+  // has never seen (its 24-hour cache would answer the old one with the same
+  // refusal), and a refusal again is not alerted twice.
+  it("a redelivery after a refusal asks on a fresh key, and is not alerted again when refused again (#4103)", async () => {
+    mockConstructWebhookEvent.mockReturnValue(groupSettlementSucceededEvent("evt_group_refused_again", "pi_group_mismatch"));
+    mockApplyGroupSettlementSucceeded.mockResolvedValue({ outcome: "amount_mismatch", settledBookingIds: [] });
+    mockListRefundsForPaymentIntent.mockResolvedValueOnce([
+      { id: "re_refused", status: "failed", amount: 50000, metadata: { reason: "group_settlement_superseded" } },
+    ]);
+    mockProcessRefund.mockResolvedValueOnce({ id: "re_refused_again", status: "failed" });
+
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mockProcessRefund).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "group_settlement_superseded_refund_pi_group_mismatch_refused1" }),
+    );
+    expect(mockMarkGroupSettlementIntentRefunded).not.toHaveBeenCalled();
+    expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
   });
 
   it("does not refund or alert when the group settlement applies cleanly", async () => {
@@ -2961,6 +2987,39 @@ describe("Stripe webhook Xero alerting", () => {
         expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
         expect(mockLogAudit).not.toHaveBeenCalledWith(
           expect.objectContaining({ action: "booking.payment.refunded_after_cancellation" }),
+        );
+      });
+
+      // #4103 review (a): the slice that WAS made is not lost from the record:
+      // the hold's audit names it, and its Xero note is queued, sized by the
+      // capture's own made refunds (a refused one is never counted).
+      it("one slice made beside one refused: the hold's audit names the made part, and its Xero note is queued", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_refused_part_noted"));
+        armCancelledBooking("inv-7", null);
+        mockRefundPaymentTransactions.mockResolvedValue({
+          refunds: [answer("txn-7", 9000, "succeeded"), answer("txn-6", 3000, "canceled")],
+          totalRefundedAmountCents: 12000,
+        });
+        mockHasReleasedXeroSupplementaryInvoiceOperationsForPaymentIntent.mockResolvedValue(true);
+        mockIsXeroConnected.mockResolvedValue(false);
+        mockPaymentRefundFindMany.mockResolvedValue([
+          { amountCents: 9000, status: "succeeded", stripeCreatedAt: new Date("2026-06-11T22:00:00.000Z"), createdAt: new Date("2026-06-11T22:00:00.000Z") },
+          { amountCents: 3000, status: "canceled", stripeCreatedAt: new Date("2026-06-11T22:00:00.000Z"), createdAt: new Date("2026-06-11T22:00:00.000Z") },
+        ]);
+
+        const response = await POST(makeRequest());
+
+        expect(response.status).toBe(200);
+        expect(mockLogAudit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "booking.payment.late_capture_refund_held",
+            details: expect.stringContaining('"refundedBesideRefusalCents":9000'),
+          }),
+        );
+        expect(mockEnqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+          "payment-7",
+          9000,
+          expect.objectContaining({ refundMethod: "card", paymentIntentId: "pi_primary_late" }),
         );
       });
 

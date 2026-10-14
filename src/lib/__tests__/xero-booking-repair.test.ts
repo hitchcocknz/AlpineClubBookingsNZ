@@ -5379,7 +5379,7 @@ describe("runBookingXeroRepair", () => {
 
   // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
   // without throwing. That slice sent nothing back, so it is never recorded or
-  // noted as refunded, and the action fails saying the capture is still held.
+  // noted as refunded, and the action fails saying the money is still with the club.
   describe("a late-capture refund Stripe refuses (#4103)", () => {
     const KEY = "late-capture-refund:booking_1:payment_1:13000";
     const answer = (paymentIntentId: string, transactionId: string, amountCents: number, status: string) => ({
@@ -5412,7 +5412,7 @@ describe("runBookingXeroRepair", () => {
 
       expect(recorded).toEqual([]);
       expect(action?.status).toBe("failed");
-      expect(action?.resultMessage).toMatch(/Stripe refused \$130\.00 .*still owed\. The capture is still held/);
+      expect(action?.resultMessage).toMatch(/Stripe refused \$130\.00 .*still owed\. That money is still with the club/);
       expect(action?.resultMessage).not.toMatch(/^Refunded/);
     });
 

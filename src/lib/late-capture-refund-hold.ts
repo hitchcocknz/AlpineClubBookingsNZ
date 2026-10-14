@@ -11,7 +11,7 @@ import {
   type CancelledBookingLateCaptureKind,
 } from "@/lib/deleted-booking-modification-payment";
 import logger from "@/lib/logger";
-import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { refusedRefundAnswerCents } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -108,8 +108,9 @@ export async function holdLateCaptureForTreasurerIfRequired(
    * asks Stripe again under a fresh key (`keepRefusedPrePersistedRefundOwed`).
    * A held task completes only as a card refund or a dismissal, so an open #2700
    * question cannot be completed as a hand-back while a retry is in flight.
+   * `madeCents`: what the same attempt did refund beside the refusal, for the audit.
    */
-  { afterStripeRefused = false }: { afterStripeRefused?: boolean } = {},
+  { afterStripeRefused = false, madeCents = 0 }: { afterStripeRefused?: boolean; madeCents?: number } = {},
 ): Promise<boolean> {
   const marker = { lateCaptureApprovalIntentId: capture.paymentIntentId };
   const owned = await prisma.manualRefundTask.findUnique({
@@ -196,7 +197,7 @@ export async function holdLateCaptureForTreasurerIfRequired(
       manualRefundTaskId: raised.taskId,
       taskRaised: raised.created,
       refundSent: false,
-      ...(afterStripeRefused ? { stripeRefusedAutomaticRefund: true } : {}),
+      ...(afterStripeRefused ? { stripeRefusedAutomaticRefund: true, refundedBesideRefusalCents: madeCents } : {}),
     }),
   });
   await announceHeldLateCapture(capture);
@@ -209,21 +210,22 @@ export async function holdLateCaptureForTreasurerIfRequired(
  * so the record, audit row, alert and Xero note that say "refunded" would each
  * be false: the refused amount is held for a treasurer instead
  * (`afterStripeRefused`), whose task and once-ever alert are the record, and the
- * handler stops. Returns false when Stripe refused nothing.
+ * handler stops. Returns false when Stripe refused nothing. A slice made beside
+ * the refusal (the primary handler's plan can span charges) is named in the
+ * audit; its Xero note is the handler's.
  */
 export async function holdLateCaptureRefusedByStripe(
   capture: HeldLateCapture,
   refunds: ReadonlyArray<{ status: string | null; amountCents: number }>,
 ): Promise<boolean> {
-  const refusedCents = refunds
-    .filter((refund) => isRefusedRefundStatus(refund.status))
-    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  const refusedCents = refusedRefundAnswerCents(refunds);
   if (refusedCents <= 0) return false;
+  const madeCents = refunds.reduce((sum, refund) => sum + refund.amountCents, 0) - refusedCents;
   logger.error(
-    { bookingId: capture.bookingId, paymentIntentId: capture.paymentIntentId, refusedCents },
+    { bookingId: capture.bookingId, paymentIntentId: capture.paymentIntentId, refusedCents, madeCents },
     "Stripe refused the automatic refund of a late capture on a cancelled booking; holding it for a treasurer (#4103)",
   );
-  await holdLateCaptureForTreasurerIfRequired({ ...capture, amountCents: refusedCents }, { afterStripeRefused: true });
+  await holdLateCaptureForTreasurerIfRequired({ ...capture, amountCents: refusedCents }, { afterStripeRefused: true, madeCents });
   return true;
 }
 

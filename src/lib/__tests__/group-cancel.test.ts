@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   txExecuteRaw: vi.fn(),
   transaction: vi.fn(),
   processRefund: vi.fn(),
+  // #4103 review C3: the refusals Stripe holds on the intent, read before the replay asks.
+  listRefundsForPaymentIntent: vi.fn(async (): Promise<unknown[]> => []),
   cancelPaymentIntentIfCancellable: vi.fn(),
   calculateRefundAmount: vi.fn(),
   daysUntilDate: vi.fn(),
@@ -104,6 +106,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 vi.mock("@/lib/stripe", () => ({
   processRefund: mocks.processRefund,
+  listRefundsForPaymentIntent: mocks.listRefundsForPaymentIntent,
   cancelPaymentIntentIfCancellable: mocks.cancelPaymentIntentIfCancellable,
 }));
 vi.mock("@/lib/cancellation", () => ({
@@ -1495,8 +1498,7 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
   });
 
   // #4103 (`INV-PAY-130`): a refusal fails the attempt, so the runner never
-  // closes the row on it. Its one fixed key reads the same refusal back for 24
-  // hours, so its retries die owed and alerted (a stated limit).
+  // closes the row on it, and its backoff asks again.
   it.each([["failed"], ["canceled"]])("throws on a refund Stripe answers %s: no flip, no mirror (#4103)", async (status) => {
     mocks.settlementFindUnique.mockResolvedValue(settlement());
     mocks.processRefund.mockResolvedValueOnce({ id: "re_refused", amount: 9000, status });
@@ -1504,6 +1506,23 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     await expect(executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST)).rejects.toThrow(/Stripe refused \$90\.00 .*still owed/);
     expect(mocks.settlementUpdate).not.toHaveBeenCalled();
     expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  // #4103 review C3: Stripe answers a repeated key with its cached refusal for
+  // 24 hours, so the replay's key moves on once for each refusal Stripe holds on
+  // the intent for this refund (same amount, same reason).
+  it("asks past the refusals Stripe holds for this refund, on a key it has never seen (#4103)", async () => {
+    mocks.settlementFindUnique.mockResolvedValue(settlement());
+    mocks.listRefundsForPaymentIntent.mockResolvedValueOnce([
+      { id: "re_1", status: "failed", amount: 9000, metadata: { reason: "organiser_cancellation" } },
+      { id: "re_2", status: "canceled", amount: 9000, metadata: { reason: "organiser_cancellation" } },
+      { id: "re_3", status: "failed", amount: 4000, metadata: { reason: "organiser_cancellation" } },
+      { id: "re_4", status: "failed", amount: 9000, metadata: { reason: "something_else" } },
+    ]);
+
+    await executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST);
+
+    expect(mocks.processRefund).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "group_cancel_refund_settle-1_refused2" }));
   });
 
   it("rolls back the refund mirror when durable Xero enqueue fails", async () => {

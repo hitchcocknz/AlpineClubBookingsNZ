@@ -2,7 +2,7 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
 import { bookingOwner, bookingOwnerEmail } from "@/lib/booking-owner";
 import { bookingPromoEmailFields } from "@/lib/booking-promo-email-options";
 import { prisma } from "@/lib/prisma";
-import { listRefundsForCharge, processRefund } from "@/lib/stripe";
+import { listRefundsForCharge, listRefundsForPaymentIntent, processRefund } from "@/lib/stripe";
 import { markBookingPaymentSucceeded, markBookingSetupIntentSucceeded } from "@/lib/payment-reconciliation";
 import { classifySucceededSetupIntentCard } from "@/lib/setup-intent-card";
 import { isXeroConnected } from "@/lib/xero";
@@ -64,7 +64,7 @@ import {
 import { adoptSavedCardChargeAttemptForIntent } from "@/lib/saved-card-charge-settle";
 import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 import { isCapturedTransactionStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
-import { refusedRefundMessage } from "@/lib/refused-card-refund-retry";
+import { keyAfterStripeRefusals, refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -1285,7 +1285,15 @@ async function refundSupersededGroupSettlementIntent(
       : "did not match the group settlement total at apply time (the recorded amount, or a child booking changed while the intent was open)";
 
   let refundId: string | null = null;
+  // #4103: a refusal after an earlier one, already alerted, is retried by the redelivery without a second alert.
+  let repeatedRefusal = false;
   try {
+    const baseKey = `group_settlement_superseded_refund_${paymentIntent.id}`;
+    // #4103 (`INV-PAY-130`): moved on past each refusal Stripe holds, so a redelivery asks afresh.
+    const idempotencyKey = keyAfterStripeRefusals(baseKey, await listRefundsForPaymentIntent(paymentIntent.id), {
+      amountCents: paymentIntent.amount,
+      reason: "group_settlement_superseded",
+    });
     const refund = await processRefund({
       paymentIntentId: paymentIntent.id,
       amountCents: paymentIntent.amount,
@@ -1294,17 +1302,21 @@ async function refundSupersededGroupSettlementIntent(
         ...(groupBookingId ? { groupBookingId } : {}),
         reason: "group_settlement_superseded",
       },
-      idempotencyKey: `group_settlement_superseded_refund_${paymentIntent.id}`,
+      idempotencyKey,
     });
-    // #4103 (`INV-PAY-130`): a refusal (failed/canceled) refunded nothing, so it
-    // fails like a thrown refund: alerted, rethrown, never marked REFUNDED.
-    if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(paymentIntent.amount, format));
+    // A refusal (failed/canceled) refunded nothing, so it fails like a thrown
+    // refund: alerted, rethrown, never marked REFUNDED.
+    if (isRefusedRefundStatus(refund.status)) {
+      repeatedRefusal = idempotencyKey !== baseKey;
+      throw new Error(refusedRefundMessage(paymentIntent.amount, format));
+    }
     refundId = refund.id;
   } catch (refundErr) {
     logger.error(
       { err: refundErr, paymentIntentId: paymentIntent.id, groupBookingId, outcome },
       "Failed to refund superseded group settlement PaymentIntent; rethrowing so Stripe redelivers"
     );
+    if (repeatedRefusal) throw refundErr;
     await alertSupersededGroupSettlementIntent(
       paymentIntent,
       groupBookingId,
@@ -1802,7 +1814,11 @@ async function handleCancelledBookingPaymentSucceeded(
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
-  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) return;
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) {
+    // #4103: this plan can span charges, so a slice made beside the refusal is still noted (sized by what was made).
+    await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
+    return;
+  }
   const refundId = refundResult.refunds[0]?.refundId;
 
   // #2773: the record this path never had. Awaited, and its failure audited rather
