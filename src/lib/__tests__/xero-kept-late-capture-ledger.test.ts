@@ -317,10 +317,12 @@ import {
   enqueueXeroKeptLateCaptureInvoiceOperation,
   settleKeptLateCaptureRecordOnApproval,
 } from "@/lib/xero-kept-late-capture-invoice";
+import { logAudit } from "@/lib/audit";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import { buildLateCaptureApprovalRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import {
   creditBackLateCaptureRefunds,
+  finishApprovedLateCaptureRefund,
   noteLateCaptureRefunds,
   queueLateCaptureRefundCreditNote,
 } from "@/lib/late-capture-refund-credit-note";
@@ -1132,5 +1134,43 @@ describe("round 6: a late charge's refund paid another way - record the receipt,
     expect(noteRows()).toHaveLength(1);
     expect(books()).toEqual({ income: 0, stripe: 24000, receivable: 0 });
     expect(bankAccount()).toBe(-24000);
+  });
+});
+
+
+describe("#4078: approved late-capture refund audit wire compatibility", () => {
+  it.each([
+    ["modification", "modification_additional"],
+    ["primary", "primary"],
+    [null, null],
+  ] as const)("preserves kind for %s captures", async (captureKind, kind) => {
+    seed({});
+    const refund = {
+      bookingId: BOOKING,
+      paymentId: PAYMENT,
+      paymentIntentId: INTENT,
+      amountCents: 2500,
+      refundId: "re_4078",
+      captureKind,
+      approvedByMemberId: "treasurer_4078",
+      manualRefundTaskId: "task_4078",
+    };
+    await finishApprovedLateCaptureRefund(refund);
+    expect(logAudit).toHaveBeenCalledWith({
+      action: "booking.payment.refunded_after_cancellation",
+      category: "payment",
+      memberId: refund.approvedByMemberId,
+      entityType: "Booking",
+      entityId: BOOKING,
+      targetId: BOOKING,
+      details: JSON.stringify({
+        paymentIntentId: INTENT,
+        refundId: refund.refundId,
+        amountCents: refund.amountCents,
+        kind,
+        approvedByMemberId: refund.approvedByMemberId,
+        manualRefundTaskId: refund.manualRefundTaskId,
+      }),
+    });
   });
 });

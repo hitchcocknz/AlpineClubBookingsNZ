@@ -42,6 +42,7 @@ import { sizeReissuedAskReplay } from "@/lib/additional-ask-recovery-replay";
 import type { AdditionalAsk, AdditionalAskPayment } from "@/lib/additional-payment-ask";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
+import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { bookingOwner } from "@/lib/booking-owner";
 import { prisma } from "@/lib/prisma";
 import { REISSUED_ASK_REASON, stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
@@ -87,7 +88,7 @@ export function planReissuedAskMint({
     idempotencyKey,
     metadata: {
       bookingId,
-      type: "modification_additional",
+      type: ADDITIONAL_ASK_INTENT_TYPE,
       reason: REISSUED_ASK_REASON,
       [REISSUED_ASK_KEY_METADATA]: idempotencyKey,
     },
