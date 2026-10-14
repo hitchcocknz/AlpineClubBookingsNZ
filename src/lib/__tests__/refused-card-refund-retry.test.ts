@@ -4,8 +4,9 @@
 // slices move, and that a persisted plan keeps the generation it was moved to.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const updateMany = vi.hoisted(() => vi.fn(async () => ({ count: 1 })));
-vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany } } }));
+const updateMany = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ count: 1 })));
+const findUnique = vi.hoisted(() => vi.fn(async (_args?: unknown) => ({ id: "op_row", paymentIntentId: "pi_row" })));
+vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique } } }));
 const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
 
@@ -21,6 +22,7 @@ import { PartialRefundError } from "@/lib/payment-transactions";
 import {
   firstRefusals,
   inlineRefundAfterAttempt,
+  keepRefusedPrePersistedRefundOwed,
   planAfterRefusals,
   refundPlanOrRetryRefusals,
   refusedRefundAlertMessage,
@@ -263,3 +265,93 @@ describe("the runner's refusal alert", () => {
   });
 });
 
+
+// #4103 (`INV-PAY-128`): every door whose row is written BEFORE its attempt -
+// the cancellation, the edit review, the late-capture approval, the duplicate
+// capture, the capacity race - re-plans that row through one helper.
+describe("a pre-persisted row after a refusal (#4103)", () => {
+  const a = { paymentTransactionId: "txn_a", amountCents: 1000 };
+  const b = { paymentTransactionId: "txn_b", amountCents: 500 };
+  const c = { paymentTransactionId: "txn_c", amountCents: 250 };
+  const answer = (slice: typeof a, status: string) => ({ status, slice, refundId: `re_${slice.paymentTransactionId}`, paymentIntentId: `pi_${slice.paymentTransactionId}` });
+  const keep = (attempt: Parameters<typeof keepRefusedPrePersistedRefundOwed>[0]["attempt"], extra: { plan?: Array<typeof a>; alertOfficers?: boolean } = {}) =>
+    keepRefusedPrePersistedRefundOwed({ bookingId: "b1", idempotencyKey: "row_key", attempt, format: CLUB_FORMAT_TEST, ...extra });
+  const writtenPlan = () => (updateMany.mock.calls[0]?.[0] as { data: { allocationPlan: unknown } }).data.allocationPlan;
+
+  beforeEach(() => {
+    updateMany.mockReset().mockResolvedValue({ count: 1 });
+    findUnique.mockClear();
+    alertPaymentRecoveryOfficers.mockClear();
+  });
+
+  it("a clean refusal: the row is re-planned on the next key, only while untouched, and alerted once", async () => {
+    const error = await keep({ refunds: [answer(a, "failed")] });
+
+    expect(error?.message).toMatch(/Stripe refused \$10\.00 .*still owed/);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { idempotencyKey: "row_key", status: "PENDING", attempts: 0 },
+      data: { allocationPlan: [{ ...a, stripeKeySuffix: "refused1" }], lastError: error?.message },
+    });
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "b1", operationId: "op_row", amountCents: 1000, paymentIntentId: "pi_txn_a" }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("one made and one refused: the made slice is marked with its refund, the refused one moves; the alert names only the refusal", async () => {
+    await keep({ refunds: [answer(a, "succeeded"), answer(b, "canceled")] });
+
+    expect(writtenPlan()).toEqual([{ ...a, madeRefundId: "re_txn_a" }, { ...b, stripeKeySuffix: "refused1" }]);
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 500 }), CLUB_FORMAT_TEST);
+  });
+
+  it("refused then thrown: the refusal moves, the made slice is marked, the slice that threw and the one never sent keep their keys", async () => {
+    const thrown = new PartialRefundError({
+      completedRefundCents: 0,
+      refunds: [answer(a, "failed"), answer(b, "succeeded")].map((each) => ({ ...each, amountCents: each.slice.amountCents })),
+      refusedSlices: [a],
+      cause: new Error("network"),
+      format: CLUB_FORMAT_TEST,
+    });
+
+    const error = await keep({ error: thrown }, { plan: [a, b, c] });
+
+    expect(error).not.toBeNull();
+    expect(writtenPlan()).toEqual([{ ...a, stripeKeySuffix: "refused1" }, { ...b, madeRefundId: "re_txn_b" }, c]);
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+  });
+
+  it("a replay against a row a worker already holds moves nothing and alerts nobody: the runner reads the refusal itself", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const error = await keep({ refunds: [answer(a, "failed")] });
+
+    expect(error).not.toBeNull();
+    expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+  });
+
+  it("a door with its own failure alert re-plans without a second alert", async () => {
+    await keep({ refunds: [answer(a, "failed")] }, { alertOfficers: false });
+
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["every slice made", { refunds: [answer(a, "succeeded"), answer(b, "pending")] }],
+    ["a throw before any Stripe call", { error: new Error("payment not found") }],
+    ["its own refusal, met again in the door's catch", { error: new Error("Stripe refused $10.00") }],
+  ])("nothing refused (%s): no write, no alert, no error", async (_label, attempt) => {
+    expect(await keep(attempt)).toBeNull();
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+  });
+
+  it("a write that fails leaves the row open and still returns the refusal, never throwing into the door", async () => {
+    updateMany.mockRejectedValue(new Error("db down"));
+
+    await expect(keep({ refunds: [answer(a, "failed")] })).resolves.toBeInstanceOf(Error);
+    expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+  });
+});

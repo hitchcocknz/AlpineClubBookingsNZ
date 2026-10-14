@@ -60,11 +60,18 @@ const mocks = vi.hoisted(() => ({
   recordBookingEvent: vi.fn(),
   recordDuplicateCaptureRefundEvent: vi.fn(),
   lodgeFindFirst: vi.fn(),
+  // #4103: the refusal's re-plan of the pre-persisted row, outside the transaction.
+  recoveryUpdateMany: vi.fn(),
+  recoveryFindUnique: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: (...args: unknown[]) => mocks.transaction(...args),
+    paymentRecoveryOperation: {
+      updateMany: (...args: unknown[]) => mocks.recoveryUpdateMany(...args),
+      findUnique: (...args: unknown[]) => mocks.recoveryFindUnique(...args),
+    },
   },
 }));
 
@@ -413,6 +420,8 @@ beforeEach(() => {
   mocks.recordDuplicateCaptureRefundRecoveryInlineError.mockResolvedValue({
     count: 1,
   });
+  mocks.recoveryUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.recoveryFindUnique.mockResolvedValue(null);
 });
 
 // The settled auto-charge capture and the arriving in-flight link capture.
@@ -1153,6 +1162,78 @@ describe("#1992 duplicate-capture auto-refund", () => {
     expect(result.outcome).toBe("already_paid");
     expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+  });
+});
+
+// #4103 (`INV-PAY-128`): Stripe can answer the duplicate's refund `failed` or
+// `canceled` without throwing. Nothing went back: the pre-persisted row stays
+// open, re-planned on the slice's next key, and the door reports a failure -
+// never "refunded", never the admin-only REFUNDED history event. Its own
+// failure alert is the refusal's one alert. The duplicate is one capture, so its
+// plan is one slice: "one made beside one refused" and "refused then thrown"
+// cannot arise here (the capacity race's suite covers them).
+describe("#4103 a duplicate-capture refund Stripe refuses", () => {
+  const refused = (status: string) => ({
+    refunds: [
+      {
+        status,
+        slice: { paymentTransactionId: "txn-duplicate", amountCents: 10000 },
+        refundId: "re_dup",
+        paymentIntentId: DUPLICATE_PI,
+        amountCents: 10000,
+      },
+    ],
+  });
+  const settle = () =>
+    markBookingPaymentSucceeded({
+      format: CLUB_FORMAT_TEST,
+      bookingId: "booking-1",
+      paymentIntentId: DUPLICATE_PI,
+      amountCents: 10000,
+      paymentMethodId: "pm_1",
+    });
+
+  it.each([["failed"], ["canceled"]])("answered %s: the row stays open on the next key, the door reports a failure, and alerts once", async (status) => {
+    primeDuplicateCaptureLedger();
+    mocks.refundPaymentTransactions.mockResolvedValue(refused(status));
+
+    const result = await settle();
+
+    expect(result.outcome).toBe("duplicate_capture_refund_failed");
+    expect(result.refundError).toMatch(/Stripe refused \$100\.00 .*still owed/);
+    expect(mocks.markDuplicateCaptureRefundRecoverySucceeded).not.toHaveBeenCalled();
+    expect(mocks.recordDuplicateCaptureRefundEvent).not.toHaveBeenCalled();
+    expect(mocks.recoveryUpdateMany).toHaveBeenCalledWith({
+      where: {
+        idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey("booking-1", DUPLICATE_PI),
+        status: PaymentRecoveryOperationStatus.PENDING,
+        attempts: 0,
+      },
+      data: {
+        allocationPlan: [{ paymentTransactionId: "txn-duplicate", amountCents: 10000, stripeKeySuffix: "refused1" }],
+        lastError: result.refundError,
+      },
+    });
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ refundFailed: true, errorMessage: expect.stringMatching(/Stripe refused/) }),
+      CLUB_FORMAT_TEST,
+    );
+    // The shared refusal alert is not sent beside the door's own.
+    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it("a replay whose row a worker already holds moves nothing and stays quiet: the worker alerts as it moves the slice", async () => {
+    primeDuplicateCaptureLedger();
+    mocks.refundPaymentTransactions.mockResolvedValue(refused("failed"));
+    mocks.recoveryUpdateMany.mockResolvedValue({ count: 0 });
+
+    const result = await settle();
+
+    expect(result.outcome).toBe("duplicate_capture_refund_failed");
+    expect(mocks.markDuplicateCaptureRefundRecoverySucceeded).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).not.toHaveBeenCalled();
+    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
   });
 });
 

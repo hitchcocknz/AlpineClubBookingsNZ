@@ -36,7 +36,7 @@ import {
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
-import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError } from "@/lib/refused-card-refund-retry";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -2186,25 +2186,28 @@ export async function markBookingPaymentSucceeded({
           "Failed to record inline duplicate-capture refund failure on the recovery operation"
         )
       );
-      sendAdminDuplicateCaptureRefundAlert({
-        memberName: `${bookingOwner(reconciliation.booking).member.firstName} ${bookingOwner(reconciliation.booking).member.lastName}`,
-        checkIn: reconciliation.booking.checkIn,
-        checkOut: reconciliation.booking.checkOut,
-        amountCents: plannedRefundCents,
-        paymentIntentId,
-        settledPaymentIntentId: settledPaymentIntentId ?? null,
-        operationReference: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
-          bookingId,
-          paymentIntentId
-        ),
-        errorMessage: refundErrorMessage,
-        refundFailed: true,
-      }, format).catch((alertErr) =>
-        logger.error(
-          { err: alertErr, bookingId, paymentIntentId },
-          "Failed to alert admins about the failed duplicate-capture refund"
-        )
-      );
+      // #4103: a refusal whose row a worker already holds is alerted by that worker.
+      if (!(refundError instanceof RefusedCardRefundError && !refundError.replanned)) {
+        sendAdminDuplicateCaptureRefundAlert({
+          memberName: `${bookingOwner(reconciliation.booking).member.firstName} ${bookingOwner(reconciliation.booking).member.lastName}`,
+          checkIn: reconciliation.booking.checkIn,
+          checkOut: reconciliation.booking.checkOut,
+          amountCents: plannedRefundCents,
+          paymentIntentId,
+          settledPaymentIntentId: settledPaymentIntentId ?? null,
+          operationReference: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
+            bookingId,
+            paymentIntentId
+          ),
+          errorMessage: refundErrorMessage,
+          refundFailed: true,
+        }, format).catch((alertErr) =>
+          logger.error(
+            { err: alertErr, bookingId, paymentIntentId },
+            "Failed to alert admins about the failed duplicate-capture refund"
+          )
+        );
+      }
 
       return {
         outcome: "duplicate_capture_refund_failed",
@@ -2352,13 +2355,16 @@ export async function markBookingPaymentSucceeded({
           "Failed to record inline capacity-race refund failure on the recovery operation"
         )
       );
-      await alertRefundFailure({
-        format,
-        booking: reconciliation.booking,
-        paymentIntentId,
-        amountCents,
-        error: refundErrorMessage,
-      });
+      // #4103: a refusal whose row a worker already holds is alerted by that worker.
+      if (!(refundError instanceof RefusedCardRefundError && !refundError.replanned)) {
+        await alertRefundFailure({
+          format,
+          booking: reconciliation.booking,
+          paymentIntentId,
+          amountCents,
+          error: refundErrorMessage,
+        });
+      }
 
       return {
         outcome: "cancelled_refund_failed",

@@ -233,6 +233,22 @@ export function answersBeforeFailure(err: unknown): AnsweredRefund[] {
 }
 
 /**
+ * A refusal a pre-persisted door met (`keepRefusedPrePersistedRefundOwed`):
+ * its message is what the door records, and `replanned` says whether this
+ * write moved the row. When it did not, a worker holds the row and alerts as
+ * it moves the slice itself, so a door with its own failure alert stays quiet.
+ */
+export class RefusedCardRefundError extends Error {
+  constructor(
+    message: string,
+    readonly replanned: boolean,
+  ) {
+    super(message);
+    this.name = "RefusedCardRefundError";
+  }
+}
+
+/**
  * #4096, #4103: a card refund whose recovery row was written BEFORE its inline
  * attempt - a cancellation, an edit review's, a treasurer-approved late
  * capture's, a duplicate capture's, a capacity race's - and that Stripe refused
@@ -250,7 +266,8 @@ export function answersBeforeFailure(err: unknown): AnsweredRefund[] {
  * The officers are alerted for the slices refused on their first key when this
  * write moved the row, with what is in hand if the row cannot be read back -
  * unless the door raises its own failure alert (`alertOfficers: false`), which
- * then carries the refusal, so it is heard once.
+ * then carries the refusal, and is raised only when this write moved the row
+ * (`RefusedCardRefundError.replanned`), so it is heard once.
  */
 export async function keepRefusedPrePersistedRefundOwed({
   bookingId,
@@ -268,7 +285,7 @@ export async function keepRefusedPrePersistedRefundOwed({
   attempt: { refunds: ReadonlyArray<AnsweredRefund> } | { error: unknown };
   format: ClubFormat;
   alertOfficers?: boolean;
-}): Promise<Error | null> {
+}): Promise<RefusedCardRefundError | null> {
   const answered = "error" in attempt ? answersBeforeFailure(attempt.error) : attempt.refunds;
   const refused = refusedAnswers(answered);
   if (refused.length === 0) return null;
@@ -306,7 +323,7 @@ export async function keepRefusedPrePersistedRefundOwed({
       format,
     );
   }
-  return new Error(message);
+  return new RefusedCardRefundError(message, moved);
 }
 
 /**
