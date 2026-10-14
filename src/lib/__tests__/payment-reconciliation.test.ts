@@ -90,8 +90,11 @@ vi.mock("@/lib/prisma", () => ({
       updateMany: (...args: unknown[]) => refusalReplan.updateMany(...args),
       findUnique: async () => null,
     },
+    // #4125: the member-facing booking events, read back by the capacity-race tests.
+    bookingEvent: { create: (...args: unknown[]) => bookingEvents.create(...args) },
   },
 }));
+const bookingEvents = vi.hoisted(() => ({ create: vi.fn<(...args: unknown[]) => Promise<object>>(async () => ({})) }));
 const refusalReplan = vi.hoisted(() => ({ updateMany: vi.fn<(...args: unknown[]) => Promise<{ count: number }>>(async () => ({ count: 1 })) }));
 
 vi.mock("@/lib/payment-transactions", () => ({
@@ -1073,6 +1076,12 @@ describe("markBookingPaymentSucceeded", () => {
         })
       );
       expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalled();
+      // #4125: the member's history says the refund is under way, never that it was made.
+      const written = bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string; reason: string | null; snapshot: { policySummary?: string } } }).data);
+      const cancelled = written.find((event) => event.type === "CANCELLED");
+      expect(cancelled?.reason).toBe("These dates filled up before payment could be secured, so the booking was cancelled and the full amount is being refunded.");
+      expect(cancelled?.snapshot.policySummary).toBe("These dates were no longer available when payment completed, so the full amount is being refunded.");
+      expect(written.some((event) => event.type === "REFUNDED")).toBe(false);
       // #3611: the cancel posts its ledger reversals in its own claim, keeping nothing.
       expect(cancellationLedger.postCancellationLedgerLines).toHaveBeenCalledWith(
         expect.objectContaining({ bookingId: "booking-1", keptCents: 0, site: "settle:capacity-void" }),
@@ -1091,6 +1100,8 @@ describe("markBookingPaymentSucceeded", () => {
       });
 
       expect(result.outcome).toBe("cancelled_refunded");
+      // #4125: made inline, so the REFUNDED event follows the CANCELLED one.
+      expect(bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string } }).data.type)).toEqual(["CANCELLED", "REFUNDED"]);
       // The durable backstop is enqueued unconditionally, before the refund.
       expect(
         mocks.enqueueCapacityClaimFailedRefundRecovery

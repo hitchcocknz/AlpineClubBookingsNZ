@@ -364,6 +364,36 @@ describe("resolveBookingNarrative", () => {
     expect(result.message).toContain("no refund was due and the full $120.00 was retained");
   });
 
+  // #4125: the capacity race's CANCELLED event is written before its card
+  // refund is attempted; while no REFUNDED event follows (it threw, or Stripe
+  // refused it, and the recovery row is retrying), the member is told it is on
+  // its way - never "refunded", never "no refund was due".
+  it("a card refund not yet made reads as on its way, not refunded and not 'no refund was due' (#4125)", () => {
+    const cancelled = event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
+      amountCents: 12000,
+      snapshot: {
+        policySummary: "These dates were no longer available when payment completed, so the full amount is being refunded.",
+        refundMethod: "card",
+        refundPercentage: 100,
+        paidAmountCents: 12000,
+        settledAmountCents: 12000,
+        retainedAmountCents: 0,
+      },
+    });
+    const paid = event(BookingEventType.MEMBER_PAID, "2026-05-02T00:00:00.000Z", { amountCents: 12000 });
+    const pending = resolveBookingNarrative({ club: CLUB, booking: booking({ status: "CANCELLED" }), events: [paid, cancelled] }, CLUB_FORMAT_TEST);
+    expect(pending.message).toContain("$120.00 is on its way back to your original payment method.");
+    expect(pending.message).not.toContain("was refunded");
+    expect(pending.message).not.toContain("no refund was due");
+
+    const made = resolveBookingNarrative({
+      club: CLUB,
+      booking: booking({ status: "CANCELLED" }),
+      events: [paid, cancelled, event(BookingEventType.REFUNDED, "2026-05-05T00:00:00.000Z", { amountCents: 12000 })],
+    }, CLUB_FORMAT_TEST);
+    expect(made.message).toContain("$120.00 was refunded on 5 May 2026");
+  });
+
   it("surfaces an admin-declined review with the reason", () => {
     const result = resolveBookingNarrative({
       club: CLUB,

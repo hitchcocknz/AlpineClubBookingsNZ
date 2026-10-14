@@ -141,6 +141,15 @@ export function buildCancelledPostPaymentNarrative(
       retainedAmountCents > 0
         ? `${formatCents(settledAmountCents, format)} is being refunded to you by the club directly (you paid in cash or by bank transfer, so there is no card payment to reverse) and ${formatCents(retainedAmountCents, format)} was retained`
         : `${formatCents(settledAmountCents, format)} is being refunded to you by the club directly — you paid in cash or by bank transfer, so there is no card payment to reverse`;
+  } else if (snapshot?.refundMethod === "card" && settledAmountCents > 0) {
+    // #4125: a card refund with no REFUNDED event yet was not made inline - it
+    // threw, or Stripe refused it - and its recovery row is retrying it. Saying
+    // "no refund was due" would deny the member's money; "refunded" would claim
+    // money not yet back.
+    settlementClause =
+      retainedAmountCents > 0
+        ? `${formatCents(settledAmountCents, format)} is on its way back to your original payment method and ${formatCents(retainedAmountCents, format)} was retained`
+        : `${formatCents(settledAmountCents, format)} is on its way back to your original payment method`;
   } else {
     settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents, format)} was retained`;
   }
