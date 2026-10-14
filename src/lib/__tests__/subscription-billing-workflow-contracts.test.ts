@@ -263,11 +263,32 @@ describe("subscription invoice delivery behavior", () => {
     expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "charge-1", status: { notIn: ["NOT_REQUIRED", "VOIDED"] } },
     }));
-    // #4098: the message names the two real choices, not a "resolve" action
-    // that never existed.
+    // #4098: the message names the real choices, not a "resolve" action that
+    // never existed.
     expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
-        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Close it as already paid on the Subscriptions page, or reverse the manual payment and Retry.",
+        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Close it as already paid on the Subscriptions page, or reverse the payment (Mark as unpaid on the subscription, or void it in Xero) and Retry.",
+      }),
+    }));
+  });
+
+  it("tells a partly paid charge to reverse the payment or finish paying, not to close (#4098)", async () => {
+    // The worker conflicts when ANY covered subscription is PAID, but the close
+    // needs EVERY one paid, so a partly paid charge is told how to finish it.
+    mocks.chargeFind.mockResolvedValue(charge({
+      coverage: [
+        { memberName: "Cash Payer", subscription: { id: "subscription-1", status: "PAID", manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z") } },
+        { memberName: "Still Owing", subscription: { id: "subscription-2", status: "NOT_INVOICED", manuallyMarkedPaidAt: null } },
+      ],
+    }));
+
+    await createXeroMembershipSubscriptionInvoice({ chargeId: "charge-1", syncOperationId: "op-1" });
+
+    expect(mocks.createInvoices).not.toHaveBeenCalled();
+    expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "CONFLICT",
+        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Not every covered subscription is paid, so it can't be closed as paid: reverse the payment (Mark as unpaid on the subscription, or void it in Xero) and Retry to invoice the whole charge, or record the remaining payments and then close it.",
       }),
     }));
   });

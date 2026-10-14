@@ -308,7 +308,10 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
         data: {
           status: "CONFLICT",
           lastErrorCode: SUBSCRIPTION_ALREADY_PAID_CODE,
-          lastErrorMessage: subscriptionAlreadyPaidConflictMessage(alreadyPaid.map((row) => row.memberName)),
+          lastErrorMessage: subscriptionAlreadyPaidConflictMessage(
+            alreadyPaid.map((row) => row.memberName),
+            alreadyPaid.length === charge.coverage.length,
+          ),
         },
       });
       await completeXeroSyncOperation(input.syncOperationId, {

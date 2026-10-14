@@ -38,16 +38,36 @@ export const SUBSCRIPTION_ALREADY_PAID_CODE = "SUBSCRIPTION_ALREADY_PAID";
 /** The longest reason an officer may give for closing an already-paid charge. */
 export const CLOSE_ALREADY_PAID_REASON_MAX = 500;
 
+/** How to undo a payment recorded outside the charge, in the panel's words. */
+const REVERSE_PAYMENT_HOW = "Mark as unpaid on the subscription, or void it in Xero";
+
 /**
- * The conflict message the invoice worker stores. It names the two real
- * choices, both on the Subscriptions page (#4098).
+ * What to do with an already-paid conflict whose covered subscriptions are not
+ * all paid: it can't be closed as paid. Shared with the close's refusal.
  */
-export function subscriptionAlreadyPaidConflictMessage(paidMemberNames: readonly string[]): string {
+export const PARTLY_PAID_CHARGE_ADVICE =
+  "Not every covered subscription is paid, so it can't be closed as paid: " +
+  `reverse the payment (${REVERSE_PAYMENT_HOW}) and Retry to invoice the whole charge, ` +
+  "or record the remaining payments and then close it.";
+
+/**
+ * The conflict message the invoice worker stores, naming the real choices
+ * (#4098). The worker conflicts when ANY covered subscription is PAID, but the
+ * close needs EVERY one paid, so a partly paid charge gets different advice.
+ */
+export function subscriptionAlreadyPaidConflictMessage(
+  paidMemberNames: readonly string[],
+  everyCoveredSubscriptionPaid: boolean,
+): string {
   const subject = paidMemberNames.length === 1 ? "subscription is" : "subscriptions are";
-  return (
-    `Covered ${subject} already PAID (${paidMemberNames.join(", ")}); no Xero invoice was created. ` +
-    "Close it as already paid on the Subscriptions page, or reverse the manual payment and Retry."
-  );
+  const head = `Covered ${subject} already PAID (${paidMemberNames.join(", ")}); no Xero invoice was created. `;
+  if (everyCoveredSubscriptionPaid) {
+    return (
+      head +
+      `Close it as already paid on the Subscriptions page, or reverse the payment (${REVERSE_PAYMENT_HOW}) and Retry.`
+    );
+  }
+  return head + PARTLY_PAID_CHARGE_ADVICE;
 }
 
 /**

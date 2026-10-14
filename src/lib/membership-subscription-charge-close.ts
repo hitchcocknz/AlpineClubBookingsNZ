@@ -4,6 +4,7 @@ import {
   CLOSE_ALREADY_PAID_REASON_MAX,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
+  PARTLY_PAID_CHARGE_ADVICE,
   SUBSCRIPTION_ALREADY_PAID_CODE,
 } from "@/lib/subscription-charge-already-paid";
 import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-invoices";
@@ -124,7 +125,7 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
     const unpaid = charge.coverage.filter((row) => row.subscription.status !== "PAID");
     if (unpaid.length > 0) {
       throw new CloseAlreadyPaidChargeError(
-        `Not every covered subscription is paid (${unpaid.map((row) => row.memberName).join(", ")}). Retry the charge to invoice it instead.`,
+        `Still unpaid: ${unpaid.map((row) => row.memberName).join(", ")}. ${PARTLY_PAID_CHARGE_ADVICE}`,
         409,
       );
     }

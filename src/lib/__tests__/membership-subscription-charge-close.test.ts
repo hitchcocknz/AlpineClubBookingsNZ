@@ -168,7 +168,7 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
         { subscriptionId: "sub-2", memberName: "Ben Reversed", subscription: { status: "NOT_INVOICED", memberId: "member-2" } },
       ],
     }));
-    await expectRefusal(409, /Ben Reversed/);
+    await expectRefusal(409, /Still unpaid: Ben Reversed\. Not every covered subscription is paid/);
     expectNoWrites();
   });
 
