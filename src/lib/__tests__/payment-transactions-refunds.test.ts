@@ -26,8 +26,8 @@ vi.mock("@/lib/stripe", () => ({
 // #4104: the failed-later debt and its alert, observed here; their own rules are
 // `card-refund-failed-later.test.ts`'s.
 const failedLater = vi.hoisted(() => ({
-  keep: vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []),
-  alert: vi.fn(async (..._args: unknown[]) => undefined),
+  keep: vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []),
+  alert: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
 }));
 vi.mock("@/lib/card-refund-failed-later", () => ({
   keepFailedLaterCardRefundsOwed: failedLater.keep,

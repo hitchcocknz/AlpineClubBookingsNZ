@@ -323,7 +323,7 @@ vi.mock("@/lib/webhook-log", () => ({
 }));
 
 // #4104: a refund Stripe accepted and failed later.
-const mockRecordRefusedCardRefund = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => "recorded"));
+const mockRecordRefusedCardRefund = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>(async () => "recorded"));
 vi.mock("@/lib/card-refund-status-sync", () => ({
   recordRefusedCardRefund: (...args: unknown[]) => mockRecordRefusedCardRefund(...args),
 }));
