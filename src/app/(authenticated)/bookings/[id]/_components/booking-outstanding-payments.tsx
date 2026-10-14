@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { Button } from "@/components/ui/button";
 import { bindClubFormat } from "@/lib/club-format-bound";
@@ -16,10 +17,22 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
   zone: ClubTimeZone;
 }) {
   const [view, setView] = useState(initial);
+  const [continuationFailed, setContinuationFailed] = useState(false);
   const [pending, startTransition] = useTransition();
+  const router = useRouter();
   const money = bindClubFormat(format);
   const club = bindClubTime(zone, format);
   if (view.kind === "hidden") return null;
+  if (continuationFailed) return (
+    <div className="space-y-2 rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11" role="alert">
+      <p>More invoices could not be checked. Current payment information needs to be checked again before using the payment controls.</p>
+      {view.cardDueCents > 0 ? <p>The last checked additional card amount was {money.cents(view.cardDueCents)}. Its current payment status could not be confirmed.</p> : null}
+      <Button variant="outline" disabled={pending} onClick={() => startTransition(() => router.refresh())}>
+        {pending ? "Checking…" : "Check current payment information"}
+      </Button>{" "}
+      <a className="underline" href={`/bookings/${bookingId}`}>Reload this booking</a>
+    </div>
+  );
   const hasEvidence = hasOutstandingCollectionEvidence(view);
   const showInvoices = view.observations.length > 0;
   if (!hasEvidence && !showInvoices) return null;
@@ -54,7 +67,10 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
                 ? { ...next, observations: [...view.observations, ...next.observations].filter((row, index, rows) => rows.findIndex((other) => other.invoiceId === row.invoiceId) === index) }
                 : next);
             } catch {
-              setView({ ...view, observations: [], cardDueCents: 0, incomplete: true, nextCursor: null });
+              // Transport failure gives no new card authority. Retain its last
+              // observation, mark uncertainty separately and revalidate the page.
+              setContinuationFailed(true);
+              router.refresh();
             }
           })}>{pending ? "Checking…" : "Check more invoices"}</Button>
         </> : null}

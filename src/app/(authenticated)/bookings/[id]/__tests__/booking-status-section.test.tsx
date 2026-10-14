@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("../_lib/booking-detail-outstanding", () => ({ readBookingOutstandingAction: vi.fn() }));
 vi.mock("../_lib/booking-detail-history", () => ({ loadBookingDetailHistory: vi.fn() }));

@@ -24,8 +24,11 @@ describe("authenticated supplementary invoice continuation", () => {
     expect(readBookingOutstandingAction).toHaveBeenCalledWith("booking", "actor", "signed-cursor");
     expect(await response.json()).toEqual({ kind: "hidden" }); expect(response.headers.get("cache-control")).toBe("private, no-store");
   });
-  it("withholds the financial view if the fresh local read fails", async () => {
+  it("distinguishes an unavailable authority read from a valid hidden view", async () => {
     vi.mocked(readBookingOutstandingAction).mockRejectedValue(new Error("unavailable"));
-    expect(await (await read()).json()).toEqual({ kind: "hidden" });
+    const response = await read();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Invoice observations unavailable" });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
   });
 });

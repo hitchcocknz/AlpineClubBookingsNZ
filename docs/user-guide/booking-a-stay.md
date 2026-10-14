@@ -208,6 +208,11 @@ automatically. If an amount or its instructions cannot yet be confirmed, check
 the booking again or contact the club. A withdrawn invoice may have a replacement;
 it does not mean the club waived the money.
 
+If checking more invoices fails, the page rechecks current payment information.
+Until that succeeds, any earlier card amount is labelled as last checked and
+payment controls wait for revalidation. Use **Check current payment information**
+or **Reload this booking** to try again.
+
 ### A booking the club saved for you
 
 Sometimes the booking is already made when you sign in. Someone at the club can

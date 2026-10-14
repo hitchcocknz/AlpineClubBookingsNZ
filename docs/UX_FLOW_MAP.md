@@ -798,7 +798,8 @@ in
 The booking detail page streams its additional-payment information separately.
 The owner sees each current card ask or dated remaining supplementary bank
 invoice amount with how to pay. Officers see the read-only audience; a plain
-linked guest sees neutral stay confirmation. Known or uncertain extras suppress
+linked guest sees neutral copy matching the current stay status, including
+awaiting confirmation on a pending booking. Known or uncertain extras suppress
 whole-booking no-payment reassurance while historical payment receipts and the
 canonical financial-review clauses remain visible to the financial audience.
 
@@ -806,7 +807,10 @@ A user presses **Check more invoices** to reach subsequent bounded batches.
 Each invoice retains its own timestamp and instructions; batches are never
 combined into a current total. Incomplete evidence says amounts/instructions
 cannot yet be confirmed and offers re-entry. Cancelled/bumped/deleted bookings
-suppress collection. See [the member guide](user-guide/booking-a-stay.md#additional-money-after-a-booking-change)
+suppress collection. A failed continuation marks payment authority uncertain,
+requests a page refresh and offers an explicit current-payment retry or reload;
+it never treats an unknown card ask as zero or leaves old pay controls current.
+See [the member guide](user-guide/booking-a-stay.md#additional-money-after-a-booking-change)
 and [the provider reader contract](xero/ARCHITECTURE.md#booking-page-supplementary-invoice-observations-4047).
 
 ## A booking change whose money is still being worked out (#3033, epic #2797)

@@ -11,6 +11,7 @@ import type { BookingDetailPayment } from "../_lib/booking-detail-payment";
 import type { BookingDetailHistory } from "../_lib/booking-detail-history";
 import type { BookingDetailMessages } from "../_lib/booking-detail-messages";
 import { BookingMoneyReconciliationNotice } from "./booking-money-reconciliation-notice";
+import { isPaidLikeBookingStatus } from "@/lib/booking-status";
 
 // States with a self-contained outcome worth surfacing as a banner. Active
 // states (payable / under_review) already have their own dedicated UI below.
@@ -77,6 +78,8 @@ export function BookingStatusBanners({
   } = party;
   const { showCompletePaymentCard } = payment;
   const { bookingNarrative } = history;
+  const neutralFinancialNarrative = !viewer.canSeeOwnerCredit && ["paid", "financial_review_pending"].includes(bookingNarrative.state);
+  const stayConfirmed = isPaidLikeBookingStatus(booking.status) || booking.status === "CONFIRMED";
   const { paymentRequiredDescription, financialReviewPendingDescription } =
     messages;
   return (
@@ -123,8 +126,8 @@ export function BookingStatusBanners({
             "border-border bg-muted text-foreground"
           }`}
         >
-          <p className="font-medium">{!viewer.canSeeOwnerCredit && ["paid", "financial_review_pending"].includes(bookingNarrative.state) ? "Booking confirmed" : bookingNarrative.headline}</p>
-          <p>{!viewer.canSeeOwnerCredit && ["paid", "financial_review_pending"].includes(bookingNarrative.state) ? "This stay is confirmed." : bookingNarrative.message}</p>
+          <p className="font-medium">{neutralFinancialNarrative ? stayConfirmed ? "Booking confirmed" : "Booking awaiting confirmation" : bookingNarrative.headline}</p>
+          <p>{neutralFinancialNarrative ? stayConfirmed ? "This stay is confirmed." : "This booking is awaiting confirmation." : bookingNarrative.message}</p>
           {/* #3033: the club's configurable explanation, inside the banner and
               between the facts and the next step, which is where a member reads
               it as part of one message rather than as a second notice. */}
@@ -134,7 +137,7 @@ export function BookingStatusBanners({
               {financialReviewPendingDescription}
             </p>
           ) : null}
-          {viewer.canSeeOwnerCredit || !["paid", "financial_review_pending"].includes(bookingNarrative.state) ? <p className="opacity-80">{bookingNarrative.nextStep}</p> : null}
+          {!neutralFinancialNarrative ? <p className="opacity-80">{bookingNarrative.nextStep}</p> : null}
         </div>
       ) : null}
 

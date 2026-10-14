@@ -42,4 +42,22 @@ describe("additional evidence and the status narrative", () => {
     expect(render(false)).not.toContain("$50.00");
     expect(render(true)).toContain("$50.00");
   });
+  it.each(["PENDING", "PAYMENT_PENDING", "CONFIRMED", "PAID", "COMPLETED"])("keeps guest financial-review copy private and accurate for %s", (status) => {
+    const review = narrative(true, true, [], status);
+    expect(review.state).toBe("financial_review_pending");
+    const html = renderToStaticMarkup(<BookingStatusBanners
+      booking={{ status, creditElectionCents: null } as never} club={club} money={bindClubFormat(CLUB_FORMAT_TEST)}
+      viewer={{ isBookingOwner: false, isLinkedGuestViewer: true, canSeeOwnerCredit: false } as never}
+      access={{ isDeleted: false } as never} party={{} as never} payment={{ showCompletePaymentCard: false } as never}
+      history={{ bookingNarrative: review, moneyReconciliation: { visibility: "WITHHELD" } } as never}
+      messages={{ financialReviewPendingDescription: "Private financial review detail" } as never} />);
+    if (status === "PENDING" || status === "PAYMENT_PENDING") {
+      expect(html).toContain("This booking is awaiting confirmation.");
+      expect(html).not.toContain("This stay is confirmed");
+      expect(html).not.toContain("Booking confirmed");
+    } else expect(html).toContain("This stay is confirmed.");
+    expect(html).not.toContain("$");
+    expect(html).not.toContain("Private financial review detail");
+    expect(html).not.toContain("charged");
+  });
 });

@@ -5,6 +5,7 @@ import { asRecord } from "@/lib/xero-json";
 import { stableDigest } from "@/lib/stable-digest";
 
 export type InvoiceObservationCursorScope = { actorId: string; bookingId: string; tenantId: string; revision: string };
+export const MAX_INVOICE_OBSERVATION_CURSOR_LENGTH = 2_000;
 function signature(body: string): Buffer {
   const secret = getAuthSecretWithSource()?.secret;
   if (!isAuthSecretStrongEnough(secret)) throw new Error("Observation continuation is unavailable");
@@ -17,7 +18,7 @@ export function createInvoiceObservationCursor(scope: InvoiceObservationCursorSc
 }
 
 export function readInvoiceObservationCursor(cursor: string, scope: InvoiceObservationCursorScope, count: number): number | null {
-  if (cursor.length > 2_000) return null;
+  if (cursor.length > MAX_INVOICE_OBSERVATION_CURSOR_LENGTH) return null;
   try {
     const parts = cursor.split(".");
     if (parts.length !== 2) return null;
