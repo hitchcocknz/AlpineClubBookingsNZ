@@ -69,7 +69,14 @@ export async function nonCardCapturedCharges(
     orderBy: { createdAt: "desc" },
     select: { id: true, source: true, stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
   });
-  return (rows ?? [])
+  return nonCardChargeHeadroom(rows ?? []);
+}
+
+/** The pure step of `nonCardCapturedCharges`, for rows already captured: #4119's cancel preview reads its in-memory ledger through it. */
+export function nonCardChargeHeadroom(
+  capturedRows: ReadonlyArray<Parameters<typeof isStripeTransaction>[0] & { id: string; amountCents: number; refundedAmountCents: number }>,
+): Array<{ id: string; headroomCents: number }> {
+  return capturedRows
     .filter((row) => !isStripeTransaction(row))
     .map((row) => ({ id: row.id, headroomCents: Math.max(0, row.amountCents - row.refundedAmountCents) }));
 }

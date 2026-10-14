@@ -336,6 +336,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-128` | Edit, cancel and refund-request card refunds Stripe refuses stay owed |
 | `INV-PAY-129` | A cancel's card refund shortfall is split: bank transfer, or check first |
 | `INV-PAY-130` | No other card refund door closes or says refunded on a refusal |
+| `INV-PAY-131` | The cancel preview quotes the card only what its plan carries |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |

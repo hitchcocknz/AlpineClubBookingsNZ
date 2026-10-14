@@ -21,7 +21,8 @@ import {
 import { formatCents } from "@/lib/utils";
 import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { useClubFormat } from "@/components/club-format-provider";
-import { ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundConfirmation } from "@/components/cancel-booking-payment-notes";
+import { CardRefundShortfallRows, CardRefundShortfallSentence, cardShortfallOptionLabel, ForcedRefundNote, NoRefundablePaymentNote, OrganiserRefundConfirmation, OwnCardRefundConfirmation } from "@/components/cancel-booking-payment-notes";
+import type { CancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall";
 
 interface CancelPreview {
   refundAmountCents: number;
@@ -53,6 +54,7 @@ interface CancelPreview {
   paymentSettledByHand?: boolean;
   /** #3653: the organiser's cancellation of the group already refunds this booking; the cancel's own sentence. */
   groupCancellationRefundNote?: string;
+  cardShortfall?: CancelCardRefundSplit; // #4119: the card refund plan carries less than refundAmountCents
 }
 
 export function CancelBookingButton({
@@ -414,6 +416,7 @@ export function CancelBookingButton({
     const hasCardRefund =
       preview.refundAmountCents > 0 || preview.creditRefundAmountCents > 0;
     const hasRefund = hasCardRefund || preview.creditRestoredCents > 0;
+    const cardShortfall = hasCardRefund && !preview.manualRefund && refundMethod === "card" ? preview.cardShortfall : undefined; // #4119
 
     return renderWithHostingOverrideRegion(
       <div className="rounded-md border border-danger-6 bg-danger-3 p-4 space-y-3">
@@ -491,7 +494,7 @@ export function CancelBookingButton({
                   />
                   <span>
                     <span className="font-medium text-foreground">
-                      Refund {formatCents(preview.refundAmountCents, format)} to original payment method
+                      {preview.cardShortfall ? cardShortfallOptionLabel(preview.cardShortfall, format) : `Refund ${formatCents(preview.refundAmountCents, format)} to original payment method`}
                     </span>
                     <span className="text-muted-foreground ml-1">({preview.refundPercentage}% refund)</span>
                   </span>
@@ -552,7 +555,7 @@ export function CancelBookingButton({
                     </span>
                   </div>
                 )}
-              {hasCardRefund && !preview.manualRefund && (
+              {cardShortfall ? <CardRefundShortfallRows split={cardShortfall} format={format} /> : hasCardRefund && !preview.manualRefund && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
                     {refundMethod === "credit" ? "Credit to account:" : "Refund to card:"}
@@ -597,6 +600,7 @@ export function CancelBookingButton({
                 </div>
               )}
             </div>
+            {cardShortfall && <CardRefundShortfallSentence split={cardShortfall} format={format} onBehalfOfMember={onBehalfOfMember} />}
           </div>
         )}
 

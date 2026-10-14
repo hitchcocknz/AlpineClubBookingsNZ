@@ -1258,8 +1258,9 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
 
 ## INV-PAY-129
 
-**Related: `INV-PAY-101`** (a hand-back's wording and Xero note) and
-**`INV-PAY-122`** (a card refund paid another way).
+**Related: `INV-PAY-101`** (a hand-back's wording and Xero note),
+**`INV-PAY-122`** (a card refund paid another way) and **`INV-PAY-131`** (the
+preview).
 
 - **What an own-card cancel's card refund plan cannot carry is recorded, split
   by what can hold it** (#4097). The plan covers what the captured Stripe
@@ -1326,6 +1327,33 @@ doors (#4103).
     `refused-card-refund-retry.test.ts`, the duplicate-capture,
     reconciliation, webhook, hold, recovery, group-cancel and repair suites,
     and `refused-card-refund-retry.realdb.test.ts`.
+
+## INV-PAY-131
+
+**Related: `INV-PAY-129`** (what the cancel records when its card refund plan is
+short).
+
+- **The cancel preview quotes the card only what the cancel's card refund plan
+  will carry** (#4119). Where the plan is short, the dialog names the card's
+  part, the bank-transfer part and the part the club will be in touch about,
+  in the one wording home's sentence, said before anything is asked of the card.
+  - **Sized by the cancel's own steps, in its order**: the claim's mirror fold
+    (one walk, `foldMirrorRefundIntoLedger`, over rows read in one order,
+    `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
+    charges as its backfill would write them (`legacyBackfillRows`), the
+    claim's planner (`planCardRefundFromLedger`), and the split
+    (`sizeCancelCardShortfall`). Asked only behind the cancel's own gate
+    (`cancelRaisesCardShortfall`): the card branch, not forced to account
+    credit or to the organiser's card.
+  - **The preview writes nothing.** A GET that backfilled ledger rows could
+    collide with the cancel's own backfill on the unique intent id. Its reads
+    are one read-only `RepeatableRead` snapshot, with no lock and no provider
+    call.
+  - Advisory, like the rest of the preview: the cancel re-plans under its
+    locks, so the two differ only if the payment's records move in between.
+  - Proven by `cancel-card-refund-shortfall-preview.test.ts`, the route's
+    `card-refund-shortfall.test.ts`, `cancel-booking-button.test.tsx` and
+    `cancel-card-refund-shortfall.realdb.test.ts`.
 
 ## INV-PAY-031
 

@@ -449,6 +449,94 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       });
     });
 
+    // #4119: the cancel preview sizes the card line from the same plan and the
+    // same split, read without writing. Asked first, with the refund the cancel
+    // then computes, it must quote exactly what the cancel then does.
+    describe("the cancel preview quotes what the cancel does (#4119)", () => {
+      const at = (day: string) => new Date(`${day}T00:00:00.000Z`);
+      it.each([
+        {
+          shape: "a bank-paid part the card cannot refund",
+          payment: {},
+          ledger: [
+            { id: CARD_TXN, kind: "PRIMARY" as const, source: "STRIPE" as const, stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-05-01") },
+            { id: BANK_TXN, kind: "ADDITIONAL" as const, source: "INTERNET_BANKING" as const, amountCents: BANK_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-06-01") },
+          ],
+          due: PRICE_CENTS,
+          split: { cardCents: CARD_CENTS, bankCents: BANK_CENTS, checkCents: 0 },
+        },
+        {
+          shape: "both parts",
+          payment: {},
+          ledger: [
+            { id: CARD_TXN, kind: "PRIMARY" as const, source: "STRIPE" as const, stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-05-01") },
+            { id: BANK_TXN, kind: "ADDITIONAL" as const, source: "INTERNET_BANKING" as const, amountCents: 2_000, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-06-01") },
+          ],
+          due: PRICE_CENTS,
+          split: { cardCents: CARD_CENTS, bankCents: 2_000, checkCents: 4_000 },
+        },
+        {
+          // The record shows $30.00 refunded that no ledger row does. The
+          // cancel's claim folds it onto the oldest captured row - the card -
+          // before it plans; unfolded, the preview would quote the card $140.00.
+          shape: "a partly refunded record the ledger does not show, folded first",
+          payment: { status: "PARTIALLY_REFUNDED" as const, refundedAmountCents: 3_000 },
+          ledger: [
+            { id: CARD_TXN, kind: "PRIMARY" as const, source: "STRIPE" as const, stripePaymentIntentId: INTENT, amountCents: CARD_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-05-01") },
+            { id: BANK_TXN, kind: "ADDITIONAL" as const, source: "INTERNET_BANKING" as const, amountCents: BANK_CENTS, refundedAmountCents: 0, status: "SUCCEEDED" as const, createdAt: at("2026-06-01") },
+          ],
+          due: PRICE_CENTS - 3_000,
+          split: { cardCents: CARD_CENTS - 3_000, bankCents: BANK_CENTS, checkCents: 0 },
+        },
+        {
+          shape: "a zero plan",
+          payment: {},
+          ledger: [
+            { id: CARD_TXN, kind: "PRIMARY" as const, source: "STRIPE" as const, stripePaymentIntentId: INTENT, amountCents: PRICE_CENTS, refundedAmountCents: PRICE_CENTS, status: "REFUNDED" as const, createdAt: at("2026-05-01") },
+          ],
+          due: PRICE_CENTS,
+          split: { cardCents: 0, bankCents: 0, checkCents: PRICE_CENTS },
+        },
+        {
+          // No ledger rows: read as the backfill would write them, which the
+          // preview must not do - the cancel's own backfill would then collide
+          // with it on the intent id.
+          shape: "a pre-ledger payment the card carries",
+          payment: {},
+          ledger: [],
+          due: PRICE_CENTS,
+          split: null,
+        },
+      ])("$shape", async ({ payment, ledger, due, split }) => {
+        if (Object.keys(payment).length > 0) await prisma.payment.update({ where: { id: PAYMENT_ID }, data: payment });
+        if (ledger.length > 0) await prisma.paymentTransaction.createMany({ data: ledger.map((row) => ({ ...row, paymentId: PAYMENT_ID })) });
+        stripeRaceHooks.refund = async (args) => ({
+          id: "re_race_4119", object: "refund", amount: args.amountCents, currency: "nzd", status: "succeeded",
+          reason: "requested_by_customer", created: Math.floor(Date.UTC(2026, 6, 1) / 1000), charge: "ch_race_4119",
+          payment_intent: args.paymentIntentId, metadata: args.metadata ?? {},
+        });
+        const ledgerNow = () => prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } });
+        const before = await ledgerNow();
+
+        const { cancelPreviewCardShortfall } = await import("@/lib/cancel-card-refund-shortfall-preview");
+        const fresh = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { id: true, source: true, manuallyMarkedPaidAt: true } });
+        const quoted = await cancelPreviewCardShortfall(prisma, { payment: fresh, organiserCard: false, refundAmountCents: due });
+        expect(quoted.cardShortfall ?? null).toEqual(split);
+        // The preview wrote nothing: no backfill, no fold.
+        expect(await ledgerNow()).toEqual(before);
+
+        const result = await cancel();
+        expect(result).toMatchObject({ status: 200, data: { refundAmountCents: due } });
+        const own = (result as unknown as { data: { ownCardRefund: { amountCents: number; byHandCents?: number; toCheckCents?: number } } }).data.ownCardRefund;
+        expect({ cardCents: own.amountCents, bankCents: own.byHandCents ?? 0, checkCents: own.toCheckCents ?? 0 }).toEqual(split ?? { cardCents: due, bankCents: 0, checkCents: 0 });
+        const tasks = await prisma.manualRefundTask.findMany({ where: { bookingId: BOOKING_ID }, select: { occurrenceKey: true, amountCents: true } });
+        expect(Object.fromEntries(tasks.map((task) => [task.occurrenceKey, task.amountCents]))).toEqual({
+          ...(split?.bankCents ? { [TASK_KEY]: split.bankCents } : {}),
+          ...(split?.checkCents ? { [CHECK_KEY]: split.checkCents } : {}),
+        });
+      });
+    });
+
     // Round 4 (coordinator decision 1): a part to check settles only on what
     // its bank-transfer part leaves, so it waits for that part.
     it("both parts: check-then-bank is refused, bank-then-check settles both", async () => {
