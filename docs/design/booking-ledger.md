@@ -591,7 +591,15 @@ and `V3_LEGACY_HAND_BACK` — the last
 two on the refunded column only, since on `owed(b)` they are money the ledger
 is missing; `CHANGE_FEE_REVERSED_BY_CANCELLATION`;
 `RETAINED_REVIEW_SHARE` (§5.3); and a cancelled booking's `IN_FLIGHT_HAND_BACK`,
-`IN_FLIGHT_REFUND`, `V5_PLANNED_REFUND_SHORT` and `D2_DISMISSED_HAND_BACK`. A
+`IN_FLIGHT_REFUND`, `V5_PLANNED_REFUND_SHORT`, `D2_DISMISSED_HAND_BACK` and
+`REFUND_APPEAL_PAID` (#4120). That last is a refund appeal paid back after the
+cancel: it returns more than the cancel kept and no charge line says so. It is
+sized from each approved appeal's own outcome as the refund-requests screen
+reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by card
+or by its own completed hand-back, and never from the lines. An appeal's
+hand-back is never the cancel's in-flight or dismissed one, because the cancel
+never netted it. An unpaid, dismissed or declined appeal explains nothing, nor
+does one paid for a different amount than the ledger shows. A
 refund is in flight while the recovery runner will still make it — pending,
 processing, or failed with a retry scheduled and attempts left
 (`isPaymentRecoveryOperationInFlight`, #3854 K1); an exhausted one is not, and
