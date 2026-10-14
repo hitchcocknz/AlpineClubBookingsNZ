@@ -4,6 +4,7 @@ import { Invoice, LineAmountTypes } from "xero-node";
 const mocks = vi.hoisted(() => ({
   chargeFind: vi.fn(),
   chargeUpdate: vi.fn(),
+  txChargeUpdateMany: vi.fn(),
   memberSubscriptionUpdateMany: vi.fn(),
   linkUpsert: vi.fn(),
   transaction: vi.fn(),
@@ -106,6 +107,8 @@ describe("subscription invoice delivery behavior", () => {
     mocks.events.length = 0;
     mocks.findContact.mockResolvedValue("contact-1");
     mocks.memberSubscriptionUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.txChargeUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.chargeUpdate.mockResolvedValue({ count: 1 });
     mocks.getInvoices.mockResolvedValue({ body: { invoices: [] } });
     mocks.createInvoices.mockImplementation(async () => {
       mocks.events.push("create");
@@ -118,7 +121,7 @@ describe("subscription invoice delivery behavior", () => {
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => {
       mocks.events.push("persist");
       return callback({
-        membershipSubscriptionCharge: { update: vi.fn() },
+        membershipSubscriptionCharge: { updateMany: mocks.txChargeUpdateMany },
         memberSubscription: { updateMany: mocks.memberSubscriptionUpdateMany },
         xeroObjectLink: { upsert: mocks.linkUpsert },
       });
@@ -290,6 +293,53 @@ describe("subscription invoice delivery behavior", () => {
         status: "CONFLICT",
         lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Not every covered subscription is paid, so it can't be closed as paid. Either record the remaining payments and then close it, or reverse every payment recorded for it (Mark as unpaid on the subscription, or void it in Xero) and then Retry to invoice the whole charge.",
       }),
+    }));
+  });
+
+  it("records the invoice with a status-guarded write, and emails through guarded writes too (#4098 review)", async () => {
+    mocks.chargeFind.mockResolvedValue(charge());
+
+    await createXeroMembershipSubscriptionInvoice({ chargeId: "charge-1", syncOperationId: "op-1" });
+
+    const liveOnly = { id: "charge-1", status: { notIn: ["NOT_REQUIRED", "VOIDED"] } };
+    expect(mocks.txChargeUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: liveOnly,
+      data: expect.objectContaining({ status: "INVOICE_CREATED", xeroInvoiceId: "invoice-1" }),
+    }));
+    expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: liveOnly,
+      data: expect.objectContaining({ status: "EMAILED" }),
+    }));
+  });
+
+  it("a close landing while the invoice was in Xero leaves a stray to void: nothing linked, nothing downgraded, no email (#4098 review)", async () => {
+    // RUNNING -> close -> success: the worker read the charge QUEUED, Xero raised
+    // the invoice, and by the time it records it the officer has closed the
+    // charge, so the guarded INVOICE_CREATED write matches nothing.
+    mocks.chargeFind.mockResolvedValue(charge());
+    mocks.txChargeUpdateMany.mockResolvedValue({ count: 0 });
+
+    const result = await createXeroMembershipSubscriptionInvoice({ chargeId: "charge-1", syncOperationId: "op-1" });
+
+    expect(result).toBeNull();
+    expect(mocks.createInvoices).toHaveBeenCalledTimes(1);
+    expect(mocks.memberSubscriptionUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.linkUpsert).not.toHaveBeenCalled();
+    expect(mocks.emailInvoice).not.toHaveBeenCalled();
+    // The closed charge stays closed and names the invoice to void.
+    expect(mocks.chargeUpdate).toHaveBeenCalledTimes(1);
+    expect(mocks.chargeUpdate).toHaveBeenCalledWith({
+      where: { id: "charge-1", status: { in: ["NOT_REQUIRED", "VOIDED"] } },
+      data: {
+        lastErrorCode: "STRAY_INVOICE_AFTER_CLOSE",
+        lastErrorMessage: "This charge was closed as already paid while Xero invoice INV-1 was being raised for it. That invoice is not linked to any member and was not emailed: void it in Xero.",
+      },
+    });
+    expect(mocks.complete).toHaveBeenCalledWith("op-1", expect.objectContaining({
+      status: "PARTIAL",
+      responsePayload: expect.objectContaining({ conflict: "STRAY_INVOICE_AFTER_CLOSE", email: null }),
+      xeroObjectId: "invoice-1",
+      xeroObjectNumber: "INV-1",
     }));
   });
 

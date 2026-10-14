@@ -35,6 +35,20 @@ export function membershipChargeNeedsNoInvoice(charge: {
 /** The `lastErrorCode` the invoice worker writes when a covered subscription is already PAID. */
 export const SUBSCRIPTION_ALREADY_PAID_CODE = "SUBSCRIPTION_ALREADY_PAID";
 
+/**
+ * The `lastErrorCode` left on a CLOSED charge when an invoice attempt that was
+ * already in Xero finished after the close (#4098 review): the invoice it
+ * raised or adopted is linked to nothing and must be voided in Xero by hand.
+ */
+export const STRAY_INVOICE_AFTER_CLOSE_CODE = "STRAY_INVOICE_AFTER_CLOSE";
+
+export function strayInvoiceAfterCloseMessage(invoiceLabel: string): string {
+  return (
+    `This charge was closed as already paid while Xero invoice ${invoiceLabel} was being raised for it. ` +
+    "That invoice is not linked to any member and was not emailed: void it in Xero."
+  );
+}
+
 /** The longest reason an officer may give for closing an already-paid charge. */
 export const CLOSE_ALREADY_PAID_REASON_MAX = 500;
 

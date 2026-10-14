@@ -36,6 +36,8 @@ import { seasonYearsLabel } from "@/lib/season-label";
 import {
   MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES,
   membershipChargeNeedsNoInvoice,
+  STRAY_INVOICE_AFTER_CLOSE_CODE,
+  strayInvoiceAfterCloseMessage,
   SUBSCRIPTION_ALREADY_PAID_CODE,
   subscriptionAlreadyPaidConflictMessage,
 } from "@/lib/subscription-charge-already-paid";
@@ -183,6 +185,18 @@ export async function findLiveSubscriptionInvoiceOperation(
   });
 }
 
+const NO_INVOICE_WORK_RESULT = { queueOperationId: null, message: "No subscription invoice work is required." } as const;
+
+/**
+ * The WHERE for every charge-status write the invoice pipeline makes: the charge
+ * and still able to be invoiced. A charge in a no-invoice status (closed as
+ * already paid, #4098, or VOIDED, #2147) matches nothing, so no pipeline write
+ * can reopen it, however late it lands.
+ */
+function liveChargeWhere(chargeId: string) {
+  return { id: chargeId, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } };
+}
+
 export async function enqueueMembershipSubscriptionChargeOperation(
   chargeId: string,
   options?: { createdByMemberId?: string },
@@ -197,7 +211,7 @@ export async function enqueueMembershipSubscriptionChargeOperation(
   // officer closed as already paid (#4098). This also fences the RETRY_CHARGE
   // admin action, which routes through here.
   if (membershipChargeNeedsNoInvoice(charge) || charge.emailSentAt) {
-    return { queueOperationId: null, message: "No subscription invoice work is required." };
+    return NO_INVOICE_WORK_RESULT;
   }
   const active = await findLiveSubscriptionInvoiceOperation(prisma, chargeId);
   if (active) return { queueOperationId: active.id, message: "Subscription invoice is already queued." };
@@ -211,10 +225,13 @@ export async function enqueueMembershipSubscriptionChargeOperation(
   });
   // #4098: status-guarded, so a close landing between the read above and this
   // write keeps the charge closed; the worker then skips the queued row.
-  await prisma.membershipSubscriptionCharge.updateMany({
-    where: { id: chargeId, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } },
+  const requeued = await prisma.membershipSubscriptionCharge.updateMany({
+    where: liveChargeWhere(chargeId),
     data: { status: charge.xeroInvoiceId ? "INVOICE_CREATED" : "QUEUED", lastErrorCode: null, lastErrorMessage: null },
   });
+  // #4098 review (money F5): a close won the race, so say so rather than
+  // "queued"; the operation just created is skipped when the worker claims it.
+  if (requeued.count === 0) return NO_INVOICE_WORK_RESULT;
   return { queueOperationId: operation.id, message: "Subscription invoice queued." };
 }
 
@@ -304,7 +321,7 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
       // #4098: status-guarded, so an officer's close landing after the read
       // above is not overwritten back into a conflict.
       await prisma.membershipSubscriptionCharge.updateMany({
-        where: { id: charge.id, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } },
+        where: liveChargeWhere(charge.id),
         data: {
           status: "CONFLICT",
           lastErrorCode: SUBSCRIPTION_ALREADY_PAID_CODE,
@@ -332,8 +349,10 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
   });
   const accountCode = charge.xeroAccountCode;
   if (!accountCode) {
-    await prisma.membershipSubscriptionCharge.update({
-      where: { id: charge.id },
+    // #4098: every charge write below is status-guarded (`liveChargeWhere`),
+    // so none can reopen a charge an officer closed meanwhile.
+    await prisma.membershipSubscriptionCharge.updateMany({
+      where: liveChargeWhere(charge.id),
       data: {
         status: "CONFLICT",
         lastErrorCode: "MISSING_MAPPING_SNAPSHOT",
@@ -381,8 +400,8 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
   if (!invoiceId) {
     const existing = await findExistingByReference(xero, tenantId, charge.invoiceReference);
     if (existing.length > 1) {
-      await prisma.membershipSubscriptionCharge.update({
-        where: { id: charge.id },
+      await prisma.membershipSubscriptionCharge.updateMany({
+        where: liveChargeWhere(charge.id),
         data: { status: "CONFLICT", lastErrorCode: "DUPLICATE_REFERENCE", lastErrorMessage: "More than one Xero invoice has this immutable subscription reference." },
       });
       await completeXeroSyncOperation(input.syncOperationId, { status: "SUCCEEDED", responsePayload: { conflict: "DUPLICATE_REFERENCE", invoiceCount: existing.length } });
@@ -394,8 +413,8 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
         lines: componentLines.map(({ amountCents, accountCode: code, itemCode }) => ({ amountCents, accountCode: code, itemCode })),
         dueDays: charge.dueDays, reference: charge.invoiceReference,
       })) {
-        await prisma.membershipSubscriptionCharge.update({
-          where: { id: charge.id },
+        await prisma.membershipSubscriptionCharge.updateMany({
+          where: liveChargeWhere(charge.id),
           data: { status: "CONFLICT", lastErrorCode: "PROVIDER_MISMATCH", lastErrorMessage: "The existing Xero invoice does not match the immutable charge snapshot. It was not changed." },
         });
         await completeXeroSyncOperation(input.syncOperationId, { status: "SUCCEEDED", responsePayload: { conflict: "PROVIDER_MISMATCH", invoice: existing[0] } });
@@ -456,9 +475,15 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
 
   // Durably record creation/adoption before attempting Xero email. A crash or
   // email failure now resumes from this identifier and cannot mint a duplicate.
-  await prisma.$transaction(async (tx) => {
-    await tx.membershipSubscriptionCharge.update({
-      where: { id: charge.id },
+  //
+  // #4098 review (money F3 / concurrency F1): the write is status-guarded. If
+  // an officer closed the charge as already paid while this attempt was in
+  // Xero, the invoice just raised or adopted is a stray: nothing is linked,
+  // no subscription is downgraded, no email is sent, and the closed charge
+  // carries a message naming the invoice to void.
+  const recorded = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.membershipSubscriptionCharge.updateMany({
+      where: liveChargeWhere(charge.id),
       data: {
         status: "INVOICE_CREATED",
         xeroInvoiceId: invoiceId,
@@ -470,6 +495,7 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
         lastErrorMessage: null,
       },
     });
+    if (claimed.count === 0) return false;
     // #1944: never blind-downgrade a PAID subscription (e.g. manually marked
     // paid between the guard above and this transaction). Skipped rows keep
     // their PAID status and manual provenance; the invoice link is still
@@ -525,7 +551,29 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
         xeroObjectUrl: linkUrl, role: "SUBSCRIPTION_INVOICE", metadata: { adopted },
       },
     });
+    return true;
   });
+  if (!recorded) {
+    const invoiceLabel = invoiceNumber ?? invoiceId;
+    logger.error(
+      { chargeId: charge.id, invoiceId, invoiceNumber, adopted },
+      "Subscription charge was closed while its Xero invoice was being raised; the invoice is a stray to void",
+    );
+    await prisma.membershipSubscriptionCharge.updateMany({
+      where: { id: charge.id, status: { in: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } },
+      data: {
+        lastErrorCode: STRAY_INVOICE_AFTER_CLOSE_CODE,
+        lastErrorMessage: strayInvoiceAfterCloseMessage(invoiceLabel),
+      },
+    });
+    await completeXeroSyncOperation(input.syncOperationId, {
+      status: "PARTIAL",
+      responsePayload: { conflict: STRAY_INVOICE_AFTER_CLOSE_CODE, invoice: providerInvoice, adopted, email: null },
+      xeroObjectType: "INVOICE", xeroObjectId: invoiceId, xeroObjectNumber: invoiceNumber,
+      xeroObjectUrl: buildXeroInvoiceUrl(invoiceId),
+    });
+    return null;
+  }
 
   const emailIdempotencyKey = buildXeroIdempotencyKey("membership-charge", charge.id, "invoice-email", invoiceId, "v1");
   /*
@@ -573,8 +621,8 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
       workflow: "createXeroMembershipSubscriptionInvoice",
       context: `email subscription invoice ${charge.id}`,
     });
-    await prisma.membershipSubscriptionCharge.update({
-      where: { id: charge.id },
+    await prisma.membershipSubscriptionCharge.updateMany({
+      where: liveChargeWhere(charge.id),
       data: { status: "EMAILED", emailAttemptCount: { increment: 1 }, emailLastAttemptAt: new Date(), emailSentAt: new Date(), lastErrorCode: null, lastErrorMessage: null },
     });
     await completeXeroSyncOperation(input.syncOperationId, {
@@ -585,8 +633,8 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn({ err: error, chargeId: charge.id, invoiceId }, "Subscription invoice persisted but Xero email failed");
-    await prisma.membershipSubscriptionCharge.update({
-      where: { id: charge.id },
+    await prisma.membershipSubscriptionCharge.updateMany({
+      where: liveChargeWhere(charge.id),
       data: { status: "EMAIL_FAILED", emailAttemptCount: { increment: 1 }, emailLastAttemptAt: new Date(), lastErrorCode: "EMAIL_FAILED", lastErrorMessage: message },
     });
     await completeXeroSyncOperation(input.syncOperationId, {
