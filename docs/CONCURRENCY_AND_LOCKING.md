@@ -4957,9 +4957,12 @@ and the debt's writes come last, on `PaymentRecoveryOperation`:
   the failure (`failedRefundIds`), means another observer decided - nothing is
   written. Otherwise the open row that counted it (marked `madeRefundId`, or
   the unmarked slice the owed figure fills with it as the payment stood before
-  the failure) is re-planned, and with none a row is inserted keyed on the
-  Stripe refund (`card_refund_failed_later_<refund>`, `skipDuplicates`).
-- **A re-plan** is a compare-and-set on the plan it read, never on a row
+  the failure, when the refund carries exactly that row's runner metadata) is
+  re-planned, and with none a row is inserted keyed on the Stripe refund
+  (`card_refund_failed_later_<refund>`, `skipDuplicates`). A refund that names
+  no booking writes an audit row on the same transaction instead.
+- **A re-plan** is a compare-and-set on the plan, status, `attempts` and
+  `nextRetryAt` it read (a claim or re-arm between moves one), never on a row
   someone may be writing: a worker mid-attempt (`PROCESSING`), or a row no
   worker has claimed yet (`PENDING`, no attempt - a door's inline attempt may
   still close or re-plan it). There, or when the plan moved since the read, a
@@ -4973,6 +4976,11 @@ and the debt's writes come last, on `PaymentRecoveryOperation`:
   its own** (the event between the door's record and its plan write) leaves a
   marked slice whose refund is refused: the owed figure reads it filled by the
   failed-later row, and the runner never sends a marked slice, so it is owed once.
+
+**The cancel card refund shortfall's completion** (`cardShortfallSettlement`,
+#4097) reads these rows under the same Payment row lock beside the cancel's
+own: a failed-later row still unsettled refuses the completion (409), as the
+cancel's own row would.
 
 No advisory key: it moves no booking status or capacity, and every other writer
 of that row takes the Payment row before it - "Paid another way" (`lock(1)`,

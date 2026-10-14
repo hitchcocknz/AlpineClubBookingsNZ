@@ -93,14 +93,32 @@ officers' alert says it failed for good, refund it in the Stripe dashboard.
 refund as pending and report it failed days later, for example when the card
 has been closed. The app then takes it back out of the refunded total and owes
 it again: it shows under **Refunds owed**, the officers are emailed once, and it
-is asked for again as a new request. If that retry is accepted and fails later
-too, it is not asked for again: it is listed here straight away, for you to pay
-the member another way and close. So is a refund made before the release that
-added this (the member may already have been paid back by hand: check Stripe
-and your bank first). Closing one whose card refund credit note is already in
-Xero queues no second note. A refund made by hand in the Stripe dashboard, or
-an older group refund, that fails is not re-sent by the app: the officers are
-emailed, and the Stripe dashboard shows it.
+is asked for again as a new request. Two kinds are not asked for again, and are
+listed here under **Card refunds Stripe gave up on** straight away, for you to
+pay the member another way and close:
+
+- a retry that Stripe also accepted and then failed;
+- a refund Stripe **created** before the release that added this, unless a
+  refund the app is still working on counts it - the member may already have
+  been paid back by hand, so check Stripe and your bank first.
+
+A refund whose retries had already run out when it failed stays here too, with
+the failure noted on it.
+
+When you close one of these, Xero may already hold the card refund credit note
+raised while the refund still counted. The dialog says how much of the refund
+that note covers: you pay back that much with no new note, and a note worded as
+a bank transfer is queued only for anything beyond it. If you pay back less than
+the card note covers, Xero credits more than went back; the Xero reconciliation
+report lists it as refund coverage above the refunded total, for you to correct
+in Xero.
+
+A refund the app did not make for the booking - one made by hand in the Stripe
+dashboard, or an older group refund - that fails is not asked for again and is
+not counted under Refunds owed. The officers are emailed with its Stripe refund
+id, and the [audit log](audit-log.md) records it under **Payment**. Find it in
+the Stripe dashboard: if the member is still owed, refund them again there, or
+pay them another way and record that in Xero by hand.
 
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
