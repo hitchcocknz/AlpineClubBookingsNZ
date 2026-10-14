@@ -1823,6 +1823,13 @@ describe("Stripe webhook Xero alerting", () => {
         expect.objectContaining({
           action: "booking.payment.refunded_after_cancellation",
           targetId: "booking-9",
+          category: "payment",
+          details: JSON.stringify({
+            paymentIntentId: "pi_additional_late",
+            refundId: "re_late_9",
+            amountCents: 2500,
+            kind: "modification_additional",
+          }),
         }),
       );
       // The supplementary Xero invoice is NEVER released on this path.
