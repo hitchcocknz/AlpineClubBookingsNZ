@@ -26,6 +26,8 @@ import type { BookingLedgerCensusRow } from "@/lib/booking-ledger-projection-cen
 import { INTERNET_BANKING_SETTLEMENT_EVIDENCE_SELECT } from "@/lib/internet-banking-settlement-evidence";
 import { bookingIdOfCreditRow, bookingsCreditRowsWhere } from "@/lib/member-credit-booking-rows";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
+import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
+import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildGroupSettlementRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 
@@ -96,6 +98,12 @@ const CENSUS_SELECT = {
         select: { settlement: { select: { id: true, source: true, status: true, amountCents: true, stripePaymentIntentId: true, refundPlan: true } } },
       },
     },
+  },
+  // #4120: its approved refund appeals, whose refunds `REFUND_APPEAL_PAID` explains.
+  refundRequests: {
+    where: { status: "APPROVED" },
+    orderBy: ASC,
+    select: { id: true, status: true, approvedAmountCents: true },
   },
   events: {
     where: { type: "CANCELLED" },
@@ -220,6 +228,7 @@ export function toCensusRow(
   credits: BookingLedgerCensusRow["credits"],
   inFlightGroupRefundSettlementIds: ReadonlySet<string> = new Set(),
   groupChildren: ReadonlyMap<string, NonNullable<BookingLedgerCensusRow["groupChild"]>> = new Map(),
+  appeals: ReadonlyMap<string, BookingLedgerCensusRow["appeals"]> = new Map(),
 ): BookingLedgerCensusRow {
   const { payment } = booking;
   const settlement = booking.organiserSettled ? (booking.parentBooking?.groupBookingAsOrganiser?.settlement ?? null) : null;
@@ -260,6 +269,7 @@ export function toCensusRow(
     })),
     recoveryOperations: booking.paymentRecoveryOperations,
     cancellation: cancellationOf(booking),
+    appeals: appeals.get(booking.id) ?? [],
     groupSettlement: settlement
       ? { ...settlement, refundRecoveryInFlight: inFlightGroupRefundSettlementIds.has(settlement.id) }
       : null,
@@ -311,7 +321,37 @@ export async function readBookingLedgerCensusRow(
 /** Bookings read per page inside the snapshot: bounds memory on a whole history. */
 export const CENSUS_PAGE_SIZE = 500;
 
-type CensusReadStore = Pick<Prisma.TransactionClient, "booking" | "memberCredit" | "paymentRecoveryOperation">;
+type CensusReadStore = Pick<
+  Prisma.TransactionClient,
+  "booking" | "memberCredit" | "paymentRecoveryOperation" | "payment" | "auditLog" | "manualRefundTask"
+>;
+
+/**
+ * #4120: what each of a page's approved refund appeals has refunded so far,
+ * read as the refund-requests screen reads it (`readApprovedAppealOutcomes`,
+ * `approvedAppealRefundedCents`), inside the same snapshot. Most pages hold
+ * none, and then nothing more is read.
+ */
+async function approvedAppeals(
+  tx: CensusReadStore,
+  page: readonly StoredCensusBooking[],
+): Promise<Map<string, BookingLedgerCensusRow["appeals"]>> {
+  const requests = page.flatMap((booking) =>
+    booking.refundRequests.map((request) => ({
+      ...request,
+      bookingId: booking.id,
+      booking: { payment: booking.payment ? { id: booking.payment.id } : null },
+    })),
+  );
+  const appeals = new Map<string, BookingLedgerCensusRow["appeals"]>();
+  if (requests.length === 0) return appeals;
+  const outcomes = await readApprovedAppealOutcomes(tx, requests);
+  for (const request of requests) {
+    const refundedCents = approvedAppealRefundedCents(request.approvedAmountCents ?? 0, outcomes.get(request.id) ?? {});
+    appeals.set(request.bookingId, [...(appeals.get(request.bookingId) ?? []), { id: request.id, refundedCents }]);
+  }
+  return appeals;
+}
 
 /** #3854: which of a page's group settlements have their one pre-#3653 refund-plan retry still in flight. */
 async function inFlightGroupRefunds(tx: CensusReadStore, page: readonly StoredCensusBooking[]): Promise<Set<string>> {
@@ -345,11 +385,12 @@ async function censusRows(
   creditsOf: (bookingId: string) => BookingLedgerCensusRow["credits"],
 ): Promise<BookingLedgerCensusRow[]> {
   const inFlight = await inFlightGroupRefunds(tx, page);
-  const rows = page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight));
+  const appeals = await approvedAppeals(tx, page);
+  const rows = page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight, new Map(), appeals));
   const candidates = page.filter((_, index) => rows[index]!.groupSettlement !== null && isGroupSettlementOffLedger(rows[index]!));
   if (candidates.length === 0) return rows;
   const groupChildren = await groupChildEvidence(tx, candidates);
-  return page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight, groupChildren));
+  return page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight, groupChildren, appeals));
 }
 
 /**

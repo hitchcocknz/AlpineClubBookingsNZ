@@ -30,7 +30,7 @@ import { cancellationCreditDescription } from "@/lib/cancellation-settled-money"
 import { internetBankingSettlementEvidence, type InternetBankingSettlementEvidence } from "@/lib/internet-banking-settlement-evidence";
 import { isCreditAppliedToBooking, isCreditIssuedFromBooking } from "@/lib/member-credit-booking-rows";
 import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
-import { isCancelCardShortfallTask } from "@/lib/manual-refund-task-settlement-rules";
+import { isCancelCardShortfallTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOperationUnmadeCents } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
@@ -84,6 +84,7 @@ export const BOOKING_LEDGER_CENSUS_CLASSES = [
   "IN_FLIGHT_REFUND",
   "V5_PLANNED_REFUND_SHORT",
   "D2_DISMISSED_HAND_BACK",
+  "REFUND_APPEAL_PAID",
   "AMBIGUOUS_REVIEW_GIVE_BACK",
   "KNOWN_DEFECT_HISTORY",
   "GROUP_SETTLEMENT_OFF_LEDGER",
@@ -568,7 +569,15 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     nonCardPayment
       ? row.tasks
           // #4042: a group organiser's hand-back repays the joiners' refunds, not this booking's.
-          .filter((task) => task.kind === "CANCELLED_BOOKING_HAND_BACK" && task.status === status && !isGroupOrganiserHandBackTask(task))
+          // #4120: nor is a refund appeal's the cancel's: raised after it, never netted by it, so
+          // open or dismissed it moves nothing; paid back, it is `REFUND_APPEAL_PAID`.
+          .filter(
+            (task) =>
+              task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+              task.status === status &&
+              !isGroupOrganiserHandBackTask(task) &&
+              !isRefundRequestHandBackTask(task),
+          )
           .reduce((sum, task) => sum + (task.amountCents ?? 0), 0)
       : 0;
   const inFlightRefund = row.recoveryOperations
@@ -591,12 +600,17 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     .filter((task) => isCancelCardShortfallTask(task) && task.status === "COMPLETED" && row.lines.some((line) => line.postingKey === handBackKey(task.id)))
     .reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
   const v5 = Math.max(0, policyRefundCents - plannedCents - shortfallPaidCents);
+  // #4120: an approved refund appeal gives back more than the cancel kept, and no charge line
+  // says so: what each has refunded, by card or by its own completed hand-back, as its
+  // outcome reads (`approvedAppealRefundedCents`) - never the approved amount, nor the lines.
+  const appealPaidCents = row.appeals.reduce((sum, appeal) => sum + appeal.refundedCents, 0);
   return [
     [
       { name: "IN_FLIGHT_HAND_BACK", cents: handBacks("OPEN") },
       { name: "D2_DISMISSED_HAND_BACK", cents: handBacks("DISMISSED") },
       { name: "IN_FLIGHT_REFUND", cents: inFlightRefund + inFlightGroupPlanRefundCents(row) },
       { name: "V5_PLANNED_REFUND_SHORT", cents: v5 },
+      { name: "REFUND_APPEAL_PAID", cents: -appealPaidCents },
       { name: "UNPOSTED_CREDIT", cents: unpostedCredits(row).reduce((sum, credit) => sum + credit.amountCents, 0) },
       ...knownDefectHistory(row),
     ],

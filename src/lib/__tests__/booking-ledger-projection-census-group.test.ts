@@ -111,6 +111,7 @@ function settledChild(source: "STRIPE" | "INTERNET_BANKING"): { row: BookingLedg
       recoveryOperations: [],
       cancellation: null,
       groupSettlement: { id: "gs1", source, status: "SUCCEEDED", amountCents: 4_500, stripePaymentIntentId: source === "STRIPE" ? PI : null, refundPlan: null, refundRecoveryInFlight: false },
+      appeals: [],
       groupChild: null,
       lines: toLines([...charges, ...share]),
     },
@@ -332,6 +333,7 @@ function backPostedCancelledChild(debt: Pick<Op, "status" | "attempts" | "nextRe
   if (cancellation.kind !== "lines") throw new Error("expected cancellation lines");
   return {
     ...offLedgerCancelledChild(4_500, debt),
+    appeals: [],
     groupChild: null,
     lines: [...row.lines, ...toLines(cancellation.postings)],
   };

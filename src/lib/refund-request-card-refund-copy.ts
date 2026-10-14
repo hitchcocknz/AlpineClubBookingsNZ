@@ -68,10 +68,14 @@ export function refundAppealApprovedNotice(
 
 /**
  * What an approved appeal has refunded so far: the approved amount less every
- * part that has not gone back - by card (queued, dead or not queued) and by
- * bank transfer while this request's own task is open or once it is dismissed.
+ * part of its outcome (`readApprovedAppealOutcomes`) that has not gone back -
+ * by card (queued, dead or not queued) and by bank transfer while this
+ * request's own task is open or once it is dismissed. The one sum, read by
+ * the screen's "Refunded" and by the booking-ledger census's
+ * `REFUND_APPEAL_PAID` (#4120).
  */
-export function refundAppealRefundedCents(approvedAmountCents: number, stillOwedCents: number): number {
+export function approvedAppealRefundedCents(approvedAmountCents: number, outcome: Partial<ApprovedAppealOutcome>): number {
+  const stillOwedCents = (outcome.cardRefundOwedCents ?? 0) + (outcome.handBackOwedCents ?? 0) + (outcome.handBackDismissedCents ?? 0)
   return Math.max(0, approvedAmountCents - Math.max(0, stillOwedCents))
 }
 

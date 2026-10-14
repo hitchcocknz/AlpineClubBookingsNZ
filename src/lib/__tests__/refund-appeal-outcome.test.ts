@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
+import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
 
 const AT = new Date("2026-06-20T00:00:05.000Z");
 const MADE_AT = new Date("2026-06-20T00:00:01.000Z");
@@ -183,4 +184,24 @@ it("reads nothing for a page with no approved appeal", async () => {
   const store = db();
   expect((await readApprovedAppealOutcomes(store as never, [{ ...approved, status: "PENDING" }])).size).toBe(0);
   expect(store.payment.findMany).not.toHaveBeenCalled();
+});
+
+describe("#4120: what an approved appeal has refunded, from its outcome (the screen's \"Refunded\" and the ledger census's `REFUND_APPEAL_PAID`)", () => {
+  it("is the approved amount less every part not gone back: card owed, hand-back open, hand-back dismissed", () => {
+    expect(approvedAppealRefundedCents(10_000, {})).toBe(10_000);
+    expect(approvedAppealRefundedCents(10_000, { cardRefundOwedCents: 1_000 })).toBe(9_000);
+    expect(approvedAppealRefundedCents(10_000, { handBackOwedCents: 3_000 })).toBe(7_000);
+    expect(approvedAppealRefundedCents(10_000, { handBackDismissedCents: 700 })).toBe(9_300);
+    expect(approvedAppealRefundedCents(10_000, { cardRefundOwedCents: 1_000, handBackOwedCents: 3_000, handBackDismissedCents: 700 })).toBe(5_300);
+  });
+
+  it("never reads below zero, nor above the approved amount", () => {
+    expect(approvedAppealRefundedCents(1_000, { handBackOwedCents: 3_000 })).toBe(0);
+    expect(approvedAppealRefundedCents(1_000, { cardRefundOwedCents: -500 })).toBe(1_000);
+  });
+
+  it("an outcome read from the rows: a dead card part and an open hand-back are both still owed", async () => {
+    const store = db({ operations: [operation({ status: "FAILED", attempts: 5, nextRetryAt: null })], tasks: [{ occurrenceKey: "refund-request-hand-back:rq-1", amountCents: 3_000 }] });
+    expect(approvedAppealRefundedCents(10_000, (await outcomeOf(store))!)).toBe(6_000);
+  });
 });
