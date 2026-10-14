@@ -280,6 +280,12 @@ import "./refused-card-refund-retry.realdb.test";
 // write, the retry's fresh key, and a held row rolling the write back. Skipped
 // unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4104-` fixtures.
 import "./card-refund-failed-later.realdb.test";
+// #4097 reuses it to prove an own-card cancel whose card refund plan carries
+// less than the refund due raises one hand-back task for the rest in its claim,
+// which "Refunds owed" counts until the treasurer pays it back (its BANK_REFUND
+// line posted on the card payment) or dismisses it. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4097-` fixtures.
+import "./cancel-card-refund-shortfall.realdb.test";
 // #3750 reuses it to prove approving a locked-period change request on a
 // finished stay: the real executor and batch service add, remove, swap and
 // re-date the stay at the same-day tier, two racing approvals make one

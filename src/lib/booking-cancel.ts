@@ -103,7 +103,8 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
-import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
+import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
+import { alertCancelCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -140,8 +141,9 @@ interface CancelBookingResult {
   manualRefundTaskId?: string;
   /** #3973: a refund that is the group organiser's (`refundMethod` stays "card"), as its email words it, for the confirmation screen. */
   organiserRefund?: { method: OrganiserRefundMethod; amountCents: number };
-  /** #4084: a refund to the member's own card, made or not yet (`refundMethod` stays "card"), for the confirmation screen. */
-  ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number };
+  /** #4084: a refund to the member's own card, made or not yet (`refundMethod` stays "card"), for the confirmation screen.
+   * #4097: `amountCents` is what the card refund carries; of the rest, `byHandCents` the club refunds by bank transfer and `toCheckCents` it checks first. */
+  ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number; byHandCents?: number; toCheckCents?: number };
   message: string;
 }
 
@@ -1923,6 +1925,7 @@ async function performBookingCancellation(
     // ledger dedupes on refund id.
     let cardRefundPlan: RefundAllocationSlice[] | null = null;
     let plannedCardRefundCents = 0;
+    let cardShortfall: CancelCardShortfall | null = null;
     if (refundMethod === "card" && refundAmountCents > 0 && !organiserCard) {
       const { slices, plannedAmountCents } = await planStripeRefundAllocation({
         paymentId: payment.id,
@@ -1939,6 +1942,10 @@ async function performBookingCancellation(
           allocationPlan: slices,
           store: tx,
         });
+      }
+      // #4097 (`INV-PAY-129`): what the plan cannot carry is recorded with the claim, card branch only.
+      if (branch === "card") {
+        cardShortfall = await raiseCancelCardShortfallHandBack(tx, { bookingId, paymentId: payment.id, refundAmountCents, plannedCardRefundCents, format });
       }
     }
 
@@ -1988,6 +1995,7 @@ async function performBookingCancellation(
       refundPercentage,
       refundAmountCents, paidAmountCents,
       tier: { refundMethod, refundableBaseCents }, // #3835: what the tier ran on
+      ...(cardShortfall ? { cardShortfall: { cardCents: cardShortfall.cardCents, bankCents: cardShortfall.bank?.cents ?? 0, checkCents: cardShortfall.check?.cents ?? 0 } } : {}),
       changeFeeCents: payment.changeFeeCents,
       retainedAmountCents,
       ledger: {
@@ -2012,6 +2020,7 @@ async function performBookingCancellation(
       shouldFailAdditionalPayment,
       cardRefundPlan,
       plannedCardRefundCents,
+      cardShortfall,
       manualRefundTaskId,
       clearingOperationId,
       branch,
@@ -2044,6 +2053,7 @@ async function performBookingCancellation(
     shouldFailAdditionalPayment,
     cardRefundPlan,
     plannedCardRefundCents,
+    cardShortfall,
     manualRefundTaskId,
     clearingOperationId,
     branch,
@@ -2057,6 +2067,12 @@ async function performBookingCancellation(
       { bookingId, creditRestoredCents },
       "Restored previously applied credit on cancellation"
     );
+  }
+
+  // #4097: the officers first, straight after the commit, whatever follows fails.
+  if (cardShortfall) {
+    const { firstName, lastName } = bookingOwner(fresh).member;
+    alertCancelCardShortfall({ memberName: `${firstName} ${lastName}`, booking: fresh, shortfall: cardShortfall, days, refundPercentage, refundAmountCents, memberEmailed: notifyMember }, format);
   }
 
   // #3643: the unpaid rest's clearing note was queued in the claim; kick it.
@@ -2321,16 +2337,10 @@ async function performBookingCancellation(
     // The refund debt was persisted INSIDE the claim transaction (F2, #1349):
     // a recovery operation carrying the frozen per-transaction plan committed
     // atomically with the CANCELLED flip, so nothing below can silently lose
-    // the member's refund. The mirror-vs-ledger drift case where the plan
-    // covers less than the policy-due amount is logged here and refunds what
-    // the ledger actually shows refundable — the same net outcome the old
-    // inline derive reached via its recovery path.
-    if (plannedCardRefundCents < refundAmountCents) {
-      logger.error(
-        { bookingId, paymentId, refundAmountCents, plannedCardRefundCents },
-        "Cancellation refund plan covers less than the policy-due amount; refunding what the payment ledger shows refundable"
-      );
-    }
+    // the member's refund. Where the plan covers less than the policy-due
+    // amount the card refunds what the ledger shows refundable, and the claim
+    // raised hand-back tasks for the rest (#4097, `cardShortfall`).
+    const shortfallParts = { bankCents: cardShortfall?.bank?.cents ?? 0, checkCents: cardShortfall?.check?.cents ?? 0 };
 
     if (cardRefundPlan && plannedCardRefundCents > 0) {
       try {
@@ -2400,9 +2410,10 @@ async function performBookingCancellation(
 
     // Queue the Xero credit note durably (allocated against the original invoice).
     try {
+      // #4097: the card refund's note, for what the card refund carries; the rest is the hand-back's.
       const queuedCreditNote = await enqueueXeroRefundCreditNoteOperation(
         paymentId,
-        refundAmountCents,
+        plannedCardRefundCents,
         {
           createdByMemberId: sessionUserId,
         }
@@ -2424,7 +2435,11 @@ async function performBookingCancellation(
     }
 
     await cleanupPromoRedemption(bookingId);
-    const ownCardRefund = { method: refundMade ? "card" : "card_pending", amountCents: refundAmountCents } as const;
+    // #4097: the card's own amount, and the part owed by hand beside it.
+    const ownCardRefund = {
+      method: refundMade ? "card" : "card_pending", amountCents: plannedCardRefundCents,
+      ...(shortfallParts.bankCents > 0 ? { byHandCents: shortfallParts.bankCents } : {}), ...(shortfallParts.checkCents > 0 ? { toCheckCents: shortfallParts.checkCents } : {}),
+    } as const;
 
     logBookingCancellationAudit({
       booking: fresh,
@@ -2442,17 +2457,24 @@ async function performBookingCancellation(
         changeFeeCents: payment.changeFeeCents,
         creditRestoredCents,
         stripeRefundId: stripeRefundId ?? null,
+        ...(cardShortfall ? { cardRefundCents: plannedCardRefundCents, ...shortfallParts, shortfallTaskIds: [cardShortfall.bank?.taskId, cardShortfall.check?.taskId].filter(Boolean) } : {}),
         ...notifyAuditFields,
       },
     });
 
-    await recordBookingEvent({
-      bookingId,
-      type: BookingEventType.REFUNDED,
-      actorMemberId: sessionUserId,
-      amountCents: refundAmountCents,
-      reason: `${refundPercentage}% refunded to the original payment method.`,
-    });
+    // #4097: the card's part only; the hand-back's completion records its own.
+    if (plannedCardRefundCents > 0) {
+      await recordBookingEvent({
+        bookingId,
+        type: BookingEventType.REFUNDED,
+        actorMemberId: sessionUserId,
+        amountCents: plannedCardRefundCents,
+        // #4097: the card's part, said as a part when the plan carried less than the refund due.
+        reason: cardShortfall
+          ? `${formatCents(plannedCardRefundCents, format)} of the ${refundPercentage}% refund (${formatCents(refundAmountCents, format)}) refunded to the original payment method.`
+          : `${refundPercentage}% refunded to the original payment method.`,
+      });
+    }
 
     if (notifyMember) {
       sendBookingCancelledEmail(
@@ -2465,10 +2487,12 @@ async function performBookingCancellation(
         format,
         ownCardRefund.method, // #4084: the email's wording only; the audit and result still say "card"
         creditRestoredCents,
-        fresh.lodgeId
+        fresh.lodgeId,
+        "cancellation-policy",
+        refundAmountCents,
+        shortfallParts, // #4097
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
     }
-
     // Trigger waitlist processing for freed dates
     processWaitlistForDates({ checkIn: fresh.checkIn, checkOut: fresh.checkOut, lodgeId: fresh.lodgeId }, format)
       .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after card refund cancellation"));
@@ -2483,7 +2507,10 @@ async function performBookingCancellation(
         ownCardRefund,
         creditRestoredCents: creditRestoredCents || undefined,
         stripeRefundId,
-        message: `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)} ${refundMade ? "processed" : "on its way"}.`,
+        // #4097: whose card, as the confirmation screen says it.
+        message: cardShortfall
+          ? `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)}: ${ownCardRefundWithShortfallSentence(plannedCardRefundCents, { ...shortfallParts, formatAmount: (cents) => formatCents(cents, format) }, !refundMade, sessionUserId === bookingOwner(fresh).memberId ? "your" : "the member's")}`
+          : `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)} ${refundMade ? "processed" : "on its way"}.`,
       },
     };
   }

@@ -14,9 +14,11 @@
  * HTML templates and the flat `{{...Note}}` tokens the senders supply are built
  * from the same function, so the two paths cannot drift apart.
  *
- * This module deliberately imports nothing - the email template layer, the
- * senders and the template registry all depend on it.
+ * This module deliberately imports only pure copy modules (no imports of their
+ * own) - the email template layer, the senders and the template registry all
+ * depend on it.
  */
+import { CARD_REFUND_SHORTFALL_ALERT_BODY, CARD_REFUND_SHORTFALL_ALERT_LEAD } from "@/lib/cancel-card-refund-shortfall-copy";
 
 /**
  * #2268 — compose an OPTIONAL line of an admin-editable plain-text email body.
@@ -276,30 +278,26 @@ export function internetBankingHoldKeptParagraph(
  * body's `{{handBack…}}` tokens, the group arm of the HTML and both arms' amount
  * label. The cash HTML keeps its own pinned literal blocks; the cash note is
  * those same blocks, so its text default still says what its HTML says.
+ * #4097 (`INV-PAY-129`): a card cancel whose card refund plan carried less
+ * than the refund due, whose remainder the club pays by bank transfer.
  */
-export type ManualRefundTaskAlertSituation = "cash-cancellation" | "group-organiser-internet-banking";
+export type ManualRefundTaskAlertSituation = "cash-cancellation" | "group-organiser-internet-banking" | "card-refund-shortfall";
+
+/** Each situation's subject phrase, text heading, amount row label and recipient row label: the cash ones exactly as they always read. */
+const ALERT_WORDS: Record<ManualRefundTaskAlertSituation, { label: string; heading: string; amountLabel: string; recipientLabel: string }> = {
+  "cash-cancellation": { label: "cash booking cancelled", heading: "Manual Refund Needed - Cash Booking Cancelled", amountLabel: "Amount to refund", recipientLabel: "Member" },
+  "group-organiser-internet-banking": { label: "Internet Banking group cancelled", heading: "Manual Refund Needed - Internet Banking Group Cancelled", amountLabel: "Owed when this alert was sent", recipientLabel: "Organiser" },
+  "card-refund-shortfall": { label: "card refund short on a cancelled booking", heading: "Manual Refund Needed - Card Refund Short on a Cancelled Booking", amountLabel: "Amount the card refund could not carry", recipientLabel: "Member" },
+};
 
 /** The subject phrase (`{{handBackLabel}}`). */
-export function manualRefundTaskAlertLabel(situation: ManualRefundTaskAlertSituation): string {
-  return situation === "group-organiser-internet-banking" ? "Internet Banking group cancelled" : "cash booking cancelled";
-}
-
-/** The text body's heading (`{{handBackHeading}}`): the cash one exactly as it always read. */
-export function manualRefundTaskAlertHeading(situation: ManualRefundTaskAlertSituation): string {
-  return situation === "group-organiser-internet-banking"
-    ? "Manual Refund Needed - Internet Banking Group Cancelled"
-    : "Manual Refund Needed - Cash Booking Cancelled";
-}
-
+export const manualRefundTaskAlertLabel = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].label;
+/** The text body's heading (`{{handBackHeading}}`). */
+export const manualRefundTaskAlertHeading = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].heading;
 /** The amount row's label, in the HTML and the text body (`{{handBackAmountLabel}}`). */
-export function manualRefundTaskAlertAmountLabel(situation: ManualRefundTaskAlertSituation): string {
-  return situation === "group-organiser-internet-banking" ? "Owed when this alert was sent" : "Amount to refund";
-}
-
+export const manualRefundTaskAlertAmountLabel = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].amountLabel;
 /** Whom the money goes back to, as the text body's row label (`{{handBackRecipientLabel}}`). */
-export function manualRefundTaskAlertRecipientLabel(situation: ManualRefundTaskAlertSituation): string {
-  return situation === "group-organiser-internet-banking" ? "Organiser" : "Member";
-}
+export const manualRefundTaskAlertRecipientLabel = (situation: ManualRefundTaskAlertSituation): string => ALERT_WORDS[situation].recipientLabel;
 
 /** The group alert's first sentence: the HTML's warning box, and the note's lead. */
 export const GROUP_HAND_BACK_ALERT_LEAD =
@@ -313,6 +311,9 @@ export const GROUP_HAND_BACK_ALERT_BODY =
 export function manualRefundTaskAlertNote(situation: ManualRefundTaskAlertSituation): string {
   if (situation === "group-organiser-internet-banking") {
     return `${GROUP_HAND_BACK_ALERT_LEAD}\n\n${GROUP_HAND_BACK_ALERT_BODY}`;
+  }
+  if (situation === "card-refund-shortfall") {
+    return `${CARD_REFUND_SHORTFALL_ALERT_LEAD}\n\n${CARD_REFUND_SHORTFALL_ALERT_BODY}`;
   }
   return [
     "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand - nothing was refunded automatically.",

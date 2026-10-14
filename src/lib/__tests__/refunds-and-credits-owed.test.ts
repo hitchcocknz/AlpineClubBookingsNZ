@@ -240,6 +240,46 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
     expect((await readRefundsAndCreditsOwed(taskOnly as never)).refundsOwedCents).toBe(30_000);
   });
 
+  it("#4097 (`INV-PAY-129`): a cancellation's card refund shortfall counts in Refunds owed and off Net Collected, once", async () => {
+    // $100.00 captured by card, $60.00 refunded to it, $40.00 the plan could not carry.
+    const shortfallTask = { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 4_000, partPaymentReviewPaymentId: null, occurrenceKey: "cancel-card-shortfall:b-short" };
+    const row = owedReconciliationPaymentRow({
+      bookingId: "b-short",
+      memberId: "m-short",
+      bookingStatus: "CANCELLED",
+      status: "PARTIALLY_REFUNDED",
+      amountCents: 10_000,
+      refundedAmountCents: 6_000,
+      source: "STRIPE",
+      capturedLedgerRows: 1,
+      deletedAt: null,
+      creditsApplied: [],
+      creditsFromCancellation: [],
+      manualRefundTasks: [shortfallTask],
+      recoveryOperations: [],
+      refunds: [],
+    });
+
+    const parts = getNetCollectedPaymentParts(row);
+    expect(parts.handBackOwedCents).toBe(4_000);
+    expect(parts.heldCashCents).toBe(0);
+
+    const db = reconciliationDb();
+    db.manualRefundTask.findMany.mockResolvedValue([{ ...shortfallTask, booking: { deletedAt: null, payment: { id: "pay-short", ...row } } }]);
+    db.paymentRecoveryOperation.findMany = operationReads(() => []);
+    db.memberCredit.groupBy.mockResolvedValue([]);
+    expect((await readRefundsAndCreditsOwed(db as never)).refundsOwedCents).toBe(4_000);
+
+    // Paid back or dismissed, it is owed nowhere.
+    const closed = owedReconciliationPaymentRow({
+      bookingId: "b-short", memberId: "m-short", bookingStatus: "CANCELLED", status: "PARTIALLY_REFUNDED",
+      amountCents: 10_000, refundedAmountCents: 6_000, source: "STRIPE", capturedLedgerRows: 1, deletedAt: null,
+      creditsApplied: [], creditsFromCancellation: [], manualRefundTasks: [{ ...shortfallTask, status: "DISMISSED" }],
+      recoveryOperations: [], refunds: [],
+    });
+    expect(getNetCollectedPaymentParts(closed).handBackOwedCents).toBe(0);
+  });
+
   it("never takes one payment's money off twice across a hand-back and a card refund", () => {
     const [failed] = rows;
     const both = {

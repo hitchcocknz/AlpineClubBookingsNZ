@@ -22,6 +22,57 @@ import type { ClubFormat } from "@/lib/club-format";
 import type { CancellationEventSnapshot } from "@/lib/booking-events";
 import type { BookingNarrative, NarrativeEvent } from "@/lib/booking-narrative";
 import { formatCents } from "@/lib/utils";
+import type { CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
+
+/**
+ * #4097 (`INV-PAY-129`): a card cancel whose card refund plan carried less than
+ * the refund due. Frozen on the CANCELLED event (`cardShortfall`): the card's
+ * part and the two parts beside it. Each of those is a task whose status the
+ * page reads live, so the sentence follows it: still owed, refunded by bank
+ * transfer, or checked and closed by the club.
+ */
+function cardShortfallClause(
+  parts: { cardCents: number; bankCents: number; checkCents: number },
+  statuses: CardShortfallTaskStatuses,
+  { cardRefundedOn, retainedAmountCents, format }: { cardRefundedOn: string | null; retainedAmountCents: number; format: ClubFormat },
+): string {
+  const money = (cents: number) => formatCents(cents, format);
+  const clauses: string[] = [];
+  if (parts.cardCents > 0) {
+    // The card part as its own refund stands, as the cancellation email says it.
+    clauses.push(
+      statuses.card === "on-its-way"
+        ? `${money(parts.cardCents)} is on its way to your card`
+        : statuses.card === "paid-another-way"
+          ? `${money(parts.cardCents)} could not go back to your card and was paid back to you another way`
+          : `${money(parts.cardCents)} was refunded to your card${cardRefundedOn ? ` on ${cardRefundedOn}` : ""}`,
+    );
+  }
+  if (parts.bankCents > 0) {
+    const status = statuses.bank ?? "OPEN";
+    clauses.push(
+      status === "COMPLETED"
+        ? `${money(parts.bankCents)} was refunded to you by bank transfer`
+        : status === "DISMISSED"
+          ? `the club has recorded the ${money(parts.bankCents)} as settled`
+          : `${money(parts.bankCents)} is being refunded to you by bank transfer`,
+    );
+  }
+  if (parts.checkCents > 0) {
+    const status = statuses.check ?? "OPEN";
+    // Nothing went to the card or by bank: it is the whole refund, not "the remaining" one.
+    const remaining = parts.cardCents > 0 || parts.bankCents > 0 ? "remaining " : "";
+    clauses.push(
+      status === "COMPLETED"
+        ? `${money(parts.checkCents)} was refunded to you by bank transfer`
+        : status === "DISMISSED"
+          ? `the club checked the ${remaining}${money(parts.checkCents)} and closed it`
+          : `the club will be in touch about the ${remaining}${money(parts.checkCents)}${remaining ? "" : " refund"}`,
+    );
+  }
+  if (retainedAmountCents > 0) clauses.push(`${money(retainedAmountCents)} was retained`);
+  return clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? "no refund was due");
+}
 
 function asCancellationSnapshot(
   value: unknown
@@ -38,6 +89,7 @@ export function buildCancelledPostPaymentNarrative(
   settlementEvent: NarrativeEvent | undefined,
   club: BoundClubTime, format: ClubFormat,
   ownerCreditHidden: boolean,
+  cardShortfallStatuses: CardShortfallTaskStatuses = {},
 ): BookingNarrative {
   const snapshot = asCancellationSnapshot(cancelEvent?.snapshot);
   const paidAmountCents = paidEvent.amountCents ?? snapshot?.paidAmountCents ?? 0;
@@ -54,7 +106,13 @@ export function buildCancelledPostPaymentNarrative(
   const opening = `You cancelled this booking on ${cancelOn} after paying ${formatCents(paidAmountCents, format)} on ${paidOn}.`;
 
   let settlementClause: string;
-  if (
+  if (snapshot?.cardShortfall) {
+    settlementClause = cardShortfallClause(snapshot.cardShortfall, cardShortfallStatuses, {
+      cardRefundedOn: settlementEvent ? club.instantDate(settlementEvent.occurredAt) : null,
+      retainedAmountCents,
+      format,
+    });
+  } else if (
     settledAmountCents > 0 &&
     settlementEvent?.type === BookingEventType.CREDITED &&
     ownerCreditHidden

@@ -32,6 +32,7 @@ import {
   type ManualRefundTaskAlertSituation,
 } from "@/lib/email-message-notes";
 import { emailPalette } from "@/lib/email-theme";
+import { CARD_REFUND_SHORTFALL_ALERT_BODY, CARD_REFUND_SHORTFALL_ALERT_LEAD } from "@/lib/cancel-card-refund-shortfall-copy";
 import {
   emailCalendarDay,
   emailCalendarDayOrUnknown,
@@ -532,9 +533,9 @@ export function adminSecondInstrumentSettlementConflictTemplate(data: {
 
 // ---- B5 (#2262): Admin Alert — manual refund task raised ----
 //
-// A cash-settled booking was cancelled (or, #4042, an organiser cancelled a
-// group paid by Internet Banking): no card refund backs it, so a person hands
-// the money back. The task is durable; this alert is the nudge, not the record.
+// A cash-settled booking was cancelled (or #4042 a group paid by Internet
+// Banking, or #4097 a card booking whose card refund fell short): a person
+// pays it back or checks it. The task is durable; this alert is the nudge.
 export function adminManualRefundTaskTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -547,10 +548,10 @@ export function adminManualRefundTaskTemplate(data: {
 },
   format: ClubFormat,
 ): string {
-  const group = data.situation === "group-organiser-internet-banking"; // #4042
+  const [group, shortfall] = [data.situation === "group-organiser-internet-banking", data.situation === "card-refund-shortfall"]; // #4042, #4097
   return layout(`
-    ${heading(group ? "Manual Refund Needed — Internet Banking Group Cancelled" : "Manual Refund Needed — Cash Booking Cancelled")}
-    ${group ? `${alertBox(GROUP_HAND_BACK_ALERT_LEAD, "warning")}${paragraph(GROUP_HAND_BACK_ALERT_BODY)}` : `${alertBox(
+    ${heading(group ? "Manual Refund Needed — Internet Banking Group Cancelled" : shortfall ? "Manual Refund Needed — Card Refund Short on a Cancelled Booking" : "Manual Refund Needed — Cash Booking Cancelled")}
+    ${group ? `${alertBox(GROUP_HAND_BACK_ALERT_LEAD, "warning")}${paragraph(GROUP_HAND_BACK_ALERT_BODY)}` : shortfall ? `${alertBox(CARD_REFUND_SHORTFALL_ALERT_LEAD, "warning")}${paragraph(CARD_REFUND_SHORTFALL_ALERT_BODY)}` : `${alertBox(
       "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand — nothing was refunded automatically.",
       "warning"
     )}
