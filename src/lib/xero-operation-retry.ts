@@ -70,6 +70,7 @@ import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import type { ClubFormat } from "@/lib/club-format";
 import { readRefundRequestIdFromPayload } from "@/lib/refund-request-credit-note";
 import { findResolvedSiblingSince } from "@/lib/xero-resolved-in-xero-fences";
+import { membershipChargeNeedsNoInvoice } from "@/lib/subscription-charge-already-paid";
 
 /**
  * The `@/lib/xero` module namespace, named because an `import()` type written
@@ -254,7 +255,7 @@ async function refuseSubscriptionInvoiceRetryWithNothingToDo(chargeId: string): 
       409,
     );
   }
-  if (charge.billingBasis === "NO_INVOICE" || charge.status === "NOT_REQUIRED" || charge.status === "VOIDED") {
+  if (membershipChargeNeedsNoInvoice(charge)) {
     throw new XeroOperationRetryError(
       "This charge no longer needs a Xero invoice, so there is nothing to retry. Mark this operation non-replayable.",
       409,

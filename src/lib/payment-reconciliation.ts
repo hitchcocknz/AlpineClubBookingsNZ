@@ -31,10 +31,12 @@ import {
 } from "@/lib/payment-recovery";
 import {
   buildBookingModificationRefundMetadata,
+  buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
   buildCapacityClaimFailedRefundStripeKeyPrefix,
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
+import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -2063,8 +2065,10 @@ export async function markBookingPaymentSucceeded({
     // cancellation. The rest of the audit trail is unchanged: the
     // PaymentRecoveryOperation row, the PaymentRefund ledger entries, this log
     // line and the admin alert below.
+    const keepRefusalOwed = (attempt: RefundAttempt) =>
+      keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
     try {
-      await refundPaymentTransactions({
+      const refundResult = await refundPaymentTransactions({
         format,
         paymentId: reconciliation.paymentId,
         amountCents: plannedRefundCents,
@@ -2085,6 +2089,9 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
+      // #4103 (`INV-PAY-130`): a refusal stays owed, re-planned; the failure branch alerts once.
+      const refused = await keepRefusalOwed(refundResult);
+      if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
@@ -2151,50 +2158,46 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund a duplicate capture; the pre-persisted recovery operation will replay the refund"
       );
+      // #4103: one slice (the duplicate's own capture), so no refusal comes before a throw.
+      const refundErrorMessage = refundError instanceof Error ? refundError.message : String(refundError);
       await recordDuplicateCaptureRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
-        message:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        message: refundErrorMessage,
       }).catch((recordErr) =>
         logger.error(
           { err: recordErr, bookingId, paymentIntentId },
           "Failed to record inline duplicate-capture refund failure on the recovery operation"
         )
       );
-      sendAdminDuplicateCaptureRefundAlert({
-        memberName: `${bookingOwner(reconciliation.booking).member.firstName} ${bookingOwner(reconciliation.booking).member.lastName}`,
-        checkIn: reconciliation.booking.checkIn,
-        checkOut: reconciliation.booking.checkOut,
-        amountCents: plannedRefundCents,
-        paymentIntentId,
-        settledPaymentIntentId: settledPaymentIntentId ?? null,
-        operationReference: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
-          bookingId,
-          paymentIntentId
-        ),
-        errorMessage:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
-        refundFailed: true,
-      }, format).catch((alertErr) =>
-        logger.error(
-          { err: alertErr, bookingId, paymentIntentId },
-          "Failed to alert admins about the failed duplicate-capture refund"
-        )
-      );
+      // #4103: a refusal whose row a worker already holds is alerted by that worker.
+      if (!(refundError instanceof RefusedCardRefundError && !refundError.replanned)) {
+        sendAdminDuplicateCaptureRefundAlert({
+          memberName: `${bookingOwner(reconciliation.booking).member.firstName} ${bookingOwner(reconciliation.booking).member.lastName}`,
+          checkIn: reconciliation.booking.checkIn,
+          checkOut: reconciliation.booking.checkOut,
+          amountCents: plannedRefundCents,
+          paymentIntentId,
+          settledPaymentIntentId: settledPaymentIntentId ?? null,
+          operationReference: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
+            bookingId,
+            paymentIntentId
+          ),
+          errorMessage: refundErrorMessage,
+          refundFailed: true,
+        }, format).catch((alertErr) =>
+          logger.error(
+            { err: alertErr, bookingId, paymentIntentId },
+            "Failed to alert admins about the failed duplicate-capture refund"
+          )
+        );
+      }
 
       return {
         outcome: "duplicate_capture_refund_failed",
         bookingId,
         bumpedBookingIds: [],
-        refundError:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        refundError: refundErrorMessage,
       };
     }
   }
@@ -2235,6 +2238,8 @@ export async function markBookingPaymentSucceeded({
       );
     }
 
+    const keepRefusalOwed = (attempt: RefundAttempt) =>
+      keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
     try {
       if (refundPlan.length === 0 || plannedRefundCents <= 0) {
         throw new Error(
@@ -2242,7 +2247,7 @@ export async function markBookingPaymentSucceeded({
         );
       }
 
-      await refundPaymentTransactions({
+      const refundResult = await refundPaymentTransactions({
         format,
         paymentId: reconciliation.paymentId,
         amountCents: plannedRefundCents,
@@ -2264,6 +2269,9 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
+      // #4103 (`INV-PAY-130`): a refusal stays owed, re-planned, no REFUNDED event; the failure branch alerts once.
+      const refused = await keepRefusalOwed(refundResult);
+      if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
@@ -2303,33 +2311,35 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund booking after final capacity claim failed; the pre-persisted recovery operation will replay the refund"
       );
+      // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
+      const refusedBefore = await keepRefusalOwed({ error: refundError });
+      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)].filter(Boolean).join(" ");
       await recordCapacityClaimFailedRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
-        message:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        message: refundErrorMessage,
       }).catch((recordErr) =>
         logger.error(
           { err: recordErr, bookingId, paymentIntentId },
           "Failed to record inline capacity-race refund failure on the recovery operation"
         )
       );
-      await alertRefundFailure({
-        format,
-        booking: reconciliation.booking,
-        paymentIntentId,
-        amountCents,
-        error: refundError,
-      });
+      // #4103: a refusal whose row a worker already holds is alerted by that worker.
+      if (!(refundError instanceof RefusedCardRefundError && !refundError.replanned)) {
+        await alertRefundFailure({
+          format,
+          booking: reconciliation.booking,
+          paymentIntentId,
+          amountCents,
+          error: refundErrorMessage,
+        });
+      }
 
       return {
         outcome: "cancelled_refund_failed",
         bookingId,
         bumpedBookingIds: [],
-        refundError:
-          refundError instanceof Error ? refundError.message : String(refundError),
+        refundError: refundErrorMessage,
       };
     }
   }

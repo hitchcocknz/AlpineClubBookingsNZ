@@ -862,7 +862,9 @@ check the others.
   carries no Xero invoice link (a write-time fence, so a manual mark-paid
   landing mid-sync is also safe); and `flushMemberSubscriptionHistory` treats a
   manual-PAID row as financial history and never deletes it on contact
-  link/push/unlink. Once a real Xero subscription invoice links to the row,
+  link/push/unlink. An audited finance:edit close (#4098) moves that conflict
+  to `NOT_REQUIRED` only while every covered subscription is still `PAID`,
+  releasing its coverage claims and bumping `voidGeneration`. Once a real Xero subscription invoice links to the row,
   Xero is authoritative again and the linking write clears the manual
   provenance columns (a row can never read "UNPAID (manual)"). Reversal
   (finance:edit) restores `NOT_INVOICED` (or `UNPAID` on a legacy row with an

@@ -64,7 +64,7 @@ import {
   organiserChildRefundMade,
   reserveOrganiserChildRefund,
 } from "@/lib/organiser-child-refund";
-import { buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
 import { releaseBookingPromoRedemptions } from "@/lib/promo";
 import {
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
@@ -90,7 +90,7 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
-import { keepRefusedCancellationRefundOwed, refusedRefundSlices } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -104,7 +104,8 @@ import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
 import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
-import { alertCancelCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
+import { alertCancelCardShortfall, cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
+import { CAPTURED_ROWS_OLDEST_FIRST, foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -1578,36 +1579,19 @@ async function performBookingCancellation(
     // still refundable. Attributing the fold to the captured rows (oldest
     // first, capped at each row's headroom) keeps mirror and ledger telling
     // the same story and tightens the planners' caps.
-    if (payment.status === "PARTIALLY_REFUNDED") {
-      const capturedRows = await tx.paymentTransaction.findMany({
-        where: {
-          paymentId: payment.id,
-          status: {
-            in: [...CAPTURED_TRANSACTION_STATUS_LIST],
-          },
-        },
-        orderBy: { createdAt: "asc" },
+    // The rows' increments are capped at each row's headroom through the shared
+    // compare-and-set (#3640): the charge.refunded webhook takes no lock, so a
+    // card refund it commits between this read and the write survives. #4119:
+    // the walk is shared with the cancel preview, which folds in memory.
+    await foldMirrorRefundIntoLedger(
+      payment,
+      () => tx.paymentTransaction.findMany({
+        where: { paymentId: payment.id, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+        orderBy: CAPTURED_ROWS_OLDEST_FIRST,
         select: { id: true, amountCents: true, refundedAmountCents: true },
-      });
-      const ledgerRefundedCents = capturedRows.reduce(
-        (sum, row) => sum + row.refundedAmountCents,
-        0
-      );
-      let foldedCents = payment.refundedAmountCents - ledgerRefundedCents;
-      for (const row of capturedRows) {
-        if (foldedCents <= 0) {
-          break;
-        }
-        // Capped at the row's headroom, as an increment through the shared
-        // compare-and-set (#3640): the charge.refunded webhook takes no lock,
-        // so a card refund it commits between this read and the write survives.
-        foldedCents -= await foldIntoTransactionRefundedAmount({
-          paymentTransactionId: row.id,
-          amountCents: foldedCents,
-          store: tx,
-        });
-      }
-    }
+      }),
+      (row, amountCents) => foldIntoTransactionRefundedAmount({ paymentTransactionId: row.id, amountCents, store: tx }),
+    );
 
     // Freeze the refund plan from the LOCKED read. Change fees (from prior
     // booking modifications) are non-refundable (INV-PAY-018). The refundable
@@ -1944,7 +1928,7 @@ async function performBookingCancellation(
         });
       }
       // #4097 (`INV-PAY-129`): what the plan cannot carry is recorded with the claim, card branch only.
-      if (branch === "card") {
+      if (cancelRaisesCardShortfall({ branch, organiserCard: organiserCard !== null })) {
         cardShortfall = await raiseCancelCardShortfallHandBack(tx, { bookingId, paymentId: payment.id, refundAmountCents, plannedCardRefundCents, format });
       }
     }
@@ -2365,9 +2349,13 @@ async function performBookingCancellation(
         // #4083/#4096 (`INV-PAY-128`): a slice Stripe refused (failed/canceled)
         // is still owed: the pre-persisted debt stays open, re-planned to the
         // refused slices on fresh keys, and the catch records why.
-        if (refusedRefundSlices(refundResult.refunds).length > 0) {
-          throw await keepRefusedCancellationRefundOwed({ bookingId, answered: refundResult.refunds, format });
-        }
+        const refused = await keepRefusedPrePersistedRefundOwed({
+          bookingId,
+          idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId),
+          attempt: refundResult,
+          format,
+        });
+        if (refused) throw refused;
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
@@ -2390,6 +2378,8 @@ async function performBookingCancellation(
         // remainder moves money. Do NOT rethrow.
         const completedRefundCents =
           err instanceof PartialRefundError ? err.completedRefundCents : 0;
+        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door.
+        await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
         await recordBookingCancellationRefundRecoveryInlineError({
           bookingId,
           message: err instanceof Error ? err.message : String(err),

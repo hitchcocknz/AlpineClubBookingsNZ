@@ -296,6 +296,9 @@ function createDependencies(state: {
   // #3924 round 7 (money M2): an approved capture's card refund row, and the
   // record of its close as paid another way.
   lateCaptureApprovalRefunds?: { id: string; idempotencyKey: string }[];
+  // #4103: the refunds already recorded on a payment, which the late-capture
+  // repair reads for each slice's key generation.
+  paymentRefunds?: { paymentId: string; paymentTransactionId: string | null; amountCents: number; status: string }[];
   paidAnotherWayCloses?: { kind: string; occurrenceKey: string }[];
   // #3924 round 8: where that close's receipt and note stand.
   paidAnotherWayReceipt?: { kind: "none" } | { kind: "resolved-by-hand" } | { kind: "recorded"; invoiceId: string | null };
@@ -556,6 +559,11 @@ function createDependencies(state: {
       // notice; and it applies the same three criteria plus the intent id the
       // real query does, so a test cannot pass on a row the real read would
       // never have returned.
+      paymentRefund: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+          (state.paymentRefunds ?? []).filter((refund) => refund.paymentId === where?.paymentId),
+        ),
+      },
       paymentTransaction: {
         findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
           const booking = state.bookings.find(
@@ -5367,6 +5375,155 @@ describe("runBookingXeroRepair", () => {
     });
     expect(booking.payment.status).toBe("REFUNDED");
     expect(report.summary.bookingsWithFindings).toBe(0);
+  });
+
+  // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
+  // without throwing. That slice sent nothing back, so it is never recorded or
+  // noted as refunded, and the action fails saying the money is still with the club.
+  describe("a late-capture refund Stripe refuses (#4103)", () => {
+    const KEY = "late-capture-refund:booking_1:payment_1:13000";
+    const answer = (paymentIntentId: string, transactionId: string, amountCents: number, status: string) => ({
+      paymentIntentId,
+      refundId: `re_${paymentIntentId}`,
+      amountCents,
+      status,
+      slice: { paymentTransactionId: transactionId, amountCents },
+    });
+    async function applyWith(refund: ReturnType<typeof vi.fn>) {
+      const deps = createDependencies({ bookings: [lateCaptureRefundBooking()] });
+      deps.refundPaymentTransactions = refund as unknown as typeof deps.refundPaymentTransactions;
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, applyActionKeys: [KEY], dependencies: deps, scope: { all: true } });
+      const action = report.passes
+        .flatMap((pass) => pass.bookings.flatMap((bookingReport) => bookingReport.actions))
+        .find((item) => item.key === KEY);
+      const recorded = (deps.recordAndNoteRepairedLateCaptureRefunds as ReturnType<typeof vi.fn>).mock.calls.flatMap(([args]) =>
+        (args as { refunds: { paymentIntentId: string }[] }).refunds.map((each) => each.paymentIntentId),
+      );
+      return { action, recorded };
+    }
+
+    it.each([["failed"], ["canceled"]])("every slice answered %s: nothing recorded or noted, and the action fails naming the refusal", async (status) => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, status), answer("pi_primary_captured", "txn_primary", 10000, status)],
+          totalRefundedAmountCents: 13000,
+        }),
+      );
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+      expect(action?.resultMessage).toMatch(/Stripe refused \$130\.00 .*still owed\. That money is still with the club/);
+      expect(action?.resultMessage).not.toMatch(/^Refunded/);
+    });
+
+    it("one slice made beside one refused: only the made one is recorded, and the action fails naming the refused amount", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, "succeeded"), answer("pi_primary_captured", "txn_primary", 10000, "failed")],
+          totalRefundedAmountCents: 13000,
+        }),
+      );
+
+      expect(recorded).toEqual(["pi_additional_captured"]);
+      expect(action?.status).toBe("failed");
+      expect(action?.resultMessage).toContain("Recorded the refund of pi_additional_captured as the webhook does.");
+      expect(action?.resultMessage).toMatch(/Stripe refused \$100\.00/);
+    });
+
+    it("refused then thrown: the refused slice is not recorded, and the action fails", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockRejectedValue(
+          new PartialRefundError({
+            format: CLUB_FORMAT_TEST,
+            completedRefundCents: 0,
+            refunds: [answer("pi_additional_captured", "txn_additional", 3000, "failed")],
+            refusedSlices: [{ paymentTransactionId: "txn_additional", amountCents: 3000 }],
+            cause: new Error("network"),
+          }),
+        ),
+      );
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+    });
+
+    it("one made, one refused, then a throw: only the made slice is recorded", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockRejectedValue(
+          new PartialRefundError({
+            format: CLUB_FORMAT_TEST,
+            completedRefundCents: 3000,
+            refunds: [answer("pi_additional_captured", "txn_additional", 3000, "succeeded"), answer("pi_primary_captured", "txn_primary", 10000, "canceled")],
+            refusedSlices: [{ paymentTransactionId: "txn_primary", amountCents: 10000 }],
+            cause: new Error("network"),
+          }),
+        ),
+      );
+
+      expect(recorded).toEqual(["pi_additional_captured"]);
+      expect(action?.status).toBe("failed");
+    });
+
+    // #4103 (option c): the repair has no row to carry a slice's key generation,
+    // so it reads it from the refusals recorded for that slice. A retry after a
+    // refusal is a fresh request; a lost answer records nothing, so its replay
+    // keeps the key Stripe answers with the original.
+    describe("the retry's key generation follows the refusals recorded for each slice", () => {
+      async function sentAllocation(paymentRefunds: NonNullable<Parameters<typeof createDependencies>[0]["paymentRefunds"]>) {
+        const deps = createDependencies({ bookings: [lateCaptureRefundBooking()], paymentRefunds });
+        await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, applyActionKeys: [KEY], dependencies: deps, scope: { all: true } });
+        return (deps.refundPaymentTransactions as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.allocation;
+      }
+      const refusal = (transactionId: string, amountCents: number, status = "failed") => ({ paymentId: "payment_1", paymentTransactionId: transactionId, amountCents, status });
+
+      it("no refusal recorded: every slice keeps its first key", async () => {
+        expect(await sentAllocation([])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ]);
+      });
+
+      it("a refusal recorded for one slice moves only that slice to its next key", async () => {
+        expect(await sentAllocation([refusal("txn_primary", 10000)])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000, stripeKeySuffix: "refused1" },
+        ]);
+      });
+
+      it("a second refusal moves it on again, never back to a key already refused", async () => {
+        expect(await sentAllocation([refusal("txn_primary", 10000), refusal("txn_primary", 10000, "canceled")])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000, stripeKeySuffix: "refused2" },
+        ]);
+      });
+
+      it("a made refund, another payment's refusal, or a refusal of another amount moves nothing", async () => {
+        expect(
+          await sentAllocation([
+            refusal("txn_primary", 10000, "succeeded"),
+            refusal("txn_primary", 10000, "pending"),
+            refusal("txn_primary", 9999),
+            { ...refusal("txn_primary", 10000), paymentId: "payment_other" },
+          ]),
+        ).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ]);
+      });
+    });
+
+    it("a re-run that Stripe answers with the same refusal records nothing, again", async () => {
+      const refusal = () =>
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, "failed"), answer("pi_primary_captured", "txn_primary", 10000, "failed")],
+          totalRefundedAmountCents: 13000,
+        });
+      await applyWith(refusal());
+      const { action, recorded } = await applyWith(refusal());
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+    });
   });
 
   it("says it recorded the refund only for the intents whose record was written, and queued only a note that was queued (#3635 N4)", async () => {

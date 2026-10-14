@@ -1247,10 +1247,8 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
   - **Deploy window**: an older release closes a refused row as paid, and
     replays a moved slice's first key, reading the cached refusal - nothing is
     refunded twice within 24 hours. Check rows it closed against Stripe.
-  - **Stated limits**: the late-capture approval and webhook, the edit
-    financial-review settlement, duplicate-capture reconciliation, the
-    superseded-payment runner and the group-settlement replay still close on a
-    refusal (#4103); a refund accepted (`pending`) and failed later is not
+  - **Every other door** follows the same rule: `INV-PAY-130` (#4103).
+  - **Stated limit**: a refund accepted (`pending`) and failed later is not
     re-owed.
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
     `own-card-refund-outcome`, `booking-cancel.test.ts`,
@@ -1260,8 +1258,9 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
 
 ## INV-PAY-129
 
-**Related: `INV-PAY-101`** (a hand-back's wording and Xero note) and
-**`INV-PAY-122`** (a card refund paid another way).
+**Related: `INV-PAY-101`** (a hand-back's wording and Xero note),
+**`INV-PAY-122`** (a card refund paid another way) and **`INV-PAY-131`** (the
+preview).
 
 - **What an own-card cancel's card refund plan cannot carry is recorded, split
   by what can hold it** (#4097). The plan covers what the captured Stripe
@@ -1290,6 +1289,70 @@ Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
     `booking-cancelled-card-shortfall-email.test.ts`,
     `manual-refund-task.test.ts`, `stripe-cash-refund-evidence.test.ts`,
     `booking-narrative-card-shortfall.test.ts` and
+    `cancel-card-refund-shortfall.realdb.test.ts`.
+
+## INV-PAY-130
+
+**Related: `INV-PAY-128`**, whose rule this carries to the other card refund
+doors (#4103).
+
+- **No card refund door closes a row, or says "refunded", on a refusal.**
+  Stripe's `failed` or `canceled` answer sent nothing back.
+  - **A door whose row predates its attempt** - the edit financial review, the
+    treasurer-approved late capture, the duplicate capture, the capacity race,
+    as the cancellation does - re-plans that row through
+    `keepRefusedPrePersistedRefundOwed`: refused slices on their next key,
+    made ones marked, a slice after a throw on its own key; only while
+    `PENDING` with no attempt, else the worker holding it does; once per
+    refusal (compare-and-set on the row's plan). No close, no
+    REFUNDED event, no refund id. A door with its own failure alert raises it
+    only when its write moved the row (`RefusedCardRefundError.replanned`).
+  - **A late-capture refusal always waits for approval**: the webhooks hold
+    it for a treasurer whatever the club's setting
+    (`holdLateCaptureRefusedByStripe`); the task is the record, and its
+    approval asks on the key its recorded refusals count to
+    (`sliceAfterRecordedRefusals`).
+  - **The superseded-payment runner** asks under its row's own key first; a
+    refusal moves it to a one-slice plan on its next key.
+  - **The Xero repair pass** records only what Stripe made and fails; each
+    slice's key generation is the count of refusals recorded for it
+    (`sliceAfterRecordedRefusals`), so a re-run asks afresh and a lost answer's
+    replay keeps its key.
+  - **The legacy group settlement refund** (inline and replay; plans frozen
+    before #3653) and **the superseded group intent's webhook refund** fail on
+    a refusal as on a throw. A retry's key moves past each refusal Stripe holds
+    on the intent for that refund (`keyAfterStripeRefusals`), so it asks
+    afresh.
+  - Proven by `pre-persisted-card-refund-refusal.test.ts`,
+    `refused-card-refund-retry.test.ts`, the duplicate-capture,
+    reconciliation, webhook, hold, recovery, group-cancel and repair suites,
+    and `refused-card-refund-retry.realdb.test.ts`.
+
+## INV-PAY-131
+
+**Related: `INV-PAY-129`** (what the cancel records when its card refund plan is
+short).
+
+- **The cancel preview quotes the card only what the cancel's card refund plan
+  will carry** (#4119). Where the plan is short, the dialog names the card's
+  part, the bank-transfer part and the part the club will be in touch about,
+  in the one wording home's sentence, said before anything is asked of the card.
+  - **Sized by the cancel's own steps, in its order**: the claim's mirror fold
+    (one walk, `foldMirrorRefundIntoLedger`, over rows read in one order,
+    `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
+    charges as its backfill would write them (`legacyBackfillRows`), the
+    claim's planner (`planCardRefundFromLedger`), and the split
+    (`sizeCancelCardShortfall`). Asked only behind the cancel's own gate
+    (`cancelRaisesCardShortfall`): the card branch, not forced to account
+    credit or to the organiser's card.
+  - **The preview writes nothing.** A GET that backfilled ledger rows could
+    collide with the cancel's own backfill on the unique intent id. Its reads
+    are one read-only `RepeatableRead` snapshot, with no lock and no provider
+    call.
+  - Advisory, like the rest of the preview: the cancel re-plans under its
+    locks, so the two differ only if the payment's records move in between.
+  - Proven by `cancel-card-refund-shortfall-preview.test.ts`, the route's
+    `card-refund-shortfall.test.ts`, `cancel-booking-button.test.tsx` and
     `cancel-card-refund-shortfall.realdb.test.ts`.
 
 ## INV-PAY-031

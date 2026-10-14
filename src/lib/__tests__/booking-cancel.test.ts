@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -1932,7 +1933,8 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.enqueueBookingCancellationRefundRecovery).toHaveBeenCalledTimes(1);
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
     expect(mocks.recoveryOperationUpdateMany).toHaveBeenCalledWith({
-      where: { idempotencyKey: "booking_cancel_refund_recovery_booking_1", status: "PENDING", attempts: 0 },
+      // #4103 review C2: compare-and-set on the plan the row held (none, here).
+      where: { idempotencyKey: "booking_cancel_refund_recovery_booking_1", status: "PENDING", attempts: 0, allocationPlan: { equals: Prisma.DbNull } },
       // The amount is not written: it stays the plan's total.
       data: {
         allocationPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50, stripeKeySuffix: "refused1" }],
@@ -1973,22 +1975,51 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
   });
 
-  it("the row it re-planned cannot be read back: the officers are still alerted, with what is in hand (#4096)", async () => {
+  // #4103 review C2: the re-plan is compare-and-set on the row's plan, so a row
+  // that cannot be read is not moved here: it stays open on its first key, and
+  // the runner reads the refusal back, moves it and alerts.
+  it("the row cannot be read: nothing is re-planned or alerted here, and it is still not closed (#4096, #4103)", async () => {
     mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
     mocks.refundPaymentTransactions.mockResolvedValueOnce({
       refunds: [cancelRefund({ paymentTransactionId: "ptx_1", amountCents: 50 }, "failed")],
       totalRefundedAmountCents: 50,
     });
-    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 1 });
     mocks.recoveryOperationFindUnique.mockRejectedValueOnce(new Error("database blip"));
 
     await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
+    expect(mocks.recoveryOperationUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
+  });
+
+  // #4103 (review g): a slice Stripe refused before a later one threw is
+  // re-planned by the catch, as at every other pre-persisted door.
+  it("refused then thrown: the refused slice moves to its next key, the one that threw keeps its own (#4103)", async () => {
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 50, refundPercentage: 100 });
+    mocks.planStripeRefundAllocation.mockResolvedValueOnce({
+      slices: [
+        { paymentTransactionId: "ptx_2", amountCents: 30 },
+        { paymentTransactionId: "ptx_1", amountCents: 20 },
+      ],
+      plannedAmountCents: 50,
+      totalRefundableCents: 50,
+    });
+    const thrown = Object.assign(new mocks.PartialRefundError(0), {
+      refunds: [cancelRefund({ paymentTransactionId: "ptx_2", amountCents: 30 }, "failed")],
+    });
+    mocks.refundPaymentTransactions.mockRejectedValueOnce(thrown);
+    mocks.recoveryOperationUpdateMany.mockResolvedValueOnce({ count: 1 });
+    mocks.recoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_cancel", paymentIntentId: "pi_1" });
+
+    await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    const written = mocks.recoveryOperationUpdateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    expect(written.data.allocationPlan).toEqual([
+      { paymentTransactionId: "ptx_2", amountCents: 30, stripeKeySuffix: "refused1" },
+      { paymentTransactionId: "ptx_1", amountCents: 20 },
+    ]);
     expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
-    expect(mocks.alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
-      expect.objectContaining({ bookingId: "booking_1", operationId: undefined, amountCents: 50, paymentIntentId: "pi_1" }),
-      CLUB_FORMAT_TEST,
-    );
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
   });
 
@@ -2006,8 +2037,7 @@ describe("cancelBooking credit refunds", () => {
 
     expect(mocks.alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
     expect(mocks.markBookingCancellationRefundRecoverySucceeded).not.toHaveBeenCalled();
-    // The lost fence never read the row: drop the queued answer so no later case inherits it.
-    mocks.recoveryOperationFindUnique.mockReset();
+
   });
 
   it("CONTROL: closes the pre-persisted recovery op when Stripe answers the card refund pending (#4083)", async () => {

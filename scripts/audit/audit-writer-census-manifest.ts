@@ -649,7 +649,11 @@ export const AUDIT_CENSUS_TOTALS = {
   // `pnpm run audit:census` on the composed tree, never added together.
   // Hand sync of `main` f3b6c008b (epic #3789): the same additions arrived again,
   // disjoint; 501 RE-MEASURED on the merged tree.
-  writeSites: 501,
+  // 501 -> 502 (#4098): `membership-subscription-billing.close-already-paid`,
+  // an officer closing a subscription charge whose members had already paid,
+  // awaited on the close's own transaction under `payment`. RE-MEASURED with
+  // `pnpm run audit:census`.
+  writeSites: 502,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -845,7 +849,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // `createAuditLog` like the lodge-settings route beside it.
     // 140/141 -> 142 (sync of `main` 0ff7e6d46 into epic #3789, #3821):
     // #3819's one and #3372's two are disjoint. RE-MEASURED on the composed tree.
-    createAuditLog: { total: 142, uncategorised: 0 },
+    // 142 -> 143 (#4098): the close of an already-paid subscription charge,
+    // awaited on the close's transaction so the row commits with the status.
+    createAuditLog: { total: 143, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1038,7 +1044,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // its money, beside the hand-back completion it mirrors.
     // 53 -> 54 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved -
     // the treasurer's note on money paid back twice, read by the same people.
-    payment: 54,
+    // 54 -> 55 (#4098): a subscription charge closed as already paid - the
+    // officer and reason beside the billing actions the same people read.
+    payment: 55,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
