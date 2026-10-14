@@ -15,7 +15,7 @@ reason: the task is raised inside the paid cancel's claim transaction, beside
   and the alert. Each is one call into the helper module.
 
 file: src/components/admin/manual-refund-task-queue.tsx
-lines: 2252
+lines: 2258
 reason: the money-to-settle card explains each kind of row in its own
   paragraph beside the others, and must not describe a card booking's
   shortfall with the cash paragraph; the paragraph and its row flag belong

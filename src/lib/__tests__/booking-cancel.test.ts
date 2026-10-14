@@ -233,7 +233,7 @@ vi.mock("@/lib/logger", () => ({
 
 vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
   // #4097: the card plan's own predicate, real: a shortfall's non-card charges are its complement.
-  isStripeTransaction: (await importOriginal<typeof import("@/lib/payment-transactions")>()).isStripeTransaction,
+  isStripeTransaction: ((await importOriginal()) as typeof import("@/lib/payment-transactions")).isStripeTransaction,
   PartialRefundError: mocks.PartialRefundError,
   applyLocalRefundAllocation: mocks.applyLocalRefundAllocation,
   foldIntoTransactionRefundedAmount: mocks.foldIntoTransactionRefundedAmount,

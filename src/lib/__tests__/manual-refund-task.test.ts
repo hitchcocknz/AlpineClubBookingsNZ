@@ -134,7 +134,7 @@ vi.mock("@/lib/late-capture-refund-credit-note", () => ({
 }));
 vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
   // #4097: the card plan's own predicate, real, so the non-card charges are its complement.
-  isStripeTransaction: (await importOriginal<typeof import("@/lib/payment-transactions")>()).isStripeTransaction,
+  isStripeTransaction: ((await importOriginal()) as typeof import("@/lib/payment-transactions")).isStripeTransaction,
   applyLocalRefundAllocation: (...a: unknown[]) =>
     mocks.applyLocalRefundAllocation(...a),
   lockPaymentForRefundedTotal: (...a: unknown[]) => mocks.lockPaymentForRefundedTotal(...a),
