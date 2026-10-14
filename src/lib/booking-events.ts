@@ -61,6 +61,11 @@ export interface CancellationEventSnapshot {
    * the part the club checks first. Absent otherwise.
    */
   cardShortfall?: { cardCents: number; bankCents: number; checkCents: number };
+  /**
+   * #4125: the system cancelled it, not the member - the dates filled up while
+   * payment was completing (the capacity race). Absent on a member's cancel.
+   */
+  cancelledBecause?: "capacity_race";
 }
 
 /** Frozen bump facts stored on a BUMPED event. */

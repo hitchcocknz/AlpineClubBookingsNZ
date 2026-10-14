@@ -103,7 +103,11 @@ export function buildCancelledPostPaymentNarrative(
   const cancelOn = cancelEvent
     ? club.instantDate(cancelEvent.occurredAt)
     : paidOn;
-  const opening = `You cancelled this booking on ${cancelOn} after paying ${formatCents(paidAmountCents, format)} on ${paidOn}.`;
+  // #4125: a capacity-race cancel was the system's, not the member's.
+  const opening =
+    snapshot?.cancelledBecause === "capacity_race"
+      ? `This booking was cancelled on ${cancelOn}, after you paid ${formatCents(paidAmountCents, format)} on ${paidOn}, because the dates filled up while your payment was completing.`
+      : `You cancelled this booking on ${cancelOn} after paying ${formatCents(paidAmountCents, format)} on ${paidOn}.`;
 
   let settlementClause: string;
   if (snapshot?.cardShortfall) {

@@ -6,3 +6,4 @@
   If the card refund fails or the card provider refuses it, the app keeps
   retrying it, and the booking page now says the amount "is on its way back
   to your original payment method" rather than "no refund was due".
+  The booking page also no longer says the member cancelled it themselves.

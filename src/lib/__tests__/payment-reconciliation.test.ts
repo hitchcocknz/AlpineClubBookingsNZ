@@ -1077,10 +1077,10 @@ describe("markBookingPaymentSucceeded", () => {
       );
       expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalled();
       // #4125: the member's history says the refund is under way, never that it was made.
-      const written = bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string; reason: string | null; snapshot: { policySummary?: string } } }).data);
+      const written = bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string; reason: string | null; snapshot: object } }).data);
       const cancelled = written.find((event) => event.type === "CANCELLED");
       expect(cancelled?.reason).toBe("These dates filled up before payment could be secured, so the booking was cancelled and the full amount is being refunded.");
-      expect(cancelled?.snapshot.policySummary).toBe("These dates were no longer available when payment completed, so the full amount is being refunded.");
+      expect(cancelled?.snapshot).toMatchObject({ policySummary: "These dates were no longer available when payment completed, so the full amount is being refunded.", cancelledBecause: "capacity_race" });
       expect(written.some((event) => event.type === "REFUNDED")).toBe(false);
       // #3611: the cancel posts its ledger reversals in its own claim, keeping nothing.
       expect(cancellationLedger.postCancellationLedgerLines).toHaveBeenCalledWith(

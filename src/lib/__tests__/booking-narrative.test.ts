@@ -374,6 +374,7 @@ describe("resolveBookingNarrative", () => {
       snapshot: {
         policySummary: "These dates were no longer available when payment completed, so the full amount is being refunded.",
         refundMethod: "card",
+        cancelledBecause: "capacity_race",
         refundPercentage: 100,
         paidAmountCents: 12000,
         settledAmountCents: 12000,
@@ -383,6 +384,9 @@ describe("resolveBookingNarrative", () => {
     const paid = event(BookingEventType.MEMBER_PAID, "2026-05-02T00:00:00.000Z", { amountCents: 12000 });
     const pending = resolveBookingNarrative({ club: CLUB, booking: booking({ status: "CANCELLED" }), events: [paid, cancelled] }, CLUB_FORMAT_TEST);
     expect(pending.message).toContain("$120.00 is on its way back to your original payment method.");
+    // The system cancelled it, so the member is never told they did.
+    expect(pending.message).toMatch(/^This booking was cancelled on 5 May 2026, after you paid \$120\.00 on 2 May 2026, because the dates filled up while your payment was completing\./);
+    expect(pending.message).not.toContain("You cancelled");
     expect(pending.message).not.toContain("was refunded");
     expect(pending.message).not.toContain("no refund was due");
 

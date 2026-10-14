@@ -2215,7 +2215,7 @@ export async function markBookingPaymentSucceeded({
       snapshot: {
         policySummary:
           "These dates were no longer available when payment completed, so the full amount is being refunded.",
-        refundMethod: "card",
+        refundMethod: "card", cancelledBecause: "capacity_race",
         refundPercentage: 100,
         paidAmountCents: amountCents,
         settledAmountCents: amountCents,
