@@ -2109,7 +2109,7 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 ## INV-PAY-118
 
 - **An approved refund appeal's non-card part raises ONE officer refund task**
-  (#3827; owner decision D-3813-7 on #3492). Approving a refund request plans
+  (#3827; owner decision D-3813-7). Approving a refund request plans
   the Stripe refund inside the approval's own transaction, under `lock(1)`;
   on an internet-banking payment whatever that plan cannot carry raises a
   `ManualRefundTask` in the same transaction through
@@ -2133,9 +2133,8 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     linked as `REFUND_REQUEST_CREDIT_NOTE`, outside `INV-ADDPAY-020`'s one note.
   - **An appeal's ceiling nets everything already handed back**
     (`refundableCashForRefundAppeal`; screens `refundAppealCeiling`): every
-    OPEN hand-back on the payment, any kind, the member credit minted
-    from late cash (`internet-banking-late-cash-credit.ts`), and (#4124) the
-    card refunds still owed (`openCardRefundOwedCents`). None moves
+    OPEN hand-back on the payment, any kind, late-cash member credit, and
+    card refunds still owed (`openCardRefundOwedCents`, #4124). None moves
     `refundedAmountCents`. Edits and cancels still exclude the
     cancellation's own task.
   - **Dismissal stays open**, unlike an edit's after a cancel: an appeal
