@@ -80,7 +80,8 @@ function cardRefundRefusal(cardRefund: { status: PaymentRecoveryOperationStatus;
   if (cardRefund.status !== PaymentRecoveryOperationStatus.PROCESSING && cardRefund.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS) {
     return CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
   }
-  if (cardRefund.status === PaymentRecoveryOperationStatus.FAILED || (cardRefund.status === PaymentRecoveryOperationStatus.PENDING && cardRefund.lastError)) {
+  // A raw-string READ: the enum member stays in the recovery module (INV-PAY-056's census).
+  if (cardRefund.status === "FAILED" || (cardRefund.status === PaymentRecoveryOperationStatus.PENDING && cardRefund.lastError)) {
     return isPaymentRecoveryOperationInFlight(cardRefund) ? CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE : CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
   }
   return CARD_SHORTFALL_CARD_STILL_REFUNDING_MESSAGE;
