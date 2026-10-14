@@ -9,11 +9,12 @@ in the function that already owns the refund. Comments were cut to one or two
 lines first.
 
 file: src/lib/payment-reconciliation.ts
-lines: 3176
+lines: 3175
 reason: the duplicate-capture and capacity-race refunds each gain a one-line
-  closure over the shared re-plan, a refusal check after the attempt, a re-plan
-  in the catch for a slice refused before a throw, and a guard so the door's
-  existing failure alert is the refusal's only alert. Both refunds live inside
+  closure over the shared re-plan, a refusal check after the attempt and a
+  guard so the door's existing failure alert is the refusal's only alert; the
+  capacity race, whose plan can span charges, also re-plans in its catch for a
+  slice refused before a throw. Both refunds live inside
   `markBookingPaymentSucceeded`'s post-commit tail; lifting either out is a
   refactor of that function, not this fix.
 

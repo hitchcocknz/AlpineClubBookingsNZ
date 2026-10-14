@@ -2158,9 +2158,8 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund a duplicate capture; the pre-persisted recovery operation will replay the refund"
       );
-      // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
-      const refusedBefore = await keepRefusalOwed({ error: refundError });
-      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)].filter(Boolean).join(" ");
+      // #4103: one slice (the duplicate's own capture), so no refusal comes before a throw.
+      const refundErrorMessage = refundError instanceof Error ? refundError.message : String(refundError);
       await recordDuplicateCaptureRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
