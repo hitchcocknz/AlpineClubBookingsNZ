@@ -1,11 +1,11 @@
 // #4104 (`INV-PAY-128`): a card refund Stripe accepted and failed later is owed
-// again. These are the rules of `keepFailedLaterCardRefundOwed` against a fake
-// transaction: whose refund it is, which row owes it, the retry's generation,
-// and the one alert after commit. The real-database proof is
-// `card-refund-failed-later.realdb.test.ts`.
+// again, by one row. These are the rules of `keepFailedLaterCardRefundOwed`
+// against a fake transaction: whose refund it is, which row owes it, when a row
+// is left alone, the retry's generation, the cutoff, and the alert after
+// commit. The real-database proof is `card-refund-failed-later.realdb.test.ts`.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async () => undefined));
+const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
 vi.mock("@/lib/club-format-server", async () => ({
   clubFormatValues: async () => (await import("./support/club-format-fixture")).CLUB_FORMAT_TEST,
@@ -17,40 +17,103 @@ import {
   FailedLaterRefundHeldError,
   keepFailedLaterCardRefundOwed,
   keepFailedLaterCardRefundsOwed,
+  type FailedLaterCardRefundDebt,
+  type FailedLaterKind,
+  type FailedLaterRefundInput,
 } from "@/lib/card-refund-failed-later";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import { bookingModificationRefundReasonForKeyPrefix } from "@/lib/payment-recovery-keys";
 
-type Row = { id: string; status: string; attempts?: number; allocationPlan: unknown; bookingId: string; paymentIntentId: string };
+const RAISED_AT = new Date("2026-06-20T00:00:00.000Z");
+const REFUNDED_AT = new Date("2026-06-20T00:00:05.000Z");
+
+type Row = {
+  id: string;
+  type: string;
+  status: string;
+  attempts: number;
+  nextRetryAt: Date | null;
+  idempotencyKey: string;
+  amountCents: number;
+  allocationPlan: unknown;
+  paymentTransactionId: string | null;
+  bookingId: string;
+  paymentIntentId: string;
+  createdAt: Date;
+  succeededAt: Date | null;
+};
+
+function row(over: Partial<Row> = {}): Row {
+  return {
+    id: "op-open",
+    type: "REFUND_BOOKING_MODIFICATION",
+    status: "FAILED",
+    attempts: 1,
+    nextRetryAt: new Date("2026-06-20T00:10:00.000Z"),
+    idempotencyKey: "payment_recovery_modification_refund_mod-1",
+    amountCents: 4_000,
+    allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000 }],
+    paymentTransactionId: null,
+    bookingId: "booking-1",
+    paymentIntentId: "pi_open",
+    createdAt: RAISED_AT,
+    succeededAt: null,
+    ...over,
+  };
+}
 
 function fakeTx({
-  bookingId = "booking-1",
-  open = [] as Row[],
+  rows = [] as Row[],
   inserted = 1,
   moved = 1,
   transactionIntent = "pi_txn" as string | null,
+  cutoff = null as Date | null,
+  recordedStatus = "failed",
 } = {}) {
-  const tx = {
-    payment: { findUnique: vi.fn(async () => (bookingId === null ? null : { bookingId })) },
+  return {
+    $queryRaw: vi.fn(async (strings: TemplateStringsArray) =>
+      strings.join("?").includes("to_regclass") ? [{ present: true }] : cutoff ? [{ finished_at: cutoff }] : [],
+    ),
+    payment: {
+      findUnique: vi.fn(async () => ({ id: "pay-1", bookingId: "booking-1", status: "PARTIALLY_REFUNDED", amountCents: 20_000, refundedAmountCents: 0 })),
+    },
+    paymentRefund: {
+      findMany: vi.fn(async () => [
+        { stripeRefundId: "re_1", paymentTransactionId: "txn-1", amountCents: 4_000, status: recordedStatus, createdAt: REFUNDED_AT, stripeCreatedAt: REFUNDED_AT },
+      ]),
+    },
     paymentTransaction: { findUnique: vi.fn(async () => ({ stripePaymentIntentId: transactionIntent })) },
     paymentRecoveryOperation: {
-      findMany: vi.fn(async () => open),
+      findMany: vi.fn(async () => rows),
       createMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: inserted })),
       updateMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: moved })),
       findUniqueOrThrow: vi.fn(async () => ({ id: "op-new" })),
     },
   };
-  return tx;
 }
 
-const keep = (tx: ReturnType<typeof fakeTx>, refund: Parameters<typeof keepFailedLaterCardRefundOwed>[1]["refund"], paymentIntentId: string | null = "pi_1") =>
-  keepFailedLaterCardRefundOwed(tx as never, { paymentId: "pay-1", paymentTransactionId: "txn-1", refund, paymentIntentId });
+const REFUND: FailedLaterRefundInput = {
+  id: "re_1",
+  amount: 4_000,
+  status: "failed",
+  created: Math.floor(REFUNDED_AT.getTime() / 1000),
+  metadata: { bookingId: "booking-1", reason: "cancellation" },
+};
 
-const CANCEL_REFUND = { id: "re_1", amount: 4_000, status: "failed", metadata: { bookingId: "booking-1", reason: "cancellation" } };
+const keep = (
+  tx: ReturnType<typeof fakeTx>,
+  refund: FailedLaterRefundInput = REFUND,
+  { kind = "transition" as FailedLaterKind, paymentIntentId = "pi_1" as string | null, cutoffSeconds = null as number | null } = {},
+) => keepFailedLaterCardRefundOwed(tx as never, { paymentId: "pay-1", paymentTransactionId: "txn-1", refund, kind, paymentIntentId, cutoffSeconds });
+
+const inserted = (tx: ReturnType<typeof fakeTx>) =>
+  (tx.paymentRecoveryOperation.createMany.mock.calls[0]?.[0] as { data: Array<Record<string, unknown>> } | undefined)?.data[0];
+const replan = (tx: ReturnType<typeof fakeTx>) =>
+  tx.paymentRecoveryOperation.updateMany.mock.calls[0]?.[0] as { where: Record<string, unknown>; data: Record<string, unknown> } | undefined;
 
 beforeEach(() => alertPaymentRecoveryOfficers.mockClear());
 
-describe("whose refund is owed again", () => {
+describe("with no row that counted it, one new row owes it", () => {
   it.each([
     ["the cancellation's", { bookingId: "booking-1", reason: "cancellation" }],
     ["an edit's", { bookingId: "booking-1", reason: "date_change_price_decrease" }],
@@ -58,17 +121,10 @@ describe("whose refund is owed again", () => {
     ["the runner's", { bookingId: "booking-1", reason: "booking_modification_refund_recovery" }],
   ])("%s refund, made for this booking, raises one row for exactly that refund", async (_door, metadata) => {
     const tx = fakeTx();
-    const debt = await keep(tx, { ...CANCEL_REFUND, metadata });
-    expect(debt).toEqual({
-      outcome: "raised",
-      operationId: "op-new",
-      bookingId: "booking-1",
-      paymentIntentId: "pi_1",
-      amountCents: 4_000,
-      stripeRefundId: "re_1",
+    expect(await keep(tx, { ...REFUND, metadata })).toEqual({
+      debt: { outcome: "raised", operationId: "op-new", bookingId: "booking-1", paymentIntentId: "pi_1", amountCents: 4_000, stripeRefundId: "re_1" },
     });
-    const [[{ data }]] = tx.paymentRecoveryOperation.createMany.mock.calls as unknown as [[{ data: Array<Record<string, unknown>> }]];
-    expect(data[0]).toMatchObject({
+    expect(inserted(tx)).toMatchObject({
       type: "REFUND_BOOKING_MODIFICATION",
       status: "PENDING",
       bookingId: "booking-1",
@@ -81,141 +137,209 @@ describe("whose refund is owed again", () => {
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000 }],
       attempts: 0,
     });
-    expect(tx.paymentRecoveryOperation.createMany.mock.calls[0]?.[0]).toMatchObject({ skipDuplicates: true });
   });
 
-  it.each([
-    ["names no booking (a refund made by hand in the Stripe dashboard)", null],
-    ["names another booking", { bookingId: "booking-2", reason: "cancellation" }],
-  ])("one that %s is not the club's to re-send", async (_case, metadata) => {
-    const tx = fakeTx();
-    expect(await keep(tx, { ...CANCEL_REFUND, metadata })).toBeNull();
-    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+  it("a closed row that counted it is never reopened: a new row owes it", async () => {
+    const tx = fakeTx({ rows: [row({ status: "SUCCEEDED", succeededAt: new Date("2026-06-20T00:00:10.000Z") })] });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "raised" } });
     expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
   });
 
+  it("takes the charge's own intent when the refund names none, and raises nothing for a charge with none", async () => {
+    expect(await keep(fakeTx({ transactionIntent: "pi_txn" }), REFUND, { paymentIntentId: null })).toMatchObject({ debt: { paymentIntentId: "pi_txn" } });
+    const none = fakeTx({ transactionIntent: null });
+    expect(await keep(none, REFUND, { paymentIntentId: null })).toEqual({});
+    expect(none.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+  });
+
   it("a second writer seeing the same refund writes nothing more", async () => {
-    const tx = fakeTx({ inserted: 0 });
-    expect(await keep(tx, CANCEL_REFUND)).toBeNull();
+    expect(await keep(fakeTx({ inserted: 0 }))).toEqual({});
+  });
+});
+
+describe("never re-sent automatically", () => {
+  it("a retry that fails later too is raised dead - attempts spent, never claimed - for Paid another way", async () => {
+    const tx = fakeTx();
+    const retry = { ...REFUND, id: "re_retry", metadata: { bookingId: "booking-1", reason: bookingModificationRefundReasonForKeyPrefix("card_refund_failed_later_re_1") } };
+    expect(await keep(tx, retry)).toMatchObject({ debt: { outcome: "raised-dead" } });
+    expect(inserted(tx)).toMatchObject({ idempotencyKey: "card_refund_failed_later_re_retry", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
+    // Stripe sent nothing: the dead row carries no "Stripe may have refunded" warning.
+    expect(lastErrorSuggestsStripeMayHaveRefunded(String(inserted(tx)?.lastError))).toBe(false);
   });
 
-  it("takes the charge's own intent when the refund names none", async () => {
-    const tx = fakeTx({ transactionIntent: "pi_txn" });
-    expect(await keep(tx, CANCEL_REFUND, null)).toMatchObject({ paymentIntentId: "pi_txn" });
+  it("MUTATION (ops 8): a refund Stripe created before the cutoff is raised dead; one created at or after it, live", async () => {
+    const created = REFUND.created as number;
+    const before = fakeTx();
+    expect(await keep(before, REFUND, { cutoffSeconds: created + 1 })).toMatchObject({ debt: { outcome: "raised-backlog" } });
+    expect(inserted(before)).toMatchObject({ attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
+    expect(lastErrorSuggestsStripeMayHaveRefunded(String(inserted(before)?.lastError))).toBe(false);
+    const at = fakeTx();
+    expect(await keep(at, REFUND, { cutoffSeconds: created })).toMatchObject({ debt: { outcome: "raised" } });
+    expect(inserted(at)).toMatchObject({ attempts: 0 });
+    expect(await keep(fakeTx(), REFUND, { cutoffSeconds: null })).toMatchObject({ debt: { outcome: "raised" } });
   });
 
-  it("raises nothing for a charge with no card intent", async () => {
-    const tx = fakeTx({ transactionIntent: null });
-    expect(await keep(tx, CANCEL_REFUND, null)).toBeNull();
+  it("reads the cutoff from the marker migration's finish, once per write, in whole seconds", async () => {
+    const tx = fakeTx({ cutoff: new Date(REFUNDED_AT.getTime() + 1_500) });
+    const decided = await keepFailedLaterCardRefundsOwed(tx as never, {
+      paymentId: "pay-1",
+      paymentTransactionId: "txn-1",
+      seen: [{ refund: REFUND, kind: "transition" }, { refund: { ...REFUND, id: "re_2" }, kind: "transition" }],
+    });
+    expect(decided.debts.map((debt) => debt.outcome)).toEqual(["raised-backlog", "raised-backlog"]);
+    expect(String(tx.$queryRaw.mock.calls[1]?.[0]?.join("?"))).toContain("_prisma_migrations");
+    expect(tx.$queryRaw.mock.calls[1]?.slice(1)).toEqual(["20261115010000_card_refund_failed_later_cutoff"]);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("not the club's refund for this booking: alerted, never re-sent", () => {
+  it.each([
+    ["names no booking (made by hand in the Stripe dashboard, or a legacy group refund)", null],
+    ["names another booking", { bookingId: "booking-2", reason: "cancellation" }],
+  ])("one that %s", async (_case, metadata) => {
+    const tx = fakeTx();
+    expect(await keep(tx, { ...REFUND, metadata })).toEqual({
+      debt: { outcome: "not-resent", operationId: null, bookingId: "booking-1", paymentIntentId: "pi_1", amountCents: 4_000, stripeRefundId: "re_1" },
+    });
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+    // Seen again by a replay, it is not alerted twice.
+    expect(await keep(fakeTx(), { ...REFUND, metadata }, { kind: "replayed" })).toEqual({});
+  });
+});
+
+describe("already owed: a second observer writes nothing (concurrency A)", () => {
+  it("a row of its own", async () => {
+    const tx = fakeTx({ rows: [row({ idempotencyKey: "card_refund_failed_later_re_1", status: "PENDING", attempts: 0 })] });
+    expect(await keep(tx)).toEqual({});
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: an open row whose slice already records this failure", async () => {
+    const plan = [{ paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] }];
+    const tx = fakeTx({ rows: [row({ allocationPlan: plan })] });
+    expect(await keep(tx)).toEqual({});
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("an open row that counted it as made owes it again (money 1)", () => {
+  const marked = [
+    { paymentTransactionId: "txn-1", amountCents: 4_000, madeRefundId: "re_1" },
+    { paymentTransactionId: "txn-2", amountCents: 1_000, stripeKeySuffix: "refused1" },
+  ];
+
+  it("a slice marked with it: moved to its next key, recording the failure, and no second row", async () => {
+    const tx = fakeTx({ rows: [row({ allocationPlan: marked, amountCents: 5_000 })] });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "re-planned", operationId: "op-open", amountCents: 4_000 } });
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    expect(replan(tx)?.where).toEqual({ id: "op-open", status: "FAILED", allocationPlan: { equals: marked } });
+    expect(replan(tx)?.data.allocationPlan).toEqual([
+      { paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] },
+      marked[1],
+    ]);
+  });
+
+  it("MUTATION: an UNMARKED slice the owed figure fills with it, as the payment stood before the failure", async () => {
+    const tx = fakeTx({ rows: [row()] });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "re-planned", operationId: "op-open" } });
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    expect(replan(tx)?.data.allocationPlan).toEqual([
+      { paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] },
+    ]);
+  });
+
+  it("an unmarked slice of another amount, or raised after the refund, is not its owner", async () => {
+    expect(await keep(fakeTx({ rows: [row({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 3_999 }] })] }))).toMatchObject({
+      debt: { outcome: "raised" },
+    });
+    expect(await keep(fakeTx({ rows: [row({ createdAt: new Date("2026-06-21T00:00:00.000Z") })] }))).toMatchObject({ debt: { outcome: "raised" } });
+  });
+
+  it.each([
+    ["its attempts spent", { attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS }],
+    ["no retry time", { nextRetryAt: null }],
+  ])("on a dead row (%s) it is moved, and said to be not asked for again (money 6)", async (_case, over) => {
+    const tx = fakeTx({ rows: [row(over)] });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "re-planned-dead" } });
+  });
+
+  it("a plan that moved since it was read is not overwritten", async () => {
+    await expect(keep(fakeTx({ rows: [row()], moved: 0 }))).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
+  });
+
+  it.each([
+    ["a worker holds (PROCESSING)", { status: "PROCESSING" }],
+    ["no worker has claimed yet (PENDING, no attempt)", { status: "PENDING", attempts: 0 }],
+  ])("never touches a row %s: its own failure write fails and is retried; a replay is handed back as refused", async (_case, over) => {
+    const transition = fakeTx({ rows: [row(over)] });
+    await expect(keep(transition)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
+    expect(transition.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+    expect(transition.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    const replayed = fakeTx({ rows: [row(over)] });
+    expect(await keep(replayed, REFUND, { kind: "replayed" })).toEqual({ readAsRefused: true });
+    expect(replayed.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+    expect(replayed.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+  });
+
+  it("an open row with no plan (a superseded intent's) re-derives it by itself: nothing is written", async () => {
+    const tx = fakeTx({
+      rows: [row({ type: "REFUND_SUPERSEDED_PAYMENT", allocationPlan: null, paymentTransactionId: "txn-1", idempotencyKey: "payment_recovery_refund_x" })],
+    });
+    expect(await keep(tx)).toEqual({});
     expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
   });
 });
 
 describe("each refund the ledger writer saw fail later", () => {
-  it("is kept owed in turn, on the intent the refund names or else the writer's", async () => {
-    const tx = fakeTx();
-    const debts = await keepFailedLaterCardRefundsOwed(tx as never, {
+  it("is decided in turn, on the intent the refund names or else the writer's, with the replays handed back", async () => {
+    const tx = fakeTx({ rows: [row({ id: "op-held", status: "PROCESSING", allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000, madeRefundId: "re_3" }] })] });
+    const decided = await keepFailedLaterCardRefundsOwed(tx as never, {
       paymentId: "pay-1",
       paymentTransactionId: "txn-1",
-      refunds: [
-        { ...CANCEL_REFUND, payment_intent: "pi_named" },
-        { ...CANCEL_REFUND, id: "re_2", payment_intent: null },
-        { ...CANCEL_REFUND, id: "re_3", metadata: null },
+      seen: [
+        { refund: { ...REFUND, id: "re_a", payment_intent: "pi_named" }, kind: "transition" },
+        { refund: { ...REFUND, id: "re_b", payment_intent: null }, kind: "transition" },
+        { refund: { ...REFUND, id: "re_3" }, kind: "replayed" },
       ],
       fallbackPaymentIntentId: "pi_fallback",
     });
-    expect(debts.map((debt) => [debt.stripeRefundId, debt.paymentIntentId])).toEqual([
-      ["re_1", "pi_named"],
-      ["re_2", "pi_fallback"],
+    expect(decided.debts.map((debt) => [debt.stripeRefundId, debt.paymentIntentId])).toEqual([
+      ["re_a", "pi_named"],
+      ["re_b", "pi_fallback"],
     ]);
+    expect(decided.readAsRefused).toEqual(["re_3"]);
   });
-});
 
-describe("a retry that fails later too", () => {
-  it("is raised dead - attempts spent, never claimed - for Paid another way", async () => {
+  it("reads nothing when nothing was seen", async () => {
     const tx = fakeTx();
-    const retry = {
-      ...CANCEL_REFUND,
-      id: "re_retry",
-      metadata: { bookingId: "booking-1", reason: bookingModificationRefundReasonForKeyPrefix("card_refund_failed_later_re_1") },
-    };
-    expect(await keep(tx, retry)).toMatchObject({ outcome: "raised-dead" });
-    const [[{ data }]] = tx.paymentRecoveryOperation.createMany.mock.calls as unknown as [[{ data: Array<Record<string, unknown>> }]];
-    expect(data[0]).toMatchObject({ idempotencyKey: "card_refund_failed_later_re_retry", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
-    // Stripe sent nothing: the dead row carries no "Stripe may have refunded" warning.
-    expect(lastErrorSuggestsStripeMayHaveRefunded(String(data[0]?.lastError))).toBe(false);
-  });
-
-  it("the retry's Stripe reason is the one the generation is read from", () => {
-    expect(bookingModificationRefundReasonForKeyPrefix("card_refund_failed_later_re_1")).toBe("card_refund_failed_later");
-  });
-});
-
-describe("a refund an open row marked made beside a refusal (#4083)", () => {
-  const plan = [
-    { paymentTransactionId: "txn-1", amountCents: 4_000, madeRefundId: "re_1" },
-    { paymentTransactionId: "txn-2", amountCents: 1_000, stripeKeySuffix: "refused1" },
-  ];
-  const openRow = (status: string): Row => ({ id: "op-open", status, allocationPlan: plan, bookingId: "booking-1", paymentIntentId: "pi_open" });
-
-  it("re-plans that row - the slice unmarked, on its next key - and raises no second row", async () => {
-    const tx = fakeTx({ open: [openRow("FAILED")] });
-    expect(await keep(tx, CANCEL_REFUND)).toMatchObject({ outcome: "re-planned", operationId: "op-open", amountCents: 4_000 });
-    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
-    const [[{ where, data }]] = tx.paymentRecoveryOperation.updateMany.mock.calls as unknown as [[{ where: Record<string, unknown>; data: Record<string, unknown> }]];
-    // Compare-and-set on the plan it read.
-    expect(where).toEqual({ id: "op-open", status: "FAILED", allocationPlan: { equals: plan } });
-    expect(data.allocationPlan).toEqual([
-      { paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1" },
-      plan[1],
-    ]);
-  });
-
-  it("re-planned on a row whose retries are spent, it says so: still owed, for Paid another way", async () => {
-    const tx = fakeTx({ open: [{ ...openRow("FAILED"), attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS }] });
-    expect(await keep(tx, CANCEL_REFUND)).toMatchObject({ outcome: "re-planned-dead" });
-  });
-
-  it("never touches a row a worker holds: the caller fails and is retried", async () => {
-    const tx = fakeTx({ open: [openRow("PROCESSING")] });
-    await expect(keep(tx, CANCEL_REFUND)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
-    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
-    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
-  });
-
-  it("a plan that moved since it was read is not overwritten", async () => {
-    const tx = fakeTx({ open: [openRow("PENDING")], moved: 0 });
-    await expect(keep(tx, CANCEL_REFUND)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
-  });
-
-  it("an open row that never marked this refund is not its owner", async () => {
-    const tx = fakeTx({ open: [{ ...openRow("PENDING"), allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000 }] }] });
-    expect(await keep(tx, CANCEL_REFUND)).toMatchObject({ outcome: "raised" });
-    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+    expect(await keepFailedLaterCardRefundsOwed(tx as never, { paymentId: "pay-1", paymentTransactionId: "txn-1", seen: [] })).toEqual({ debts: [], readAsRefused: [] });
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
   });
 });
 
 describe("the officers' alert", () => {
   const debt = { operationId: "op-1", bookingId: "booking-1", paymentIntentId: "pi_1", amountCents: 4_000, stripeRefundId: "re_1" };
+  const messageOf = () => (alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage;
 
-  it("is sent once per row raised, naming the amount", async () => {
-    await alertFailedLaterCardRefunds([{ ...debt, outcome: "raised" }]);
+  it.each([
+    ["raised", /\$40\.00 .*will be asked for again automatically/],
+    ["re-planned", /will be asked for again automatically/],
+    ["re-planned-dead", /retries are already spent: pay the member another way/],
+    ["raised-dead", /will not be asked for again automatically/],
+    ["raised-backlog", /before this release .* check whether the member has already been paid back/],
+    ["not-resent", /did not make it for this booking .* not asked for again/],
+  ] as const)("says what a %s decision means, once", async (outcome, words) => {
+    await alertFailedLaterCardRefunds([{ ...debt, outcome } as FailedLaterCardRefundDebt]);
     expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
-    expect(alertPaymentRecoveryOfficers.mock.calls[0]).toMatchObject([
-      { bookingId: "booking-1", operationId: "op-1", amountCents: 4_000, errorMessage: expect.stringContaining("$40.00") },
-      expect.anything(),
-    ]);
-    expect((alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage).toMatch(/will be asked for again automatically/);
+    expect(messageOf()).toMatch(words);
   });
 
-  it.each(["raised-dead", "re-planned-dead"] as const)("says a %s one will not be asked for again", async (outcome) => {
-    await alertFailedLaterCardRefunds([{ ...debt, outcome }]);
-    expect((alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage).toMatch(/will not be asked for again automatically/);
-  });
-
-  it("says a re-planned live one will be", async () => {
-    await alertFailedLaterCardRefunds([{ ...debt, outcome: "re-planned" }]);
-    expect((alertPaymentRecoveryOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage).toMatch(/will be asked for again automatically/);
+  it("names no operation for a refund nothing owes", async () => {
+    await alertFailedLaterCardRefunds([{ ...debt, operationId: null, paymentIntentId: null, outcome: "not-resent" }]);
+    expect(alertPaymentRecoveryOfficers.mock.calls[0]?.[0]).toMatchObject({ operationId: undefined, paymentIntentId: "" });
   });
 
   it("sends nothing for nothing, and never throws", async () => {

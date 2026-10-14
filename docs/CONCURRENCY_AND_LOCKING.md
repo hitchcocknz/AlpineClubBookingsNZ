@@ -4925,15 +4925,27 @@ and the debt's writes come last, on `PaymentRecoveryOperation`:
   (`recordStripeRefundLedgerEntry`), or a door told `pending` by a replayed key
   while the row already says refused. Two deliveries of one event queue on the
   Payment row; the second sees the row refused and writes nothing.
-- **A new row** is an insert keyed on the Stripe refund
-  (`card_refund_failed_later_<refund>`, `skipDuplicates`), so a second observer
-  writes nothing.
-- **A re-plan** of an open row that marked the refund made is a
-  compare-and-set on the plan it read, never on a `PROCESSING` row: a worker
-  mid-attempt, or a plan moved since the read, throws
-  (`FailedLaterRefundHeldError`), the whole transaction - refund row and refunded
-  total too - rolls back, and the webhook answers 500 or the cron retries next
-  run.
+- **One row owes it.** The owner search reads every card refund row of the
+  payment under that lock: a row of its own, or a slice that already records
+  the failure (`failedRefundIds`), means another observer decided - nothing is
+  written. Otherwise the open row that counted it (marked `madeRefundId`, or
+  the unmarked slice the owed figure fills with it as the payment stood before
+  the failure) is re-planned, and with none a row is inserted keyed on the
+  Stripe refund (`card_refund_failed_later_<refund>`, `skipDuplicates`).
+- **A re-plan** is a compare-and-set on the plan it read, never on a row
+  someone may be writing: a worker mid-attempt (`PROCESSING`), or a row no
+  worker has claimed yet (`PENDING`, no attempt - a door's inline attempt may
+  still close or re-plan it). There, or when the plan moved since the read, a
+  failure seen by its own counted -> refused write throws
+  (`FailedLaterRefundHeldError`): the whole transaction - refund row and
+  refunded total too - rolls back, and the webhook answers 500 or the cron
+  reads it back again next run. A failure a door or worker meets replaying its
+  own key is handed back to it as refused, and it moves its own row
+  (`INV-PAY-128`'s refusal path).
+- **A door that marks a slice made after the failure was handed to a row of
+  its own** (the event between the door's record and its plan write) leaves a
+  marked slice whose refund is refused: the owed figure reads it filled by the
+  failed-later row, and the runner never sends a marked slice, so it is owed once.
 
 No advisory key: it moves no booking status or capacity, and every other writer
 of that row takes the Payment row before it - "Paid another way" (`lock(1)`,

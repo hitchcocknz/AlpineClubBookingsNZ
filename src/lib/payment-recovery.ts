@@ -58,7 +58,7 @@ import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
-import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE } from "@/lib/payment-recovery-constants";
 import { stripeReferenceId } from "@/lib/stripe-references";
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
 import { formatCents } from "@/lib/utils";
@@ -3169,6 +3169,7 @@ async function alertStalePaymentRecoveryQueueIfNeeded(format: ClubFormat, charge
     where: {
       status: PaymentRecoveryOperationStatus.PENDING,
       createdAt: { lt: staleThreshold },
+      ...PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE, // #4104: a dead row is not a stalled cron
       ...(quietCharges ? { type: { not: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT } } : {}),
     },
     orderBy: { createdAt: "asc" },
@@ -3292,9 +3293,11 @@ export async function runPaymentRecoveryOperationNow(
 export async function processPaymentRecoveryOperations(options?: {
   limit?: number;
   /**
-   * #3653, #4104: also read pending card refunds (organiser children's too) back from Stripe. The
-   * payments cron passes it; the inline drain after an edit does not, so a
-   * member's request never waits on those provider reads.
+   * #3653, #4104: also read card refunds still recorded pending back from
+   * Stripe - organiser children's (`reconcilePendingOrganiserChildRefunds`)
+   * and every other one (`reconcilePendingCardRefunds`) - despite the name,
+   * kept for its callers. The payments cron passes it; the inline drain after
+   * an edit does not, so a member's request never waits on those provider reads.
    */
   reconcilePendingChildRefunds?: boolean;
 }): Promise<PaymentRecoveryProcessResult> {

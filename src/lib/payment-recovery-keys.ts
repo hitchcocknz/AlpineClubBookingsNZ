@@ -38,6 +38,12 @@ export const CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX = "card_refund_failed_late
 export function buildCardRefundFailedLaterRecoveryKey(stripeRefundId: string) {
   return `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}${stripeRefundId}`;
 }
+/** The failed Stripe refund a failed-later row owes; null for any other key. */
+export function cardRefundFailedLaterRefundId(key: string): string | null {
+  return key.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) && key.length > CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX.length
+    ? key.slice(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX.length)
+    : null;
+}
 /** The Stripe `reason` metadata of that retry; a failed refund carrying it was itself a retry. */
 export const CARD_REFUND_FAILED_LATER_REASON = "card_refund_failed_later";
 

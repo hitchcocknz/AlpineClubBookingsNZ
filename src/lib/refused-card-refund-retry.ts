@@ -272,6 +272,32 @@ export async function keepRefusedCancellationRefundOwed({
 }
 
 /**
+ * #4104: a cancellation's inline refund that failed partway (`PartialRefundError`):
+ * its pre-persisted row is re-planned as the runner would (`planAfterAttempt`) -
+ * each slice made marked with its refund, each refused on its next key - while
+ * no worker has touched it (PENDING, no attempt). Best effort: unmarked, the
+ * runner replays a made slice's key and Stripe answers with the original refund.
+ */
+export async function markCancellationAttempt({
+  bookingId,
+  plan,
+  answered,
+}: {
+  bookingId: string;
+  plan: ReadonlyArray<RefundAllocationSlice>;
+  answered: ReadonlyArray<Pick<AnsweredRefund, "status" | "slice" | "refundId">>;
+}): Promise<void> {
+  const known = answered.filter((answer) => answer?.slice);
+  if (known.length === 0) return;
+  await prisma.paymentRecoveryOperation
+    .updateMany({
+      where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), status: PaymentRecoveryOperationStatus.PENDING, attempts: 0 },
+      data: { allocationPlan: planAfterAttempt(plan, known) as unknown as Prisma.InputJsonValue },
+    })
+    .catch((err: unknown) => logger.error({ err, bookingId }, "Could not mark a cancellation refund's made slices (#4104)"));
+}
+
+/**
  * Written only on the attempt this worker holds - fenced on PROCESSING and its
  * own `processingStartedAt` - and never a status: the attempt's failure is the
  * runner's own write. A lost fence moves nothing, and the next attempt replays
@@ -329,11 +355,12 @@ export async function refundPlanOrRetryRefusals({
     // A slice already made beside a refusal is never sent again.
     answered = (await refund(plan.filter((slice) => !slice.madeRefundId))).refunds;
   } catch (err) {
-    // The slices answered before a later one threw (`PartialRefundError`): a
-    // refusal among them re-plans the row; the slice that threw keeps its key.
+    // The slices answered before a later one threw (`PartialRefundError`) re-plan
+    // the row - a refusal on its next key, and (#4104) a made one marked, so a
+    // failure Stripe reports later is owed by this row by its refund id - while
+    // the slice that threw keeps its key.
     const before = ((err as { refunds?: AnsweredRefund[] } | null)?.refunds ?? []).filter((answer) => answer?.slice);
-    const refusedBefore = refusedRefundSlices(before);
-    if (refusedBefore.length > 0) await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, before)), before);
+    if (before.length > 0) await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, before)), before);
     throw err;
   }
   const refused = refusedRefundSlices(answered);

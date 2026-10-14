@@ -114,11 +114,20 @@ describe("the payments cron's read-back", () => {
     expect(mocks.record).toHaveBeenCalledWith(
       expect.objectContaining({ paymentId: "pay-1", paymentTransactionId: "txn-1", refunds: [expect.objectContaining({ id: "re_failed", status: "failed" })] }),
     );
-    // The one still pending is stamped, so the next run reads others first; guarded on the status it read.
-    expect(mocks.refundUpdateMany).toHaveBeenCalledTimes(1);
-    expect(mocks.refundUpdateMany).toHaveBeenCalledWith({
-      where: { stripeRefundId: "re_still", status: "pending" },
-      data: { updatedAt: expect.any(Date) },
-    });
+    // The one still pending, and the one it could not read (ops 9), are stamped, so
+    // the next run reads others first; guarded on the status it read.
+    expect(mocks.refundUpdateMany).toHaveBeenCalledTimes(2);
+    for (const id of ["re_still", "re_unreadable"]) {
+      expect(mocks.refundUpdateMany).toHaveBeenCalledWith({ where: { stripeRefundId: id, status: "pending" }, data: { updatedAt: expect.any(Date) } });
+    }
+    // Each read bounded, with no retries (`retrieveRefund`'s sweep option).
+    expect(retrieveRefund).toHaveBeenCalledWith("re_failed", { timeoutMs: 10_000 });
+  });
+
+  it("stops when its time budget is spent", async () => {
+    mocks.refundFindMany.mockResolvedValue([row("re_a"), row("re_b")]);
+    const retrieveRefund = vi.fn(async (id: string) => refund("pending", { id }));
+    expect(await reconcilePendingCardRefunds({ retrieveRefund: retrieveRefund as never }, 25, 0)).toEqual({ checked: 0, moved: 0 });
+    expect(retrieveRefund).not.toHaveBeenCalled();
   });
 });

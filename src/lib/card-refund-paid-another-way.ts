@@ -170,6 +170,7 @@ const OPERATION_SELECT = {
   idempotencyKey: true,
   bookingId: true,
   paymentId: true,
+  paymentIntentId: true,
   paymentTransactionId: true,
   allocationPlan: true,
   amountCents: true,

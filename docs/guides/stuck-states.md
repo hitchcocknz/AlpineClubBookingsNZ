@@ -84,8 +84,12 @@ has been closed. The app then takes it back out of the refunded total and owes
 it again: it shows under **Refunds owed**, the officers are emailed once, and it
 is asked for again as a new request. If that retry is accepted and fails later
 too, it is not asked for again: it is listed here straight away, for you to pay
-the member another way and close. A refund made by hand in the Stripe dashboard
-that fails is not re-sent by the app; the Stripe dashboard shows it.
+the member another way and close. So is a refund made before the release that
+added this (the member may already have been paid back by hand: check Stripe
+and your bank first). Closing one whose card refund credit note is already in
+Xero queues no second note. A refund made by hand in the Stripe dashboard, or
+an older group refund, that fails is not re-sent by the app: the officers are
+emailed, and the Stripe dashboard shows it.
 
 If you pay the member back another way, for example by bank transfer, close the
 refund here:

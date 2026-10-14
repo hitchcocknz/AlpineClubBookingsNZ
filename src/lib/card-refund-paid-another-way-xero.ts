@@ -9,7 +9,10 @@ import {
   readPaidAnotherWayLateCaptureXeroReceipt,
 } from "@/lib/late-capture-xero-receipt";
 import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement-rules";
-import { lateCaptureIntentOfApprovalRefundRecoveryKey } from "@/lib/payment-recovery-keys";
+import { lateCaptureIntentOfCardRefundOperation } from "@/lib/late-capture-paid-another-way";
+import { cardRefundFailedLaterRefundId } from "@/lib/payment-recovery-keys";
+import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
+import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
 import {
   enqueueXeroKeptLateCaptureInvoiceOperation,
   keptLateCaptureDocumentDate,
@@ -28,10 +31,7 @@ import { xeroDocumentDateFromInstant } from "@/lib/xero-provider-dates";
  * `card-refund-paid-another-way.ts`'s.
  */
 
-type XeroPlanStore = Pick<
-  Prisma.TransactionClient,
-  "$executeRaw" | "manualRefundTask" | "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation"
->;
+type XeroPlanStore = Prisma.TransactionClient;
 
 /** What a close of this card refund records in Xero (`paidAnotherWayXeroPlan`). */
 export type PaidAnotherWayXeroPlan =
@@ -44,7 +44,15 @@ export type PaidAnotherWayXeroPlan =
        */
       creditsInvoiceId?: string;
     }
-  | { xeroRefundNote: "none" }
+  | {
+      xeroRefundNote: "none";
+      /**
+       * #4104 review (money 2): a refund Stripe failed later whose card refund
+       * note is already in Xero - raised while the refund counted - so that
+       * note answers the bank transfer, and a second one would credit it twice.
+       */
+      coveredByCardNote?: true;
+    }
   | {
       xeroRefundNote: "after-receipt";
       /**
@@ -81,11 +89,13 @@ export type PaidAnotherWayXeroPlan =
  */
 export type PaidAnotherWayXeroPromise =
   | PaidAnotherWayXeroNote
+  | "covered-by-card-note"
   | "after-receipt-on-its-way"
   | "after-receipt-failed"
   | "after-receipt-held-for-officer";
 
 export function paidAnotherWayXeroPromise(plan: PaidAnotherWayXeroPlan): PaidAnotherWayXeroPromise {
+  if (plan.xeroRefundNote === "none" && plan.coveredByCardNote) return "covered-by-card-note";
   if (plan.xeroRefundNote !== "after-receipt") return plan.xeroRefundNote;
   if (plan.receiptHeldForOfficer) return "after-receipt-held-for-officer";
   if (plan.receipt === null) return plan.receiptFailed ? "after-receipt-failed" : "after-receipt-on-its-way";
@@ -129,11 +139,16 @@ export function paidAnotherWayXeroPromise(plan: PaidAnotherWayXeroPlan): PaidAno
  */
 export async function paidAnotherWayXeroPlan(
   db: XeroPlanStore,
-  operation: { idempotencyKey: string },
+  operation: { idempotencyKey: string; paymentIntentId: string; amountCents: number },
   payment: { id: string; xeroInvoiceId: string | null },
   { lockApprovalTask }: { lockApprovalTask: boolean },
 ): Promise<PaidAnotherWayXeroPlan> {
-  const lateCaptureIntent = lateCaptureIntentOfApprovalRefundRecoveryKey(operation.idempotencyKey);
+  if (await failedLaterRefundCoveredByCardNote(db, operation, payment.id)) {
+    return { xeroRefundNote: "none", coveredByCardNote: true };
+  }
+  // #4104 review (money 3): a late capture's refund that Stripe failed later
+  // keeps `INV-PAY-110`'s routing, as its approval row's close would.
+  const lateCaptureIntent = await lateCaptureIntentOfCardRefundOperation(operation, db);
   if (lateCaptureIntent === null) {
     const hasInvoice =
       payment.xeroInvoiceId !== null || (await findKeptLateCaptureInvoiceIdForPayment(payment.id, db)) !== null;
@@ -186,6 +201,30 @@ export async function paidAnotherWayXeroPlan(
 }
 
 /**
+ * #4104 review (money 2): whether a failed-later row's refund still has its card
+ * refund note in Xero. Notes are per payment, not per refund, so this reads the
+ * payment: refund notes covering more than the card cash still standing behind
+ * them (`sumRefundCreditNoteCoverageCents` against
+ * `resolveRefundNoteEligibleCash`) by at least this refund are notes raised for
+ * refunds that failed since - this one's among them. An unreadable resolved
+ * note decides nothing here; the note's own enqueue refuses on it.
+ */
+async function failedLaterRefundCoveredByCardNote(
+  db: XeroPlanStore,
+  operation: { idempotencyKey: string; amountCents: number },
+  paymentId: string,
+): Promise<boolean> {
+  if (cardRefundFailedLaterRefundId(operation.idempotencyKey) === null) return false;
+  const payment = await db.payment.findUnique({ where: { id: paymentId }, select: { id: true, bookingId: true, refundedAmountCents: true } });
+  if (!payment) return false;
+  const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, db);
+  if (resolved.unreadableOperationIds.length > 0) return false;
+  const coveredCents = await sumRefundCreditNoteCoverageCents(paymentId, resolved, db);
+  const { eligibleCashCents } = await resolveRefundNoteEligibleCash(payment, db);
+  return coveredCents - eligibleCashCents >= operation.amountCents;
+}
+
+/**
  * #3924 round 8 (concurrency): an officer resolved or withdrew the late
  * charge's Xero receipt between the plan's read and its requeue - neither takes
  * the approval task's row. The plan no longer holds (a receipt resolved by hand
@@ -216,6 +255,7 @@ export type PaidAnotherWayXeroQueued =
   | "refund-note-after-receipt"
   | "refund-note-after-failed-receipt"
   | "receipt-held-for-officer"
+  | "covered-by-card-note"
   | "nothing";
 
 /**
@@ -279,7 +319,7 @@ export async function queuePaidAnotherWayXero(
     });
     return queued.queueOperationId !== null ? "refund-note" : "nothing";
   }
-  if (plan.xeroRefundNote === "none") return "nothing";
+  if (plan.xeroRefundNote === "none") return plan.coveredByCardNote ? "covered-by-card-note" : "nothing";
   if (plan.receipt === null) {
     // Round 10: a failed change invoice that may be in Xero waits on an
     // officer's check of Xero, as a held receipt row does.

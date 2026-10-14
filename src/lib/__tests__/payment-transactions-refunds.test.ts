@@ -26,7 +26,7 @@ vi.mock("@/lib/stripe", () => ({
 // #4104: the failed-later debt and its alert, observed here; their own rules are
 // `card-refund-failed-later.test.ts`'s.
 const failedLater = vi.hoisted(() => ({
-  keep: vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []),
+  keep: vi.fn<(...args: unknown[]) => Promise<{ debts: unknown[]; readAsRefused: string[] }>>(async () => ({ debts: [], readAsRefused: [] })),
   alert: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
 }));
 vi.mock("@/lib/card-refund-failed-later", () => ({
@@ -2193,7 +2193,10 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     metadata: APP_METADATA,
   });
   /** The refunds each write handed over as failed later, write by write. */
-  const seen = () => failedLater.keep.mock.calls.map((call) => ((call[1] as { refunds: Array<{ id: string }> }).refunds).map((refund) => refund.id));
+  const seen = () =>
+    failedLater.keep.mock.calls.map((call) =>
+      (call[1] as { seen: Array<{ refund: { id: string }; kind: string }> }).seen.map(({ refund, kind }) => `${refund.id}:${kind}`),
+    );
   const record = (store: unknown, status: string) =>
     syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 0, refunds: [refund(status)], store: store as never });
 
@@ -2208,13 +2211,13 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     expect(failedLater.keep.mock.calls[1]?.[1]).toEqual({
       paymentId: "payment_1",
       paymentTransactionId: "txn_1",
-      refunds: [expect.objectContaining({ id: "re_1", amount: 2000, metadata: APP_METADATA })],
+      seen: [{ refund: expect.objectContaining({ id: "re_1", amount: 2000, metadata: APP_METADATA }), kind: "transition" }],
       fallbackPaymentIntentId: "pi_1",
     });
 
     // The same event again: the row is already refused, nothing is seen twice.
     await record(store, "failed");
-    expect(seen()).toEqual([[], ["re_1"], []]);
+    expect(seen()).toEqual([[], ["re_1:transition"], []]);
   });
 
   it("a refund told to count while its row already says refused is kept owed (the event arrived first)", async () => {
@@ -2224,7 +2227,7 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
 
     // The door's own write, carrying Stripe's original answer.
     await record(store, "pending");
-    expect(seen()).toEqual([[], ["re_1"]]);
+    expect(seen()).toEqual([[], ["re_1:replayed"]]);
     expect(transaction.refundedAmountCents).toBe(0);
   });
 
@@ -2239,17 +2242,67 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     const debt = { outcome: "raised", operationId: "op_1" };
     const joined = createRefundStore();
     await record(joined.store, "pending");
-    failedLater.keep.mockResolvedValueOnce([debt]);
-    await record(joined.store, "failed");
+    failedLater.keep.mockResolvedValueOnce({ debts: [debt], readAsRefused: [] });
+    const joinedSync = await record(joined.store, "failed");
+    // Returned for the caller to alert after its own commit (concurrency E).
+    expect(joinedSync?.failedLaterDebts).toEqual([debt]);
     expect(failedLater.alert).not.toHaveBeenCalled();
 
     const owned = createRefundStore();
     const root = { ...owned.store, $connect: vi.fn(), $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(owned.store)) };
     await record(root, "pending");
     expect(failedLater.alert).toHaveBeenLastCalledWith([]);
-    failedLater.keep.mockResolvedValueOnce([debt]);
+    failedLater.keep.mockResolvedValueOnce({ debts: [debt], readAsRefused: [] });
     await record(root, "failed");
     expect(root.$transaction).toHaveBeenCalledTimes(2);
     expect(failedLater.alert).toHaveBeenLastCalledWith([debt]);
+  });
+});
+
+describe("#4104 review - what the refund sender and the snapshot floor do with a failure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const stripeRefund = (id: string, status: string, amount = 2000) => ({
+    id,
+    amount,
+    currency: "nzd",
+    status,
+    created: 1770000000,
+    charge: "ch_1",
+    payment_intent: "pi_1",
+    metadata: { bookingId: "booking_1", reason: "cancellation" },
+  });
+
+  it("MUTATION (money 4): a charge.refunded snapshot taken before a refund failed does not lift the total back up", async () => {
+    const { store, transaction } = createRefundStore();
+    await syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 2000, refunds: [stripeRefund("re_1", "pending")], store: store as never });
+    await syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 2000, refunds: [stripeRefund("re_1", "failed")], store: store as never });
+    expect(transaction.refundedAmountCents).toBe(0);
+    // A late snapshot still carrying the failed refund in Stripe's cumulative figure.
+    await syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 2000, refunds: [stripeRefund("re_1", "failed")], store: store as never });
+    expect(transaction.refundedAmountCents).toBe(0);
+    // Backed by counted rows, the figure still floors the total.
+    await syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 500, refunds: [stripeRefund("re_1", "failed"), stripeRefund("re_2", "succeeded", 500)], store: store as never });
+    expect(transaction.refundedAmountCents).toBe(500);
+  });
+
+  it("a refund a row it is moving owns is handed back as refused: never counted as completed, and owed by that row", async () => {
+    const { store } = createRefundStore();
+    failedLater.keep.mockResolvedValueOnce({ debts: [], readAsRefused: ["re_held"] });
+    mocks.processRefund.mockResolvedValueOnce(stripeRefund("re_held", "pending"));
+    const result = await refundPaymentTransactions({ format: CLUB_FORMAT_TEST, paymentId: "payment_1", amountCents: 2000, idempotencyKeyPrefix: "booking_cancel_refund_b1", store: store as never });
+    expect(result.refunds).toEqual([expect.objectContaining({ refundId: "re_held", status: "failed" })]);
+  });
+
+  it("returns what it decided, for a caller whose transaction it joined to alert after its commit (concurrency E)", async () => {
+    const { store } = createRefundStore();
+    const debt = { outcome: "raised", operationId: "op_1" };
+    failedLater.keep.mockResolvedValueOnce({ debts: [debt], readAsRefused: [] });
+    mocks.processRefund.mockResolvedValueOnce(stripeRefund("re_x", "succeeded"));
+    const result = await refundPaymentTransactions({ format: CLUB_FORMAT_TEST, paymentId: "payment_1", amountCents: 2000, store: store as never });
+    expect(result.failedLaterDebts).toEqual([debt]);
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(expect.objectContaining({ failedLaterDebts: [debt] }), expect.stringContaining("#4104"));
   });
 });

@@ -17,6 +17,10 @@ export function xeroRefundNotePromise(xeroRefundNote: PaidAnotherWayXeroPromise,
   if (xeroRefundNote === "now") {
     return `A Xero refund credit note for the amount, worded "${bankNoteWording}", is queued when you close it.`;
   }
+  // #4104: a refund Stripe failed later - its card note, raised while it counted, is in Xero.
+  if (xeroRefundNote === "covered-by-card-note") {
+    return "No Xero refund credit note is queued: Xero already holds this refund's card refund credit note, raised when the card provider first accepted it, and that note records the money going back.";
+  }
   if (xeroRefundNote === "after-receipt") {
     return `Xero has no record of this late card charge yet. Closing it records the charge in Xero as a payment received into the Stripe account, then queues a Xero refund credit note for the amount, worded "${bankNoteWording}", against it.`;
   }
@@ -52,6 +56,9 @@ export function xeroQueuedMessage(xeroQueued: PaidAnotherWayXeroQueued | undefin
       xeroQueued === "refund-note-after-failed-receipt" ? "failed" : "held-for-officer",
       `its refund credit note, worded "${bankNoteWording}", follows`,
     );
+  }
+  if (xeroQueued === "covered-by-card-note") {
+    return "No Xero refund credit note was queued: the card refund credit note already in Xero records this refund.";
   }
   return "No Xero refund credit note was queued: check the refund is recorded in Xero.";
 }

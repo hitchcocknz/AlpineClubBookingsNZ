@@ -55,3 +55,21 @@ export const PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE = {
     { status: "FAILED", nextRetryAt: { not: null }, attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS } },
   ],
 } satisfies Prisma.PaymentRecoveryOperationWhereInput;
+
+/**
+ * #4104 review (ops 7): a recovery the runner will never claim again - in a
+ * claimable status with its attempts spent - as a Prisma filter. A card refund
+ * raised dead (`card-refund-failed-later.ts`) is PENDING with its attempts
+ * spent, so "exhausted" is read on both statuses, and a queue that is only
+ * waiting on dead rows is not a stalled cron (`PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE`).
+ */
+export const PAYMENT_RECOVERY_EXHAUSTED_WHERE = {
+  status: { in: ["PENDING", "FAILED"] },
+  attempts: { gte: MAX_PAYMENT_RECOVERY_ATTEMPTS },
+} satisfies Prisma.PaymentRecoveryOperationWhereInput;
+
+/** The other side of it: a row the runner's claim can still take, once its retry time comes. */
+export const PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE = {
+  attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS },
+  nextRetryAt: { not: null },
+} satisfies Prisma.PaymentRecoveryOperationWhereInput;

@@ -65,18 +65,24 @@ export async function recordRefusedCardRefund(refund: Stripe.Refund): Promise<Re
   return "recorded";
 }
 
+/** One read's bound, with no retries, and the whole sweep's: a Stripe brown-out never stalls the cron behind it. */
+const READ_BACK_TIMEOUT_MS = 10_000;
+const READ_BACK_BUDGET_MS = 60_000;
+
 /**
  * The payments cron's read-back: each card refund still recorded as neither
  * made nor refused (`pending`, `requires_action`) is read from Stripe, and one
  * whose status moved is recorded - a failure is kept owed, a success just
- * brings the row up to date. Least recently read first, and each one read is
- * stamped, so a refund Stripe keeps pending for days cannot starve the rest.
- * One refund failing to read or record never stops the others. Never inside a
- * transaction with the provider call.
+ * brings the row up to date. Least recently read first, and each one read -
+ * or that could not be read or recorded - is stamped, so neither a refund
+ * Stripe keeps pending for days nor one that keeps failing can hog a slot.
+ * One refund failing never stops the others; the sweep stops when its time
+ * budget is spent. Never inside a transaction with the provider call.
  */
 export async function reconcilePendingCardRefunds(
   stripe: { retrieveRefund: typeof retrieveRefund } = { retrieveRefund },
   limit = 25,
+  budgetMs = READ_BACK_BUDGET_MS,
 ): Promise<{ checked: number; moved: number }> {
   const pending = await prisma.paymentRefund.findMany({
     where: { paymentTransactionId: { not: null }, status: { notIn: [...EXCLUDED_LEDGER_REFUND_STATUSES, "succeeded"] } },
@@ -85,14 +91,18 @@ export async function reconcilePendingCardRefunds(
     take: limit,
   });
   let moved = 0;
+  let checked = 0;
+  const startedAt = performance.now();
+  // Guarded on the status read: a concurrent write to the row is never overwritten.
+  const stamp = (row: (typeof pending)[number]) =>
+    prisma.paymentRefund.updateMany({ where: { stripeRefundId: row.stripeRefundId, status: row.status }, data: { updatedAt: new Date() } });
   for (const row of pending) {
+    if (performance.now() - startedAt >= budgetMs) break;
+    checked += 1;
     try {
-      const refund = await stripe.retrieveRefund(row.stripeRefundId);
+      const refund = await stripe.retrieveRefund(row.stripeRefundId, { timeoutMs: READ_BACK_TIMEOUT_MS });
       if ((refund.status ?? row.status) === row.status) {
-        await prisma.paymentRefund.updateMany({
-          where: { stripeRefundId: row.stripeRefundId, status: row.status },
-          data: { updatedAt: new Date() },
-        });
+        await stamp(row);
         continue;
       }
       await recordStripeRefundsAgainstTransaction({
@@ -104,7 +114,10 @@ export async function reconcilePendingCardRefunds(
       moved += 1;
     } catch (err) {
       logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not bring a pending card refund up to date from Stripe (#4104)");
+      await stamp(row).catch((stampErr: unknown) =>
+        logger.error({ err: stampErr, stripeRefundId: row.stripeRefundId }, "Could not stamp a pending card refund's read-back (#4104)"),
+      );
     }
   }
-  return { checked: pending.length, moved };
+  return { checked, moved };
 }
