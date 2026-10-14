@@ -281,11 +281,23 @@ async function enqueueLedgerRefundRecovery({
     skipDuplicates: true,
   });
   if (inserted.count === 0) {
+    // #4103 review C2: a fresh plan with no refusal in it never resets a row a
+    // refusal already re-planned (a slice on a later key, or marked made): a
+    // redelivery would send the cached refusal's key again, and re-alert. Read,
+    // then written compare-and-set on what was read.
+    const progressed = (slices: ReadonlyArray<RefundAllocationSlice> | null | undefined) =>
+      (slices ?? []).some((slice) => slice.stripeKeySuffix || slice.madeRefundId);
+    let planFence: Prisma.PaymentRecoveryOperationWhereInput = {};
+    if (allocationPlanJson !== undefined && !progressed(allocationPlan)) {
+      const held = (await store.paymentRecoveryOperation.findUnique({ where: { idempotencyKey }, select: { allocationPlan: true } }))?.allocationPlan ?? null;
+      if (progressed(parseRefundAllocationPlan(held))) return { created: false, paymentIntentId: representativePaymentIntentId };
+      planFence = { allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue } };
+    }
     // #4083: a repeat enqueue refreshes only a row no worker has picked up
     // (PENDING). One a worker has claimed, failed or closed keeps its amount,
     // prefix and plan: those slices may already have been sent under their keys.
     await store.paymentRecoveryOperation.updateMany({
-      where: { idempotencyKey, status: PaymentRecoveryOperationStatus.PENDING },
+      where: { idempotencyKey, status: PaymentRecoveryOperationStatus.PENDING, ...planFence },
       data: {
         bookingId,
         paymentId,

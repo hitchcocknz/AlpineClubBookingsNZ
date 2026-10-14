@@ -2586,6 +2586,50 @@ describe("payment recovery worker", () => {
     });
   });
 
+  // #4103 review C2: a redelivery's fresh plan carries no refusal; it must not
+  // put a row a refusal re-planned back on the key Stripe answers with that
+  // refusal, nor overwrite a plan another writer moves meanwhile.
+  describe("a repeat enqueue with a fresh plan, over a row a refusal re-planned (#4103)", () => {
+    const enqueueFresh = () =>
+      enqueueBookingModificationRefundRecovery({
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        bookingModificationId: "mod-7",
+        amountCents: 4000,
+        stripeKeyPrefix: "mod_batch_refund_booking-1_mod-7",
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
+      });
+
+    it.each([
+      ["a slice moved to its next key", { stripeKeySuffix: "refused1" }],
+      ["a slice marked made", { madeRefundId: "re_1" }],
+    ])("keeps the held plan when it carries %s", async (_label, progress) => {
+      mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+      mockPaymentRecoveryFindUnique.mockResolvedValueOnce({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000, ...progress }] });
+
+      await expect(enqueueFresh()).resolves.toMatchObject({ created: false });
+
+      expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("refreshes an untouched row compare-and-set on the plan it read", async () => {
+      const held = [{ paymentTransactionId: "txn-1", amountCents: 4000 }];
+      mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+      mockPaymentRecoveryFindUnique.mockResolvedValueOnce({ allocationPlan: held });
+
+      await enqueueFresh();
+
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith({
+        where: {
+          idempotencyKey: "payment_recovery_modification_refund_mod-7",
+          status: PaymentRecoveryOperationStatus.PENDING,
+          allocationPlan: { equals: held },
+        },
+        data: expect.objectContaining({ allocationPlan: held }),
+      });
+    });
+  });
+
   it("enqueueBookingModificationRefundRecovery picks the latest captured PaymentIntent", async () => {
     mockPaymentFindUnique.mockResolvedValueOnce({
       id: "payment-1",

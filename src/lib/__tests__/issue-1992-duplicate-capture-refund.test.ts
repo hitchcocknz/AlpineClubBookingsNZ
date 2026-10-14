@@ -6,6 +6,7 @@ import {
   PaymentSource,
   PaymentStatus,
   PaymentTransactionKind,
+  Prisma,
 } from "@prisma/client";
 import { parseDateOnly } from "@/lib/date-only";
 
@@ -1208,6 +1209,8 @@ describe("#4103 a duplicate-capture refund Stripe refuses", () => {
         idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey("booking-1", DUPLICATE_PI),
         status: PaymentRecoveryOperationStatus.PENDING,
         attempts: 0,
+        // #4103 review C2: compare-and-set on the plan the row held (none read, here).
+        allocationPlan: { equals: Prisma.DbNull },
       },
       data: {
         allocationPlan: [{ paymentTransactionId: "txn-duplicate", amountCents: 10000, stripeKeySuffix: "refused1" }],

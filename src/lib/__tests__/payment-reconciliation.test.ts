@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BookingStatus } from "@prisma/client";
+import { BookingStatus, Prisma } from "@prisma/client";
 import { normalizeDateOnlyForTimeZone, parseDateOnly } from "@/lib/date-only";
 
 /**
@@ -1163,7 +1163,12 @@ describe("markBookingPaymentSucceeded", () => {
         expect(result.refundError).toMatch(/Stripe refused \$100\.00 .*still owed/);
         expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).not.toHaveBeenCalled();
         expect(replanned()).toEqual({
-          where: { idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey("booking-1", "pi_race"), status: "PENDING", attempts: 0 },
+          where: {
+            idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey("booking-1", "pi_race"),
+            status: "PENDING",
+            attempts: 0,
+            allocationPlan: { equals: Prisma.DbNull },
+          },
           data: { allocationPlan: [{ ...a, stripeKeySuffix: "refused1" }, { ...b, stripeKeySuffix: "refused1" }], lastError: result.refundError },
         });
         expect(mocks.recordCapacityClaimFailedRefundRecoveryInlineError).toHaveBeenCalledWith(

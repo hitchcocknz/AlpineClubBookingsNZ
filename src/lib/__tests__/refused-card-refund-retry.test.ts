@@ -2,10 +2,13 @@
 // retry asks under a key Stripe has never seen. These are the pure rules: the
 // key spelling and its generations, which statuses are refusals, which plan
 // slices move, and that a persisted plan keeps the generation it was moved to.
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const updateMany = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: 1 })));
-const findUnique = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string; paymentIntentId: string }>>(async () => ({ id: "op_row", paymentIntentId: "pi_row" })));
+const findUnique = vi.hoisted(() =>
+  vi.fn<(args: unknown) => Promise<{ id: string; paymentIntentId: string; allocationPlan?: unknown }>>(async () => ({ id: "op_row", paymentIntentId: "pi_row" })),
+);
 vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique } } }));
 const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
@@ -291,7 +294,7 @@ describe("a pre-persisted row after a refusal (#4103)", () => {
 
     expect(error?.message).toMatch(/Stripe refused \$10\.00 .*still owed/);
     expect(updateMany).toHaveBeenCalledWith({
-      where: { idempotencyKey: "row_key", status: "PENDING", attempts: 0 },
+      where: { idempotencyKey: "row_key", status: "PENDING", attempts: 0, allocationPlan: { equals: Prisma.DbNull } },
       data: { allocationPlan: [{ ...a, stripeKeySuffix: "refused1" }], lastError: error?.message },
     });
     expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
@@ -322,6 +325,31 @@ describe("a pre-persisted row after a refusal (#4103)", () => {
     expect(error).not.toBeNull();
     expect(writtenPlan()).toEqual([{ ...a, stripeKeySuffix: "refused1" }, { ...b, madeRefundId: "re_txn_b" }, c]);
     expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);
+  });
+
+  // #4103 review C2: once per refusal. The re-plan starts from the row's own
+  // plan and is written compare-and-set on it, so two deliveries that read the
+  // same refusal move the slice once and alert once.
+  it("re-plans from the plan the row holds, compare-and-set on it", async () => {
+    findUnique.mockResolvedValueOnce({ id: "op_row", paymentIntentId: "pi_row", allocationPlan: [a, b] });
+
+    const error = await keep({ refunds: [answer(a, "failed")] });
+
+    expect(error?.replanned).toBe(true);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { idempotencyKey: "row_key", status: "PENDING", attempts: 0, allocationPlan: { equals: [a, b] } },
+      data: { allocationPlan: [{ ...a, stripeKeySuffix: "refused1" }, b], lastError: error?.message },
+    });
+  });
+
+  it("a second delivery of the same refusal finds the slice already moved: no write, no alert", async () => {
+    findUnique.mockResolvedValueOnce({ id: "op_row", paymentIntentId: "pi_row", allocationPlan: [{ ...a, stripeKeySuffix: "refused1" }] });
+
+    const error = await keep({ refunds: [answer(a, "failed")] }, { plan: [a] });
+
+    expect(error?.replanned).toBe(false);
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
   });
 
   it("a replay against a row a worker already holds moves nothing and alerts nobody: the runner reads the refusal itself", async () => {

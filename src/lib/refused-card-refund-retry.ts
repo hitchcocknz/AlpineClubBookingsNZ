@@ -19,8 +19,10 @@
  *   review, the late-capture approval, the duplicate capture and the capacity
  *   race (#4103) - moves its row's plan the same way, only while no worker has
  *   touched it (PENDING, no attempt yet; `keepRefusedPrePersistedRefundOwed`).
- * - The late-capture webhook, which writes no row before its attempt, queues
- *   one after it as the refund request does (#4103).
+ * - The late-capture webhook, which writes no row before its attempt, holds a
+ *   refusal for a treasurer instead (`holdLateCaptureRefusedByStripe`, #4103),
+ *   whose approval asks on the key its recorded refusals count to
+ *   (`sliceAfterRecordedRefusals`).
  * - An approved refund request queues its attempt's plan with refused slices
  *   already moved and made ones marked (`inlineRefundAfterAttempt`, #4102).
  * - The runner, on the attempt it holds, does the same and fails the attempt,
@@ -39,10 +41,11 @@
  * door that met it), and again if the retries run out; the row then dies owed,
  * for the treasurer's "Paid another way" (#3372).
  */
-import { PaymentRecoveryOperationStatus, type PaymentRecoveryOperation, type Prisma } from "@prisma/client";
+import { PaymentRecoveryOperationStatus, Prisma, type PaymentRecoveryOperation } from "@prisma/client";
 
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
+import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import { nextRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
@@ -283,14 +286,19 @@ export type RefundAttempt = { refunds: ReadonlyArray<AnsweredRefund> } | { error
  * attempt), as the runner owns it after that and reads the refusal itself. Its
  * amount stays the plan's total.
  *
+ * Once per refusal (#4103 review C2): the re-plan starts from the plan the row
+ * holds and is written compare-and-set on it, so a refusal moves only a slice
+ * still on the key it was read under. A second delivery that read the same
+ * refusal finds the slice already moved, writes nothing and alerts nobody.
+ *
  * Takes the attempt as the door met it: its answers, or what it threw (only a
  * `PartialRefundError` carries answers). Returns null when nothing was refused,
  * so a door may call it on every outcome; otherwise the error the door records
  * on the row - the refusal is never a refund, so the door must not close it.
  *
  * The officers are alerted for the slices refused on their first key when this
- * write moved the row, with what is in hand if the row cannot be read back -
- * unless the door raises its own failure alert (`alertOfficers: false`), which
+ * write moved the row (a row that cannot be read is not moved: the runner
+ * moves it and alerts) - unless the door raises its own failure alert (`alertOfficers: false`), which
  * then carries the refusal, and is raised only when this write moved the row
  * (`RefusedCardRefundError.replanned`), so it is heard once.
  */
@@ -317,27 +325,33 @@ export async function keepRefusedPrePersistedRefundOwed({
   const refusedCents = refusedRefundCents(refused.map((answer) => answer.slice));
   const message = refusedRefundMessage(refusedCents, format);
   let moved = false;
+  let row: { id: string; paymentIntentId: string; allocationPlan?: Prisma.JsonValue } | null = null;
   try {
-    const written = await prisma.paymentRecoveryOperation.updateMany({
-      where: { idempotencyKey, status: PaymentRecoveryOperationStatus.PENDING, attempts: 0 },
-      data: {
-        allocationPlan: planAfterAttempt(plan ?? answered.map((answer) => answer.slice), answered) as unknown as Prisma.InputJsonValue,
-        lastError: message,
-      },
+    row = await prisma.paymentRecoveryOperation.findUnique({
+      where: { idempotencyKey },
+      select: { id: true, paymentIntentId: true, allocationPlan: true },
     });
-    moved = written.count === 1;
+    const held = row?.allocationPlan ?? null;
+    const base = parseRefundAllocationPlan(held) ?? plan ?? answered.map((answer) => answer.slice);
+    const next = planAfterAttempt(base, answered);
+    if (JSON.stringify(next) !== JSON.stringify(base)) {
+      const written = await prisma.paymentRecoveryOperation.updateMany({
+        where: {
+          idempotencyKey,
+          status: PaymentRecoveryOperationStatus.PENDING,
+          attempts: 0,
+          allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue },
+        },
+        data: { allocationPlan: next as unknown as Prisma.InputJsonValue, lastError: message },
+      });
+      moved = written.count === 1;
+    }
   } catch (err) {
-    // The row stays open either way; the runner reads the refusal itself.
+    // The row stays open either way; the runner reads the refusal itself, and alerts as it moves it.
     logger.error({ err, bookingId, idempotencyKey }, "Could not re-plan a refused card refund's pre-persisted row (#4096, #4103)");
   }
   const first = firstRefusals(refused);
   if (moved && alertOfficers && first.length > 0) {
-    let row: { id: string; paymentIntentId: string } | null = null;
-    try {
-      row = await prisma.paymentRecoveryOperation.findUnique({ where: { idempotencyKey }, select: { id: true, paymentIntentId: true } });
-    } catch (err) {
-      logger.error({ err, bookingId }, "Could not read back a re-planned card refund; alerting with what is in hand (#4096)");
-    }
     await alertRefusedCardRefund(
       {
         bookingId,

@@ -2394,6 +2394,8 @@ async function performBookingCancellation(
         // remainder moves money. Do NOT rethrow.
         const completedRefundCents =
           err instanceof PartialRefundError ? err.completedRefundCents : 0;
+        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door.
+        await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
         await recordBookingCancellationRefundRecoveryInlineError({
           bookingId,
           message: err instanceof Error ? err.message : String(err),
