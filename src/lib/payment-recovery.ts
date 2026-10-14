@@ -573,6 +573,7 @@ import {
   buildPaymentIntentCancelRecoveryIdempotencyKey,
   buildRefundRequestRefundMetadata,
   buildRefundRequestRefundRecoveryIdempotencyKey,
+  cardRefundOperationRefundMetadata,
   buildSupersededPaymentRefundRecoveryIdempotencyKey,
   buildLegacyModificationRefundStripeKeyPrefix,
   REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
@@ -1969,10 +1970,7 @@ async function processRefundSupersededPaymentOperation(
     return;
   }
 
-  const metadata = {
-    bookingId: operation.bookingId,
-    reason: "zero_dollar_batch_modification_superseded",
-  };
+  const metadata = cardRefundOperationRefundMetadata(operation);
   // #4103 (`INV-PAY-130`): a refusal is never closed or reported. The first ask
   // keeps the row's own key, so a refund made but unrecorded is replayed; a
   // refusal moves to a one-slice plan on a fresh key, which later attempts send.
@@ -2007,14 +2005,17 @@ async function processRefundSupersededPaymentOperation(
       // commit together. A row an older attempt left behind still lifts a mirror
       // with no credit on it to the card refunds on record (the ledger floor); with
       // a credit it cannot, and the refunded-total audit lists it.
-      await recordStripeRefundsAgainstTransaction({
+      const recorded = await recordStripeRefundsAgainstTransaction({
         paymentId: operation.paymentId,
         paymentTransactionId: refreshedTransaction.id,
         refunds: [refund],
         fallbackPaymentIntentId: operation.paymentIntentId,
       });
+      // #4104 review (ML2): a replayed key reads Stripe's original answer; the
+      // ledger knows the refund failed since, and this row moves it itself.
+      const status = recorded.readAsRefused.includes(refund.id) ? "failed" : (refund.status ?? null);
       return {
-        refunds: [{ status: refund.status ?? null, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
+        refunds: [{ status, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
       };
     },
   });
@@ -2181,7 +2182,9 @@ async function processBookingModificationRefundOperation(
     BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   );
 
-  let metadata: Record<string, string>;
+  // #4104 review (CM): the body comes from the one builder a failed-later
+  // refund's owner check reads too (`cardRefundOperationRefundMetadata`).
+  const metadata = cardRefundOperationRefundMetadata(operation);
   let idempotencyKeyPrefix: string;
   if (refundRequestId) {
     // #1507: replay the inline appeal-refund body VERBATIM. The admin approve
@@ -2194,10 +2197,6 @@ async function processBookingModificationRefundOperation(
     // bookingId + refundRequestId, so pre-fix rows replay through this same path
     // (the inline body — reason:"refund_appeal_approved" — is unchanged, so no
     // pre-deploy sliver).
-    metadata = buildRefundRequestRefundMetadata(
-      operation.bookingId,
-      refundRequestId,
-    );
     idempotencyKeyPrefix = `refund_request_${refundRequestId}`;
   } else if (isBookingCancellationRecovery) {
     // #1494: replay the inline cancel body VERBATIM. Both callers build the
@@ -2211,7 +2210,6 @@ async function processBookingModificationRefundOperation(
     // reconcile). The metadata reconstructs purely from the persisted
     // bookingId, so an operation enqueued BEFORE this fix replays through the
     // same code path (there is no separate persisted-metadata to miss).
-    metadata = buildBookingCancellationRefundMetadata(operation.bookingId);
     idempotencyKeyPrefix = `booking_cancel_refund_${operation.bookingId}`;
   } else {
     // #1507: replay the inline modification-refund body VERBATIM. The inline
@@ -2227,10 +2225,6 @@ async function processBookingModificationRefundOperation(
     idempotencyKeyPrefix =
       operation.stripeKeyPrefix ??
       buildLegacyModificationRefundStripeKeyPrefix(operation.id);
-    metadata = buildBookingModificationRefundMetadata(
-      operation.bookingId,
-      bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),
-    );
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.

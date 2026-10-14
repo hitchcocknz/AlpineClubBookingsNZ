@@ -1389,15 +1389,33 @@ refund is owed again (it shows under **Refunds owed** and is retried). It is
 pending, every 15 minutes, so it catches a pending refund that fails, but a
 refund Stripe reported as succeeded and then failed reaches the app only
 through this event. `refund.updated` and `charge.refund.updated` are also
-understood if an endpoint already sends them; neither is needed.
+understood if an endpoint already sends them; neither is needed. Add it once
+the new release is the only one serving: an older release acknowledges an
+event it does not know and drops it. Such a refund is still recorded pending,
+so the new release's read-back finds it within a run or two.
 
-**Refunds that failed before the upgrade are not re-sent.** The release ships
-a marker migration (`20261115010000_card_refund_failed_later_cutoff`, no schema
-change). A card refund Stripe created before it finished, found failed after
-the upgrade - most often by the cron's first read-back of older pending
-refunds - is raised under **Refunds owed** with its retries already spent, and
-the officers are emailed: the member may already have been paid back by hand.
-Check each in Stripe and close it as **Paid another way** once settled.
+**Refunds Stripe created before the upgrade are not re-sent.** The release
+ships a marker migration (`20261115010000_card_refund_failed_later_cutoff`, no
+schema change). A card refund Stripe CREATED before it finished, found failed
+after the upgrade - most often by the cron's first read-back of older pending
+refunds - is raised with its retries already spent, and the officers are
+emailed: the member may already have been paid back by hand. It is listed
+under **Card refunds Stripe gave up on** on the Stuck states page; check each
+in Stripe and close it there as **Paid another way** once settled. Two
+exceptions: a refund an open card refund row still counts as one of its own
+slices is asked for again with that row, which no close can have settled yet;
+and with a migration history that lacks the marker (rolled back), every
+failed-later refund is raised this way.
+
+**Check once after the upgrade: refunds the old release already saw fail.**
+The old release took a card refund that failed later out of the payment's
+refunded total without owing it again, whenever a later refund on the same
+charge made it re-read the charge's refunds. Those rows already say `failed`,
+so the new release never sees them change, and nothing in the database tells
+one apart from a refund Stripe refused outright (which its door already asked
+for again). In the Stripe dashboard, list the refunds that failed in the last
+few months, and for any the member is still owed, pay them another way and
+record it in Xero by hand.
 
 If Stripe webhook delivery was missed while the endpoint, DNS, TLS, or the
 signing secret stored under **Admin > Integrations > Stripe** was wrong (it is

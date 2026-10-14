@@ -13,13 +13,19 @@ import { paidAnotherWayReceiptRetryInstruction } from "@/lib/paid-another-way-re
  * of refund-note words (`describeRefundMethod("internet-banking")`, passed by
  * the server page so this client file does not bundle that module).
  */
-export function xeroRefundNotePromise(xeroRefundNote: PaidAnotherWayXeroPromise, bankNoteWording: string): string {
+export function xeroRefundNotePromise(
+  xeroRefundNote: PaidAnotherWayXeroPromise,
+  bankNoteWording: string,
+  /** #4104: what a card refund note already in Xero answers, formatted (`cardNoteCoversCents`). */
+  cardNoteCovers = "",
+): string {
   if (xeroRefundNote === "now") {
     return `A Xero refund credit note for the amount, worded "${bankNoteWording}", is queued when you close it.`;
   }
   // #4104: a refund Stripe failed later - its card note, raised while it counted, is in Xero.
+  // Delta review (D4): said for a close of any amount, in full or in part.
   if (xeroRefundNote === "covered-by-card-note") {
-    return "No Xero refund credit note is queued: Xero already holds this refund's card refund credit note, raised when the card provider first accepted it, and that note records the money going back.";
+    return `Xero already holds a card refund credit note for ${cardNoteCovers} of this refund, raised when the card provider first accepted it. Up to that much of what you pay back needs no new note; for anything beyond it, a Xero refund credit note worded "${bankNoteWording}" is queued when you close it. If you pay back less than ${cardNoteCovers}, Xero's note credits more than went back: the Xero reconciliation report lists the difference as refund coverage above the refunded total, for you to correct in Xero.`;
   }
   if (xeroRefundNote === "after-receipt") {
     return `Xero has no record of this late card charge yet. Closing it records the charge in Xero as a payment received into the Stripe account, then queues a Xero refund credit note for the amount, worded "${bankNoteWording}", against it.`;
@@ -58,7 +64,10 @@ export function xeroQueuedMessage(xeroQueued: PaidAnotherWayXeroQueued | undefin
     );
   }
   if (xeroQueued === "covered-by-card-note") {
-    return "No Xero refund credit note was queued: the card refund credit note already in Xero records this refund.";
+    return "No Xero refund credit note was queued: the card refund credit note already in Xero records what you paid back.";
+  }
+  if (xeroQueued === "refund-note-beyond-card-note") {
+    return `A card refund credit note already in Xero records part of what you paid back; a Xero refund credit note worded "${bankNoteWording}" is queued for the rest.`;
   }
   return "No Xero refund credit note was queued: check the refund is recorded in Xero.";
 }

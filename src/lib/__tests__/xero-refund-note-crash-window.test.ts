@@ -917,6 +917,19 @@ describe("#3880: one refund note in flight per payment, from coverage read to re
       expect(row("op_close").xeroObjectId).not.toBe("cn_hand_back");
     });
 
+    // #4104 (delta review ML1): a close a card refund note already in Xero
+    // partly answers queues its note for the rest only; executed, it is never
+    // grown back to the close's whole share.
+    it("MUTATION: never bills more than its row asked for", async () => {
+      seedPayment(PaymentSource.INTERNET_BANKING);
+      state.closes = { close_1: 2500 };
+      queueClose("op_close", "close_1", 1000, 1000);
+
+      await dispatch("op_close");
+
+      expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([10]);
+    });
+
     it("MUTATION: once its own note covers it, a second row for it raises nothing and borrows no other note", async () => {
       seedPayment(PaymentSource.INTERNET_BANKING);
       state.closes = { close_1: 2500 };

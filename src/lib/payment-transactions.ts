@@ -18,11 +18,10 @@ import {
   type FailedLaterCardRefundDebt,
   type FailedLaterKind,
 } from "@/lib/card-refund-failed-later";
-import { decodeRawRows } from "@/lib/raw-sql-rows";
+import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import logger from "@/lib/logger";
 import { writeEditAttributedTransaction } from "@/lib/edit-attributed-ask-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
-import { z } from "zod";
 import type { ClubFormat } from "@/lib/club-format";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
 import { CAPTURED_ROWS_OLDEST_FIRST } from "@/lib/mirror-refund-fold";
@@ -607,8 +606,6 @@ export function refundHeadroomIncrementCents(row: { amountCents: number; refunde
  */
 const REFUND_LEDGER_WRITERS_MIGRATION = "20260509090000_enrich_payment_refund_ledger";
 
-const REFUND_LEDGER_START_ROW = z.object({ finished_at: z.date() });
-const REFUND_LEDGER_HISTORY_PRESENT_ROW = z.object({ present: z.boolean() });
 
 /**
  * #3640: THE lock order for a payment's refunded total - the `Payment` row
@@ -694,36 +691,20 @@ async function reversalFloorForTransaction(
  * a refund made there is counted twice (safe direction: the member is
  * under-refunded, never over-refunded; the Xero note is capped by cash evidence).
  *
- * A one-row lookup, read raw because no Prisma model covers `_prisma_migrations`
- * (`INV-OPS-001`: the row is decoded, never cast).
+ * Read through the one reader of migration history (`readMigrationFinishedAt`).
  */
 async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null> {
   // A database built with `prisma db push` (a dev convenience) has no
-  // `_prisma_migrations` table, and naming a missing table aborts the whole
-  // transaction - every card-refund write with it. Such a database never ran
-  // pre-ledger code either, so a missing table reads like a missing row
-  // (#3640 delta review, D4). Production, CI and e2e all `migrate deploy`.
-  const presence = decodeRawRows(
-    await db.$queryRaw`SELECT to_regclass('"_prisma_migrations"') IS NOT NULL AS "present"`,
-    REFUND_LEDGER_HISTORY_PRESENT_ROW,
-    "refund ledger history present"
-  );
-  if (!presence[0]?.present) {
+  // migration history; it never ran pre-ledger code either, so it reads like
+  // a missing row (#3640 delta review, D4). Production, CI and e2e all `migrate deploy`.
+  const started = await readMigrationFinishedAt(db, REFUND_LEDGER_WRITERS_MIGRATION);
+  if (!started.history) {
     logger.warn(
       "No _prisma_migrations table: treating every card refund as made since the refund ledger started (#3640)"
     );
     return null;
   }
-  const rows = await db.$queryRaw`
-    SELECT "finished_at" FROM "_prisma_migrations"
-    WHERE "migration_name" = ${REFUND_LEDGER_WRITERS_MIGRATION}
-      AND "finished_at" IS NOT NULL
-      AND "rolled_back_at" IS NULL
-    ORDER BY "finished_at" ASC
-    LIMIT 1
-  `;
-  const [row] = decodeRawRows(rows, REFUND_LEDGER_START_ROW, "refund ledger start");
-  return row ? Math.floor(row.finished_at.getTime() / 1000) : null;
+  return started.finishedAtSeconds;
 }
 
 /**
@@ -752,8 +733,9 @@ async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null
  *   counted (`reversalFloorForTransaction`) - so a refund the OLD arithmetic
  *   never added cannot be taken out of money that was never its.
  *
- * The card refunds on record - and, from the webhook, Stripe's own
- * `amount_refunded` - remain a FLOOR, never the value: the mirror never reads
+ * The card refunds on record remain a FLOOR, never the value (#4104: Stripe's
+ * own `amount_refunded` no longer is - the sync reads every refund live, and a
+ * snapshot from before a refund failed would undo it): the mirror never reads
  * below the cash the card has demonstrably returned. For a transaction with no
  * credit on it, that also lifts a row a pre-#3640 crash left between its ledger
  * row and its mirror write; with a credit the floor cannot, and the refunded-
@@ -839,6 +821,17 @@ export async function recordStripeRefundsAgainstTransaction({
         ? await reversalFloorForTransaction(db, paymentId, paymentTransactionId)
         : 0;
 
+    // #4104 review (ML4): Stripe's cumulative `amount_refunded` is no longer a
+    // floor. The sync records every refund Stripe lists for the charge, read
+    // live, so the ledger floor above already holds each one that counts; the
+    // event's figure is a snapshot, and one taken before a refund failed would
+    // lift the total back up. Above the ledger it is only logged.
+    if (stripeRefundedAmountCents > ledgerRefundedAmountCents) {
+      logger.info(
+        { paymentId, paymentTransactionId, stripeRefundedAmountCents, ledgerRefundedAmountCents },
+        "Stripe's refunded figure is above the card refunds on record; the refunds on record stand (#4104)",
+      );
+    }
     const { previousCents, nextCents } = await compareAndSetRefundedAmount(
       db,
       paymentTransactionId,
@@ -848,10 +841,6 @@ export async function recordStripeRefundsAgainstTransaction({
           Math.max(
             row.refundedAmountCents + newlyCountedCents - reversedCents,
             ledgerRefundedAmountCents,
-            // #4104 review: Stripe's cumulative figure is a floor only while the
-            // counted refund rows back it - a snapshot taken before a refund
-            // failed must not lift the total back up.
-            stripeRefundedAmountCents > ledgerRefundedAmountCents ? 0 : stripeRefundedAmountCents,
             // A subtraction never goes below the payment's floor - and the
             // floor never RAISES a mirror (that would be the repair the audit
             // leaves to a person).

@@ -89,12 +89,6 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // with each replica's clock would let a skewed one take over a live lease.
   // Its one timestamp is schema-decoded through `decodeRawRows`.
   "src/lib/group-organiser-hand-back.ts": 1,
-  // #4104: the cutoff for re-sending a card refund Stripe failed later is when
-  // its marker migration finished on this install - the same two reads as the
-  // refund ledger's start (`payment-transactions.ts`): `_prisma_migrations` has
-  // no Prisma model, and a `db push` database has no such table at all. Both
-  // rows are schema-decoded through `decodeRawRows`.
-  "src/lib/card-refund-failed-later.ts": 2,
   // The hosting coverage participant protocol's fail-fast lock reads the boolean
   // returned by `pg_try_advisory_xact_lock` and schema-decodes it before deciding
   // whether the outer transaction must retry.
@@ -110,14 +104,14 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // parameterised on those two (`INV-SSOT-001`). A second copy would be a second
   // place for the `AS "locked"` alias or the decoder to drift.
   "src/lib/adult-member-hosting-coverage-lock.ts": 1,
-  // #3640: when this install's refund-ledger writers arrived - the
-  // `finished_at` of the migration that shipped them. No Prisma model covers
+  // #3640, #4104 (`INV-SSOT`): when a named migration finished on this install -
+  // the refund ledger's start (`INV-PAY-103`) and the failed-later card refund
+  // cutoff (`INV-PAY-128`) both read it here. No Prisma model covers
   // `_prisma_migrations`, so it is read raw, and its one timestamp is
-  // schema-decoded before the card-refund writer decides whether a refund
-  // predates the ledger (`INV-PAY-103`). TWO reads since the delta review
-  // (D4): a `to_regclass` boolean first, also decoded, because naming the
-  // table on a `db push` database that lacks it would abort the transaction.
-  "src/lib/payment-transactions.ts": 2,
+  // schema-decoded. TWO reads since #3640's delta review (D4): a `to_regclass`
+  // boolean first, also decoded, because naming the table on a `db push`
+  // database that lacks it would abort the transaction.
+  "src/lib/migration-finished-at.ts": 2,
 };
 
 /**

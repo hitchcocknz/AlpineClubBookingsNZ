@@ -72,6 +72,8 @@ const {
     ledgerRefundedAmountCents: 6000,
     refundedAmountCents: 6000,
     appliedCents: 6000,
+    failedLaterDebts: [],
+    readAsRefused: [],
   }),
   mockRefundPaymentTransactions: vi.fn(),
   mockSendAdminPaymentFailureAlert: vi.fn().mockResolvedValue(undefined),
@@ -2517,6 +2519,27 @@ describe("payment recovery worker", () => {
         expect.objectContaining({ amountCents: 6000, errorMessage: expect.stringContaining("will be retried automatically") }),
         CLUB_FORMAT_TEST,
       );
+    });
+
+    // #4104 review (ML2): a replay of the row's own key reads Stripe's original
+    // `pending` for a refund that failed since; the ledger hands it back as
+    // refused, so the row moves its key and asks again instead of closing.
+    it("MUTATION: a replayed refund the ledger reads as failed since is not closed on: moved to a fresh key", async () => {
+      const operation = queueSuperseded();
+      mockProcessRefund.mockResolvedValue(stripeRefund("pending"));
+      mockRecordStripeRefundsAgainstTransaction.mockResolvedValueOnce({ failedLaterDebts: [], readAsRefused: ["re_pending"] });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ succeeded: 0, retried: 1 });
+      expect(closed()).toBe(false);
+      expect(mockReportSupersededPaymentRefund).not.toHaveBeenCalled();
+      expect(planWrites()).toEqual([
+        {
+          where: { id: operation.id, status: PaymentRecoveryOperationStatus.PROCESSING, processingStartedAt: operation.processingStartedAt },
+          data: { allocationPlan: [{ ...slice, stripeKeySuffix: "refused1" }] },
+        },
+      ]);
     });
 
     it("the retry sends the moved slice under the row's key and its generation, then closes and reports once Stripe makes it", async () => {

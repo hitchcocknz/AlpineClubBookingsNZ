@@ -22,7 +22,7 @@ import {
   type FailedLaterRefundInput,
 } from "@/lib/card-refund-failed-later";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
-import { bookingModificationRefundReasonForKeyPrefix } from "@/lib/payment-recovery-keys";
+import { bookingModificationRefundReasonForKeyPrefix, SUPERSEDED_PAYMENT_REFUND_METADATA_REASON } from "@/lib/payment-recovery-keys";
 
 const RAISED_AT = new Date("2026-06-20T00:00:00.000Z");
 const REFUNDED_AT = new Date("2026-06-20T00:00:05.000Z");
@@ -34,6 +34,7 @@ type Row = {
   attempts: number;
   nextRetryAt: Date | null;
   idempotencyKey: string;
+  stripeKeyPrefix: string | null;
   amountCents: number;
   allocationPlan: unknown;
   paymentTransactionId: string | null;
@@ -51,6 +52,7 @@ function row(over: Partial<Row> = {}): Row {
     attempts: 1,
     nextRetryAt: new Date("2026-06-20T00:10:00.000Z"),
     idempotencyKey: "payment_recovery_modification_refund_mod-1",
+    stripeKeyPrefix: null,
     amountCents: 4_000,
     allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000 }],
     paymentTransactionId: null,
@@ -83,6 +85,7 @@ function fakeTx({
       ]),
     },
     paymentTransaction: { findUnique: vi.fn(async () => ({ stripePaymentIntentId: transactionIntent })) },
+    auditLog: { create: vi.fn<(args: unknown) => Promise<object>>(async () => ({})) },
     paymentRecoveryOperation: {
       findMany: vi.fn(async () => rows),
       createMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: inserted })),
@@ -179,6 +182,27 @@ describe("never re-sent automatically", () => {
     expect(await keep(fakeTx(), REFUND, { cutoffSeconds: null })).toMatchObject({ debt: { outcome: "raised" } });
   });
 
+  it("MUTATION (ML3): with a migration history but no finished cutoff, every refund is raised dead, never re-sent", async () => {
+    const tx = fakeTx({ cutoff: null });
+    const decided = await keepFailedLaterCardRefundsOwed(tx as never, {
+      paymentId: "pay-1",
+      paymentTransactionId: "txn-1",
+      seen: [{ refund: REFUND, kind: "transition" }],
+    });
+    expect(decided.debts.map((debt) => debt.outcome)).toEqual(["raised-backlog"]);
+  });
+
+  it("with no migration history at all (a `db push` database) nothing is backlog", async () => {
+    const tx = fakeTx();
+    tx.$queryRaw.mockImplementation(async () => [{ present: false }]);
+    const decided = await keepFailedLaterCardRefundsOwed(tx as never, {
+      paymentId: "pay-1",
+      paymentTransactionId: "txn-1",
+      seen: [{ refund: REFUND, kind: "transition" }],
+    });
+    expect(decided.debts.map((debt) => debt.outcome)).toEqual(["raised"]);
+  });
+
   it("reads the cutoff from the marker migration's finish, once per write, in whole seconds", async () => {
     const tx = fakeTx({ cutoff: new Date(REFUNDED_AT.getTime() + 1_500) });
     const decided = await keepFailedLaterCardRefundsOwed(tx as never, {
@@ -204,8 +228,15 @@ describe("not the club's refund for this booking: alerted, never re-sent", () =>
     });
     expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
     expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
-    // Seen again by a replay, it is not alerted twice.
-    expect(await keep(fakeTx(), { ...REFUND, metadata }, { kind: "replayed" })).toEqual({});
+    // #4104 review (CL3): the audit log keeps it, on the ledger writer's transaction.
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(tx.auditLog.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { action: "booking-payment.card-refund.failed-later-not-resent", entityType: "PaymentRefund", entityId: "re_1", targetId: "booking-1", category: "payment" },
+    });
+    // Seen again by a replay, it is not alerted or recorded twice.
+    const replay = fakeTx();
+    expect(await keep(replay, { ...REFUND, metadata }, { kind: "replayed" })).toEqual({});
+    expect(replay.auditLog.create).not.toHaveBeenCalled();
   });
 });
 
@@ -235,16 +266,26 @@ describe("an open row that counted it as made owes it again (money 1)", () => {
     const tx = fakeTx({ rows: [row({ allocationPlan: marked, amountCents: 5_000 })] });
     expect(await keep(tx)).toMatchObject({ debt: { outcome: "re-planned", operationId: "op-open", amountCents: 4_000 } });
     expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
-    expect(replan(tx)?.where).toEqual({ id: "op-open", status: "FAILED", allocationPlan: { equals: marked } });
+    // #4104 review (CL2): fenced on everything the plan and the outcome were read from.
+    expect(replan(tx)?.where).toEqual({
+      id: "op-open",
+      status: "FAILED",
+      attempts: 1,
+      nextRetryAt: new Date("2026-06-20T00:10:00.000Z"),
+      allocationPlan: { equals: marked },
+    });
     expect(replan(tx)?.data.allocationPlan).toEqual([
       { paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] },
       marked[1],
     ]);
   });
 
+  // The metadata this row's runner sends (`cardRefundOperationRefundMetadata`).
+  const RUNNERS = { ...REFUND, metadata: { bookingId: "booking-1", reason: "booking_modification_refund_recovery" } };
+
   it("MUTATION: an UNMARKED slice the owed figure fills with it, as the payment stood before the failure", async () => {
     const tx = fakeTx({ rows: [row()] });
-    expect(await keep(tx)).toMatchObject({ debt: { outcome: "re-planned", operationId: "op-open" } });
+    expect(await keep(tx, RUNNERS)).toMatchObject({ debt: { outcome: "re-planned", operationId: "op-open" } });
     expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
     expect(replan(tx)?.data.allocationPlan).toEqual([
       { paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] },
@@ -252,22 +293,37 @@ describe("an open row that counted it as made owes it again (money 1)", () => {
   });
 
   it("an unmarked slice of another amount, or raised after the refund, is not its owner", async () => {
-    expect(await keep(fakeTx({ rows: [row({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 3_999 }] })] }))).toMatchObject({
+    expect(await keep(fakeTx({ rows: [row({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 3_999 }] })] }), RUNNERS)).toMatchObject({
       debt: { outcome: "raised" },
     });
-    expect(await keep(fakeTx({ rows: [row({ createdAt: new Date("2026-06-21T00:00:00.000Z") })] }))).toMatchObject({ debt: { outcome: "raised" } });
+    expect(await keep(fakeTx({ rows: [row({ createdAt: new Date("2026-06-21T00:00:00.000Z") })] }), RUNNERS)).toMatchObject({ debt: { outcome: "raised" } });
+  });
+
+  it("MUTATION (CM): an unmarked slice is not its owner when the refund is not what that row's runner sends", async () => {
+    // A cancellation's refund matched by amount to an edit row's unsent slice:
+    // the runner sends that slice anyway, so the cancellation's refund needs a row of its own.
+    const tx = fakeTx({ rows: [row()] });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "raised", operationId: "op-new" } });
+    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["its attempts spent", { attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS }],
-    ["no retry time", { nextRetryAt: null }],
-  ])("on a dead row (%s) it is moved, and said to be not asked for again (money 6)", async (_case, over) => {
+    ["FAILED, its attempts spent", { attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null }],
+    ["PENDING, its attempts spent (raised dead)", { status: "PENDING", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS }],
+  ])("MUTATION (CL4): on a dead row (%s) it is moved, and said to be not asked for again (money 6)", async (_case, over) => {
     const tx = fakeTx({ rows: [row(over)] });
-    expect(await keep(tx)).toMatchObject({ debt: { outcome: "re-planned-dead" } });
+    expect(await keep(tx, RUNNERS)).toMatchObject({ debt: { outcome: "re-planned-dead" } });
+    expect(String(replan(tx)?.data.lastError)).toMatch(/retries are already spent, so it is not asked for again automatically: pay the member another way and close it under "Card refunds Stripe gave up on"/);
+  });
+
+  it("on a row the runner will claim again it is moved, and said to be asked for again", async () => {
+    const tx = fakeTx({ rows: [row({ attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS - 1 })] });
+    expect(await keep(tx, RUNNERS)).toMatchObject({ debt: { outcome: "re-planned" } });
+    expect(String(replan(tx)?.data.lastError)).toMatch(/is asked for again as a new request/);
   });
 
   it("a plan that moved since it was read is not overwritten", async () => {
-    await expect(keep(fakeTx({ rows: [row()], moved: 0 }))).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
+    await expect(keep(fakeTx({ rows: [row()], moved: 0 }), RUNNERS)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
   });
 
   it.each([
@@ -275,21 +331,35 @@ describe("an open row that counted it as made owes it again (money 1)", () => {
     ["no worker has claimed yet (PENDING, no attempt)", { status: "PENDING", attempts: 0 }],
   ])("never touches a row %s: its own failure write fails and is retried; a replay is handed back as refused", async (_case, over) => {
     const transition = fakeTx({ rows: [row(over)] });
-    await expect(keep(transition)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
+    await expect(keep(transition, RUNNERS)).rejects.toBeInstanceOf(FailedLaterRefundHeldError);
     expect(transition.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
     expect(transition.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
     const replayed = fakeTx({ rows: [row(over)] });
-    expect(await keep(replayed, REFUND, { kind: "replayed" })).toEqual({ readAsRefused: true });
+    expect(await keep(replayed, RUNNERS, { kind: "replayed" })).toEqual({ readAsRefused: true });
     expect(replayed.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
     expect(replayed.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
   });
 
-  it("an open row with no plan (a superseded intent's) re-derives it by itself: nothing is written", async () => {
-    const tx = fakeTx({
-      rows: [row({ type: "REFUND_SUPERSEDED_PAYMENT", allocationPlan: null, paymentTransactionId: "txn-1", idempotencyKey: "payment_recovery_refund_x" })],
+  describe("an open row with no plan (a superseded intent's)", () => {
+    const superseded = () =>
+      fakeTx({
+        rows: [row({ type: "REFUND_SUPERSEDED_PAYMENT", allocationPlan: null, paymentTransactionId: "txn-1", idempotencyKey: "payment_recovery_refund_x" })],
+      });
+    const ITS_OWN = { ...REFUND, metadata: { bookingId: "booking-1", reason: SUPERSEDED_PAYMENT_REFUND_METADATA_REASON } };
+
+    it("re-derives its own refund by itself: nothing is written", async () => {
+      const tx = superseded();
+      expect(await keep(tx, ITS_OWN)).toEqual({});
+      expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
     });
-    expect(await keep(tx)).toEqual({});
-    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+
+    it("MUTATION (ML2): its own replay of the key is told the refund failed, so it asks again rather than closing", async () => {
+      expect(await keep(superseded(), ITS_OWN, { kind: "replayed" })).toEqual({ readAsRefused: true });
+    });
+
+    it("another door's refund it would re-derive is owed by a row of its own", async () => {
+      expect(await keep(superseded())).toMatchObject({ debt: { outcome: "raised" } });
+    });
   });
 });
 
@@ -327,10 +397,11 @@ describe("the officers' alert", () => {
   it.each([
     ["raised", /\$40\.00 .*will be asked for again automatically/],
     ["re-planned", /will be asked for again automatically/],
-    ["re-planned-dead", /retries are already spent: pay the member another way/],
-    ["raised-dead", /will not be asked for again automatically/],
-    ["raised-backlog", /before this release .* check whether the member has already been paid back/],
-    ["not-resent", /did not make it for this booking .* not asked for again/],
+    ["re-planned-dead", /retries are already spent: pay the member another way and close it under "Card refunds Stripe gave up on" on the Stuck states page/],
+    ["raised-dead", /will not be asked for again automatically: pay the member another way and close it under "Card refunds Stripe gave up on"/],
+    ["raised-backlog", /before this release .* check whether the member has already been paid back, and close it under "Card refunds Stripe gave up on"/],
+    // #4104 review (D2): which refund, and what to do about it.
+    ["not-resent", /card refund re_1 of \$40\.00 .*did not make it for this booking .* not asked for again .*refund them again there or pay them another way/],
   ] as const)("says what a %s decision means, once", async (outcome, words) => {
     await alertFailedLaterCardRefunds([{ ...debt, outcome } as FailedLaterCardRefundDebt]);
     expect(alertPaymentRecoveryOfficers).toHaveBeenCalledTimes(1);

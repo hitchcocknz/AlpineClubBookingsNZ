@@ -500,6 +500,42 @@ export function buildBookingModificationRefundMetadata(
   return { bookingId, reason };
 }
 
+/** #3340: the `reason` a superseded payment's refund carries (`REFUND_SUPERSEDED_PAYMENT`). */
+export const SUPERSEDED_PAYMENT_REFUND_METADATA_REASON = "zero_dollar_batch_modification_superseded";
+
+/**
+ * #4104 review (CM, `INV-SSOT`): THE STRIPE REFUND METADATA A CARD REFUND ROW'S
+ * RUNNER SENDS - an approved refund request's, a cancellation's, a superseded
+ * payment's, or any other's by its stored Stripe key prefix
+ * (`bookingModificationRefundReasonForKeyPrefix`). The runner builds its body
+ * here, and a refund Stripe failed later is matched to an open row's unmarked
+ * slice only when it carries exactly this (`card-refund-failed-later.ts`), so a
+ * refund some other door or the Stripe dashboard made is never taken for it.
+ */
+export function cardRefundOperationRefundMetadata(operation: {
+  type: string;
+  idempotencyKey: string;
+  stripeKeyPrefix: string | null;
+  bookingId: string;
+}): Record<string, string> {
+  if (operation.type === "REFUND_SUPERSEDED_PAYMENT") {
+    return { bookingId: operation.bookingId, reason: SUPERSEDED_PAYMENT_REFUND_METADATA_REASON };
+  }
+  if (operation.idempotencyKey.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX)) {
+    return buildRefundRequestRefundMetadata(
+      operation.bookingId,
+      operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length),
+    );
+  }
+  if (operation.idempotencyKey.startsWith(BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX)) {
+    return buildBookingCancellationRefundMetadata(operation.bookingId);
+  }
+  return buildBookingModificationRefundMetadata(
+    operation.bookingId,
+    bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),
+  );
+}
+
 // #1507: map a modification refund's Stripe idempotency-key prefix to the
 // Stripe metadata `reason`. THE ONE SPELLING (`INV-MOD-061`, #4101): the inline
 // settlement helper (executeBookingModificationRefund) stamps the reason this

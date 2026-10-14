@@ -25,4 +25,18 @@ describe("the Stripe webhook events the endpoint must send (#4104)", () => {
     const deployment = readFileSync(resolve(ROOT, "DEPLOYMENT.md"), "utf8");
     expect(deployment).toContain("src/lib/stripe-webhook-events.ts");
   });
+
+  // #4104 delta review (D6, `INV-SSOT`): the operator's copy of the list in
+  // DEPLOYMENT.md is held to the shared one, event for event, in order.
+  it("MUTATION: DEPLOYMENT.md lists exactly the shared events", () => {
+    const deployment = readFileSync(resolve(ROOT, "DEPLOYMENT.md"), "utf8");
+    const after = deployment.slice(deployment.indexOf("src/lib/stripe-webhook-events.ts"));
+    const listed: string[] = [];
+    for (const line of after.slice(after.indexOf("\n- ")).split("\n").slice(1)) {
+      const item = /^- `([a-z_.]+)`/.exec(line);
+      if (!item) break;
+      listed.push(item[1]!);
+    }
+    expect(listed, "#4104: DEPLOYMENT.md's event list has drifted from STRIPE_WEBHOOK_EVENT_TYPES").toEqual([...STRIPE_WEBHOOK_EVENT_TYPES]);
+  });
 });

@@ -440,9 +440,9 @@ export async function createXeroCreditNote(
       // requested), and key the note by the EXECUTION-TIME watermark so a
       // replay under unchanged state mints the identical Xero idempotency
       // key, while changed state produces a consistent new intent.
-      // #3924 round 8: a close's note is exactly its own uncovered share.
-      effectiveRefundAmountCents =
-        paidAnotherWayTaskId !== null ? uncoveredCents : Math.min(refundAmountCents, uncoveredCents);
+      // #3924 round 8: a close's note is its own uncovered share - and (#4104)
+      // never more than its row asked for, as for every other note.
+      effectiveRefundAmountCents = Math.min(refundAmountCents, uncoveredCents);
       effectiveWatermarkCents = coveredCents + effectiveRefundAmountCents;
     }
   } else if (refundRequestId !== null) {
