@@ -34,7 +34,7 @@ reason: the event switch is the one dispatcher of Stripe events; three case
   new recorder, which holds all of the handling.
 
 file: src/lib/booking-cancel.ts
-lines: 2834
+lines: 2861
 reason: the cancellation's inline catch is the only place its partial refund's
   answers are in hand, so it marks the slices made before the failure on its
   pre-persisted row (`markCancellationAttempt`, whose body lives in
