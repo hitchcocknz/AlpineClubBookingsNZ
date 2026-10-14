@@ -36,7 +36,8 @@ function ledger(rows: Row[]) {
     paymentTransaction: {
       updateMany: async ({ where, data }: { where: Row; data: Row }) => {
         const hit = rows.filter((row) => matches(row, where));
-        for (const row of hit) Object.assign(row, data);
+        // As Prisma: an `undefined` field is left as it is.
+        for (const row of hit) for (const [field, value] of Object.entries(data)) if (value !== undefined) row[field] = value;
         return { count: hit.length };
       },
       createMany: async ({ data, skipDuplicates }: { data: Row[]; skipDuplicates: boolean }) => {

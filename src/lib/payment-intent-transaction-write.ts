@@ -70,7 +70,8 @@ export async function writePaymentIntentTransaction(
     stripePaymentIntentId: paymentIntentId,
     ...(bookingModificationId !== undefined ? { OR: [{ bookingModificationId: null }, { bookingModificationId }] } : {}),
   };
-  const { status: _keptOnCapturedRow, ...keepingStatus } = update;
+  // `undefined` is Prisma's "leave as is": a captured row keeps its status.
+  const keepingStatus = { ...update, status: undefined };
   const captured = [...CAPTURED_TRANSACTION_STATUS_LIST];
   const updateOurs = async () =>
     (await store.paymentTransaction.updateMany({ where: { ...ours, status: { notIn: captured } }, data: update })).count === 1 ||
