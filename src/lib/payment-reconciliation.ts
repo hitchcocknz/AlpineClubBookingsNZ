@@ -36,7 +36,7 @@ import {
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
-import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -2065,6 +2065,8 @@ export async function markBookingPaymentSucceeded({
     // cancellation. The rest of the audit trail is unchanged: the
     // PaymentRecoveryOperation row, the PaymentRefund ledger entries, this log
     // line and the admin alert below.
+    const keepRefusalOwed = (attempt: RefundAttempt) =>
+      keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
     try {
       const refundResult = await refundPaymentTransactions({
         format,
@@ -2087,16 +2089,8 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
-      // #4103 (`INV-PAY-128`): a slice Stripe refused (failed/canceled) is still
-      // owed: the row stays open, re-planned on fresh keys, and the failure
-      // branch below says so - its alert is the refusal's one alert.
-      const refused = await keepRefusedPrePersistedRefundOwed({
-        bookingId,
-        idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
-        attempt: refundResult,
-        format,
-        alertOfficers: false,
-      });
+      // #4103 (`INV-PAY-129`): a refusal stays owed, re-planned; the failure branch alerts once.
+      const refused = await keepRefusalOwed(refundResult);
       if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
@@ -2165,17 +2159,8 @@ export async function markBookingPaymentSucceeded({
         "Failed to auto-refund a duplicate capture; the pre-persisted recovery operation will replay the refund"
       );
       // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
-      const refusedBefore = await keepRefusedPrePersistedRefundOwed({
-        bookingId,
-        idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
-        plan: refundPlan,
-        attempt: { error: refundError },
-        format,
-        alertOfficers: false,
-      });
-      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)]
-        .filter(Boolean)
-        .join(" ");
+      const refusedBefore = await keepRefusalOwed({ error: refundError });
+      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)].filter(Boolean).join(" ");
       await recordDuplicateCaptureRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
@@ -2254,6 +2239,8 @@ export async function markBookingPaymentSucceeded({
       );
     }
 
+    const keepRefusalOwed = (attempt: RefundAttempt) =>
+      keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
     try {
       if (refundPlan.length === 0 || plannedRefundCents <= 0) {
         throw new Error(
@@ -2283,16 +2270,8 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
-      // #4103 (`INV-PAY-128`): a slice Stripe refused (failed/canceled) is still
-      // owed: the row stays open, re-planned on fresh keys, no REFUNDED event is
-      // written, and the failure branch's alert is the refusal's one alert.
-      const refused = await keepRefusedPrePersistedRefundOwed({
-        bookingId,
-        idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
-        attempt: refundResult,
-        format,
-        alertOfficers: false,
-      });
+      // #4103 (`INV-PAY-129`): a refusal stays owed, re-planned, no REFUNDED event; the failure branch alerts once.
+      const refused = await keepRefusalOwed(refundResult);
       if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
@@ -2334,17 +2313,8 @@ export async function markBookingPaymentSucceeded({
         "Failed to auto-refund booking after final capacity claim failed; the pre-persisted recovery operation will replay the refund"
       );
       // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
-      const refusedBefore = await keepRefusedPrePersistedRefundOwed({
-        bookingId,
-        idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
-        plan: refundPlan,
-        attempt: { error: refundError },
-        format,
-        alertOfficers: false,
-      });
-      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)]
-        .filter(Boolean)
-        .join(" ");
+      const refusedBefore = await keepRefusalOwed({ error: refundError });
+      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)].filter(Boolean).join(" ");
       await recordCapacityClaimFailedRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,

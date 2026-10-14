@@ -2441,7 +2441,7 @@ describe("payment recovery worker", () => {
     });
   });
 
-  // #4103 (`INV-PAY-128`): the superseded-payment refund (`REFUND_SUPERSEDED_PAYMENT`)
+  // #4103 (`INV-PAY-129`): the superseded-payment refund (`REFUND_SUPERSEDED_PAYMENT`)
   // is asked under the row's own key first, as it always was. A refusal must not
   // close the row or tell the member "we have refunded you": it moves to a
   // one-slice plan on a fresh key, which every later attempt sends.

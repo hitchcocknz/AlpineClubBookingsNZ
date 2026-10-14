@@ -1961,16 +1961,9 @@ async function processRefundSupersededPaymentOperation(
     bookingId: operation.bookingId,
     reason: "zero_dollar_batch_modification_superseded",
   };
-  /**
-   * #4103 (`INV-PAY-128`): a refund Stripe refused (failed/canceled) is still
-   * owed - the row is never closed on it, nobody is told it was refunded, and
-   * it is asked for again under a key Stripe has never seen. The first ask is
-   * the row's own key, as it always was, so a refund made but not recorded
-   * before this release is replayed, never made twice. A refusal moves it to a
-   * one-slice plan on its next key generation (`refundPlanOrRetryRefusals`),
-   * which every later attempt sends (`refundSliceStripeIdempotencyKey` under
-   * the row's key) and "Refunds owed" then reads as that slice.
-   */
+  // #4103 (`INV-PAY-129`): a refusal is never closed or reported. The first ask
+  // keeps the row's own key, so a refund made but unrecorded is replayed; a
+  // refusal moves to a one-slice plan on a fresh key, which later attempts send.
   const persistedPlan = parseRefundAllocationPlan(operation.allocationPlan);
   const plan = persistedPlan ?? [{ paymentTransactionId: refreshedTransaction.id, amountCents: outstandingCents }];
   await refundPlanOrRetryRefusals({

@@ -1102,7 +1102,7 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     });
   });
 
-  // #4103 (`INV-PAY-128`): Stripe answers the legacy group refund `failed` or
+  // #4103 (`INV-PAY-129`): Stripe answers the legacy group refund `failed` or
   // `canceled` without throwing. Nothing went back, so it fails as a throw does:
   // no flip, no mirrors, the recovery row re-armed with the refusal.
   it.each([["failed"], ["canceled"]])("a refund Stripe answers %s is a failure: no flip, no mirror, the retry re-armed (#4103)", async (status) => {
@@ -1494,7 +1494,7 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
   });
 
-  // #4103 (`INV-PAY-128`): a refusal fails the attempt, so the runner never
+  // #4103 (`INV-PAY-129`): a refusal fails the attempt, so the runner never
   // closes the row on it. Its one fixed key reads the same refusal back for 24
   // hours, so its retries die owed and alerted (a stated limit).
   it.each([["failed"], ["canceled"]])("throws on a refund Stripe answers %s: no flip, no mirror (#4103)", async (status) => {

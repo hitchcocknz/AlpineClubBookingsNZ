@@ -1165,7 +1165,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
   });
 });
 
-// #4103 (`INV-PAY-128`): Stripe can answer the duplicate's refund `failed` or
+// #4103 (`INV-PAY-129`): Stripe can answer the duplicate's refund `failed` or
 // `canceled` without throwing. Nothing went back: the pre-persisted row stays
 // open, re-planned on the slice's next key, and the door reports a failure -
 // never "refunded", never the admin-only REFUNDED history event. Its own

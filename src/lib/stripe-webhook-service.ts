@@ -1295,7 +1295,7 @@ async function refundSupersededGroupSettlementIntent(
       },
       idempotencyKey: `group_settlement_superseded_refund_${paymentIntent.id}`,
     });
-    // #4103 (`INV-PAY-128`): a refusal (failed/canceled) refunded nothing, so it
+    // #4103 (`INV-PAY-129`): a refusal (failed/canceled) refunded nothing, so it
     // fails like a thrown refund: alerted, rethrown, never marked REFUNDED.
     if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(paymentIntent.amount, format));
     refundId = refund.id;

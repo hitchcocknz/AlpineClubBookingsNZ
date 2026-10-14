@@ -450,9 +450,7 @@ export async function settleGroupBookingOnOrganiserCancel(
         // failure (Stripe refunded, response lost) is replayed, not repeated.
         idempotencyKey: `group_cancel_refund_${settlement.id}`,
       });
-      // #4103 (`INV-PAY-128`): Stripe refused it (failed/canceled): nothing went
-      // back, so it fails like a thrown refund - no flip, no mirrors, the
-      // recovery row re-armed below.
+      // #4103 (`INV-PAY-129`): a refusal fails like a throw - no flip, no mirrors, re-armed below.
       if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(totalRefundCents, format));
       await prisma.groupBookingSettlement.update({
         where: { id: settlement.id },
@@ -841,10 +839,8 @@ export async function executeGroupSettlementRefundPlan(
       },
       idempotencyKey: `group_cancel_refund_${settlement.id}`,
     });
-    // #4103 (`INV-PAY-128`): a refusal (failed/canceled) fails the attempt, so the
-    // row is never closed on it. STATED LIMIT: this legacy refund has one fixed
-    // key, which Stripe answers with the same refusal for 24 hours, so its
-    // retries die owed and alerted, for an officer.
+    // #4103 (`INV-PAY-129`): a refusal fails the attempt, never closing the row; its
+    // one fixed key reads the refusal back for 24 hours (a stated limit).
     if (isRefusedRefundStatus(refund.status)) throw new Error(refusedRefundMessage(totalRefundCents, format));
     await prisma.groupBookingSettlement.update({
       where: { id: settlement.id },

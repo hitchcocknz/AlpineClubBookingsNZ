@@ -5369,7 +5369,7 @@ describe("runBookingXeroRepair", () => {
     expect(report.summary.bookingsWithFindings).toBe(0);
   });
 
-  // #4103 (`INV-PAY-128`): Stripe answers a slice `failed` or `canceled`
+  // #4103 (`INV-PAY-129`): Stripe answers a slice `failed` or `canceled`
   // without throwing. That slice sent nothing back, so it is never recorded or
   // noted as refunded, and the action fails saying the capture is still held.
   describe("a late-capture refund Stripe refuses (#4103)", () => {

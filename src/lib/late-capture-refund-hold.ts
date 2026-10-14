@@ -102,7 +102,7 @@ export function heldLateCaptureReason(capture: HeldLateCapture): string {
 export async function holdLateCaptureForTreasurerIfRequired(
   capture: HeldLateCapture,
   /**
-   * #4103 (`INV-PAY-128`): Stripe refused the automatic refund (failed or
+   * #4103 (`INV-PAY-129`): Stripe refused the automatic refund (failed or
    * canceled), so nothing went back. The capture is held whatever the setting
    * says: the task is the durable record of money still owed, and its approval
    * asks Stripe again under a fresh key (`keepRefusedPrePersistedRefundOwed`).
@@ -204,7 +204,7 @@ export async function holdLateCaptureForTreasurerIfRequired(
 }
 
 /**
- * #4103 (`INV-PAY-128`): a late-capture webhook's automatic refund that Stripe
+ * #4103 (`INV-PAY-129`): a late-capture webhook's automatic refund that Stripe
  * answered `failed` or `canceled` without throwing. Nothing refused went back,
  * so the record, audit row, alert and Xero note that say "refunded" would each
  * be false: the refused amount is held for a treasurer instead

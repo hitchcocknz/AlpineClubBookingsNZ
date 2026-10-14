@@ -1,5 +1,5 @@
 /**
- * #4083, #4096, #4102, #4103 (`INV-PAY-128`): A CARD REFUND STRIPE REFUSES IS
+ * #4083, #4096, #4102, #4103 (`INV-PAY-129`): A CARD REFUND STRIPE REFUSES IS
  * STILL OWED, AND IS ASKED FOR AGAIN UNDER A KEY STRIPE HAS NEVER SEEN.
  *
  * Stripe can answer a refund with `failed` or `canceled` instead of throwing.
@@ -248,6 +248,9 @@ export class RefusedCardRefundError extends Error {
   }
 }
 
+/** An inline attempt as its door met it: Stripe's answers, or what it threw. */
+export type RefundAttempt = { refunds: ReadonlyArray<AnsweredRefund> } | { error: unknown };
+
 /**
  * #4096, #4103: a card refund whose recovery row was written BEFORE its inline
  * attempt - a cancellation, an edit review's, a treasurer-approved late
@@ -282,7 +285,7 @@ export async function keepRefusedPrePersistedRefundOwed({
   idempotencyKey: string;
   /** The plan the attempt sent; omitted, the slices it answered (every slice, when nothing threw). */
   plan?: ReadonlyArray<RefundAllocationSlice>;
-  attempt: { refunds: ReadonlyArray<AnsweredRefund> } | { error: unknown };
+  attempt: RefundAttempt;
   format: ClubFormat;
   alertOfficers?: boolean;
 }): Promise<RefusedCardRefundError | null> {

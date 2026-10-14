@@ -14,7 +14,7 @@ import {
   buildEditFinancialReviewRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
 import { refundPaymentTransactions, type RefundAllocationSlice } from "@/lib/payment-transactions";
-import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 
 /**
  * #3032: a completed edit financial review's card refund, AFTER its transaction
@@ -49,7 +49,7 @@ export async function executeEditReviewCardRefund({
   format: ClubFormat;
 }): Promise<string | null> {
   const refundAmountCents = route.refundCents;
-  const keepRefusalOwed = (attempt: Parameters<typeof keepRefusedPrePersistedRefundOwed>[0]["attempt"]) =>
+  const keepRefusalOwed = (attempt: RefundAttempt) =>
     keepRefusedPrePersistedRefundOwed({
       bookingId,
       idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),

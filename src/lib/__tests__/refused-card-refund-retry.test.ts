@@ -23,6 +23,7 @@ import {
   firstRefusals,
   inlineRefundAfterAttempt,
   keepRefusedPrePersistedRefundOwed,
+  type RefundAttempt,
   planAfterRefusals,
   refundPlanOrRetryRefusals,
   refusedRefundAlertMessage,
@@ -266,7 +267,7 @@ describe("the runner's refusal alert", () => {
 });
 
 
-// #4103 (`INV-PAY-128`): every door whose row is written BEFORE its attempt -
+// #4103 (`INV-PAY-129`): every door whose row is written BEFORE its attempt -
 // the cancellation, the edit review, the late-capture approval, the duplicate
 // capture, the capacity race - re-plans that row through one helper.
 describe("a pre-persisted row after a refusal (#4103)", () => {
@@ -274,7 +275,7 @@ describe("a pre-persisted row after a refusal (#4103)", () => {
   const b = { paymentTransactionId: "txn_b", amountCents: 500 };
   const c = { paymentTransactionId: "txn_c", amountCents: 250 };
   const answer = (slice: typeof a, status: string) => ({ status, slice, refundId: `re_${slice.paymentTransactionId}`, paymentIntentId: `pi_${slice.paymentTransactionId}` });
-  const keep = (attempt: Parameters<typeof keepRefusedPrePersistedRefundOwed>[0]["attempt"], extra: { plan?: Array<typeof a>; alertOfficers?: boolean } = {}) =>
+  const keep = (attempt: RefundAttempt, extra: { plan?: Array<typeof a>; alertOfficers?: boolean } = {}) =>
     keepRefusedPrePersistedRefundOwed({ bookingId: "b1", idempotencyKey: "row_key", attempt, format: CLUB_FORMAT_TEST, ...extra });
   const writtenPlan = () => (updateMany.mock.calls[0]?.[0] as { data: { allocationPlan: unknown } }).data.allocationPlan;
 
