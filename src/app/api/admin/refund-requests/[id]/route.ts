@@ -26,11 +26,11 @@ import {
 import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { refundRequestHandBackOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import {
-  PartialRefundError,
   planStripeRefundAllocation,
   refundPaymentTransactions,
 } from "@/lib/payment-transactions";
-import { enqueueRefundRequestRefundRecovery } from "@/lib/payment-recovery";
+import { inlineRefundAfterAttempt } from "@/lib/refused-card-refund-retry";
+import { NO_CARD_REFUND_OWED, queueUnmadeRefundRequestCardRefund, refundRequestCardRefundAnswer } from "@/lib/refund-request-card-refund";
 import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatStayDate } from "@/lib/club-time";
@@ -106,6 +106,7 @@ export async function PUT(
   const booking = refundRequest.booking;
   const payment = booking.payment;
 
+  let cardRefund = NO_CARD_REFUND_OWED; // #4117: what its card refund left unmade, queued or not, and why
   if (status === "APPROVED") {
     if (!approvedAmountCents || approvedAmountCents <= 0) {
       return NextResponse.json(
@@ -381,8 +382,10 @@ export async function PUT(
     }
 
     if (!organiserChildDebtId) {
+      let attempt: Parameters<typeof inlineRefundAfterAttempt>[1];
+      const attemptedAt = new Date(); // #4117: a refund Stripe makes from here is this attempt's
       try {
-        await refundPaymentTransactions({
+        attempt = await refundPaymentTransactions({
           format: money.format,
           paymentId: payment.id,
           amountCents: plannedAmountCents,
@@ -407,65 +410,60 @@ export async function PUT(
           { err, refundRequestId: id },
           "Stripe refund failed for approved appeal - enqueueing durable recovery"
         );
-        // Persist the frozen slices the inline attempt did NOT refund and record
-        // (#1510; #3924 F1): the cron replays their keys, Refunds owed reads only them.
-        // Any failure after a Stripe call is a `PartialRefundError`, an unrecorded
-        // slice included (#3924 C2); any other came before one, so all are unsent.
-        const unsentPlan =
-          err instanceof PartialRefundError ? refundPlan.slice(err.refunds.length) : refundPlan;
-        const unsentCents = unsentPlan.reduce((sum, slice) => sum + slice.amountCents, 0);
-        try {
-          if (unsentCents > 0) {
-            await enqueueRefundRequestRefundRecovery({
-              bookingId: booking.id,
-              paymentId: payment.id,
-              refundRequestId: id,
-              amountCents: unsentCents,
-              allocationPlan: unsentPlan,
+        attempt = { error: err };
+      }
+      // Persist the frozen plan with what the inline attempt did NOT make still
+      // to send (#1510; #3924 F1): the cron replays those keys. #4102, #4117
+      // (`INV-PAY-128`): a slice Stripe refused is among them on its next key;
+      // one that threw or was never sent keeps its key; a made one is marked.
+      const read = inlineRefundAfterAttempt(refundPlan, attempt);
+      const outcome = await queueUnmadeRefundRequestCardRefund({
+        bookingId: booking.id,
+        paymentId: payment.id,
+        refundRequestId: id,
+        read,
+        paymentIntentIdFallback: payment.stripePaymentIntentId ?? "",
+        format: money.format,
+      });
+      cardRefund = refundRequestCardRefundAnswer(read, outcome, attemptedAt);
+      if (outcome === "release_claim") {
+        // No durable row could be written and Stripe was never asked: fall
+        // back to the pre-#1039 behaviour and release the claim so an admin
+        // can retry manually.
+        // #3827 (D-3813-7): the bank-transfer task this approval raised goes
+        // with the claim, in one transaction under the same lock, or a retried
+        // approval would find its key taken and its cash already netted.
+        await prisma
+          .$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+            const released = await tx.refundRequest.updateMany({
+              where: { id, status: "APPROVED" },
+              data: {
+                status: "PENDING",
+                approvedAmountCents: null,
+                reviewedBy: null,
+                reviewedAt: null,
+              },
             });
-          }
-        } catch (enqueueErr) {
-          // No durable row could be written: fall back to the pre-#1039
-          // behaviour and release the claim so an admin can retry manually.
-          logger.error(
-            { err: enqueueErr, refundRequestId: id },
-            "Failed to enqueue refund recovery - releasing the claim for manual retry"
-          );
-          // #3827 (D-3813-7): the bank-transfer task this approval raised goes
-          // with the claim, in one transaction under the same lock, or a retried
-          // approval would find its key taken and its cash already netted.
-          await prisma
-            .$transaction(async (tx) => {
-              await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-              const released = await tx.refundRequest.updateMany({
-                where: { id, status: "APPROVED" },
-                data: {
-                  status: "PENDING",
-                  approvedAmountCents: null,
-                  reviewedBy: null,
-                  reviewedAt: null,
+            if (released.count === 1) {
+              await tx.manualRefundTask.deleteMany({
+                where: {
+                  occurrenceKey: refundRequestHandBackOccurrenceKey(id),
+                  status: "OPEN",
                 },
               });
-              if (released.count === 1) {
-                await tx.manualRefundTask.deleteMany({
-                  where: {
-                    occurrenceKey: refundRequestHandBackOccurrenceKey(id),
-                    status: "OPEN",
-                  },
-                });
-              }
-            })
-            .catch((revertErr) => {
-              logger.error(
-                { err: revertErr, refundRequestId: id },
-                "Failed to revert refund request claim after Stripe refund failure"
-              );
-            });
-          return NextResponse.json(
-            { error: "Failed to process Stripe refund" },
-            { status: 500 }
-          );
-        }
+            }
+          })
+          .catch((revertErr) => {
+            logger.error(
+              { err: revertErr, refundRequestId: id },
+              "Failed to revert refund request claim after Stripe refund failure"
+            );
+          });
+        return NextResponse.json(
+          { error: "Failed to process Stripe refund" },
+          { status: 500 }
+        );
       }
     }
 
@@ -477,7 +475,8 @@ export async function PUT(
     // (`enqueueXeroRefundRequestCreditNoteOperation`). Nor does an
     // organiser-card refund (#3956): the executor queues its note with the
     // refund row, once Stripe has answered.
-    const cardNoteCents = organiserChildDebtId ? 0 : approvedAmountCents - bankTransferCents;
+    const unqueuedCents = cardRefund.cardRefundQueued ? 0 : cardRefund.cardRefundOwedCents; // #4117: not refunded, so not noted
+    const cardNoteCents = organiserChildDebtId ? 0 : approvedAmountCents - bankTransferCents - unqueuedCents;
     try {
       const queuedCreditNote =
         cardNoteCents > 0
@@ -536,6 +535,7 @@ export async function PUT(
         ...(organiserChildDebtId
           ? { organiserCardRefundOperationId: organiserChildDebtId, organiserCardRefundMade: organiserCardRefundMade }
           : {}),
+        ...cardRefund, // #4117: what the card refund left unmade; the list reads it when no row was written
         ...notifyAuditFields,
       },
       ipAddress: req.headers.get("x-forwarded-for") ?? "unknown",
@@ -727,5 +727,5 @@ export async function PUT(
     },
   });
 
-  return NextResponse.json(updated);
+  return NextResponse.json({ ...updated, ...cardRefund });
 }

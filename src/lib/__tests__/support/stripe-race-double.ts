@@ -20,7 +20,9 @@ export const stripeRaceHooks: {
   /** #4036: the recent intents an ordinary ask's refused replay looks through. */
   list: null | ((args: Parameters<Stripe["listRecentPaymentIntentsMatching"]>[0]) => Promise<unknown>);
   cancel: null | ((id: string) => Promise<unknown>);
-} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null };
+  /** #4096: a card refund's answer, e.g. one Stripe refused (`failed`). */
+  refund: null | ((args: Parameters<Stripe["processRefund"]>[0]) => Promise<unknown>);
+} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null, refund: null };
 
 export function resetStripeRaceHooks(): void {
   stripeRaceHooks.update = null;
@@ -29,6 +31,7 @@ export function resetStripeRaceHooks(): void {
   stripeRaceHooks.findByMetadata = null;
   stripeRaceHooks.list = null;
   stripeRaceHooks.cancel = null;
+  stripeRaceHooks.refund = null;
 }
 
 export function stripeRaceDouble(actual: Stripe): Stripe {
@@ -54,5 +57,7 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
       stripeRaceHooks.cancel
         ? stripeRaceHooks.cancel(args[0])
         : actual.cancelPaymentIntentIfCancellableWithResult(...args)) as Stripe["cancelPaymentIntentIfCancellableWithResult"],
+    processRefund: ((args: Parameters<Stripe["processRefund"]>[0]) =>
+      stripeRaceHooks.refund ? stripeRaceHooks.refund(args) : actual.processRefund(args)) as Stripe["processRefund"],
   };
 }

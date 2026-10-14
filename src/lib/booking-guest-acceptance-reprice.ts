@@ -592,7 +592,6 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
     format,
     bookingId,
     result: paymentContext,
-    metadataReason: "guest_accepted_promo_reprice",
     idempotencyKeyPrefix: `guest_accept_refund_${bookingId}`,
     failureMessage: "Stripe refund failed after a guest-acceptance re-price - enqueueing recovery",
     recoveryFailureMessage:

@@ -101,6 +101,24 @@ second ask for the same money. Not recorded means not raised.
   runner also refuses an adopted intent that any row holds.
 - **Not** a review charge (`INV-PAY-112`) or a re-issued ask (`INV-PAY-120`).
 
+## INV-MOD-061
+
+- **An edit's card refund is one Stripe request, whichever of the edit and its
+  recovery replay sends it** (#4101, #1507). Stripe refuses a key replayed with
+  other parameters (`idempotency_error`), so a refund Stripe made but the app
+  never recorded recovers only if the replay sends the original body.
+  `executeBookingModificationRefund` takes no reason from its caller: it
+  stamps the one `bookingModificationRefundReasonForKeyPrefix` gives the
+  caller's key prefix, stores that prefix on the recovery row, and the replay
+  rebuilds the reason from the stored prefix. Each caller's prefix and reason
+  are spelled once, in that map; a new caller adds its prefix there.
+- Before #4101 each caller passed its reason by hand and the guest-acceptance
+  re-price's prefix was missing, so its replays died on `idempotency_error`
+  although Stripe had refunded. Such a dead row is flagged **Stripe may have
+  refunded** (`lastErrorSuggestsStripeMayHaveRefunded`).
+- Enforced by `modification-refund-replay-reason.test.ts`, which finds every
+  caller, and by the per-prefix replay rows in `payment-recovery.test.ts`.
+
 ## INV-MOD-004
 
 Per-guest stay ranges must sit inside the parent booking's checkIn/checkOut

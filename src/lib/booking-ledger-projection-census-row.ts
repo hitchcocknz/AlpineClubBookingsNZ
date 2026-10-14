@@ -129,6 +129,8 @@ export type BookingLedgerCensusRow = {
     attempts: number;
     nextRetryAt: Date | null;
     amountCents: number;
+    /** #4117: the frozen plan, whose slices marked made are not in flight (`cardRefundOperationUnmadeCents`). */
+    allocationPlan?: unknown;
     idempotencyKey: string;
     paymentId: string;
     paymentIntentId: string;

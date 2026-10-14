@@ -36,7 +36,7 @@ import {
   isOrganiserChildRefundKey,
   organiserChildRefundReasonForKey,
 } from "@/lib/payment-recovery-keys";
-import { EXCLUDED_LEDGER_REFUND_STATUSES, isRecordedRefundStatus } from "@/lib/payment-transaction-status";
+import { EXCLUDED_LEDGER_REFUND_STATUSES, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
 import { lockPaymentForRefundedTotal, recordStripeRefundLedgerEntry } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
@@ -69,7 +69,7 @@ async function findProviderRefundForKey(
   return (
     refunds.find(
       (refund) =>
-        refund.metadata?.organiserChildRefundKey === key && isRecordedRefundStatus(refund.status ?? "unknown"),
+        refund.metadata?.organiserChildRefundKey === key && !isRefusedRefundStatus(refund.status),
     ) ?? null
   );
 }
@@ -140,7 +140,7 @@ export async function processOrganiserChildRefundOperation(
       metadata,
       idempotencyKey: key,
     }));
-  if (!isRecordedRefundStatus(refund.status ?? "unknown")) {
+  if (isRefusedRefundStatus(refund.status)) {
     throw new Error(`Stripe reported organiser child refund ${refund.id} as ${refund.status}`);
   }
 
@@ -162,7 +162,7 @@ export async function processOrganiserChildRefundOperation(
         where: { stripeRefundId: refund.id },
         select: { status: true },
       });
-      if (known && !isRecordedRefundStatus(known.status)) {
+      if (known && isRefusedRefundStatus(known.status)) {
         throw new Error(`Organiser child refund ${refund.id} is recorded as ${known.status}; the refund is still owed`);
       }
     }

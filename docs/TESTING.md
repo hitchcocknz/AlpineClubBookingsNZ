@@ -1032,7 +1032,7 @@ why the reveal key is a required argument, what reduced motion does, and what
 the census does and does not hold. This section is about TESTING a call site,
 and deliberately does not restate it.
 
-Testing a call site is the same three assertions each time, and each is
+Testing a call site is the same four assertions each time, and each is
 discriminated by a named test in the tree already:
 
 - **Failure**: `expectRecoveryAlertToHoldFocus(alert)` above — the element the
@@ -1047,7 +1047,11 @@ discriminated by a named test in the tree already:
   only "group" is the defect, and `getByRole("region", { name })` is what fails
   when the name goes missing. Do not hand-roll the spy — jsdom implements no
   layout, so `Element.prototype.scrollIntoView` does not exist, and three files
-  had written the same fixture out verbatim before it moved to the helper.
+  had written the same fixture out verbatim before it moved to the helper. A
+  staged section's Edit reveals on its own (#4115), so there press Edit as a
+  keyboard user does and `expectToHoldFocus` its first field — the one the edit
+  enabled, not a control that was already live
+  (`group-discount-section.test.tsx`, `list-editor-focus-return.test.tsx`).
 - **Success**: `document.activeElement` is the page or card whose top was
   positioned at, and it contains the confirmation
   (`lodge-capacity-card.test.tsx`). A card below the top of its scroll container
@@ -1056,6 +1060,19 @@ discriminated by a named test in the tree already:
   page wrapper (`use-scroll-to-feedback.test.ts`). A surface whose success closes
   a Radix dialog cannot assert focus at all — the dialog's focus release wins, by
   design, and the scroll still happens — so assert the scroll there.
+- **Return** (applies to staged sections — `useSectionEditState`, or
+  `useEditorFocusReturn` for a list whose row editor is its own component — and
+  to a list row's direct write, `useRowActionFocusReturn`): operate Save, Cancel
+  or the action as a keyboard user does — `focus()` the control, then click it —
+  and `expectToHoldFocus(target)` from the same helper file, finding the
+  re-rendered target by role and name
+  (`use-section-edit-state.test.tsx`, `allocation-preferences-section.test.tsx`,
+  `list-editor-focus-return.test.tsx`; a row's direct write in
+  `row-action-focus-return.test.tsx`). jsdom never drops focus from a control
+  that becomes disabled, so a failed-save return is tested by blurring to the
+  page inside the save, as a browser would (#4087); jsdom will not blur a
+  DISABLED control either, so park focus on a throwaway control and remove it
+  (#4116).
 
 `admin-attention-primitive-contract.test.ts` is the census that keeps the admin
 tree routed through the module: a direct `scrollIntoView` / `scrollTo`, or a
@@ -1417,6 +1434,32 @@ batch: the 141 files vitest selects for the filters `census`, `contract` and
 passed alone immediately afterwards. That is the evidence of the limit being
 crossed; a lane running any such batch beside another lane's tests, a build, or
 a typecheck is where it will be crossed again.
+
+## The shared race harness: declare the environment role per suite, and put it back
+
+The real-PostgreSQL race harness (`concurrency-lock-races.realdb.test.ts`)
+imports some forty suites into one vitest file, so whatever one suite leaves in
+`process.env` is there for every suite after it. A suite that drives a Xero or
+email path should still say what installation it is (`INV-CONFIG-003`): left
+unset, the role resolves UNKNOWN and the containment gates refuse, which is the
+safe default and the wrong premise for a disposable test database.
+
+Use `declareEnvironmentRoleForSuite("non-production")` from
+`src/lib/__tests__/helpers/environment-role.ts` in the suite's `beforeAll`,
+call the handle's `restore()` in a `finally` in its `afterAll`, and add a
+describe after the suite that asserts the variable equals the handle's
+`before` again. #4013 does all three in
+`credit-only-card-allocation.realdb.test.ts`. Do not use
+`declareEnvironmentRole` (`vi.stubEnv`) here: nothing unstubs it until the
+whole file ends, and `vi.unstubAllEnvs()` would undo every other suite's stubs
+too. The helper accepts only `non-production`: a shared harness never
+declares itself the live site, and never weakens the production containment
+gate to make a suite pass.
+
+A declared role is not a fix for a path a suite should never reach. #4013's H1
+case reached the remainder-note mint because its credit lots tied on the
+frozen clock; the cure was an explicit fixture chronology and a regression that
+names the path (`INV-PAY-127`), not a declaration that let the mint go further.
 
 ## Mocking a money seam: never in a test that asserts its money
 

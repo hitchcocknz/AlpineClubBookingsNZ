@@ -2,7 +2,7 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
 import { bookingOwner, bookingOwnerEmail } from "@/lib/booking-owner";
 import { bookingPromoEmailFields } from "@/lib/booking-promo-email-options";
 import { prisma } from "@/lib/prisma";
-import { listRefundsForCharge, processRefund } from "@/lib/stripe";
+import { listRefundsForCharge, listRefundsForPaymentIntent, processRefund } from "@/lib/stripe";
 import { markBookingPaymentSucceeded, markBookingSetupIntentSucceeded } from "@/lib/payment-reconciliation";
 import { classifySucceededSetupIntentCard } from "@/lib/setup-intent-card";
 import { isXeroConnected } from "@/lib/xero";
@@ -32,7 +32,7 @@ import {
   type CancelledBookingLateCapture,
 } from "@/lib/cancelled-booking-late-capture";
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
-import { holdLateCaptureForTreasurerIfRequired } from "@/lib/late-capture-refund-hold";
+import { holdLateCaptureForTreasurerIfRequired, holdLateCaptureRefusedByStripe } from "@/lib/late-capture-refund-hold";
 import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
@@ -41,6 +41,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import Stripe from "stripe";
 import logger from "@/lib/logger";
+import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { logAudit } from "@/lib/audit";
 import {
   findPaymentTransactionByIntentId,
@@ -62,7 +63,8 @@ import {
 } from "@/lib/group-settlement";
 import { adoptSavedCardChargeAttemptForIntent } from "@/lib/saved-card-charge-settle";
 import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
-import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
+import { isCapturedTransactionStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { keyAfterStripeRefusals, refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -469,7 +471,7 @@ async function handlePaymentIntentSucceeded(
   }
 
   // Check if this is an additional modification payment
-  if (paymentIntent.metadata?.type === "modification_additional") {
+  if (paymentIntent.metadata?.type === ADDITIONAL_ASK_INTENT_TYPE) {
     await handleAdditionalModificationPaymentSucceeded(paymentIntent, bookingId, format);
     return;
   }
@@ -1283,23 +1285,39 @@ async function refundSupersededGroupSettlementIntent(
       : "did not match the group settlement total at apply time (the recorded amount, or a child booking changed while the intent was open)";
 
   let refundId: string | null = null;
+  // #4103: a refusal after an earlier one, already alerted, is retried by the redelivery without a second alert.
+  let repeatedRefusal = false;
   try {
+    const baseKey = `group_settlement_superseded_refund_${paymentIntent.id}`;
+    const metadata = {
+      ...(groupBookingId ? { groupBookingId } : {}),
+      reason: "group_settlement_superseded",
+    };
+    // #4103 (`INV-PAY-130`): moved on past each refusal Stripe holds, so a redelivery asks afresh.
+    const idempotencyKey = keyAfterStripeRefusals(baseKey, await listRefundsForPaymentIntent(paymentIntent.id), {
+      amountCents: paymentIntent.amount,
+      metadata,
+    });
     const refund = await processRefund({
       paymentIntentId: paymentIntent.id,
       amountCents: paymentIntent.amount,
       reason: "requested_by_customer",
-      metadata: {
-        ...(groupBookingId ? { groupBookingId } : {}),
-        reason: "group_settlement_superseded",
-      },
-      idempotencyKey: `group_settlement_superseded_refund_${paymentIntent.id}`,
+      metadata,
+      idempotencyKey,
     });
+    // A refusal (failed/canceled) refunded nothing, so it fails like a thrown
+    // refund: alerted, rethrown, never marked REFUNDED.
+    if (isRefusedRefundStatus(refund.status)) {
+      repeatedRefusal = idempotencyKey !== baseKey;
+      throw new Error(refusedRefundMessage(paymentIntent.amount, format));
+    }
     refundId = refund.id;
   } catch (refundErr) {
     logger.error(
       { err: refundErr, paymentIntentId: paymentIntent.id, groupBookingId, outcome },
       "Failed to refund superseded group settlement PaymentIntent; rethrowing so Stripe redelivers"
     );
+    if (repeatedRefusal) throw refundErr;
     await alertSupersededGroupSettlementIntent(
       paymentIntent,
       groupBookingId,
@@ -1548,6 +1566,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) return;
   const refundId = refundResult.refunds[0]?.refundId;
 
   // #2700 — if the browser confirm won the race to this capture, it recorded the
@@ -1603,7 +1622,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
       paymentIntentId: paymentIntent.id,
       refundId,
       amountCents: paymentIntent.amount,
-      kind: "modification_additional",
+      kind: ADDITIONAL_ASK_INTENT_TYPE,
     }),
   });
 
@@ -1796,6 +1815,11 @@ async function handleCancelledBookingPaymentSucceeded(
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) {
+    // #4103: a slice made beside the refusal on this capture's own charge is still noted (sized by what was made there); one made on an older charge is in the audit only.
+    await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
+    return;
+  }
   const refundId = refundResult.refunds[0]?.refundId;
 
   // #2773: the record this path never had. Awaited, and its failure audited rather

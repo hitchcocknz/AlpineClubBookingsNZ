@@ -55,14 +55,39 @@ the list). To close one you need **Finance edit**.
 **Before you pay the member another way, check Stripe.** Open the payment in the
 Stripe dashboard and compare its refunds with this refund's amount. A row that
 says **Stripe may have refunded: check the Stripe dashboard first** failed with
-a timeout, a network or Stripe server error, or Stripe saying the money was
-already refunded, so the refund may have gone through after all. If Stripe did
+a timeout, a network or Stripe server error, Stripe saying the money was
+already refunded, or Stripe refusing a reused key, so the refund may have gone
+through after all. An `idempotency_error` on a card refund ("Keys for
+idempotent requests can only be used with the same parameters") means Stripe
+already received the refund under that key, so it has almost certainly been
+made (#4101). If Stripe did
 refund it, or you refund it in the Stripe dashboard yourself, do not close it
 here. Wait until that refund shows on the payment: the amount still owed then
 drops, and once nothing is left owed the refund leaves this list on its own. A
 close always records money paid back, so it can never be for $0.00. A refund
 with nothing left owed still shows in the **Exhausted recovery operations**
 count: ask a developer to reconcile it.
+
+**A refund Stripe refused** (#4083, #4096). When a booking change or a
+cancellation refunds a card and Stripe answers straight away that the refund
+failed or was cancelled, Stripe sent nothing back. The officers are emailed
+once for the refusal, saying how much Stripe refused, and again if the retries
+run out. The app asks again as a new request
+each time, because Stripe would otherwise repeat its refusal. If the retries
+run out, the row carries no **Stripe may have refunded** warning: Stripe sent
+nothing. Once the Stripe dashboard shows that refund as failed or cancelled,
+you can pay the member another way and close it here.
+
+The same holds for a reviewed change's card refund, an approved late card
+charge's, a duplicate charge's and a refund after the dates filled up (#4103).
+Two cases are different. An automatic refund of a late card charge on a
+cancelled booking that Stripe refuses is held on the payments board for a
+treasurer to approve, whatever the club's setting, and approving it asks
+Stripe again as a fresh request. A late-charge refund from the booking repair
+tool that Stripe refuses fails, and running the repair again asks Stripe
+afresh. An old group organiser's refund, or the refund of a stale group
+payment, fails and is retried automatically as a fresh request; if the
+officers' alert says it failed for good, refund it in the Stripe dashboard.
 
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
@@ -256,7 +281,7 @@ without widening who can read the membership roll.
 | **Paid another way** says the refund "is still being retried" | Stripe has retries left, so the refund is not stuck yet | Wait. It only appears in the list once its last retry has failed |
 | **Paid another way** says the payment "no longer holds that much to refund" | Another refund or credit on the same payment used the money since the page loaded | Reload the page and check the amount still owed |
 | **Paid another way** says the refund "changed while you were closing it", or that the amount is "more than this refund still owes" | A refund was recorded on the payment, or someone else closed it, since the page loaded. The list refreshes behind the dialog | Check the new amount still owed, and Stripe, before closing again |
-| A row says **Stripe may have refunded** | Its last retry failed with a timeout, a network or Stripe server error, or Stripe saying it was already refunded | Check the payment's refunds in the Stripe dashboard before paying the member another way |
+| A row says **Stripe may have refunded** | Its last retry failed with a timeout, a network or Stripe server error, Stripe saying it was already refunded, or an `idempotency_error` (Stripe already received this refund) | Check the payment's refunds in the Stripe dashboard before paying the member another way |
 | **Paid another way** says paid back in full "must be exactly what is still owed" | What is owed changed since the page loaded | Reload the page, check the amount, and choose again |
 | The dialog says what is still owed changed, or closes and says the refund is no longer waiting | A refund was recorded, or someone else closed it, while the dialog was open | Check the new amount, or the payment, before doing anything more |
 | **Paid another way** says the late card charge's Xero record "changed while you were closing it" | An officer resolved or withdrew the charge's record in Xero while you were closing the refund | Reload the page. The dialog then says what will be recorded in Xero now |

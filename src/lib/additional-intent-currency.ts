@@ -7,6 +7,7 @@ import type { AdditionalAsk } from "@/lib/additional-payment-ask";
 import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
+import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
 import { staleIntentAction } from "@/lib/stale-intent-action";
 import { prisma } from "@/lib/prisma";
@@ -75,7 +76,7 @@ export async function reissueAdditionalIntentInClubCurrency({
     customerId: customerId ?? undefined,
     metadata: {
       bookingId,
-      type: "modification_additional",
+      type: ADDITIONAL_ASK_INTENT_TYPE,
       reason: reason ?? "modification_additional_currency_reissue",
     },
     idempotencyKey: stripeIdempotencyKeyForAskAmount(

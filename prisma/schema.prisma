@@ -1080,10 +1080,12 @@ model MemberSubscription {
   manualPaymentNote            String?   @db.VarChar(500)
   // #2147: monotonic re-bill discriminator. Incremented each time the
   // membership sync observes this season's Xero invoice VOIDED/DELETED and
-  // releases the coverage claim. The confirm step folds it into the charge
-  // idempotencyKey so a post-void re-bill mints a NEW charge instead of
-  // no-op-ing onto the released one. Stays 0 for a never-voided subscription,
-  // which keeps the idempotencyKey byte-identical to the pre-#2147 shape.
+  // releases the coverage claim, and (#4098) each time an officer closes a
+  // charge as already paid, which releases its claims the same way. The
+  // confirm step folds it into the charge idempotencyKey so a re-bill mints a
+  // NEW charge instead of no-op-ing onto the released one. Stays 0 for a
+  // subscription never released, which keeps the idempotencyKey byte-identical
+  // to the pre-#2147 shape.
   voidGeneration       Int       @default(0)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt

@@ -875,6 +875,56 @@ describe("CancelBookingButton — an own-card refund not made yet (#4084)", () =
     expect(screen.getByText(sentence).className).toContain("text-success-11");
     expect(screen.queryByText(/on its way/i)).toBeNull();
   });
+
+  // #4097 (`INV-PAY-129`): the card's own amount, and the part the card refund
+  // plan could not carry, which the club refunds by bank transfer - as information.
+  it.each([
+    [
+      "made, for the member",
+      { method: "card", amountCents: 3000, byHandCents: 1500 },
+      false,
+      "Cancel Booking",
+      "A refund of $30.00 has been processed to your original payment method, and the club will refund the remaining $15.00 to you by bank transfer. You will receive a confirmation email shortly.",
+    ],
+    [
+      "on its way, for an officer on the member's behalf",
+      { method: "card_pending", amountCents: 3000, byHandCents: 1500 },
+      true,
+      "Cancel on behalf of member",
+      "A refund of $30.00 is on its way to the member's original payment method, and the club will refund the remaining $15.00 to the member by bank transfer. They will receive a confirmation email shortly.",
+    ],
+    [
+      "nothing on the card",
+      { method: "card", amountCents: 0, byHandCents: 4500 },
+      false,
+      "Cancel Booking",
+      "The club will refund $45.00 to you by bank transfer. You will receive a confirmation email shortly.",
+    ],
+    [
+      "nothing on the card and nothing holding the rest",
+      { method: "card", amountCents: 0, toCheckCents: 4500 },
+      false,
+      "Cancel Booking",
+      "The club will be in touch about the $45.00 refund. You will receive a confirmation email shortly.",
+    ],
+    [
+      "a bank part and a part to check, for an officer",
+      { method: "card", amountCents: 3000, byHandCents: 500, toCheckCents: 1000 },
+      true,
+      "Cancel on behalf of member",
+      "A refund of $30.00 has been processed to the member's original payment method; the club will refund $5.00 to the member by bank transfer and will be in touch about the remaining $10.00. They will receive a confirmation email shortly.",
+    ],
+  ] as const)("#4097: names the card's amount and the bank-transfer remainder (%s)", async (_label, ownCardRefund, onBehalfOfMember, buttonName, sentence) => {
+    stubOwnCardFetch({ refundAmountCents: 4500, refundMethod: "card", ownCardRefund });
+    render(<CancelBookingButton bookingId="bk_own" onBehalfOfMember={onBehalfOfMember} />);
+    await confirmCancel(buttonName);
+
+    await waitFor(() => {
+      expect(screen.getByText(sentence)).toBeTruthy();
+    });
+    expect(screen.getByText(sentence).className).toContain("text-info-11");
+    expect(screen.queryByText(/\$45\.00 has been processed/i)).toBeNull();
+  });
 });
 
 // #3643 DECISION 2: a payment the app cannot credit is settled by hand.
@@ -888,5 +938,72 @@ describe("CancelBookingButton — a recorded payment settled by hand", () => {
       expect(screen.getByTestId("payment-settled-by-hand")).toBeTruthy();
     });
     expect(screen.queryByText(/No payment has been taken/)).toBeNull();
+  });
+});
+
+// #4119 (`INV-PAY-131`): where the cancel's card refund plan is short, the
+// preview's card line is the card's part, beside the bank-transfer part and the
+// part the club will be in touch about, then the wording home's one sentence
+// under the figures. The card option names where each part goes.
+describe("CancelBookingButton — a card refund plan that cannot carry the whole refund (#4119)", () => {
+  const cardShortfall = { cardCents: 3000, bankCents: 1000, checkCents: 500 };
+
+  async function openPreview(props: { onBehalfOfMember?: boolean } = {}, body: Record<string, unknown> = { ...previewBody, cardShortfall }) {
+    stubPreviewFetch(body);
+    render(<CancelBookingButton bookingId="bk_short" {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: props.onBehalfOfMember ? "Cancel on behalf of member" : "Cancel Booking" }));
+    await waitFor(() => expect(screen.getByText("Choose refund method:")).toBeTruthy());
+  }
+
+  function row(label: string): string | null {
+    return screen.queryByText(label)?.nextElementSibling?.textContent ?? null;
+  }
+
+  it("quotes the card only its part, and names the rest by part", async () => {
+    const { ownCardRefundWithShortfallSentence } = await import("@/lib/booking-modified-email-copy");
+    await openPreview();
+    expect([row("Refund to card:"), row("Refund by bank transfer:"), row("To be confirmed by the club:")]).toEqual(["$30.00", "$10.00", "$5.00"]);
+    const sentence = screen.getByTestId("cancel-preview-card-shortfall");
+    expect(sentence.textContent).toBe(
+      ownCardRefundWithShortfallSentence(3000, { bankCents: 1000, checkCents: 500, formatAmount: (cents) => `$${(cents / 100).toFixed(2)}` }, "planned"),
+    );
+    // The sentence sits under the figures, not among them.
+    expect(sentence.parentElement?.contains(screen.getByText("To be confirmed by the club:"))).toBe(true);
+    expect(screen.getByText("To be confirmed by the club:").closest("div.border-t")?.contains(sentence)).toBe(false);
+    // The card option names each part's destination, and promises nothing of the part to check.
+    expect(screen.getByText("Refund $30.00 to original payment method and $10.00 by bank transfer")).toBeTruthy();
+    expect(screen.queryByText(/Refund \$45\.00/)).toBeNull();
+  });
+
+  it("leaves a part out when it is nothing, and frames the sentence for the member when an officer cancels", async () => {
+    await openPreview({ onBehalfOfMember: true }, { ...previewBody, cardShortfall: { cardCents: 3500, bankCents: 1000, checkCents: 0 } });
+    expect(row("The club will be in touch about:")).toBeNull();
+    expect(screen.getByTestId("cancel-preview-card-shortfall").textContent).toBe(
+      "A refund of $35.00 will be processed to the member's original payment method, and the club will refund the remaining $10.00 to the member by bank transfer.",
+    );
+  });
+
+  it.each([
+    { split: { cardCents: 4000, bankCents: 0, checkCents: 500 }, label: "Refund $40.00 to original payment method" },
+    { split: { cardCents: 0, bankCents: 4500, checkCents: 0 }, label: "Refund $45.00 by bank transfer" },
+    { split: { cardCents: 0, bankCents: 0, checkCents: 4500 }, label: "Refund: the club will be in touch" },
+  ])("labels the card option by its parts: $label", async ({ split, label }) => {
+    await openPreview({}, { ...previewBody, cardShortfall: split });
+    expect(screen.getByText(label)).toBeTruthy();
+  });
+
+  it("is the card option's line only: account credit is quoted whole", async () => {
+    await openPreview();
+    fireEvent.click(screen.getAllByRole("radio")[1]!);
+    expect(row("Credit to account:")).toBe("$50.00");
+    expect(screen.queryByTestId("cancel-preview-card-shortfall")).toBeNull();
+    expect(row("Refund to card:")).toBeNull();
+  });
+
+  it("keeps the whole refund on the card when the plan carries it", async () => {
+    await openPreview({}, previewBody);
+    expect(row("Refund to card:")).toBe("$45.00");
+    expect(screen.queryByTestId("cancel-preview-card-shortfall")).toBeNull();
+    expect(screen.getByText("Refund $45.00 to original payment method")).toBeTruthy();
   });
 });

@@ -64,7 +64,7 @@ import {
   organiserChildRefundMade,
   reserveOrganiserChildRefund,
 } from "@/lib/organiser-child-refund";
-import { buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, buildOrganiserChildCancellationRefundKey } from "@/lib/payment-recovery-keys";
 import { releaseBookingPromoRedemptions } from "@/lib/promo";
 import {
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
@@ -90,6 +90,7 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
+import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -102,7 +103,9 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
-import type { OrganiserRefundMethod, OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
+import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
+import { alertCancelCardShortfall, cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
+import { CAPTURED_ROWS_OLDEST_FIRST, foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -139,8 +142,9 @@ interface CancelBookingResult {
   manualRefundTaskId?: string;
   /** #3973: a refund that is the group organiser's (`refundMethod` stays "card"), as its email words it, for the confirmation screen. */
   organiserRefund?: { method: OrganiserRefundMethod; amountCents: number };
-  /** #4084: a refund to the member's own card, made or not yet (`refundMethod` stays "card"), for the confirmation screen. */
-  ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number };
+  /** #4084: a refund to the member's own card, made or not yet (`refundMethod` stays "card"), for the confirmation screen.
+   * #4097: `amountCents` is what the card refund carries; of the rest, `byHandCents` the club refunds by bank transfer and `toCheckCents` it checks first. */
+  ownCardRefund?: { method: OwnCardRefundMethod; amountCents: number; byHandCents?: number; toCheckCents?: number };
   message: string;
 }
 
@@ -1575,36 +1579,19 @@ async function performBookingCancellation(
     // still refundable. Attributing the fold to the captured rows (oldest
     // first, capped at each row's headroom) keeps mirror and ledger telling
     // the same story and tightens the planners' caps.
-    if (payment.status === "PARTIALLY_REFUNDED") {
-      const capturedRows = await tx.paymentTransaction.findMany({
-        where: {
-          paymentId: payment.id,
-          status: {
-            in: [...CAPTURED_TRANSACTION_STATUS_LIST],
-          },
-        },
-        orderBy: { createdAt: "asc" },
+    // The rows' increments are capped at each row's headroom through the shared
+    // compare-and-set (#3640): the charge.refunded webhook takes no lock, so a
+    // card refund it commits between this read and the write survives. #4119:
+    // the walk is shared with the cancel preview, which folds in memory.
+    await foldMirrorRefundIntoLedger(
+      payment,
+      () => tx.paymentTransaction.findMany({
+        where: { paymentId: payment.id, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+        orderBy: CAPTURED_ROWS_OLDEST_FIRST,
         select: { id: true, amountCents: true, refundedAmountCents: true },
-      });
-      const ledgerRefundedCents = capturedRows.reduce(
-        (sum, row) => sum + row.refundedAmountCents,
-        0
-      );
-      let foldedCents = payment.refundedAmountCents - ledgerRefundedCents;
-      for (const row of capturedRows) {
-        if (foldedCents <= 0) {
-          break;
-        }
-        // Capped at the row's headroom, as an increment through the shared
-        // compare-and-set (#3640): the charge.refunded webhook takes no lock,
-        // so a card refund it commits between this read and the write survives.
-        foldedCents -= await foldIntoTransactionRefundedAmount({
-          paymentTransactionId: row.id,
-          amountCents: foldedCents,
-          store: tx,
-        });
-      }
-    }
+      }),
+      (row, amountCents) => foldIntoTransactionRefundedAmount({ paymentTransactionId: row.id, amountCents, store: tx }),
+    );
 
     // Freeze the refund plan from the LOCKED read. Change fees (from prior
     // booking modifications) are non-refundable (INV-PAY-018). The refundable
@@ -1922,6 +1909,7 @@ async function performBookingCancellation(
     // ledger dedupes on refund id.
     let cardRefundPlan: RefundAllocationSlice[] | null = null;
     let plannedCardRefundCents = 0;
+    let cardShortfall: CancelCardShortfall | null = null;
     if (refundMethod === "card" && refundAmountCents > 0 && !organiserCard) {
       const { slices, plannedAmountCents } = await planStripeRefundAllocation({
         paymentId: payment.id,
@@ -1938,6 +1926,10 @@ async function performBookingCancellation(
           allocationPlan: slices,
           store: tx,
         });
+      }
+      // #4097 (`INV-PAY-129`): what the plan cannot carry is recorded with the claim, card branch only.
+      if (cancelRaisesCardShortfall({ branch, organiserCard: organiserCard !== null })) {
+        cardShortfall = await raiseCancelCardShortfallHandBack(tx, { bookingId, paymentId: payment.id, refundAmountCents, plannedCardRefundCents, format });
       }
     }
 
@@ -1987,6 +1979,7 @@ async function performBookingCancellation(
       refundPercentage,
       refundAmountCents, paidAmountCents,
       tier: { refundMethod, refundableBaseCents }, // #3835: what the tier ran on
+      ...(cardShortfall ? { cardShortfall: { cardCents: cardShortfall.cardCents, bankCents: cardShortfall.bank?.cents ?? 0, checkCents: cardShortfall.check?.cents ?? 0 } } : {}),
       changeFeeCents: payment.changeFeeCents,
       retainedAmountCents,
       ledger: {
@@ -2011,6 +2004,7 @@ async function performBookingCancellation(
       shouldFailAdditionalPayment,
       cardRefundPlan,
       plannedCardRefundCents,
+      cardShortfall,
       manualRefundTaskId,
       clearingOperationId,
       branch,
@@ -2043,6 +2037,7 @@ async function performBookingCancellation(
     shouldFailAdditionalPayment,
     cardRefundPlan,
     plannedCardRefundCents,
+    cardShortfall,
     manualRefundTaskId,
     clearingOperationId,
     branch,
@@ -2056,6 +2051,12 @@ async function performBookingCancellation(
       { bookingId, creditRestoredCents },
       "Restored previously applied credit on cancellation"
     );
+  }
+
+  // #4097: the officers first, straight after the commit, whatever follows fails.
+  if (cardShortfall) {
+    const { firstName, lastName } = bookingOwner(fresh).member;
+    alertCancelCardShortfall({ memberName: `${firstName} ${lastName}`, booking: fresh, shortfall: cardShortfall, days, refundPercentage, refundAmountCents, memberEmailed: notifyMember }, format);
   }
 
   // #3643: the unpaid rest's clearing note was queued in the claim; kick it.
@@ -2313,21 +2314,17 @@ async function performBookingCancellation(
   // ── Card branch: Stripe refund ────────────────────────────────────
   if (branch === "card") {
     let stripeRefundId: string | undefined;
-    let refundMade = false; // #4084: only when Stripe's answer says so (`ownCardRefundMade`); a throw, `failed` or `canceled` is on its way
+    // #4084: made only when Stripe's answer says so (`ownCardRefundMade`); a throw, `failed` or `canceled` is on its way.
+    // A zero plan (nothing left to refund, e.g. refunded outside the app) calls neither Stripe nor recovery: made, as before.
+    let refundMade = !cardRefundPlan || plannedCardRefundCents <= 0;
 
     // The refund debt was persisted INSIDE the claim transaction (F2, #1349):
     // a recovery operation carrying the frozen per-transaction plan committed
     // atomically with the CANCELLED flip, so nothing below can silently lose
-    // the member's refund. The mirror-vs-ledger drift case where the plan
-    // covers less than the policy-due amount is logged here and refunds what
-    // the ledger actually shows refundable — the same net outcome the old
-    // inline derive reached via its recovery path.
-    if (plannedCardRefundCents < refundAmountCents) {
-      logger.error(
-        { bookingId, paymentId, refundAmountCents, plannedCardRefundCents },
-        "Cancellation refund plan covers less than the policy-due amount; refunding what the payment ledger shows refundable"
-      );
-    }
+    // the member's refund. Where the plan covers less than the policy-due
+    // amount the card refunds what the ledger shows refundable, and the claim
+    // raised hand-back tasks for the rest (#4097, `cardShortfall`).
+    const shortfallParts = { bankCents: cardShortfall?.bank?.cents ?? 0, checkCents: cardShortfall?.check?.cents ?? 0 };
 
     if (cardRefundPlan && plannedCardRefundCents > 0) {
       try {
@@ -2349,6 +2346,16 @@ async function performBookingCancellation(
         });
         stripeRefundId = refundResult.refunds[0]?.refundId;
         refundMade = ownCardRefundMade(refundResult.refunds);
+        // #4083/#4096 (`INV-PAY-128`): a slice Stripe refused (failed/canceled)
+        // is still owed: the pre-persisted debt stays open, re-planned to the
+        // refused slices on fresh keys, and the catch records why.
+        const refused = await keepRefusedPrePersistedRefundOwed({
+          bookingId,
+          idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId),
+          attempt: refundResult,
+          format,
+        });
+        if (refused) throw refused;
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
@@ -2371,6 +2378,8 @@ async function performBookingCancellation(
         // remainder moves money. Do NOT rethrow.
         const completedRefundCents =
           err instanceof PartialRefundError ? err.completedRefundCents : 0;
+        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door.
+        await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
         await recordBookingCancellationRefundRecoveryInlineError({
           bookingId,
           message: err instanceof Error ? err.message : String(err),
@@ -2389,9 +2398,10 @@ async function performBookingCancellation(
 
     // Queue the Xero credit note durably (allocated against the original invoice).
     try {
+      // #4097: the card refund's note, for what the card refund carries; the rest is the hand-back's.
       const queuedCreditNote = await enqueueXeroRefundCreditNoteOperation(
         paymentId,
-        refundAmountCents,
+        plannedCardRefundCents,
         {
           createdByMemberId: sessionUserId,
         }
@@ -2413,7 +2423,11 @@ async function performBookingCancellation(
     }
 
     await cleanupPromoRedemption(bookingId);
-    const ownCardRefund = { method: refundMade ? "card" : "card_pending", amountCents: refundAmountCents } as const;
+    // #4097: the card's own amount, and the part owed by hand beside it.
+    const ownCardRefund = {
+      method: refundMade ? "card" : "card_pending", amountCents: plannedCardRefundCents,
+      ...(shortfallParts.bankCents > 0 ? { byHandCents: shortfallParts.bankCents } : {}), ...(shortfallParts.checkCents > 0 ? { toCheckCents: shortfallParts.checkCents } : {}),
+    } as const;
 
     logBookingCancellationAudit({
       booking: fresh,
@@ -2431,17 +2445,24 @@ async function performBookingCancellation(
         changeFeeCents: payment.changeFeeCents,
         creditRestoredCents,
         stripeRefundId: stripeRefundId ?? null,
+        ...(cardShortfall ? { cardRefundCents: plannedCardRefundCents, ...shortfallParts, shortfallTaskIds: [cardShortfall.bank?.taskId, cardShortfall.check?.taskId].filter(Boolean) } : {}),
         ...notifyAuditFields,
       },
     });
 
-    await recordBookingEvent({
-      bookingId,
-      type: BookingEventType.REFUNDED,
-      actorMemberId: sessionUserId,
-      amountCents: refundAmountCents,
-      reason: `${refundPercentage}% refunded to the original payment method.`,
-    });
+    // #4097: the card's part only; the hand-back's completion records its own.
+    if (plannedCardRefundCents > 0) {
+      await recordBookingEvent({
+        bookingId,
+        type: BookingEventType.REFUNDED,
+        actorMemberId: sessionUserId,
+        amountCents: plannedCardRefundCents,
+        // #4097: the card's part, said as a part when the plan carried less than the refund due.
+        reason: cardShortfall
+          ? `${formatCents(plannedCardRefundCents, format)} of the ${refundPercentage}% refund (${formatCents(refundAmountCents, format)}) refunded to the original payment method.`
+          : `${refundPercentage}% refunded to the original payment method.`,
+      });
+    }
 
     if (notifyMember) {
       sendBookingCancelledEmail(
@@ -2454,10 +2475,12 @@ async function performBookingCancellation(
         format,
         ownCardRefund.method, // #4084: the email's wording only; the audit and result still say "card"
         creditRestoredCents,
-        fresh.lodgeId
+        fresh.lodgeId,
+        "cancellation-policy",
+        refundAmountCents,
+        shortfallParts, // #4097
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
     }
-
     // Trigger waitlist processing for freed dates
     processWaitlistForDates({ checkIn: fresh.checkIn, checkOut: fresh.checkOut, lodgeId: fresh.lodgeId }, format)
       .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after card refund cancellation"));
@@ -2472,7 +2495,10 @@ async function performBookingCancellation(
         ownCardRefund,
         creditRestoredCents: creditRestoredCents || undefined,
         stripeRefundId,
-        message: `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)} ${refundMade ? "processed" : "on its way"}.`,
+        // #4097: whose card, as the confirmation screen says it.
+        message: cardShortfall
+          ? `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)}: ${ownCardRefundWithShortfallSentence(plannedCardRefundCents, { ...shortfallParts, formatAmount: (cents) => formatCents(cents, format) }, !refundMade, sessionUserId === bookingOwner(fresh).memberId ? "your" : "the member's")}`
+          : `Booking cancelled. ${refundPercentage}% refund of ${formatCents(refundAmountCents, format)} ${refundMade ? "processed" : "on its way"}.`,
       },
     };
   }

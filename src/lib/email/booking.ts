@@ -843,6 +843,8 @@ export async function sendBookingCancelledEmail(
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
   // #3973: the amount the refund line names when the refund is the group's; `{{refundAmount}}` stays this booking's.
   refundSentenceCents: number = refundCents,
+  // #4097: the parts of an own-card refund its card refund could not carry; the refund line names each.
+  shortfall: { bankCents: number; checkCents: number } = { bankCents: 0, checkCents: 0 },
 ) {
   await sendEmail({
     to: email,
@@ -857,6 +859,7 @@ export async function sendBookingCancelledEmail(
       creditRestoredCents,
       creditRestoredBasis,
       refundSentenceCents,
+      shortfall,
     )),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-cancelled",
@@ -865,7 +868,10 @@ export async function sendBookingCancelledEmail(
       checkIn: emailCalendarDay(checkIn),
       checkOut: emailCalendarDay(checkOut),
       refundAmount: formatMoneyCents(refundCents, format),
-      refundMessage: bookingCancelledRefundSentence(refundSentenceCents, formatMoneyCents(refundSentenceCents, format), refundMethod),
+      refundMessage: bookingCancelledRefundSentence(refundSentenceCents, formatMoneyCents(refundSentenceCents, format), refundMethod, {
+        ...shortfall,
+        formatAmount: (cents) => formatMoneyCents(cents, format),
+      }),
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).

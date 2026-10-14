@@ -380,11 +380,16 @@ export function bookingCancelledTemplate(
   // #3973: the amount the refund line names when the refund is not this
   // booking's own (the group organiser's cancellation carries it).
   refundSentenceCents: number = refundCents,
+  // #4097: the parts of an own-card refund its card refund could not carry.
+  shortfall: { bankCents: number; checkCents: number } = { bankCents: 0, checkCents: 0 },
 ): string {
   // #3973: the one wording `{{refundMessage}}` also reads, and its one tone.
   const refundInfo = alertBox(
-    bookingCancelledRefundSentence(refundSentenceCents, formatCents(refundSentenceCents, format), refundMethod),
-    bookingCancelledRefundMade(refundSentenceCents, refundMethod) ? "success" : "info",
+    bookingCancelledRefundSentence(refundSentenceCents, formatCents(refundSentenceCents, format), refundMethod, {
+      ...shortfall,
+      formatAmount: (cents) => formatCents(cents, format),
+    }),
+    bookingCancelledRefundMade(refundSentenceCents, refundMethod, shortfall.bankCents + shortfall.checkCents) ? "success" : "info",
   );
 
   // #1164 / D7: the account credit originally applied to this booking is now

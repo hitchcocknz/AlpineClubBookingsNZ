@@ -268,6 +268,18 @@ import "./organiser-child-refund.realdb.test";
 // row. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-3372-paw-` fixtures.
 import "./card-refund-paid-another-way.realdb.test";
+// #4083 reuses it to prove a card refund Stripe answered failed or canceled
+// stays owed: the edit's enqueue is one row whose refused plan reads back
+// exactly, "Refunds owed" counts it until a retry makes it, and the runner moves
+// a refused slice to a fresh key only on the attempt it holds. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4083-` fixtures.
+import "./refused-card-refund-retry.realdb.test";
+// #4097 reuses it to prove an own-card cancel whose card refund plan carries
+// less than the refund due raises one hand-back task for the rest in its claim,
+// which "Refunds owed" counts until the treasurer pays it back (its BANK_REFUND
+// line posted on the card payment) or dismisses it. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4097-` fixtures.
+import "./cancel-card-refund-shortfall.realdb.test";
 // #3750 reuses it to prove approving a locked-period change request on a
 // finished stay: the real executor and batch service add, remove, swap and
 // re-date the stay at the same-day tier, two racing approvals make one
@@ -294,6 +306,12 @@ import "./xero-subscription-invoice-retry.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4046-` fixtures.
 import "./xero-refund-note-void-pointer.realdb.test";
+// #4098 reuses it to prove closing a subscription charge as already paid: two
+// closes at once close it once (one audit row, each voidGeneration bumped
+// once), and a manual reversal committing while the close waits for the
+// subscription row rolls the close back whole. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4098-` fixtures.
+import "./membership-subscription-charge-close.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

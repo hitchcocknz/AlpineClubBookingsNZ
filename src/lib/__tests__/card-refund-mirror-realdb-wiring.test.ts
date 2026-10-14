@@ -32,6 +32,41 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("nor when the claim's #1491 fold took the transaction row before the top-up write");
   });
 
+  // #4083: the refused-refund proof rides the same harness.
+  it("wires the refused card refund's real-database proof the same way (#4083)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./refused-card-refund-retry.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/refused-card-refund-retry.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("a second enqueue of the edit's refusal writes no second row, and never re-plans a row a worker holds");
+    expect(suite).toContain("the REAL cancelBooking, Stripe answering the card refund refused (#4096)");
+    expect(suite).toContain("the runner moves a refused slice only on the attempt it holds");
+  });
+
+  // #4097: the cancel's card refund shortfall proof rides the same harness.
+  it("wires the card refund shortfall's real-database proof the same way (#4097)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./cancel-card-refund-shortfall.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/cancel-card-refund-shortfall.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("a partial plan: the card refunds what it carries, and the rest is ONE task");
+    expect(suite).toContain("a zero plan: no card refund, the whole refund owed");
+    expect(suite).toContain("the card part still being refunded");
+    expect(suite).toContain("both parts: check-then-bank is refused, bank-then-check settles both");
+  });
+
   // #3793: the paid cancel's read-under-lock proof rides the same harness.
   it("wires the paid cancel's refunded-total race proof the same way (#3793)", () => {
     const harness = readFileSync(

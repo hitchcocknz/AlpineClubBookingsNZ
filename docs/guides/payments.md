@@ -266,13 +266,46 @@ wording for this email too. Add `{{handBackNote}}` to the body (and keep
 wording appears; until then the email's reason line still says it is a
 group repayment. `{{handBackHeading}}`, `{{handBackRecipientLabel}}` and
 `{{handBackAmountLabel}}` fill in the heading and the row labels for whichever
-case it is. The editor's preview shows the cash wording.
+case it is, the card refund shortfall below included. The editor's preview
+shows the cash wording.
+
+**The same task for a card refund that falls short (#4097).** A card
+cancellation refunds to the card only what the payment's card charges can
+still give back. When that is less than the refund the cancellation policy
+gives, usually because the payment's records disagree, the cancel records the
+rest as up to two of these tasks, and admins are emailed once ("card refund
+short on a cancelled booking"). The cancel dialog says so before anyone
+confirms (#4119): its refund option and summary show only the card's part as
+going to the card, then the bank-transfer part and the part "To be confirmed
+by the club", worked out the same way the cancel works them out.
+
+- **The part to refund by bank transfer** is what the payment's other
+  (non-card) charges still hold. The member is told the club will refund it by
+  bank transfer: pay it by bank transfer, then mark it paid back. That records
+  the refund on the payment and the booking ledger and queues one Xero refund
+  credit note for exactly that amount, worded as a bank transfer, beside the
+  card refund's own note; nothing needs recording in Xero by hand. A booking
+  with no Xero invoice to credit gets no note.
+- **The part to check before paying** is anything beyond that: the payment's
+  records show it already refunded, or nothing holds it. The member is told
+  only that the club will be in touch. Check Stripe and the bank, then contact
+  the member with what you found. If they have had the money, dismiss it with
+  a note saying how. If it really is owed, pay it by bank transfer and mark it
+  paid back - after the bank-transfer part, which the app requires, since both
+  are settled on the same money. Where the payment's records show nothing left
+  to refund, the app refuses to mark it and says to dismiss it.
+
+**Neither part can be marked paid back until the card refund itself has gone
+through.** While Stripe is still making it, the app says to mark the part once
+it settles. If the card refund failed and is waiting to retry, wait for the
+retry. If its retries have run out, close it as **Paid another way** on this
+page once the member has had that money back, then mark the part.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
 ("Decide a booking change the system would not price"), an amount the club may
 not have asked for ("Check an amount the club may not have asked for"), a
-late card payment held for approval, and a group organiser's repayment (above). Each kind's explaining paragraph appears
+late card payment held for approval, a group organiser's repayment and a card refund that fell short (above). Each kind's explaining paragraph appears
 only when a row of that kind is waiting, and none of them speaks for the others.
 
 ### Settle a part payment an officer cancelled as unpaid
@@ -661,6 +694,14 @@ to it — is **not** refunded. The money
 stays with the club and the payment appears in **Money to settle**, with a
 line saying it went through after the booking was cancelled. It counts towards the
 waiting-items badge in the sidebar like any other refund task.
+
+**A refund Stripe refuses when the payment arrives always waits for approval,
+whichever way the club is set** (#4103). If the automatic refund is answered as
+failed or cancelled, nothing went back, so the payment is held here exactly as
+above, and the item says it has not been refunded. **Refund to card** then asks
+Stripe again, as a fresh request; a refusal after that is retried
+automatically. A change payment that replaced an earlier one is refunded by the
+payments cron instead, which retries a refusal itself.
 
 1. **Refund to card** sends the payment back to the card it came from, through
    Stripe, straight away. It is exactly the refund the automatic setting would have

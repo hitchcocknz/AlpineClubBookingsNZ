@@ -9,6 +9,7 @@ import { keptLateCaptureDocumentDate } from "@/lib/xero-kept-late-capture-invoic
 import { editReviewChargeRequestCriteria } from "@/lib/edit-financial-review-charge-shape";
 import logger from "@/lib/logger";
 import { PartialRefundError } from "@/lib/payment-transactions";
+import { sliceAfterRecordedRefusals } from "@/lib/refused-card-refund-retry";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { classifyEditReviewChargeCapture } from "./xero-booking-repair-payments";
 import type {
@@ -18,7 +19,7 @@ import type {
   XeroBookingRepairActionStatus,
 } from "./xero-booking-repair-types";
 import type { RepairDependencies } from "./xero-booking-repair-deps";
-import { describeRepairedLateCaptureRefund } from "@/lib/late-capture-repair-result-message";
+import { describeRefusedRepairedLateCaptureRefund, describeRepairedLateCaptureRefund, madeRepairRefunds } from "@/lib/late-capture-repair-result-message";
 import { createCountMap } from "./xero-booking-repair-utils";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
@@ -251,6 +252,10 @@ async function applyLateCaptureRefundRepair(
     return;
   }
 
+  // #4103 (`INV-PAY-130`): each slice's key generation follows the refusals recorded for it.
+  const recorded = allocation
+    ? await deps.prisma.paymentRefund.findMany({ where: { paymentId }, select: { paymentTransactionId: true, amountCents: true, status: true } })
+    : [];
   let refundResult: Awaited<
     ReturnType<typeof deps.refundPaymentTransactions>
   >;
@@ -259,7 +264,7 @@ async function applyLateCaptureRefundRepair(
       format,
       paymentId,
       amountCents: refundAmountCents,
-      allocation: allocation ?? undefined,
+      allocation: allocation?.map((slice) => sliceAfterRecordedRefusals(slice, recorded)),
       reason: "requested_by_customer",
       metadata: {
         bookingId,
@@ -273,12 +278,13 @@ async function applyLateCaptureRefundRepair(
     // before rethrowing, so Xero stays consistent with what actually moved;
     // the operator's re-run refunds the rest, and the per-capture sizing
     // (`noteLateCaptureRefunds`) never notes a slice twice.
-    if (error instanceof PartialRefundError && error.refunds.length > 0) {
+    // #4103: only the slices Stripe made; a refused one sent nothing back.
+    if (error instanceof PartialRefundError && madeRepairRefunds(error.refunds).length > 0) {
       try {
         await deps.recordAndNoteRepairedLateCaptureRefunds({
           bookingId,
           paymentId,
-          refunds: error.refunds,
+          refunds: madeRepairRefunds(error.refunds),
           format,
         });
       } catch (recordError) {
@@ -296,15 +302,16 @@ async function applyLateCaptureRefundRepair(
   // capture only against a receipt the app recorded in Xero. Never the
   // payment-wide note: for a late capture that names the invoice the cancel
   // already cleared and posts a Stripe-account refund of money Xero never had.
+  // #4103 (`INV-PAY-130`): a refused slice is never recorded or noted, and the action fails.
   const xero = await deps.recordAndNoteRepairedLateCaptureRefunds({
     bookingId,
     paymentId,
-    refunds: refundResult.refunds,
+    refunds: madeRepairRefunds(refundResult.refunds),
     format,
   });
-
-  action.status = xero.noted.length > 0 ? "queued" : "applied";
-  action.resultMessage = describeRepairedLateCaptureRefund(refundResult.refunds, xero);
+  const refused = describeRefusedRepairedLateCaptureRefund(refundResult.refunds, xero, format);
+  action.status = refused ? "failed" : xero.noted.length > 0 ? "queued" : "applied";
+  action.resultMessage = refused ?? describeRepairedLateCaptureRefund(refundResult.refunds, xero);
 }
 
 /**

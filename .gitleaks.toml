@@ -135,6 +135,10 @@ regexes = ['''^bbbd2b447299d6f849655b881b1c8978b9904a229223e00ae25c6964f5c062cb$
 description = "The `idempotencyKey` of the fixture `MembershipSubscriptionCharge` the #3971 real-PostgreSQL proof seeds (`src/lib/__tests__/xero-subscription-invoice-retry.realdb.test.ts`). It is a unique-column value for a throwaway row in the disposable race database and authorises nothing. `generic-api-key` fires on the `idempotencyKey` identifier, not the value. The literal is forgiven because commit 6664bf772 in the PR's history carries the line, and this file's header rules out fingerprints. Only this exact literal is forgiven."
 regexes = ['''^race-3971-charge-key$''']
 
+[[allowlists]]
+description = "The `idempotencyKey` of the fixture `MembershipSubscriptionCharge` the #4098 real-PostgreSQL proof seeds (`src/lib/__tests__/membership-subscription-charge-close.realdb.test.ts`). It is a unique-column value for a throwaway row in the disposable race database and authorises nothing. `generic-api-key` fires on the `idempotencyKey` identifier, not the value. The literal is forgiven because commit e98867fe6 in the PR's history carries the line, and this file's header rules out fingerprints. Only this exact literal is forgiven."
+regexes = ['''^race-4098-charge-key$''']
+
 # ---------------------------------------------------------------------------
 # Repository-owned rules
 # ---------------------------------------------------------------------------

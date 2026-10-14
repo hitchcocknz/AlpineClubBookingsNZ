@@ -237,7 +237,6 @@ export async function DELETE(
       format,
       bookingId,
       result,
-      metadataReason: "guest_removed_price_decrease",
       idempotencyKeyPrefix: `guest_remove_refund_${bookingId}`,
       failureMessage:
         "Stripe refund failed after guest removal - enqueueing recovery",
