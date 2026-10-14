@@ -182,14 +182,50 @@ export function OwnCardRefundConfirmation({
 }
 
 /**
- * #4119 (`INV-PAY-129`): the cancel preview's card line when the card refund
- * plan cannot carry the policy's whole refund - the card's part, the part the
- * club refunds by bank transfer and the part it will be in touch about, sized
- * by the cancel's own sizing (`cancelPreviewCardShortfall`), then the one
- * sentence for them all from the wording home, said before anything is asked
- * of the card ("planned").
+ * #4119 (`INV-PAY-131`): the card option's label when the card refund plan is
+ * short - what goes to the card and what by bank transfer, never the part the
+ * club checks first, which is not promised as a refund.
  */
-export function CardRefundShortfallPreview({
+export function cardShortfallOptionLabel(split: CancelCardRefundSplit, format: ClubFormat): string {
+  const parts = [
+    split.cardCents > 0 ? `${formatCents(split.cardCents, format)} to original payment method` : null,
+    split.bankCents > 0 ? `${formatCents(split.bankCents, format)} by bank transfer` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? `Refund ${parts.join(" and ")}` : "Refund: the club will be in touch";
+}
+
+/**
+ * #4119 (`INV-PAY-131`): the cancel preview's figures when the card refund plan
+ * cannot carry the policy's whole refund - the card's part, the part the club
+ * refunds by bank transfer and the part it will be in touch about, sized by the
+ * cancel's own sizing (`cancelPreviewCardShortfall`).
+ */
+export function CardRefundShortfallRows({ split, format }: { split: CancelCardRefundSplit; format: ClubFormat }) {
+  // The part to check is not promised as a refund, so it does not read as one.
+  const rows: Array<[string, number, string]> = [
+    ["Refund to card:", split.cardCents, "text-success-11"],
+    ["Refund by bank transfer:", split.bankCents, "text-success-11"],
+    ["To be confirmed by the club:", split.checkCents, "text-muted-foreground"],
+  ];
+  return (
+    <>
+      {rows
+        .filter(([, cents]) => cents > 0)
+        .map(([label, cents, tone]) => (
+          <div key={label} className="flex justify-between">
+            <span className="text-muted-foreground">{label}</span>
+            <span className={`font-medium ${tone}`}>{formatCents(cents, format)}</span>
+          </div>
+        ))}
+    </>
+  );
+}
+
+/**
+ * #4119 (`INV-PAY-131`): the same parts as one sentence from the wording home,
+ * said before anything is asked of the card ("planned"), under the figures.
+ */
+export function CardRefundShortfallSentence({
   split,
   format,
   onBehalfOfMember,
@@ -198,30 +234,11 @@ export function CardRefundShortfallPreview({
   format: ClubFormat;
   onBehalfOfMember: boolean;
 }) {
-  const formatAmount = (cents: number) => formatCents(cents, format);
-  // The part to check is not promised as a refund, so it does not read as one.
-  const rows: Array<[string, number, string]> = [
-    ["Refund to card:", split.cardCents, "text-success-11"],
-    ["Refund by bank transfer:", split.bankCents, "text-success-11"],
-    ["The club will be in touch about:", split.checkCents, "text-muted-foreground"],
-  ];
   const sentence = ownCardRefundWithShortfallSentence(
     split.cardCents,
-    { bankCents: split.bankCents, checkCents: split.checkCents, formatAmount },
+    { bankCents: split.bankCents, checkCents: split.checkCents, formatAmount: (cents) => formatCents(cents, format) },
     "planned",
     onBehalfOfMember ? "the member's" : "your",
   );
-  return (
-    <>
-      {rows
-        .filter(([, cents]) => cents > 0)
-        .map(([label, cents, tone]) => (
-          <div key={label} className="flex justify-between">
-            <span className="text-muted-foreground">{label}</span>
-            <span className={`font-medium ${tone}`}>{formatAmount(cents)}</span>
-          </div>
-        ))}
-      <p className="text-sm text-info-11" data-testid="cancel-preview-card-shortfall">{sentence}</p>
-    </>
-  );
+  return <p className="text-sm text-info-11" data-testid="cancel-preview-card-shortfall">{sentence}</p>;
 }
