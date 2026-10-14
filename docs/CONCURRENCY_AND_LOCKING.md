@@ -4907,9 +4907,13 @@ Stripe call:
   late-capture approval, the duplicate capture and the capacity race) writes
   only while its row is `PENDING` with `attempts` 0, so it never races a worker
   that has claimed the row; that worker reads the refusal and moves it itself.
+  It reads the row's plan and writes compare-and-set on it, skipping a slice
+  already moved, so two deliveries of one refusal move it, and alert, once.
 - **The ledger refund enqueue** inserts if absent (`createMany`,
   `skipDuplicates`) and refreshes only a `PENDING` row, so a repeat enqueue
-  never re-plans a row a worker has picked up.
+  never re-plans a row a worker has picked up. A fresh plan with no refusal in
+  it never replaces one a refusal moved, and is written compare-and-set on the
+  plan it read (#4103).
 - **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
   the attempt's `attempts` and a live claim, so an attempt the reaper gave up
   on cannot write `FAILED` over a reclaimed one. Not on the claim time: an
@@ -4919,6 +4923,11 @@ Stripe call:
   and the webhook's superseded hand-off
   (`queueSupersededPaymentIntentRefundRecovery`), which takes the row from
   outside any attempt and so spends one of its five.
+
+The legacy group settlement replay and the superseded group intent's webhook
+refund carry no plan: each reads Stripe's refunds on the intent before it asks
+(`keyAfterStripeRefusals`), outside any transaction, and moves its key past the
+refusals there.
 
 The "Paid another way" close above claims only `PENDING|FAILED` rows with
 their attempts spent, so it never meets the runner's re-plan.

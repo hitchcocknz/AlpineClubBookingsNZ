@@ -909,7 +909,7 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "admin-late-capture-held": {
     triggerSummary:
-      "A card payment went through after its booking was cancelled and the club has a treasurer approve these refunds, so it was held on the payments board instead of refunded",
+      "A card payment went through after its booking was cancelled and was held on the payments board instead of refunded - because the club has a treasurer approve these refunds, or because the card provider refused the automatic refund",
     frequency:
       "Once per late payment held - claim-guarded, so a Stripe redelivery or a retry does not re-send",
   },

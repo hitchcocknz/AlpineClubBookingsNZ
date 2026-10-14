@@ -11,5 +11,5 @@
   treasurer to approve instead, whatever the club's setting. A late-charge
   refund from the booking repair tool reports the refusal as a failure, and
   running the repair again asks afresh. An old group organiser's refund and
-  the refund of a stale group payment report it as a failure too; retry those
-  after a day, or refund them in the provider's dashboard.
+  the refund of a stale group payment report it as a failure too, and are
+  retried automatically as a fresh request; the officers are told once.

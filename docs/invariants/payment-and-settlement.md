@@ -1302,24 +1302,26 @@ doors (#4103).
     as the cancellation does - re-plans that row through
     `keepRefusedPrePersistedRefundOwed`: refused slices on their next key,
     made ones marked, a slice after a throw on its own key; only while
-    `PENDING` with no attempt, else the worker holding it does. No close, no
+    `PENDING` with no attempt, else the worker holding it does; once per
+    refusal (compare-and-set on the row's plan). No close, no
     REFUNDED event, no refund id. A door with its own failure alert raises it
     only when its write moved the row (`RefusedCardRefundError.replanned`).
   - **A late-capture refusal always waits for approval**: the webhooks hold
     it for a treasurer whatever the club's setting
     (`holdLateCaptureRefusedByStripe`); the task is the record, and its
-    approval retries the refund on a fresh key.
+    approval asks on the key its recorded refusals count to
+    (`sliceAfterRecordedRefusals`).
   - **The superseded-payment runner** asks under its row's own key first; a
     refusal moves it to a one-slice plan on its next key.
   - **The Xero repair pass** records only what Stripe made and fails; each
     slice's key generation is the count of refusals recorded for it
     (`sliceAfterRecordedRefusals`), so a re-run asks afresh and a lost answer's
     replay keeps its key.
-  - **The legacy group settlement refund** (inline and replay) and **the
-    superseded group intent's webhook refund** fail on a refusal as on a throw.
-  - **Stated limit**: those two keep one fixed key, so a retry within 24 hours
-    reads the refusal back; the group replay dies owed and alerted. It serves
-    only settlement plans frozen before #3653.
+  - **The legacy group settlement refund** (inline and replay; plans frozen
+    before #3653) and **the superseded group intent's webhook refund** fail on
+    a refusal as on a throw. A retry's key moves past each refusal Stripe holds
+    on the intent for that refund (`keyAfterStripeRefusals`), so it asks
+    afresh.
   - Proven by `pre-persisted-card-refund-refusal.test.ts`,
     `refused-card-refund-retry.test.ts`, the duplicate-capture,
     reconciliation, webhook, hold, recovery, group-cancel and repair suites,

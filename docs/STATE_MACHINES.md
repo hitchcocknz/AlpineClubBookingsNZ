@@ -3517,15 +3517,18 @@ Every other card refund door keeps a refusal owed too (#4103, `INV-PAY-130`). A
 door whose row is written before its attempt - the edit financial review, the
 treasurer-approved late capture, the duplicate capture and the capacity race,
 as the cancellation does - re-plans that row while it is `PENDING` with no
-attempt, and never closes it. The superseded-payment runner asks under its
-row's key first and moves a refusal to a one-slice plan on its next key. The
-late-capture webhooks hold a refused capture for a treasurer (an `OPEN`
-approval task) whatever the setting, so they write no "refunded" record. The
-Xero repair pass fails on a refusal and records only what Stripe made; a re-run
-moves each slice to the key generation its recorded refusals count to, so it
-asks afresh. The legacy group settlement refund (plans frozen before #3653) and
-the superseded group intent's webhook refund fail on a refusal as on a throw;
-they keep one fixed key, so a retry within 24 hours reads the same refusal back.
+attempt, once per refusal (compare-and-set on the row's plan), including a
+refusal before a later slice threw, and never closes it. The superseded-payment
+runner asks under its row's key first and moves a refusal to a one-slice plan on
+its next key. The late-capture webhooks hold a refused capture for a treasurer
+(an `OPEN` approval task) whatever the setting, so they write no "refunded"
+record; the approval asks on the key generation the recorded refusals count to.
+The Xero repair pass fails on a refusal and records only what Stripe made; a
+re-run moves each slice to the key generation its recorded refusals count to,
+so it asks afresh. The legacy group settlement refund (plans frozen before
+#3653) and the superseded group intent's webhook refund fail on a refusal as on
+a throw; each retry's key moves past the refusals Stripe holds on the intent
+for that refund, so it asks afresh.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row
