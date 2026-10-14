@@ -1436,7 +1436,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // `main` 0ff7e6d46 into epic #3789, #3821): #3819's pinned `admin` site and
     // #3372's two unpinned `payment` sites compose. RE-MEASURED on the
     // composed tree.
-    ).toEqual({ pinned: 127, unpinned: 374 });
+    // 374 -> 375 (#4098): the close of an already-paid subscription charge,
+    // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
+    ).toEqual({ pinned: 127, unpinned: 375 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

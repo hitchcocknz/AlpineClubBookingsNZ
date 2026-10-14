@@ -74,6 +74,10 @@ import {
 } from "@/lib/xero-group-settlement-invoice-voids";
 import { createXeroMembershipSubscriptionInvoice } from "@/lib/xero-subscription-invoices";
 import {
+  MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES,
+  membershipChargeNeedsNoInvoice,
+} from "@/lib/subscription-charge-already-paid";
+import {
   readXeroInvoiceEmailInstruction,
   type XeroInvoiceEmailInstruction,
 } from "@/lib/xero-invoice-email-instruction";
@@ -3262,13 +3266,15 @@ export async function processQueuedXeroOutboxOperations(options?: {
       if (payload?.queueType === XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE && subscriptionChargeId) {
         const currentCharge = await prisma.membershipSubscriptionCharge.findUnique({
           where: { id: subscriptionChargeId },
-          select: { xeroInvoiceId: true, status: true },
+          select: { xeroInvoiceId: true, status: true, billingBasis: true },
         }).catch(() => null);
         // #2147: never resurrect a VOIDED charge (its invoice was voided and its
-        // coverage released) back to a retryable QUEUED/EMAIL_FAILED state.
-        if (currentCharge && currentCharge.status !== "VOIDED") {
-          await prisma.membershipSubscriptionCharge.update({
-            where: { id: subscriptionChargeId },
+        // coverage released) back to a retryable QUEUED/EMAIL_FAILED state, nor
+        // (#4098) a charge an officer closed as already paid. The write is
+        // status-guarded too, so a close landing after the read still stands.
+        if (currentCharge && !membershipChargeNeedsNoInvoice(currentCharge)) {
+          await prisma.membershipSubscriptionCharge.updateMany({
+            where: { id: subscriptionChargeId, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } },
             data: {
               status: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "QUEUED",
               lastErrorCode: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "XERO_FAILED",
