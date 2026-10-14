@@ -78,6 +78,15 @@ run out, the row carries no **Stripe may have refunded** warning: Stripe sent
 nothing. Once the Stripe dashboard shows that refund as failed or cancelled,
 you can pay the member another way and close it here.
 
+**A refund Stripe accepted and failed later** (#4104). Stripe can accept a card
+refund as pending and report it failed days later, for example when the card
+has been closed. The app then takes it back out of the refunded total and owes
+it again: it shows under **Refunds owed**, the officers are emailed once, and it
+is asked for again as a new request. If that retry is accepted and fails later
+too, it is not asked for again: it is listed here straight away, for you to pay
+the member another way and close. A refund made by hand in the Stripe dashboard
+that fails is not re-sent by the app; the Stripe dashboard shows it.
+
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
 

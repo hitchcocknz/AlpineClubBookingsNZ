@@ -3437,6 +3437,13 @@ PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
 PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
                        held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
+(none) -> PENDING     (a refund Stripe accepted, then failed: a new row per
+                       Stripe refund, card_refund_failed_later_<refund>, under
+                       the Payment row lock; INV-PAY-128)
+(none) -> DEAD        (that row's own retry failed later too: raised with its
+                       attempts spent, never claimed)
+PENDING|FAILED -> same (an open row whose slice it marked made is re-planned
+                       instead: the slice unmarked, on its next key)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
                        figure the treasurer saw, then a status-guarded claim on
@@ -3464,6 +3471,23 @@ row's amount stays the plan's total. The officers are alerted once for the
 refusal - by the write that moves the row off its first keys, or by the edit
 door when no row could be written - and again if the retries run out. Other
 card refund doors still close on a refusal (#4103, #4102).
+
+A refund Stripe accepted (`pending`) and failed later is owed again (#4104,
+`INV-PAY-128`). The one writer of a charge's refund rows
+(`recordStripeRefundsAgainstTransaction`) sees it exactly once: its guarded
+counted -> refused write, or a door told `pending` by a replayed key while the
+row already says refused (the event came first). In the same transaction, under
+the Payment row lock it already holds, an open row that marked the refund made
+is re-planned onto the slice's next key - or refused while a worker holds it, so
+the caller rolls back and is retried - and otherwise one new row is raised per
+failed Stripe refund, for exactly its amount on its charge, under a key Stripe
+has never seen. A closed door row is never reopened: nothing ties its other
+slices to the refunds that made them. A refund that names no booking of this
+payment (made by hand in the Stripe dashboard) is taken out of the refunded
+total but not re-sent. Two ways in: the `refund.failed` webhook (and
+`refund.updated` / `charge.refund.updated` where subscribed), and the payments
+cron, which reads each card refund still recorded `pending` back from Stripe,
+least recently read first. The officers are alerted once per row, after commit.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

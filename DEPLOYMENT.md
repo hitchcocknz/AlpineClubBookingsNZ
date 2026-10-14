@@ -1375,6 +1375,18 @@ Subscribe the Stripe endpoint to these event types:
 - `setup_intent.setup_failed`
 - `setup_intent.canceled`
 - `charge.refunded`
+- `refund.failed` (#4104)
+
+**Upgrading to #4104: add `refund.failed` to an existing endpoint.** In Stripe
+open Workbench → Webhooks (Developers → Webhooks), select the endpoint, choose
+**Edit destination** (or **Update details**) and add the `refund.failed` event.
+It tells the app when a card refund Stripe first accepted as pending has
+failed, so the refund is owed again (it shows under **Refunds owed** and is
+retried). Until it is added, the payments cron still finds such a refund by
+reading each pending card refund back from Stripe every 15 minutes, so nothing
+is lost; the event only makes it prompt. `refund.updated` and
+`charge.refund.updated` are also understood if an endpoint already sends them;
+neither is needed.
 
 If Stripe webhook delivery was missed while the endpoint, DNS, TLS, or the
 signing secret stored under **Admin > Integrations > Stripe** was wrong (it is

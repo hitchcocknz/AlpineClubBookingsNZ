@@ -12,7 +12,7 @@ import Stripe from "stripe";
 import { formatCents } from "@/lib/utils";
 import { compareOrdinal } from "@/lib/ordinal-order";
 import { isRootPrismaClient, withStoreTransaction } from "@/lib/db-transaction";
-import { alertFailedLaterCardRefunds, keepFailedLaterCardRefundOwed, type FailedLaterCardRefundDebt } from "@/lib/card-refund-failed-later";
+import { alertFailedLaterCardRefunds, keepFailedLaterCardRefundsOwed } from "@/lib/card-refund-failed-later";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
 import logger from "@/lib/logger";
 import { writeEditAttributedTransaction } from "@/lib/edit-attributed-ask-write";
@@ -856,12 +856,7 @@ export async function recordStripeRefundsAgainstTransaction({
     const payment = await reconcilePaymentAggregates({ paymentId, store: db });
 
     // #4104 (`INV-PAY-128`): a refund seen failing after it counted is owed again, in this transaction.
-    const failedLaterDebts: FailedLaterCardRefundDebt[] = [];
-    for (const refund of failedLater) {
-      const paymentIntentId = stripeReferenceId(refund.payment_intent) ?? fallbackPaymentIntentId ?? null;
-      const debt = await keepFailedLaterCardRefundOwed(db, { paymentId, paymentTransactionId, refund, paymentIntentId });
-      if (debt) failedLaterDebts.push(debt);
-    }
+    const failedLaterDebts = await keepFailedLaterCardRefundsOwed(db, { paymentId, paymentTransactionId, refunds: failedLater, fallbackPaymentIntentId });
 
     return {
       payment,

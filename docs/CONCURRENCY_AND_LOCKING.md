@@ -4912,6 +4912,40 @@ refunded twice within Stripe's 24-hour key window; a row it closed is found by
 a recorded `failed` or `canceled` refund with no later one, and checked against
 the Stripe dashboard.
 
+## A card refund that failed later: the Payment row lock, no advisory key (#4104)
+
+A refund Stripe accepted (`pending`) and failed later (`INV-PAY-128`) is kept
+owed inside the one writer of a charge's refund rows,
+`recordStripeRefundsAgainstTransaction`, in the transaction that sees it fail.
+That writer already takes the refunded-total order - the Payment row
+(`lockPaymentForRefundedTotal`), then refund rows, then the transaction row -
+and the debt's writes come last, on `PaymentRecoveryOperation`:
+
+- **Exactly one writer sees the failure**: the guarded counted -> refused write
+  (`recordStripeRefundLedgerEntry`), or a door told `pending` by a replayed key
+  while the row already says refused. Two deliveries of one event queue on the
+  Payment row; the second sees the row refused and writes nothing.
+- **A new row** is an insert keyed on the Stripe refund
+  (`card_refund_failed_later_<refund>`, `skipDuplicates`), so a second observer
+  writes nothing.
+- **A re-plan** of an open row that marked the refund made is a
+  compare-and-set on the plan it read, never on a `PROCESSING` row: a worker
+  mid-attempt, or a plan moved since the read, throws
+  (`FailedLaterRefundHeldError`), the whole transaction - refund row and refunded
+  total too - rolls back, and the webhook answers 500 or the cron retries next
+  run.
+
+No advisory key: it moves no booking status or capacity, and every other writer
+of that row takes the Payment row before it - "Paid another way" (`lock(1)`,
+then the Payment row, then its claim) - or touches only the row (the runner's
+claim and re-plan), so Payment row -> operation row is no cycle. A reader that
+sizes a refund net of promised card refunds (the edit review's cap,
+`unfinishedCardRefundDebts`) reads the payment's refundable total before the
+debts, so straddling this commit errs towards refusing. The provider calls - the
+webhook's own Stripe payload, and the cron's read-back
+(`reconcilePendingCardRefunds`) - run outside the transaction, and the officers'
+alert after its commit.
+
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 
 `applyStripeRefundNoteLinkRepairs` (`src/lib/xero-refund-note-link-repair.ts`,

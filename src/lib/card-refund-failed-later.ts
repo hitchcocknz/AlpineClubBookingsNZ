@@ -53,6 +53,7 @@ import {
   CARD_REFUND_FAILED_LATER_REASON,
   nextRefusedRefundKeySuffix,
 } from "@/lib/payment-recovery-keys";
+import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references";
 import { formatCents } from "@/lib/utils";
 
 /** The refund as the ledger writer has it: Stripe's object, or the slice of it the writer reads. */
@@ -145,11 +146,11 @@ export async function keepFailedLaterCardRefundOwed(
     if (row.status === PaymentRecoveryOperationStatus.PROCESSING) {
       throw new FailedLaterRefundHeldError(refund.id, row.id);
     }
-    const replanned = plan.map((slice) => {
-      if (slice.madeRefundId !== refund.id) return slice;
-      const { madeRefundId: _made, ...unsent } = slice;
-      return { ...unsent, stripeKeySuffix: nextRefusedRefundKeySuffix(slice.stripeKeySuffix) };
-    });
+    const replanned = plan.map((slice) =>
+      slice.madeRefundId === refund.id
+        ? { paymentTransactionId: slice.paymentTransactionId, amountCents: slice.amountCents, stripeKeySuffix: nextRefusedRefundKeySuffix(slice.stripeKeySuffix) }
+        : slice,
+    );
     // Compare-and-set on the plan read: a write in between (a cancellation's
     // re-plan, a claim) means this read is stale, and the caller retries.
     const moved = await tx.paymentRecoveryOperation.updateMany({
@@ -201,6 +202,30 @@ export async function keepFailedLaterCardRefundOwed(
     amountCents: refund.amount,
     stripeRefundId: refund.id,
   };
+}
+
+/** Each refund the ledger writer saw fail later, kept owed in its transaction, in the order it saw them. */
+export async function keepFailedLaterCardRefundsOwed(
+  tx: Prisma.TransactionClient,
+  {
+    paymentId,
+    paymentTransactionId,
+    refunds,
+    fallbackPaymentIntentId,
+  }: {
+    paymentId: string;
+    paymentTransactionId: string;
+    refunds: ReadonlyArray<FailedLaterRefundInput & { payment_intent?: StripeReference }>;
+    fallbackPaymentIntentId?: string | null;
+  },
+): Promise<FailedLaterCardRefundDebt[]> {
+  const debts: FailedLaterCardRefundDebt[] = [];
+  for (const refund of refunds) {
+    const paymentIntentId = stripeReferenceId(refund.payment_intent) ?? fallbackPaymentIntentId ?? null;
+    const debt = await keepFailedLaterCardRefundOwed(tx, { paymentId, paymentTransactionId, refund, paymentIntentId });
+    if (debt) debts.push(debt);
+  }
+  return debts;
 }
 
 /**

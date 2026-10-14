@@ -26,11 +26,11 @@ vi.mock("@/lib/stripe", () => ({
 // #4104: the failed-later debt and its alert, observed here; their own rules are
 // `card-refund-failed-later.test.ts`'s.
 const failedLater = vi.hoisted(() => ({
-  keep: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+  keep: vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []),
   alert: vi.fn(async (..._args: unknown[]) => undefined),
 }));
 vi.mock("@/lib/card-refund-failed-later", () => ({
-  keepFailedLaterCardRefundOwed: failedLater.keep,
+  keepFailedLaterCardRefundsOwed: failedLater.keep,
   alertFailedLaterCardRefunds: failedLater.alert,
 }));
 
@@ -2192,6 +2192,8 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     payment_intent: "pi_1",
     metadata: APP_METADATA,
   });
+  /** The refunds each write handed over as failed later, write by write. */
+  const seen = () => failedLater.keep.mock.calls.map((call) => ((call[1] as { refunds: Array<{ id: string }> }).refunds).map((refund) => refund.id));
   const record = (store: unknown, status: string) =>
     syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 0, refunds: [refund(status)], store: store as never });
 
@@ -2199,32 +2201,30 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     const { store, transaction } = createRefundStore();
     await record(store, "pending");
     expect(transaction.refundedAmountCents).toBe(2000);
-    expect(failedLater.keep).not.toHaveBeenCalled();
+    expect(seen()).toEqual([[]]);
 
     await record(store, "failed");
     expect(transaction.refundedAmountCents).toBe(0);
-    expect(failedLater.keep).toHaveBeenCalledTimes(1);
-    expect(failedLater.keep.mock.calls[0]?.[1]).toEqual({
+    expect(failedLater.keep.mock.calls[1]?.[1]).toEqual({
       paymentId: "payment_1",
       paymentTransactionId: "txn_1",
-      refund: expect.objectContaining({ id: "re_1", amount: 2000, metadata: APP_METADATA }),
-      paymentIntentId: "pi_1",
+      refunds: [expect.objectContaining({ id: "re_1", amount: 2000, metadata: APP_METADATA })],
+      fallbackPaymentIntentId: "pi_1",
     });
 
     // The same event again: the row is already refused, nothing is seen twice.
     await record(store, "failed");
-    expect(failedLater.keep).toHaveBeenCalledTimes(1);
+    expect(seen()).toEqual([[], ["re_1"], []]);
   });
 
   it("a refund told to count while its row already says refused is kept owed (the event arrived first)", async () => {
     const { store, transaction } = createRefundStore();
     await record(store, "failed");
-    expect(failedLater.keep).not.toHaveBeenCalled();
     expect(transaction.refundedAmountCents).toBe(0);
 
     // The door's own write, carrying Stripe's original answer.
     await record(store, "pending");
-    expect(failedLater.keep).toHaveBeenCalledTimes(1);
+    expect(seen()).toEqual([[], ["re_1"]]);
     expect(transaction.refundedAmountCents).toBe(0);
   });
 
@@ -2232,14 +2232,14 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     const { store } = createRefundStore();
     await record(store, "failed");
     await record(store, "canceled");
-    expect(failedLater.keep).not.toHaveBeenCalled();
+    expect(seen()).toEqual([[], []]);
   });
 
   it("alerts after the commit it owns, with the debts it kept; joined to a caller's transaction it leaves that to the caller", async () => {
     const debt = { outcome: "raised", operationId: "op_1" };
-    failedLater.keep.mockResolvedValue(debt);
     const joined = createRefundStore();
     await record(joined.store, "pending");
+    failedLater.keep.mockResolvedValueOnce([debt]);
     await record(joined.store, "failed");
     expect(failedLater.alert).not.toHaveBeenCalled();
 
@@ -2247,8 +2247,9 @@ describe("#4104 - a card refund seen failing after it counted is kept owed, once
     const root = { ...owned.store, $connect: vi.fn(), $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(owned.store)) };
     await record(root, "pending");
     expect(failedLater.alert).toHaveBeenLastCalledWith([]);
+    failedLater.keep.mockResolvedValueOnce([debt]);
     await record(root, "failed");
+    expect(root.$transaction).toHaveBeenCalledTimes(2);
     expect(failedLater.alert).toHaveBeenLastCalledWith([debt]);
-    failedLater.keep.mockResolvedValue(null);
   });
 });

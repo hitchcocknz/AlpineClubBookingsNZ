@@ -16,6 +16,7 @@ import {
   alertFailedLaterCardRefunds,
   FailedLaterRefundHeldError,
   keepFailedLaterCardRefundOwed,
+  keepFailedLaterCardRefundsOwed,
 } from "@/lib/card-refund-failed-later";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import { bookingModificationRefundReasonForKeyPrefix } from "@/lib/payment-recovery-keys";
@@ -34,8 +35,8 @@ function fakeTx({
     paymentTransaction: { findUnique: vi.fn(async () => ({ stripePaymentIntentId: transactionIntent })) },
     paymentRecoveryOperation: {
       findMany: vi.fn(async () => open),
-      createMany: vi.fn(async () => ({ count: inserted })),
-      updateMany: vi.fn(async () => ({ count: moved })),
+      createMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: inserted })),
+      updateMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: moved })),
       findUniqueOrThrow: vi.fn(async () => ({ id: "op-new" })),
     },
   };
@@ -107,6 +108,26 @@ describe("whose refund is owed again", () => {
     const tx = fakeTx({ transactionIntent: null });
     expect(await keep(tx, CANCEL_REFUND, null)).toBeNull();
     expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("each refund the ledger writer saw fail later", () => {
+  it("is kept owed in turn, on the intent the refund names or else the writer's", async () => {
+    const tx = fakeTx();
+    const debts = await keepFailedLaterCardRefundsOwed(tx as never, {
+      paymentId: "pay-1",
+      paymentTransactionId: "txn-1",
+      refunds: [
+        { ...CANCEL_REFUND, payment_intent: "pi_named" },
+        { ...CANCEL_REFUND, id: "re_2", payment_intent: null },
+        { ...CANCEL_REFUND, id: "re_3", metadata: null },
+      ],
+      fallbackPaymentIntentId: "pi_fallback",
+    });
+    expect(debts.map((debt) => [debt.stripeRefundId, debt.paymentIntentId])).toEqual([
+      ["re_1", "pi_named"],
+      ["re_2", "pi_fallback"],
+    ]);
   });
 });
 

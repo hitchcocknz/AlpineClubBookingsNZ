@@ -300,8 +300,7 @@ export async function processStripeWebhookEvent(
         await handleChargeRefunded(event.data.object as Stripe.Charge);
         break;
 
-      // #4104 (`INV-PAY-128`): a refund Stripe accepted and failed later is owed again.
-      case "refund.failed":
+      case "refund.failed": // #4104 (`INV-PAY-128`): a refund Stripe accepted and failed later is owed again.
       case "refund.updated":
       case "charge.refund.updated":
         await recordRefusedCardRefund(event.data.object as Stripe.Refund);
