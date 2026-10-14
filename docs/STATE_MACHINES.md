@@ -2462,7 +2462,10 @@ marks the covering `MembershipSubscriptionCharge` `VOIDED` (kept for audit, neve
 re-enqueued), releases its coverage claim (`releasedAt` set — row kept), and
 bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
 fresh idempotency key. Closing a charge as already paid (#4098) releases its
-claims and bumps the generation the same way, leaving the row `PAID`.
+claims and bumps the generation the same way, leaving the row `PAID`. A
+closed per-family charge still counts as the family's charge in the preview
+(`FAMILY_ALREADY_BILLED`): a second family charge would hit the
+family/type/season unique index, which #4110 tracks.
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
 sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero

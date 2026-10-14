@@ -12,8 +12,9 @@
   close waits until no Xero invoice attempt for the charge is still queued or
   running. If a payment was recorded by mistake, reverse it instead (**Mark as
   unpaid** on the subscription, or void it in Xero) and then **Retry**. If the
-  payment is reversed after a close, the member is billed again in the next
-  preview, family charge or not.
+  payment is reversed after a close, a member on a per-member charge is billed
+  again in the next preview; on a per-family charge the preview still shows the
+  family as already billed until #4110 is fixed.
 
   Conflicts raised from now on name those real choices rather than an action
   that did not exist, and a charge only some of whose members have paid says

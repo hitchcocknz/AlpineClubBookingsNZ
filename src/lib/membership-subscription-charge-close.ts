@@ -38,7 +38,10 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * re-billable: no claim hides them from the preview, and the bumped generation
  * gives the new charge a fresh idempotency key. Keeping the claims would leave a
  * reversed member silently unbillable, and without the bump a re-bill would
- * collapse onto this closed charge's key and raise nothing.
+ * collapse onto this closed charge's key and raise nothing. A PER_FAMILY charge
+ * is the exception: the preview still counts the closed row as the family's
+ * charge (FAMILY_ALREADY_BILLED), because a second family charge would collide
+ * with the family/type/season unique index (#4110).
  *
  * GUARDS AND RACES. No advisory lock, like the void release and the family
  * markers: every write is guarded in its own WHERE. The charge claim is a
