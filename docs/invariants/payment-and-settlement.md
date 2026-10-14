@@ -1277,12 +1277,15 @@ doors (#4103).
     approval retries the refund on a fresh key.
   - **The superseded-payment runner** asks under its row's own key first; a
     refusal moves it to a one-slice plan on its next key.
-  - **The legacy group settlement refund** (inline and replay), **the
-    superseded group intent's webhook refund** and **the Xero repair pass**
-    fail on a refusal as on a throw; the repair records only what Stripe made.
-  - **Stated limit**: those last three keep one fixed key, so a retry within
-    24 hours reads the same refusal back; the group replay's retries die owed
-    and alerted, and the repair asks the operator to wait or refund in Stripe.
+  - **The Xero repair pass** records only what Stripe made and fails; each
+    slice's key generation is the count of refusals recorded for it
+    (`sliceAfterRecordedRefusals`), so a re-run asks afresh and a lost answer's
+    replay keeps its key.
+  - **The legacy group settlement refund** (inline and replay) and **the
+    superseded group intent's webhook refund** fail on a refusal as on a throw.
+  - **Stated limit**: those two keep one fixed key, so a retry within 24 hours
+    reads the refusal back; the group replay dies owed and alerted. It serves
+    only settlement plans frozen before #3653.
   - Proven by `pre-persisted-card-refund-refusal.test.ts`,
     `refused-card-refund-retry.test.ts`, the duplicate-capture,
     reconciliation, webhook, hold, recovery, group-cancel and repair suites,

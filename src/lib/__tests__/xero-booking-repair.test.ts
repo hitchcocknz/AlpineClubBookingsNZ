@@ -296,6 +296,9 @@ function createDependencies(state: {
   // #3924 round 7 (money M2): an approved capture's card refund row, and the
   // record of its close as paid another way.
   lateCaptureApprovalRefunds?: { id: string; idempotencyKey: string }[];
+  // #4103: the refunds already recorded on a payment, which the late-capture
+  // repair reads for each slice's key generation.
+  paymentRefunds?: { paymentId: string; paymentTransactionId: string | null; amountCents: number; status: string }[];
   paidAnotherWayCloses?: { kind: string; occurrenceKey: string }[];
   // #3924 round 8: where that close's receipt and note stand.
   paidAnotherWayReceipt?: { kind: "none" } | { kind: "resolved-by-hand" } | { kind: "recorded"; invoiceId: string | null };
@@ -556,6 +559,11 @@ function createDependencies(state: {
       // notice; and it applies the same three criteria plus the intent id the
       // real query does, so a test cannot pass on a row the real read would
       // never have returned.
+      paymentRefund: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+          (state.paymentRefunds ?? []).filter((refund) => refund.paymentId === where?.paymentId),
+        ),
+      },
       paymentTransaction: {
         findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
           const booking = state.bookings.find(
@@ -5454,6 +5462,54 @@ describe("runBookingXeroRepair", () => {
 
       expect(recorded).toEqual(["pi_additional_captured"]);
       expect(action?.status).toBe("failed");
+    });
+
+    // #4103 (option c): the repair has no row to carry a slice's key generation,
+    // so it reads it from the refusals recorded for that slice. A retry after a
+    // refusal is a fresh request; a lost answer records nothing, so its replay
+    // keeps the key Stripe answers with the original.
+    describe("the retry's key generation follows the refusals recorded for each slice", () => {
+      async function sentAllocation(paymentRefunds: NonNullable<Parameters<typeof createDependencies>[0]["paymentRefunds"]>) {
+        const deps = createDependencies({ bookings: [lateCaptureRefundBooking()], paymentRefunds });
+        await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, applyActionKeys: [KEY], dependencies: deps, scope: { all: true } });
+        return (deps.refundPaymentTransactions as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.allocation;
+      }
+      const refusal = (transactionId: string, amountCents: number, status = "failed") => ({ paymentId: "payment_1", paymentTransactionId: transactionId, amountCents, status });
+
+      it("no refusal recorded: every slice keeps its first key", async () => {
+        expect(await sentAllocation([])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ]);
+      });
+
+      it("a refusal recorded for one slice moves only that slice to its next key", async () => {
+        expect(await sentAllocation([refusal("txn_primary", 10000)])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000, stripeKeySuffix: "refused1" },
+        ]);
+      });
+
+      it("a second refusal moves it on again, never back to a key already refused", async () => {
+        expect(await sentAllocation([refusal("txn_primary", 10000), refusal("txn_primary", 10000, "canceled")])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000, stripeKeySuffix: "refused2" },
+        ]);
+      });
+
+      it("a made refund, another payment's refusal, or a refusal of another amount moves nothing", async () => {
+        expect(
+          await sentAllocation([
+            refusal("txn_primary", 10000, "succeeded"),
+            refusal("txn_primary", 10000, "pending"),
+            refusal("txn_primary", 9999),
+            { ...refusal("txn_primary", 10000), paymentId: "payment_other" },
+          ]),
+        ).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ]);
+      });
     });
 
     it("a re-run that Stripe answers with the same refusal records nothing, again", async () => {

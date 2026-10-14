@@ -24,6 +24,7 @@ import {
   inlineRefundAfterAttempt,
   keepRefusedPrePersistedRefundOwed,
   type RefundAttempt,
+  sliceAfterRecordedRefusals,
   planAfterRefusals,
   refundPlanOrRetryRefusals,
   refusedRefundAlertMessage,
@@ -354,5 +355,31 @@ describe("a pre-persisted row after a refusal (#4103)", () => {
 
     await expect(keep({ refunds: [answer(a, "failed")] })).resolves.toBeInstanceOf(Error);
     expect(alertPaymentRecoveryOfficers).not.toHaveBeenCalled();
+  });
+});
+
+// #4103 (`INV-PAY-130`): a door with no row to carry a slice's key generation
+// reads it from the refusals already recorded for that slice.
+describe("a slice's key generation, read from the refusals recorded for it (#4103)", () => {
+  const slice = { paymentTransactionId: "txn_a", amountCents: 1000 };
+  const recorded = (status: string, overrides: Partial<{ paymentTransactionId: string | null; amountCents: number }> = {}) => ({
+    paymentTransactionId: "txn_a",
+    amountCents: 1000,
+    status,
+    ...overrides,
+  });
+
+  it.each([
+    ["nothing recorded", [], undefined],
+    ["one refusal", [recorded("failed")], "refused1"],
+    ["two refusals", [recorded("failed"), recorded("canceled")], "refused2"],
+    ["made refunds only", [recorded("succeeded"), recorded("pending")], undefined],
+    ["another transaction's refusal", [recorded("failed", { paymentTransactionId: "txn_b" })], undefined],
+    ["a refusal of another amount", [recorded("failed", { amountCents: 999 })], undefined],
+    ["a refusal on no transaction", [recorded("failed", { paymentTransactionId: null })], undefined],
+  ])("%s: %s", (_label, rows, suffix) => {
+    const after = sliceAfterRecordedRefusals(slice, rows);
+    expect(after).toEqual(suffix ? { ...slice, stripeKeySuffix: suffix } : slice);
+    expect(isRefusedRefundKeySuffix(after.stripeKeySuffix ?? "refused1")).toBe(true);
   });
 });

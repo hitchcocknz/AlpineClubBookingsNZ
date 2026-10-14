@@ -83,10 +83,11 @@ charge's, a duplicate charge's and a refund after the dates filled up (#4103).
 Two cases are different. An automatic refund of a late card charge on a
 cancelled booking that Stripe refuses is held on the payments board for a
 treasurer to approve, whatever the club's setting, and approving it asks
-Stripe again. And an old group organiser's refund, the refund of a stale
-group payment, or a late-charge refund from the booking repair tool keeps
-the same request, so Stripe repeats its refusal for 24 hours: wait a day
-before retrying, or refund it in the Stripe dashboard.
+Stripe again. A late-charge refund from the booking repair tool that Stripe
+refuses fails, and running the repair again asks Stripe afresh. An old group
+organiser's refund, or the refund of a stale group payment, keeps the same
+request, so Stripe repeats its refusal for 24 hours: wait a day before
+retrying, or refund it in the Stripe dashboard.
 
 If you pay the member back another way, for example by bank transfer, close the
 refund here:

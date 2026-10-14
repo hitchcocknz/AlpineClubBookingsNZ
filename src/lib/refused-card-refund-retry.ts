@@ -123,6 +123,28 @@ export function planAfterAttempt(
   });
 }
 
+/**
+ * #4103 (`INV-PAY-130`): a slice's key generation for a door with no row to
+ * carry one (the Xero repair pass), read from the refusals already recorded on
+ * the payment for that slice - the same transaction and amount, answered
+ * `failed` or `canceled`. Each refusal read and recorded moves the slice on, so
+ * a retry after a refusal is a request Stripe has never seen; an answer that
+ * was lost records nothing, so a replay of it keeps its key and is answered with
+ * the original. A refusal from another writer of the same slice only moves it
+ * further on, to a key still never sent.
+ */
+export function sliceAfterRecordedRefusals(
+  slice: RefundAllocationSlice,
+  recorded: ReadonlyArray<{ paymentTransactionId: string | null; amountCents: number; status: string }>,
+): RefundAllocationSlice {
+  let stripeKeySuffix: string | undefined;
+  for (const refund of recorded) {
+    const same = refund.paymentTransactionId === slice.paymentTransactionId && refund.amountCents === slice.amountCents;
+    if (same && isRefusedRefundStatus(refund.status)) stripeKeySuffix = nextRefusedRefundKeySuffix(stripeKeySuffix);
+  }
+  return stripeKeySuffix ? { ...slice, stripeKeySuffix } : slice;
+}
+
 /** A refusal, with the intent it was asked of: the alert names it. */
 type RefusedAnswer = { slice: RefundAllocationSlice; paymentIntentId: string };
 

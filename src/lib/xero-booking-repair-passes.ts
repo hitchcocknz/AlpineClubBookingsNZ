@@ -9,6 +9,7 @@ import { keptLateCaptureDocumentDate } from "@/lib/xero-kept-late-capture-invoic
 import { editReviewChargeRequestCriteria } from "@/lib/edit-financial-review-charge-shape";
 import logger from "@/lib/logger";
 import { PartialRefundError } from "@/lib/payment-transactions";
+import { sliceAfterRecordedRefusals } from "@/lib/refused-card-refund-retry";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { classifyEditReviewChargeCapture } from "./xero-booking-repair-payments";
 import type {
@@ -251,6 +252,10 @@ async function applyLateCaptureRefundRepair(
     return;
   }
 
+  // #4103 (`INV-PAY-130`): each slice's key generation follows the refusals recorded for it.
+  const recorded = allocation
+    ? await deps.prisma.paymentRefund.findMany({ where: { paymentId }, select: { paymentTransactionId: true, amountCents: true, status: true } })
+    : [];
   let refundResult: Awaited<
     ReturnType<typeof deps.refundPaymentTransactions>
   >;
@@ -259,7 +264,7 @@ async function applyLateCaptureRefundRepair(
       format,
       paymentId,
       amountCents: refundAmountCents,
-      allocation: allocation ?? undefined,
+      allocation: allocation?.map((slice) => sliceAfterRecordedRefusals(slice, recorded)),
       reason: "requested_by_customer",
       metadata: {
         bookingId,

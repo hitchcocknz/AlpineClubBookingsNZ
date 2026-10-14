@@ -3484,9 +3484,11 @@ attempt, and never closes it. The superseded-payment runner asks under its
 row's key first and moves a refusal to a one-slice plan on its next key. The
 late-capture webhooks hold a refused capture for a treasurer (an `OPEN`
 approval task) whatever the setting, so they write no "refunded" record. The
-legacy group settlement refund, the superseded group intent's webhook refund
-and the Xero repair pass fail on a refusal as on a throw; they keep one fixed
-key, so a retry within 24 hours reads the same refusal back.
+Xero repair pass fails on a refusal and records only what Stripe made; a re-run
+moves each slice to the key generation its recorded refusals count to, so it
+asks afresh. The legacy group settlement refund (plans frozen before #3653) and
+the superseded group intent's webhook refund fail on a refusal as on a throw;
+they keep one fixed key, so a retry within 24 hours reads the same refusal back.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

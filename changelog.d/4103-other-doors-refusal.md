@@ -8,7 +8,8 @@
   **Refunds owed**, the officers are emailed once, and it is retried
   automatically as a fresh request. An automatic refund of a late card charge
   on a cancelled booking that is refused is held on the payments board for a
-  treasurer to approve instead. An old group organiser's refund, the refund
-  of a stale group payment and a late-charge refund from the booking repair
-  tool now report the refusal as a failure; retry those after a day, or
-  refund them in the provider's dashboard.
+  treasurer to approve instead, whatever the club's setting. A late-charge
+  refund from the booking repair tool reports the refusal as a failure, and
+  running the repair again asks afresh. An old group organiser's refund and
+  the refund of a stale group payment report it as a failure too; retry those
+  after a day, or refund them in the provider's dashboard.
