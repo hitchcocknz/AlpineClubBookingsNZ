@@ -25,7 +25,7 @@
     "https://github.com/thatskiff33/AlpineClubBookingsNZ/pull/4000#issuecomment-6066865039",
     "https://github.com/thatskiff33/AlpineClubBookingsNZ/pull/3892#issuecomment-6066867807"
   ],
-  "expires": "2026-10-19T00:00:00Z",
+  "expires": "2026-10-26T00:00:00Z",
   "patch": {
     "path": "patches/braces@3.0.3.patch",
     "sha256": "37f95f7d660c05bfd44d4b429ca49ceeede99dcff68389f81ee9b995a8ea24d2"
