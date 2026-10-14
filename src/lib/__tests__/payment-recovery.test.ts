@@ -190,6 +190,11 @@ vi.mock("@/lib/organiser-child-refund-executor", () => ({
   reconcilePendingOrganiserChildRefunds: (...args: unknown[]) =>
     mockReconcilePendingOrganiserChildRefunds(...args),
 }));
+// #4104: and every other pending card refund.
+const mockReconcilePendingCardRefunds = vi.fn().mockResolvedValue({ checked: 0, moved: 0 });
+vi.mock("@/lib/card-refund-status-sync", () => ({
+  reconcilePendingCardRefunds: (...args: unknown[]) => mockReconcilePendingCardRefunds(...args),
+}));
 
 /**
  * #3341 (`INV-OPS-015`): the ADDITIONAL supersede runs for REAL. The replay
@@ -513,6 +518,20 @@ describe("payment recovery worker", () => {
       processPaymentRecoveryOperations({ limit: 1, reconcilePendingChildRefunds: true }),
     ).resolves.toMatchObject({ found: expect.any(Number) });
     expect(mockReconcilePendingOrganiserChildRefunds).toHaveBeenCalledOnce();
+  });
+
+  it("#4104: re-reads every other pending card refund on the cron's run only, and a failure there fails nothing", async () => {
+    mockReconcilePendingCardRefunds.mockClear();
+    await processPaymentRecoveryOperations({ limit: 1 });
+    expect(mockReconcilePendingCardRefunds).not.toHaveBeenCalled();
+
+    // Neither read-back's failure stops the other, or fails the run.
+    mockReconcilePendingOrganiserChildRefunds.mockRejectedValueOnce(new Error("Stripe is unavailable"));
+    mockReconcilePendingCardRefunds.mockRejectedValueOnce(new Error("Stripe is unavailable"));
+    await expect(
+      processPaymentRecoveryOperations({ limit: 1, reconcilePendingChildRefunds: true }),
+    ).resolves.toMatchObject({ found: expect.any(Number) });
+    expect(mockReconcilePendingCardRefunds).toHaveBeenCalledOnce();
   });
 
   it("cancels a cancellable superseded PaymentIntent and marks the transaction failed", async () => {

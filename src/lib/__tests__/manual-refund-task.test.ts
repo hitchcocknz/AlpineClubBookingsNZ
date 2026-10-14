@@ -4769,6 +4769,12 @@ describe("#3835 - a review completed after a card-paid booking was cancelled", (
         NOT: { status: { in: ["PENDING", "FAILED"] }, OR: [{ nextRetryAt: null }, { attempts: { gte: 5 } }] },
       }),
     }));
+    // #4104: a refund Stripe accepted and failed later, owed again, is promised too.
+    expect(mocks.paymentRecoveryOperationAggregate).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: expect.arrayContaining([{ idempotencyKey: { startsWith: "card_refund_failed_later_" } }]),
+      }),
+    }));
   });
 
   it("MUTATION: refuses with the task OPEN where the cancellation's refund cannot be reproduced", async () => {

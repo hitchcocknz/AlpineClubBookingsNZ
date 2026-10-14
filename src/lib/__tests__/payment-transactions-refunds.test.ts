@@ -23,6 +23,17 @@ vi.mock("@/lib/stripe", () => ({
   processRefund: mocks.processRefund,
 }));
 
+// #4104: the failed-later debt and its alert, observed here; their own rules are
+// `card-refund-failed-later.test.ts`'s.
+const failedLater = vi.hoisted(() => ({
+  keep: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+  alert: vi.fn(async (..._args: unknown[]) => undefined),
+}));
+vi.mock("@/lib/card-refund-failed-later", () => ({
+  keepFailedLaterCardRefundOwed: failedLater.keep,
+  alertFailedLaterCardRefunds: failedLater.alert,
+}));
+
 import {
   applyLocalRefundAllocation,
   foldIntoTransactionRefundedAmount,
@@ -2153,5 +2164,91 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
 
     expect(ctx.transaction.refundedAmountCents).toBe(CARD_REFUND_CENTS);
     expect(delta).toBe(CARD_REFUND_CENTS);
+  });
+});
+
+/*
+  #4104 (`INV-PAY-128`) - A REFUND SEEN FAILING AFTER IT COUNTED IS OWED AGAIN.
+
+  The one writer of a transaction's refund rows says when it sees a refund
+  fail after it counted, and keeps it owed in the same transaction: its own
+  guarded counted -> refused write, or a caller told the refund counts (a
+  replayed key reads Stripe's original 'pending') while the row says refused -
+  the refund-failed webhook having got there first.
+*/
+describe("#4104 - a card refund seen failing after it counted is kept owed, once", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const APP_METADATA = { bookingId: "booking_1", reason: "cancellation" };
+  const refund = (status: string) => ({
+    id: "re_1",
+    amount: 2000,
+    currency: "nzd",
+    status,
+    created: 1770000000,
+    charge: "ch_1",
+    payment_intent: "pi_1",
+    metadata: APP_METADATA,
+  });
+  const record = (store: unknown, status: string) =>
+    syncRefundsFromStripeCharge({ paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: 0, refunds: [refund(status)], store: store as never });
+
+  it("the counted -> failed write keeps it owed, with the refund and its charge, and a replay does not again", async () => {
+    const { store, transaction } = createRefundStore();
+    await record(store, "pending");
+    expect(transaction.refundedAmountCents).toBe(2000);
+    expect(failedLater.keep).not.toHaveBeenCalled();
+
+    await record(store, "failed");
+    expect(transaction.refundedAmountCents).toBe(0);
+    expect(failedLater.keep).toHaveBeenCalledTimes(1);
+    expect(failedLater.keep.mock.calls[0]?.[1]).toEqual({
+      paymentId: "payment_1",
+      paymentTransactionId: "txn_1",
+      refund: expect.objectContaining({ id: "re_1", amount: 2000, metadata: APP_METADATA }),
+      paymentIntentId: "pi_1",
+    });
+
+    // The same event again: the row is already refused, nothing is seen twice.
+    await record(store, "failed");
+    expect(failedLater.keep).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refund told to count while its row already says refused is kept owed (the event arrived first)", async () => {
+    const { store, transaction } = createRefundStore();
+    await record(store, "failed");
+    expect(failedLater.keep).not.toHaveBeenCalled();
+    expect(transaction.refundedAmountCents).toBe(0);
+
+    // The door's own write, carrying Stripe's original answer.
+    await record(store, "pending");
+    expect(failedLater.keep).toHaveBeenCalledTimes(1);
+    expect(transaction.refundedAmountCents).toBe(0);
+  });
+
+  it("a refund Stripe refused at once is the door's to keep owed (#4083), not this", async () => {
+    const { store } = createRefundStore();
+    await record(store, "failed");
+    await record(store, "canceled");
+    expect(failedLater.keep).not.toHaveBeenCalled();
+  });
+
+  it("alerts after the commit it owns, with the debts it kept; joined to a caller's transaction it leaves that to the caller", async () => {
+    const debt = { outcome: "raised", operationId: "op_1" };
+    failedLater.keep.mockResolvedValue(debt);
+    const joined = createRefundStore();
+    await record(joined.store, "pending");
+    await record(joined.store, "failed");
+    expect(failedLater.alert).not.toHaveBeenCalled();
+
+    const owned = createRefundStore();
+    const root = { ...owned.store, $connect: vi.fn(), $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(owned.store)) };
+    await record(root, "pending");
+    expect(failedLater.alert).toHaveBeenLastCalledWith([]);
+    await record(root, "failed");
+    expect(failedLater.alert).toHaveBeenLastCalledWith([debt]);
+    failedLater.keep.mockResolvedValue(null);
   });
 });

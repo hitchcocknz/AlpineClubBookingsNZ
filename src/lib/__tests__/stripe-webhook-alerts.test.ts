@@ -322,6 +322,12 @@ vi.mock("@/lib/webhook-log", () => ({
   recordWebhookLog: (...args: unknown[]) => mockRecordWebhookLog(...args),
 }));
 
+// #4104: a refund Stripe accepted and failed later.
+const mockRecordRefusedCardRefund = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => "recorded"));
+vi.mock("@/lib/card-refund-status-sync", () => ({
+  recordRefusedCardRefund: (...args: unknown[]) => mockRecordRefusedCardRefund(...args),
+}));
+
 vi.mock("@/lib/xero", () => ({
   isXeroConnected: (...args: unknown[]) => mockIsXeroConnected(...args),
 }));
@@ -3743,5 +3749,55 @@ describe("Stripe webhook Xero alerting", () => {
         expect.objectContaining({ data: expect.objectContaining({ status: "COMPLETED" }) }),
       );
     });
+  });
+});
+
+// #4104 (`INV-PAY-128`): Stripe's refund-failed signal reaches the refund's
+// recorder, under the same once-per-event claim as every other event.
+describe("a card refund Stripe accepted and failed later (#4104)", () => {
+  const refund = { id: "re_late", object: "refund", amount: 4000, status: "failed", payment_intent: "pi_late", charge: "ch_late" };
+  const request = () =>
+    new NextRequest("http://localhost/api/webhooks/stripe", {
+      method: "POST",
+      headers: { "stripe-signature": "test-sig" },
+      body: JSON.stringify({}),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProcessedWebhookCreate.mockResolvedValue({});
+    mockProcessedWebhookDeleteMany.mockResolvedValue({ count: 1 });
+    mockProcessedWebhookUpdateMany.mockResolvedValue({ count: 1 });
+    mockProcessedWebhookFindFirst.mockResolvedValue({ status: "COMPLETED", processingStartedAt: new Date("2020-01-01T00:00:00.000Z") });
+    mockRecordRefusedCardRefund.mockResolvedValue("recorded");
+  });
+
+  it.each(["refund.failed", "refund.updated", "charge.refund.updated"])("%s hands the refund to its recorder and is acknowledged", async (type) => {
+    mockConstructWebhookEvent.mockReturnValue({ id: `evt_${type}`, type, data: { object: refund } } as any);
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(mockRecordRefusedCardRefund).toHaveBeenCalledTimes(1);
+    expect(mockRecordRefusedCardRefund).toHaveBeenCalledWith(refund);
+    expect(mockProcessedWebhookUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "COMPLETED" }) }),
+    );
+  });
+
+  it("a repeat delivery of a finished event records nothing again", async () => {
+    mockConstructWebhookEvent.mockReturnValue({ id: "evt_refund_failed", type: "refund.failed", data: { object: refund } } as any);
+    mockProcessedWebhookCreate.mockRejectedValue(Object.assign(new Error("Unique constraint failed"), { code: "P2002" }));
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(mockRecordRefusedCardRefund).not.toHaveBeenCalled();
+  });
+
+  it("a recorder that fails releases the claim and answers 500, so Stripe sends it again", async () => {
+    mockConstructWebhookEvent.mockReturnValue({ id: "evt_refund_failed_retry", type: "refund.failed", data: { object: refund } } as any);
+    mockRecordRefusedCardRefund.mockRejectedValue(new Error("recovery mid-attempt"));
+    const response = await POST(request());
+    expect(response.status).toBe(500);
+    expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ eventId: "evt_refund_failed_retry", status: "PROCESSING" }) }),
+    );
   });
 });
