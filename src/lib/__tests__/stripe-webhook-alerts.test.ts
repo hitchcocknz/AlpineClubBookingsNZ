@@ -1582,6 +1582,29 @@ describe("Stripe webhook Xero alerting", () => {
     expect(mockMarkBookingPaymentSucceeded).not.toHaveBeenCalled();
   });
 
+  // #4103 (`INV-PAY-128`): Stripe answers the refund `failed` or `canceled`
+  // without throwing. Nothing went back: the settlement is never marked
+  // REFUNDED, the alert says the refund failed, and the webhook fails so Stripe
+  // redelivers, exactly as for a thrown refund.
+  it.each([["failed"], ["canceled"]])("a refund Stripe answers %s is a failure: alerted as failed, never marked refunded (#4103)", async (status) => {
+    mockConstructWebhookEvent.mockReturnValue(groupSettlementSucceededEvent(`evt_group_refused_${status}`, "pi_group_mismatch"));
+    mockApplyGroupSettlementSucceeded.mockResolvedValue({ outcome: "amount_mismatch", settledBookingIds: [] });
+    mockProcessRefund.mockResolvedValueOnce({ id: "re_refused", status });
+
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mockMarkGroupSettlementIntentRefunded).not.toHaveBeenCalled();
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ errorMessage: expect.stringContaining("the automatic refund failed") }),
+      CLUB_FORMAT_TEST,
+    );
+    expect(mockLogAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "group.settlement.superseded_intent_refunded" }),
+    );
+  });
+
   it("does not refund or alert when the group settlement applies cleanly", async () => {
     mockConstructWebhookEvent.mockReturnValue(
       groupSettlementSucceededEvent("evt_group_ok", "pi_group_ok"),

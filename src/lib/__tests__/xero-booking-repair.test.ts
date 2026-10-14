@@ -5369,6 +5369,90 @@ describe("runBookingXeroRepair", () => {
     expect(report.summary.bookingsWithFindings).toBe(0);
   });
 
+  // #4103 (`INV-PAY-128`): Stripe answers a slice `failed` or `canceled`
+  // without throwing. That slice sent nothing back, so it is never recorded or
+  // noted as refunded, and the action fails saying the capture is still held.
+  describe("a late-capture refund Stripe refuses (#4103)", () => {
+    const KEY = "late-capture-refund:booking_1:payment_1:13000";
+    const answer = (paymentIntentId: string, transactionId: string, amountCents: number, status: string) => ({
+      paymentIntentId,
+      refundId: `re_${paymentIntentId}`,
+      amountCents,
+      status,
+      slice: { paymentTransactionId: transactionId, amountCents },
+    });
+    async function applyWith(refund: ReturnType<typeof vi.fn>) {
+      const deps = createDependencies({ bookings: [lateCaptureRefundBooking()] });
+      deps.refundPaymentTransactions = refund as unknown as typeof deps.refundPaymentTransactions;
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, applyActionKeys: [KEY], dependencies: deps, scope: { all: true } });
+      const action = report.passes
+        .flatMap((pass) => pass.bookings.flatMap((bookingReport) => bookingReport.actions))
+        .find((item) => item.key === KEY);
+      const recorded = (deps.recordAndNoteRepairedLateCaptureRefunds as ReturnType<typeof vi.fn>).mock.calls.flatMap(([args]) =>
+        (args as { refunds: { paymentIntentId: string }[] }).refunds.map((each) => each.paymentIntentId),
+      );
+      return { action, recorded };
+    }
+
+    it.each([["failed"], ["canceled"]])("every slice answered %s: nothing recorded or noted, and the action fails naming the refusal", async (status) => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, status), answer("pi_primary_captured", "txn_primary", 10000, status)],
+          totalRefundedAmountCents: 13000,
+        }),
+      );
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+      expect(action?.resultMessage).toMatch(/Stripe refused \$130\.00 .*still owed\. The capture is still held/);
+      expect(action?.resultMessage).not.toMatch(/^Refunded/);
+    });
+
+    it("one slice made beside one refused: only the made one is recorded, and the action fails naming the refused amount", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, "succeeded"), answer("pi_primary_captured", "txn_primary", 10000, "failed")],
+          totalRefundedAmountCents: 13000,
+        }),
+      );
+
+      expect(recorded).toEqual(["pi_additional_captured"]);
+      expect(action?.status).toBe("failed");
+      expect(action?.resultMessage).toContain("Recorded the refund of pi_additional_captured as the webhook does.");
+      expect(action?.resultMessage).toMatch(/Stripe refused \$100\.00/);
+    });
+
+    it("refused then thrown: the refused slice is not recorded, and the action fails", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockRejectedValue(
+          new PartialRefundError({
+            format: CLUB_FORMAT_TEST,
+            completedRefundCents: 0,
+            refunds: [answer("pi_additional_captured", "txn_additional", 3000, "failed")],
+            refusedSlices: [{ paymentTransactionId: "txn_additional", amountCents: 3000 }],
+            cause: new Error("network"),
+          }),
+        ),
+      );
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+    });
+
+    it("a re-run that Stripe answers with the same refusal records nothing, again", async () => {
+      const refusal = () =>
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, "failed"), answer("pi_primary_captured", "txn_primary", 10000, "failed")],
+          totalRefundedAmountCents: 13000,
+        });
+      await applyWith(refusal());
+      const { action, recorded } = await applyWith(refusal());
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+    });
+  });
+
   it("says it recorded the refund only for the intents whose record was written, and queued only a note that was queued (#3635 N4)", async () => {
     const booking = lateCaptureRefundBooking();
     const deps = createDependencies({ bookings: [booking] });

@@ -1102,6 +1102,37 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     });
   });
 
+  // #4103 (`INV-PAY-128`): Stripe answers the legacy group refund `failed` or
+  // `canceled` without throwing. Nothing went back, so it fails as a throw does:
+  // no flip, no mirrors, the recovery row re-armed with the refusal.
+  it.each([["failed"], ["canceled"]])("a refund Stripe answers %s is a failure: no flip, no mirror, the retry re-armed (#4103)", async (status) => {
+    mocks.groupBookingFindUnique.mockResolvedValue({
+      id: GROUP_ID,
+      paymentMode: GroupBookingPaymentMode.ORGANISER_PAYS,
+      settlement: {
+        id: "settle-1",
+        status: PaymentStatus.SUCCEEDED,
+        amountCents: 4500,
+        stripePaymentIntentId: "pi_settle_1",
+        refundPlan: { "child-1": 4500 },
+      },
+    });
+    mocks.bookingFindMany.mockResolvedValue([paidChild("child-1", "pay-1")]);
+    mocks.processRefund.mockResolvedValueOnce({ id: "re_refused", amount: 4500, status });
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(mocks.settlementUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: expect.stringMatching(/REFUNDED/) }) }),
+    );
+    expect(mocks.enqueueGroupSettlementRefundRecovery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settlementId: "settle-1", retryDelayMs: 0, lastError: expect.stringMatching(/Stripe refused \$45\.00 .*still owed/) }),
+    );
+    expect(mocks.markGroupSettlementRefundRecoverySucceeded).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    expect(mocks.enqueueXeroRefund).not.toHaveBeenCalled();
+  });
+
   it("keeps the frozen plan and arms the durable retry when the refund fails (#1351)", async () => {
     mocks.groupBookingFindUnique.mockResolvedValue({
       id: GROUP_ID,
@@ -1459,6 +1490,18 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     await expect(executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST)).rejects.toThrow(
       "stripe still down"
     );
+    expect(mocks.settlementUpdate).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  // #4103 (`INV-PAY-128`): a refusal fails the attempt, so the runner never
+  // closes the row on it. Its one fixed key reads the same refusal back for 24
+  // hours, so its retries die owed and alerted (a stated limit).
+  it.each([["failed"], ["canceled"]])("throws on a refund Stripe answers %s: no flip, no mirror (#4103)", async (status) => {
+    mocks.settlementFindUnique.mockResolvedValue(settlement());
+    mocks.processRefund.mockResolvedValueOnce({ id: "re_refused", amount: 9000, status });
+
+    await expect(executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST)).rejects.toThrow(/Stripe refused \$90\.00 .*still owed/);
     expect(mocks.settlementUpdate).not.toHaveBeenCalled();
     expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
   });
