@@ -886,6 +886,93 @@ describe("the opposite order belongs to #1992 (#3638)", () => {
   });
 });
 
+/**
+ * #4163 (`INV-PAY-133`): two card captures both qualify, and the one the
+ * conflict names is the settling capture - the OLDEST-INSERTED one no
+ * duplicate-capture refund owns. The mock answers like the database: it
+ * honours the read's `orderBy`, so a read without the shared ledger order
+ * hands back the rows as seeded (newest first) and names the later capture.
+ */
+describe("the settling capture follows the shared ledger order (#4163)", () => {
+  const FIRST_CAPTURE = {
+    ...CARD_PRIMARY,
+    id: "first-capture",
+    stripePaymentIntentId: "pi_first_4163",
+    amountCents: 27000,
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    insertionSeq: 1,
+  };
+  // Same createdAt (one transaction): only insertionSeq tells them apart.
+  const SECOND_CAPTURE = {
+    ...CARD_PRIMARY,
+    id: "second-capture",
+    stripePaymentIntentId: "pi_second_4163",
+    amountCents: 31000,
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    insertionSeq: 2,
+  };
+
+  function answerLikeTheDatabase(rows: (typeof FIRST_CAPTURE)[]) {
+    mocks.paymentTransactionFindMany.mockImplementation(
+      async ({ orderBy }: { orderBy?: Record<string, "asc" | "desc">[] }) => {
+        const sorted = [...rows];
+        for (const key of [...(orderBy ?? [])].reverse()) {
+          const [[field, direction]] = Object.entries(key) as [
+            ["createdAt" | "insertionSeq", "asc" | "desc"],
+          ];
+          const sign = direction === "asc" ? 1 : -1;
+          sorted.sort(
+            (a, b) =>
+              sign *
+              (field === "createdAt"
+                ? a.createdAt.getTime() - b.createdAt.getTime()
+                : a.insertionSeq - b.insertionSeq),
+          );
+        }
+        return sorted;
+      },
+    );
+  }
+
+  it("names the oldest-inserted capture when two qualify, whatever order the rows come back in", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    // Seeded newest first: the "wrong" order for the `.find()`.
+    answerLikeTheDatabase([SECOND_CAPTURE, FIRST_CAPTURE]);
+
+    const result = await sync();
+
+    expect(result.secondInstrumentSettlementConflicts).toBe(1);
+    expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ createdAt: "asc" }, { insertionSeq: "asc" }],
+      }),
+    );
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({
+      cardPaymentIntentId: "pi_first_4163",
+      cardHeldCents: 27000,
+    });
+  });
+
+  it("skips an older capture the duplicate-capture refund owns and names the next oldest", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    answerLikeTheDatabase([SECOND_CAPTURE, FIRST_CAPTURE]);
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
+      { idempotencyKey: "duplicate_capture_booking-1_pi_first_4163" },
+    ]);
+
+    await sync();
+
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({
+      cardPaymentIntentId: "pi_second_4163",
+      cardHeldCents: 31000,
+    });
+  });
+});
+
 describe("a replay on a completed booking (#3638)", () => {
   it("never flips it back to PAID or re-sends the confirmation", async () => {
     // An ordinary Internet Banking booking, paid by bank and completed after

@@ -1413,6 +1413,11 @@ short).
     refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change across this
     release. Check for open ones after the old colour drains.
+  - **The settling capture** the Xero second-instrument conflict names
+    (`findSecondInstrumentSettlement`, #4163) is the oldest-inserted captured
+    PRIMARY card row that no duplicate-capture refund owns. The first capture
+    settled the booking; a later one is the duplicate. Pinned by
+    `issue-3638-second-instrument-conflict.test.ts`.
   - Policed by `ledger-row-order-census.test.ts`. Proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, and the migration by its
     data-migration fixture.
