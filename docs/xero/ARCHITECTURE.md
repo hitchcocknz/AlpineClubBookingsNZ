@@ -1030,11 +1030,13 @@ Xero pushes CONTACT, INVOICE, and CREDITNOTE events (the credit-note
 category has no underscore); the webhook stores each signed event as sent and
 returns fast. A category this app does not reconcile is logged and left
 processed, so it is visible without being retried forever. A credit-note void
-that deactivates a payment's refund-note mirror also moves
-`Payment.xeroRefundCreditNoteId`, in the same link write, to the newest other
-live note that may be canonical (never a per-refund note, #3880) or clears it,
-as the #2901 repair apply does, so the nightly missing-link report never sees a
-pointer to an inactive mirror (#4046). Reconciliation happens in a bounded
+deactivates a payment's refund-note mirror whatever the payment: a card
+payment's per-delta note, a per-refund note, or a bank-transfer payment's one
+canonical note, whose mirror used to stay active (#4091). The void retires no
+sibling, and the same link write moves `Payment.xeroRefundCreditNoteId` to the
+newest other live note that may be canonical (never a per-refund note, #3880)
+or clears it, as the #2901 repair apply does, so the nightly missing-link report
+never sees a pointer to an inactive mirror (#4046). Reconciliation happens in a bounded
 worker kicked after the response and swept by cron. Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
 payment records; operator-applied overpayments/prepayments count), the
