@@ -11,7 +11,8 @@ vi.mock("server-only", () => ({}));
 
 const updateMany = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: 1 })));
 const findUnique = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string; paymentIntentId: string }>>(async () => ({ id: "op_row", paymentIntentId: "pi_row" })));
-vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique } } }));
+const findBooking = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string } | null>>(async () => ({ id: "b1" })));
+vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique }, booking: { findUnique: findBooking } } }));
 
 const refundPaymentTransactions = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
@@ -254,6 +255,27 @@ describe("the treasurer-approved late-capture refund (#4103)", () => {
       expect.objectContaining({ operationId: "op_row", errorMessage: expect.stringContaining("re_txn_a") }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  it("#4126: a close that threw is no anomaly - logged, left to the runner, no alert and no re-read", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockRejectedValue(new Error("pool timeout"));
+    findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 } as never);
+
+    expect(await approve()).toBe("re_txn_a");
+    expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
+  });
+
+  it("#4126: an anomalous lost close for a booking that no longer exists is logged, not alerted", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 } as never);
+    findBooking.mockResolvedValueOnce(null);
+
+    await approve();
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
   });
 
   it("#4126: a lost close on a row the runner claimed raises no anomaly alert", async () => {

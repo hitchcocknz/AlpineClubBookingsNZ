@@ -228,7 +228,9 @@ async function markLateCaptureApprovalRefundRecoverySucceeded(
  * above, nothing should have moved it. Re-read; if it is still untouched, log it
  * and alert the officers once for the row, naming the refund Stripe made, so a
  * person checks it: the runner will replay the row (Stripe answers with this
- * refund) unless its plan no longer names these keys. Never throws.
+ * refund) unless its plan no longer names these keys. Best effort, sent once:
+ * nothing calls this again, so an alert that reaches nobody is not retried
+ * (the error log above it stands). Never throws.
  */
 async function alertLostLateCaptureApprovalClose(params: {
   bookingId: string;
@@ -250,6 +252,11 @@ async function alertLostLateCaptureApprovalClose(params: {
       { ...context, operationId: row.id },
       "A late-capture approval's refund was made but its close lost on a row still untouched (#4126) - check the recovery operation",
     );
+    const booking = await prisma.booking.findUnique({ where: { id: params.bookingId }, select: { id: true } });
+    if (!booking) {
+      logger.warn({ ...context, operationId: row.id }, "Lost late-capture approval close alert not sent: the booking no longer exists (#4126)");
+      return;
+    }
     await sendAdminAlertOnceEver({
       key: `late-capture-approval-close-lost:${row.id}`,
       label: "lost late-capture approval close alert",
@@ -341,11 +348,14 @@ export async function executeLateCaptureApprovalRefund({
     (err) => {
       logger.error(
         { err, bookingId, taskId },
-        "Failed to close the late-capture approval refund recovery operation after an inline refund succeeded",
+        "Failed to close the late-capture approval refund recovery operation after an inline refund succeeded - the recovery runner will replay and close it",
       );
-      return { count: 0 };
+      return { count: 0, threw: true as const };
     },
   );
+  // A close that threw is logged above and is no anomaly: the row is left to the
+  // runner's replay. Only a close that ran and matched nothing is checked.
+  if ("threw" in closed) return refundId;
   if (closed.count === 0) {
     await alertLostLateCaptureApprovalClose({
       bookingId,

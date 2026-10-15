@@ -4917,8 +4917,8 @@ Stripe call:
 - **The late-capture approval's happy-path close**
   (`markLateCaptureApprovalRefundRecoverySucceeded`) claims its row only while
   it is `PENDING`, with `attempts` 0, on the plan the approval just sent
-  (#4126), through the one compare-and-set the doors share
-  (`untouchedPrePersistedRowWhere`). A row the runner has claimed or tried is
+  (#4126), through `untouchedPrePersistedRowWhere` - the compare-and-set it
+  shares with the doors' refusal re-plan (`replanPrePersistedRow`). A row the runner has claimed or tried is
   left to it: its replay of the same keys reads the refund back and closes it,
   writing the record once. A re-plan of this row moves a slice only after
   Stripe refused it, so it cannot follow an approval that made every slice; a
