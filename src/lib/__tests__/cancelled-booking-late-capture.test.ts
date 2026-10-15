@@ -503,6 +503,26 @@ describe("recordAutomaticLateCaptureRefund (#2773 — the record)", () => {
 
     const outcome = await recordAutomaticLateCaptureRefund(capture());
     expect(outcome.handCompletedAfterRefund).toBe(false);
+    // An operator's row is not this writer's: the refund's entry and alert still go.
+    expect(outcome.recordedBefore).toBe(false);
+  });
+
+  it("says when this writer's own row was already there, so only the delivery that wrote it audits and alerts (#4149)", async () => {
+    mocks.recordAutomaticCancelledBookingRefundTask.mockResolvedValueOnce({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "self",
+      existingStatus: "DISMISSED",
+    });
+    expect((await recordAutomaticLateCaptureRefund(capture())).recordedBefore).toBe(true);
+
+    mocks.recordAutomaticCancelledBookingRefundTask.mockResolvedValueOnce({
+      closed: 0,
+      created: true,
+      alreadyRecorded: false,
+      existingStatus: null,
+    });
+    expect((await recordAutomaticLateCaptureRefund(capture())).recordedBefore).toBe(false);
   });
 });
 
