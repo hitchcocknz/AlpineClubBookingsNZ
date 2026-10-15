@@ -6,7 +6,6 @@ import { observationReviewContext } from "./support/booking-observation-fixtures
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { bindClubTime, requireClubTimeZone } from "@/lib/club-time";
 import { observeInvoicePayables } from "@/lib/xero-invoice-payable-observation";
-import { editFinancialReviewOccurrenceKey } from "@/lib/edit-financial-review-occurrence";
 const session = { actor: "race-4047-owner" };
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -16,6 +15,7 @@ let prisma: PrismaClient;
 let identities: typeof import("@/lib/booking-supplementary-invoice-identities");
 let action: typeof import("@/app/(authenticated)/bookings/[id]/_lib/booking-detail-outstanding");
 let history: typeof import("@/app/(authenticated)/bookings/[id]/_lib/booking-detail-history");
+let editFinancialReviewOccurrenceKey: typeof import("@/lib/edit-financial-review-occurrence").editFinancialReviewOccurrenceKey;
 const invoiceId = (n: number) => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 
 async function clean() {
@@ -63,6 +63,8 @@ function deps(onRead?: () => Promise<void>) {
   beforeAll(async () => {
     assertSafeRaceDbUrl(URL, "4047 invoice observation"); process.env.DATABASE_URL = URL;
     ({ prisma } = await import("@/lib/prisma"));
+    // This helper transitively imports Prisma: resolve it only after the guarded URL.
+    ({ editFinancialReviewOccurrenceKey } = await import("@/lib/edit-financial-review-occurrence"));
     identities = await import("@/lib/booking-supplementary-invoice-identities");
     action = await import("@/app/(authenticated)/bookings/[id]/_lib/booking-detail-outstanding");
     history = await import("@/app/(authenticated)/bookings/[id]/_lib/booking-detail-history");
