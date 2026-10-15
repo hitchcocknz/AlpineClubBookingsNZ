@@ -602,12 +602,16 @@ cancel's in-flight or dismissed one, nor is its card refund still retrying the
 cancel's in-flight refund, because the cancel never netted either. An unpaid,
 dismissed or declined appeal explains nothing, nor does one paid for a
 different amount than the ledger shows. The class checks a booking's total
-against its appeals' outcomes, not which ledger lines are the appeal's. One
-case it cannot classify: a card payment whose refund plan covers less than the
-approved amount refunds only the planned part, and with no recovery row left
-the outcome reads the whole approved amount, so PRICE stays a disagreement for
-an officer to look at (the approval records no planned amount to read
-instead). A refund is in flight while the recovery runner will still make it — pending,
+against its appeals' outcomes, not which ledger lines are the appeal's. Two
+cases it cannot classify, each left a disagreement for an officer to look at.
+A card payment whose refund plan covers less than the approved amount refunds
+only the planned part; once that refund succeeds (or when nothing could be
+planned) no record holds the rest, so the outcome reads the whole approved
+amount and PRICE disagrees by the unplanned part — the drift `INV-PAY-118`
+logs at approval. And an appeal's card refund closed as paid another way in
+part (`card-refund-paid-another-way.ts`) is SUCCEEDED, so the outcome reads the
+whole approved amount while the ledger's bank-refund line holds only the part
+paid back; closed in full, the two agree. A refund is in flight while the recovery runner will still make it — pending,
 processing, or failed with a retry scheduled and attempts left
 (`isPaymentRecoveryOperationInFlight`, #3854 K1); an exhausted one is not, and
 the money it owes back is a disagreement.

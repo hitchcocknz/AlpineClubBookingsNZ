@@ -39,11 +39,7 @@ import {
   type CardRefundOperationRow,
 } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
-import {
-  buildOrganiserChildAppealRefundKey,
-  buildRefundRequestRefundRecoveryIdempotencyKey,
-  isAppealRefundRecoveryKey,
-} from "@/lib/payment-recovery-keys";
+import { buildOrganiserChildAppealRefundKey, buildRefundRequestRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import type { ApprovedAppealOutcome } from "@/lib/refund-request-card-refund-copy";
 
 const NOTHING_OWED: ApprovedAppealOutcome = {
@@ -77,13 +73,13 @@ function unqueuedOperation(requestId: string, metadata: unknown): CardRefundOper
   };
 }
 
-/** An appeal's card refund row: the request's own, or (#3956) its debt to the group organiser's card. */
+/**
+ * An appeal's card refund row: the request's own, or (#3956) its debt to the group organiser's card.
+ * The exact keys decide; they are the two families `isAppealRefundRecoveryKey` names for the census.
+ */
 function isAppealRefundRow(operation: { idempotencyKey: string }, requestId: string): boolean {
   const key = operation.idempotencyKey;
-  return (
-    isAppealRefundRecoveryKey(key) &&
-    (key === buildRefundRequestRefundRecoveryIdempotencyKey(requestId) || key === buildOrganiserChildAppealRefundKey(requestId))
-  );
+  return key === buildRefundRequestRefundRecoveryIdempotencyKey(requestId) || key === buildOrganiserChildAppealRefundKey(requestId);
 }
 
 type OutcomeStore = Pick<PrismaClient, "payment" | "auditLog" | "manualRefundTask">;
