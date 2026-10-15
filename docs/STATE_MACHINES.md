@@ -543,10 +543,16 @@ was refused or made only some slices - in the close's own transaction, dated by
 it and for the frozen plan's total, so it is written once and never for a
 refund still owed (#4145, `INV-PAY-133`). A "Paid another way" close records
 only what the row's slices took from the refunds recorded on the payment, as
-that event dated by the latest of them as Stripe made it and marked as that
-close's (none made, none written); the page splits its sentence only by that
-marked event, says what the close's own record paid back, and any remainder as
-closed by the club. A cancel made before #4145 wrote its event up front,
+that event dated by the latest of them as Stripe made it - never before the
+cancel - and marked as that close's (none made, none written). The page tells
+each part from where it is recorded: the card's from that marked event (with
+none, the refund due less what the close's record says the row still owed,
+undated), what the record says was paid back, and as closed by the club only
+what the record left unpaid (`paidAnotherWayUnpaidCents`) - never a part the
+payment no longer held when it closed. It keeps the card's part as the close
+found it: a refund Stripe made before the close and recorded after it, or one
+that fails later and is owed again on its own row, is not re-told there (a
+stated limit). A cancel made before #4145 wrote its event up front,
 whatever became of the refund, so a later close writes no second one; the
 booking page reads an open or paid-another-way row ahead of that event.
 Stated limit, the deploy boundary, both ways and history only while both
@@ -1733,9 +1739,10 @@ page and the payment-link page read the row
 sent says "on its way to your original payment method"; a dead row (retries
 spent, or failed with no retry) says the club will be in touch - as does a
 dead card part of a card refund shortfall; a row closed "Paid another way"
-says so, with what its record paid back (the slices Stripe had made first, a
-member cancel's or a capacity race's, are recorded by that close and said
-apart, and only the rest past the plan is followed up); a capacity race's row the runner closed before #4125,
+says so, with what its record paid back and left unpaid (the slices Stripe had
+made first, a member cancel's or a capacity race's, are recorded by that close
+and said apart, and only the rest past the plan is followed up); a capacity
+race's row the runner closed before #4125,
 which wrote no event, says it was refunded. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
