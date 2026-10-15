@@ -98,6 +98,22 @@ export function parseFixScope(subject) {
   return { scopes, issues };
 }
 
+/**
+ * Read the underlying subject of one or more Git `Revert "…"` wrappers.
+ * A squash PR suffix can follow any wrapper. Unwrapped titles return null:
+ * the revert body alone does not make an arbitrary title scope evidence.
+ */
+export function unwrapRevertSubject(subject) {
+  let unwrapped = null;
+  let remaining = subject;
+  while (true) {
+    const match = /^Revert "(.*)"$/.exec(remaining.replace(/ \(#\d+\)$/, ""));
+    if (!match) return unwrapped;
+    unwrapped = match[1];
+    remaining = unwrapped;
+  }
+}
+
 /** Lower-case and fold plurals so `booking`/`bookings` land on one scope. */
 export function normaliseScope(scope) {
   const lower = scope.toLowerCase().replace(/^#/, "");
