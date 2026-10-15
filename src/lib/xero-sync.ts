@@ -613,10 +613,7 @@ async function normalizePaymentRefundLinkWithClient(
       // The pointer move happens after this link row is written. Doing it
       // here would lock the payment before the link, opposite the repair
       // apply, which locks the link and then the payment.
-      return {
-        ...link,
-        active: false,
-      };
+      return { ...link, active: false };
     }
 
     const payment = await client.payment.findUnique({
