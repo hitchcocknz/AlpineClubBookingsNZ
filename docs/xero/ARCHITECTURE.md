@@ -1029,13 +1029,72 @@ note.
 Xero pushes CONTACT, INVOICE, and CREDITNOTE events (the credit-note
 category has no underscore); the webhook stores each signed event as sent and
 returns fast. A category this app does not reconcile is logged and left
-processed, so it is visible without being retried forever. A credit-note void
-that deactivates a payment's refund-note mirror also moves
-`Payment.xeroRefundCreditNoteId`, in the same link write, to the newest other
-live note that may be canonical (never a per-refund note, #3880) or clears it,
+processed, so it is visible without being retried forever. Reconciliation
+happens in a bounded worker kicked after the response and swept by cron.
+
+**A voided refund note (#4091, `INV-ADDPAY-041`).** A credit-note void
+deactivates a payment's refund-note mirror whatever the payment: a card
+payment's per-delta note, a per-refund note, or a bank-transfer payment's one
+canonical note, whose mirror used to stay active. The void retires no sibling.
+The same link write moves `Payment.xeroRefundCreditNoteId` to the newest other
+live note that may be canonical (never a per-refund note, #3880), or clears it,
 as the #2901 repair apply does, so the nightly missing-link report never sees a
-pointer to an inactive mirror (#4046). Reconciliation happens in a bounded
-worker kicked after the response and swept by cron. Internet-banking settlement rides this flow: when an invoice is
+pointer to an inactive mirror (#4046). A refund left with no live note shows no
+drift in that report, by design; making it visible is #4162. Rows that went
+wrong before #4091 (a voided canonical mirror still active) are #4161.
+
+A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
+skips any note a link records VOIDED or DELETED, whether it arrives as the field,
+a refund payment's note, a succeeded create or an active link. The pointer gate
+`mayRecordAsCanonicalRefundNote` refuses one, so no retry or repair writes it
+back, and the booking repair tool neither offers it as a field backfill nor
+counts it as a conflicting reference.
+
+A reissue never gets a note back from Xero that is not its own. A void moves
+coverage, so a reissue's key base can equal the voided note's own key or a live
+note's. Once a refund note on the payment is voided, the refund-note key (built
+the same way for the outbox row's correlation key and the Xero idempotency key,
+`refundNoteKeyAfterVoidParts`) ends `:after-void:<ids>`, sorted and hashed when
+long. The ids are every refund note, live or voided, recorded at the key's own
+watermark (card and per-refund notes) or amount (a single note), or, once a
+"Paid another way" close has a voided note, every note its own rows raised. A
+link that records no figure is read from its create row, and counts as matching
+when that records none either (fail closed). With no void the key is
+byte-identical. A card payment's #2901 self-heal reissue follows the same rule.
+
+As a last check, the create path refuses Xero's answer before recording anything
+when the note is VOIDED or DELETED or another create row on the payment already
+raised it: the row fails with that reason and neither the pointer nor a link is
+written, so no key reuse can re-adopt or relabel a note.
+
+Stated limit: a lost attempt's retry keeps its key only while nothing it is keyed
+on moves. A void of a note the payment's coverage counted moves a card note's
+watermark between the attempt and its retry, so the retry can mint a second note
+(true on `main` before #4091 too). A void that adds a matching or unreadable
+link to the suffix does the same. Both need a void inside a lost-answer window.
+
+On a bank transfer a void undoes the refund (owner decision; Xero is its payment
+rail, `INV-ADDPAY-021`). The inbound sync returns the refunded amount to what the
+live notes say, and nothing is re-raised automatically. If the refund was real,
+the treasurer records it again, and only then does a request raise the fresh
+note, under its own key.
+
+**Deploy and rollback note (#4091).** The previous release writes a voided
+canonical bank-transfer mirror active, re-adopts a voided note through its
+succeeded create, and sends the plain key, so a reissue there can get the voided
+note back from Xero. Stop the old colour's outbox and inbound workers before the
+new release queues refund notes. A retry of a row the old code first attempted,
+on a payment that already has a matching void, gets the new key and so may mint
+a fresh note beside one the lost attempt raised; the scoping above makes that
+rare. Before rolling back, and after rolling forward, list the rows at risk
+(read-only):
+`SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`
+(voided mirrors still active), and
+`SELECT o.id, o."localId", o.status, o."correlationKey" FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND o.status IN ('PENDING', 'RUNNING', 'WAITING_PAYMENT', 'FAILED', 'PARTIAL') AND EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = o."localId" AND l.role = 'REFUND_CREDIT_NOTE' AND upper(trim(l.metadata->>'status')) IN ('VOIDED', 'DELETED'))`
+(unfinished refund-note creates on a payment with a void). Let each listed create
+finish on one colour; a listed mirror is #4161's to heal.
+
+Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
 payment records; operator-applied overpayments/prepayments count), the
 matching local payments/bookings are flipped here, and the receipt is recorded
@@ -1697,6 +1756,39 @@ idempotency key, which returns the original invoice
   not billed. An invoice linked without stored figures (before this check, or
   outside the create) is not checked; the retry warns when its payment records
   a fee.
+
+## Booking-page supplementary invoice observations (#4047)
+
+The booking page observes issued supplementary invoices through
+`booking-supplementary-invoice-identities.ts` and
+`xero-invoice-observation-read.ts`. Discovery covers Booking, BookingModification
+and eligible financial-review second asks on ManualRefundTask, using canonical
+payload and repair recovery rules. Replayed links are deduplicated. Card receipts
+and the organiser's combined invoice never become another member bank demand.
+The clearing selector remains narrower because its note does not cover second asks.
+
+Each action authenticates through the existing Xero client, then makes at most
+one native JSON GET for 20 scoped invoice IDs. The accounting deadline is five
+seconds, active through body consumption via AbortController, with no automatic
+retry. Authentication can refresh tokens or wait on its existing lease outside
+that deadline; this section streams separately from the ordinary booking content.
+`callXeroApi` retains metering and daily/outage gates, and the per-actor
+`booking-supplementary-observation` key uses the booking-query limiter.
+
+Amounts use `exactProviderAmountToCents` (`INV-MONEY-001`, `INV-MONEY-003`),
+finite non-negative raw input and safe integer cents. Settlement requires raw
+AmountDue exactly zero. Missing identities, malformed/contradictory status,
+unissued instruments or positive amounts that normalise to zero remain unknown.
+Void/deletion retires an instrument, not the debt. All observations are request-local,
+dated and shown individually; no cross-batch current total or durable balance is written.
+
+User continuations use an authenticated actor/booking/tenant/revision-bound signed
+cursor and reauthorize every action. Current audience, ownership, lifecycle,
+card ask, invoice population, module and tenant are re-read around provider waits.
+Cancelled/bumped/deleted bookings and unauthorised audiences make no provider read.
+Payment routes retain their final guards. No settlement, reconciliation, new lock
+key, schema change, historical operation or ledger reader cutover is introduced
+(`INV-INT-003`, `INV-LOCK-001`, `INV-LOCK-002`, `INV-LOCK-003`).
 
 ## OAuth and token lifecycle (supporting flow)
 

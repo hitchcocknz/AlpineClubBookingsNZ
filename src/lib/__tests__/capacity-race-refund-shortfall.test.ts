@@ -8,7 +8,7 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
  * touch about the remaining $X". The once-ever rule is the real
  * `sendAdminAlertOnceEver`; its claim and the send are doubled.
  *
- * #4154 (`INV-PAY-133`): and the hand-back task to check that records the same
+ * #4154 (`INV-PAY-134`): and the hand-back task to check that records the same
  * remainder, raised in the capacity void's claim.
  */
 const doubles = vi.hoisted(() => ({
@@ -124,7 +124,7 @@ const CHECK_KEY = "cancel-card-shortfall:booking-1:capacity-race:pi_1:check";
 const raiseTask = (store: ReturnType<typeof claimTx>, plannedRefundCents: number, chargedCents = 10000) =>
   raiseCapacityRaceRefundShortfallTask(store as never, { bookingId: "booking-1", paymentId: "payment-1", paymentIntentId: "pi_1", chargedCents, plannedRefundCents, format: CLUB_FORMAT_TEST });
 
-describe("the capacity race's refund shortfall task (#4154, INV-PAY-133)", () => {
+describe("the capacity race's refund shortfall task (#4154, INV-PAY-134)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("MUTATION: a partial plan raises ONE card shortfall part to CHECK for the remainder, keyed on the booking and the race's intent", async () => {

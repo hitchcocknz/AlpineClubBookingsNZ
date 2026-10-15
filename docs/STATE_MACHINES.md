@@ -1722,7 +1722,7 @@ ledger showed less refundable than the charge (or nothing - an empty plan,
 which never reads "no refund was due"), the rest is neither refunded nor
 retained, and the narrative says the club will be in touch about it. That
 promise is backed by a once-ever officers' alert on the booking naming the
-rest (`alertCapacityRaceRefundShortfall`) and (#4154, `INV-PAY-133`) by a
+rest (`alertCapacityRaceRefundShortfall`) and (#4154, `INV-PAY-134`) by a
 hand-back task to check for it, raised OPEN in the void's claim. The
 narrative counts every settlement event of a capacity race, so the task
 marked paid back (its REFUNDED event) removes the follow-up line; dismissed,
@@ -2186,7 +2186,7 @@ Where that charge holds too little, the completion first lowers its refunded
 total to its refund rows when every guard holds (the owner's guarded
 recalculation), else is refused naming the guard (DISMISSED and a Xero note by
 hand). See
-[`INV-PAY-133`](invariants/payment-and-settlement.md#inv-pay-133).
+[`INV-PAY-134`](invariants/payment-and-settlement.md#inv-pay-134).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

@@ -1149,7 +1149,7 @@ describe("#3032 - applyLocalRefundAllocation cannot lose an update", () => {
 });
 
 /**
- * #4154 (`INV-PAY-133`, PR #4159 F2/F4): a capacity race's hand-back may land
+ * #4154 (`INV-PAY-134`, PR #4159 F2/F4): a capacity race's hand-back may land
  * only on the race's own card charge. `onlyTransactionIds` narrows the charges
  * the allocation may use; short there, it refuses as any shortfall does, and
  * never spills onto a charge outside the list, however much that one holds.

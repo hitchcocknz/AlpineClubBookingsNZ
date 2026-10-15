@@ -38,6 +38,7 @@ import {
   pullUrl,
   repeatMentions,
   revertedCommit,
+  unwrapRevertSubject,
 } from "./fragility-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -129,7 +130,7 @@ export function buildRepeats({ units, codePairs, github, reverts }) {
     // A revert undoes one commit, not the whole fix unit: both sides carry that
     // commit's own scope and files, so a wide PR's union of scopes does not
     // spread one revert across every area the PR touched.
-    const reverted = { scopes: parseFixScope(/^Revert "(.*)"$/.exec(revert.subject)?.[1] ?? "").scopes, files: revert.files ?? [] };
+    const reverted = { scopes: parseFixScope(unwrapRevertSubject(revert.subject) ?? "").scopes, files: revert.files ?? [] };
     add({ ...unitRef(earlier), ...reverted }, { key: `commit-${revert.sha.slice(0, 12)}`, commit: revert.sha, date: revert.date, title: revert.subject, ...reverted, url: commitUrl(revert.sha) }, {
       kind: "revert",
       url: commitUrl(revert.sha),

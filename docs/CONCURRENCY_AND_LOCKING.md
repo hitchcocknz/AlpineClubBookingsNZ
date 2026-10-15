@@ -3216,7 +3216,7 @@ conflict under its unique
 settle never rolls back on it. Its completion is the one above, reading the
 race's own recovery rows (one per intent, on the booking) beside the cancel's,
 and it reads the race intent's captured charge under the same `Payment` row
-lock its allocation then writes, on that charge alone (`INV-PAY-133`).
+lock its allocation then writes, on that charge alone (`INV-PAY-134`).
 
 **#4154's guarded correction is a new writer of a charge's refunded total, and
 takes no new key.** Where the race's charge holds too little for the task, the

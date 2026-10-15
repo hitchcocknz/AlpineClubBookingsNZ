@@ -455,7 +455,7 @@ describe("resolveBookingNarrative", () => {
       expect(narrate(events)).toBe(`${OPENING} $100.00 was refunded on 20 May 2026. No further payment is required.`);
     });
 
-    // #4154 (`INV-PAY-133`): the rest is a task to check (#4097's `check` part), read live.
+    // #4154 (`INV-PAY-134`): the rest is a task to check (#4097's `check` part), read live.
     describe("its task to check (#4154)", () => {
       const withTask = (events: NarrativeEvent[], check: "OPEN" | "COMPLETED" | "DISMISSED", cardRefundState?: "on-its-way" | "stalled") =>
         resolveBookingNarrative({ club: CLUB, booking: booking({ status: "CANCELLED" }), events, cardRefundState, cardShortfallStatuses: { check } }, CLUB_FORMAT_TEST).message;

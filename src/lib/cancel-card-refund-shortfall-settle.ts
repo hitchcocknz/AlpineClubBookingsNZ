@@ -17,6 +17,7 @@ import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { bookingCancelCardRefundRecoveryWhere, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX, isBookingCancelCardRefundRecoveryKey } from "@/lib/payment-recovery-keys";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * #4097 (`INV-PAY-129`, coordinator decisions on PR #4122): HOW A CANCEL'S CARD
@@ -94,7 +95,7 @@ export async function nonCardCapturedCharges(
 ): Promise<Array<{ id: string; headroomCents: number }>> {
   const rows = await db.paymentTransaction.findMany({
     where: { paymentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
-    orderBy: { createdAt: "desc" },
+    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
     select: { id: true, source: true, stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
   });
   return nonCardChargeHeadroom(rows ?? []);
@@ -171,7 +172,7 @@ export async function cardShortfallSettlement(
       : { ...CANCEL_CARD_REFUND_REFUSALS, awaitingRetry: CAPACITY_RACE_CARD_AWAITING_RETRY_MESSAGE, stopped: capacityRaceCardStoppedMessage(raceXero) };
   const refusal = ownOrFailedLater.map((row) => cardRefundRefusal(row, says)).find((message) => message !== null);
   if (refusal) throw new ManualBookingPaymentError(refusal, 409);
-  // #4154 (`INV-PAY-133`, PR #4159 review F2/F4): a capacity race's settles on
+  // #4154 (`INV-PAY-134`, PR #4159 review F2/F4): a capacity race's settles on
   // the race's own card charge and nowhere else - never a non-card charge, nor
   // a charge captured later on the same payment. Short there, the allocation
   // refuses (`onlyTransactionIds`) with the race's own way out.

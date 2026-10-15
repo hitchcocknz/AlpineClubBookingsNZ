@@ -45,6 +45,7 @@ import {
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { isPartPaymentReviewTask, NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { refundPaymentLinkWhere } from "@/lib/xero-refund-note-settlement";
+import { cancelledRefundNoteIds as cancelledRefundNoteIdsFor } from "@/lib/xero-refund-note-status";
 
 /** A settled edit-review charge share, carrying the booking it was raised on. */
 type EditReviewChargeShareRecord = EditReviewChargeShareRow & {
@@ -445,6 +446,8 @@ export async function loadAuditData(
         })
       : [];
 
+  // #4091: refund notes Xero voided, active or not (`paymentLinks` holds active links only).
+  const cancelledRefundNoteIds = await cancelledRefundNoteIdsFor(paymentIds, deps.prisma);
   const linksByLocalKey = new Map<string, XeroObjectLinkRecord[]>();
   for (const link of links) {
     const key = makeLocalKey(link.localModel, link.localId);
@@ -590,6 +593,7 @@ export async function loadAuditData(
     paymentLinks: booking.payment
       ? linksByLocalKey.get(makeLocalKey("Payment", booking.payment.id)) ?? []
       : [],
+    cancelledRefundNoteIds,
     paymentRefundPaymentLinks: booking.payment
       ? refundPaymentLinks.filter((link) => link.localModel === "Payment" && link.localId === booking.payment!.id)
       : [],

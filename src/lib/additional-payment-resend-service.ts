@@ -17,6 +17,7 @@ import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { buildAdditionalOwedPaymentWhere } from "@/lib/unpaid-finished-stays";
 import { clubFormatValues } from "@/lib/club-format-server";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * Admin re-send of the "you still owe this" email (#2350).
@@ -104,7 +105,7 @@ export async function resendAdditionalPaymentEmail(params: {
           transactions: {
             where: { kind: "ADDITIONAL" },
             select: { createdAt: true },
-            orderBy: { createdAt: "desc" },
+            orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
             take: 1,
           },
         },
@@ -444,7 +445,7 @@ async function explainLostClaim(params: {
         transactions: {
           where: { kind: "ADDITIONAL" },
           select: { createdAt: true },
-          orderBy: { createdAt: "desc" },
+          orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
           take: 1,
         },
       },

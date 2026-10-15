@@ -2644,7 +2644,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
     });
 
-    // #4154 (`INV-PAY-133`): a capacity race's task to check waits for that race's own card refund row(s), one per intent.
+    // #4154 (`INV-PAY-134`): a capacity race's task to check waits for that race's own card refund row(s), one per intent.
     it.each([
       ["still being sent", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: null }, /still being refunded; mark this once it settles/],
       // #4154 review (M10): a race's own words - never "close it as Paid another way, then mark this", which its correction refuses.

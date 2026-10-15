@@ -40,6 +40,8 @@ const ledger = vi.hoisted(() => ({
   transactions: [] as Row[],
   operations: [] as Row[],
   clock: 0,
+  /** The database's insertion sequence (#4132): every new ledger row takes the next value. */
+  seq: 0,
 }));
 
 const stripe = vi.hoisted(() => ({
@@ -106,7 +108,12 @@ vi.mock("@/lib/prisma", () => {
     ...payment,
     transactions: ledger.transactions
       .filter((transaction) => transaction.paymentId === payment.id)
-      .sort((a, b) => (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime())
+      // LEDGER_ROWS_OLDEST_FIRST (#4132): createdAt, then insertion order.
+      .sort(
+        (a, b) =>
+          (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime() ||
+          (a.insertionSeq as number) - (b.insertionSeq as number),
+      )
       .map((transaction) => ({ ...transaction })),
   });
 
@@ -121,6 +128,7 @@ vi.mock("@/lib/prisma", () => {
     carriedAskCents: 0,
     reason: null,
     bookingModificationId: null,
+    insertionSeq: ++ledger.seq,
   });
 
   return {
@@ -133,7 +141,10 @@ vi.mock("@/lib/prisma", () => {
             onlyArgs(include, ["transactions"]);
             // `withTransactions` sorts oldest first, which is the only order
             // reconcile asks for; anything else would be answered wrongly.
-            if (JSON.stringify(include.transactions) !== JSON.stringify({ orderBy: { createdAt: "asc" } })) {
+            if (
+              JSON.stringify(include.transactions) !==
+              JSON.stringify({ orderBy: [{ createdAt: "asc" }, { insertionSeq: "asc" }] })
+            ) {
               refuse(`include ${JSON.stringify(include)}`);
             }
           }
@@ -275,6 +286,7 @@ function seedPaidBooking() {
     carriedAskCents: 0,
     reason: null,
     createdAt: new Date(Date.UTC(2026, 7, 1)),
+    insertionSeq: ++ledger.seq,
   });
 }
 
@@ -339,6 +351,7 @@ beforeEach(() => {
   ledger.transactions.length = 0;
   ledger.operations.length = 0;
   ledger.clock = 0;
+  ledger.seq = 0;
   let minted = 0;
   stripe.createPaymentIntent.mockReset().mockImplementation(async () => {
     minted += 1;
@@ -449,6 +462,7 @@ describe("an ask's ledger write keeps each edit's row its own (#4036 review)", (
       stripePaymentIntentId: "pi_add_1", amountCents: 7000, refundedAmountCents: 0, status: PaymentStatus.PENDING,
       paymentMethodId: null, reference: null, xeroInvoiceId: null, xeroInvoiceNumber: null, withdrawnAt: null,
       carriedAskCents: 0, reason: null, bookingModificationId: null, createdAt: new Date(Date.UTC(2026, 7, 2)),
+      insertionSeq: ++ledger.seq,
     });
 
     const first = await editUp("mod_1", 7000);

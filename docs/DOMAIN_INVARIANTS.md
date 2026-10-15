@@ -338,7 +338,8 @@ Prefix `INV-PAY`.
 | `INV-PAY-130` | No other card refund door closes or says refunded on a refusal |
 | `INV-PAY-131` | The cancel preview quotes the card only what its plan carries |
 | `INV-PAY-132` | No intent ledger-row write lowers a captured status |
-| `INV-PAY-133` | A capacity race's unrefunded rest is a hand-back task to check |
+| `INV-PAY-133` | Ledger rows order by createdAt, then insertionSeq |
+| `INV-PAY-134` | A capacity race's unrefunded rest is a hand-back task to check |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -718,6 +719,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-038` | Unmutable alert names population — #2773 orchestrator decision; owner has not ruled; `INV-ADDPAY-039` |
 | `INV-ADDPAY-039` | Hand-refunded late capture never refunded again — orchestrator decision; owner has not ruled |
 | `INV-ADDPAY-040` | An unpaid review-raised request can be withdrawn; withdrawal retires every instrument, durably |
+| `INV-ADDPAY-041` | A voided refund note is never re-adopted or replayed by Xero |
 
 ## Analytics And Privacy
 
