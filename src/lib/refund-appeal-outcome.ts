@@ -24,13 +24,21 @@
  * - By bank transfer: this request's own hand-back task
  *   (`refundRequestHandBackOccurrenceKey`, `INV-PAY-118`) while OPEN, and once
  *   DISMISSED - the club kept that money, so it never went back.
+ * - Closed as paid another way (`card-refund-paid-another-way.ts`): the row is
+ *   SUCCEEDED, so it owes nothing, but a part close's unpaid rest never went
+ *   back - read from the close's task, as a dismissed hand-back is (#4120).
  *
- * Read-only, three queries for a page of requests.
+ * Read-only, three queries for a page of requests, and a fourth when one of
+ * their card refunds was closed.
  */
 import { PaymentRecoveryOperationStatus, type PrismaClient } from "@prisma/client";
 
 import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
-import { refundRequestHandBackOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
+import {
+  CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
+  closeKeysOf,
+  refundRequestHandBackOccurrenceKey,
+} from "@/lib/manual-refund-task-settlement-rules";
 import {
   cardRefundSlicesByOperation,
   openCardRefundOwedCents,
@@ -49,6 +57,7 @@ const NOTHING_OWED: ApprovedAppealOutcome = {
   cardRefundUnansweredCents: 0,
   handBackOwedCents: 0,
   handBackDismissedCents: 0,
+  cardRefundClosedUnpaidCents: 0,
 };
 
 /** The approve route's audit of a card refund no retry was queued for, as an operation the owed figure can read, or null. */
@@ -122,6 +131,8 @@ export async function readApprovedAppealOutcomes(
     }),
   ]);
 
+  // #4120: an appeal's card refund closed as paid another way is SUCCEEDED; its close's task says how much.
+  const closedRows = new Map<string, string>();
   for (const payment of payments) {
     const appeals = approved.filter((request) => request.booking.payment?.id === payment.id);
     // Each appeal's card refund: its recovery row, or the operation its audit records.
@@ -133,6 +144,10 @@ export async function readApprovedAppealOutcomes(
     }
     const owing = { ...payment, recoveryOperations: [...payment.recoveryOperations, ...unqueued.values()] };
     const slicesById = new Map(cardRefundSlicesByOperation(owing).map(({ operation, slices }) => [operation.id, slices]));
+    for (const request of appeals) {
+      const row = payment.recoveryOperations.find((each) => isAppealRefundRow(each, request.id));
+      if (row?.status === PaymentRecoveryOperationStatus.SUCCEEDED) closedRows.set(row.id, request.id);
+    }
     // The per-payment cap, shared by the payment's appeals in list order.
     let capLeftCents = openCardRefundOwedCents(owing);
     for (const request of appeals) {
@@ -154,6 +169,21 @@ export async function readApprovedAppealOutcomes(
         ...(row ? {} : { cardRefundRefusedCents: refusedCents, cardRefundUnansweredCents: owedCents - refusedCents }),
       });
     }
+  }
+
+  // #4120: a part close is final - what it did not pay back went nowhere, as a dismissed hand-back.
+  const closes = closedRows.size
+    ? await db.manualRefundTask.findMany({
+        where: { ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: [...closedRows.keys()].flatMap(closeKeysOf) } },
+        select: { occurrenceKey: true, amountCents: true, raisedAmountCents: true },
+      })
+    : [];
+  for (const [rowId, requestId] of closedRows) {
+    const keys = closeKeysOf(rowId);
+    const unpaidCents = closes
+      .filter((close) => close.occurrenceKey !== null && keys.includes(close.occurrenceKey))
+      .reduce((sum, close) => sum + Math.max(0, (close.raisedAmountCents ?? 0) - (close.amountCents ?? 0)), 0);
+    if (unpaidCents > 0) outcomes.set(requestId, { ...(outcomes.get(requestId) ?? NOTHING_OWED), cardRefundClosedUnpaidCents: unpaidCents });
   }
 
   for (const request of approved) {

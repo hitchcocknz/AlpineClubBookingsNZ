@@ -3,7 +3,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
-import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
+import { approvedAppealRefundedCents, refundAppealOutstandingLines } from "@/lib/refund-request-card-refund-copy";
+import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 
 const AT = new Date("2026-06-20T00:00:05.000Z");
 const MADE_AT = new Date("2026-06-20T00:00:01.000Z");
@@ -32,7 +33,7 @@ function db({
   operations = [operation()],
   refundedAmountCents = 1_500,
   audits = [] as Array<{ entityId: string; metadata: unknown }>,
-  tasks = [] as Array<{ occurrenceKey: string; status?: string; amountCents: number | null }>,
+  tasks = [] as Array<{ occurrenceKey: string; status?: string; amountCents: number | null; raisedAmountCents?: number | null }>,
   refunds = [
     { stripeRefundId: "re_made", paymentTransactionId: "txn-new", amountCents: 1_500, status: "succeeded", createdAt: MADE_AT, stripeCreatedAt: MADE_AT },
   ] as Array<Record<string, unknown>>,
@@ -82,6 +83,40 @@ describe("an approved appeal's card refund, read from its recovery row", () => {
       cardRefundState: "made",
       cardRefundOwedCents: 0,
     });
+  });
+});
+
+describe("#4120: an appeal's card refund closed as paid another way (card-refund-paid-another-way.ts)", () => {
+  // The close moves the row to SUCCEEDED and writes a COMPLETED task for what was paid back,
+  // `raisedAmountCents` keeping what was still owed when it closed.
+  const closed = operation({ status: "SUCCEEDED", succeededAt: new Date("2026-06-21T00:00:00.000Z") });
+  const close = (op: string, paid: number, owed: number, xeroRefundNote: "now" | "none" = "now") => ({
+    occurrenceKey: cardRefundPaidAnotherWayOccurrenceKey(op, { xeroRefundNote }),
+    status: "COMPLETED",
+    amountCents: paid,
+    raisedAmountCents: owed,
+  });
+
+  it("closed in full: nothing unpaid, the whole approved amount refunded", async () => {
+    const outcome = await outcomeOf(db({ operations: [closed], tasks: [close("op-1", 1_000, 1_000)] }));
+    expect(outcome).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0, cardRefundClosedUnpaidCents: 0 });
+    expect(approvedAppealRefundedCents(2_500, outcome ?? {})).toBe(2_500);
+  });
+
+  it("closed in part: the part not paid back is not refunded, and the screen says so", async () => {
+    const store = db({ operations: [closed], tasks: [close("op-1", 600, 1_000, "none"), close("op-other", 0, 900)] });
+    const outcome = await outcomeOf(store);
+    expect(outcome).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0, cardRefundClosedUnpaidCents: 400 });
+    expect(approvedAppealRefundedCents(2_500, outcome ?? {})).toBe(2_100);
+    expect(refundAppealOutstandingLines(outcome ?? {}, (cents) => `$${cents / 100}`)).toEqual(["$4 of the card refund was closed without being paid back."]);
+    expect(store.manualRefundTask.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: "COMPLETED", occurrenceKey: { in: expect.arrayContaining([close("op-1", 0, 0).occurrenceKey]) } }) }),
+    );
+  });
+
+  it("a row still owed is never read as closed", async () => {
+    const outcome = await outcomeOf(db({ tasks: [close("op-1", 600, 1_000)] }));
+    expect(outcome).toMatchObject({ cardRefundState: "retrying", cardRefundClosedUnpaidCents: 0 });
   });
 });
 
@@ -139,6 +174,7 @@ describe("an approved appeal with no recovery row", () => {
       cardRefundUnansweredCents: 1_000,
       handBackOwedCents: 0,
       handBackDismissedCents: 0,
+      cardRefundClosedUnpaidCents: 0,
     });
   });
 

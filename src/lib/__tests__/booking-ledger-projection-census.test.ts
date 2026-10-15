@@ -9,6 +9,8 @@
  * integrity, paging, acknowledgements and the verdict.
  */
 import { describe, expect, it, vi } from "vitest";
+import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
+import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
 
 vi.mock("server-only", () => ({}));
 
@@ -2292,6 +2294,35 @@ describe("#4120: a paid refund appeal on a cancelled booking is REFUND_APPEAL_PA
     };
     expect(identity(retrying, "PRICE")).toMatchObject({ status: "CLASSIFIED", explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -4_000 }] });
     expect(disagreements(retrying)).toEqual([]);
+  });
+
+  it("MUTATION: an appeal card refund closed as paid another way in part agrees once the unpaid part is read as not refunded", () => {
+    // $40 approved; its card refund died, and the treasurer closed it having paid $25 back by bank.
+    // The close: the row SUCCEEDED, a COMPLETED task for $25 (raised at the $40 still owed), and
+    // its bank-refund line; the payment's refunded total rose by $25 (`card-refund-paid-another-way.ts`).
+    const subject = cardAppeal(null, false);
+    const close = new Ledger().post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: "task-paw-appeal", amountCents: 2_500, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+    const closedInPart = (refundedCents: number): BookingLedgerCensusRow => ({
+      ...subject,
+      lines: [...subject.lines, ...close.lines.map((line) => ({ ...line, id: `paw-${line.id}` }))],
+      transactions: [txn("t1", 19_000, { refundedAmountCents: 9_500 + 2_500 })],
+      payment: payment({ refundedAmountCents: 9_500 + 2_500 }),
+      tasks: [
+        ...subject.tasks,
+        { id: "task-paw-appeal", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", amountCents: 2_500, settlementDirection: null, paymentId: "pay-3583", lateCaptureApprovalIntentId: null, occurrenceKey: cardRefundPaidAnotherWayOccurrenceKey("op-appeal", { xeroRefundNote: "now" }) },
+      ],
+      recoveryOperations: [
+        ...subject.recoveryOperations,
+        { type: "REFUND_BOOKING_MODIFICATION", status: "SUCCEEDED", attempts: 5, nextRetryAt: null, amountCents: 4_000, idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey("rr1"), paymentId: "pay-3583", paymentIntentId: "pi-3583" },
+      ],
+      appeals: [{ id: "rr1", refundedCents }],
+    });
+    const refunded = approvedAppealRefundedCents(4_000, { cardRefundClosedUnpaidCents: 1_500 });
+    expect(refunded).toBe(2_500);
+    expect(identity(closedInPart(refunded), "PRICE")).toMatchObject({ status: "CLASSIFIED", deltaCents: -2_500, explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -2_500 }] });
+    expect(disagreements(closedInPart(refunded))).toEqual([]);
+    // Read as the whole approved amount (the unpaid part ignored), PRICE disagrees by that part.
+    expect(disagreements(closedInPart(4_000))).toEqual(["PRICE"]);
   });
 
   it("two appeals sum: each by what its outcome says went back", () => {

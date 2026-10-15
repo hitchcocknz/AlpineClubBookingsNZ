@@ -72,6 +72,7 @@ interface RefundRequestData {
   cardRefundUnansweredCents?: number
   handBackOwedCents?: number
   handBackDismissedCents?: number
+  cardRefundClosedUnpaidCents?: number
   booking: {
     id: string
     checkIn: string

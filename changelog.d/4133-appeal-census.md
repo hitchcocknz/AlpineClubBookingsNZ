@@ -17,3 +17,6 @@
 
   Also: an appeal refunded to the group organiser's card now counts only once
   that refund is actually made, on the refund-requests screen as in the census.
+  And an appeal's card refund closed as "paid another way" for less than was
+  owed now counts only the part paid back: the screen says how much "was
+  closed without being paid back", and the census agrees with the ledger.
