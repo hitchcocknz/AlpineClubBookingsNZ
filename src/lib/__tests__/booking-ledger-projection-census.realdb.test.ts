@@ -473,7 +473,8 @@ const NOTHING = { disagreements: [], coverage: [], integrity: [], classes: [] };
     const appealTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BANK_APPEAL, status: "OPEN" }, select: { id: true } });
     await complete(appealTask.id);
     const paid = await census();
-    expect(about(paid, BANK_APPEAL)).toEqual({ ...NOTHING, classes: ["REFUND_MIRROR_CREDIT_ALLOCATION:REFUNDED", "REFUND_APPEAL_PAID:PRICE"] });
+    // The paid hand-back raised the refunded total too, which its own mirror class explains.
+    expect(about(paid, BANK_APPEAL)).toEqual({ ...NOTHING, classes: ["REFUND_MIRROR_HAND_BACK:REFUNDED", "REFUND_MIRROR_CREDIT_ALLOCATION:REFUNDED", "REFUND_APPEAL_PAID:PRICE"] });
     expect(paid.classes.REFUND_APPEAL_PAID.instances.filter((instance) => instance.bookingId === BANK_APPEAL)).toEqual([
       expect.objectContaining({ identity: "PRICE", cents: -4_000 }),
     ]);
