@@ -28,6 +28,11 @@
  *   nothing corrected, until the runner makes the race's refund.
  * - A charge made before the refund ledger started: never corrected - refused
  *   naming why, nothing written - and dismissed, the page says the club closed it.
+ * - #4154 review: a payment with no Xero invoice (the usual case) completes with
+ *   no note (M4); a dashboard refund Stripe shows and the app has not recorded,
+ *   or Stripe unread, refuses until it is - then the charge cannot hold the task
+ *   (M1); a completion racing the refund sync, and two completions of one task,
+ *   leave the totals agreeing and one of everything (M7).
  *
  * "Refunds owed" is not read: it is club-wide, and capped at what a payment's
  * records still hold, which here read the whole charge refunded.
@@ -39,8 +44,9 @@
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
  * (#1881), which imports this file so CI reaches it; it owns and cleans its own
- * `race-4154-` fixtures. No Stripe call is made: the refund goes to the
- * harness's one shared `@/lib/stripe` double (`support/stripe-race-double.ts`).
+ * `race-4154-` fixtures. No Stripe call is made: the refund, and the
+ * completion's read of the charge (`getPaymentIntent`), go to the harness's one
+ * shared `@/lib/stripe` double (`support/stripe-race-double.ts`).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -150,7 +156,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         });
       }
       await prisma.payment.create({
-        data: { id: PAYMENT_ID, bookingId: BOOKING_ID, amountCents: CHARGE_CENTS, source: "STRIPE", status: "PENDING", stripePaymentIntentId: INTENT, xeroInvoiceId: XERO_INVOICE_ID },
+        // #4154 review (M4): no invoice on a payment still awaiting its card - a race's payment is usually never invoiced (`invoice()`).
+        data: { id: PAYMENT_ID, bookingId: BOOKING_ID, amountCents: CHARGE_CENTS, source: "STRIPE", status: "PENDING", stripePaymentIntentId: INTENT },
       });
       await prisma.paymentTransaction.create({
         data: { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CHARGE_CENTS, refundedAmountCents: refundedCents, status: "SUCCEEDED", createdAt: chargeMadeAt },
@@ -178,6 +185,34 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         };
       };
       return asked;
+    }
+
+    /** The booking invoiced in Xero after its card payment, so a hand-back's refund note has an invoice to credit. */
+    const invoice = () => prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: XERO_INVOICE_ID } });
+
+    /**
+     * #4154 review (M1): what Stripe says the race's charge has refunded, as the completion reads it before its
+     * transaction - or (`unreachable`) that Stripe cannot be read. Each read is counted.
+     */
+    function stripeShowsRefunded(answer: number | "unreachable") {
+      const reads: string[] = [];
+      stripeRaceHooks.get = async (id) => {
+        reads.push(id);
+        if (answer === "unreachable") throw new Error("race-4154: Stripe unreachable");
+        return { id, object: "payment_intent", status: "succeeded", latest_charge: { id: "ch_race_4154", object: "charge", amount_refunded: answer } };
+      };
+      return reads;
+    }
+
+    /** A refund made in the Stripe dashboard on the race's charge, reaching the app through the refund sync. */
+    async function dashboardRefundRecorded(id: string, amountCents: number) {
+      const { recordStripeRefundsAgainstTransaction } = await import("@/lib/payment-transactions");
+      return recordStripeRefundsAgainstTransaction({
+        paymentId: PAYMENT_ID,
+        paymentTransactionId: CARD_TXN,
+        refunds: [{ id, amount: amountCents, currency: "nzd", status: "succeeded", created: Math.floor(Date.UTC(2099, 0, 2) / 1000), charge: "ch_race_4154", payment_intent: INTENT }],
+        store: prisma,
+      });
     }
 
     /** The card payment completing after the dates filled. */
@@ -321,7 +356,10 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect((await census("apply")).posted).toMatchObject({ kind: "CANNOT_POST", disagreements: [{ identity: "REFUNDED", deltaCents: DRIFT_CENTS }] });
 
       // Paid back by bank transfer: the charge corrected to its refund rows, then the task on it alone.
+      await invoice();
+      const reads = stripeShowsRefunded(CHARGE_CENTS - DRIFT_CENTS);
       await resolve("completed", tasks[0]!.id);
+      expect(reads).toEqual([INTENT]);
       expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: DRIFT_CENTS });
       expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
       expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
@@ -357,6 +395,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(task).toMatchObject({ status: "OPEN", amountCents: CHARGE_CENTS });
       expect(await memberPage()).toContain("The club will be in touch about the $200.00.");
 
+      await invoice();
+      stripeShowsRefunded(0);
       await resolve("completed", task.id);
       expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: CHARGE_CENTS });
       expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
@@ -382,6 +422,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await capacityRace();
       await lateCharge(50_000);
 
+      stripeShowsRefunded(CHARGE_CENTS - DRIFT_CENTS);
       await resolve("completed", (await checkTask()).id);
       expect(await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } })).toEqual([
         { id: CARD_TXN, refundedAmountCents: CHARGE_CENTS },
@@ -397,6 +438,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const task = await checkTask();
       expect(task).toMatchObject({ status: "OPEN", amountCents: DRIFT_CENTS });
 
+      stripeShowsRefunded(0);
       await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/still being refunded|waiting to retry/) });
       expect(await checkTask()).toMatchObject({ status: "OPEN" });
       expect(await corrections()).toEqual([]);
@@ -409,6 +451,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
       expect(await runPaymentRecoveryOperationNow(raceRow.id, CLUB_FORMAT_TEST)).toBe("succeeded");
 
+      stripeShowsRefunded(CHARGE_CENTS - DRIFT_CENTS);
       await resolve("completed", task.id);
       expect(await checkTask()).toMatchObject({ status: "COMPLETED" });
       expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(1);
@@ -420,11 +463,13 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       stripeRefunds("make");
       await capacityRace();
       await lateCharge(50_000);
+      await invoice();
       const task = await checkTask();
 
+      stripeShowsRefunded(0);
       await expect(resolve("completed", task.id)).rejects.toMatchObject({
         status: 400,
-        message: expect.stringMatching(/^The payment's records show none of this card charge left to refund.*raise its refund credit note in Xero by hand.*the charge was made before the app kept a record of each card refund/),
+        message: expect.stringMatching(/^The payment's records show too little of this card charge left to refund.*raise its refund credit note in Xero by hand.*the charge was made before the app kept a record of each card refund/),
       });
       expect(await checkTask()).toMatchObject({ status: "OPEN" });
       expect(await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } })).toEqual([
@@ -440,6 +485,105 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const page = await memberPage();
       expect(page).toContain("The club checked the $200.00 and closed it.");
       expect(page).not.toContain("in touch");
+    });
+    it("#4154 review (M4): a race's payment with no Xero invoice - the usual case - completes, posts its line and queues no Xero note, and the census agrees", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      const task = await checkTask();
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { xeroInvoiceId: true } })).toEqual({ xeroInvoiceId: null });
+
+      stripeShowsRefunded(0);
+      await resolve("completed", task.id);
+      expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: CHARGE_CENTS });
+      expect(await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" }, select: { amountCents: true } })).toEqual([{ amountCents: -CHARGE_CENTS }]);
+      expect(await taskRefundNotes()).toEqual([]);
+      expect((await census("apply")).disagreements).toEqual([]);
+    });
+
+    it("MUTATION (review M1): a refund made in the Stripe dashboard whose webhook is late stops the completion until it is recorded - then the charge no longer holds the task, so the officer never pays it twice", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      const nothingMoved = async () => {
+        expect(await checkTask()).toMatchObject({ status: "OPEN" });
+        expect(await corrections()).toEqual([]);
+        expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(0);
+        expect(await taskRefundNotes()).toEqual([]);
+      };
+
+      stripeShowsRefunded(5_000);
+      await expect(resolve("completed", task.id)).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringMatching(/^Stripe shows \$50\.00 of this card charge refunded, but the app has recorded only \$0\.00/),
+      });
+      await nothingMoved();
+
+      stripeShowsRefunded("unreachable");
+      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^The app could not reach Stripe/) });
+      await nothingMoved();
+
+      // The late webhook arrives: its refund is recorded, and Stripe and the app now agree. The charge corrected to its
+      // refund rows holds only $150.00 - less than the task - so the app refuses rather than record a second $50.00.
+      await dashboardRefundRecorded("re_race_4154_dashboard", 5_000);
+      stripeShowsRefunded(5_000);
+      await expect(resolve("completed", task.id)).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining("even corrected, the charge would not hold this amount"),
+      });
+      await nothingMoved();
+    });
+
+    it("MUTATION (review M7): a completion racing the refund sync recording a new refund on the race's charge - both commit or the completion refuses, and the totals agree either way", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      stripeShowsRefunded(0);
+
+      const [completion, sync] = await Promise.allSettled([resolve("completed", task.id), dashboardRefundRecorded("re_race_4154_concurrent", 3_000)]);
+      expect(sync.status).toBe("fulfilled");
+      const charge = await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } });
+      const paymentRow = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } });
+      expect(paymentRow.refundedAmountCents).toBe(charge.refundedAmountCents);
+      expect(charge.refundedAmountCents).toBe(CHARGE_CENTS);
+      expect(await prisma.paymentRefund.count({ where: { paymentTransactionId: CARD_TXN, stripeRefundId: "re_race_4154_concurrent" } })).toBe(1);
+      const lines = await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } });
+      if (completion.status === "fulfilled") {
+        // The completion first: corrected to nothing, the whole charge handed back; the sync's refund then capped (and logged).
+        expect(await checkTask()).toMatchObject({ status: "COMPLETED" });
+        expect(await corrections()).toHaveLength(1);
+        expect(lines).toBe(1);
+      } else {
+        // The sync first: its refund row is on the charge, so even corrected the charge cannot hold the task.
+        expect(completion.reason).toMatchObject({ status: 400, message: expect.stringContaining("even corrected, the charge would not hold this amount") });
+        expect(await checkTask()).toMatchObject({ status: "OPEN" });
+        expect(await corrections()).toEqual([]);
+        expect(lines).toBe(0);
+      }
+    });
+
+    it("MUTATION (review M7): two completions of one task at once - exactly one wins; one correction, one line, one Xero note", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      stripeShowsRefunded(0);
+
+      const outcomes = await Promise.allSettled([resolve("completed", task.id), resolve("completed", task.id)]);
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      const [lost] = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+      expect(lost!.reason).toMatchObject({ status: 409 });
+      expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: CHARGE_CENTS });
+      expect(await corrections()).toHaveLength(1);
+      expect(await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" }, select: { amountCents: true } })).toEqual([{ amountCents: -CHARGE_CENTS }]);
+      expect(await taskRefundNotes()).toEqual([{ cents: CHARGE_CENTS, taskId: task.id }]);
+      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
     });
   },
 );
