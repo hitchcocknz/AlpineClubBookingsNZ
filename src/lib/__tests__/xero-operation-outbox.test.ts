@@ -1422,6 +1422,21 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
   });
 
+  it("#4091: once Xero voided the payment's one note, a re-request repoints nothing and queues a fresh create", async () => {
+    // The void released the field, and the lookup no longer re-adopts the
+    // voided note (`findCanonicalPaymentRefundCreditNote`, its own test).
+    mocks.findCanonicalPaymentRefundCreditNote.mockResolvedValue(null);
+
+    await expect(enqueueXeroRefundCreditNoteOperation("payment_1", 5000)).resolves.toEqual({
+      queueOperationId: "op_credit_note_1",
+      message: "Xero refund credit note queued for background processing.",
+    });
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ operationType: "CREATE", entityType: "CREDIT_NOTE", localId: "payment_1", status: "PENDING" }),
+    );
+    expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+  });
+
   it("skips queueing when the webhook delta is zero", async () => {
     await expect(
       enqueueXeroRefundCreditNoteOperation("payment_1", 0)

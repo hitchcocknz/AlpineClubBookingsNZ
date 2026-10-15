@@ -82,13 +82,27 @@ export function canonicalRefundNoteCandidates<
   };
 }
 
-/** #3880: the payment's per-refund notes, active or not, read on the caller's client. */
-export async function perDeltaRefundNoteIds(paymentId: string, db: Prisma.TransactionClient): Promise<Set<string>> {
-  const links = await db.xeroObjectLink.findMany({
+/**
+ * The payment's refund notes, active or not, in one read on the caller's client:
+ * its per-refund notes (#3880), and the notes Xero recorded VOIDED/DELETED,
+ * which are never re-adopted as its one refund note (#4091, owner decision).
+ */
+export async function refundNoteIdSets(
+  paymentId: string,
+  db: Prisma.TransactionClient,
+): Promise<{ perDelta: Set<string>; cancelled: Set<string> }> {
+  const links = (await db.xeroObjectLink.findMany({
     where: { localModel: "Payment", localId: paymentId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
     select: { xeroObjectId: true, metadata: true },
-  });
-  return new Set((links ?? []).filter((link) => isPerDeltaRefundNoteLink(link.metadata)).map((link) => link.xeroObjectId));
+  })) ?? [];
+  const idsWhere = (keep: (metadata: unknown) => boolean) =>
+    new Set(links.filter((link) => keep(link.metadata)).map((link) => link.xeroObjectId));
+  return { perDelta: idsWhere(isPerDeltaRefundNoteLink), cancelled: idsWhere(isRefundCreditNoteLinkCancelledInXero) };
+}
+
+/** #3880: the payment's per-refund notes, active or not, read on the caller's client. */
+export async function perDeltaRefundNoteIds(paymentId: string, db: Prisma.TransactionClient): Promise<Set<string>> {
+  return (await refundNoteIdSets(paymentId, db)).perDelta;
 }
 
 /**

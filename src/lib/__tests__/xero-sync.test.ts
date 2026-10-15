@@ -319,6 +319,46 @@ describe("findCanonicalPaymentRefundCreditNote", () => {
     );
   });
 
+  describe("#4091 (owner decision): a note Xero voided is never re-adopted", () => {
+    // A bank-transfer payment whose one refund note Xero voided: its mirror is
+    // inactive and recorded VOIDED, but its refund payment link and its
+    // succeeded create still name it.
+    function voidedNoteOnPayment(field: string | null, active: Array<{ xeroObjectId: string; xeroObjectNumber: string }> = []) {
+      mocks.paymentFindUnique.mockResolvedValue({ xeroRefundCreditNoteId: field });
+      mocks.linkFindMany.mockImplementation(async ({ where }: any) => {
+        if (where?.role === "REFUND_CREDIT_NOTE") {
+          return where.active
+            ? active
+            : [{ xeroObjectId: "cn_voided", metadata: { amountCents: 20_000, status: "VOIDED" } }, ...active.map((link) => ({ ...link, metadata: { amountCents: 500 } }))];
+        }
+        if (where?.role === "REFUND_PAYMENT") return [{ metadata: { creditNoteId: "cn_voided" } }];
+        return [];
+      });
+      mocks.operationFindFirst.mockImplementation(async ({ where }: any) =>
+        where.xeroObjectId.notIn?.includes("cn_voided") ? null : { xeroObjectId: "cn_voided", xeroObjectNumber: "CN-V" },
+      );
+    }
+
+    it("MUTATION: with the field released, neither its refund payment nor its create re-adopts it - a later request raises a fresh note", async () => {
+      voidedNoteOnPayment(null);
+
+      await expect(findCanonicalPaymentRefundCreditNote("payment_1")).resolves.toBeNull();
+      expect(mocks.operationFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ xeroObjectId: { not: null, notIn: ["cn_voided"] } }) }),
+      );
+    });
+
+    it("MUTATION: a field still naming the voided note does not re-adopt it, and a live note is still found", async () => {
+      voidedNoteOnPayment("cn_voided", [{ xeroObjectId: "cn_live", xeroObjectNumber: "CN-L" }]);
+
+      await expect(findCanonicalPaymentRefundCreditNote("payment_1")).resolves.toEqual({
+        xeroObjectId: "cn_live",
+        xeroObjectNumber: "CN-L",
+        source: "link",
+      });
+    });
+  });
+
   it("falls back to the latest succeeded credit note create when no durable link exists yet", async () => {
     mocks.linkFindMany.mockImplementation(async ({ where }: any) => {
       if (where?.role === "REFUND_CREDIT_NOTE") {

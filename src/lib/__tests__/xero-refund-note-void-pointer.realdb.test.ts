@@ -59,6 +59,7 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
   { timeout: 60_000 },
   () => {
     async function clearRun() {
+      await prisma.xeroSyncOperation.deleteMany({ where: { localModel: "Payment", localId: PAYMENT_ID } });
       await prisma.xeroObjectLink.deleteMany({ where: { localId: PAYMENT_ID } });
       await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
     }
@@ -303,6 +304,40 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
       expect(await recordPointerWrites(() => withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical"))))
         .toEqual([]);
       expect(await state()).toEqual(after);
+    });
+
+    it("a refund note requested again after the void raises a fresh note and never re-adopts the voided one (#4091 owner decision)", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_canonical", [
+        { id: "cn_canonical", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000 } },
+      ]);
+      // The create that raised it, which the single-note lookup falls back to.
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
+          status: "SUCCEEDED", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", xeroObjectNumber: "CN-4091",
+          correlationKey: "race-4091-original-create", completedAt: new Date("2026-06-01T00:00:00.000Z"),
+        },
+      });
+      const voided = {
+        creditNoteID: "cn_canonical", creditNoteNumber: "CN-4091", status: "VOIDED",
+        total: 200, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [],
+      };
+      await withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical"));
+
+      // A rerun of the refund's request. Before the decision it found the
+      // voided note through its create, wrote it back into the pointer and
+      // re-armed its mirror, and raised nothing.
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 20_000);
+      // A redelivery of the void after it changes nothing either.
+      await withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical"));
+
+      expect(queued.queueOperationId).not.toBeNull();
+      const fresh = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: queued.queueOperationId! } });
+      expect(fresh).toMatchObject({ operationType: "CREATE", entityType: "CREDIT_NOTE", status: "PENDING", xeroObjectId: null });
+      const after = await state();
+      expect(after).toEqual({ pointer: null, active: [] });
+      expectNoMissingLink(after);
     });
 
     it("a bank-transfer canonical note voided beside a live per-refund note: only the canonical mirror goes off (#4091, #3880)", async () => {

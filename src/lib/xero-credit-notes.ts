@@ -490,9 +490,9 @@ export async function createXeroCreditNote(
   } else {
     const canonicalRefundCreditNote =
       await findCanonicalPaymentRefundCreditNote(paymentId);
-    // #3880 F1: never a per-refund note, even one an older writer left in the field.
-    existingCreditNoteId =
-      (await readCanonicalRefundNoteField(payment, prisma)) ?? canonicalRefundCreditNote?.xeroObjectId ?? null;
+    // #3880 F1: never a per-refund note, even one an older writer left in the
+    // field; #4091: never a voided one either - the lookup reads the field first.
+    existingCreditNoteId = canonicalRefundCreditNote?.xeroObjectId ?? null;
     existingCreditNoteNumber =
       canonicalRefundCreditNote?.xeroObjectNumber ?? null;
   }
