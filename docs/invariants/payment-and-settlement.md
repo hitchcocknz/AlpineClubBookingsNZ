@@ -794,15 +794,17 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   including a change payment the superseded-intent hand-off catches: refunded
   automatically (default) or held as one #2700-kind task per intent, marked by
   `lateCaptureApprovalIntentId`. Approval is the automatic refund, same Stripe
-  keys; a task of any status owns its capture, and the repair tool offers no
-  refund behind it. A #2700 hand-back is refused once its capture was refunded.
+  keys, and both refund only the capture's own charge, capped at what it
+  holds (#4131, `lateCaptureOwnChargeSlice`); a task of any status owns its capture, and the
+  repair tool offers no refund behind it. A #2700 hand-back is refused once its
+  capture was refunded.
   Kept money is recorded in Xero (`INV-PAY-110`).
 - **The repair tool's cancelled-open-invoice arm** asks "was money captured?"
   of every source and skips a payment already carrying a refund or
   account-credit note, or such an operation queued or failed.
 - Pinned by `cancellation-settled-money.test.ts`, `stripe-webhook-alerts.test.ts`,
-  `payment-recovery.test.ts`, `manual-refund-task.test.ts` and
-  `xero-booking-repair.test.ts`.
+  `payment-recovery.test.ts`, `manual-refund-task.test.ts`,
+  `xero-booking-repair.test.ts` and `late-capture-own-charge-refund.realdb.test.ts`.
 
 ## INV-PAY-110
 
@@ -1292,22 +1294,25 @@ preview).
 
 ## INV-PAY-130
 
-**Related: `INV-PAY-128`**, whose rule this carries to the other card refund
-doors (#4103).
+**Related: `INV-PAY-128`**, carried here to the other card refund doors
+(#4103).
 
 - **No card refund door closes a row, or says "refunded", on a refusal.**
   Stripe's `failed` or `canceled` answer sent nothing back.
-  - **A door whose row predates its attempt** - the edit financial review, the
-    treasurer-approved late capture, the duplicate capture, the capacity race,
-    as the cancellation does - re-plans that row through
-    `keepRefusedPrePersistedRefundOwed`: refused slices on their next key,
+  - **A door whose row predates its attempt** - the cancellation, edit
+    review, approved late capture, duplicate capture and capacity race -
+    re-plans that row through `keepRefusedPrePersistedRefundOwed`: refused
+    slices on their next key,
     made ones marked, a slice after a throw on its own key; only while
     `PENDING` with no attempt, else the worker holding it does; once per
     refusal (compare-and-set on the row's plan). No close, no
     REFUNDED event, no refund id. A door with its own failure alert raises it
     only when its write moved the row (`RefusedCardRefundError.replanned`).
+    Its happy-path close takes only an open row on the plan it sent
+    (`closePrePersistedRefundRow`; the late capture's, an untouched one;
+    #4144).
   - **A late-capture refusal always waits for approval**: the webhooks hold
-    it for a treasurer whatever the club's setting
+    it for a treasurer whatever the setting
     (`holdLateCaptureRefusedByStripe`); the task is the record, and its
     approval asks on the key its recorded refusals count to
     (`sliceAfterRecordedRefusals`).
@@ -1315,17 +1320,16 @@ doors (#4103).
     refusal moves it to a one-slice plan on its next key.
   - **The Xero repair pass** records only what Stripe made and fails; each
     slice's key generation is the count of refusals recorded for it
-    (`sliceAfterRecordedRefusals`), so a re-run asks afresh and a lost answer's
-    replay keeps its key.
+    (`sliceAfterRecordedRefusals`); a lost answer's replay keeps its key.
   - **The legacy group settlement refund** (inline and replay; plans frozen
     before #3653) and **the superseded group intent's webhook refund** fail on
-    a refusal as on a throw. A retry's key moves past each refusal Stripe holds
-    on the intent for that refund (`keyAfterStripeRefusals`), so it asks
-    afresh.
+    a refusal as on a throw; a retry's key moves past each refusal Stripe
+    holds on the intent for that refund (`keyAfterStripeRefusals`).
   - Proven by `pre-persisted-card-refund-refusal.test.ts`,
-    `refused-card-refund-retry.test.ts`, the duplicate-capture,
-    reconciliation, webhook, hold, recovery, group-cancel and repair suites,
-    and `refused-card-refund-retry.realdb.test.ts`.
+    `refused-card-refund-retry.test.ts`, `pre-persisted-refund-close.test.ts`,
+    the duplicate-capture, reconciliation, webhook, hold, recovery,
+    group-cancel and repair suites, and
+    `refused-card-refund-retry.realdb.test.ts`.
 
 ## INV-PAY-131
 

@@ -91,6 +91,7 @@ import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
 import { keepRefusedPrePersistedRefundOwed, markCancellationAttempt } from "@/lib/refused-card-refund-retry";
+import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -2359,15 +2360,11 @@ async function performBookingCancellation(
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
-        // completes with no second money movement.
-        await markBookingCancellationRefundRecoverySucceeded({
-          bookingId,
-        }).catch((markErr) =>
-          logger.error(
-            { err: markErr, bookingId, paymentId },
-            "Failed to mark booking cancellation refund recovery succeeded; the cron will replay the frozen plan idempotently"
-          )
-        );
+        // completes with no second money movement. #4144: only on the plan sent.
+        await closeDoorRow({
+          door: "cancellation", idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), bookingId,
+          paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "", amountCents: plannedCardRefundCents, refundId: stripeRefundId ?? null, format, context: { paymentId },
+        }, async (idempotencyKey) => (await markBookingCancellationRefundRecoverySucceeded({ idempotencyKey, sentPlan: cardRefundPlan })).count === 1);
       } catch (err) {
         // The claim already committed and the recovery operation already
         // exists with the frozen plan, so there is nothing to enqueue here
