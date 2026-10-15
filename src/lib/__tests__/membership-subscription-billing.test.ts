@@ -708,7 +708,7 @@ describe("membership subscription billing", () => {
         subscription: {
           memberId: memberName,
           status: subscriptionStatus,
-          member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: nowInFamily ?? "family-1" }] },
+          member: { billingFamilyGroupId: null as string | null, familyGroupMemberships: [{ familyGroupId: nowInFamily ?? "family-1" }] },
         },
       })),
       ...overrides,
