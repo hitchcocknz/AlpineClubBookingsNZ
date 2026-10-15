@@ -1050,14 +1050,28 @@ a refund payment's note, a succeeded create or an active link. The pointer gate
 back, and the booking repair tool neither offers it as a field backfill nor
 counts it as a conflicting reference.
 
-A reissue never gets the voided note back from Xero. The refund-note key, built
-the same way for the outbox row's correlation key and the Xero idempotency key
-(`refundNoteKeyAfterVoidParts`), carries the voided note ids it could replay,
-sorted and hashed when long: `:after-void:<ids>`. "Could replay" means a voided
-note recorded at the key's own watermark (card and per-refund notes) or amount
-(a single note), or raised by a "Paid another way" close's own rows. A void of
-any other note leaves the key byte-identical, so a live retry never mints a
-duplicate. A card payment's #2901 self-heal reissue follows the same rule.
+A reissue never gets a note back from Xero that is not its own. A void moves
+coverage, so a reissue's key base can equal the voided note's own key or a live
+note's. Once a refund note on the payment is voided, the refund-note key (built
+the same way for the outbox row's correlation key and the Xero idempotency key,
+`refundNoteKeyAfterVoidParts`) ends `:after-void:<ids>`, sorted and hashed when
+long. The ids are every refund note, live or voided, recorded at the key's own
+watermark (card and per-refund notes) or amount (a single note), or, once a
+"Paid another way" close has a voided note, every note its own rows raised. A
+link that records no figure is read from its create row, and counts as matching
+when that records none either (fail closed). With no void the key is
+byte-identical. A card payment's #2901 self-heal reissue follows the same rule.
+
+As a last check, the create path refuses Xero's answer before recording anything
+when the note is VOIDED or DELETED or another create row on the payment already
+raised it: the row fails with that reason and neither the pointer nor a link is
+written, so no key reuse can re-adopt or relabel a note.
+
+Stated limit: a lost attempt's retry keeps its key only while nothing it is keyed
+on moves. A void of a note the payment's coverage counted moves a card note's
+watermark between the attempt and its retry, so the retry can mint a second note
+(true on `main` before #4091 too). A void that adds a matching or unreadable
+link to the suffix does the same. Both need a void inside a lost-answer window.
 
 On a bank transfer a void undoes the refund (owner decision; Xero is its payment
 rail, `INV-ADDPAY-021`). The inbound sync returns the refunded amount to what the

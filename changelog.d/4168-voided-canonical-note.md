@@ -16,3 +16,7 @@
     It is always a new note in Xero, never the voided one handed back.
   - A failed attempt at that fresh note stays in the failed Xero operations list
     with its Retry, instead of being shown as already repaired.
+  - If Xero ever answers a refund-note request with a voided note, or with a
+    note another refund already raised, the attempt fails in the failed Xero
+    operations list with that reason, and nothing is recorded against the
+    payment. Check the note in Xero before retrying.

@@ -1569,8 +1569,8 @@ decision and would need its own owner decision.
 ### INV-ADDPAY-041
 
 - **A refund credit note Xero voided is never re-adopted as a payment's
-  refund note; a reissue's key carries the voided note ids it could replay;
-  and on a bank transfer a void undoes the refund** (#4091, owner decisions).
+  refund note; a reissue's key names every note whose key it could collide
+  with; and on a bank transfer a void undoes the refund** (#4091, owner decisions).
   Its mirror is written inactive on any payment (`INV-ADDPAY-020`), and
   `findCanonicalPaymentRefundCreditNote`, the pointer gate
   `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill and
@@ -1578,12 +1578,14 @@ decision and would need its own owner decision.
   (`refundNoteIdSets`, `xero-refund-note-status.ts`), so no request, retry or
   repair writes one back into `Payment.xeroRefundCreditNoteId`.
 - **The reissue's key.** `refundNoteKeyAfterVoidParts` is the one home for the
-  outbox row's correlation key and the Xero idempotency key. It appends
-  `after-void:<sorted ids>` for the voided notes that key could replay: recorded
-  at its watermark (v2), at its amount (v1), or raised by the "Paid another
-  way" close's own rows (v3). Nothing else moves the key, so a void of another
-  note never turns a live retry into a duplicate, and with no match the key is
-  byte-identical. A card payment's #2901 self-heal follows the same rule.
+  outbox row's correlation key and the Xero idempotency key. Once the payment
+  has a voided refund note, it appends `after-void:<sorted ids>`: every refund
+  note, live or voided, recorded at the key's watermark (v2) or amount (v1),
+  or every note a "Paid another way" close's own rows raised once one is
+  voided (v3). A figure the link lacks is read from its create row; none
+  there counts as matching. With no void the key is byte-identical. The
+  create path also refuses a VOIDED/DELETED note or one another create row
+  raised, recording nothing.
 - **Bank transfers.** Xero is the payment rail (`INV-ADDPAY-021`), so the
   inbound sync returns the refunded amount to what the live notes say and
   nothing is re-raised automatically. A fresh note is raised only once the
@@ -1591,5 +1593,5 @@ decision and would need its own owner decision.
   drift in the reconciliation report, by design (#4046); visibility is #4162.
   Pinned by `xero-refund-note-void-pointer.realdb.test.ts`,
   `xero-refund-note-crash-window.test.ts`, `xero-sync.test.ts`,
-  `xero-booking-repair.test.ts`, `xero-operation-retry.test.ts` and
-  `xero-operation-outbox.test.ts`.
+  `xero-booking-repair.test.ts`, `xero-operation-retry.test.ts`,
+  `xero-operation-outbox.test.ts` and `xero-refund-note-after-void-key.test.ts`.
