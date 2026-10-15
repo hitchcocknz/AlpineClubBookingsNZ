@@ -1220,41 +1220,40 @@ one, check the other.
 
 ## INV-PAY-128
 
-**Related: `INV-PAY-114`** (an organiser child's refund, which reopens one
-Stripe fails later) and **`INV-PAY-122`** (closing a dead card refund).
+**Related: `INV-PAY-114`** (an organiser child's refund) and
+**`INV-PAY-122`** (closing a dead card refund).
 
 - **A card refund Stripe answers `failed` or `canceled` on an edit, a
-  cancellation or a refund request is still owed** (#4083, #4096, #4102).
-  `refundPaymentTransactions` records it, never counted as made
-  (`completedRefundCents`), and returns.
+  cancellation or a refund request, or accepts (`pending`) and fails later, is
+  still owed** (#4083, #4096, #4102, #4104), never counted as made.
   - **Whoever reads a refusal moves that slice to a fresh key**
-    (`refused1`, `refused2`, ...; `refundSliceStripeIdempotencyKey`): Stripe
-    replays a key's refusal for 24 hours. A slice never read refused keeps its
-    key, so a refund made but not recorded is answered with the original.
-  - **The four edit doors** (`executeBookingModificationRefund`) queue exactly
-    the refused slices, when Stripe answered every slice; on a partial
-    failure, the remainder, planned by the runner.
-  - **A cancellation** re-plans its pre-persisted row, only while PENDING with
-    no attempt.
-  - **A refund request** queues its whole plan; once Stripe was asked, the
-    approval stands; unqueued cents split refused/unanswered (#4117).
+    (`refundSliceStripeIdempotencyKey`): Stripe replays a key's refusal for 24
+    hours. A slice never read refused keeps its key.
+  - **The edit doors** queue the refused slices, or the remainder; **a
+    cancellation** re-plans its unclaimed row; **a refund request** queues its
+    whole plan (#4117).
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
     it holds and fails it.
-  - **A slice made beside a refusal stays, marked** (`madeRefundId`): never
-    re-sent, filled only by that refund; the amount stays.
-  - **Officers hear once per refused slice**, on leaving its first key, and
+  - **A slice made beside a refusal or a failure stays, marked**
+    (`madeRefundId`): never re-sent; the amount stays.
+  - **Failed later**: the refund-row writer sees it once, under the Payment row
+    lock. The open row that counted it moves that slice (`failedRefundIds`) - a
+    marked slice, or one it fills carrying exactly that row's runner metadata;
+    else one row per Stripe refund owes it. A retry failing too, or a refund no
+    open row owes that Stripe created before the cutoff migration, is raised
+    dead; one naming no booking only alerts and is audited.
+  - **Paid another way** notes only what a card note still in Xero does not
+    cover, kept on its record (`failedLaterCardNoteCoverCents`).
+  - **Officers hear once per refused slice or failed-later decision**, and
     again if retries run out.
-  - **Deploy window**: an older release closes a refused row as paid, and
-    replays a moved slice's first key, reading the cached refusal - nothing is
-    refunded twice within 24 hours. Check rows it closed against Stripe.
-  - **Every other door** follows the same rule: `INV-PAY-130` (#4103).
-  - **Stated limit**: a refund accepted (`pending`) and failed later is not
-    re-owed.
+  - **Deploy window**: an older release closes a refused row as paid and drops
+    `refund.failed`; the read-back finds a dropped one still pending.
+  - **Every other door**: `INV-PAY-130` (#4103).
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
     `own-card-refund-outcome`, `booking-cancel.test.ts`,
     `admin-refund-request-review-route.test.ts`,
-    `refunds-and-credits-owed.test.ts` and
-    `refused-card-refund-retry.realdb.test.ts`.
+    `refunds-and-credits-owed.test.ts`, `card-refund-failed-later.test.ts`,
+    `card-refund-paid-another-way-xero.test.ts` and both `.realdb` twins.
 
 ## INV-PAY-129
 
@@ -1525,8 +1524,10 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   no transaction of its own, so the ordinary appeal refunded $0 while
   queuing a full Xero note and promising the money.
   - **One cap** (`organiserCardAppealCap`): the room a child refund debt may
-    take, less what is already handed back; zero while the group cancel's
-    own combined refund is unmade. The approval reads it under `lock(1)`;
+    take, less open hand-backs and late-cash credit
+    (`refundAppealHandedBackParts`); the room already nets the child's own
+    refund debts (#4124). Zero while the group cancel's own combined refund
+    is unmade. The approval reads it under `lock(1)` and the Payment row;
     screens read it as advice (`organiserCardAppealCeilingFor`).
   - **Refused past it, never clamped**: a 409 naming what can still be
     refunded, or saying to decline, before the request is claimed.
@@ -2146,9 +2147,9 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   logged, never a task. A task that cannot be raised refuses the approval.
   - **One task per request**: occurrence key
     `refund-request-hand-back:<RefundRequest id>`, unique, inserted
-    `ON CONFLICT DO NOTHING`. If the approval's claim is released (Stripe and
-    its recovery enqueue both failed), the OPEN task is deleted in the same
-    locked transaction.
+    `ON CONFLICT DO NOTHING`. A released claim (Stripe and its recovery
+    enqueue both failed) deletes the OPEN task in the same locked
+    transaction.
   - **The same kind and marker as an edit's.** `isNonCancellationHandBackTask`
     and `NOT_NON_CANCELLATION_HAND_BACK_WHERE` cover both. Completion records
     the refund on the payment, the bank-refund ledger line and a `REFUNDED`
@@ -2160,11 +2161,11 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     (`enqueueXeroRefundRequestCreditNoteOperation`), keyed by the request and
     linked as `REFUND_REQUEST_CREDIT_NOTE`, outside `INV-ADDPAY-020`'s one note.
   - **An appeal's ceiling nets everything already handed back**
-    (`refundableCashForRefundAppeal`; screens `refundAppealCeiling`): every
-    OPEN hand-back on the payment, any kind, and the member credit minted
-    from late cash (`internet-banking-late-cash-credit.ts`). Neither moves
-    `refundedAmountCents`. Edits and cancels still exclude the
-    cancellation's own task.
+    (`refundAppealHandedBackParts`; screens `refundAppealCeilingParts`): every
+    OPEN hand-back, any kind, late-cash member credit, and card refunds still
+    owed (`openCardRefundOwedCents`, #4124), read under `lock(1)` and the
+    Payment row. None moves `refundedAmountCents`. Edits and cancels exclude
+    the cancellation's own task.
   - **Dismissal stays open**, unlike an edit's after a cancel: an appeal
     exists only on a cancelled booking, so the cancel never counted it.
   - **A cash-settled payment is still refused**: a dismissed cancellation

@@ -2133,15 +2133,27 @@ export function classifyBookingContext(
         transaction.stripePaymentIntentId !== null &&
         context.lateCaptureApprovalIntentIds.has(transaction.stripePaymentIntentId)
     );
+    // #4104 (#4128 review C5): money a card refund Stripe failed later still
+    // owes on a row of its own is that row's to refund, never offered here too.
+    const owedByRow = (transaction: (typeof capturedPaymentTransactions)[number]) =>
+      transaction.id === null ? 0 : (context.failedLaterOwedCentsByTransactionId?.get(transaction.id) ?? 0);
+    const headroomCents = (transaction: (typeof capturedPaymentTransactions)[number]) =>
+      Math.max(transaction.amountCents - transaction.refundedAmountCents - owedByRow(transaction), 0);
     const unheldOutstandingCents =
       outstandingCapturedRefundAmountCents -
       heldOutstanding.reduce(
         (sum, t) => sum + Math.max(t.amountCents - t.refundedAmountCents, 0),
         0
-      );
+      ) -
+      capturedPaymentTransactions
+        .filter((transaction) => !heldOutstanding.includes(transaction))
+        .reduce(
+          (sum, t) => sum + Math.min(owedByRow(t), Math.max(t.amountCents - t.refundedAmountCents, 0)),
+          0
+        );
     const lateCaptureTransactions = capturedPaymentTransactions.filter(
       (transaction) =>
-        transaction.amountCents > transaction.refundedAmountCents &&
+        headroomCents(transaction) > 0 &&
         !heldOutstanding.includes(transaction)
     );
     // #3639 delta D1: the refund is PINNED to the unheld captures, slice by
@@ -2155,10 +2167,7 @@ export function classifyBookingContext(
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
     )) {
       if (!pinnable || transaction.id === null || unallocatedCents <= 0) break;
-      const sliceCents = Math.min(
-        transaction.amountCents - transaction.refundedAmountCents,
-        unallocatedCents
-      );
+      const sliceCents = Math.min(headroomCents(transaction), unallocatedCents);
       lateCaptureAllocation.push({ paymentTransactionId: transaction.id, amountCents: sliceCents });
       unallocatedCents -= sliceCents;
     }

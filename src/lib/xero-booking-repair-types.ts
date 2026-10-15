@@ -476,6 +476,12 @@ export interface BookingClassificationContext {
    */
   lateCaptureApprovalIntentIds: Set<string>;
   /**
+   * #4104 (#4128 review C5): by charge, the cents a card refund Stripe failed
+   * later is still owed by a row of its own. The late-capture finding leaves
+   * them out, as it leaves out a capture an approval task owns. Absent, none.
+   */
+  failedLaterOwedCentsByTransactionId?: Map<string, number>;
+  /**
    * #3635: of those, the ones a treasurer KEPT (task DISMISSED), by intent: the
    * task and the Xero rows anchored on it. A kept booking payment is recorded
    * by its own invoice, anchored on that task (`late-capture-kept-xero-rules.ts`).

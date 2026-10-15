@@ -77,6 +77,8 @@ const mocks = vi.hoisted(() => ({
   // #4097: the card refund shortfall's preflight - the Payment row, and the cancel's card refund row.
   lockPaymentForRefundedTotal: vi.fn().mockResolvedValue(undefined),
   paymentRecoveryOperationFindUnique: vi.fn().mockResolvedValue(null),
+  // #4104 review (MM3): the payment's card refunds Stripe failed later, owed by rows of their own.
+  failedLaterRecoveryRows: vi.fn((): unknown[] => []),
   paymentFindUnique: vi.fn(),
   // #3827 (`INV-PAY-117`): the by-hand review route's pre-claim cap reads the
   // payment and the open hand-backs on the completion's own transaction.
@@ -288,7 +290,17 @@ const tx = {
     aggregate: (...a: unknown[]) => mocks.paymentRecoveryOperationAggregate(...a),
     // #3924 round 4 (M7): the siblings' refund debts, read row by row so a
     // paid-another-way close for less counts only what it paid back.
-    findMany: vi.fn().mockResolvedValue([]),
+    // #4097, #4104 review (MM3): the shortfall's preflight reads the cancel's card
+    // refund row and the payment's failed-later rows in one query (`where.OR`).
+    findMany: vi.fn(async (args?: { where?: { OR?: Array<{ paymentId?: string; idempotencyKey?: unknown }> } }) => {
+      if (!args?.where?.OR) return [];
+      const cancelRow = await mocks.paymentRecoveryOperationFindUnique(args);
+      // Only a query that asks for them is answered with the payment's failed-later rows.
+      const asksFailedLater = args.where.OR.some(
+        (arm) => arm.paymentId === "payment-1" && JSON.stringify(arm.idempotencyKey) === JSON.stringify({ startsWith: "card_refund_failed_later_" }),
+      );
+      return [...(cancelRow ? [cancelRow] : []), ...(asksFailedLater ? mocks.failedLaterRecoveryRows() : [])];
+    }),
     findUnique: (...a: unknown[]) => mocks.paymentRecoveryOperationFindUnique(...a),
   },
   // #3032: the anchor-taken check (owner decision D-3032-1) reads this inside
@@ -2551,7 +2563,13 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
       expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(tx, "payment-1");
       expect(mocks.paymentRecoveryOperationFindUnique).toHaveBeenCalledWith({
-        where: { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
+        where: {
+          OR: [
+            { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
+            { paymentId: "payment-1", idempotencyKey: { startsWith: "card_refund_failed_later_" } },
+          ],
+        },
+        orderBy: { createdAt: "asc" },
         select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
       });
       expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-bank"] });
@@ -2584,6 +2602,20 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
       await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
       expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+    });
+
+    // #4104 review (MM3): a card refund on the payment Stripe failed later, owed
+    // again by a row of its own, is card money still moving, as the cancel's own row would be.
+    it.each([
+      ["waiting to be asked again", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: "Stripe accepted refund re_1 and later reported it failed" }, /failed and is waiting to retry/],
+      ["raised dead for the treasurer", { status: "PENDING", attempts: 5, nextRetryAt: LATER, lastError: "Stripe accepted retried refund re_2 and later reported it failed too" }, /has stopped retrying: close it as Paid another way/],
+    ] as const)("MUTATION: is refused while a card refund Stripe failed later is %s, though the cancel's own row has closed", async (_label, row, message) => {
+      shortfallTask();
+      mocks.paymentRecoveryOperationFindUnique.mockResolvedValue({ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, lastError: null });
+      mocks.failedLaterRecoveryRows.mockReturnValueOnce([row]);
+
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
       expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
     });
 
@@ -4932,6 +4964,12 @@ describe("#3835 - a review completed after a card-paid booking was cancelled", (
         status: { in: ["PENDING", "PROCESSING", "FAILED"] },
         // A dead refund is a person's; a hand refund lowers the headroom instead.
         NOT: { status: { in: ["PENDING", "FAILED"] }, OR: [{ nextRetryAt: null }, { attempts: { gte: 5 } }] },
+      }),
+    }));
+    // #4104: a refund Stripe accepted and failed later, owed again, is promised too.
+    expect(mocks.paymentRecoveryOperationAggregate).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: expect.arrayContaining([{ idempotencyKey: { startsWith: "card_refund_failed_later_" } }]),
       }),
     }));
   });

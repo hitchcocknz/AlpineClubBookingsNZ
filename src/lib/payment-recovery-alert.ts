@@ -8,9 +8,23 @@
 import type { ClubFormat } from "@/lib/club-format";
 import { bookingOwner } from "@/lib/booking-owner";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
+import type { AdminAlertSendResult } from "@/lib/email/admin-alert-send-result";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
+/** A send that reached nobody: what a once-only caller reads when the booking is gone. */
+export const NOBODY_ALERTED: AdminAlertSendResult = {
+  deliveryAllowed: true,
+  recipients: 0,
+  sent: 0,
+  queuedForRetry: 0,
+  notDelivered: 0,
+};
+
+/**
+ * Returns the send's result, for a once-only caller (#4126), or null when the
+ * booking no longer exists and nothing was sent.
+ */
 export async function alertPaymentRecoveryOfficers(
   alert: {
     bookingId: string;
@@ -21,7 +35,7 @@ export async function alertPaymentRecoveryOfficers(
     errorMessage: string;
   },
   format: ClubFormat,
-): Promise<void> {
+): Promise<AdminAlertSendResult | null> {
   const booking = await prisma.booking.findUnique({
     where: { id: alert.bookingId },
     // #3369: the owner may be an Organisation; bookingOwner() reads both.
@@ -33,10 +47,10 @@ export async function alertPaymentRecoveryOfficers(
       { bookingId: alert.bookingId, operationId: alert.operationId },
       "Payment recovery failure alert skipped because booking no longer exists"
     );
-    return;
+    return null;
   }
 
-  await sendAdminPaymentFailureAlert({
+  return sendAdminPaymentFailureAlert({
     memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,

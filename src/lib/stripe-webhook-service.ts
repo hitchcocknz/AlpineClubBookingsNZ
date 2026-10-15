@@ -20,6 +20,7 @@ import {
 } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import { recordWebhookLog } from "@/lib/webhook-log";
+import { recordRefusedCardRefund } from "@/lib/card-refund-status-sync";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
@@ -299,6 +300,12 @@ export async function processStripeWebhookEvent(
 
       case "charge.refunded":
         await handleChargeRefunded(event.data.object as Stripe.Charge);
+        break;
+
+      case "refund.failed": // #4104 (`INV-PAY-128`): a refund Stripe accepted and failed later is owed again.
+      case "refund.updated":
+      case "charge.refund.updated":
+        await recordRefusedCardRefund(event.data.object as Stripe.Refund);
         break;
 
       default:

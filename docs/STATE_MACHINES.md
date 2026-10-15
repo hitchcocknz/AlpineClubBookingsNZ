@@ -3498,6 +3498,17 @@ PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
 PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
                        held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
+(none) -> PENDING     (a refund Stripe accepted, then failed: a new row per
+                       Stripe refund, card_refund_failed_later_<refund>, under
+                       the Payment row lock; INV-PAY-128)
+(none) -> DEAD        (that row's own retry failed later too, or Stripe
+                       created the refund before the cutoff migration and no
+                       open row counts it: raised PENDING with its attempts
+                       spent, never claimed, never in flight)
+PENDING|FAILED -> same (an open, claimed row that counted the refund is
+                       re-planned instead: the slice on its next key,
+                       recording the failure in failedRefundIds; compare-and-set
+                       on the plan, status, attempts and nextRetryAt read)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
                        figure the treasurer saw, then a status-guarded claim on
@@ -3553,6 +3564,39 @@ so it asks afresh. The legacy group settlement refund (plans frozen before
 #3653) and the superseded group intent's webhook refund fail on a refusal as on
 a throw; each retry's key moves past the refusals Stripe holds on the intent
 for that refund, so it asks afresh.
+
+A refund Stripe accepted (`pending`) and failed later is owed again (#4104,
+`INV-PAY-128`), by one row. The one writer of a charge's refund rows
+(`recordStripeRefundsAgainstTransaction`) sees it exactly once: its guarded
+counted -> refused write, or a door or worker told `pending` by a replayed key
+while the row already says refused (the event came first). In the same
+transaction, under the Payment row lock it already holds, it finds who owes it:
+a row of its own, or a slice already recording it (`failedRefundIds`), means
+nothing more; the open row that counted it - the slice marked with it
+(`madeRefundId`), or the unmarked slice "Refunds owed" fills with it as the
+payment stood before the failure when the refund carries exactly the metadata
+that row's runner sends (`cardRefundOperationRefundMetadata`) - has that slice
+moved to its next key; with none, a new row is raised per failed Stripe refund, for exactly its amount on
+its charge, under a key Stripe has never seen. A row someone may be writing (a
+worker's attempt, or a row no worker has claimed yet) is never moved: the
+failure is retried later, or, met by that row's own door or worker replaying
+its key, handed back to it as refused. A closed row is never reopened. A new
+row is raised dead - for "Paid another way", alerted - when the refund was
+itself such a retry, or Stripe created it before the cutoff migration
+(`20261115010000_card_refund_failed_later_cutoff`) finished (every refund, with
+a migration history that lacks it): it may have failed while nothing could
+notice, and may already have been paid by hand. A refund naming no booking of
+the payment (made in the Stripe dashboard, or a legacy group refund) is taken
+out of the refunded total, alerted with its Stripe id and audited, never
+re-sent. Two ways
+in: the `refund.failed` webhook (and `refund.updated` / `charge.refund.updated`
+where subscribed), and the payments cron, which reads each card refund still
+recorded `pending` back from Stripe, least recently read first. The officers
+are alerted once per decision, after commit. Closed as "Paid another way", a
+row owing a failed-later refund - its own, or a re-planned slice - whose card
+refund note is still in Xero (the payment's notes cover more than its card
+cash) notes only what that excess does not cover
+(`failedLaterCardNoteCoverCents`), and the close counts as noted.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

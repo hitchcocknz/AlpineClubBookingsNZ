@@ -59,7 +59,7 @@ import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
-import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE } from "@/lib/payment-recovery-constants";
 import { stripeReferenceId } from "@/lib/stripe-references";
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
 import { formatCents } from "@/lib/utils";
@@ -574,6 +574,7 @@ import {
   buildPaymentIntentCancelRecoveryIdempotencyKey,
   buildRefundRequestRefundMetadata,
   buildRefundRequestRefundRecoveryIdempotencyKey,
+  cardRefundOperationRefundMetadata,
   buildSupersededPaymentRefundRecoveryIdempotencyKey,
   buildLegacyModificationRefundStripeKeyPrefix,
   REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
@@ -1969,10 +1970,7 @@ async function processRefundSupersededPaymentOperation(
     return;
   }
 
-  const metadata = {
-    bookingId: operation.bookingId,
-    reason: "zero_dollar_batch_modification_superseded",
-  };
+  const metadata = cardRefundOperationRefundMetadata(operation);
   // #4103 (`INV-PAY-130`): a refusal is never closed or reported. The first ask
   // keeps the row's own key, so a refund made but unrecorded is replayed; a
   // refusal moves to a one-slice plan on a fresh key, which later attempts send.
@@ -2007,14 +2005,17 @@ async function processRefundSupersededPaymentOperation(
       // commit together. A row an older attempt left behind still lifts a mirror
       // with no credit on it to the card refunds on record (the ledger floor); with
       // a credit it cannot, and the refunded-total audit lists it.
-      await recordStripeRefundsAgainstTransaction({
+      const recorded = await recordStripeRefundsAgainstTransaction({
         paymentId: operation.paymentId,
         paymentTransactionId: refreshedTransaction.id,
         refunds: [refund],
         fallbackPaymentIntentId: operation.paymentIntentId,
       });
+      // #4104 review (ML2): a replayed key reads Stripe's original answer; the
+      // ledger knows the refund failed since, and this row moves it itself.
+      const status = recorded.readAsRefused.includes(refund.id) ? "failed" : (refund.status ?? null);
       return {
-        refunds: [{ status: refund.status ?? null, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
+        refunds: [{ status, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
       };
     },
   });
@@ -2181,7 +2182,9 @@ async function processBookingModificationRefundOperation(
     BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   );
 
-  let metadata: Record<string, string>;
+  // #4104 review (CM): the body comes from the one builder a failed-later
+  // refund's owner check reads too (`cardRefundOperationRefundMetadata`).
+  const metadata = cardRefundOperationRefundMetadata(operation);
   let idempotencyKeyPrefix: string;
   if (refundRequestId) {
     // #1507: replay the inline appeal-refund body VERBATIM. The admin approve
@@ -2194,10 +2197,6 @@ async function processBookingModificationRefundOperation(
     // bookingId + refundRequestId, so pre-fix rows replay through this same path
     // (the inline body — reason:"refund_appeal_approved" — is unchanged, so no
     // pre-deploy sliver).
-    metadata = buildRefundRequestRefundMetadata(
-      operation.bookingId,
-      refundRequestId,
-    );
     idempotencyKeyPrefix = `refund_request_${refundRequestId}`;
   } else if (isBookingCancellationRecovery) {
     // #1494: replay the inline cancel body VERBATIM. Both callers build the
@@ -2211,7 +2210,6 @@ async function processBookingModificationRefundOperation(
     // reconcile). The metadata reconstructs purely from the persisted
     // bookingId, so an operation enqueued BEFORE this fix replays through the
     // same code path (there is no separate persisted-metadata to miss).
-    metadata = buildBookingCancellationRefundMetadata(operation.bookingId);
     idempotencyKeyPrefix = `booking_cancel_refund_${operation.bookingId}`;
   } else {
     // #1507: replay the inline modification-refund body VERBATIM. The inline
@@ -2227,14 +2225,10 @@ async function processBookingModificationRefundOperation(
     idempotencyKeyPrefix =
       operation.stripeKeyPrefix ??
       buildLegacyModificationRefundStripeKeyPrefix(operation.id);
-    metadata = buildBookingModificationRefundMetadata(
-      operation.bookingId,
-      bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),
-    );
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
+  const refundId = await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
     format,
     paymentId: operation.paymentId,
     amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
@@ -2302,10 +2296,8 @@ async function processBookingModificationRefundOperation(
       },
     });
     if (transition.count > 0) {
-      await finishApprovedLateCaptureRefundAfterReplay({
-        ...operation,
-        amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
-      });
+      const amountCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
+      await finishApprovedLateCaptureRefundAfterReplay({ ...operation, amountCents, refundId });
     }
     return;
   }
@@ -3207,6 +3199,7 @@ async function alertStalePaymentRecoveryQueueIfNeeded(format: ClubFormat, charge
     where: {
       status: PaymentRecoveryOperationStatus.PENDING,
       createdAt: { lt: staleThreshold },
+      ...PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE, // #4104: a dead row is not a stalled cron
       ...(quietCharges ? { type: { not: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT } } : {}),
     },
     orderBy: { createdAt: "asc" },
@@ -3330,9 +3323,11 @@ export async function runPaymentRecoveryOperationNow(
 export async function processPaymentRecoveryOperations(options?: {
   limit?: number;
   /**
-   * #3653: also read pending organiser child refunds back from Stripe. The
-   * payments cron passes it; the inline drain after an edit does not, so a
-   * member's request never waits on those provider reads.
+   * #3653, #4104: also read card refunds still recorded pending back from
+   * Stripe - organiser children's (`reconcilePendingOrganiserChildRefunds`)
+   * and every other one (`reconcilePendingCardRefunds`) - despite the name,
+   * kept for its callers. The payments cron passes it; the inline drain after
+   * an edit does not, so a member's request never waits on those provider reads.
    */
   reconcilePendingChildRefunds?: boolean;
 }): Promise<PaymentRecoveryProcessResult> {
@@ -3408,6 +3403,10 @@ export async function processPaymentRecoveryOperations(options?: {
     } catch (err) {
       logger.error({ err }, "Could not re-read pending organiser child refunds (#3653)");
     }
+    // #4104: and every other pending card refund, so one that failed later is owed again.
+    await import("@/lib/card-refund-status-sync")
+      .then(({ reconcilePendingCardRefunds }) => reconcilePendingCardRefunds())
+      .catch((err: unknown) => logger.error({ err }, "Could not re-read pending card refunds (#4104)"));
   }
 
   return result;

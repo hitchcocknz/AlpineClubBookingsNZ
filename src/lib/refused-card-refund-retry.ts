@@ -47,7 +47,8 @@ import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
-import { nextRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
+import { UNTOUCHED_PRE_PERSISTED_ROW } from "@/lib/payment-recovery-constants";
+import { buildBookingCancellationRefundIdempotencyKey, nextRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { PartialRefundError, type RefundAllocationSlice } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
@@ -307,6 +308,56 @@ export class RefusedCardRefundError extends Error {
 /** An inline attempt as its door met it: Stripe's answers, or what it threw. */
 export type RefundAttempt = { refunds: ReadonlyArray<AnsweredRefund> } | { error: unknown };
 
+type PrePersistedRow = { id: string; paymentIntentId: string; allocationPlan?: Prisma.JsonValue };
+
+/**
+ * #4126 (`INV-SSOT`): the one compare-and-set a door writes its own
+ * pre-persisted row under - untouched (`UNTOUCHED_PRE_PERSISTED_ROW`) and still
+ * on `plan`, the plan the door read or sent (null: a row raised with none). A
+ * claim, an attempt or a re-plan in between fails it.
+ */
+export function untouchedPrePersistedRowWhere(
+  idempotencyKey: string,
+  plan: Prisma.JsonValue | ReadonlyArray<RefundAllocationSlice> | null,
+): Prisma.PaymentRecoveryOperationWhereInput {
+  return {
+    idempotencyKey,
+    ...UNTOUCHED_PRE_PERSISTED_ROW,
+    allocationPlan: plan === null ? { equals: Prisma.DbNull } : { equals: plan as Prisma.InputJsonValue },
+  };
+}
+
+/**
+ * The one re-plan write of a pre-persisted door's row (#4103 review C2, #4104):
+ * from the plan the row holds, compare-and-set on it, while no worker has
+ * touched it (PENDING, no attempt). Says whether it moved the row.
+ */
+async function replanPrePersistedRow({
+  idempotencyKey,
+  plan,
+  answered,
+  lastError,
+}: {
+  idempotencyKey: string;
+  plan?: ReadonlyArray<RefundAllocationSlice>;
+  answered: ReadonlyArray<AnsweredRefund>;
+  lastError?: string;
+}): Promise<{ moved: boolean; row: PrePersistedRow | null }> {
+  const row = await prisma.paymentRecoveryOperation.findUnique({
+    where: { idempotencyKey },
+    select: { id: true, paymentIntentId: true, allocationPlan: true },
+  });
+  const held = row?.allocationPlan ?? null;
+  const base = parseRefundAllocationPlan(held) ?? plan ?? answered.map((answer) => answer.slice);
+  const next = planAfterAttempt(base, answered);
+  if (JSON.stringify(next) === JSON.stringify(base)) return { moved: false, row };
+  const written = await prisma.paymentRecoveryOperation.updateMany({
+    where: untouchedPrePersistedRowWhere(idempotencyKey, held),
+    data: { allocationPlan: next as unknown as Prisma.InputJsonValue, ...(lastError ? { lastError } : {}) },
+  });
+  return { moved: written.count === 1, row };
+}
+
 /**
  * #4096, #4103: a card refund whose recovery row was written BEFORE its inline
  * attempt - a cancellation, an edit review's, a treasurer-approved late
@@ -356,27 +407,9 @@ export async function keepRefusedPrePersistedRefundOwed({
   const refusedCents = refusedRefundCents(refused.map((answer) => answer.slice));
   const message = refusedRefundMessage(refusedCents, format);
   let moved = false;
-  let row: { id: string; paymentIntentId: string; allocationPlan?: Prisma.JsonValue } | null = null;
+  let row: PrePersistedRow | null = null;
   try {
-    row = await prisma.paymentRecoveryOperation.findUnique({
-      where: { idempotencyKey },
-      select: { id: true, paymentIntentId: true, allocationPlan: true },
-    });
-    const held = row?.allocationPlan ?? null;
-    const base = parseRefundAllocationPlan(held) ?? plan ?? answered.map((answer) => answer.slice);
-    const next = planAfterAttempt(base, answered);
-    if (JSON.stringify(next) !== JSON.stringify(base)) {
-      const written = await prisma.paymentRecoveryOperation.updateMany({
-        where: {
-          idempotencyKey,
-          status: PaymentRecoveryOperationStatus.PENDING,
-          attempts: 0,
-          allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue },
-        },
-        data: { allocationPlan: next as unknown as Prisma.InputJsonValue, lastError: message },
-      });
-      moved = written.count === 1;
-    }
+    ({ moved, row } = await replanPrePersistedRow({ idempotencyKey, plan, answered, lastError: message }));
   } catch (err) {
     // The row stays open either way; the runner reads the refusal itself, and alerts as it moves it.
     logger.error({ err, bookingId, idempotencyKey }, "Could not re-plan a refused card refund's pre-persisted row (#4096, #4103)");
@@ -394,6 +427,32 @@ export async function keepRefusedPrePersistedRefundOwed({
     );
   }
   return new RefusedCardRefundError(message, moved);
+}
+
+/**
+ * #4104: a cancellation's inline refund that failed partway (`PartialRefundError`)
+ * with nothing refused (a refusal is `keepRefusedPrePersistedRefundOwed`'s): its
+ * pre-persisted row is re-planned as the runner would (`replanPrePersistedRow`) -
+ * each slice made marked with its refund, so a failure Stripe reports later is
+ * owed by this row by its refund id. Best effort: unmarked, the runner replays a
+ * made slice's key and Stripe answers with the original refund.
+ */
+export async function markCancellationAttempt({
+  bookingId,
+  plan,
+  error,
+}: {
+  bookingId: string;
+  plan: ReadonlyArray<RefundAllocationSlice>;
+  error: unknown;
+}): Promise<void> {
+  const answered = answersBeforeFailure(error);
+  if (answered.length === 0) return;
+  try {
+    await replanPrePersistedRow({ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan, answered });
+  } catch (err) {
+    logger.error({ err, bookingId }, "Could not mark a cancellation refund's made slices (#4104)");
+  }
 }
 
 /**
@@ -422,6 +481,11 @@ async function moveRefusedSlices(
  * The recovery runner's refund of a frozen plan. Returns when Stripe made every
  * slice; otherwise moves what it refused to fresh keys and throws, so the
  * attempt fails and is retried (or, retries spent, dies owed).
+ *
+ * Returns the refund of the plan's first slice - one made beside an earlier
+ * refusal (`madeRefundId`), or the one Stripe answered now - as the inline
+ * doors read theirs (`refunds[0]`), so a record the runner writes names it
+ * (#4126).
  */
 export async function refundPlanOrRetryRefusals({
   operation,
@@ -434,7 +498,7 @@ export async function refundPlanOrRetryRefusals({
   format: ClubFormat;
   /** Sends the slices still to send (`refundPaymentTransactions` with them as the allocation). */
   refund: (plan: RefundAllocationSlice[]) => Promise<{ refunds: ReadonlyArray<AnsweredRefund> }>;
-}): Promise<void> {
+}): Promise<string | null> {
   // Alerted for each slice refused on its first key, once this attempt moved it.
   const alertIfFirst = async (moved: boolean, answers: ReadonlyArray<AnsweredRefund>) => {
     const first = firstRefusals(refusedAnswers(answers));
@@ -454,15 +518,16 @@ export async function refundPlanOrRetryRefusals({
     // A slice already made beside a refusal is never sent again.
     answered = (await refund(plan.filter((slice) => !slice.madeRefundId))).refunds;
   } catch (err) {
-    // The slices answered before a later one threw (`PartialRefundError`): a
-    // refusal among them re-plans the row; the slice that threw keeps its key.
+    // The slices answered before a later one threw (`PartialRefundError`) re-plan
+    // the row - a refusal on its next key, and (#4104) a made one marked, so a
+    // failure Stripe reports later is owed by this row by its refund id - while
+    // the slice that threw keeps its key.
     const before = answersBeforeFailure(err);
-    const refusedBefore = refusedRefundSlices(before);
-    if (refusedBefore.length > 0) await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, before)), before);
+    if (before.length > 0) await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, before)), before);
     throw err;
   }
   const refused = refusedRefundSlices(answered);
-  if (refused.length === 0) return;
+  if (refused.length === 0) return plan[0]?.madeRefundId ?? answered[0]?.refundId ?? null;
   await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, answered)), answered);
   throw new Error(refusedRefundMessage(refusedRefundCents(refused), format));
 }
