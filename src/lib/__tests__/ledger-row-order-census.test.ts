@@ -119,10 +119,6 @@ const UNORDERED_ROW_SETS: Record<string, string> = {
   "src/lib/xero-inbound/settle-from-cash.ts > decideInternetBankingReceiptFigure":
     "planInternetBankingCashSettlement filters and sums the rows (the IB primary rows, the ledger's " +
     "refunded total, the captured non-IB cash); no figure depends on the order.",
-  "src/lib/xero-inbound/settlement-conflicts.ts > findSecondInstrumentSettlement":
-    "KNOWN, PRE-EXISTING and out of #4132's scope (#4163): this read has no order and a later `.find()` " +
-    "picks a candidate, so on two holding captures which one is named is unspecified. Tracked in #4163; " +
-    "remove this entry when that fix orders the read.",
 };
 
 /**

@@ -307,7 +307,14 @@ export async function findSecondInstrumentSettlement(
         : null;
     }
   }
+  // #4163 (`INV-PAY-133`): ordered oldest first, so when several captures
+  // qualify the `.find()` below names the OLDEST-INSERTED one the duplicate-
+  // capture refund does not own. The first capture is the one that settled the
+  // booking; a later capture is the duplicate the refund (#1992) exists for.
+  // #1765 refund history is dropped below on a paid booking and only ranked
+  // last on a cancelled one, whose stable sort keeps this order in each group.
   const captured = await tx.paymentTransaction.findMany({
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     where: {
       paymentId,
       kind: PaymentTransactionKind.PRIMARY,
