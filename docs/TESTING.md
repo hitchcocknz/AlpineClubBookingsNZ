@@ -1461,7 +1461,9 @@ The harness checks this for every suite at once (#4107). It imports
 `process.env` before any suite's hooks run, and its `afterAll` runs last. A
 variable left changed, added or removed by any suite fails the run, naming the
 variable. The one exemption is `DATABASE_URL` pointed at the race database,
-which every suite sets on purpose.
+which every suite sets on purpose. It checks the end state, so a later
+suite's blanket restore could hide an earlier leak: put back only the variable
+your suite changed.
 
 A declared role is not a fix for a path a suite should never reach. #4013's H1
 case reached the remainder-note mint because its credit lots tied on the

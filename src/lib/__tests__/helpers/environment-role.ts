@@ -59,7 +59,7 @@ import { getEnvironmentRole, type EnvironmentRole } from "@/lib/environment-role
  *
  * Uses `vi.stubEnv`, so it is undone by `vi.unstubAllEnvs()` and by vitest's own
  * teardown at the end of the FILE. A separate test file therefore cannot leak a
- * production declaration into the next one - but the race harness imports some
+ * production declaration into the next one — but the race harness imports some
  * forty suites into one file, where nothing undoes it until all of them have
  * run (#4107): there, use {@link declareEnvironmentRoleForSuite}.
  * Call it in `beforeEach`, AFTER any `vi.unstubAllEnvs()` the suite already does.

@@ -11,9 +11,15 @@
  * suite's hooks run, and registers the harness's first `afterAll`. Hooks run
  * as a stack (`vitest.config.mts`, `sequence.hooks: "stack"`), so that check
  * runs LAST, once every imported suite has torn down, and names each variable
- * left changed, added or removed. A suite fixes a failure by putting back what
- * it changed (`declareEnvironmentRoleForSuite`'s `restore()`, or
- * `vi.unstubAllEnvs()` in its own `afterAll`).
+ * left changed, added or removed. A suite fixes a failure by putting back the
+ * one variable it changed: `declareEnvironmentRoleForSuite`'s `restore()`, or
+ * the value it saved, restored in its own `afterAll` (as
+ * `xero-token-credential-store.realdb.test.ts` does for `AUTH_SECRET`). Never
+ * `vi.unstubAllEnvs()`: in this harness it undoes every other suite's stubs too.
+ *
+ * IT CHECKS THE END STATE. A later suite's blanket restore can therefore hide
+ * an earlier suite's leak from this check, though not from the suites that ran
+ * in between - which is one more reason never to restore in bulk here.
  *
  * One variable is exempt: `DATABASE_URL` pointed at the race database itself.
  * Every suite points the app's Prisma singleton there on purpose, before it
