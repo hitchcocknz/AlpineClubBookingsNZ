@@ -1342,7 +1342,7 @@ short).
   in the one wording home's sentence, said before anything is asked of the card.
   - **Sized by the cancel's own steps, in its order**: the claim's mirror fold
     (one walk, `foldMirrorRefundIntoLedger`, over rows read in one order,
-    `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
+    `LEDGER_ROWS_OLDEST_FIRST`, `INV-PAY-133`), a pre-ledger payment's
     charges as its backfill would write them (`legacyBackfillRows`), the
     claim's planner (`planCardRefundFromLedger`), and the split
     (`sizeCancelCardShortfall`). Asked only behind the cancel's own gate
@@ -1385,6 +1385,35 @@ short).
     captured row, and the new code does not repair one already lowered.
   - Proven by `payment-intent-ledger-row-write.test.ts` and, on PostgreSQL,
     `additional-ask-reduction.realdb.test.ts` ("#4081").
+
+## INV-PAY-133
+
+**Related: `INV-PAY-127`** (the same rule for credit lots).
+
+- **A payment's ledger rows have one order: `createdAt`, then `insertionSeq`**
+  (#4132, owner decision 15 Oct 2026). `createdAt` alone is not an order. Rows
+  written in one transaction share it, and PostgreSQL returns a tie in heap
+  order, which an update of an indexed column, such as a capture, changes. A
+  cuid `id` is not an insertion order either.
+  - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
+    sequence the column owns. The database assigns it and code never writes
+    it. Rows stored before it were numbered by `createdAt`, then the heap
+    order they were read in, under the migration's lock.
+  - **One home**: `LEDGER_ROWS_OLDEST_FIRST` and `LEDGER_ROWS_NEWEST_FIRST`,
+    with their comparators, in `payment-ledger-order.ts`. Every money read uses
+    them: the loader, the cancel's fold, the ask chain, the refund slices and
+    their replay, the census store and the repair passes.
+  - **"The latest" row of a kind, on a tie, is the one inserted last**
+    (`latestTransactionOfKind`). The mirror, the ask a reduction sets against
+    and the census now pick the same row. Before this, a tie went to the
+    earliest row.
+  - **Newest-first refund slices** take a tie's last-inserted row first. A
+    refund recovery with no frozen `allocationPlan` derives its slices again at
+    replay, so on a tied payment its Stripe keys can change across this
+    release. Check for open ones before deploying.
+  - Policed by `ledger-row-order-census.test.ts`. Proven on PostgreSQL by
+    `ledger-insertion-seq.realdb.test.ts`, and the migration by its
+    data-migration fixture.
 
 ## INV-PAY-031
 

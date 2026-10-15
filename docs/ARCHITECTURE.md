@@ -1986,6 +1986,32 @@ the booking-envelope triggers are matched on their `RAISE EXCEPTION` text instea
 call arguments, so any match against it is made on Prisma's whole sentence —
 member free text can otherwise supply a convincing-looking field list of its own.
 
+### The payment ledger's row order (#4132)
+
+A payment's charges, asks and receipts are `PaymentTransaction` rows, and
+several readers depend on their order: the cancel's mirror fold walks them
+oldest first, the card refund plan slices them newest first (and the slices
+name the Stripe idempotency keys), and the `Payment` mirror is derived from
+"the latest" row of each kind.
+
+`createdAt` alone cannot give that order. Prisma stamps `@default(now())` once
+per query, so rows written in one transaction tie, and under the frozen test
+clock every row ties. PostgreSQL returns a tie in heap order, and an update of
+an indexed column (`status`, on every capture) writes the row's new version at
+the end of the heap, so the order of a tie changed whenever one of its rows was
+updated. A cuid `id` does not follow insertion order either.
+
+So the table carries **`insertionSeq`**, an `INTEGER` filled by a sequence the
+column owns. Code never writes it. Every money read orders by `createdAt`, then
+`insertionSeq`, through one home, `src/lib/payment-ledger-order.ts`, and on a tie
+"the latest" row is the one inserted last (`INV-PAY-133`). The migration numbered
+the rows already stored by `createdAt`, then the heap order they were read in,
+under its own lock, so no stored tie changed order at the release. It is the
+schema's first hand-written sequence column. Prisma's `@default(autoincrement())`
+matches it for drift, but the `SERIAL` Prisma would generate is never accepted:
+it rewrites the table and numbers rows in an order nobody chose.
+`ledger-row-order-census.test.ts` fails any ledger read ordered another way.
+
 ## Booking and Payment Flow
 
 The happy-path request/data flow for a card booking. Capacity is claimed under
