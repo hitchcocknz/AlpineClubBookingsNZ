@@ -7,12 +7,16 @@
  * pointer as a promise that an active link exists, so the pointer must always
  * name an active link or nothing.
  *
+ * #4091: the same holds for the one canonical note of a bank-transfer payment,
+ * whose mirror the funnel used to keep active after the void.
+ *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
  * imports this file so CI reaches it; it owns and cleans its own `race-4046-`
  * fixtures.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -55,6 +59,7 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
   { timeout: 60_000 },
   () => {
     async function clearRun() {
+      await prisma.xeroSyncOperation.deleteMany({ where: { localModel: "Payment", localId: PAYMENT_ID } });
       await prisma.xeroObjectLink.deleteMany({ where: { localId: PAYMENT_ID } });
       await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
     }
@@ -255,6 +260,170 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
       expect(await recordPointerWrites(() => withFakeXero(voided, () => reconcileXeroCreditNote("cn_only"))))
         .toEqual([]);
       expect(await state()).toEqual(after);
+    });
+
+    /** What the nightly report and the coverage sum say about this payment's refund notes. */
+    async function reportedRefundNoteState() {
+      const { buildXeroReconciliationReport } = await import("@/lib/xero-hardening-report");
+      const { sumCoveredRefundCreditNoteCents } = await import("@/lib/xero-sync");
+      const drift = (await buildXeroReconciliationReport(CLUB_FORMAT_TEST)).issueSections
+        .filter((section) => section.id === "canonical-link-drift")
+        .flatMap((section) => section.items)
+        .filter((item) => item.localId === PAYMENT_ID && item.xeroObjectType === "CREDIT_NOTE")
+        .map((item) => item.xeroObjectId);
+      return { drift, coveredCents: await sumCoveredRefundCreditNoteCents(PAYMENT_ID) };
+    }
+
+    it("a bank-transfer payment's one canonical note, voided inbound: mirror off, pointer released, no live note anywhere (#4091)", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_canonical", [
+        { id: "cn_canonical", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000 } },
+      ]);
+      const before = await reportedRefundNoteState();
+      expect(before).toEqual({ drift: [], coveredCents: 20_000 });
+      const voided = {
+        creditNoteID: "cn_canonical", creditNoteNumber: "CN-4091", status: "VOIDED",
+        total: 200, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [],
+      };
+
+      // Before the fix the canonical branch kept the mirror active - the field
+      // named it - so the pointer stayed on a voided note and every reader of
+      // an active link saw a live refund note that Xero had cancelled.
+      const writes = await recordPointerWrites(() => withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical")));
+
+      expect(writes).toEqual([null]);
+      const after = await state();
+      expect(after).toEqual({ pointer: null, active: [] });
+      expectNoMissingLink(after);
+      // The refund has no live note: nothing covers it, and the report shows no
+      // pointer promising a link that is not there.
+      expect(await reportedRefundNoteState()).toEqual({ drift: [], coveredCents: 0 });
+
+      // The nightly cleanup and a redelivery of the void change nothing.
+      const { cleanupStaleCanonicalXeroObjectLinks } = await import("@/lib/xero-hardening-canonical-links");
+      await cleanupStaleCanonicalXeroObjectLinks();
+      expect(await recordPointerWrites(() => withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical"))))
+        .toEqual([]);
+      expect(await state()).toEqual(after);
+    });
+
+    it("INV-ADDPAY-041: a refund note requested again after the void raises a fresh note and never re-adopts the voided one", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_canonical", [
+        { id: "cn_canonical", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, watermarkCents: 20_000 } },
+      ]);
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: "inv-race-4091" } });
+      const ORIGINAL_KEY = `payment:${PAYMENT_ID}:refund-credit-note:20000:v1`;
+      // The create that raised it, which the single-note lookup falls back to.
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
+          status: "SUCCEEDED", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", xeroObjectNumber: "CN-4091",
+          correlationKey: ORIGINAL_KEY, idempotencyKey: ORIGINAL_KEY, completedAt: new Date("2026-06-01T00:00:00.000Z"),
+        },
+      });
+      const voided = {
+        creditNoteID: "cn_canonical", creditNoteNumber: "CN-4091", status: "VOIDED",
+        total: 200, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [],
+      };
+      await withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical"));
+
+      // A rerun of the refund's request. Before the decision it found the
+      // voided note through its create, wrote it back into the pointer and
+      // re-armed its mirror, and raised nothing.
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 20_000);
+      // A redelivery of the void after it changes nothing either.
+      await withFakeXero(voided, () => reconcileXeroCreditNote("cn_canonical"));
+
+      expect(queued.queueOperationId).not.toBeNull();
+      const fresh = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: queued.queueOperationId! } });
+      expect(fresh).toMatchObject({ operationType: "CREATE", entityType: "CREDIT_NOTE", status: "PENDING", xeroObjectId: null });
+      // INV-ADDPAY-041: its row key names the voided note too, so the failed
+      // panel never reads the voided note's SUCCEEDED create as its repair.
+      expect(fresh.correlationKey).toBe(`${ORIGINAL_KEY}:after-void:cn_canonical`);
+      const { resolveFailedXeroOperationStates } = await import("@/lib/xero-admin-failures");
+      const failed = await prisma.xeroSyncOperation.update({ where: { id: fresh.id }, data: { status: "FAILED" } });
+      expect((await resolveFailedXeroOperationStates([failed])).get(fresh.id)?.state).toBe("ACTIVE");
+      await prisma.xeroSyncOperation.update({ where: { id: fresh.id }, data: { status: "PENDING" } });
+      const after = await state();
+      expect(after).toEqual({ pointer: null, active: [] });
+      expectNoMissingLink(after);
+
+      // Xero is a bank transfer's payment rail, so the void undid the refund
+      // (INV-ADDPAY-021, owner decision) and the worker would size the note at
+      // zero. The treasurer records the refund again; the worker then raises the note
+      // under a Xero key naming the voided note, so a Xero that still holds
+      // the voided note's key cannot replay it back.
+      expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).refundedAmountCents).toBe(0);
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 20_000 } });
+      const keys = await raiseQueuedNote(queued.queueOperationId!);
+      expect(keys).toEqual([`payment:${PAYMENT_ID}:refund-credit-note:20000:v2:after-void:cn_canonical`]);
+      expect(await state()).toEqual({ pointer: "cn-race-4091-fresh", active: ["cn-race-4091-fresh"] });
+    });
+
+    /**
+     * The outbox's own call for a queued refund-note row, against a fake Xero
+     * that replays a key it has seen (the voided note's original key returns
+     * the voided note). Returns the Xero idempotency keys it was sent.
+     */
+    async function raiseQueuedNote(operationId: string): Promise<string[]> {
+      const keys: string[] = [];
+      const xero = {
+        accountingApi: {
+          createCreditNotes: async (_t: string, body: { creditNotes: Array<{ lineItems: Array<{ unitAmount: number }> }> }, _s?: unknown, _u?: unknown, key?: string) => {
+            keys.push(key!);
+            const replay = key === `payment:${PAYMENT_ID}:refund-credit-note:20000:v2`;
+            const total = body.creditNotes[0]!.lineItems[0]!.unitAmount;
+            return {
+              body: {
+                creditNotes: [{
+                  creditNoteID: replay ? "cn_canonical" : "cn-race-4091-fresh", creditNoteNumber: replay ? "CN-4091" : "CN-4091-2",
+                  total, remainingCredit: total, status: replay ? "VOIDED" : "AUTHORISED", payments: [],
+                }],
+              },
+            };
+          },
+          getCreditNote: async () => ({ body: { creditNotes: [] } }),
+        },
+      };
+      const apiClient = await import("@/lib/xero-api-client");
+      const contacts = await import("@/lib/xero-contacts");
+      const invoicedParty = await import("@/lib/organisation-xero-contacts");
+      const invoicePayments = await import("@/lib/xero-invoice-payments");
+      const { createXeroCreditNote } = await import("@/lib/xero-credit-notes");
+      const spies = [
+        vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero, tenantId: "tenant-4091" } as never),
+        vi.spyOn(apiClient, "callXeroApi").mockImplementation(((call: () => unknown) => call()) as never),
+        vi.spyOn(invoicedParty, "findOrCreateXeroContactForInvoicedParty").mockResolvedValue("contact-4091"),
+        vi.spyOn(contacts, "retryXeroWriteWithContactRepair").mockImplementation((async (options: { run: (input: { contactId: string }) => unknown; currentContactId: string }) =>
+          options.run({ contactId: options.currentContactId })) as never),
+        // No bank-transfer refund account mapped: the note is left unsettled, which this proof does not read.
+        vi.spyOn(invoicePayments, "resolveRefundSettlement").mockResolvedValue({ kind: "unsettled", reason: "race-4091" }),
+      ];
+      try {
+        const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { requestPayload: true } });
+        const payload = row.requestPayload as { refundAmountCents: number; watermarkCents: number };
+        await createXeroCreditNote(PAYMENT_ID, payload.refundAmountCents, {
+          syncOperationId: operationId, watermarkCents: payload.watermarkCents, refundMethod: "internet-banking",
+        });
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+      return keys;
+    }
+
+    it("a bank-transfer canonical note voided beside a live per-refund note: only the canonical mirror goes off (#4091, #3880)", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_canonical", [
+        { id: "cn_canonical", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 15_000 } },
+        { id: "cn_per_refund", createdAt: "2026-06-02T00:00:00.000Z", metadata: { amountCents: 5_000, perDelta: true } },
+      ]);
+
+      await voidNote("cn_canonical");
+
+      const after = await state();
+      // The per-refund note keeps covering its own refund and never becomes the pointer.
+      expect(after).toEqual({ pointer: null, active: ["cn_per_refund"] });
+      expectNoMissingLink(after);
+      expect(await reportedRefundNoteState()).toEqual({ drift: [], coveredCents: 5_000 });
     });
 
     it("the pointer move commits or rolls back with the mirror write", async () => {

@@ -717,6 +717,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-038` | Unmutable alert names population — #2773 orchestrator decision; owner has not ruled; `INV-ADDPAY-039` |
 | `INV-ADDPAY-039` | Hand-refunded late capture never refunded again — orchestrator decision; owner has not ruled |
 | `INV-ADDPAY-040` | An unpaid review-raised request can be withdrawn; withdrawal retires every instrument, durably |
+| `INV-ADDPAY-041` | A voided refund note is never re-adopted or replayed by Xero |
 
 ## Analytics And Privacy
 
