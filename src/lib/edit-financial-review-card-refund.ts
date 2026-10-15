@@ -93,10 +93,8 @@ export async function executeEditReviewCardRefund({
     // operation open and the cron replays the identical frozen slices, which
     // Stripe answers with the original refunds. #4144: only on the plan sent.
     await closeDoorRow(
-      async () => (await markEditFinancialReviewRefundRecoverySucceeded({ taskId, sentPlan: route.allocation })).count === 1,
       {
         door: "edit-review",
-        refundLabel: "The edit review's card refund",
         idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),
         bookingId,
         paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "",
@@ -105,6 +103,7 @@ export async function executeEditReviewCardRefund({
         format,
         context: { taskId },
       },
+      async (idempotencyKey) => (await markEditFinancialReviewRefundRecoverySucceeded({ idempotencyKey, sentPlan: route.allocation })).count === 1,
     );
   } catch (err) {
     // The debt is already durable, so there is nothing to enqueue here and

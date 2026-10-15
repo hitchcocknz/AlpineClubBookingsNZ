@@ -53,6 +53,7 @@ const CHARGE_CENTS = 12_000;
 const PLANNED_CENTS = 9_000;
 /** The plan the claim froze, and so the plan the inline door sends. */
 const PLAN = [{ paymentTransactionId: TXN_ID, amountCents: PLANNED_CENTS }];
+const ROW_KEY = `capacity_claim_failed_refund_recovery_${BOOKING_ID}_${INTENT}`;
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 function assertSafeRaceDbUrl(url: string): void {
@@ -141,7 +142,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         allocationPlan: PLAN,
       });
       return prisma.paymentRecoveryOperation.findUniqueOrThrow({
-        where: { idempotencyKey: `capacity_claim_failed_refund_recovery_${BOOKING_ID}_${INTENT}` },
+        where: { idempotencyKey: ROW_KEY },
       });
     }
 
@@ -227,7 +228,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await refundedEvents()).toEqual([{ amountCents: PLANNED_CENTS, reason: CAPACITY_RACE_REFUND_EVENT_REASON, actorMemberId: null }]);
 
       // The inline door's close, arriving late, closes nothing - so it records nothing.
-      expect(await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT, sentPlan: PLAN })).toEqual({ count: 0 });
+      expect(await markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey: ROW_KEY, sentPlan: PLAN })).toEqual({ count: 0 });
       // A second run claims nothing.
       expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("not-claimed");
       expect(await refundedEvents()).toHaveLength(1);
@@ -241,7 +242,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const row = await queueCapacityRaceRefund();
       stripeMakesRefunds(async () => {
         // The inline door's refund, answered by the same Stripe key, closes the row first.
-        expect(await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT, sentPlan: PLAN })).toEqual({ count: 1 });
+        expect(await markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey: ROW_KEY, sentPlan: PLAN })).toEqual({ count: 1 });
       });
 
       await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST);

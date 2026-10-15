@@ -37,7 +37,6 @@ const b: RefundAllocationSlice = { paymentTransactionId: "txn_b", amountCents: 2
 
 const lost: LostCloseContext = {
   door: "capacity-race",
-  refundLabel: "The capacity race's refund",
   idempotencyKey: "op_key",
   bookingId: "b1",
   paymentIntentId: "pi_1",
@@ -82,17 +81,25 @@ describe("closePrePersistedRefundRow (#4144)", () => {
 });
 
 describe("closeDoorRow (#4144)", () => {
+  it("hands the close its row's key - built once, so the close and the read-back name one row", async () => {
+    const close = vi.fn(async (_key: string) => false);
+    findUnique.mockResolvedValue({ id: "op_row", status: "FAILED", attempts: 1 });
+    await closeDoorRow(lost, close);
+    expect(close).toHaveBeenCalledWith("op_key");
+    expect(findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { idempotencyKey: "op_key" } }));
+  });
+
   it("a close that moved the row reads nothing back and alerts nobody", async () => {
-    expect(await closeDoorRow(async () => true, lost)).toBe(true);
+    expect(await closeDoorRow(lost, async () => true)).toBe(true);
     expect(findUnique).not.toHaveBeenCalled();
     expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
   });
 
   it("a close that threw is logged and left to the runner: no read-back, no alert", async () => {
-    expect(await closeDoorRow(async () => Promise.reject(new Error("pool timeout")), lost)).toBeNull();
+    expect(await closeDoorRow(lost, async () => Promise.reject(new Error("pool timeout")))).toBeNull();
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ bookingId: "b1", paymentIntentId: "pi_1", idempotencyKey: "op_key" }),
-      expect.stringContaining("Failed to close the capacity-race refund recovery operation"),
+      expect.objectContaining({ door: "capacity-race", bookingId: "b1", paymentIntentId: "pi_1", idempotencyKey: "op_key" }),
+      expect.stringContaining("Failed to close the capacity race's refund recovery operation"),
     );
     expect(findUnique).not.toHaveBeenCalled();
     expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
@@ -102,20 +109,27 @@ describe("closeDoorRow (#4144)", () => {
     ["re-planned by another writer (FAILED, tried)", { id: "op_row", status: "FAILED", attempts: 1 }, "warn"],
     ["held by the runner (PROCESSING)", { id: "op_row", status: "PROCESSING", attempts: 1 }, "warn"],
     ["already closed by the runner", { id: "op_row", status: "SUCCEEDED", attempts: 1 }, "info"],
-    ["gone", null, "warn"],
   ] as const)("a lost close on a row %s is logged and left to the runner, never alerted", async (_label, row, level) => {
     findUnique.mockResolvedValue(row);
-    expect(await closeDoorRow(async () => false, lost)).toBe(false);
+    expect(await closeDoorRow(lost, async () => false)).toBe(false);
     expect(logger[level]).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: "op_key", status: row?.status ?? null }),
-      expect.stringContaining("left to the recovery runner"),
+      expect.objectContaining({ door: "capacity-race", idempotencyKey: "op_key", status: row.status }),
+      "The capacity race's refund was made, but the capacity race's close matched no open row it could close - already closed, held by the runner, or re-planned (#4144): left to the recovery runner",
     );
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
+  });
+
+  it("a row that is gone - nothing deletes a door's refund row - is logged as an error, not alerted", async () => {
+    findUnique.mockResolvedValue(null);
+    expect(await closeDoorRow(lost, async () => false)).toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "op_key" }), expect.stringContaining("no longer exists"));
+    expect(logger.warn).not.toHaveBeenCalled();
     expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
   });
 
   it("a lost close on a row still untouched is an anomaly: logged and alerted once for the row, naming the refund", async () => {
     findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 });
-    expect(await closeDoorRow(async () => false, lost)).toBe(false);
+    expect(await closeDoorRow(lost, async () => false)).toBe(false);
     expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ operationId: "op_row" }), expect.stringContaining("still untouched"));
     expect(sendAdminAlertOnceEver).toHaveBeenCalledTimes(1);
     const [{ key, send }] = sendAdminAlertOnceEver.mock.calls[0]!;
@@ -136,13 +150,13 @@ describe("closeDoorRow (#4144)", () => {
   it("an untouched row whose booking is gone is logged, not alerted", async () => {
     findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 });
     findBooking.mockResolvedValue(null);
-    await closeDoorRow(async () => false, lost);
+    await closeDoorRow(lost, async () => false);
     expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
   });
 
   it("a read-back that throws is logged and never escapes", async () => {
     findUnique.mockRejectedValue(new Error("db down"));
-    await expect(closeDoorRow(async () => false, lost)).resolves.toBe(false);
-    expect(logger.error).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("Failed to check a lost capacity-race close"));
+    await expect(closeDoorRow(lost, async () => false)).resolves.toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("Failed to check a lost close for the capacity race"));
   });
 });

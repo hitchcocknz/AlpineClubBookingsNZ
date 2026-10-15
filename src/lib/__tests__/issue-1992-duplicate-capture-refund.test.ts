@@ -508,8 +508,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
       mocks.markDuplicateCaptureRefundRecoverySucceeded
     ).toHaveBeenCalledWith(
       expect.objectContaining({
-        bookingId: "booking-1",
-        paymentIntentId: DUPLICATE_PI,
+        idempotencyKey: `duplicate_capture_booking-1_${DUPLICATE_PI}`,
         // #4144: fenced on the plan this attempt sent, so a re-planned row stays owed.
         sentPlan: [{ paymentTransactionId: "txn-duplicate", amountCents: 10000 }],
       })

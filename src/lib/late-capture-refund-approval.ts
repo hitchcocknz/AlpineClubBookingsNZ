@@ -202,11 +202,7 @@ export async function persistLateCaptureApprovalRefundDebt({
  * cannot follow an approval whose every slice was made; a close that loses on
  * a row still untouched is an anomaly (`reportLostPrePersistedClose`).
  */
-async function markLateCaptureApprovalRefundRecoverySucceeded(
-  paymentIntentId: string,
-  sentPlan: ReadonlyArray<RefundAllocationSlice>,
-) {
-  const idempotencyKey = buildLateCaptureApprovalRefundRecoveryIdempotencyKey(paymentIntentId);
+async function markLateCaptureApprovalRefundRecoverySucceeded(idempotencyKey: string, sentPlan: ReadonlyArray<RefundAllocationSlice>) {
   return closePrePersistedRefundRow({ idempotencyKey, sentPlan, untouchedOnly: true });
 }
 
@@ -279,10 +275,8 @@ export async function executeLateCaptureApprovalRefund({
   // A close that threw is logged and is no anomaly: the row is left to the
   // runner's replay. Only a close that ran and matched nothing is read back.
   const closed = await closeDoorRow(
-    async () => (await markLateCaptureApprovalRefundRecoverySucceeded(route.paymentIntentId, route.allocation)).count === 1,
     {
       door: "late-capture-approval",
-      refundLabel: "The approved refund",
       idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(route.paymentIntentId),
       bookingId,
       paymentIntentId: route.paymentIntentId,
@@ -291,6 +285,7 @@ export async function executeLateCaptureApprovalRefund({
       format,
       context: { taskId },
     },
+    async (idempotencyKey) => (await markLateCaptureApprovalRefundRecoverySucceeded(idempotencyKey, route.allocation)).count === 1,
   );
   if (closed) {
     await finishApprovedLateCaptureRefund({

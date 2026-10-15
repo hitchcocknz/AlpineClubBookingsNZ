@@ -606,19 +606,19 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
           name: "the cancellation",
           key: () => keys.buildBookingCancellationRefundIdempotencyKey(BOOKING_ID),
           enqueue: () => recovery.enqueueBookingCancellationRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
-          close: async () => (await recovery.markBookingCancellationRefundRecoverySucceeded({ bookingId: BOOKING_ID, sentPlan: PLAN })).count,
+          close: async () => (await recovery.markBookingCancellationRefundRecoverySucceeded({ idempotencyKey: keys.buildBookingCancellationRefundIdempotencyKey(BOOKING_ID), sentPlan: PLAN })).count,
         },
         {
           name: "the edit financial review",
           key: () => keys.buildEditFinancialReviewRefundRecoveryIdempotencyKey(TASK_ID),
           enqueue: () => recovery.enqueueEditFinancialReviewRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, taskId: TASK_ID, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
-          close: async () => (await recovery.markEditFinancialReviewRefundRecoverySucceeded({ taskId: TASK_ID, sentPlan: PLAN })).count,
+          close: async () => (await recovery.markEditFinancialReviewRefundRecoverySucceeded({ idempotencyKey: keys.buildEditFinancialReviewRefundRecoveryIdempotencyKey(TASK_ID), sentPlan: PLAN })).count,
         },
         {
           name: "the duplicate capture",
           key: () => keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT),
           enqueue: () => recovery.enqueueDuplicateCaptureRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: INTENT, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
-          close: async () => (await recovery.markDuplicateCaptureRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT, sentPlan: PLAN })).count,
+          close: async () => (await recovery.markDuplicateCaptureRefundRecoverySucceeded({ idempotencyKey: keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT), sentPlan: PLAN })).count,
         },
         {
           // #4125: the close and its REFUNDED event commit together, the event only when this close moved the row.
@@ -627,7 +627,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
           enqueue: () => recovery.enqueueCapacityClaimFailedRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: INTENT, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
           close: async () =>
             (await events.closeCapacityRaceRefundRecordingEvent({ bookingId: BOOKING_ID, amountCents: PLAN_CENTS, actorMemberId: MEMBER_ID }, async (tx) =>
-              (await recovery.markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT, sentPlan: PLAN, store: tx })).count === 1))
+              (await recovery.markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey: keys.buildCapacityClaimFailedRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT), sentPlan: PLAN, store: tx })).count === 1))
               ? 1
               : 0,
         },

@@ -315,7 +315,7 @@ type PrePersistedRow = { id: string; paymentIntentId: string; allocationPlan?: P
  * door read or sent. Null or empty is a row raised with none, as the enqueue
  * stores it (`enqueueLedgerRefundRecovery`).
  */
-function onPlanWhere(plan: Prisma.JsonValue | ReadonlyArray<RefundAllocationSlice> | null): Prisma.PaymentRecoveryOperationWhereInput {
+export function onPlanWhere(plan: Prisma.JsonValue | ReadonlyArray<RefundAllocationSlice> | null): Prisma.PaymentRecoveryOperationWhereInput {
   const none = plan === null || (Array.isArray(plan) && plan.length === 0);
   return { allocationPlan: none ? { equals: Prisma.DbNull } : { equals: plan as Prisma.InputJsonValue } };
 }
@@ -338,9 +338,11 @@ export function untouchedPrePersistedRowWhere(
  * - open, and still on the plan the door sent. The runner may hold it: it
  * replays these same keys, Stripe answers with the door's refunds, and its own
  * close then matches nothing, so the record is written once. A row another
- * writer re-planned - a refusal moved on, a slice marked made, a refund Stripe
- * failed later (`card-refund-failed-later.ts`) - is not on that plan, and is
- * still owed: it is left open.
+ * writer re-planned is not on that plan and is left open: one moved after a
+ * refusal, or after Stripe's later report that a refund failed
+ * (`card-refund-failed-later.ts`), is still owed; one re-planned only by the
+ * runner marking a slice made is left to the runner, whose replay closes it
+ * without moving money.
  */
 export function sentPlanRowWhere(
   idempotencyKey: string,

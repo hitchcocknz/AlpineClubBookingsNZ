@@ -4891,7 +4891,7 @@ not stopped by any lock either, so the request carries the card figure the
 dialog showed (`expectedRefundedByCardCents`, round 8) and a different figure
 is a 409: a refund the treasurer never saw is never marked resolved.
 
-## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103)
+## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103, #4144)
 
 A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds these
 writes to a `PaymentRecoveryOperation`, all lock-free and each fenced in its
@@ -4924,18 +4924,24 @@ Stripe call:
   only the close that moved the row writes a record - the duplicate capture's
   event and the capacity race's REFUNDED event (`closeCapacityRaceRefundRecordingEvent`,
   close and event in one transaction) - so it is written once. A row another
-  writer re-planned is not on that plan and stays owed. The window this shuts:
+  writer re-planned is not on that plan and is left open: one moved after a
+  refusal, or after Stripe's later report that a refund failed, is still owed;
+  one re-planned only by the runner marking a slice made is left to the
+  runner, whose replay closes it without moving money. The window this shuts:
   the door's refund is made, the runner claims the row and its attempt fails,
-  a refund Stripe failed later re-plans it (`card-refund-failed-later.ts`
-  writes only a tried row), and only then the door's close runs.
+  Stripe's later report that the refund failed re-plans it
+  (`card-refund-failed-later.ts` writes only a tried row), and only then the
+  door's close runs. The row's key is built once per door (`closeDoorRow`
+  hands it to the close and to the read-back).
   The late-capture approval closes only a row still `PENDING` with `attempts`
   0 on the plan it sent (#4126, `untouchedPrePersistedRowWhere`, the
   compare-and-set it shares with the doors' refusal re-plan,
   `replanPrePersistedRow`), as its record is written by whichever close moves
   the row. Every door reads a lost close back (`reportLostPrePersistedClose`):
-  closed, gone, held or re-planned is logged and left to the runner; a row
-  still `PENDING` with `attempts` 0 is an anomaly, logged and alerted to
-  officers once for the row (`<door>-close-lost:<row id>`), naming the refund.
+  closed, held or re-planned is logged and left to the runner; a row that is
+  gone (nothing deletes one) is logged as an error; a row still `PENDING`
+  with `attempts` 0 is an anomaly, logged and alerted to officers once for
+  the row (`<door>-close-lost:<row id>`), naming the refund.
   A close that threw is logged and left to the runner's replay.
 - **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
   the attempt's `attempts` and a live claim, so an attempt the reaper gave up

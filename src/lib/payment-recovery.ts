@@ -35,8 +35,8 @@ import {
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
-import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
-import { closePrePersistedRefundRow } from "@/lib/pre-persisted-refund-close";
+import { onPlanWhere, refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
+import { closePrePersistedRefundRow, type DoorCloseArgs } from "@/lib/pre-persisted-refund-close";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
   findWaitingSupplementaryInvoiceOperationForPaymentIntent,
@@ -293,7 +293,7 @@ async function enqueueLedgerRefundRecovery({
     if (allocationPlanJson !== undefined && !progressed(allocationPlan)) {
       const held = (await store.paymentRecoveryOperation.findUnique({ where: { idempotencyKey }, select: { allocationPlan: true } }))?.allocationPlan ?? null;
       if (progressed(parseRefundAllocationPlan(held))) return { created: false, paymentIntentId: representativePaymentIntentId };
-      planFence = { allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue } };
+      planFence = onPlanWhere(held);
     }
     // #4083: a repeat enqueue refreshes only a row no worker has picked up
     // (PENDING). One a worker has claimed, failed or closed keeps its amount,
@@ -650,19 +650,10 @@ export async function enqueueEditFinancialReviewRefundRecovery({
  * leaves the operation open, and its replay re-requests the identical frozen
  * slices under the identical Stripe keys, so Stripe answers with the original
  * refunds and the ledger dedupes on refund id. #4144: only on the plan the door
- * sent (`closePrePersistedRefundRow`), so a re-planned debt stays owed.
+ * sent (`closePrePersistedRefundRow`), on the key its `closeDoorRow` builds
+ * once. Each door keeps a named close, as the seam its suites observe.
  */
-export async function markEditFinancialReviewRefundRecoverySucceeded({
-  taskId,
-  sentPlan,
-  store = prisma,
-}: {
-  taskId: string;
-  sentPlan: ReadonlyArray<RefundAllocationSlice>;
-  store?: PaymentRecoveryStore;
-}) {
-  return closePrePersistedRefundRow({ idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId), sentPlan, store });
-}
+export const markEditFinancialReviewRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /** #3639: a treasurer-approved late-capture refund's debt, as the edit-review one above; replayed under the webhook's own prefix. */
 export async function enqueueLateCaptureApprovalRefundRecovery({
@@ -736,17 +727,7 @@ export async function enqueueBookingCancellationRefundRecovery({
  * with the original refunds and the ledger dedupes on refund id, so the close
  * being best-effort is safe. #4144: only on the plan the door sent.
  */
-export async function markBookingCancellationRefundRecoverySucceeded({
-  bookingId,
-  sentPlan,
-  store = prisma,
-}: {
-  bookingId: string;
-  sentPlan: ReadonlyArray<RefundAllocationSlice>;
-  store?: PaymentRecoveryStore;
-}) {
-  return closePrePersistedRefundRow({ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), sentPlan, store });
-}
+export const markBookingCancellationRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /**
  * Record why the inline cancellation refund failed on the already-persisted
@@ -830,20 +811,7 @@ export async function enqueueCapacityClaimFailedRefundRecovery({
  * ledger dedupes on refund id, so no second money movement is possible.
  * #4144: only on the plan the door sent.
  */
-export async function markCapacityClaimFailedRefundRecoverySucceeded({
-  bookingId,
-  paymentIntentId,
-  sentPlan,
-  store = prisma,
-}: {
-  bookingId: string;
-  paymentIntentId: string;
-  sentPlan: ReadonlyArray<RefundAllocationSlice>;
-  store?: PaymentRecoveryStore;
-}) {
-  const idempotencyKey = buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId);
-  return closePrePersistedRefundRow({ idempotencyKey, sentPlan, store });
-}
+export const markCapacityClaimFailedRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /**
  * Record why the inline capacity-race refund failed on the already-persisted
@@ -968,20 +936,7 @@ export async function findOtherDuplicateCaptureRefundOperation({
  * original refund and the ledger dedupes on refund id. #4144: only on the plan
  * the door sent.
  */
-export async function markDuplicateCaptureRefundRecoverySucceeded({
-  bookingId,
-  paymentIntentId,
-  sentPlan,
-  store = prisma,
-}: {
-  bookingId: string;
-  paymentIntentId: string;
-  sentPlan: ReadonlyArray<RefundAllocationSlice>;
-  store?: PaymentRecoveryStore;
-}) {
-  const idempotencyKey = buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId);
-  return closePrePersistedRefundRow({ idempotencyKey, sentPlan, store });
-}
+export const markDuplicateCaptureRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /**
  * Record why the inline duplicate-capture refund failed on the

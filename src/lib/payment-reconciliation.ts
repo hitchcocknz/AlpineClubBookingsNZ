@@ -2097,9 +2097,9 @@ export async function markBookingPaymentSucceeded({
       // slice/keys, which Stripe answers with the original refund. #4144: only
       // on the plan sent, so a row another writer re-planned stays owed.
       const closed = await closeDoorRow(
-        async () => (await markDuplicateCaptureRefundRecoverySucceeded({ bookingId, paymentIntentId, sentPlan: refundPlan })).count === 1,
-        { door: "duplicate-capture", refundLabel: "The duplicate capture's refund", idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        { door: "duplicate-capture", idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
           bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format },
+        async (idempotencyKey) => (await markDuplicateCaptureRefundRecoverySucceeded({ idempotencyKey, sentPlan: refundPlan })).count === 1,
       );
 
       // #2008 — record the admin-only history event EXACTLY ONCE, gated on this
@@ -2268,11 +2268,11 @@ export async function markBookingPaymentSucceeded({
       // slices/keys, which Stripe answers with the original refunds - and
       // (#4125) records the REFUNDED event, which commits with this close only
       // when it is the one that closed the row, for what was refunded.
-      await closeDoorRow(() => closeCapacityRaceRefundRecordingEvent(
+      await closeDoorRow({ door: "capacity-race", idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format }, (idempotencyKey) => closeCapacityRaceRefundRecordingEvent(
         { bookingId, amountCents: plannedRefundCents, actorMemberId: bookingOwner(reconciliation.booking).memberId },
-        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId, paymentIntentId, sentPlan: refundPlan, store: tx })).count === 1,
-      ), { door: "capacity-race", refundLabel: "The capacity race's refund", idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
-        bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format });
+        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey, sentPlan: refundPlan, store: tx })).count === 1,
+      ));
 
       return {
         outcome: "cancelled_refunded",
