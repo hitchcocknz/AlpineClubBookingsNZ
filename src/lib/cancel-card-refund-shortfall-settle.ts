@@ -3,6 +3,7 @@ import "server-only";
 import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 
 import { capacityRaceChargeForHandBack } from "@/lib/capacity-race-refunded-total-correction";
+import type { ClubFormat } from "@/lib/club-format";
 import { capacityRaceShortfallIntentId } from "@/lib/capacity-race-shortfall-task-key";
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationExhausted, isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
@@ -109,7 +110,7 @@ export async function cardShortfallSettlement(
   task: { id: string; kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null },
   store: Prisma.TransactionClient,
   /** What this completion settles, and who: a capacity race's correction (#4154) needs both. */
-  completion: { amountCents: number; actingMemberId: string | null },
+  completion: { amountCents: number; actingMemberId: string | null; format: ClubFormat },
 ): Promise<{ preferTransactionIds: string[]; onlyTransactionIds?: string[]; nothingToAllocateMessage?: string } | null> {
   const part = cancelCardShortfallPart(task);
   if (part === null || task.paymentId === null) return null;
@@ -146,6 +147,7 @@ export async function cardShortfallSettlement(
       raceIntentId,
       amountCents: completion.amountCents,
       actingMemberId: completion.actingMemberId,
+      format: completion.format,
       nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE,
     });
     return { preferTransactionIds: [chargeId], onlyTransactionIds: [chargeId], nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE };

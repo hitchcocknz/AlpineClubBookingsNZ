@@ -310,7 +310,7 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
-    const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null }); // #4097: null unless a card refund shortfall
+    const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null, format: club.format }); // #4097: null unless a card refund shortfall
     return handsBackByHand(task) && task.paymentId !== null
       ? {
           kind: "local-allocation",

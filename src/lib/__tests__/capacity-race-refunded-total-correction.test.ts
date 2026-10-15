@@ -35,6 +35,7 @@ vi.mock("@/lib/payment-reconciliation", () => ({
   },
 }));
 
+import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import {
   CAPACITY_RACE_CORRECTION_BLOCKED_REASON,
   capacityRaceChargeForHandBack,
@@ -66,6 +67,7 @@ const run = (store: ReturnType<typeof world>, amountCents = 6_000) =>
     amountCents,
     actingMemberId: "officer-1",
     nothingToAllocateMessage: BASE,
+    format: CLUB_FORMAT_TEST,
   });
 
 const expectBlocked = async (store: ReturnType<typeof world>, blocked: CapacityRaceCorrectionBlocked) => {
@@ -100,6 +102,7 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
     expect(doubles.audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "booking-payment.capacity-race.refunded-total-corrected",
+        summary: expect.stringContaining("corrected from $200.00 to $140.00"),
         actorMemberId: "officer-1",
         category: "payment",
         entityId: "txn-race",

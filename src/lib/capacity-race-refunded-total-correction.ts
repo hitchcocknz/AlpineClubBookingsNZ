@@ -3,10 +3,12 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 
 import { createAuditLog } from "@/lib/audit";
+import type { ClubFormat } from "@/lib/club-format";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { CAPTURED_TRANSACTION_STATUS_LIST, EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
 import { compareAndSetRefundedAmount, reconcilePaymentAggregates, refundLedgerStartSeconds } from "@/lib/payment-transactions";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
+import { formatCents } from "@/lib/utils";
 
 /**
  * #4154 (`INV-PAY-133`, owner decision on #4154, 15 Oct 2026: "Guarded
@@ -90,6 +92,8 @@ export async function capacityRaceChargeForHandBack(
     /** The officer completing the task; null only on a read-only preview, which rolls back. */
     actingMemberId: string | null;
     nothingToAllocateMessage: string;
+    /** The club's format, for the audit's sentence. */
+    format: ClubFormat;
   },
 ): Promise<{ chargeId: string }> {
   const { task, raceIntentId, amountCents } = params;
@@ -143,7 +147,7 @@ export async function capacityRaceChargeForHandBack(
       category: "payment",
       severity: "important",
       outcome: "success",
-      summary: `Capacity race card charge's refunded total corrected from ${previousCents} to ${nextCents} cents, the card refunds on record, so its hand-back can be recorded (#4154)`,
+      summary: `Capacity race card charge's refunded total corrected from ${formatCents(previousCents, params.format)} to ${formatCents(nextCents, params.format)}, the card refunds on record, so its hand-back can be recorded (#4154)`,
       metadata: {
         bookingId: task.bookingId,
         paymentId: task.paymentId,
