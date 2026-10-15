@@ -9,7 +9,7 @@ reason: the panel's read of the charge queue now carries each covered
   payload the panel reads in one place.
 
 file: src/lib/membership-subscription-billing.ts
-lines: 1677
+lines: 1706
 reason: the preview decides which family charges still bill their family: a
   closed charge does until a covered member's payment is reversed, and a
   partly reversed one raises the officer's warning (owner decisions on #4110).
@@ -17,7 +17,10 @@ reason: the preview decides which family charges still bill their family: a
   billedFamilyTypes map and exceptions list the preview loop uses. The confirm
   then either acknowledges that warning (an officer's run) or withholds the
   family it names and keeps it OPEN for Finance (a membership approval, #4110
-  review F2), beside where it filters, persists and counts the exceptions. The
+  review F2), beside where it filters, persists and counts the exceptions. A
+  member who moved out of the family never counts as a reversal, and one who
+  was exempt at the close but now needs a subscription gets their own
+  exception, read from the same rows. The
   predicates and wording live in subscription-charge-already-paid.ts; what
   remains here is the confirm's own use of them, and moving it out would split
   one confirm transaction across two files.
