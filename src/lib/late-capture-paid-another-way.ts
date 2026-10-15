@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 
-import { readPaidAnotherWayLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
+import { findLateCapturePaymentIntents, readPaidAnotherWayLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
 import {
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
   closeKeysOf,
@@ -10,6 +10,8 @@ import {
 } from "@/lib/manual-refund-task-settlement-rules";
 import {
   buildLateCaptureApprovalRefundRecoveryIdempotencyKey,
+  CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
+  cardRefundFailedLaterRefundId,
   lateCaptureIntentOfApprovalRefundRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
@@ -42,20 +44,51 @@ export interface LateCaptureRefundPaidAnotherWay {
   completedByMemberId: string | null;
 }
 
+/**
+ * #4104: the card refund rows a late capture's refund can be closed on - its
+ * approval row, and a row owing a refund of it that Stripe failed later
+ * (`card_refund_failed_later_<refund>`, on the capture's own intent) - so the
+ * close keeps `INV-PAY-110`'s routing whichever row it was.
+ */
+function lateCaptureRefundOperationsWhere(paymentIntentIds: readonly string[]) {
+  return {
+    OR: [
+      { idempotencyKey: { in: paymentIntentIds.map((intent) => buildLateCaptureApprovalRefundRecoveryIdempotencyKey(intent)) } },
+      { idempotencyKey: { startsWith: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX }, paymentIntentId: { in: [...paymentIntentIds] } },
+    ],
+  };
+}
+
+/**
+ * The late capture a card refund row refunds: an approval row's own capture,
+ * or (#4104) a failed-later row's intent when that intent is a late capture.
+ * Null for any other row.
+ */
+export async function lateCaptureIntentOfCardRefundOperation(
+  operation: { idempotencyKey: string; paymentIntentId?: string | null },
+  store: Pick<Prisma.TransactionClient, "manualRefundTask"> = prisma,
+): Promise<string | null> {
+  const approved = lateCaptureIntentOfApprovalRefundRecoveryKey(operation.idempotencyKey);
+  if (approved !== null) return approved;
+  const intent = operation.paymentIntentId;
+  if (!intent || cardRefundFailedLaterRefundId(operation.idempotencyKey) === null) return null;
+  return (await findLateCapturePaymentIntents([intent], store)).has(intent) ? intent : null;
+}
+
 /** The close of this capture's approved card refund, or null when it was never closed as paid another way. */
 export async function findLateCaptureRefundPaidAnotherWay(
   paymentIntentId: string,
   store: CloseStore = prisma,
 ): Promise<LateCaptureRefundPaidAnotherWay | null> {
-  const operation = await store.paymentRecoveryOperation.findUnique({
-    where: { idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(paymentIntentId) },
+  const operations = await store.paymentRecoveryOperation.findMany({
+    where: lateCaptureRefundOperationsWhere([paymentIntentId]),
     select: { id: true },
   });
-  if (!operation) return null;
+  if ((operations ?? []).length === 0) return null;
   return store.manualRefundTask.findFirst({
     where: {
       ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
-      occurrenceKey: { in: closeKeysOf(operation.id) },
+      occurrenceKey: { in: operations.flatMap((operation) => closeKeysOf(operation.id)) },
     },
     select: {
       id: true,
@@ -85,10 +118,12 @@ export async function readLateCaptureRefundsPaidAnotherWay(
     paymentIntentIds.map((intent) => [buildLateCaptureApprovalRefundRecoveryIdempotencyKey(intent), intent]),
   );
   const operations = await store.paymentRecoveryOperation.findMany({
-    where: { idempotencyKey: { in: [...intentByKey.keys()] } },
-    select: { id: true, idempotencyKey: true },
+    where: lateCaptureRefundOperationsWhere(paymentIntentIds),
+    select: { id: true, idempotencyKey: true, paymentIntentId: true },
   });
-  const intentByOperation = new Map((operations ?? []).map((row) => [row.id, intentByKey.get(row.idempotencyKey)]));
+  const intentByOperation = new Map(
+    (operations ?? []).map((row) => [row.id, intentByKey.get(row.idempotencyKey) ?? row.paymentIntentId]),
+  );
   if (intentByOperation.size === 0) return found;
   const [closes, tasks] = await Promise.all([
     store.manualRefundTask.findMany({
@@ -139,9 +174,9 @@ export async function paidAnotherWayCloseReceiptRecorded(
   if (operationId === null) return false;
   const operation = await store.paymentRecoveryOperation.findUnique({
     where: { id: operationId },
-    select: { idempotencyKey: true },
+    select: { idempotencyKey: true, paymentIntentId: true },
   });
-  const paymentIntentId = operation ? lateCaptureIntentOfApprovalRefundRecoveryKey(operation.idempotencyKey) : null;
+  const paymentIntentId = operation ? await lateCaptureIntentOfCardRefundOperation(operation, store) : null;
   if (paymentIntentId === null) return false;
   const receipt = await readPaidAnotherWayLateCaptureXeroReceipt(paymentIntentId, store);
   return receipt.kind === "recorded" && receipt.invoiceId !== null;

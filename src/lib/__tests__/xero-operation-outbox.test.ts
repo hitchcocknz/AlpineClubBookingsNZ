@@ -1509,6 +1509,16 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
       );
     });
 
+    // #4104 (delta review ML1): a close a card refund note already in Xero
+    // partly answers asks only for the rest - never its whole share.
+    it("MUTATION: never more than the close asks for", async () => {
+      mocks.readPaidAnotherWayCloseShare.mockResolvedValue({ amountCents: 2500, coveredCents: 0, uncoveredCents: 2500 });
+      await enqueueXeroRefundCreditNoteOperation("payment_1", 900, { refundMethod: "internet-banking", paidAnotherWayTaskId: "close_1" });
+      expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ requestPayload: expect.objectContaining({ refundAmountCents: 900 }) }),
+      );
+    });
+
     it("nothing once its own notes cover it", async () => {
       mocks.readPaidAnotherWayCloseShare.mockResolvedValue({ amountCents: 2500, coveredCents: 2500, uncoveredCents: 0 });
       await expect(enqueueClose()).resolves.toMatchObject({ queueOperationId: null });
