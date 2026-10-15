@@ -98,7 +98,11 @@ const bookingEvents = vi.hoisted(() => ({ create: vi.fn<(...args: unknown[]) => 
 const refusalReplan = vi.hoisted(() => ({ updateMany: vi.fn<(...args: unknown[]) => Promise<{ count: number }>>(async () => ({ count: 1 })) }));
 
 // #4125: the officers' once-ever alert for a capacity-race charge no refund covers; its rule is proved in its own suite.
-const shortfallAlert = vi.hoisted(() => ({ alertCapacityRaceRefundShortfall: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true) }));
+// #4154: and the hand-back task to check it raises in the void's claim; its rule is proved there too.
+const shortfallAlert = vi.hoisted(() => ({
+  alertCapacityRaceRefundShortfall: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true),
+  raiseCapacityRaceRefundShortfallTask: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true),
+}));
 vi.mock("@/lib/capacity-race-refund-shortfall", () => shortfallAlert);
 
 vi.mock("@/lib/payment-transactions", () => ({
@@ -1158,9 +1162,13 @@ describe("markBookingPaymentSucceeded", () => {
       });
 
       expect(result.outcome).toBe("cancelled_refunded");
-      // #4125: the officers are told about the $10.00 no refund covers.
+      // #4154: the $10.00 no refund covers is a task to check, raised in the void's own claim transaction.
+      expect(shortfallAlert.raiseCapacityRaceRefundShortfallTask).toHaveBeenCalledWith(tx, {
+        bookingId: "booking-1", paymentId: expect.any(String), chargedCents: 10000, plannedRefundCents: 9000, format: CLUB_FORMAT_TEST,
+      });
+      // #4125: the officers are told about the $10.00 no refund covers - and (#4154) that its task was raised.
       expect(shortfallAlert.alertCapacityRaceRefundShortfall).toHaveBeenCalledWith(
-        { bookingId: "booking-1", paymentIntentId: "pi_race", chargedCents: 10000, plannedRefundCents: 9000 },
+        { bookingId: "booking-1", paymentIntentId: "pi_race", chargedCents: 10000, plannedRefundCents: 9000, taskRaised: true },
         CLUB_FORMAT_TEST,
       );
       // The close runs in the event's transaction, so the two commit together.

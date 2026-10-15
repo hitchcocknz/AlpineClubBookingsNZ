@@ -79,6 +79,8 @@ const mocks = vi.hoisted(() => ({
   paymentRecoveryOperationFindUnique: vi.fn().mockResolvedValue(null),
   // #4104 review (MM3): the payment's card refunds Stripe failed later, owed by rows of their own.
   failedLaterRecoveryRows: vi.fn((): unknown[] => []),
+  // #4154: a capacity race's own card refund rows, answered only to a query that asks for them.
+  capacityRaceRecoveryRows: vi.fn((): unknown[] => []),
   paymentFindUnique: vi.fn(),
   // #3827 (`INV-PAY-117`): the by-hand review route's pre-claim cap reads the
   // payment and the open hand-backs on the completion's own transaction.
@@ -292,14 +294,17 @@ const tx = {
     // paid-another-way close for less counts only what it paid back.
     // #4097, #4104 review (MM3): the shortfall's preflight reads the cancel's card
     // refund row and the payment's failed-later rows in one query (`where.OR`).
-    findMany: vi.fn(async (args?: { where?: { OR?: Array<{ paymentId?: string; idempotencyKey?: unknown }> } }) => {
+    findMany: vi.fn(async (args?: { where?: { OR?: Array<{ paymentId?: string; bookingId?: string; idempotencyKey?: unknown }> } }) => {
       if (!args?.where?.OR) return [];
       const cancelRow = await mocks.paymentRecoveryOperationFindUnique(args);
       // Only a query that asks for them is answered with the payment's failed-later rows.
       const asksFailedLater = args.where.OR.some(
         (arm) => arm.paymentId === "payment-1" && JSON.stringify(arm.idempotencyKey) === JSON.stringify({ startsWith: "card_refund_failed_later_" }),
       );
-      return [...(cancelRow ? [cancelRow] : []), ...(asksFailedLater ? mocks.failedLaterRecoveryRows() : [])];
+      const asksCapacityRace = args.where.OR.some(
+        (arm) => arm.bookingId === "booking-1" && JSON.stringify(arm.idempotencyKey) === JSON.stringify({ startsWith: "capacity_claim_failed_refund_recovery_booking-1_" }),
+      );
+      return [...(cancelRow ? [cancelRow] : []), ...(asksCapacityRace ? mocks.capacityRaceRecoveryRows() : []), ...(asksFailedLater ? mocks.failedLaterRecoveryRows() : [])];
     }),
     findUnique: (...a: unknown[]) => mocks.paymentRecoveryOperationFindUnique(...a),
   },
@@ -2566,6 +2571,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
         where: {
           OR: [
             { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
+            { bookingId: "booking-1", idempotencyKey: { startsWith: "capacity_claim_failed_refund_recovery_booking-1_" } },
             { paymentId: "payment-1", idempotencyKey: { startsWith: "card_refund_failed_later_" } },
           ],
         },
@@ -2617,6 +2623,24 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
       await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
       expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+    });
+
+    // #4154 (`INV-PAY-133`): a capacity race's task to check waits for that race's own card refund row(s), one per intent.
+    it.each([
+      ["still being sent", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: null }, /still being refunded; mark this once it settles/],
+      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way/],
+    ] as const)("MUTATION: a capacity race's part to check is refused while its card refund is %s, and completes once it is made", async (_label, row, message) => {
+      shortfallTask("check");
+      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([row]);
+
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+
+      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([{ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, lastError: null }]);
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-bank"] });
+      expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(expect.objectContaining({ manualRefundTaskId: "task-9", amountCents: 2000, cardShortfall: true }));
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-1", 2000, expect.objectContaining({ refundMethod: "internet-banking", paidAnotherWayTaskId: "task-9" }));
     });
 
     it("MUTATION: a part to check is refused while its bank-transfer part is open, and completes once it is closed", async () => {

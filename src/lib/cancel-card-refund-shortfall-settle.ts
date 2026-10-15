@@ -5,7 +5,7 @@ import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } f
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationExhausted, isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
-import { buildBookingCancellationRefundIdempotencyKey, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } from "@/lib/payment-recovery-keys";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 
@@ -20,7 +20,8 @@ import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-
  * - **Never while the card part is still being refunded.** Under the `Payment`
  *   row lock (`lockPaymentForRefundedTotal`, which every refunded-total writer
  *   takes first), a completion is refused while the cancel's card refund
- *   recovery (`booking_cancel_refund_recovery_<bookingId>`) is not SUCCEEDED:
+ *   recovery (`booking_cancel_refund_recovery_<bookingId>`, or a capacity
+ *   race's per intent, #4154) is not SUCCEEDED:
  *   the card's slices and this hand-back must never be read off one ledger
  *   while one of them is still moving. Nor (#4104) while a card refund on the
  *   payment that Stripe failed later is owed again by a row of its own. The refusal names the next step by the
@@ -104,10 +105,12 @@ export async function cardShortfallSettlement(
   // #4104 review (MM3): the cancel's own recovery row, and any card refund on
   // this payment Stripe failed later and that is owed again by a row of its own
   // (`card_refund_failed_later_<refund>`) - card money still moving either way.
+  // #4154: a capacity race's cancel's own rows are one per intent, on its booking.
   const cardRefunds = await store.paymentRecoveryOperation.findMany({
     where: {
       OR: [
         { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(task.bookingId) },
+        { bookingId: task.bookingId, idempotencyKey: { startsWith: buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(task.bookingId) } },
         { paymentId: task.paymentId, idempotencyKey: { startsWith: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } },
       ],
     },

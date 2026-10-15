@@ -37,6 +37,9 @@ function withClubFollowUp(clause: string, subjects: string[]): string {
 }
 const STALLED_CARD_REFUND = "the card refund";
 
+/** #4097, #4154: a part to check that the club checked and dismissed (`INV-SSOT`). */
+const checkedAndClosed = (amount: string) => `the club checked the ${amount} and closed it`;
+
 /** #4097, #4125: one card refund, by where it stands - the shortfall's card part and a whole card refund alike (`INV-SSOT`). */
 function cardRefundClause(amount: string, state: CardRefundState, refundedOn: string | null): string {
   switch (state) {
@@ -87,7 +90,7 @@ function cardShortfallClause(
       status === "COMPLETED"
         ? `${money(parts.checkCents)} was refunded to you by bank transfer`
         : status === "DISMISSED"
-          ? `the club checked the ${remaining}${money(parts.checkCents)} and closed it`
+          ? checkedAndClosed(`${remaining}${money(parts.checkCents)}`)
           : `the club will be in touch about the ${remaining}${money(parts.checkCents)}${remaining ? "" : " refund"}`,
     );
   }
@@ -218,8 +221,12 @@ export function buildCancelledPostPaymentNarrative(
   // #4125: a capacity race refunds what the payment ledger showed refundable,
   // which can be less than the charge; the snapshot keeps nothing back, so the
   // rest is neither refunded nor retained - say so, never "no further payment".
+  // #4154: its task to check, once dismissed, says the club closed it; paid
+  // back, it is a REFUNDED event, counted above.
   const unaccountedCents = capacityRace ? paidAmountCents - settledAmountCents - retainedAmountCents : 0;
-  if (unaccountedCents > 0) followUps.push(`the ${settledAmountCents > 0 ? "remaining " : ""}${formatCents(unaccountedCents, format)}`);
+  const rest = `${settledAmountCents > 0 ? "remaining " : ""}${formatCents(unaccountedCents, format)}`;
+  if (unaccountedCents > 0 && cardShortfallStatuses.check === "DISMISSED") settlementClause = [settlementClause, checkedAndClosed(rest)].filter(Boolean).join(" and ");
+  else if (unaccountedCents > 0) followUps.push(`the ${rest}`);
   settlementClause = withClubFollowUp(settlementClause, followUps);
 
   return {

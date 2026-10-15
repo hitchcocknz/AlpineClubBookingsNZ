@@ -97,9 +97,17 @@ function shortfallReason(part: CancelCardShortfallPart, bookingId: string, figur
   ).slice(0, MANUAL_REFUND_TASK_REASON_MAX);
 }
 
-async function raisePart(
+/**
+ * #4097, #4154: write one part of a card refund shortfall under its key,
+ * inserted on no conflict. A key already held must be the same OPEN row at the
+ * same amount: the paid cancel's claim throws otherwise (`throw`), rather than
+ * report a stale figure; the capacity race's settle (`keep`) logs it and leaves
+ * that row, since a throw there would wedge the webhook with the charge taken.
+ */
+export async function raiseCardShortfallPart(
   tx: Prisma.TransactionClient,
   params: { bookingId: string; paymentId: string; part: CancelCardShortfallPart; cents: number; reason: string; format: ClubFormat },
+  onKeyHeld: "throw" | "keep" = "throw",
 ): Promise<{ taskId: string; cents: number } | null> {
   if (params.cents <= 0) return null;
   const occurrenceKey = cancelCardShortfallOccurrenceKey(params.bookingId, params.part);
@@ -124,9 +132,10 @@ async function raisePart(
   if (!task) throw new Error(`The card refund shortfall task for booking ${params.bookingId} was not written (#4097).`);
   // A replay that hit the key must find what this claim would have written.
   if (inserted.count === 0 && (task.status !== ManualRefundTaskStatus.OPEN || task.amountCents !== params.cents)) {
-    throw new Error(
-      `The card refund shortfall task ${task.id} for booking ${params.bookingId} already exists as ${task.status} for ${task.amountCents === null ? "no amount" : formatCents(task.amountCents, params.format)}, not OPEN for ${formatCents(params.cents, params.format)} (#4097).`,
-    );
+    const message = `The card refund shortfall task ${task.id} for booking ${params.bookingId} already exists as ${task.status} for ${task.amountCents === null ? "no amount" : formatCents(task.amountCents, params.format)}, not OPEN for ${formatCents(params.cents, params.format)} (#4097).`;
+    if (onKeyHeld === "throw") throw new Error(message);
+    logger.error({ bookingId: params.bookingId, taskId: task.id, cents: params.cents }, message);
+    return null;
   }
   return { taskId: task.id, cents: params.cents };
 }
@@ -150,7 +159,7 @@ export async function raiseCancelCardShortfallHandBack(
   const sizes: Record<CancelCardShortfallPart, number> = { bank: split.bankCents, check: split.checkCents };
   const figures = (cents: number) => ({ card: formatCents(cardCents, format), due: formatCents(refundAmountCents, format), part: formatCents(cents, format) });
   const raise = (part: CancelCardShortfallPart) =>
-    raisePart(tx, { bookingId, paymentId, part, cents: sizes[part], reason: shortfallReason(part, bookingId, figures(sizes[part])), format });
+    raiseCardShortfallPart(tx, { bookingId, paymentId, part, cents: sizes[part], reason: shortfallReason(part, bookingId, figures(sizes[part])), format });
   const shortfall: CancelCardShortfall = { cardCents, bank: await raise("bank"), check: await raise("check") };
   logger.warn(
     { bookingId, paymentId, refundAmountCents, cardCents, bankCents: sizes.bank, checkCents: sizes.check },
