@@ -87,6 +87,28 @@ describe("matchesWhere — scalar conditions", () => {
     expect(matchesWhere(booking({ notes: null }), { notes: { contains: "" } })).toBe(false);
   });
 
+  it("reads startsWith and contains as the unescaped LIKE Prisma sends (#4165)", () => {
+    const action = (value: string) => booking({ notes: value });
+    // A bare `_` is any one character and `%` any run, as PostgreSQL reads them.
+    expect(matchesWhere(action("xero.contact.synced"), { notes: { startsWith: "xero_" } })).toBe(true);
+    expect(matchesWhere(action("memberXlifecycle.delete_x"), { notes: { startsWith: "member_lifecycle.delete" } })).toBe(true);
+    expect(matchesWhere(action("a-long-b"), { notes: { startsWith: "a%b" } })).toBe(true);
+    expect(matchesWhere(action("xDATAXEXPORTx"), { notes: { contains: "DATA_EXPORT" } })).toBe(true);
+    // A `.` and the regex metacharacters are literal.
+    expect(matchesWhere(action("memberXprofile"), { notes: { startsWith: "member." } })).toBe(false);
+    expect(matchesWhere(action("a(b)+c"), { notes: { startsWith: "a(b)+" } })).toBe(true);
+    // A backslash escapes the next character, which is how `exactPrefix` asks for a literal.
+    expect(matchesWhere(action("xero.contact.synced"), { notes: { startsWith: "xero\\_" } })).toBe(false);
+    expect(matchesWhere(action("xero_account_mappings_updated"), { notes: { startsWith: "xero\\_" } })).toBe(true);
+    expect(matchesWhere(action("MEMBERSHIP_APPLICATION_APPROVED"), { notes: { startsWith: "MEMBERSHIP\\_APPLICATION" } })).toBe(true);
+    expect(matchesWhere(action("50%_off\\x"), { notes: { startsWith: "50\\%\\_off\\\\" } })).toBe(true);
+    expect(matchesWhere(action("50%Xoff\\x"), { notes: { startsWith: "50\\%\\_off\\\\" } })).toBe(false);
+    // Case-sensitive, as LIKE is.
+    expect(matchesWhere(action("XERO_PUSH"), { notes: { startsWith: "xero\\_" } })).toBe(false);
+    // PostgreSQL refuses a pattern ending in its escape character; so does this.
+    expect(() => matchesWhere(action("a\\"), { notes: { startsWith: "a\\" } })).toThrow(/lone backslash/);
+  });
+
   it("drops a condition of undefined, as Prisma does", () => {
     expect(matchesWhere(booking(), { status: undefined, memberId: "m-1" })).toBe(true);
     expect(matchesWhere(booking(), { status: { in: undefined } })).toBe(true);
