@@ -638,9 +638,9 @@ export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
  * `maxWait: 2s / timeout: 5s` while the longest-lived holder of `lock(1)` in the
  * tree — `assignBedRange` — runs on `{ maxWait: 10_000, timeout: 30_000 }`. An
  * admin assigning a bed range concurrently with a Stripe delivery would therefore
- * blow this transaction's budget with a P2028, and because the caller must not
- * fail the webhook the row would simply be lost: Stripe never redelivers a 200.
- * It takes a wider budget than the default and a TIGHTER one than the admin
+ * blow this transaction's budget with a P2028, and the record would wait for a
+ * 500 and Stripe's redelivery (#4149) instead of being written on the delivery
+ * that refunded. It takes a wider budget than the default and a TIGHTER one than the admin
  * precedent — Stripe's own delivery timeout is the ceiling on a webhook handler,
  * so copying 30s here would trade a lost row for a lost delivery. The caller
  * writes a `critical` audit row if it still fails.

@@ -3236,12 +3236,11 @@ holder of `lock(1)` in the tree is `assignBedRange`, which runs on
 an admin assigning a bed range concurrently with a Stripe delivery would blow a
 defaulted budget with a `P2028`. Copying the admin precedent is the wrong fix in
 the other direction — a webhook has Stripe's own delivery timeout over it, and a
-handler that sits on a lock for 30s trades a lost row for a lost delivery. The
-caller must answer 200 (the money is already back with the member, and a 500
-replays the whole refund path for a bookkeeping row), so Stripe never
-redelivers: a failure here is unrecoverable, and its caller therefore writes a
-`critical` `booking.payment.auto_refund_record_failed` audit row rather than
-only logging. See `INV-ADDPAY-037`.
+handler that sits on a lock for 30s trades a lost row for a lost delivery. A
+failure here writes a `critical` `booking.payment.auto_refund_record_failed`
+audit row, and since #4149 the webhook then answers 500: a replay no longer
+refunds again (#3639), so Stripe's redelivery writes the row
+(`late-capture-record-recovery.ts`). See `INV-ADDPAY-037`.
 
 **TWO CALLERS SINCE #2773, AND THAT CHANGES THE COHORT'S FOOTPRINT RATHER THAN ITS
 SHAPE.** `handleCancelledBookingPaymentSucceeded` — the late-capture handler for a
@@ -3252,6 +3251,18 @@ key, same budget, same single-key acquisition, no new tier and no new ordering: 
 only difference is that one more Stripe event type can now be the thing waiting on
 `lock(1)`. Both callers make every provider call outside the transaction, and both
 re-read `Booking.deletedAt` outside it.
+
+**#4149 ADDS CALLERS OF THE SAME WRITER, NOT A NEW PARTICIPANT.** A webhook
+redelivery that finds a late capture refunded with no record row, and the nightly
+credit-reconciliation self-heal before it raises a card note, both run the shared
+epilogue (`finishAutomaticLateCaptureRefund`) and so this writer: same key, same
+budget, no new tier or ordering. Each asks Stripe which door sent the refund
+BEFORE the transaction, never inside it. The writer's row is the claim that
+makes the record exactly-once across them: two deliveries, a delivery racing the
+self-heal, or a retried lost write serialise on `lock(1)`, the later finds the
+row (`alreadyRecorded: "self"`), and only the writer that created it writes the
+`refunded_after_cancellation` entry and sends the alert. Proved on real
+PostgreSQL by `late-capture-record-recovery.realdb.test.ts`.
 
 **AND ONE READ THAT IS DELIBERATELY OUTSIDE EVERY LOCK (#2774,
 `INV-ADDPAY-039`).** Before refunding, both handlers call

@@ -66,10 +66,11 @@ import {
  * already decided, or a capture already handed back, neither of which the
  * member is still owed by this path. The only gate on a genuine late capture is
  * the club's own setting (owner decision 26 Sep 2026, `INV-PAY-106`), which
- * lives in `late-capture-refund-hold.ts`. The
- * `booking.payment.refunded_after_cancellation` audit entry also stays in each
- * handler: it carries handler-specific detail, and moving it would renumber census
- * ordinals for no gain.
+ * lives in `late-capture-refund-hold.ts`. The handlers' ordered use of these
+ * pieces - record, `booking.payment.refunded_after_cancellation` entry, alert,
+ * Xero note - is `finishAutomaticLateCaptureRefund` since #4149, so a redelivery
+ * that finds a refund's record lost runs the same sequence once
+ * (`late-capture-record-recovery.ts`).
  *
  * WHY THE EPILOGUE IS TWO FUNCTIONS AND NOT ONE. The record write must be
  * AWAITED — an un-awaited database write in a route handler can be killed when the
@@ -516,15 +517,15 @@ async function resolveLateCaptureBookingDeleted(capture: {
  * caller has already refunded at Stripe and this is the only row that says so on
  * an operator surface.
  *
- * IT MAY NEVER FAIL THE WEBHOOK, which is why the catch is here rather than left
- * to the call site. The money is already back with the member and a 500 would
- * replay the whole refund path for a bookkeeping row. But a swallowed failure is
- * unrecoverable — Stripe never redelivers a 200, and nothing else in the tree ever
- * writes that row — so the catch writes
- * `booking.payment.auto_refund_record_failed` at `severity: "critical"`. That audit
- * row is the ONLY surface a lost record appears on, and it is the surface the
+ * IT NEVER THROWS, which is why the catch is here rather than left to the call
+ * site: the caller decides what a lost record means. The catch writes
+ * `booking.payment.auto_refund_record_failed` at `severity: "critical"` — the one
+ * surface a lost record appears on until it is written, and the surface the
  * finance card itself names as permanent. This is `INV-ADDPAY-037`'s second named
- * exception; removing it or downgrading it to a log line breaks the rule.
+ * exception; removing it or downgrading it to a log line breaks the rule. Since
+ * #4149 the webhook's epilogue (`finishAutomaticLateCaptureRefund`) answers 500 on
+ * `recorded: false`: a replay no longer refunds again (#3639), and Stripe's
+ * redelivery - or the nightly self-heal - writes the record once.
  *
  * THE OUTCOME IT RETURNS IS NOT DECORATION. `handCompletedAfterRefund` is #2774's
  * residual-window detector: the fence read this capture's hand-back task as

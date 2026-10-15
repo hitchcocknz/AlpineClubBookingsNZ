@@ -1127,17 +1127,17 @@ is worse than the partial claim it replaced:
   **`COMPLETED`** variant of the same ordering is a different matter entirely and is
   now `INV-ADDPAY-039`: it means the club has already paid the member back, and it
   is fenced.
-- **The record write itself failing.** The caller must answer 200 — the money is
-  already back with the member and a 500 replays the whole refund path for a
-  bookkeeping row — so Stripe never redelivers and nothing else in the tree ever
-  writes that row. A container log is not a record when the card claims
-  completeness, so the caller writes
+- **The record write itself failing.** Since #4149 the caller answers 500: a
+  replay no longer refunds again, so Stripe's redelivery (or else the nightly
+  self-heal) writes the row, the `refunded_after_cancellation` entry and the
+  alert, once (`late-capture-record-recovery.ts`). A container log is not a record
+  meanwhile, so the writer adds
   `booking.payment.auto_refund_record_failed` (`severity: "critical"`,
   `outcome: "failure"`, `category: "payment"`, carrying the booking and the
-  payment intent) beside the `refunded_after_cancellation` entry. **That audit row
-  is the recovery surface**: it is the one place a finance operator can find an
-  automatic refund the card does not hold. Removing it, or downgrading it to a log
-  line, breaks this rule.
+  payment intent). **That audit row is the recovery surface** while the row is
+  missing: it is the one place a finance operator can find an automatic refund
+  the card does not hold. Removing it, or downgrading it to a log line, breaks
+  this rule.
 
 **The writer's obligations, none of them optional:**
 
@@ -1179,8 +1179,8 @@ is worse than the partial claim it replaced:
   `lock(1)` in the tree — `assignBedRange`, up to 366 nights — runs on
   `{ maxWait: 10_000, timeout: 30_000 }`, so on the 2s/5s default an admin
   assigning a bed range concurrently with a Stripe delivery blows this
-  transaction with a `P2028` and the row is lost for good (see the second
-  exception above). Copying the 30s admin precedent into a webhook is the
+  transaction with a `P2028` and the row waits for Stripe's redelivery (see the
+  second exception above). Copying the 30s admin precedent into a webhook is the
   opposite error: Stripe's delivery timeout is the ceiling on a handler, so it
   would trade a lost row for a lost delivery. This is the `lock(1)` cohort's only
   webhook-triggered participant, and `docs/CONCURRENCY_AND_LOCKING.md` records it

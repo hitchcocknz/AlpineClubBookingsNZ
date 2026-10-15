@@ -196,8 +196,10 @@ export async function hasXeroReceiptForLateCapture(
  * (`lateCaptureApprovalIntentId`), or one the webhook refunded automatically,
  * recorded by the #2760/#2773 row whose frozen `reason` names the intent
  * (`automaticCancelledBookingRefundTaskReasons`). A capture the webhook refunded
- * whose record write FAILED (audited `booking.payment.auto_refund_record_failed`)
- * leaves no row and cannot be told apart here - a stated limit.
+ * whose record was lost (a crash, or a write audited
+ * `booking.payment.auto_refund_record_failed`) has no row until Stripe's
+ * redelivery or the nightly self-heal writes it (#4149,
+ * `late-capture-record-recovery.ts`); until then it cannot be told apart here.
  */
 export async function findLateCapturePaymentIntents(
   paymentIntentIds: readonly string[],
