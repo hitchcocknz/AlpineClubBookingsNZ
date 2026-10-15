@@ -1522,9 +1522,7 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
 
 - **An approved refund appeal on a booking the group organiser paid for by
   card is refunded out of the organiser's combined payment, to the
-  organiser's card** (#3956; owner decision 13 Oct 2026). Such a booking has
-  no transaction of its own, so the ordinary appeal refunded $0 while
-  queuing a full Xero note and promising the money.
+  organiser's card** (#3956; owner decision 13 Oct 2026).
   - **One cap** (`organiserCardAppealCap`): the room a child refund debt may
     take, less open hand-backs and late-cash credit
     (`refundAppealHandedBackParts`); the room already nets the child's own
