@@ -289,6 +289,11 @@ import "./card-refund-failed-later.realdb.test";
 // line posted on the card payment) or dismisses it. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4097-` fixtures.
 import "./cancel-card-refund-shortfall.realdb.test";
+// #4154 reuses it to prove a capacity race whose card refund plan is short raises
+// one hand-back task to check in the void's claim, which completes (BANK_REFUND
+// line, Xero note) once the race's card refund is made, or is dismissed. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4154-` fixtures.
+import "./capacity-race-refund-shortfall-task.realdb.test";
 // #4125 reuses it to prove the capacity race's card refund, made by the
 // recovery runner, writes one REFUNDED booking event for the frozen plan's
 // total - none from a late inline close or a second run - and that the booking
