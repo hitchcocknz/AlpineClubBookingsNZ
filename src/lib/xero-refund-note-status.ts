@@ -7,6 +7,7 @@
 // coverage while its siblings do not. A pure leaf: import it from anywhere.
 import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 /**
  * True when a Xero credit-note status still contributes to refund coverage.
@@ -122,31 +123,95 @@ export type RefundNoteKeyScope =
   | { closeRowsWhere: Prisma.XeroSyncOperationWhereInput };
 
 /**
- * `INV-ADDPAY-041`: the parts a refund note's key gains after a void - the
- * voided notes THIS key could replay, sorted, as `after-void:<ids>`: those
- * recorded at the key's own watermark or amount, or raised by the close's own
- * rows. None match, and the key is byte-identical, so a void of an unrelated
- * note never moves a live retry's key. The one home for the enqueue's
- * correlation key and the executor's Xero key.
+ * A refund-note link's recorded watermark or amount, or null when neither the
+ * link nor its create row records it (`INV-ADDPAY-041` fails closed on null).
+ * Inbound, backfilled and pre-#1162 links carry no figures; the create row's
+ * payload does (`allocation.amount` in dollars, or the queued figures).
+ */
+async function recordedRefundNoteFigure(
+  paymentId: string,
+  link: { xeroObjectId: string; metadata: unknown },
+  field: "watermarkCents" | "amountCents",
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+): Promise<number | null> {
+  const onLink = readNumber(asRecord(link.metadata)?.[field]);
+  if (onLink !== null) return onLink;
+  const create = await db.xeroSyncOperation.findFirst({
+    where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: link.xeroObjectId },
+    orderBy: { createdAt: "desc" },
+    select: { requestPayload: true },
+  });
+  const payload = asRecord(create?.requestPayload);
+  if (field === "watermarkCents") return readNumber(payload?.watermarkCents);
+  return readNumber(payload?.refundAmountCents) ?? providerAmountToCents(asRecord(payload?.allocation)?.amount);
+}
+
+/**
+ * `INV-ADDPAY-041`: the parts a refund note's key gains once the payment has a
+ * voided refund note, `after-void:<sorted ids>`, so a reissue never sends a key
+ * Xero has answered before. A void moves coverage, so a reissue's base can equal
+ * the voided note's own key or a LIVE note's: the suffix names every refund
+ * note, live or voided, whose recorded watermark (v2) or amount (v1) equals the
+ * key's base - one whose figure cannot be recovered counts as equal (fail
+ * closed) - or, once a "Paid another way" close has a voided note, every note
+ * its own rows raised (v3). A lost attempt's own note has no link yet, so its
+ * retry keeps its key; with no void the key is byte-identical. The one home
+ * for the enqueue's correlation key and the executor's Xero key.
  */
 export async function refundNoteKeyAfterVoidParts(
   paymentId: string,
   scope: RefundNoteKeyScope,
   db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "xeroSyncOperation">,
 ): Promise<string[]> {
-  const cancelled = (await readRefundNoteLinks(paymentId, db)).filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata));
-  if (cancelled.length === 0) return [];
-  let replayable: typeof cancelled;
+  const links = await readRefundNoteLinks(paymentId, db);
+  const voided = links.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata));
+  if (voided.length === 0) return [];
+  const named: string[] = [];
   if ("closeRowsWhere" in scope) {
     const rows = (await db.xeroSyncOperation.findMany({ where: scope.closeRowsWhere, select: { xeroObjectId: true } })) ?? [];
     const own = new Set(rows.map((row) => row.xeroObjectId));
-    replayable = cancelled.filter((link) => own.has(link.xeroObjectId));
+    if (voided.some((link) => own.has(link.xeroObjectId))) {
+      named.push(...links.filter((link) => own.has(link.xeroObjectId)).map((link) => link.xeroObjectId));
+    }
   } else {
-    const [field, cents] = "watermarkCents" in scope ? ["watermarkCents", scope.watermarkCents] : ["amountCents", scope.amountCents];
-    replayable = cancelled.filter((link) => readNumber(asRecord(link.metadata)?.[field]) === cents);
+    const [field, cents] = "watermarkCents" in scope ? (["watermarkCents", scope.watermarkCents] as const) : (["amountCents", scope.amountCents] as const);
+    for (const link of links) {
+      const recorded = await recordedRefundNoteFigure(paymentId, link, field, db);
+      if (recorded === null || recorded === cents) named.push(link.xeroObjectId);
+    }
   }
-  const ids = [...new Set(replayable.map((link) => link.xeroObjectId))].sort();
+  const ids = [...new Set(named)].sort();
   return ids.length > 0 ? ["after-void", ...ids] : [];
+}
+
+/**
+ * `INV-ADDPAY-041` defence in depth: throws, before anything is recorded, when
+ * Xero answered a refund-note create with a note this payment must not take -
+ * one Xero reports or a link records VOIDED/DELETED, or one another create row
+ * on this payment already raised. No key reuse can then re-adopt or relabel a
+ * note; the row fails with this message for an officer to read.
+ */
+export async function assertFreshRefundNoteFromCreate(
+  paymentId: string,
+  operationId: string,
+  created: { creditNoteID: string; status?: unknown },
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "xeroSyncOperation">,
+): Promise<void> {
+  const voidedInXero = typeof created.status === "string" && !isIncludedRefundCreditNoteStatus(created.status);
+  if (voidedInXero || (await refundNoteIdSets(paymentId, db)).cancelled.has(created.creditNoteID)) {
+    throw new Error(
+      `Refusing to record Xero credit note ${created.creditNoteID} for payment ${paymentId}: Xero answered with a VOIDED or DELETED note, which is never re-adopted (INV-ADDPAY-041). Check the note in Xero before retrying.`,
+    );
+  }
+  const other = await db.xeroSyncOperation.findFirst({
+    where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: created.creditNoteID, id: { not: operationId } },
+    select: { id: true },
+  });
+  if (other) {
+    throw new Error(
+      `Refusing to record Xero credit note ${created.creditNoteID} for payment ${paymentId}: operation ${other.id} already raised it, so this create would relabel another refund's note (INV-ADDPAY-041). Check the note in Xero before retrying.`,
+    );
+  }
 }
 
 /** #3880: the payment's per-refund notes, active or not, read on the caller's client. */

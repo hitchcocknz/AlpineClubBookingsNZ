@@ -17,7 +17,7 @@
 
 import { reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import { assertNoRefundCreditNoteInFlight } from "@/lib/xero-refund-note-in-flight";
-import { mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField, refundNoteKeyAfterVoidParts, type RefundNoteKeyScope } from "@/lib/xero-refund-note-status";
+import { assertFreshRefundNoteFromCreate, mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField, refundNoteKeyAfterVoidParts, type RefundNoteKeyScope } from "@/lib/xero-refund-note-status";
 import {
   XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
@@ -762,6 +762,7 @@ export async function createXeroCreditNote(
     };
     const createdNoteId = createdNote.creditNoteID;
     const createdNoteNumber = createdNote.creditNoteNumber ?? null;
+    await assertFreshRefundNoteFromCreate(paymentId, operationId!, { creditNoteID: createdNoteId, status: createdNote.status }, prisma);
     await prisma.$transaction(async (tx) => {
       // #3827 (D-3813-8): a request's own note never takes the pointer, nor
       // does a per-refund note (#3880 F1).

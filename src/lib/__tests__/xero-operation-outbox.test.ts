@@ -1461,6 +1461,29 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     }
   });
 
+  it("MUTATION (INV-ADDPAY-041, final lens F1): a reissue's row key landing on a LIVE note's key names that note", async () => {
+    // A ($50, watermark 5000) voided; B ($30, watermark 8000) live: A's reissue lands on watermark 8000.
+    mocks.findUniquePayment.mockResolvedValue({ id: "payment_1", source: "STRIPE", refundedAmountCents: 8000, xeroRefundCreditNoteId: "cn_B" });
+    mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(3000);
+    mocks.findManyLinks.mockImplementation((async ({ where }: any) =>
+      where?.role === "REFUND_CREDIT_NOTE"
+        ? [
+            { xeroObjectId: "cn_A", metadata: { amountCents: 5000, watermarkCents: 5000, status: "VOIDED" } },
+            { xeroObjectId: "cn_B", metadata: { amountCents: 3000, watermarkCents: 8000 } },
+          ]
+        : []) as never);
+    try {
+      await enqueueXeroRefundCreditNoteOperation("payment_1", 5000);
+
+      // Not B's own `…:8000:v2`, which the failed panel would read as this row's repair.
+      expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ correlationKey: "payment:payment_1:refund-credit-note:8000:v2:after-void:cn_B" }),
+      );
+    } finally {
+      mocks.findManyLinks.mockImplementation((async () => []) as never);
+    }
+  });
+
   it("skips queueing when the webhook delta is zero", async () => {
     await expect(
       enqueueXeroRefundCreditNoteOperation("payment_1", 0)
