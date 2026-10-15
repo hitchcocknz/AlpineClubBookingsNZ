@@ -10,6 +10,9 @@ import {
   openNonCancellationHandBackCents,
   raiseRefundRequestHandBack,
   refundableCashForRefundAppeal,
+  refundAppealHandedBackCents,
+  refundAppealHandedBackParts,
+  totalRefundAppealHandedBackCents,
 } from "@/lib/edit-refund-hand-back";
 import {
   isInternetBankingLateCashCredit,
@@ -295,6 +298,27 @@ describe("the refund appeal ceiling (INV-PAY-118)", () => {
       payment: { findUnique: vi.fn(async () => ({ ...payment, recoveryOperations: [owingOperation], refunds: [] })) },
     };
     await expect(refundableCashForRefundAppeal(store as never, payment)).resolves.toBe(7500);
+    // Two payment reads: the card-refund debt (its recovery rows), then the
+    // payment the ceiling is taken from - the debt first, with the other sums.
+    const [debtRead, paymentRead] = store.payment.findUnique.mock.calls as unknown as Array<[{ select: Record<string, unknown> }]>;
+    expect(debtRead?.[0].select).toHaveProperty("recoveryOperations");
+    expect(paymentRead?.[0].select).not.toHaveProperty("recoveryOperations");
+    const [debtAt, paymentAt] = store.payment.findUnique.mock.invocationCallOrder;
+    expect(store.manualRefundTask.aggregate.mock.invocationCallOrder[0]).toBeLessThan(paymentAt!);
+    expect(store.memberCredit.aggregate.mock.invocationCallOrder[0]).toBeLessThan(paymentAt!);
+    expect(debtAt).toBeLessThan(paymentAt!);
+  });
+
+  it("#4124 review F1: the parts keep the card debt apart, and the total sums all three", async () => {
+    const store = {
+      manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: 1000 } })) },
+      memberCredit: { aggregate: vi.fn(async () => ({ _sum: { amountCents: 500 } })) },
+      payment: { findUnique: vi.fn(async () => ({ ...payment, recoveryOperations: [owingOperation], refunds: [] })) },
+    };
+    const parts = await refundAppealHandedBackParts(store as never, payment);
+    expect(parts).toEqual({ handBackCents: 1000, lateCashCreditCents: 500, cardRefundOwedCents: 2500 });
+    expect(totalRefundAppealHandedBackCents(parts)).toBe(4000);
+    await expect(refundAppealHandedBackCents(store as never, payment)).resolves.toBe(4000);
   });
 
   it("#4124 screen: the same figure from the loaded rows", () => {

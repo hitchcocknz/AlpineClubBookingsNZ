@@ -226,7 +226,7 @@ export async function assertByHandReviewRefundWithinUnpromisedCash(
   }
 }
 
-/** What a refund appeal's cap reads: hand-back tasks and member credit. */
+/** What a refund appeal's cap reads: hand-back tasks, member credit and (#4124) the payment's card refunds. */
 export type RefundAppealCapDb = Pick<PrismaClient, "manualRefundTask" | "memberCredit" | "payment">;
 
 /**
@@ -248,28 +248,57 @@ export async function openHandBackCentsForRefundAppeal(
 
 /**
  * #3827 (`INV-PAY-118`): what a refund appeal must treat as ALREADY handed
- * back, beyond `refundedAmountCents`: every hand-back still open on the
- * payment and the member credit already minted from its late cash
- * (`refundAppealCeiling` says why each one is missing from the mirror).
+ * back, beyond `refundedAmountCents`, in its three parts: every hand-back
+ * still open on the payment, the member credit already minted from its late
+ * cash (`refundAppealCeiling` says why each is missing from the mirror), and
+ * (#4124) the card refunds the payment still owes.
  *
- * READ THIS BEFORE THE PAYMENT. A cancellation's own hand-back completes
- * without `lock(1)` (legacy kinds take none; it holds only the Payment row),
- * moving the mirror and closing the task in one commit. Read in this order, a
- * completion landing between the two reads is counted twice - the task still
- * open here, its refund already in the payment read after - so the ceiling
- * errs LOW, never high. The other order would count it nowhere. The late-cash
- * mint and every non-cancellation hand-back hold `lock(1)`, as the approval
- * does, so they cannot land in between at all.
+ * The parts are kept apart because the organiser-card cap (`INV-PAY-123`)
+ * already nets this child's card refund debts in its own headroom
+ * (`organiserCardAppealCap`), so it takes only the first two; every other cap
+ * takes all three (`refundAppealHandedBackCents`).
+ *
+ * LOCKED READERS - the approval and the reopen of a dismissed appeal task -
+ * take `lock(1)` and then the Payment row (`lockPaymentForRefundedTotal`)
+ * BEFORE this, then read the payment after it. No writer holding either lock
+ * can then land between these reads and the payment's: every refunded-total
+ * writer and a cancellation hand-back's completion hold the Payment row, a
+ * card refund Stripe failed later is kept owed under it (#4104), and every
+ * other hand-back writer and the late-cash mint hold `lock(1)`. The member's
+ * request and the screens read it unlocked, as advice.
  */
+export type RefundAppealHandedBack = {
+  /** Every hand-back still open on the payment, the cancellation's own included. */
+  handBackCents: number;
+  /** Member credit already minted from the booking's late cash. */
+  lateCashCreditCents: number;
+  /** #4124: the card refunds the payment still owes (`openCardRefundOwedCents`). */
+  cardRefundOwedCents: number;
+};
+
+/** The three parts of what a refund appeal treats as already handed back (`RefundAppealHandedBack`). */
+export async function refundAppealHandedBackParts(
+  db: RefundAppealCapDb,
+  payment: { id: string; bookingId: string },
+): Promise<RefundAppealHandedBack> {
+  return {
+    handBackCents: await openHandBackCentsForRefundAppeal(db, payment.id),
+    lateCashCreditCents: await sumInternetBankingMintedCentsForBookings(db, [payment.bookingId]),
+    cardRefundOwedCents: await openCardRefundDebtCents(db, payment.id),
+  };
+}
+
+/** Every part a refund appeal's cap nets: hand-backs, late-cash credit and owed card refunds. */
+export function totalRefundAppealHandedBackCents(parts: RefundAppealHandedBack): number {
+  return parts.handBackCents + parts.lateCashCreditCents + parts.cardRefundOwedCents;
+}
+
+/** `totalRefundAppealHandedBackCents` of a fresh read (`refundAppealHandedBackParts`). */
 export async function refundAppealHandedBackCents(
   db: RefundAppealCapDb,
   payment: { id: string; bookingId: string },
 ): Promise<number> {
-  return (
-    (await openHandBackCentsForRefundAppeal(db, payment.id)) +
-    (await sumInternetBankingMintedCentsForBookings(db, [payment.bookingId])) +
-    (await openCardRefundDebtCents(db, payment.id))
-  );
+  return totalRefundAppealHandedBackCents(await refundAppealHandedBackParts(db, payment));
 }
 
 /**
@@ -277,9 +306,7 @@ export async function refundAppealHandedBackCents(
  * row's slices Stripe refused or never answered, or a refund it failed later -
  * the same figure "Refunds owed" counts (`openCardRefundOwedCents`). That money
  * is out of `refundedAmountCents` (it never went back) yet a row is set to send
- * it, so an appeal approved against it would return it twice. Read with the
- * other promised sums, before the payment: a debt made in between is counted
- * twice and the ceiling errs low, never high.
+ * it, so an appeal approved against it would return it twice.
  */
 async function openCardRefundDebtCents(db: Pick<PrismaClient, "payment">, paymentId: string): Promise<number> {
   const payment = await db.payment.findUnique({
@@ -290,12 +317,11 @@ async function openCardRefundDebtCents(db: Pick<PrismaClient, "payment">, paymen
 }
 
 /**
- * #3827 (`INV-PAY-118`): THE MOST A REFUND APPEAL MAY PROMISE BACK, for a
- * caller holding no lock (the member's advisory request): the refundable cash
- * less `refundAppealHandedBackCents`, read before the payment. The admin
- * approval and the reopen of a dismissed appeal task, which re-read the
- * payment under `lock(1)`, call that function first and read the payment
- * after it themselves.
+ * #3827 (`INV-PAY-118`): THE MOST A REFUND APPEAL MAY PROMISE BACK: the
+ * refundable cash less `refundAppealHandedBackCents`, read before the payment.
+ * The reopen of a dismissed appeal task calls it holding `lock(1)` and the
+ * Payment row (`RefundAppealHandedBack` says why both); the admin approval
+ * reads the parts itself under the same two locks.
  */
 export async function refundableCashForRefundAppeal(
   db: RefundAppealCapDb & Pick<PrismaClient, "payment">,

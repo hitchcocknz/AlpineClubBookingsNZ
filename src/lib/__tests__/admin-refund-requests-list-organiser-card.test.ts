@@ -149,7 +149,7 @@ describe("GET /api/admin/refund-requests, a pending appeal's ceiling (#4124)", (
           status: "PARTIALLY_REFUNDED",
           amountCents: 10_000,
           refundedAmountCents: 0,
-          manualRefundTasks: [],
+          manualRefundTasks: [{ amountCents: 500 }],
           recoveryOperations: [
             {
               id: "op-refused",
@@ -170,10 +170,17 @@ describe("GET /api/admin/refund-requests, a pending appeal's ceiling (#4124)", (
     mocks.findMany.mockResolvedValue([pending]);
 
     const response = await GET(new NextRequest("http://localhost/api/admin/refund-requests?status=PENDING"));
-    const { data } = (await response.json()) as { data: Array<{ booking: { appealCeilingCents: number; payment: Record<string, unknown> } }> };
+    const { data } = (await response.json()) as {
+      data: Array<{ booking: { appealCeilingCents: number; appealCardRefundOwedCents: number; payment: Record<string, unknown> } }>;
+    };
 
-    expect(data[0].booking.appealCeilingCents).toBe(7_500);
+    // $100 less a $5 open hand-back and the $25 card refund still owed.
+    expect(data[0].booking.appealCeilingCents).toBe(7_000);
+    // #4124 review: the card refund it netted, for the screen's "Less ..." line.
+    expect(data[0].booking.appealCardRefundOwedCents).toBe(2_500);
     expect(data[0].booking.payment).not.toHaveProperty("recoveryOperations");
     expect(data[0].booking.payment).not.toHaveProperty("refunds");
+    expect(data[0].booking.payment).not.toHaveProperty("manualRefundTasks");
+    expect(data[0].booking.payment).toMatchObject({ id: "p-rq-1", amountCents: 10_000, refundedAmountCents: 0 });
   });
 });

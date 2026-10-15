@@ -28,6 +28,11 @@ const mocks = vi.hoisted(() => ({
   executeRaw: vi.fn(),
   aggregate: vi.fn(),
   creditAggregate: vi.fn(),
+  // #4124 review F2: the Payment row an appeal task's reopen takes.
+  lockPaymentForRefundedTotal: vi.fn(),
+  paymentRead: vi.fn(),
+  /** #4124: the card refund rows on the payment (none unless a test says). */
+  cardRefundOperations: [] as unknown[],
 }));
 
 vi.mock("server-only", () => ({}));
@@ -36,6 +41,9 @@ vi.mock("@/lib/prisma", () => ({
 }));
 vi.mock("@/lib/audit", () => ({
   createAuditLog: (...a: unknown[]) => mocks.createAuditLog(...a),
+}));
+vi.mock("@/lib/payment-transactions", () => ({
+  lockPaymentForRefundedTotal: (...a: unknown[]) => mocks.lockPaymentForRefundedTotal(...a),
 }));
 
 import {
@@ -73,11 +81,12 @@ const tx = {
   // `INV-PAY-118`: an appeal task's reopen re-reads the payment after the
   // handed-back sums; echo whatever the task row carried.
   payment: {
-    findUnique: async () => {
+    findUnique: async (...a: unknown[]) => {
+      mocks.paymentRead(...a);
       const task = (await mocks.findUnique.getMockImplementation()?.()) ?? null;
       const payment = (task as { payment?: object } | null)?.payment ?? null;
-      // #4124: the appeal cap's card-debt read sees no open card-refund debt.
-      return payment && { recoveryOperations: [], refunds: [], ...payment };
+      // #4124: the appeal cap's card-debt read sees the test's card refund rows.
+      return payment && { recoveryOperations: mocks.cardRefundOperations, refunds: [], ...payment };
     },
   },
 };
@@ -106,6 +115,7 @@ function reopen(note: string | null = "Closed by mistake.") {
 beforeEach(() => {
   vi.clearAllMocks();
   calls.length = 0;
+  mocks.cardRefundOperations = [];
   mocks.executeRaw.mockResolvedValue(1);
   mocks.transaction.mockImplementation(
     async (fn: (store: typeof tx) => Promise<unknown>) => fn(tx),
@@ -408,6 +418,61 @@ describe("reopening a dismissed refund APPEAL hand-back (#3827, D-3813-7, INV-PA
       where: { paymentId: "pay-1", status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK" },
       _sum: { amountCents: true },
     });
+  });
+
+  // #4124 review F2 (`INV-LOCK-002`): lock(1), then the Payment row, then the
+  // appeal cap's reads, so no refunded-total writer, hand-back completion or
+  // failed-later card refund debt (all Payment-row holders) lands between them.
+  it("takes the Payment row after lock(1) and before every read the appeal cap makes", async () => {
+    mocks.findUnique.mockResolvedValue(dismissedAppeal({ amountCents: 20000, refundedAmountCents: 10000 }));
+
+    await reopen();
+
+    expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(tx, "pay-1");
+    const paymentRowAt = mocks.lockPaymentForRefundedTotal.mock.invocationCallOrder[0]!;
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(paymentRowAt);
+    const reads = [
+      ...mocks.aggregate.mock.invocationCallOrder,
+      ...mocks.creditAggregate.mock.invocationCallOrder,
+      ...mocks.paymentRead.mock.invocationCallOrder,
+    ];
+    expect(reads).toHaveLength(4); // the two sums, the card-debt read and the payment
+    for (const readAt of reads) expect(paymentRowAt).toBeLessThan(readAt);
+  });
+
+  it("CONTROL: an edit's hand-back takes no Payment row (its cap reads no card refund debt)", async () => {
+    mocks.findUnique.mockResolvedValue({
+      ...dismissedAppeal({ amountCents: 20000, refundedAmountCents: 10000 }),
+      kind: "EDIT_FINANCIAL_REVIEW",
+      occurrenceKey: "edit-refund-hand-back:mod-1",
+      booking: { memberId: "member-1", status: "CONFIRMED", organisation: null },
+    });
+
+    await reopen();
+
+    expect(mocks.lockPaymentForRefundedTotal).not.toHaveBeenCalled();
+  });
+
+  // #4124: a card refund still being sent on the payment is money already
+  // promised back, so a reopened appeal task cannot promise it again.
+  it("refuses once a card refund still being sent has taken that cash", async () => {
+    mocks.findUnique.mockResolvedValue(dismissedAppeal({ amountCents: 20000, refundedAmountCents: 10000 }));
+    mocks.cardRefundOperations = [
+      {
+        id: "op-refused",
+        type: "REFUND_BOOKING_MODIFICATION",
+        status: "FAILED",
+        idempotencyKey: "refund_request_req-0",
+        amountCents: 2500,
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 2500, stripeKeySuffix: "refused1" }],
+        paymentTransactionId: null,
+        createdAt: new Date("2026-06-20T00:00:00.000Z"),
+        succeededAt: null,
+      },
+    ];
+
+    await expect(reopen()).rejects.toMatchObject({ message: REOPEN_EDIT_REFUND_EXCEEDS_CASH_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
   });
 
   it("refuses once the member already holds that cash as late-cash credit", async () => {

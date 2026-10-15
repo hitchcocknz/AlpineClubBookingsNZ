@@ -98,3 +98,22 @@ export function refundAppealOutstandingLines(
   }
   return lines
 }
+
+/**
+ * #4124 (`INV-PAY-118`): why an appeal's ceiling is lower than the payment's
+ * refundable cash - a card refund on the payment still being sent (refused and
+ * being retried, failed after Stripe accepted it, or stopped and awaiting
+ * "Paid another way"), which the ceiling nets so the money is not promised
+ * twice (`refundAppealCeilingParts`). To the officer under "Max refundable",
+ * and to the booking's owner in the appeal form.
+ */
+export function appealCardRefundOwedOfficerNote(amount: string): string {
+  return `Less ${amount} of card refund still being sent — see Refunds owed.`
+}
+
+/** The owner's line, beside the form's maximum; `ceilingIsZero` when that refund is everything still refundable. */
+export function appealCardRefundOwedMemberNote(amount: string, ceilingIsZero: boolean): string {
+  return ceilingIsZero
+    ? `${amount} is still being refunded to your card, and that is everything still refundable on this booking, so there is nothing further to appeal for.`
+    : `${amount} is still being refunded to your card.`
+}

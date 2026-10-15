@@ -21,11 +21,13 @@ import {
 import logger from "@/lib/logger";
 import {
   raiseRefundRequestHandBack,
-  refundAppealHandedBackCents,
+  refundAppealHandedBackParts,
+  totalRefundAppealHandedBackCents,
 } from "@/lib/edit-refund-hand-back";
 import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { refundRequestHandBackOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import {
+  lockPaymentForRefundedTotal,
   planStripeRefundAllocation,
   refundPaymentTransactions,
 } from "@/lib/payment-transactions";
@@ -151,8 +153,10 @@ export async function PUT(
     // appeal's (D-3813-7), or a cancellation's own hand-back - and of the
     // account credit already minted from late cash, or an appeal re-promises
     // money the member holds or is being sent (paid 200, an edit to 150 leaves
-    // a 50 task OPEN). Read under `lock(1)`, which every writer of those
-    // figures holds; claimed in the same transaction.
+    // a 50 task OPEN), of the account credit minted from late cash, and
+    // (#4124) of the card refunds the payment still owes. Read under `lock(1)`
+    // and the Payment row (`RefundAppealHandedBack` names who holds which);
+    // claimed in the same transaction.
     const capped = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       // #3956 review: a request another approval or decline settled while this
@@ -161,13 +165,18 @@ export async function PUT(
       // authority; this re-read only puts the answer before the cap.
       const current = await tx.refundRequest.findUnique({ where: { id }, select: { status: true } });
       if (current?.status !== "PENDING") return { kind: "lost" as const };
-      // What is already handed back is read BEFORE the payment, so a
-      // cancellation hand-back completing in between (it takes no `lock(1)`)
-      // is counted twice and the cap errs low, never high.
-      const handedBackCents = await refundAppealHandedBackCents(tx, {
+      // #4124 review F2: the Payment row next (`INV-LOCK-002`: `lock(1)`, then
+      // the Payment row, the order every holder of both takes), BEFORE what is
+      // already handed back and the payment are read. A cancellation
+      // hand-back's completion, every refunded-total writer and the failed-later
+      // card refund debt (#4104) hold that row without `lock(1)`, so under both
+      // locks none of them can land between the reads below.
+      await lockPaymentForRefundedTotal(tx, payment.id);
+      const handedBack = await refundAppealHandedBackParts(tx, {
         id: payment.id,
         bookingId: booking.id,
       });
+      const handedBackCents = totalRefundAppealHandedBackCents(handedBack);
       const lockedPayment = await tx.payment.findUnique({
         where: { id: payment.id },
         select: {
@@ -186,7 +195,7 @@ export async function PUT(
       // return. Over that, the approval is refused naming what can still be
       // refunded (owner decision), never clamped.
       const organiserCard = lockedPayment
-        ? await organiserCardAppealCap(tx, booking, lockedPayment, handedBackCents)
+        ? await organiserCardAppealCap(tx, booking, lockedPayment, handedBack)
         : null;
       if (organiserCard) {
         if (organiserCard.combinedRefundPending) return { kind: "organiserCardCombinedRefundPending" as const };

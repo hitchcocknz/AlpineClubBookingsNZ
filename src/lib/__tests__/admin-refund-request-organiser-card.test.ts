@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
   paymentFindUnique: vi.fn(),
   executeRaw: vi.fn(),
+  // #4124 review F2: the Payment row, taken after lock(1) and before the cap's reads.
+  lockPaymentForRefundedTotal: vi.fn(),
   manualRefundTaskAggregate: vi.fn(),
   memberCreditAggregate: vi.fn(),
   transaction: vi.fn(),
@@ -71,6 +73,7 @@ vi.mock("@/lib/payment-recovery", () => ({
   enqueueRefundRequestRefundRecovery: mocks.enqueueRefundRequestRefundRecovery,
 }));
 vi.mock("@/lib/payment-transactions", () => ({
+  lockPaymentForRefundedTotal: mocks.lockPaymentForRefundedTotal,
   refundPaymentTransactions: mocks.refundPaymentTransactions,
   planStripeRefundAllocation: mocks.planStripeRefundAllocation,
   PartialRefundError: class PartialRefundError extends Error {},
@@ -86,6 +89,7 @@ vi.mock("@/lib/organiser-child-refund-executor", () => ({
 
 import { PUT } from "@/app/api/admin/refund-requests/[id]/route";
 import { OrganiserChildRefundRefusedError } from "@/lib/organiser-child-refund";
+import { buildOrganiserChildModificationRefundKey } from "@/lib/payment-recovery-keys";
 
 const SETTLEMENT = { id: "settlement_1", stripePaymentIntentId: "pi_group", amountCents: 20_000 };
 const LOCKED_PAYMENT = { id: "payment_child", source: "STRIPE", status: "PARTIALLY_REFUNDED", amountCents: 10_000, refundedAmountCents: 5_000, recoveryOperations: [], refunds: [] };
@@ -328,9 +332,61 @@ describe("approving a refund appeal on a booking the group organiser paid for by
       expect.anything(),
       expect.objectContaining({ id: "booking_child", organiserSettled: true, parentBookingId: "booking_organiser" }),
       LOCKED_PAYMENT,
-      1_000,
+      { handBackCents: 1_000, lateCashCreditCents: 0, cardRefundOwedCents: 0 },
     );
     expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.organiserCardAppealCap.mock.invocationCallOrder[0]!);
+  });
+
+  it("#4124 review F1: an open child refund debt comes off the ceiling once, in the headroom, not again as a card debt", async () => {
+    const actual = (await vi.importActual("@/lib/organiser-child-refund")) as typeof import("@/lib/organiser-child-refund");
+    mocks.organiserCardAppealCap.mockImplementation(actual.organiserCardAppealCap);
+    // The joiner's $20 reduction is still owed back to the organiser's card.
+    const childDebt = {
+      id: "op_child_debt",
+      type: "REFUND_BOOKING_MODIFICATION",
+      status: "PENDING",
+      idempotencyKey: buildOrganiserChildModificationRefundKey("mod_1"),
+      amountCents: 2_000,
+      allocationPlan: null,
+      paymentTransactionId: null,
+      createdAt: new Date("2026-06-20T00:00:00.000Z"),
+      succeededAt: null,
+    };
+    mocks.paymentFindUnique.mockResolvedValue({ ...LOCKED_PAYMENT, recoveryOperations: [childDebt] });
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $executeRaw: mocks.executeRaw,
+        manualRefundTask: { aggregate: mocks.manualRefundTaskAggregate },
+        memberCredit: { aggregate: mocks.memberCreditAggregate },
+        refundRequest: { findUnique: mocks.lockedRefundRequestFindUnique, updateMany: mocks.refundRequestUpdateMany },
+        payment: { findUnique: mocks.paymentFindUnique },
+        groupBookingSettlement: { findFirst: vi.fn().mockResolvedValue({ ...SETTLEMENT, status: "SUCCEEDED", refundPlan: null }) },
+        paymentRecoveryOperation: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          findMany: vi.fn().mockResolvedValue([{ paymentId: "payment_child", amountCents: 2_000 }]),
+        },
+        // $50 of the combined payment already refunded, all of it this joiner's.
+        paymentRefund: { aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 5_000 } }) },
+      }),
+    );
+
+    const response = await approve(3_000);
+
+    expect(response.status).toBe(200);
+    // The debt was read as a card refund owed, and handed to the cap...
+    expect(mocks.organiserCardAppealCap).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { handBackCents: 0, lateCashCreditCents: 0, cardRefundOwedCents: 2_000 },
+    );
+    // ...which nets it once, through the headroom: $100 - $50 refunded - $20 owed.
+    const cap = await mocks.organiserCardAppealCap.mock.results[0]!.value;
+    expect(cap.maxRefundableCents).toBe(3_000);
+    expect(mocks.reserveOrganiserChildAppealRefund).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ amountCents: 3_000 }),
+    );
   });
 
   it("answers 409 and moves nothing when the reservation refuses after the claim (the claim rolls back with it)", async () => {

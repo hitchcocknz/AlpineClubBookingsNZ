@@ -73,6 +73,8 @@ const G = { organiser: `${P}-g-organiser`, group: `${P}-g-group`, settlement: `$
 // #3956: refund appeals on a joiner's booking after the organiser cancelled (H).
 const H = { organiser: `${P}-h-organiser`, group: `${P}-h-group`, settlement: `${P}-h-settlement`, child: `${P}-h-child`, payment: `${P}-h-pay`, pi: "pi_race_3653_h" };
 const EXTRA = [D, E, F, G, H];
+/** An appeal cap's hand-back parts with nothing promised back another way (`RefundAppealHandedBack`). */
+const NOTHING_HANDED_BACK = { handBackCents: 0, lateCashCreditCents: 0, cardRefundOwedCents: 0 };
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 export function assertSafeOrganiserChildRefundDbUrl(url: string): void {
@@ -711,7 +713,7 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
         return prisma.$transaction(async (tx) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
           const payment = await tx.payment.findUniqueOrThrow({ where: { id: H.payment } });
-          const cap = (await core.organiserCardAppealCap(tx, hBooking, payment, 0))!;
+          const cap = (await core.organiserCardAppealCap(tx, hBooking, payment, NOTHING_HANDED_BACK))!;
           if (!cap.settlement || amountCents > cap.maxRefundableCents) {
             return { kind: "refused" as const, maxRefundableCents: cap.maxRefundableCents };
           }
@@ -727,7 +729,7 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
       }
 
       async function room() {
-        return prisma.$transaction(async (tx) => (await core.organiserCardAppealCap(tx, hBooking, await childPayment(), 0))!);
+        return prisma.$transaction(async (tx) => (await core.organiserCardAppealCap(tx, hBooking, await childPayment(), NOTHING_HANDED_BACK))!);
       }
 
       it("sizes an appeal from what is left after the group cancel's refund, and refuses past it", async () => {
@@ -746,7 +748,7 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
 
         expect(await room()).toMatchObject({ settlement: { id: H.settlement, stripePaymentIntentId: H.pi }, maxRefundableCents: 5_000 });
         // What is already promised back another way comes off it.
-        expect((await prisma.$transaction(async (tx) => core.organiserCardAppealCap(tx, hBooking, await childPayment(), 1_500)))?.maxRefundableCents).toBe(3_500);
+        expect((await prisma.$transaction(async (tx) => core.organiserCardAppealCap(tx, hBooking, await childPayment(), { ...NOTHING_HANDED_BACK, handBackCents: 1_500 })))?.maxRefundableCents).toBe(3_500);
         // The stored mirror zeroed (a reconcile of a payment with no transaction
         // rows) cannot raise the room: the refund row still counts.
         await prisma.payment.update({ where: { id: H.payment }, data: { refundedAmountCents: 0 } });
@@ -758,7 +760,7 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
         await expect(
           prisma.$transaction(async (tx) => {
             await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-            const found = (await core.organiserCardAppealCap(tx, hBooking, await tx.payment.findUniqueOrThrow({ where: { id: H.payment } }), 0))!;
+            const found = (await core.organiserCardAppealCap(tx, hBooking, await tx.payment.findUniqueOrThrow({ where: { id: H.payment } }), NOTHING_HANDED_BACK))!;
             return core.reserveOrganiserChildAppealRefund(tx, {
               settlement: found.settlement!,
               refundRequestId: `${P}-h-rr-over`,

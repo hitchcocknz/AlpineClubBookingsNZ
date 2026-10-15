@@ -895,13 +895,8 @@ describe("Admin refund and credit review page", () => {
     expect(screen.getByText("Max refundable: $0.00")).toBeTruthy();
   });
 
-  // #3827 (`INV-PAY-117`): the ceiling the screen offers is the one the approve
-  // route enforces - the remaining refundable cash LESS the edit refunds still
-  // promised back by bank transfer. Paid 200, refunded 75 at cancel, a 50 edit
-  // refund still open: 75, not the gross 125.
-  it("offers the ceiling net of open edit refunds, the figure the approve route caps at", async () => {
-    mocks.currentSearch = "";
-    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+  /** Paid 200, refunded 75 at cancel, a 50 edit refund still open: one pending appeal, ceiling 75. */
+  function mockEditedPendingAppeal(appealCardRefundOwedCents = 0) {
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/admin/refund-requests?status=PENDING") {
@@ -929,12 +924,12 @@ describe("Admin refund and credit review page", () => {
                   noEmails: false,
                   creditsFromCancellation: [],
                   appealCeilingCents: 7500, // #4124: the list route's `refundAppealCeiling`
+                  appealCardRefundOwedCents,
                   payment: {
                     status: "PARTIALLY_REFUNDED",
                     amountCents: 20000,
                     refundedAmountCents: 7500,
                     stripePaymentIntentId: null,
-                    manualRefundTasks: [{ amountCents: 5000 }],
                   },
                 },
                 member: { id: "member-edited", firstName: "Jane", lastName: "edited", email: "e@example.com" },
@@ -951,6 +946,16 @@ describe("Admin refund and credit review page", () => {
       }
       return Promise.reject(new Error(`Unexpected fetch: ${url}`));
     });
+  }
+
+  // #3827 (`INV-PAY-117`): the ceiling the screen offers is the one the approve
+  // route enforces - the remaining refundable cash LESS the edit refunds still
+  // promised back by bank transfer. Paid 200, refunded 75 at cancel, a 50 edit
+  // refund still open: 75, not the gross 125.
+  it("offers the ceiling net of open edit refunds, the figure the approve route caps at", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    mockEditedPendingAppeal();
 
     render(<RefundRequestsPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
@@ -961,6 +966,32 @@ describe("Admin refund and credit review page", () => {
     // gross capture labelled as gross.
     expect(screen.getByText("Remaining refundable:").parentElement).toHaveTextContent("Remaining refundable: $75.00");
     expect(screen.getByText("Gross paid:").parentElement).toHaveTextContent("Gross paid: $200.00");
+  });
+
+  // #4124: a card refund still being sent is netted from the ceiling, and the
+  // officer is told why it is lower, and where that refund is tracked.
+  it("says under the ceiling how much of it is a card refund still being sent", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    mockEditedPendingAppeal(2500);
+
+    render(<RefundRequestsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+    expect(screen.getByText("Max refundable: $75.00")).toBeTruthy();
+    expect(screen.getByText("Less $25.00 of card refund still being sent — see Refunds owed.")).toBeTruthy();
+  });
+
+  it("CONTROL: shows no card refund line when none was netted", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    mockEditedPendingAppeal(0);
+
+    render(<RefundRequestsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+    expect(screen.getByText("Max refundable: $75.00")).toBeTruthy();
+    expect(screen.queryByText(/card refund still being sent/)).toBeNull();
   });
 
   /*

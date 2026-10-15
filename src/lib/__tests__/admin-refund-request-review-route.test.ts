@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   paymentFindUnique: vi.fn(),
   paymentUpdate: vi.fn(),
   executeRaw: vi.fn(),
+  // #4124 review F2: the Payment row, after lock(1) and before the cap's reads.
+  lockPaymentForRefundedTotal: vi.fn(),
   manualRefundTaskAggregate: vi.fn(),
   manualRefundTaskCreateMany: vi.fn(),
   manualRefundTaskDeleteMany: vi.fn(),
@@ -105,6 +107,7 @@ vi.mock("@/lib/payment-recovery", () => ({
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
+  lockPaymentForRefundedTotal: mocks.lockPaymentForRefundedTotal,
   refundPaymentTransactions: mocks.refundPaymentTransactions,
   planStripeRefundAllocation: mocks.planStripeRefundAllocation,
   // The real class's shape: what the route reads off a partial failure.
@@ -430,15 +433,23 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       expect(response.status).toBe(200);
       const lockSql = (mocks.executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
       expect(lockSql).toContain("pg_advisory_xact_lock(1)");
-      const lockedAt = mocks.executeRaw.mock.invocationCallOrder[0];
-      expect(lockedAt).toBeLessThan(mocks.manualRefundTaskAggregate.mock.invocationCallOrder[0]);
-      // `INV-PAY-118`: the handed-back sums are read BEFORE the payment, so a
-      // cancellation hand-back completing between them errs the cap low.
+      const lockedAt = mocks.executeRaw.mock.invocationCallOrder[0]!;
+      // #4124 review F2 (`INV-LOCK-002`): lock(1), then the Payment row, then
+      // every read the cap makes - the hand-back and credit sums, the card
+      // refund debts and the payment - so no writer holding either lands
+      // between them.
+      expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(expect.anything(), "payment_1");
+      const paymentRowAt = mocks.lockPaymentForRefundedTotal.mock.invocationCallOrder[0]!;
+      expect(lockedAt).toBeLessThan(paymentRowAt);
+      const reads = [
+        ...mocks.manualRefundTaskAggregate.mock.invocationCallOrder,
+        ...mocks.memberCreditAggregate.mock.invocationCallOrder,
+        ...mocks.paymentFindUnique.mock.invocationCallOrder,
+      ];
+      expect(reads).toHaveLength(4); // the two sums, the card-debt read and the payment
+      for (const readAt of reads) expect(paymentRowAt).toBeLessThan(readAt);
       expect(mocks.manualRefundTaskAggregate.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.paymentFindUnique.mock.invocationCallOrder[0],
-      );
-      expect(mocks.memberCreditAggregate.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.paymentFindUnique.mock.invocationCallOrder[0],
+        mocks.paymentFindUnique.mock.invocationCallOrder[0]!,
       );
       expect(mocks.manualRefundTaskAggregate.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.refundRequestUpdateMany.mock.invocationCallOrder[0],

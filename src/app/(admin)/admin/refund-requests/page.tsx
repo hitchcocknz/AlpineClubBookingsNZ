@@ -35,6 +35,7 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents, formatCentsPlain } from "@/lib/utils"
 import {
+  appealCardRefundOwedOfficerNote,
   refundAppealApprovedNotice,
   refundAppealOutstandingLines,
   refundAppealRefundedCents,
@@ -88,10 +89,9 @@ interface RefundRequestData {
       amountCents: number
       refundedAmountCents: number
       stripePaymentIntentId: string | null
-      // #3827: every hand-back still promised back by bank transfer.
-      manualRefundTasks?: Array<{ amountCents: number | null }>
     } | null
-    appealCeilingCents: number // #4124: the list route's `refundAppealCeiling`, card debts netted
+    appealCeilingCents: number // #4124: the list route's `refundAppealCeilingParts`, card debts netted
+    appealCardRefundOwedCents: number // ...and the card refund still owed it netted (0: none, or not why)
     // #3956 (`INV-PAY-123`): on a pending appeal for a booking the group
     // organiser paid for by card, the server's `organiserCardAppealCap` - the
     // most the organiser's combined payment can still return. Null otherwise.
@@ -114,9 +114,7 @@ interface RefundRequestData {
  * otherwise `refundAppealCeiling` (#3827).
  */
 function appealCeiling(req: RefundRequestData): number {
-  return (
-    req.booking.organiserCardMaxRefundableCents ?? req.booking.appealCeilingCents
-  )
+  return req.booking.organiserCardMaxRefundableCents ?? req.booking.appealCeilingCents
 }
 
 interface AdminActor {
@@ -662,6 +660,9 @@ export default function RefundRequestsPage() {
                                     <p className="text-xs text-muted-foreground">
                                       {ORGANISER_CARD_APPEAL_CEILING_NOTE}
                                     </p>
+                                  )}
+                                  {req.booking.organiserCardMaxRefundableCents == null && req.booking.appealCardRefundOwedCents > 0 && (
+                                    <p className="text-xs text-muted-foreground">{appealCardRefundOwedOfficerNote(formatCents(req.booking.appealCardRefundOwedCents, format))}</p>
                                   )}
                                 </>
                               )}
