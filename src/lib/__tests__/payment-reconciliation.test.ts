@@ -97,6 +97,10 @@ vi.mock("@/lib/prisma", () => ({
 const bookingEvents = vi.hoisted(() => ({ create: vi.fn<(...args: unknown[]) => Promise<object>>(async () => ({})) }));
 const refusalReplan = vi.hoisted(() => ({ updateMany: vi.fn<(...args: unknown[]) => Promise<{ count: number }>>(async () => ({ count: 1 })) }));
 
+// #4125: the officers' once-ever alert for a capacity-race charge no refund covers; its rule is proved in its own suite.
+const shortfallAlert = vi.hoisted(() => ({ alertCapacityRaceRefundShortfall: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true) }));
+vi.mock("@/lib/capacity-race-refund-shortfall", () => shortfallAlert);
+
 vi.mock("@/lib/payment-transactions", () => ({
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
     mocks.upsertPaymentIntentTransaction(...args),
@@ -1155,6 +1159,11 @@ describe("markBookingPaymentSucceeded", () => {
       });
 
       expect(result.outcome).toBe("cancelled_refunded");
+      // #4125: the officers are told about the $10.00 no refund covers.
+      expect(shortfallAlert.alertCapacityRaceRefundShortfall).toHaveBeenCalledWith(
+        { bookingId: "booking-1", paymentIntentId: "pi_race", chargedCents: 10000, plannedRefundCents: 9000 },
+        CLUB_FORMAT_TEST,
+      );
       // The close runs in the event's transaction, so the two commit together.
       expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking-1", paymentIntentId: "pi_race", store: tx });
       const refunded = bookingEvents.create.mock.calls
@@ -1195,10 +1204,10 @@ describe("markBookingPaymentSucceeded", () => {
       expect(bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string } }).data.type)).toEqual(["CANCELLED"]);
     });
 
-    // #4125: the close and its REFUNDED insert are one transaction. An insert
-    // the database refuses rolls the close back (the row stays open for the
-    // runner's replay); the door logs it and still reports the refund made -
-    // nothing throws out of the settle.
+    // #4125: the close and its REFUNDED insert are one transaction (the
+    // rollback itself is proved against PostgreSQL in
+    // `capacity-race-refund-event.realdb.test.ts`). Here: a refused insert is
+    // logged, the settle still reports the refund made, and nothing throws.
     it("a refused REFUNDED insert is logged and the refund still reads made (#4125)", async () => {
       primeCapacityRaceLoss();
       // The CANCELLED event first, then the REFUNDED insert, refused once.

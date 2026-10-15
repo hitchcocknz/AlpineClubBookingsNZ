@@ -433,6 +433,36 @@ describe("resolveBookingNarrative", () => {
     ] as const)("MUTATION: a refund short of the charge, %s, names the rest", (_label, events, state, clause) => {
       expect(narrate([...events], state)).toBe(`${OPENING} ${clause} No further payment is required.`);
     });
+
+    // An empty plan refunds nothing by card: never "no refund was due", only what the club follows up.
+    it.each([
+      ["on its way", "on-its-way"],
+      ["stalled", "stalled"],
+      ["unread", undefined],
+    ] as const)("MUTATION: an empty plan (%s) says the club will be in touch about the whole charge", (_label, state) => {
+      const message = narrate([raceCancel(0)], state);
+      expect(message).toBe(`${OPENING} The club will be in touch about the $100.00. No further payment is required.`);
+      expect(message).not.toContain("no refund was due");
+    });
+
+    // The club pays the rest later: every settlement event counts, so the follow-up line goes.
+    it("MUTATION: a later refund covering the rest removes the follow-up line", () => {
+      const events = [
+        raceCancel(8000),
+        event(BookingEventType.REFUNDED, "2026-05-05T00:00:00.000Z", { amountCents: 8000 }),
+        event(BookingEventType.REFUNDED, "2026-05-20T00:00:00.000Z", { amountCents: 2000 }),
+      ];
+      expect(narrate(events)).toBe(`${OPENING} $100.00 was refunded on 20 May 2026. No further payment is required.`);
+    });
+
+    it("a refund recorded twice never reads as more than was paid", () => {
+      const events = [
+        raceCancel(10000),
+        event(BookingEventType.REFUNDED, "2026-05-05T00:00:00.000Z", { amountCents: 10000 }),
+        event(BookingEventType.REFUNDED, "2026-05-06T00:00:00.000Z", { amountCents: 10000 }),
+      ];
+      expect(narrate(events)).toBe(`${OPENING} $100.00 was refunded on 6 May 2026. No further payment is required.`);
+    });
   });
 
   // #4125: a card cancel's refund with no REFUNDED event says where its

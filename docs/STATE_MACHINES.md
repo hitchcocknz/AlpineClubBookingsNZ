@@ -1711,8 +1711,13 @@ it was refunded, or paid back another way. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
 snapshot, whose `settledAmountCents` is the plan's total: when the payment
-ledger showed less refundable than the charge, the rest is neither refunded
-nor retained, and the narrative says the club will be in touch about it.
+ledger showed less refundable than the charge (or nothing - an empty plan,
+which never reads "no refund was due"), the rest is neither refunded nor
+retained, and the narrative says the club will be in touch about it. That
+promise is backed by a once-ever officers' alert on the booking naming the
+rest (`alertCapacityRaceRefundShortfall`). The narrative counts every
+settlement event of a capacity race, so a later refund of the rest removes
+the follow-up line.
 
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 

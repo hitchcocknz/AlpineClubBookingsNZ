@@ -22,4 +22,6 @@
   card refund not yet made. A booking cancelled because the dates filled up
   no longer mentions the cancellation policy, which did not apply to it, and
   no longer says no payment had been taken. If less than the full charge could
-  be refunded automatically, it says the club will be in touch about the rest.
+  be refunded automatically, or none of it, it says the club will be in touch
+  about the rest, and the club's officers get one email naming that amount.
+  Once the rest has been refunded, the page stops saying so.

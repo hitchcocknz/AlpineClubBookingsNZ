@@ -25,9 +25,15 @@ import { formatCents } from "@/lib/utils";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
 
-/** #4125: what the club follows up - a dead card refund, a part no refund covers - as the clause's ending (`INV-SSOT`). */
-function clubWillBeInTouch(subjects: string[]): string {
-  return subjects.length > 0 ? `; the club will be in touch about ${subjects.join(" and ")}` : "";
+/**
+ * #4125: what the club follows up - a dead card refund, a part no refund
+ * covers - appended to a clause after "; ", or the whole clause when nothing
+ * else is said (`INV-SSOT`).
+ */
+function withClubFollowUp(clause: string, subjects: string[]): string {
+  if (subjects.length === 0) return clause;
+  const followUp = `the club will be in touch about ${subjects.join(" and ")}`;
+  return clause ? `${clause}; ${followUp}` : followUp;
 }
 const STALLED_CARD_REFUND = "the card refund";
 
@@ -88,7 +94,7 @@ function cardShortfallClause(
   if (retainedAmountCents > 0) clauses.push(`${money(retainedAmountCents)} was retained`);
   const joined = clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? "no refund was due");
   // #4125: a dead card part is the club's to follow up.
-  return `${joined}${clubWillBeInTouch(parts.cardCents > 0 && statuses.card === "stalled" ? [STALLED_CARD_REFUND] : [])}`;
+  return withClubFollowUp(joined, parts.cardCents > 0 && statuses.card === "stalled" ? [STALLED_CARD_REFUND] : []);
 }
 
 /**
@@ -115,16 +121,24 @@ function asCancellationSnapshot(
 export function buildCancelledPostPaymentNarrative(
   paidEvent: NarrativeEvent,
   cancelEvent: NarrativeEvent | undefined,
-  settlementEvent: NarrativeEvent | undefined,
+  /** The cancellation's settlement events, oldest first; the first is its settlement clause. */
+  settlementEvents: readonly NarrativeEvent[],
   club: BoundClubTime, format: ClubFormat,
   ownerCreditHidden: boolean,
   cardShortfallStatuses: CardShortfallTaskStatuses = {},
   cardRefundState?: CardRefundState,
 ): BookingNarrative {
   const snapshot = asCancellationSnapshot(cancelEvent?.snapshot);
+  // #4125: no policy decided a capacity-race refund, and the club may pay part
+  // of it later (a second REFUNDED event): it reads as everything refunded so
+  // far, dated by the latest refund - never more than was paid (a REFUNDED
+  // written twice across a deploy, by a pre-#4125 inline close and the runner).
+  const capacityRace = snapshot?.cancelledBecause === "capacity_race";
+  const settlementEvent = capacityRace ? settlementEvents[settlementEvents.length - 1] : settlementEvents[0];
   const paidAmountCents = paidEvent.amountCents ?? snapshot?.paidAmountCents ?? 0;
-  const settledAmountCents =
-    settlementEvent?.amountCents ?? snapshot?.settledAmountCents ?? 0;
+  const settledAmountCents = capacityRace && settlementEvent
+    ? Math.min(settlementEvents.reduce((sum, event) => sum + (event.amountCents ?? 0), 0), paidAmountCents)
+    : settlementEvent?.amountCents ?? snapshot?.settledAmountCents ?? 0;
   const retainedAmountCents =
     snapshot?.retainedAmountCents ??
     Math.max(paidAmountCents - settledAmountCents, 0);
@@ -134,7 +148,6 @@ export function buildCancelledPostPaymentNarrative(
     ? club.instantDate(cancelEvent.occurredAt)
     : paidOn;
   // #4125: a capacity-race cancel was the system's, not the member's.
-  const capacityRace = snapshot?.cancelledBecause === "capacity_race";
   const opening =
     capacityRace
       ? `This booking was cancelled on ${cancelOn}, after you paid ${formatCents(paidAmountCents, format)} on ${paidOn}, because the dates filled up while your payment was going through.`
@@ -195,6 +208,10 @@ export function buildCancelledPostPaymentNarrative(
     const retained = retainedAmountCents > 0 ? ` and ${formatCents(retainedAmountCents, format)} was retained` : "";
     settlementClause = `${refund}${retained}`;
     if (state === "stalled") followUps.push(STALLED_CARD_REFUND);
+  } else if (capacityRace) {
+    // #4125: an empty plan refunded nothing by card - never "no refund was
+    // due"; the whole charge is the club's to follow up, below.
+    settlementClause = "";
   } else {
     settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents, format)} was retained`;
   }
@@ -202,8 +219,8 @@ export function buildCancelledPostPaymentNarrative(
   // which can be less than the charge; the snapshot keeps nothing back, so the
   // rest is neither refunded nor retained - say so, never "no further payment".
   const unaccountedCents = capacityRace ? paidAmountCents - settledAmountCents - retainedAmountCents : 0;
-  if (unaccountedCents > 0) followUps.push(`the remaining ${formatCents(unaccountedCents, format)}`);
-  settlementClause += clubWillBeInTouch(followUps);
+  if (unaccountedCents > 0) followUps.push(`the ${settledAmountCents > 0 ? "remaining " : ""}${formatCents(unaccountedCents, format)}`);
+  settlementClause = withClubFollowUp(settlementClause, followUps);
 
   return {
     state: "cancelled_post_payment",

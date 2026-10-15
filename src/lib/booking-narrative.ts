@@ -311,7 +311,7 @@ function buildCancelledNarrative(
     // back by hand while the booking was live) must NEVER be picked up as this
     // cancellation's settlement clause, which would falsely claim the member
     // was refunded. `isRefundOutsideBookingSettlement` is the one list.
-    const settlementEvent = events.find(
+    const settlementEvents = events.filter(
       (e) =>
         (e.type === BookingEventType.REFUNDED ||
           e.type === BookingEventType.CREDITED) &&
@@ -319,7 +319,7 @@ function buildCancelledNarrative(
     );
     return buildCancelledPostPaymentNarrative(
       paidEvent,
-      cancelEvent, settlementEvent, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState,
+      cancelEvent, settlementEvents, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState,
     );
   }
 

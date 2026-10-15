@@ -53,6 +53,7 @@ import {
   type ManualSettlementReversalEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
 import { closeCapacityRaceRefundRecordingEvent, recordBookingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { alertCapacityRaceRefundShortfall } from "@/lib/capacity-race-refund-shortfall";
 import {
   sendAdminDuplicateCaptureRefundAlert,
   sendAdminPaymentFailureAlert,
@@ -2226,14 +2227,9 @@ export async function markBookingPaymentSucceeded({
     // operation for the recovery cron — never a stranded charge that only an
     // alert email knows about.
     const { refundPlan, plannedRefundCents } = reconciliation;
-    if (plannedRefundCents < amountCents) {
-      // Mirror-vs-ledger drift (same guard as booking-cancel): refund what
-      // the payment ledger actually shows refundable and surface the gap.
-      logger.error(
-        { bookingId, paymentIntentId, amountCents, plannedRefundCents },
-        "Capacity-race refund plan covers less than the captured amount; refunding what the payment ledger shows refundable"
-      );
-    }
+    // Mirror-vs-ledger drift (same guard as booking-cancel): refund what the
+    // payment ledger actually shows refundable; #4125: the officers are told the rest, once.
+    await alertCapacityRaceRefundShortfall({ bookingId, paymentIntentId, chargedCents: amountCents, plannedRefundCents }, format);
 
     const keepRefusalOwed = (attempt: RefundAttempt) =>
       keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
