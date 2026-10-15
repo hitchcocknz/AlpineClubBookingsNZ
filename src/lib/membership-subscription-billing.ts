@@ -37,9 +37,12 @@ import { buildXeroIdempotencyKey, startXeroSyncOperation } from "@/lib/xero-sync
 import {
   CLOSED_FAMILY_PARTLY_REVERSED_CODE,
   isChargeClosedAsAlreadyPaid,
+  confirmWithholdsInvoicingWarnings,
+  invoicingWarningEntryKey,
   isClosedCoveragePaymentReversed,
   isInvoicingPreviewWarning,
   wasPaidAtClose,
+  WITHHELD_ON_APPROVAL_NOTE,
 } from "@/lib/subscription-charge-already-paid";
 
 export class SubscriptionBillingError extends Error {
@@ -1288,26 +1291,6 @@ async function persistOpenExceptions(
   }
 }
 
-/**
- * #4110 review F2 (owner decision 1 on #4110: the preview flags a partly
- * reversed closed family for the officer BEFORE confirming). Membership
- * approval confirms its own preview with no officer looking at it, so for that
- * source an invoicing warning withholds the family entry it names, like any
- * other exception: it is persisted OPEN for Finance and counted, so the
- * approver is told Finance must review it. Finance's own confirm of the billing
- * run then shows the warning and invoices the family.
- */
-function confirmWithholdsInvoicingWarnings(source: MembershipSubscriptionChargeSource): boolean {
-  return source === "NEW_MEMBER_APPROVAL";
-}
-
-const WITHHELD_ON_APPROVAL_NOTE =
-  "It was not invoiced on membership approval: Finance must review it in Subscription billing and confirm the billing run to invoice it.";
-
-/** The family entry an invoicing warning names. */
-function invoicingWarningEntryKey(item: Pick<SubscriptionBillingPlanException, "familyGroupId" | "membershipTypeId">): string {
-  return `${item.membershipTypeId}:family:${item.familyGroupId}`;
-}
 
 // Resolve every OPEN MembershipBillingException for the season that a fresh
 // preview no longer regenerated (its fingerprint is not in currentFingerprints),

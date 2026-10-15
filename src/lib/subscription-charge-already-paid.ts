@@ -1,5 +1,6 @@
 import type {
   MembershipFeeBillingBasis,
+  MembershipSubscriptionChargeSource,
   MembershipSubscriptionChargeStatus,
   SubscriptionStatus,
 } from "@prisma/client";
@@ -216,4 +217,26 @@ export const CLOSED_FAMILY_PARTLY_REVERSED_CODE = "CLOSED_FAMILY_PARTLY_REVERSED
 /** True for a preview exception that warns about a charge confirming still invoices. */
 export function isInvoicingPreviewWarning(code: string): boolean {
   return code === CLOSED_FAMILY_PARTLY_REVERSED_CODE;
+}
+
+/**
+ * #4110 review F2 (owner decision 1 on #4110: the preview flags a partly
+ * reversed closed family for the officer BEFORE confirming). Membership
+ * approval confirms its own preview with no officer looking at it, so for that
+ * source an invoicing warning withholds the family entry it names, like any
+ * other exception: it is persisted OPEN for Finance and counted, so the
+ * approver is told Finance must review it. Finance's own confirm of the billing
+ * run then shows the warning and invoices the family.
+ */
+export function confirmWithholdsInvoicingWarnings(source: MembershipSubscriptionChargeSource): boolean {
+  return source === "NEW_MEMBER_APPROVAL";
+}
+
+/** Appended to a withheld warning's persisted message, for Finance. */
+export const WITHHELD_ON_APPROVAL_NOTE =
+  "It was not invoiced on membership approval: Finance must review it in Subscription billing and confirm the billing run to invoice it.";
+
+/** The family entry an invoicing warning names, keyed the same way from either side. */
+export function invoicingWarningEntryKey(item: { familyGroupId: string | null; membershipTypeId: string | null }): string {
+  return `${item.membershipTypeId}:family:${item.familyGroupId}`;
 }

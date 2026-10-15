@@ -9,15 +9,18 @@ reason: the panel's read of the charge queue now carries each covered
   payload the panel reads in one place.
 
 file: src/lib/membership-subscription-billing.ts
-lines: 1638
+lines: 1677
 reason: the preview decides which family charges still bill their family: a
-  closed charge does until a subscription it covered stops being settled, and a
+  closed charge does until a covered member's payment is reversed, and a
   partly reversed one raises the officer's warning (owner decisions on #4110).
   That rule reads the family-charge query's own rows and feeds the same
-  billedFamilyTypes map and exceptions list the preview loop uses, and the
-  confirm keeps the warning out of the persisted exceptions beside where it
-  persists them; moving it out would split one preview's decision across two
-  files.
+  billedFamilyTypes map and exceptions list the preview loop uses. The confirm
+  then either acknowledges that warning (an officer's run) or withholds the
+  family it names and keeps it OPEN for Finance (a membership approval, #4110
+  review F2), beside where it filters, persists and counts the exceptions. The
+  predicates and wording live in subscription-charge-already-paid.ts; what
+  remains here is the confirm's own use of them, and moving it out would split
+  one confirm transaction across two files.
 
 file: src/lib/xero-operation-retry.ts
 lines: 2025
