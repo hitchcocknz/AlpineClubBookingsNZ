@@ -91,6 +91,19 @@ describe("#4097: the booking page names each part of a card refund shortfall and
     );
   });
 
+  // #4125: a card part whose retries have stopped is the club's to follow up, never "on its way".
+  it("MUTATION: the card's part, stalled, says the club will be in touch about it", () => {
+    const message = narrate({ cardCents: 6000, bankCents: 4000, checkCents: 0 }, { bank: "OPEN", card: "stalled" });
+    expect(message).toBe(
+      `${LEAD}$60.00 is being refunded to you, $40.00 is being refunded to you by bank transfer and $20.00 was retained; the club will be in touch about the card refund. No further payment is required.`,
+    );
+    expect(message).not.toContain("on its way");
+  });
+
+  it("a stalled card part with no card refund carried names no card refund", () => {
+    expect(narrate({ cardCents: 0, bankCents: 10000, checkCents: 0 }, { bank: "OPEN", card: "stalled" })).not.toContain("card refund");
+  });
+
   it("a zero plan's part to check is the whole refund, never 'the remaining'", () => {
     expect(narrate({ cardCents: 0, bankCents: 0, checkCents: 10000 }, { check: "OPEN" })).toBe(
       `${LEAD}the club will be in touch about the $100.00 refund and $20.00 was retained. No further payment is required.`,

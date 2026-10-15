@@ -194,6 +194,8 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { buildCapacityClaimFailedRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 
 const tx = {
+  // #4125: the capacity race's REFUNDED event commits with the recovery row's close.
+  bookingEvent: { create: (...args: unknown[]) => bookingEvents.create(...args) },
   $executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
   $queryRaw: (...args: unknown[]) => mocks.executeRaw(...args),
   lodge: {
@@ -1151,6 +1153,8 @@ describe("markBookingPaymentSucceeded", () => {
       });
 
       expect(result.outcome).toBe("cancelled_refunded");
+      // The close runs in the event's transaction, so the two commit together.
+      expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking-1", paymentIntentId: "pi_race", store: tx });
       const refunded = bookingEvents.create.mock.calls
         .map(([args]) => (args as { data: { type: string; amountCents: number | null; reason: string | null } }).data)
         .filter((event) => event.type === "REFUNDED");

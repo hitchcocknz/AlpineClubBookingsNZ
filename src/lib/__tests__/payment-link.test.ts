@@ -612,7 +612,7 @@ describe("getPaymentLinkContext", () => {
 
     const context = await getPaymentLinkContext(RAW_TOKEN, noReview());
 
-    expect(context.narrative.message).toContain("$120.00 is being refunded to you; the club will be in touch about the refund.");
+    expect(context.narrative.message).toContain("$120.00 is being refunded to you; the club will be in touch about the card refund.");
     expect(context.narrative.message).not.toContain("on its way");
   });
 });

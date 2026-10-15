@@ -58,8 +58,8 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { nothingToPayNarrative, nothingToPayWithFinancialReviewNarrative } from "@/lib/booking-narrative-nothing-to-pay";
 import type { BookingAmountOwed } from "@/lib/booking-payment-state";
-import { buildCancelledPostPaymentNarrative, type CardRefundState } from "@/lib/booking-narrative-cancelled-post-payment";
-import type { CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
+import { buildCancelledPostPaymentNarrative } from "@/lib/booking-narrative-cancelled-post-payment";
+import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 
 export type BookingNarrativeState =
   | "payable"

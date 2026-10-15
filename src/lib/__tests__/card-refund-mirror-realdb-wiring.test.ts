@@ -114,6 +114,7 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("the runner's replay records ONE REFUNDED event for the plan's total");
     expect(suite).toContain("the worker's close finds it closed and writes no event");
+    expect(suite).toContain("an event insert the database refuses rolls the close back");
     expect(suite).toContain("a dead row reads as stalled");
   });
 });

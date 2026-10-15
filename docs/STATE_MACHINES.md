@@ -1696,15 +1696,19 @@ says the full amount "is being refunded" and carries
 `cancelledBecause: "capacity_race"`, so the member is never told they
 cancelled it. The `REFUNDED` event is written once the refund is made, for the
 plan's total (never the full charge), by whichever close moves the row to
-`SUCCEEDED`: the inline attempt's close or the recovery runner's
-(`recordCapacityRaceRefundEvent`). A close that finds the row already closed
-writes nothing, so the event lands exactly once. Until it lands, the booking
+`SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
+same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+crash cannot leave the row closed without its event, and a failed insert
+leaves the row open for the runner's replay. A close that finds the row
+already closed writes nothing, so the event lands exactly once. Until it lands, the booking
 page and the payment-link page read the row
 (`readCancelledCardRefundState`, which reads a member cancel's
 `booking_cancel_refund_recovery_<bookingId>` row the same way): still being
 sent says "on its way to your original payment method"; a dead row (retries
-spent, or failed with no retry) says the club will be in touch; a row closed
-without the event says it was refunded, or paid back another way.
+spent, or failed with no retry) says the club will be in touch - as does a
+dead card part of a card refund shortfall; a row closed without the event says
+it was refunded, or paid back another way. No cancellation policy decided a
+capacity-race refund, so its narrative names none.
 
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 

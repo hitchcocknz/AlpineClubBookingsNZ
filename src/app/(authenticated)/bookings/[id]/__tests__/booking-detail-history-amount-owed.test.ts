@@ -150,7 +150,7 @@ describe("booking page history narrative reads a cancelled card refund's row (#4
 
     const narrative = await narrativeFor({ ...(bookingWith(null) as object), status: "CANCELLED" } as never);
 
-    expect(narrative.message).toContain("$200.00 is being refunded to you; the club will be in touch about the refund.");
+    expect(narrative.message).toContain("$200.00 is being refunded to you; the club will be in touch about the card refund.");
     expect(narrative.message).not.toContain("on its way");
   });
 });

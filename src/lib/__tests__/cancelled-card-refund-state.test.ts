@@ -10,16 +10,18 @@ import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants"
  */
 const db = vi.hoisted(() => ({
   findMany: vi.fn(),
+  findUnique: vi.fn(),
   count: vi.fn(),
+  tasks: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    paymentRecoveryOperation: { findMany: db.findMany },
-    manualRefundTask: { count: db.count },
+    paymentRecoveryOperation: { findMany: db.findMany, findUnique: db.findUnique },
+    manualRefundTask: { count: db.count, findMany: db.tasks },
   },
 }));
 
-import { readCancelledCardRefundState } from "@/lib/cancel-card-refund-shortfall-status";
+import { readCancelledCardRefundState, readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
 
 type Row = { id: string; idempotencyKey: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
 const row = (overrides: Partial<Row> = {}): Row => ({
@@ -45,6 +47,8 @@ describe("readCancelledCardRefundState (#4125)", () => {
     expect(db.findMany).toHaveBeenCalledTimes(1);
     expect(db.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
+        // On the bookingId index, never a scan of every row's key.
+        bookingId: "booking-1",
         OR: [
           { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
           // The trailing underscore keeps booking-1's prefix from matching booking-10's rows.
@@ -98,5 +102,24 @@ describe("readCancelledCardRefundState (#4125)", () => {
 
     db.findMany.mockResolvedValue([closed, live, dead]);
     expect(await readCancelledCardRefundState("booking-1")).toBe("stalled");
+  });
+});
+
+// #4125: a card refund shortfall's card part reads its row the same way, so a
+// dead one is stalled there too - never "on its way".
+describe("readCardShortfallTaskStatuses reads a dead card part as stalled (#4125)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.count.mockResolvedValue(0);
+    db.tasks.mockResolvedValue([{ kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", status: "OPEN" }]);
+  });
+
+  it.each([
+    ["dead", row({ idempotencyKey: "booking_cancel_refund_recovery_booking-1", status: PaymentRecoveryOperationStatus.FAILED, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null }), "stalled"],
+    ["still being sent", row({ idempotencyKey: "booking_cancel_refund_recovery_booking-1" }), "on-its-way"],
+  ] as const)("a %s card refund row", async (_label, found, card) => {
+    db.findUnique.mockResolvedValue(found);
+
+    expect(await readCardShortfallTaskStatuses("booking-1")).toEqual({ bank: "OPEN", card });
   });
 });

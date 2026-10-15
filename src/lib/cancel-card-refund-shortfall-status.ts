@@ -4,14 +4,14 @@ import {
   CANCEL_CARD_SHORTFALL_KEY_PREFIX,
   cancelCardShortfallPart,
   closeKeysOf,
+  type CardRefundState,
   type CardShortfallTaskStatuses,
 } from "@/lib/manual-refund-task-settlement-rules";
 import {
   buildBookingCancellationRefundIdempotencyKey,
-  CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
+  buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking,
 } from "@/lib/payment-recovery-keys";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
-import type { CardRefundState } from "@/lib/booking-narrative-cancelled-post-payment";
 import { prisma } from "@/lib/prisma";
 
 type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
@@ -56,11 +56,7 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
     where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
     select: { id: true, status: true, attempts: true, nextRetryAt: true },
   });
-  if (cardRefund) {
-    // A dead card part still reads as owed here: the shortfall's own sentence has no "stalled" yet.
-    const state = await cardRefundRowState(cardRefund);
-    statuses.card = state === "stalled" ? "on-its-way" : state;
-  }
+  if (cardRefund) statuses.card = await cardRefundRowState(cardRefund);
   return statuses;
 }
 
@@ -75,9 +71,11 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
  * the one furthest from done: a dead one first, then one still being sent.
  */
 export async function readCancelledCardRefundState(bookingId: string): Promise<CardRefundState | undefined> {
-  const capacityRacePrefix = `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
+  const capacityRacePrefix = buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId);
   const rows = await prisma.paymentRecoveryOperation.findMany({
     where: {
+      // On `@@index([bookingId])`, so the prefix match never scans the table.
+      bookingId,
       OR: [
         { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
         { idempotencyKey: { startsWith: capacityRacePrefix } },

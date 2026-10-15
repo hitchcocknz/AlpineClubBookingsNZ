@@ -396,6 +396,15 @@ describe("resolveBookingNarrative", () => {
       events: [paid, cancelled, event(BookingEventType.REFUNDED, "2026-05-05T00:00:00.000Z", { amountCents: 12000 })],
     }, CLUB_FORMAT_TEST);
     expect(made.message).toContain("$120.00 was refunded on 5 May 2026");
+
+    // No cancellation policy decided it: the whole charge goes back, so no policy is named.
+    expect(pending.message).toBe(
+      "This booking was cancelled on 5 May 2026, after you paid $120.00 on 2 May 2026, because the dates filled up while your payment was going through. $120.00 is on its way to your original payment method. No further payment is required.",
+    );
+    expect(made.message).toBe(
+      "This booking was cancelled on 5 May 2026, after you paid $120.00 on 2 May 2026, because the dates filled up while your payment was going through. $120.00 was refunded on 5 May 2026. No further payment is required.",
+    );
+    expect(made.message).not.toContain("cancellation policy");
   });
 
   // #4125: a card cancel's refund with no REFUNDED event says where its
@@ -422,8 +431,8 @@ describe("resolveBookingNarrative", () => {
     it.each([
       ["on its way (no row read)", undefined, 0, "the time, $120.00 is on its way to your original payment method. No further"],
       ["on its way, with a part retained", "on-its-way", 3000, "the time, $90.00 is on its way to your original payment method and $30.00 was retained. No further"],
-      ["stalled", "stalled", 0, "the time, $120.00 is being refunded to you; the club will be in touch about the refund. No further"],
-      ["stalled, with a part retained", "stalled", 3000, "the time, $90.00 is being refunded to you and $30.00 was retained; the club will be in touch about the refund. No further"],
+      ["stalled", "stalled", 0, "the time, $120.00 is being refunded to you; the club will be in touch about the card refund. No further"],
+      ["stalled, with a part retained", "stalled", 3000, "the time, $90.00 is being refunded to you and $30.00 was retained; the club will be in touch about the card refund. No further"],
       ["made by the runner before it recorded", "settled", 3000, "the time, $90.00 was refunded to your card and $30.00 was retained. No further"],
       ["closed as paid another way", "paid-another-way", 0, "the time, $120.00 could not go back to your card and was paid back to you another way. No further"],
     ] as const)("%s", (_label, state, retained, expected) => {

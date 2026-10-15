@@ -15,6 +15,9 @@
  * - The inline door closing the row while a worker is still sending it (the
  *   close lands inside the refund call): the worker's close finds the row
  *   closed and writes no event - the inline close owns it.
+ * - The close and the event commit together: an event insert the database
+ *   refuses rolls the close back, the row stays open, and the next run closes
+ *   it and records it once.
  * - The row's state for the narrative, by the real `startsWith` read: still
  *   being sent, dead (retries spent) - which the narrative says the club will
  *   follow up - and made.
@@ -109,8 +112,9 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       stripeRaceHooks.refund = async (args) => {
         asked.count += 1;
         await during?.();
+        // Stripe answers a repeated key with the refund it already made.
         return {
-          id: `re_race_4125_${asked.count}`,
+          id: `re_race_4125_${args.idempotencyKey ?? asked.count}`,
           object: "refund",
           amount: args.amountCents,
           currency: "nzd",
@@ -243,6 +247,33 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: row.id }, select: { status: true } })).toEqual({ status: "SUCCEEDED" });
       // The inline close was the one that moved it, so the event is the inline door's to write.
       expect(await refundedEvents()).toEqual([]);
+    });
+
+    it("an event insert the database refuses rolls the close back: the row stays open, and the next run closes it and records it once", async () => {
+      const asked = stripeMakesRefunds();
+      const row = await queueCapacityRaceRefund();
+      // Every REFUNDED insert for this booking is refused while the trigger stands.
+      await prisma.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION race_4125_refuse_event() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'race-4125: event refused'; END $$ LANGUAGE plpgsql`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE TRIGGER race_4125_refuse_event BEFORE INSERT ON "BookingEvent" FOR EACH ROW WHEN (NEW."bookingId" = '${BOOKING_ID}') EXECUTE FUNCTION race_4125_refuse_event()`,
+      );
+      try {
+        expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("failed");
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS race_4125_refuse_event ON "BookingEvent"`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS race_4125_refuse_event()`);
+      }
+      expect((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: row.id }, select: { status: true } })).status).not.toBe("SUCCEEDED");
+      expect(await refundedEvents()).toEqual([]);
+
+      // Its retry comes due: Stripe answers the same keys with the same refund, and the close and event commit.
+      await prisma.paymentRecoveryOperation.update({ where: { id: row.id }, data: { nextRetryAt: new Date("2020-01-01T00:00:00.000Z") } });
+      expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      expect(asked.count).toBe(2);
+      expect(await refundedEvents()).toEqual([{ amountCents: PLANNED_CENTS, reason: CAPACITY_RACE_REFUND_EVENT_REASON, actorMemberId: null }]);
+      expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBe(1);
     });
 
     it("a dead row reads as stalled - never on its way - and a row of another booking is not read", async () => {

@@ -10,10 +10,14 @@
   app's payment retries make it later, and the retry that makes it now
   records it on the booking's history, so the booking page says it was
   refunded instead of "on its way" forever. The record is written once, for
-  the amount actually refunded rather than the full charge.
+  the amount actually refunded rather than the full charge, and together with
+  the step that marks the refund done, so a crash cannot lose it.
 - **A card refund the retries could not make no longer reads as "on its way".**
   On the booking page and the payment link page, a cancelled booking's card
   refund that has not been made yet says where it stands: on its way to the
   member's original payment method while it is being retried, and "the club
-  will be in touch" once the retries have stopped. One wording, "is on its way
-  to your original payment method", is used for a card refund not yet made.
+  will be in touch" once the retries have stopped. This also applies to the
+  card part of a refund split between the card and a bank transfer. One
+  wording, "is on its way to your original payment method", is used for a
+  card refund not yet made. A booking cancelled because the dates filled up
+  no longer mentions the cancellation policy, which did not apply to it.

@@ -52,7 +52,7 @@ import {
   MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
   type ManualSettlementReversalEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
-import { recordBookingEvent, recordCapacityRaceRefundEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { closeCapacityRaceRefundRecordingEvent, recordBookingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import {
   sendAdminDuplicateCaptureRefundAlert,
   sendAdminPaymentFailureAlert,
@@ -2273,18 +2273,14 @@ export async function markBookingPaymentSucceeded({
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
       // slices/keys, which Stripe answers with the original refunds - and
-      // (#4125) records the REFUNDED event, which this close records only when
-      // it is the one that closed the row, for what was refunded.
-      const closed = await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId, paymentIntentId }).catch((markErr) => {
-        logger.error(
-          { err: markErr, bookingId, paymentIntentId },
-          "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently"
-        );
-        return null;
-      });
-      if (closed && closed.count > 0) {
-        await recordCapacityRaceRefundEvent({ bookingId, amountCents: plannedRefundCents, actorMemberId: bookingOwner(reconciliation.booking).memberId });
-      }
+      // (#4125) records the REFUNDED event, which commits with this close only
+      // when it is the one that closed the row, for what was refunded.
+      await closeCapacityRaceRefundRecordingEvent(
+        { bookingId, amountCents: plannedRefundCents, actorMemberId: bookingOwner(reconciliation.booking).memberId },
+        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId, paymentIntentId, store: tx })).count === 1,
+      ).catch((markErr) =>
+        logger.error({ err: markErr, bookingId, paymentIntentId }, "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently")
+      );
 
       return {
         outcome: "cancelled_refunded",

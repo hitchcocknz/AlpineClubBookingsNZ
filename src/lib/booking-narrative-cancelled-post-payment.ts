@@ -22,17 +22,11 @@ import type { ClubFormat } from "@/lib/club-format";
 import type { CancellationEventSnapshot } from "@/lib/booking-events";
 import type { BookingNarrative, NarrativeEvent } from "@/lib/booking-narrative";
 import { formatCents } from "@/lib/utils";
-import type { CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
+import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
 
-/**
- * #4125: where a cancel's card refund stands, read live from its recovery row
- * by the caller (`readCancelledCardRefundState`): made (`settled`), still being
- * sent (`on-its-way`), closed as "Paid another way", or `stalled` - the row is
- * dead (its retries are spent, or it failed with no retry scheduled), so
- * nothing will send it without the club.
- */
-export type CardRefundState = NonNullable<CardShortfallTaskStatuses["card"]> | "stalled";
+/** #4125: a dead card refund's ending - the club follows it up, never "on its way" (`INV-SSOT`). */
+const STALLED_CARD_REFUND_ENDING = "; the club will be in touch about the card refund";
 
 /** #4097, #4125: one card refund, by where it stands - the shortfall's card part and a whole card refund alike (`INV-SSOT`). */
 function cardRefundClause(amount: string, state: CardRefundState, refundedOn: string | null): string {
@@ -89,7 +83,9 @@ function cardShortfallClause(
     );
   }
   if (retainedAmountCents > 0) clauses.push(`${money(retainedAmountCents)} was retained`);
-  return clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? "no refund was due");
+  const joined = clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? "no refund was due");
+  // #4125: a dead card part is the club's to follow up.
+  return parts.cardCents > 0 && statuses.card === "stalled" ? `${joined}${STALLED_CARD_REFUND_ENDING}` : joined;
 }
 
 function asCancellationSnapshot(
@@ -123,8 +119,9 @@ export function buildCancelledPostPaymentNarrative(
     ? club.instantDate(cancelEvent.occurredAt)
     : paidOn;
   // #4125: a capacity-race cancel was the system's, not the member's.
+  const capacityRace = snapshot?.cancelledBecause === "capacity_race";
   const opening =
-    snapshot?.cancelledBecause === "capacity_race"
+    capacityRace
       ? `This booking was cancelled on ${cancelOn}, after you paid ${formatCents(paidAmountCents, format)} on ${paidOn}, because the dates filled up while your payment was going through.`
       : `You cancelled this booking on ${cancelOn} after paying ${formatCents(paidAmountCents, format)} on ${paidOn}.`;
 
@@ -180,7 +177,7 @@ export function buildCancelledPostPaymentNarrative(
     const state = cardRefundState ?? "on-its-way";
     const refund = cardRefundClause(formatCents(settledAmountCents, format), state, null);
     const retained = retainedAmountCents > 0 ? ` and ${formatCents(retainedAmountCents, format)} was retained` : "";
-    settlementClause = `${refund}${retained}${state === "stalled" ? "; the club will be in touch about the refund" : ""}`;
+    settlementClause = `${refund}${retained}${state === "stalled" ? STALLED_CARD_REFUND_ENDING : ""}`;
   } else {
     settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents, format)} was retained`;
   }
@@ -188,7 +185,8 @@ export function buildCancelledPostPaymentNarrative(
   return {
     state: "cancelled_post_payment",
     headline: "Booking cancelled",
-    message: `${opening} Under the cancellation policy in effect at the time, ${settlementClause}. No further payment is required.`,
+    // #4125: no policy decided a capacity-race refund - the whole charge goes back.
+    message: `${opening} ${capacityRace ? settlementClause.charAt(0).toUpperCase() + settlementClause.slice(1) : `Under the cancellation policy in effect at the time, ${settlementClause}`}. No further payment is required.`,
     nextStep:
       "If you'd like to stay another time, you can book again from the bookings page whenever you're ready.",
   };

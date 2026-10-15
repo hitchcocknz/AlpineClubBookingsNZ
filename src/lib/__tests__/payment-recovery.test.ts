@@ -37,7 +37,7 @@ const {
   mockFindWaitingSupplementaryOpForIntent,
   mockExecuteGroupSettlementRefundPlan,
   mockRecordDuplicateCaptureRefundEvent,
-  mockRecordCapacityRaceRefundEvent,
+  mockBookingEventCreate,
   mockReportSupersededPaymentRefund,
   mockSyncEditFinancialReviewChargeRequest,
   mockBookingModificationFindUnique,
@@ -97,7 +97,7 @@ const {
     .fn()
     .mockResolvedValue({ outcome: "refunded", mirroredChildren: 1 }),
   mockRecordDuplicateCaptureRefundEvent: vi.fn().mockResolvedValue(undefined),
-  mockRecordCapacityRaceRefundEvent: vi.fn().mockResolvedValue(undefined),
+  mockBookingEventCreate: vi.fn().mockResolvedValue({}),
   // #3340: the supersede-refund epilogue - one audit row, one booking event, one
   // member email, one admin alert. Mocked so a REPLAY can be asked whether it
   // spoke a second time.
@@ -164,6 +164,7 @@ vi.mock("@/lib/prisma", () => {
       findUnique: (...args: unknown[]) =>
         mockBookingModificationFindUnique(...args),
     },
+    bookingEvent: { create: (...args: unknown[]) => mockBookingEventCreate(...args) },
   };
   // #3954 review round 4: the additional-intent replay writes its row under a
   // claim hold, in one transaction, on these same mocks.
@@ -322,10 +323,11 @@ vi.mock("@/lib/email", () => ({
     mockSendAdminXeroSyncErrorAlert(...args),
 }));
 
-vi.mock("@/lib/booking-events", () => ({
+// #4125: the capacity race's close-and-record runs for real, on the prisma double below.
+vi.mock("@/lib/booking-events", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/booking-events")>()),
   recordDuplicateCaptureRefundEvent: (...args: unknown[]) =>
     mockRecordDuplicateCaptureRefundEvent(...args),
-  recordCapacityRaceRefundEvent: (...args: unknown[]) => mockRecordCapacityRaceRefundEvent(...args),
 }));
 
 vi.mock("@/lib/superseded-additional-refund", () => ({
@@ -3842,6 +3844,10 @@ describe("payment recovery worker", () => {
 
       expect(result.succeeded).toBe(1);
       expect(mockRecordDuplicateCaptureRefundEvent).not.toHaveBeenCalled();
+      // #4125: losing to the inline close is expected here, so it is no warning.
+      const lostClose = ([, message]: unknown[]) => typeof message === "string" && message.includes("completion matched no live operation");
+      expect(vi.mocked(logger.warn).mock.calls.filter(lostClose)).toHaveLength(0);
+      expect(vi.mocked(logger.debug).mock.calls.filter(lostClose)).toHaveLength(1);
     });
   });
 
@@ -3880,8 +3886,10 @@ describe("payment recovery worker", () => {
       const result = await processPaymentRecoveryOperations({ limit: 1 });
 
       expect(result.succeeded).toBe(1);
-      expect(mockRecordCapacityRaceRefundEvent).toHaveBeenCalledTimes(1);
-      expect(mockRecordCapacityRaceRefundEvent).toHaveBeenCalledWith({ bookingId: "booking-1", amountCents: 9000, actorMemberId: null });
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
+      expect(mockBookingEventCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({ bookingId: "booking-1", type: "REFUNDED", amountCents: 9000, actorMemberId: null, reason: "Automatic refund after lodge capacity was no longer available." }),
+      });
       expect(mockRecordDuplicateCaptureRefundEvent).not.toHaveBeenCalled();
     });
 
@@ -3896,7 +3904,19 @@ describe("payment recovery worker", () => {
       const result = await processPaymentRecoveryOperations({ limit: 1 });
 
       expect(result.succeeded).toBe(1);
-      expect(mockRecordCapacityRaceRefundEvent).not.toHaveBeenCalled();
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
+    });
+
+    // #4125: the close and the event commit together - an event that cannot be
+    // written fails the attempt, so the row is not left closed without it.
+    it("an event insert that fails fails the attempt, so the row is retried rather than closed unrecorded", async () => {
+      queue(makeCapacityOp());
+      mockBookingEventCreate.mockRejectedValueOnce(new Error("insert failed"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(0);
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
     });
 
     it("records nothing when the replay's refund throws - the row is not closed", async () => {
@@ -3905,7 +3925,7 @@ describe("payment recovery worker", () => {
 
       await processPaymentRecoveryOperations({ limit: 1 });
 
-      expect(mockRecordCapacityRaceRefundEvent).not.toHaveBeenCalled();
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
     });
   });
 });

@@ -27,7 +27,9 @@ export const MAX_PAYMENT_RECOVERY_ATTEMPTS = 5;
  * class (`booking-ledger-projection-census-classes.ts`) and the snapshot's
  * per-operation flag (`booking-ledger-projection-census-store.ts`) - and the
  * refund-requests screen's retrying-or-dead read of an approved appeal's card
- * refund (`refund-appeal-outcome.ts`, #4117). Two
+ * refund (`refund-appeal-outcome.ts`, #4117), and the booking and payment-link
+ * pages' read of a cancel's card refund row - on its way or stalled
+ * (`cardRefundRowState`, `cancel-card-refund-shortfall-status.ts`, #4125). Two
  * readers deliberately use a different rule and do not route through this:
  * `isEditFinancialReviewChargeRecoveryDead` (`payment-recovery.ts`, #3402) and
  * `unfinishedCardRefundDebts` (`edit-financial-review-cancel-netting.ts`,
