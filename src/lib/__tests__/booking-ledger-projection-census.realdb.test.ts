@@ -24,9 +24,12 @@
  *     the real refund writer (the rest queued by the real recovery enqueue), is
  *     `REFUND_APPEAL_PAID` on PRICE for the part made, read through the store's
  *     own appeal-outcome read; declined, or approved for a different amount,
- *     it still disagrees. Paid by internet banking instead, the appeal's own
- *     hand-back (the real raiser and resolver) is read the same way: nothing
- *     while open, `REFUND_APPEAL_PAID` once paid back.
+ *     it still disagrees. Paid by internet banking instead - settled by the
+ *     real inbound Xero settle, so not marked paid by hand, which the approval
+ *     route refuses - the appeal's own hand-back (the real raiser and
+ *     resolver) is read the same way: nothing while open, `REFUND_APPEAL_PAID`
+ *     once paid back. The approval route itself is not driven: the request is
+ *     written APPROVED and its hand-back raised by the route's own raiser.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -56,6 +59,7 @@ const LEGACY = "race-3583-legacy";
 const APPEAL = "race-3583-appeal";
 const BANK_APPEAL = "race-3583-bank-appeal";
 const BOOKINGS = [CARD, CREDIT, CASH, LEGACY, APPEAL, BANK_APPEAL];
+const BANK_APPEAL_INVOICE = "race-3583-bank-appeal-invoice";
 // A stay well after today, in the policy's one tier.
 const D1 = new Date("2027-08-01T00:00:00.000Z");
 const D2 = new Date("2027-08-02T00:00:00.000Z");
@@ -90,6 +94,7 @@ let censusStore: typeof import("@/lib/booking-ledger-projection-census-store");
 
 async function clean(): Promise<void> {
   const where = { bookingId: { in: BOOKINGS } };
+  await prisma.xeroObjectLink.deleteMany({ where: { xeroObjectId: BANK_APPEAL_INVOICE } });
   await prisma.bookingLedgerLine.deleteMany({ where });
   await prisma.bedAllocation.deleteMany({ where });
   await prisma.bookingModification.deleteMany({ where });
@@ -404,20 +409,50 @@ const NOTHING = { disagreements: [], coverage: [], integrity: [], classes: [] };
   }, 120_000);
 
   it("#4120: an internet-banking appeal's own hand-back is nothing while open and REFUND_APPEAL_PAID once paid back", async () => {
+    // Paid by a bank transfer Xero reconciled, as the invoice job links it and the inbound settle
+    // records it - not marked paid by hand (`manuallyMarkedPaidAt`), which the approval route refuses.
     await createBooking(BANK_APPEAL, { amountCents: 20_000, source: "INTERNET_BANKING" });
-    const { markBookingPaymentManuallySettled } = await import("@/lib/payment-reconciliation");
-    await markBookingPaymentManuallySettled({ bookingId: BANK_APPEAL, actingAdminMemberId: OFFICER_ID, note: "bank transfer", expectedAmountCents: 20_000, notifyMember: false, format: CLUB_FORMAT_TEST });
+    const paymentId = `${BANK_APPEAL}-payment`;
+    await prisma.booking.update({ where: { id: BANK_APPEAL }, data: { status: "CONFIRMED" } });
+    await prisma.payment.update({ where: { id: paymentId }, data: { xeroInvoiceId: BANK_APPEAL_INVOICE, xeroInvoiceNumber: "INV-3583" } });
+    await prisma.paymentTransaction.create({
+      data: { paymentId, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 20_000, status: "PENDING", reason: "internet_banking_booking_payment", xeroInvoiceId: BANK_APPEAL_INVOICE, xeroInvoiceNumber: "INV-3583" },
+    });
+    await prisma.xeroObjectLink.create({
+      data: { localModel: "Payment", localId: paymentId, xeroObjectType: "INVOICE", xeroObjectId: BANK_APPEAL_INVOICE, role: "PRIMARY_INVOICE", active: true },
+    });
+    // The inbound settle posts the bank receipt, not the confirmation's charge lines (the back-post's
+    // to post), so they are posted here by the settle's own planner, as the legacy case does.
+    const { planConfirmationChargeLines } = await import("@/lib/booking-ledger-confirmation-posting");
+    const { postBookingLedgerLines } = await import("@/lib/booking-ledger-write");
+    await prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUniqueOrThrow({
+        where: { id: BANK_APPEAL },
+        select: {
+          id: true,
+          lodgeId: true,
+          totalPriceCents: true,
+          promoAdjustmentCents: true,
+          guests: { select: { id: true, firstName: true, lastName: true, ageTier: true, rateMembershipTypeId: true, nights: { select: { stayDate: true, priceCents: true } } } },
+        },
+      });
+      await postBookingLedgerLines(tx, planConfirmationChargeLines(booking).postings);
+    });
+    const { syncInternetBankingPaymentsForPaidInvoice } = await import("@/lib/xero-inbound/invoice-paid-effects");
+    const invoice = { invoiceID: BANK_APPEAL_INVOICE, invoiceNumber: "INV-3583", status: "PAID", amountPaid: 200, payments: [{ paymentID: "race-3583-xpay", amount: 200, status: "AUTHORISED" }] };
+    await syncInternetBankingPaymentsForPaidInvoice(invoice as unknown as Parameters<typeof syncInternetBankingPaymentsForPaidInvoice>[0], [paymentId], CLUB_FORMAT_TEST);
+    expect(await prisma.payment.findUniqueOrThrow({ where: { id: paymentId }, select: { status: true, manuallyMarkedPaidAt: true } })).toEqual({ status: "SUCCEEDED", manuallyMarkedPaidAt: null });
     const { cancelBooking } = await import("@/lib/booking-cancel");
-    expect((await cancelBooking(BANK_APPEAL, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card")).status).toBe(200);
+    // Cancelled to account credit: a hand-back is raised only for money marked paid by hand.
+    expect((await cancelBooking(BANK_APPEAL, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "credit")).status).toBe(200);
+    expect(await prisma.manualRefundTask.count({ where: { bookingId: BANK_APPEAL } })).toBe(0);
     const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
     const complete = (taskId: string) =>
       resolveManualRefundTask(
         { taskId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null },
         CLUB_FORMAT_TEST,
       );
-    const cancelTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BANK_APPEAL }, select: { id: true } });
-    await complete(cancelTask.id);
-    const cancelOnly = { ...NOTHING, classes: ["REFUND_MIRROR_HAND_BACK:REFUNDED"] };
+    const cancelOnly = { ...NOTHING, classes: ["REFUND_MIRROR_CREDIT_ALLOCATION:REFUNDED"] };
     expect(about(await census(), BANK_APPEAL)).toEqual(cancelOnly);
 
     // A $40 appeal approved, its hand-back raised by the approval's own writer: open, it moved
@@ -438,7 +473,7 @@ const NOTHING = { disagreements: [], coverage: [], integrity: [], classes: [] };
     const appealTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BANK_APPEAL, status: "OPEN" }, select: { id: true } });
     await complete(appealTask.id);
     const paid = await census();
-    expect(about(paid, BANK_APPEAL)).toEqual({ ...NOTHING, classes: ["REFUND_MIRROR_HAND_BACK:REFUNDED", "REFUND_APPEAL_PAID:PRICE"] });
+    expect(about(paid, BANK_APPEAL)).toEqual({ ...NOTHING, classes: ["REFUND_MIRROR_CREDIT_ALLOCATION:REFUNDED", "REFUND_APPEAL_PAID:PRICE"] });
     expect(paid.classes.REFUND_APPEAL_PAID.instances.filter((instance) => instance.bookingId === BANK_APPEAL)).toEqual([
       expect.objectContaining({ identity: "PRICE", cents: -4_000 }),
     ]);
