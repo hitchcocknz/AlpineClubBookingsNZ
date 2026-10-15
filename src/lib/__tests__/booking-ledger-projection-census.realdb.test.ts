@@ -429,6 +429,10 @@ const NOTHING = { disagreements: [], coverage: [], integrity: [], classes: [] };
     const { raiseRefundRequestHandBack } = await import("@/lib/edit-refund-hand-back");
     expect(await prisma.$transaction((tx) => raiseRefundRequestHandBack(tx, { bookingId: BANK_APPEAL, paymentId: `${BANK_APPEAL}-payment`, refundRequestId: request.id, amountCents: 4_000 }))).toBe(1);
     expect(about(await census(), BANK_APPEAL)).toEqual(cancelOnly);
+    // PRICE agrees at a zero delta whatever the outcome says, so the outcome is read too: owed, not refunded.
+    const { readApprovedAppealOutcomes } = await import("@/lib/refund-appeal-outcome");
+    const open = await readApprovedAppealOutcomes(prisma, [{ id: request.id, status: "APPROVED", booking: { payment: { id: `${BANK_APPEAL}-payment` } } }]);
+    expect(open.get(request.id)).toMatchObject({ handBackOwedCents: 4_000, handBackDismissedCents: 0 });
 
     // Paid back by the real resolver: the outcome reads $40 refunded, and PRICE names it.
     const appealTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BANK_APPEAL, status: "OPEN" }, select: { id: true } });
