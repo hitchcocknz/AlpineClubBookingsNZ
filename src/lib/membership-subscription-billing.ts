@@ -1124,12 +1124,13 @@ export async function buildSubscriptionBillingPreview(input: {
       const reversedUnderOlderCharge = !exemptAtClose
         && (reversedUnderOlderChargeByFamilyKey.get(groupingKey)?.has(member.id) ?? false);
       if (exemptAtClose || reversedUnderOlderCharge) {
+        const reason = exemptAtClose ? "EXEMPT_AT_CLOSE" : "REVERSED_UNDER_OLDER_CHARGE";
         exceptions.push(exception({
           code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
           message: closedFamilyMemberDecisionMessage({
             memberName,
             membershipTypeName: membershipType.name,
-            reason: exemptAtClose ? "EXEMPT_AT_CLOSE" : "REVERSED_UNDER_OLDER_CHARGE",
+            reason,
           }),
           seasonYear: input.seasonYear,
           memberId: member.id,
@@ -1139,7 +1140,7 @@ export async function buildSubscriptionBillingPreview(input: {
             memberName,
             existingFamilyChargeId,
             membershipAnnualFeeId: fee.id,
-            reason: exemptAtClose ? "EXEMPT_AT_CLOSE" : "REVERSED_UNDER_OLDER_CHARGE",
+            reason,
           },
         }));
         continue;

@@ -7,9 +7,15 @@
   whole confirmation. Until a payment is reversed, a closed family still counts
   as billed, so a member who joins later is not invoiced for it, and an exempt
   (**Not required**) member whose membership type is changed later doesn't
-  count as a reversal: they paid nothing. Such a member, if they now need a
-  subscription, is listed as an exception that says so, for Finance to decide.
-  A member who has moved to another family doesn't count either. If only some
+  count as a reversal: they paid nothing. If such a member now needs a
+  subscription, the preview lists them under a new **Needs your decision**
+  count, and the family is not billed again: if the family fee already covers
+  everyone in the family, mark them Paid; otherwise invoice just the
+  difference in Xero by hand. The exception stays open until one of those is
+  done. If a family has two closed charges, only the newest one counts, so a
+  payment reversed under the older one is listed the same way rather than
+  billing the family again. A member who has moved to another family doesn't
+  count either. If only some
   of the members who had paid are no longer paid, the preview shows a **Check
   before confirming** warning that confirming invoices the full family fee.
   Approving a membership application never confirms through that warning: the

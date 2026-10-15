@@ -190,7 +190,13 @@ billing workflow below.
    charge. A member exempt (`NOT_REQUIRED`) at the close had no payment to
    reverse, so a later move to `NOT_INVOICED` (an assignment save, the
    membership sync) does not re-bill the family; the close records each
-   member's status on the released claim for this. When only some of the
+   member's status on the released claim for this. Such a member, and one
+   whose payment under an older closed charge was reversed, is an exception
+   asking Finance to decide (`CLOSED_FAMILY_MEMBER_NEEDS_DECISION`): mark them
+   Paid if the family fee covers everyone, otherwise invoice the difference in
+   Xero by hand. It stays open until they are paid or invoiced. With two closed
+   charges, the newest one decides — the owner's rule (#4110 decisions 4 and
+   5, 16 Oct 2026). When only some of the
    payments were reversed, the preview warns (`CLOSED_FAMILY_PARTLY_REVERSED`)
    that confirming invoices the full family fee (#4110). A membership approval
    confirms with no officer to see that warning, so it withholds the family

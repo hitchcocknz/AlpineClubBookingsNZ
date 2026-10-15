@@ -812,7 +812,7 @@ describe("membership subscription billing", () => {
     );
     expect(preview.entries).toHaveLength(0);
     expect(preview.exceptions).toEqual([
-      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: "re-billable", context: expect.not.objectContaining({ exemptAtClose: true }) }),
+      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: "re-billable", context: expect.not.objectContaining({ reason: expect.anything() }) }),
     ]);
   });
 
