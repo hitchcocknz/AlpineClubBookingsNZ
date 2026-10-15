@@ -25,6 +25,10 @@ rows already written no longer match the code, deploying to production,
 choosing credentials or data for CI and local validation, or mocking a money
 seam in a test that asserts money.
 
+A Prisma `startsWith` is SQL `LIKE` too, and Prisma does not escape it: a
+prefix carrying an id or typed text goes through `exactPrefix`
+(`INV-SSOT-006`).
+
 `INV-OPS-005` to `INV-OPS-011` are the `FamilyGroupMember.role` column drop,
 re-homed here from `membership-lifecycle.md` by #2706: they are migration
 policy — Prisma `@ignore` behaviour, what a generated client can emit, the

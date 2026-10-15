@@ -5,7 +5,10 @@ import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
 import { isFinishedStay } from "@/lib/booking-edit-policy";
-import { storedRequestNamesNoChange } from "@/lib/booking-change-request-stored";
+import {
+  describeRequestedGuestNights,
+  storedRequestNamesNoChange,
+} from "@/lib/booking-change-request-stored";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { loadMemberGuestFindGate } from "@/lib/member-guest-find-service";
 
@@ -113,6 +116,8 @@ export async function GET(req: NextRequest) {
       booking: acceptsOfficerGuests ? { ...booking, guests } : booking,
       executesOnApproval,
       acceptsOfficerGuests,
+      // #4088: each guest's requested nights, as runs, for the card.
+      requestedGuestNights: describeRequestedGuestNights(request.requestedChanges),
     };
   });
 

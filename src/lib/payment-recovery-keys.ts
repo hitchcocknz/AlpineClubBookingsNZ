@@ -7,6 +7,7 @@
 // The Diagnostics finance pack classifies a `PaymentRecoveryOperation` by these
 // and its test fails when an export here is neither mapped to a scenario nor
 // declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
 export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
   "capacity_claim_failed_refund_recovery_";
@@ -93,11 +94,10 @@ export function buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookin
   return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
 }
 
-// #4147 (`INV-SSOT`): THIS booking's cancel's card refund (a member cancel's row; a capacity race's per intent), as the
-// booking page and census V5 read it. The query narrows; the exact test decides (SQL `LIKE` reads `_` as a wildcard).
+// #4147 (`INV-SSOT`): THIS booking's cancel's card refund (member cancel's row; capacity race's per intent); exact (#4146).
 export const bookingCancelCardRefundRecoveryWhere = (bookingId: string) => ({
   bookingId,
-  OR: [{ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) }, { idempotencyKey: { startsWith: buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId) } }],
+  OR: [{ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) }, { idempotencyKey: exactPrefix(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)) }],
 });
 export const isBookingCancelCardRefundRecoveryKey = (bookingId: string, key: string): boolean =>
   key === buildBookingCancellationRefundIdempotencyKey(bookingId) || key.startsWith(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId));

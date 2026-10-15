@@ -9,14 +9,25 @@ import {
 } from "@/lib/club-time";
 import {
   BookingGuestStayRangeValidationError,
+  GUEST_NIGHT_INVALID_MESSAGE,
+  guestNightListSchema,
   normalizeGuestStayRange,
+  type BookingGuestStayRangeInput,
+  type NormalizedBookingGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
+import { parseDateOnly } from "@/lib/date-only";
+import {
+  getExplicitGuestBedNightKeys,
+  getGuestBedNightKeys,
+  sameNightKeys,
+} from "@/lib/booking-guest-stay-ranges";
 import {
   resolveModificationStayRanges,
   type LiveGuestStayRow,
   type StayRangeDeltaInput,
 } from "@/lib/booking-modification-stay-ranges";
 import { nameField } from "@/lib/zod-helpers";
+import { guestName } from "@/lib/bed-allocation-display-names";
 
 /**
  * The guests a LOCKED_PERIOD change request adds (#4030), in the one shape every
@@ -31,7 +42,11 @@ import { nameField } from "@/lib/zod-helpers";
  * is being added, with the same fields and nights inside the stay.
  */
 
-/** One added guest, as the request carries it. Nights are `[stayStart, stayEnd)`. */
+/**
+ * One added guest, as the request carries it. Nights are `[stayStart, stayEnd)`,
+ * or, from the editor's per-night grid, the explicit night set `nights` (#713),
+ * which wins over the two bounds exactly as it does on an edit (#4088).
+ */
 export const changeRequestAddGuestSchema = z.object({
   firstName: nameField(),
   lastName: nameField(),
@@ -40,6 +55,19 @@ export const changeRequestAddGuestSchema = z.object({
   memberId: z.string().trim().min(1).optional(),
   stayStart: z.string().optional(),
   stayEnd: z.string().optional(),
+  nights: guestNightListSchema.optional(),
+});
+
+/**
+ * One existing guest's requested nights (#4088): both bounds, or the editor
+ * grid's explicit night set. Without `nights` declared here zod stripped it, so
+ * a grid-mode request lost every guest's chosen nights.
+ */
+export const changeRequestGuestStayRangeSchema = z.object({
+  guestId: z.string().trim().min(1),
+  stayStart: z.string().optional(),
+  stayEnd: z.string().optional(),
+  nights: guestNightListSchema.optional(),
 });
 
 export type ChangeRequestAddGuest = z.infer<typeof changeRequestAddGuestSchema>;
@@ -54,7 +82,8 @@ export const changeRequestAddGuestsSchema = z.array(changeRequestAddGuestSchema)
  */
 export const officerEnteredGuestsSchema = z
   .array(
-    changeRequestAddGuestSchema.extend({
+    // The officer states two bounds; the per-night grid is the member's editor.
+    changeRequestAddGuestSchema.omit({ nights: true }).extend({
       stayStart: z.string(),
       stayEnd: z.string(),
     }),
@@ -63,6 +92,21 @@ export const officerEnteredGuestsSchema = z
   .max(200);
 
 export type OfficerEnteredGuest = z.infer<typeof officerEnteredGuestsSchema>[number];
+
+/**
+ * The `error` a request the schema refuses is answered with (#4088): a bad
+ * night is said in the member's terms, anything else stays "Validation failed"
+ * with the details beside it.
+ */
+export function changeRequestValidationMessage(error: z.ZodError): string {
+  // Only the night refine's own failure: a list too long, or `nights` that is
+  // not a list at all, is not a bad date and stays "Validation failed".
+  return error.issues.some(
+    (issue) => issue.code === "custom" && issue.message === GUEST_NIGHT_INVALID_MESSAGE,
+  )
+    ? GUEST_NIGHT_INVALID_MESSAGE
+    : "Validation failed";
+}
 
 /**
  * The refusal a request with no structured change gets. A note alone cannot be
@@ -102,6 +146,28 @@ export interface ChangeRequestStay {
 }
 
 /**
+ * One guest's nights read by the canonical `normalizeGuestStayRange`, or its
+ * refusal said with the guest's name in place of the position label ("Guest
+ * 2") the shared rule writes (#4088), as the within-stay refusal below does.
+ */
+function readNamedStayRange(
+  entry: BookingGuestStayRangeInput,
+  bounds: { checkIn: Date; checkOut: Date },
+  index: number,
+  name: string | null,
+): NormalizedBookingGuestStayRange | { refusal: string } {
+  try {
+    return normalizeGuestStayRange(entry, bounds, index);
+  } catch (error) {
+    if (!(error instanceof BookingGuestStayRangeValidationError)) throw error;
+    const label = `Guest ${index + 1}`;
+    return {
+      refusal: name && error.message.startsWith(label) ? `${name}${error.message.slice(label.length)}` : error.message,
+    };
+  }
+}
+
+/**
  * Why an added guest's nights cannot be requested, or `null` when every one is
  * a run of nights inside the stay.
  *
@@ -111,7 +177,11 @@ export interface ChangeRequestStay {
  * request's own rule, that the nights fall inside the stay (#4030 review M3).
  */
 export function addedGuestNightsRefusal(
-  guests: ReadonlyArray<Pick<ChangeRequestAddGuest, "firstName" | "lastName" | "stayStart" | "stayEnd">>,
+  guests: ReadonlyArray<
+    Pick<ChangeRequestAddGuest, "firstName" | "lastName" | "stayStart" | "stayEnd"> & {
+      nights?: ReadonlyArray<string> | null;
+    }
+  >,
   stay: ChangeRequestStay,
 ): string | null {
   const bounds = {
@@ -119,52 +189,60 @@ export function addedGuestNightsRefusal(
     checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
   };
   for (const [index, guest] of guests.entries()) {
-    let range;
-    try {
-      range = normalizeGuestStayRange(
-        { stayStart: guest.stayStart ?? null, stayEnd: guest.stayEnd ?? null },
-        bounds,
-        index,
-      );
-    } catch (error) {
-      if (error instanceof BookingGuestStayRangeValidationError) return error.message;
-      throw error;
-    }
+    const name = guestName(guest) || null;
+    const range = readNamedStayRange(guest, bounds, index, name);
+    if ("refusal" in range) return range.refusal;
     if (range.stayStart < bounds.checkIn || range.stayEnd > bounds.checkOut) {
-      const name = `${guest.firstName} ${guest.lastName}`.trim();
-      return `${name}'s nights must fall within the stay (${stay.checkIn} to ${stay.checkOut}).`;
+      return `${name ?? `Guest ${index + 1}`}'s nights must fall within the stay (${stay.checkIn} to ${stay.checkOut}).`;
     }
   }
   return null;
 }
 
 /**
+ * Each added guest's first night (#4088), by the canonical range rule: a grid
+ * night set's earliest night, else Date In, else the stay's check-in. For the
+ * route's locked-period test, after `addedGuestNightsRefusal` accepted them.
+ */
+export function addedGuestFirstNights(
+  guests: ReadonlyArray<{
+    stayStart?: string | null;
+    stayEnd?: string | null;
+    nights?: ReadonlyArray<string> | null;
+  }>,
+  stay: { checkIn: Date; checkOut: Date },
+): Date[] {
+  return guests.map((guest, index) => normalizeGuestStayRange(guest, stay, index).stayStart);
+}
+
+/**
  * #4030 re-review of 72c933ffc: an existing guest's requested nights are read
  * by the same canonical range rule the added guests' are
  * (`normalizeGuestStayRange`): real `yyyy-mm-dd` days, both bounds or neither,
- * Date Out after Date In. The refusal message, or `null`. A range may still
- * reach outside the stay: the planner widens the stay to cover it, as an edit
- * does (#713).
+ * Date Out after Date In. The refusal message, naming the guest from `guests`
+ * (#4088), or `null`. A range or night set may still reach outside the stay:
+ * the planner widens the stay to cover it, as an edit does (#713), and a moved
+ * date it does not reach is refused by `requestedDatesIgnoredByNightsRefusal`.
  */
 export function guestStayRangesRefusal(
-  ranges: ReadonlyArray<{ stayStart?: string | null; stayEnd?: string | null }>,
+  ranges: ReadonlyArray<{
+    guestId?: string;
+    stayStart?: string | null;
+    stayEnd?: string | null;
+    nights?: ReadonlyArray<string> | null;
+  }>,
   stay: ChangeRequestStay,
+  guests: ReadonlyArray<{ id: string; firstName: string; lastName: string }> = [],
 ): string | null {
   const bounds = {
     checkIn: dateOnlyInstantOf(requireCalendarDate(stay.checkIn)),
     checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
   };
   for (const [index, range] of ranges.entries()) {
-    try {
-      normalizeGuestStayRange(
-        { stayStart: range.stayStart ?? null, stayEnd: range.stayEnd ?? null },
-        bounds,
-        index,
-      );
-    } catch (error) {
-      if (error instanceof BookingGuestStayRangeValidationError) return error.message;
-      throw error;
-    }
+    const named = guests.find((guest) => guest.id === range.guestId);
+    const name = named ? guestName(named) || null : null;
+    const read = readNamedStayRange(range, bounds, index, name);
+    if ("refusal" in read) return read.refusal;
   }
   return null;
 }
@@ -205,6 +283,37 @@ export function requestedDatesIgnoredByNightsRefusal(args: {
   return ignored ? CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE : null;
 }
 
+/** A guest's range and, when it has one, its explicit night set, as calendar days. */
+export interface GuestNightsAsDays {
+  stayStart: string;
+  stayEnd: string;
+  nights?: ReadonlyArray<string> | null;
+}
+
+/**
+ * A guest's nights as sorted, distinct `yyyy-mm-dd` keys (#4088): the canonical
+ * `getGuestBedNightKeys` (INV-DATE-020) over calendar days. Read only from
+ * STORED values (the booking's own rows, or the request's snapshot of them).
+ */
+export function guestNightKeys(guest: GuestNightsAsDays): string[] {
+  const stayStart = parseDateOnly(guest.stayStart);
+  const stayEnd = parseDateOnly(guest.stayEnd);
+  return getGuestBedNightKeys({ stayStart, stayEnd, nights: guest.nights }, { checkIn: stayStart, checkOut: stayEnd });
+}
+
+/** A live guest's stored range and night rows, as {@link GuestNightsAsDays}. */
+export function storedGuestNightsAsDays(guest: {
+  stayStart: Date;
+  stayEnd: Date;
+  nights?: ReadonlyArray<{ stayDate: Date }> | null;
+}): GuestNightsAsDays & { nights: string[] } {
+  return {
+    stayStart: calendarDateOfDateOnlyInstant(guest.stayStart),
+    stayEnd: calendarDateOfDateOnlyInstant(guest.stayEnd),
+    nights: (guest.nights ?? []).map((night) => calendarDateOfDateOnlyInstant(night.stayDate)).sort(),
+  };
+}
+
 /**
  * Whether a requested guest stay range actually changes anything (#4030 review
  * M2): both bounds given, and different from the guest's own stored range. A
@@ -212,14 +321,19 @@ export function requestedDatesIgnoredByNightsRefusal(args: {
  * structured change — it must not let a note through as one, nor stop the
  * officer entering guests for what is really a free-text request.
  *
+ * A grid night set (#4088) counts when it differs from the guest's current
+ * nights. A two-bound range is compared on its bounds alone, as before.
+ *
  * `current` is the guest's stored range as calendar days, or `undefined` when
  * it is not known (a range for a guest the request does not describe), in which
- * case a two-bound range counts.
+ * case a two-bound range or a night set counts.
  */
 export function isEffectiveStayRangeChange(
-  range: { stayStart?: string | null; stayEnd?: string | null },
-  current: { stayStart: string; stayEnd: string } | undefined,
+  range: { stayStart?: string | null; stayEnd?: string | null; nights?: ReadonlyArray<string> | null },
+  current: GuestNightsAsDays | undefined,
 ): boolean {
+  const requested = getExplicitGuestBedNightKeys({ nights: range.nights });
+  if (requested) return !current || !sameNightKeys(requested, guestNightKeys(current));
   if (!range.stayStart || !range.stayEnd) return false;
   if (!current) return true;
   return range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd;
@@ -230,20 +344,22 @@ export function isEffectiveStayRangeChange(
  * nights, against the guests' stored `@db.Date` ranges.
  */
 export function namesStayRangeChange(
-  ranges: ReadonlyArray<{ guestId: string; stayStart?: string | null; stayEnd?: string | null }>,
-  guests: ReadonlyArray<{ id: string; stayStart: Date; stayEnd: Date }>,
+  ranges: ReadonlyArray<{
+    guestId: string;
+    stayStart?: string | null;
+    stayEnd?: string | null;
+    nights?: ReadonlyArray<string> | null;
+  }>,
+  guests: ReadonlyArray<{
+    id: string;
+    stayStart: Date;
+    stayEnd: Date;
+    nights?: ReadonlyArray<{ stayDate: Date }> | null;
+  }>,
 ): boolean {
   return ranges.some((range) => {
     const guest = guests.find((candidate) => candidate.id === range.guestId);
-    return isEffectiveStayRangeChange(
-      range,
-      guest
-        ? {
-            stayStart: calendarDateOfDateOnlyInstant(guest.stayStart),
-            stayEnd: calendarDateOfDateOnlyInstant(guest.stayEnd),
-          }
-        : undefined,
-    );
+    return isEffectiveStayRangeChange(range, guest ? storedGuestNightsAsDays(guest) : undefined);
   });
 }
 
