@@ -168,7 +168,7 @@ export async function paymentsCountingInvoiceCorrections(paymentIds: string[]): 
 export async function uncapturedPrimaryStatus(paymentId: string): Promise<PaymentStatus | null> {
   const rows = await prisma.paymentTransaction.findMany({
     where: { paymentId },
-    select: { kind: true, status: true, createdAt: true },
+    select: { kind: true, status: true, createdAt: true, insertionSeq: true },
   });
   if (rows.some((row) => isCapturedTransactionStatus(row.status))) return null;
   return latestTransactionOfKind(rows, PaymentTransactionKind.PRIMARY)?.status ?? null;

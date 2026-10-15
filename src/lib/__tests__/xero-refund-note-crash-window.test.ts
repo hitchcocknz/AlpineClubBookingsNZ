@@ -72,6 +72,11 @@ function matches(row: Row, where: Row | undefined): boolean {
       if ("notIn" in expected) return !(expected as { notIn: unknown[] }).notIn.includes(actual);
       if ("not" in expected) return actual !== (expected as { not: unknown }).not;
       if ("gte" in expected) return actual instanceof Date && actual >= (expected as { gte: Date }).gte;
+      // A JSON path filter (`paidAnotherWayCloseNoteRowsWhere`): one top-level key.
+      if ("path" in expected) {
+        const { path, equals } = expected as { path: string[]; equals: unknown };
+        return (actual as Row | null)?.[path[0]!] === equals;
+      }
       return true;
     }
     return actual === expected;
@@ -189,9 +194,9 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
         for (const link of completion.extraLinks ?? []) upsertLink(link);
       },
     ),
-    failXeroSyncOperation: vi.fn(async (id: string) => {
+    failXeroSyncOperation: vi.fn(async (id: string, error?: unknown) => {
       const row = state.operations.find((operation) => operation.id === id);
-      if (row) Object.assign(row, { status: "FAILED", responsePayload: { error: "failed" } });
+      if (row) Object.assign(row, { status: "FAILED", responsePayload: { error: "failed" }, lastErrorMessage: error instanceof Error ? error.message : null });
     }),
     upsertXeroObjectLink: vi.fn(async (link: Row) => upsertLink(link)),
     findCanonicalPaymentRefundCreditNote: vi.fn(async () => null),
@@ -1378,5 +1383,141 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
       applyRefundNoteSettlementRepair({ operationId: "op_crashed", paymentId: PAYMENT_ID, creditNoteId: "cn_1" }),
     ).rejects.toThrow(/shows no settlement in Xero now/);
     expect(state.xero.createPaymentsCalls).toEqual([]);
+  });
+});
+
+describe("INV-ADDPAY-041 (#4091): the reissue's Xero key names only the voided notes it could replay", () => {
+  /** Raise the refund's note, then let Xero void it as the inbound sync records it: mirror off, pointer released. */
+  async function raiseThenVoid() {
+    queueRefundNote("op_first", 5000, 5000);
+    await dispatch("op_first");
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000]);
+    const link = state.links.find((candidate) => candidate.role === "REFUND_CREDIT_NOTE" && candidate.xeroObjectId === "cn_1")!;
+    link.active = false;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+    state.xero.notes.get("cn_1")!.status = "VOIDED";
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: null };
+  }
+
+  it("MUTATION: a reissue after the void names the voided note in its key, so Xero raises a fresh note rather than replaying the voided one (card payment, the #2901 self-heal path)", async () => {
+    await raiseThenVoid();
+
+    queueRefundNote("op_reissue", 5000, 5000);
+    await dispatch("op_reissue");
+
+    // Same watermark as the voided note's create: before #4091 Xero replayed cn_1.
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
+    expect(row("op_reissue")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_2" });
+  });
+
+  it("MUTATION: the same on a bank-transfer payment's one note", async () => {
+    seedPayment(PaymentSource.INTERNET_BANKING);
+    state.xero.notes = new Map();
+    queueRefundNote("op_first", 5000, 5000, "internet-banking");
+    await dispatch("op_first");
+    const link = state.links.find((candidate) => candidate.role === "REFUND_CREDIT_NOTE" && candidate.xeroObjectId === "cn_1")!;
+    link.active = false;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: null };
+
+    queueRefundNote("op_reissue", 5000, 5000, "internet-banking");
+    await dispatch("op_reissue");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
+    expect(row("op_reissue")).toMatchObject({ xeroObjectId: "cn_2" });
+  });
+
+  it("MUTATION: a sibling note voided between a close's lost attempt and its retry leaves the retry's key alone - no duplicate in Xero", async () => {
+    seedPayment(PaymentSource.INTERNET_BANKING);
+    // The payment's own refund note, beside a "Paid another way" close.
+    upsertLink({ localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_C", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 5000, watermarkCents: 5000 } });
+    state.eligibleCents = 7500;
+    state.closes = { close_1: 2500 };
+    queueRefundNote("op_close", 2500, 7500, "internet-banking");
+    row("op_close").requestPayload = { ...(row("op_close").requestPayload as Row), paidAnotherWayTaskId: "close_1" };
+    // Xero raises the close's note but the answer is lost.
+    state.xero.loseNextCreateAnswer = true;
+    await expect(dispatch("op_close")).rejects.toThrow(/socket hang up/);
+    const firstKey = [...state.xero.noteKeys.keys()];
+
+    // Xero voids the OTHER note before anyone retries the close.
+    const sibling = state.links.find((link) => link.xeroObjectId === "cn_C")!;
+    sibling.active = false;
+    sibling.metadata = { ...(sibling.metadata as Row), status: "VOIDED" };
+    await dispatch("op_close");
+
+    // The retry sends the same key, so Xero answers with the note it raised.
+    expect([...state.xero.noteKeys.keys()]).toEqual(firstKey);
+    expect(state.xero.notes.size).toBe(1);
+    expect(row("op_close")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_1" });
+  });
+
+  it("MUTATION (final lens F1): a reissue whose base lands on a LIVE note's key names that note - Xero never hands the live note back to be relabelled", async () => {
+    // A ($50, watermark 5000), then B ($30, watermark 8000).
+    state.eligibleCents = 8000;
+    queueRefundNote("op_a", 5000, 5000);
+    await dispatch("op_a");
+    queueRefundNote("op_b", 3000, 8000);
+    await dispatch("op_b");
+    // Xero voids A: coverage drops to B's 3000, so A's reissue lands on watermark 8000 - B's key.
+    const a = state.links.find((link) => link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectId === "cn_1")!;
+    a.active = false;
+    a.metadata = { ...(a.metadata as Row), status: "VOIDED" };
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: "cn_2" };
+
+    queueRefundNote("op_reissue", 5000, 8000);
+    await dispatch("op_reissue");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([
+      NOTE_KEY_5000,
+      "payment:cmpayment0001xyz:refund-credit-note:8000:v2",
+      "payment:cmpayment0001xyz:refund-credit-note:8000:v2:after-void:cn_2",
+    ]);
+    expect(row("op_reissue")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_3" });
+    const b = state.links.find((link) => link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectId === "cn_2")!;
+    expect(b.metadata).toMatchObject({ amountCents: 3000, watermarkCents: 8000 });
+  });
+
+  describe("final lens: Xero's answer to a create is checked before anything is recorded", () => {
+    it("MUTATION: a VOIDED note handed back is refused - the row fails loudly and neither the pointer nor a link is written", async () => {
+      await raiseThenVoid();
+      // A Xero that answers the reissue's key with the voided note.
+      state.xero.noteKeys.set(`${NOTE_KEY_5000}:after-void:cn_1`, "cn_1");
+      const linksBefore = JSON.stringify(state.links);
+
+      queueRefundNote("op_reissue", 5000, 5000);
+      await expect(dispatch("op_reissue")).rejects.toThrow(/VOIDED or DELETED note, which is never re-adopted \(INV-ADDPAY-041\)/);
+
+      expect(row("op_reissue")).toMatchObject({ status: "FAILED", xeroObjectId: null });
+      expect(row("op_reissue").lastErrorMessage).toMatch(/INV-ADDPAY-041/);
+      expect(state.payment!.xeroRefundCreditNoteId).toBeNull();
+      expect(JSON.stringify(state.links)).toBe(linksBefore);
+    });
+
+    it("MUTATION: a note another create row already raised is refused - it is never relabelled as this refund's", async () => {
+      queueRefundNote("op_a", 5000, 5000);
+      await dispatch("op_a");
+      state.eligibleCents = 8000;
+      // A Xero that answers the next refund's key with the first refund's note.
+      state.xero.noteKeys.set("payment:cmpayment0001xyz:refund-credit-note:8000:v2", "cn_1");
+      const linksBefore = JSON.stringify(state.links);
+
+      queueRefundNote("op_b", 3000, 8000);
+      await expect(dispatch("op_b")).rejects.toThrow(/operation op_a already raised it/);
+
+      expect(row("op_b")).toMatchObject({ status: "FAILED", xeroObjectId: null });
+      expect(row("op_b").lastErrorMessage).toMatch(/INV-ADDPAY-041/);
+      expect(JSON.stringify(state.links)).toBe(linksBefore);
+    });
+  });
+
+  it("with no note voided the key is byte-identical to before", async () => {
+    queueRefundNote("op_first", 5000, 5000);
+    await dispatch("op_first");
+    state.eligibleCents = 8000;
+    queueRefundNote("op_second", 3000, 8000);
+    await dispatch("op_second");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, "payment:cmpayment0001xyz:refund-credit-note:8000:v2"]);
   });
 });
