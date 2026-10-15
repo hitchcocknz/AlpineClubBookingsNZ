@@ -26,36 +26,32 @@
  *   pnpm exec vitest run src/lib/__tests__/xero-token-credential-store.realdb.test.ts
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as raceDbUrl from "./support/race-db-url";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 const RACE_TEST_TIMEOUT_MS = 20_000;
 
-/** Standalone fail-closed copy: importing this file must not register another suite. */
+/** Keep the existing entry point; INV-SSOT-004 gives the safety policy one home. */
 export function assertSafeXeroTokenRaceDbUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Xero token race proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
-  }
-  const port = Number.parseInt(parsed.port, 10);
-  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
-    throw new Error(
-      `Refusing to run Xero token race proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
-    );
-  }
-  const host = parsed.hostname.toLowerCase();
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
-    throw new Error("Xero token race proof DB must be loopback-only.");
-  }
-  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  if (!databaseName.includes("concurrency_race_1881")) {
-    throw new Error("Xero token race proof DB name must contain 'concurrency_race_1881'.");
-  }
+  raceDbUrl.assertSafeRaceDbUrl(url, "Xero token store");
 }
 
 describe("Xero token race DB safety guard (#3454)", () => {
+  it("propagates the canonical safety refusal (#4175, INV-SSOT-004)", () => {
+    const url = "postgresql://u:p@127.0.0.1:55442/concurrency_race_1881";
+    const refusal = new Error("synthetic canonical safety refusal");
+    const guard = vi.spyOn(raceDbUrl, "assertSafeRaceDbUrl").mockImplementationOnce(() => {
+      throw refusal;
+    });
+    try {
+      expect(() => assertSafeXeroTokenRaceDbUrl(url)).toThrow(refusal);
+      expect(guard).toHaveBeenCalledExactlyOnceWith(url, "Xero token store");
+    } finally {
+      guard.mockRestore();
+    }
+  });
+
   it("accepts only a dedicated loopback scratch database", () => {
     expect(() =>
       assertSafeXeroTokenRaceDbUrl("postgresql://u:p@127.0.0.1:55442/concurrency_race_1881"),
