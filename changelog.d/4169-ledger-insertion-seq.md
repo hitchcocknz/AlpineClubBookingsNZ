@@ -1,14 +1,13 @@
-- **A payment's records now keep one order when two are written at the same
-  moment** (#4132). Charges, payment requests and receipts saved together used
-  to share a timestamp, and which came first then depended on the database's
-  internal layout, which changes whenever one of them is updated. A new
-  `PaymentTransaction.insertionSeq` column records the order they were saved in,
-  and every money calculation now reads them by time, then that order. Where two
-  records tie, "the latest" request is now the one saved last, so the payment
-  summary, an edit's price reduction and the ledger census always agree on which
-  request is live, and a card refund split across charges saved together
-  refunds the last one first. The upgrade numbers existing records in the order
-  they are read today, so nothing already stored changes order. Operators: the
-  migration briefly locks the payment records table (measured at about 1.5 to
-  3 seconds per 100,000 records); see `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` for
-  the pre-deploy check on open card refunds.
+- **Payment records saved at the same moment now always read in the same
+  order** (#4132). When a booking change saves two payment records together -
+  say a new payment request and the one it replaces - the system now always
+  knows which came last. The payment summary, an edit that lowers the price,
+  and the finance checks therefore agree on which request is the one still
+  owed, and a refund split across charges saved together refunds the most
+  recent one first. Records saved before this release are given an order on
+  upgrade: anything cancelled, failed or withdrawn comes before what is still
+  live, so the live request stays the one that counts. **Operators:** the
+  upgrade briefly locks the payment records table - about 2 to 3.5 seconds per
+  100,000 records - and has read-only pre-deploy checks (stored ties, and any
+  unfinished card refund on them); see the migration's row in
+  `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.

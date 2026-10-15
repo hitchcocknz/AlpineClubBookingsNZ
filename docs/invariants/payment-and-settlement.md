@@ -1397,8 +1397,10 @@ short).
   cuid `id` is not an insertion order either.
   - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
     sequence the column owns. The database assigns it and code never writes
-    it. Rows stored before it were numbered by `createdAt`, then the heap
-    order they were read in, under the migration's lock.
+    it. Stored rows had no insertion order to keep, so the migration numbered
+    each tie retired rows first (FAILED, withdrawn, or an ask queued for
+    cancellation), live rows last, then physical order. A stored tie can
+    change order at that release; the owner counts the ties before deploying.
   - **One home**: `LEDGER_ROWS_OLDEST_FIRST` and `LEDGER_ROWS_NEWEST_FIRST`,
     with their comparators, in `payment-ledger-order.ts`. Every money read uses
     them: the loader, the cancel's fold, the ask chain, the refund slices and
@@ -1408,9 +1410,9 @@ short).
     and the census now pick the same row. Before this, a tie went to the
     earliest row.
   - **Newest-first refund slices** take a tie's last-inserted row first. A
-    refund recovery with no frozen `allocationPlan` derives its slices again at
+    refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change across this
-    release. Check for open ones before deploying.
+    release. Check for open ones after the old colour drains.
   - Policed by `ledger-row-order-census.test.ts`. Proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, and the migration by its
     data-migration fixture.

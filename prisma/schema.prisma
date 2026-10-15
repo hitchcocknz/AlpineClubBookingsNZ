@@ -3264,8 +3264,9 @@ model PaymentTransaction {
   /// (`LEDGER_ROWS_OLDEST_FIRST` / `LEDGER_ROWS_NEWEST_FIRST` in
   /// `payment-ledger-order.ts`), and "the latest" row of a kind on a tie is the
   /// one inserted last. Never written by code: the database assigns it. The
-  /// migration numbered stored rows by `(createdAt, ctid)` and created the
-  /// sequence by hand; never accept a generated `SERIAL` for it.
+  /// migration numbered stored rows by `createdAt`, retired rows before live
+  /// ones within a tie, then `ctid`, and created the sequence by hand; never
+  /// accept a generated `SERIAL` for it.
   insertionSeq          Int                    @default(autoincrement())
   updatedAt             DateTime               @updatedAt
 

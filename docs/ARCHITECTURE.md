@@ -1996,18 +1996,25 @@ name the Stripe idempotency keys), and the `Payment` mirror is derived from
 
 `createdAt` alone cannot give that order. Prisma stamps `@default(now())` once
 per query, so rows written in one transaction tie, and under the frozen test
-clock every row ties. PostgreSQL returns a tie in heap order, and an update of
-an indexed column (`status`, on every capture) writes the row's new version at
-the end of the heap, so the order of a tie changed whenever one of its rows was
-updated. A cuid `id` does not follow insertion order either.
+clock every row ties. PostgreSQL returns a tie in whatever order its plan meets
+the rows, and an update of an indexed column (`status`, on every capture) writes
+the row's new version later in the heap, so the order of a tie could change
+whenever one of its rows was updated. A cuid `id` does not follow insertion
+order either.
 
 So the table carries **`insertionSeq`**, an `INTEGER` filled by a sequence the
 column owns. Code never writes it. Every money read orders by `createdAt`, then
 `insertionSeq`, through one home, `src/lib/payment-ledger-order.ts`, and on a tie
-"the latest" row is the one inserted last (`INV-PAY-133`). The migration numbered
-the rows already stored by `createdAt`, then the heap order they were read in,
-under its own lock, so no stored tie changed order at the release. It is the
-schema's first hand-written sequence column. Prisma's `@default(autoincrement())`
+"the latest" row is the one inserted last (`INV-PAY-133`). Rows stored before
+the column carry no record of the order they were inserted in, so the migration
+numbered them by a rule, under its own lock: `createdAt`; within a tie, retired
+rows (FAILED, withdrawn, or an ask whose intent is queued for cancellation)
+before live ones, so "the latest" of a stored tie is the live charge; then
+physical order (`ctid`). That is safe for money but it is not the history, and a
+stored tie's order can change at the release. The owner counts the stored ties
+before deploying (the migration's row in `BLUE_GREEN_MIGRATION_SAFETY.tsv`); when
+there are none, the numbering changes nothing anyone reads. It is the schema's
+first hand-written sequence column. Prisma's `@default(autoincrement())`
 matches it for drift, but the `SERIAL` Prisma would generate is never accepted:
 it rewrites the table and numbers rows in an order nobody chose.
 `ledger-row-order-census.test.ts` fails any ledger read ordered another way.
