@@ -23,9 +23,10 @@
   credit gets no note. If it refuses, it says why and what to do: dismiss the
   task with a note saying when and how much, and raise the Xero note by hand
   only where it says to. The officers' email now points at the task.
-- **Parts to check are marked first, then paid (#4154).** For a card
-  cancellation's part to check too, the queue, the confirm dialog and the
-  refusal now all say the same: mark it paid back first, and pay straight after
-  the app accepts, so a refusal never comes after the money has gone. Where
-  the records show nothing left to refund, the refusal now also says what to
-  do if the member really is owed.
+- **Card refund hand-backs are marked first, then paid (#4154).** For a card
+  cancellation's parts too - the bank-transfer part and the part to check -
+  the queue, the confirm dialog, the officers' email and the refusals now all
+  say the same: mark it paid back first, and pay straight after the app
+  accepts, so a refusal never comes after the money has gone. Where the
+  records show nothing left to refund, the refusal now also says what to do if
+  the member really is owed.

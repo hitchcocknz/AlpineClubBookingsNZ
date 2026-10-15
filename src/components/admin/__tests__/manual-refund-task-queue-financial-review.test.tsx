@@ -163,7 +163,10 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     });
     const intro = screen.getByTestId("manual-refund-task-card-shortfall-intro");
     expect(intro.textContent).toMatch(/card refund could not carry all of the refund due/);
-    expect(intro.textContent).toMatch(/pay it by bank transfer/);
+    // #4154 review: one order on every hand-back - mark first, then pay straight after the app accepts.
+    expect(intro.textContent).toMatch(/mark it paid back\s+first/);
+    expect(intro.textContent).toMatch(/then pay it by bank\s+transfer straight after the app accepts/);
+    expect(intro.textContent).not.toMatch(/pay it by bank\s+transfer, then mark/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();

@@ -283,7 +283,9 @@ by the club", worked out the same way the cancel works them out.
 
 - **The part to refund by bank transfer** is what the payment's other
   (non-card) charges still hold. The member is told the club will refund it by
-  bank transfer: pay it by bank transfer, then mark it paid back. That records
+  bank transfer: mark it paid back first, then pay it by bank transfer straight
+  after the app accepts - it refuses while the card refund is still moving, or
+  where the payment's records no longer hold the money. Accepted, it records
   the refund on the payment and the booking ledger and queues one Xero refund
   credit note for exactly that amount, worded as a bank transfer, beside the
   card refund's own note; nothing needs recording in Xero by hand. A booking
