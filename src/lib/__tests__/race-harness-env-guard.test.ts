@@ -1,7 +1,7 @@
 // #4107: the race harness's environment check names what a suite left changed.
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("vitest", async (importOriginal) => ({ ...(await importOriginal<typeof import("vitest")>()), afterAll: vi.fn() }));
+// Importing the module also registers its harness check here; this file
+// changes no variable, so that check passes too.
+import { describe, expect, it } from "vitest";
 
 import { envDrift } from "@/lib/__tests__/support/race-harness-env-guard";
 
