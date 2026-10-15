@@ -2361,15 +2361,10 @@ async function performBookingCancellation(
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
         // completes with no second money movement. #4144: only on the plan sent.
-        await closeDoorRow(
-          async () => (await markBookingCancellationRefundRecoverySucceeded({ bookingId, sentPlan: cardRefundPlan })).count === 1,
-          {
-            door: "cancellation", refundLabel: "The cancellation's card refund",
-            idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), bookingId,
-            paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "", amountCents: plannedCardRefundCents,
-            refundId: stripeRefundId ?? null, format, context: { paymentId },
-          },
-        );
+        await closeDoorRow(async () => (await markBookingCancellationRefundRecoverySucceeded({ bookingId, sentPlan: cardRefundPlan })).count === 1, {
+          door: "cancellation", refundLabel: "The cancellation's card refund", idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), bookingId,
+          paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "", amountCents: plannedCardRefundCents, refundId: stripeRefundId ?? null, format, context: { paymentId },
+        });
       } catch (err) {
         // The claim already committed and the recovery operation already
         // exists with the frozen plan, so there is nothing to enqueue here
