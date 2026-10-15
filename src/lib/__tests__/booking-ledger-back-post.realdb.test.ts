@@ -785,14 +785,14 @@ async function lines(bookingId: string) {
       const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { payment: true } });
       const payment = booking.payment!;
       const request = await prisma.refundRequest.create({ data: { bookingId, memberId: NAMES.memberId, reason: "appeal after the organiser cancelled" } });
-      const { refundAppealHandedBackCents } = await import("@/lib/edit-refund-hand-back");
+      const { refundAppealHandedBackParts } = await import("@/lib/edit-refund-hand-back");
       const { organiserCardAppealCap, reserveOrganiserChildAppealRefund } = await import("@/lib/organiser-child-refund");
       const debt = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         expect((await tx.refundRequest.findUniqueOrThrow({ where: { id: request.id } })).status).toBe("PENDING");
-        const handedBackCents = await refundAppealHandedBackCents(tx, { id: payment.id, bookingId });
+        const handedBack = await refundAppealHandedBackParts(tx, { id: payment.id, bookingId });
         const locked = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
-        const cap = await organiserCardAppealCap(tx, booking, locked, handedBackCents);
+        const cap = await organiserCardAppealCap(tx, booking, locked, handedBack);
         expect(cap?.settlement).toBeTruthy();
         expect(amountCents).toBeLessThanOrEqual(cap!.maxRefundableCents);
         expect((await tx.refundRequest.updateMany({ where: { id: request.id, status: "PENDING" }, data: { status: "APPROVED", approvedAmountCents: amountCents } })).count).toBe(1);

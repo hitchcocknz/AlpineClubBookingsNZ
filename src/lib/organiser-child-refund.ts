@@ -50,7 +50,7 @@ import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
-import { openNonCancellationHandBackCents, refundAppealHandedBackCents } from "@/lib/edit-refund-hand-back";
+import { openNonCancellationHandBackCents, refundAppealHandedBackParts, type RefundAppealHandedBack } from "@/lib/edit-refund-hand-back";
 import { organiserHasPaidSettlement, paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import { calculateRefundAmount, type CancellationRule } from "@/lib/cancellation";
 import logger from "@/lib/logger";
@@ -577,8 +577,9 @@ export type OrganiserCardAppealCap = {
  * organiser's combined payment, so it is the room a child refund debt may take
  * (`organiserChildRefundHeadroomCents`: the combined payment's and this child's
  * refunds made and owed both count; the stored mirror alone is not safe to size
- * from), less `handedBackCents` - what the caller's `refundAppealHandedBackCents`
- * read says is already promised back another way. Zero, with no settlement, once
+ * from), less the open hand-backs and late-cash credit the caller's
+ * `refundAppealHandedBackParts` read - never its owed card refunds (#4124 F1):
+ * the headroom already nets the child's organiser-child debts. Zero, with no settlement, once
  * that payment no longer holds the money, or while the group cancel's own
  * combined refund is not done (`combinedRefundPending`). The approval reads it
  * under `lock(1)` and refuses past it; the member's form, the review screen and
@@ -588,7 +589,7 @@ export async function organiserCardAppealCap(
   db: Db,
   booking: { organiserSettled: boolean; parentBookingId: string | null; payment: { source: string } | null },
   childPayment: ChildPayment,
-  handedBackCents: number,
+  handedBack: RefundAppealHandedBack,
 ): Promise<OrganiserCardAppealCap | null> {
   if (!paidByOrganiserCard(booking)) return null;
   const found = await findCombinedCardSettlementForChild(db, booking);
@@ -600,7 +601,8 @@ export async function organiserCardAppealCap(
   }
   const settlement = { id: found.id, stripePaymentIntentId: found.stripePaymentIntentId, amountCents: found.amountCents };
   const roomCents = await organiserChildRefundHeadroomCents(db, settlement, childPayment);
-  return { settlement, maxRefundableCents: Math.max(0, roomCents - handedBackCents), combinedRefundPending: false };
+  const maxRefundableCents = Math.max(0, roomCents - handedBack.handBackCents - handedBack.lateCashCreditCents);
+  return { settlement, maxRefundableCents, combinedRefundPending: false };
 }
 
 /** The group cancel's own combined refund still to make: a pre-#3653 plan's (`mirrorPlanRefundUnmade`), or its retry owed. */
@@ -621,7 +623,7 @@ export type OrganiserCardAppealCeiling = { ceilingCents: number; combinedRefundP
 
 /**
  * #3956: the appeal ceiling the screens and the member's appeal show - the
- * approval's cap net of `refundAppealHandedBackCents`, read unlocked as advice;
+ * approval's cap net of `refundAppealHandedBackParts`, read unlocked as advice;
  * null unless the organiser paid by card. A cap held at zero only until the
  * group cancel's own refund is made says so (`combinedRefundPending`), so no
  * screen reads a wait as "nothing left". The approval re-reads both locked.
@@ -632,8 +634,8 @@ export async function organiserCardAppealCeilingFor(
   payment: ChildPayment,
 ): Promise<OrganiserCardAppealCeiling | null> {
   if (!paidByOrganiserCard(booking)) return null;
-  const handedBackCents = await refundAppealHandedBackCents(db, { id: payment.id, bookingId: booking.id });
-  const cap = await organiserCardAppealCap(db, booking, payment, handedBackCents);
+  const handedBack = await refundAppealHandedBackParts(db, { id: payment.id, bookingId: booking.id });
+  const cap = await organiserCardAppealCap(db, booking, payment, handedBack);
   return cap ? { ceilingCents: cap.maxRefundableCents, combinedRefundPending: cap.combinedRefundPending } : null;
 }
 

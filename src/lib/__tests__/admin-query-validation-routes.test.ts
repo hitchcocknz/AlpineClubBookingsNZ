@@ -119,6 +119,8 @@ function refundRequest(id: string, status = "PENDING") {
         amountCents: 12000,
         refundedAmountCents: 0,
         stripePaymentIntentId: "pi_123",
+        recoveryOperations: [],
+        refunds: [],
       },
     },
     member: {

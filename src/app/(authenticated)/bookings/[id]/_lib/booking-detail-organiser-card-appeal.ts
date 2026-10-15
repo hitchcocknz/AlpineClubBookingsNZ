@@ -6,7 +6,7 @@ import { organiserCardAppealCeilingFor, type OrganiserCardAppealCeiling } from "
  * card, the most a refund appeal can ask for is what the organiser's combined
  * payment can still return (`organiserCardAppealCeilingFor`) - the figure the
  * appeal route and its approval cap at - not the booking's own payment row alone.
- * Null for any other booking, which keeps `refundAppealCeiling`. While the group
+ * Null for any other booking, which keeps `refundAppealCeilingParts`. While the group
  * cancel's own refund is not made, it says so (`combinedRefundPending`) rather
  * than reading as "nothing left".
  */

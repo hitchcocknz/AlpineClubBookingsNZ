@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT } from "@/lib/manual-refund-task-settlement-rules";
+import { OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT, refundAppealCeilingParts } from "@/lib/manual-refund-task-settlement-rules";
+import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
 import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";
 import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
 
@@ -57,12 +58,14 @@ export async function GET(req: NextRequest) {
             },
             payment: {
               select: {
-                // #2932: the screen derives its refund ceiling through
+                // #2932: the refund ceiling is derived through
                 // `getRemainingRefundableCents`, which answers 0 unless the
                 // payment actually captured. #3827 (`INV-PAY-118`): less every
                 // hand-back still open on the payment and the late-cash credit
-                // in `creditsFromCancellation` above (`refundAppealCeiling`),
-                // the figure the approve route caps at.
+                // in `creditsFromCancellation` above, and (#4124) the card
+                // refunds still owed (`refundAppealCeilingParts`) - the figure
+                // the approve route caps at. Worked out below; the hand-back
+                // and card-refund rows never reach the screen.
                 id: true,
                 source: true,
                 status: true,
@@ -70,6 +73,8 @@ export async function GET(req: NextRequest) {
                 refundedAmountCents: true,
                 stripePaymentIntentId: true,
                 manualRefundTasks: OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT,
+                // #4124: the open card-refund debts the ceiling also nets.
+                ...netCollectedCardRefundSelect,
               },
             },
           },
@@ -99,10 +104,34 @@ export async function GET(req: NextRequest) {
   // so the screen offers the figure the approval will accept.
   const data = await Promise.all(
     requests.map(async (listed) => {
-      const request = { ...listed, ...outcomes.get(listed.id) };
-      const payment = request.booking.payment;
+      // #4124: the ceiling is worked out here, where the card-refund rows are
+      // Dates, and only the figures go to the screen - the ceiling, and the
+      // card refund still owed that it netted (`appealCardRefundOwedCents`, the
+      // screen's "Less ... not yet made" line) - never the rows.
+      const { payment: loadedPayment, ...bookingRest } = listed.booking;
+      const ceiling = refundAppealCeilingParts(loadedPayment, listed.booking.creditsFromCancellation);
+      // The payment's own columns only, named: never its hand-back or card-refund rows.
+      const screenPayment = loadedPayment && {
+        id: loadedPayment.id,
+        source: loadedPayment.source,
+        status: loadedPayment.status,
+        amountCents: loadedPayment.amountCents,
+        refundedAmountCents: loadedPayment.refundedAmountCents,
+        stripePaymentIntentId: loadedPayment.stripePaymentIntentId,
+      };
+      const request = {
+        ...listed,
+        ...outcomes.get(listed.id),
+        booking: {
+          ...bookingRest,
+          payment: screenPayment,
+          appealCeilingCents: ceiling.ceilingCents,
+          appealCardRefundOwedCents: ceiling.cardRefundOwedCents,
+        },
+      };
+      const payment = loadedPayment;
       if (request.status !== "PENDING" || !payment) return request;
-      const organiserCard = await organiserCardAppealCeilingFor(prisma, request.booking, payment);
+      const organiserCard = await organiserCardAppealCeilingFor(prisma, listed.booking, payment);
       if (organiserCard === null) return request;
       return {
         ...request,
