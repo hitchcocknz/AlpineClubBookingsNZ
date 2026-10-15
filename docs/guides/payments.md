@@ -303,6 +303,20 @@ it settles. If the card refund failed and is waiting to retry, wait for the
 retry. If its retries have run out, close it as **Paid another way** on this
 page once the member has had that money back, then mark the part.
 
+**The same part to check when the dates fill up during a card payment
+(#4154).** If a member's card payment completes after the last beds went, the
+booking is cancelled and the card refunded automatically - but only for what
+the payment's records show can go back to the card. When that is less than
+the charge, or nothing, the rest appears here as one part to check, and
+admins are emailed once. The member's booking page says the club will be in
+touch about it. Treat it exactly as the part to check above: check Stripe and
+the bank first, because the records may be wrong and the money may already
+have gone back. If it has, dismiss it with a note saying how, and the
+member's page then says the club checked it and closed it. If it really is
+owed, pay it by bank transfer and mark it paid back once the card refund has
+gone through; that records the refund, queues its Xero refund credit note,
+and the member's page then says the whole payment was refunded.
+
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
 ("Decide a booking change the system would not price"), an amount the club may

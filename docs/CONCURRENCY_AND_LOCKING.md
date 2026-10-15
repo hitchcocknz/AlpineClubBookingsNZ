@@ -3206,6 +3206,17 @@ refund's recording are serialised by the row every refunded-total writer takes
 first. Its Xero refund note is an outbox row queued inside the completion
 transaction, with no provider call (`INV-PAY-129`).
 
+**#4154 adds one more create, inside the capacity void's claim, and no key.**
+Where the race's frozen card refund plan is short of the charge, the settle
+inserts the part to check of the same task (`raiseCapacityRaceRefundShortfallTask`)
+after freezing the plan, under the locks it already holds (`lock(1)`, the
+lodge key, the member's credit-ledger key where it takes one), on no
+conflict under its unique
+`occurrenceKey`. A key already held is logged, never thrown, so the webhook's
+settle never rolls back on it. Its completion is the one above, reading the
+race's own recovery rows (one per intent, on the booking) beside the cancel's
+(`INV-PAY-133`).
+
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
 holds nothing. Until #2760 it was
