@@ -209,5 +209,18 @@ describe("approving a range-mode request keeps a gapped guest's nights (#4157)",
     expect(
       lockedPeriodRequestToBatchInput(storedLockedPeriodRequestSchema.parse(repeatsOnly), LIVE),
     ).toBeNull();
+    // A row stored before #4088 snapshotted no night rows: the live gapped
+    // nights kept for the guest are still not read as a change the member
+    // asked for, so the request still names none.
+    const olderRow = {
+      ...repeatsOnly,
+      original: {
+        ...repeatsOnly.original,
+        guests: [snapshotGuest("gap", undefined), snapshotGuest("full", undefined)],
+      },
+    };
+    expect(
+      lockedPeriodRequestToBatchInput(storedLockedPeriodRequestSchema.parse(olderRow), LIVE),
+    ).toBeNull();
   });
 });
