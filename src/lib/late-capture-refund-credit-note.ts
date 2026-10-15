@@ -277,9 +277,9 @@ export async function queueLateCaptureRefundCreditNote(params: {
 }
 
 /**
- * The `kind` a `booking.payment.refunded_after_cancellation` entry names
- * (#2773): every writer of that entry reads it here (#4149), so the rows are
- * told apart by the row itself, whichever door refunded.
+ * The `kind` a `booking.payment.refunded_after_cancellation` entry names:
+ * every writer of that entry reads it here (#4149), so the rows are told apart
+ * by the row itself, whichever door refunded.
  */
 export function lateCaptureAuditKind(captureKind: "primary" | "modification" | null): string | null {
   if (captureKind === null) return null;
