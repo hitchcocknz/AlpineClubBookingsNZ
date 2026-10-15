@@ -4,5 +4,7 @@
   active and the payment kept pointing at it, though Xero had cancelled it.
 
   The record now goes inactive when the void arrives, as it already did for
-  card refunds, and the payment stops pointing at it. Nothing is created, voided
-  or changed in Xero.
+  card refunds, and the payment stops pointing at it. A voided note is never
+  taken up again: if the refund's credit note is requested later, a fresh note
+  is raised in Xero, and the booking repair tool no longer offers to point the
+  payment back at the voided note.
