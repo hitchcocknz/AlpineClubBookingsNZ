@@ -136,6 +136,27 @@ from your pre-upgrade backup.
 **Rollback.** Rolling the code back restores the old predicate and stops further
 deletions, but does not bring back rows the new release already pruned.
 
+### Do not roll back across the late-payment refund change while late payments are arriving (#4131)
+
+**What changes.** When a card payment goes through after its booking was
+cancelled, the new version refunds it only from that payment's own card charge.
+The previous version could take part of the refund from another card charge on
+the same booking. The marker migration `20261116010000_late_capture_own_charge_cutoff`
+changes no data; the new version uses the time it finished to recognise a refund
+the previous version started and Stripe is still delivering. It then finishes
+that refund under the same Stripe request, so nothing is refunded twice.
+
+**The limit.** That recognition only works forwards. If you roll the code back
+to the previous version while Stripe is still delivering a late payment's
+notice, and the new version's record of its refund was lost, the previous
+version can refund the other card charge a second time. So do not roll back
+across this change while a late payment on a cancelled booking is waiting to be
+refunded. If you must, check the **Refunded automatically** card on the
+Payments page and the late payment in Stripe first.
+
+**Rollback.** The marker migration needs no reversal; the previous version
+ignores it.
+
 ### Do not mark an edit's refund task paid back until cutover completes (#3827)
 
 **What changes.** When a change lowers the price of a booking paid by internet

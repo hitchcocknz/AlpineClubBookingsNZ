@@ -35,7 +35,7 @@ import {
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
 import { holdLateCaptureForTreasurerIfRequired, holdLateCaptureRefusedByStripe } from "@/lib/late-capture-refund-hold";
 import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
-import { refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
+import { lateCaptureOwnChargeSlice, refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
   buildLateCaptureRefundMetadata,
@@ -1563,14 +1563,9 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     format,
     paymentId: booking.payment.id,
     amountCents: paymentIntent.amount,
-    // Pin the refund to THIS transaction so replays mint identical Stripe
-    // keys regardless of the payment's other transactions.
-    allocation: [
-      {
-        paymentTransactionId: paymentTransaction.id,
-        amountCents: paymentIntent.amount,
-      },
-    ],
+    // Pinned to THIS transaction (#4131, the one rule), so replays mint identical Stripe keys regardless of the
+    // payment's other transactions. Unrefunded: `acknowledgeSettledLateNotice` above returns on any refund of it.
+    allocation: [lateCaptureOwnChargeSlice({ id: paymentTransaction.id, status: PaymentStatus.SUCCEEDED, amountCents: paymentIntent.amount, refundedAmountCents: 0 }, paymentIntent.amount).slice],
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
@@ -1817,8 +1812,8 @@ async function handleCancelledBookingPaymentSucceeded(
   if (await holdLateCaptureForTreasurerIfRequired(lateCapture)) return;
 
   // #4131 (`INV-PAY-106`): from the capture's OWN charge only, capped at what it holds (a deploy replay asks only for the rest).
-  const { refunds, shortfall } = await refundLateCaptureFromOwnCharge({ format, bookingId: booking.id, paymentId: booking.payment.id, paymentIntentId: paymentIntent.id, amountCents: paymentIntent.amount });
-  if (await holdLateCaptureRefusedByStripe(lateCapture, refunds)) {
+  const { refunds, answers, audit } = await refundLateCaptureFromOwnCharge({ format, bookingId: booking.id, paymentId: booking.payment.id, paymentIntentId: paymentIntent.id, amountCents: paymentIntent.amount });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, answers)) {
     // #4103: whatever this one slice on the capture's own charge made is noted, sized by what was made.
     await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
     return;
@@ -1837,13 +1832,13 @@ async function handleCancelledBookingPaymentSucceeded(
     targetId: booking.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
-      refundId,
+      refundId: refundId ?? null,
       amountCents: paymentIntent.amount,
       // #2773: named on this handler too, so the two audit rows are told apart by
       // the row itself rather than by knowing which handler writes which shape.
       // The sibling has carried `kind: "modification_additional"` since #1350.
       kind: "primary",
-      ...shortfall, // #4131: only when it asked for less than the capture, saying where the rest went back.
+      ...audit, // #4131: what went back now, and where the rest of `amountCents` went back.
     }),
   });
 

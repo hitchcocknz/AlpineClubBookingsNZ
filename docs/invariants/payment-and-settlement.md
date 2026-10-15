@@ -803,8 +803,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   of every source and skips a payment already carrying a refund or
   account-credit note, or such an operation queued or failed.
 - Pinned by `cancellation-settled-money.test.ts`, `stripe-webhook-alerts.test.ts`,
-  `payment-recovery.test.ts`, `manual-refund-task.test.ts` and
-  `xero-booking-repair.test.ts`.
+  `payment-recovery.test.ts`, `manual-refund-task.test.ts`,
+  `xero-booking-repair.test.ts` and `late-capture-own-charge-refund.realdb.test.ts`.
 
 ## INV-PAY-110
 

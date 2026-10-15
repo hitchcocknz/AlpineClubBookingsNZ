@@ -16,7 +16,8 @@
  *   it holds.
  * - A deploy replay of an attempt whose pre-#4131 plan refunded the newer
  *   charge first (Stripe holds that refund, unrecorded) asks only for the rest,
- *   under that attempt's own key.
+ *   under that attempt's own key; a slice of it Stripe refused is held as owed.
+ * - A sibling change payment's own late-capture refund is never taken off it.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -224,6 +225,12 @@ function stripeRefund(
       return webhook.processStripeWebhookEvent(event);
     }
 
+    /** The late capture's charge, a day before the refunds below: the earliest an old plan's slice of it can be. */
+    function armChargedAt() {
+      const created = Math.floor(Date.parse("2026-06-24T00:00:00.000Z") / 1000);
+      stripeRaceHooks.get = async (id) => ({ id, object: "payment_intent", created, latest_charge: { id: `ch_${id}`, created } });
+    }
+
     /** Every refund the handler asks Stripe for, answered as made. */
     function answerRefunds() {
       const asked: Array<{ paymentIntentId: string; amountCents: number; idempotencyKey?: string }> = [];
@@ -260,6 +267,7 @@ function stripeRefund(
 
     beforeEach(async () => {
       resetStripeRaceHooks();
+      armChargedAt();
       await deletePaymentRows();
     });
 
@@ -305,16 +313,12 @@ function stripeRefund(
     it("a deploy replay of a pre-#4131 attempt that refunded the newer charge first asks only for the rest, under that attempt's own key", async () => {
       await seed();
       const asked = answerRefunds();
-      // The old newest-first plan made the kept fee's slice and stopped; Stripe
-      // holds it, never recorded. A refused one sent nothing and is not counted.
+      // The old newest-first plan made the kept fee's slice and stopped; Stripe holds it, never recorded.
       const listed: string[] = [];
       stripeRaceHooks.listRefunds = async (intent) => {
         listed.push(intent);
         return intent === PAID_INTENT
-          ? [
-              stripeRefund("re_race_4131_old_slice", PAID_INTENT, KEPT_FEE_CENTS, { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture" }),
-              stripeRefund("re_race_4131_old_refused", PAID_INTENT, 700, { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture" }, "failed"),
-            ]
+          ? [stripeRefund("re_race_4131_old_slice", PAID_INTENT, KEPT_FEE_CENTS, { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture" })]
           : [];
       };
 
@@ -330,6 +334,52 @@ function stripeRefund(
         },
       ]);
       expect((await transaction(LATE_TXN)).refundedAmountCents).toBe(LATE_CENTS - KEPT_FEE_CENTS);
+    });
+
+    it("a slice of that old plan Stripe refused is subtracted for the key, and held for a treasurer as owed", async () => {
+      await seed();
+      const asked = answerRefunds();
+      stripeRaceHooks.listRefunds = async (intent) =>
+        intent === PAID_INTENT
+          ? [stripeRefund("re_race_4131_old_refused", PAID_INTENT, KEPT_FEE_CENTS, { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture" }, "failed")]
+          : [];
+
+      expect((await deliverLateCapture()).init?.status ?? 200).toBe(200);
+
+      expect(asked.map((each) => each.idempotencyKey)).toEqual([`${KEY_PREFIX}_${LATE_TXN}_${LATE_CENTS - KEPT_FEE_CENTS}`]);
+      const held = await prisma.manualRefundTask.findUniqueOrThrow({
+        where: { lateCaptureApprovalIntentId: LATE_INTENT },
+        select: { status: true, amountCents: true },
+      });
+      expect(held).toEqual({ status: "OPEN", amountCents: KEPT_FEE_CENTS });
+    });
+
+    it("(b) a sibling change payment captured late, marked for cancellation by the cancel, keeps its own refund: nothing is taken off this capture", async () => {
+      await seed();
+      // The sibling refunded itself (same booking metadata) before its task was written.
+      await prisma.paymentTransaction.update({ where: { id: PAID_TXN }, data: { kind: "ADDITIONAL" } });
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "CANCEL_PAYMENT_INTENT",
+          status: "SUCCEEDED",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentIntentId: PAID_INTENT,
+          amountCents: PAID_CENTS,
+          idempotencyKey: "race-4131-cancel-sibling",
+        },
+      });
+      const asked = answerRefunds();
+      const listed: string[] = [];
+      stripeRaceHooks.listRefunds = async (intent) => {
+        listed.push(intent);
+        return [stripeRefund("re_race_4131_sibling", PAID_INTENT, KEPT_FEE_CENTS, { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture" })];
+      };
+
+      expect((await deliverLateCapture()).init?.status ?? 200).toBe(200);
+
+      expect(listed).toEqual([]);
+      expect(asked.map((each) => each.amountCents)).toEqual([LATE_CENTS]);
     });
   },
 );

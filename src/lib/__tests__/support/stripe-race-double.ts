@@ -62,9 +62,9 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
         : actual.cancelPaymentIntentIfCancellableWithResult(...args)) as Stripe["cancelPaymentIntentIfCancellableWithResult"],
     processRefund: ((args: Parameters<Stripe["processRefund"]>[0]) =>
       stripeRaceHooks.refund ? stripeRaceHooks.refund(args) : actual.processRefund(args)) as Stripe["processRefund"],
-    listRefundsForPaymentIntent: ((paymentIntentId: string) =>
+    listRefundsForPaymentIntent: ((...args: Parameters<Stripe["listRefundsForPaymentIntent"]>) =>
       stripeRaceHooks.listRefunds
-        ? stripeRaceHooks.listRefunds(paymentIntentId)
-        : actual.listRefundsForPaymentIntent(paymentIntentId)) as Stripe["listRefundsForPaymentIntent"],
+        ? stripeRaceHooks.listRefunds(args[0])
+        : actual.listRefundsForPaymentIntent(...args)) as Stripe["listRefundsForPaymentIntent"],
   };
 }
