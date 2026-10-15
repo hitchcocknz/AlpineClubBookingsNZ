@@ -1576,7 +1576,8 @@ decision and would need its own owner decision.
   `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill and
   conflict check all leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`, `xero-refund-note-status.ts`), so no request, retry or
-  repair writes one back into `Payment.xeroRefundCreditNoteId`.
+  repair writes one back into `Payment.xeroRefundCreditNoteId`. The nightly
+  link cleanup heals a mirror left active before #4091 through that write (#4161).
 - **The reissue's key.** `refundNoteKeyAfterVoidParts` is the one home for the
   outbox row's correlation key and the Xero idempotency key. Once the payment
   has a voided refund note, it appends `after-void:<sorted ids>`: every refund
@@ -1594,4 +1595,5 @@ decision and would need its own owner decision.
   Pinned by `xero-refund-note-void-pointer.realdb.test.ts`,
   `xero-refund-note-crash-window.test.ts`, `xero-sync.test.ts`,
   `xero-booking-repair.test.ts`, `xero-operation-retry.test.ts`,
-  `xero-operation-outbox.test.ts` and `xero-refund-note-after-void-key.test.ts`.
+  `xero-operation-outbox.test.ts`, `xero-hardening.test.ts` and
+  `xero-refund-note-after-void-key.test.ts`.

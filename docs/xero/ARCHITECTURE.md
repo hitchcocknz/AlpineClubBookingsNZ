@@ -1040,8 +1040,9 @@ The same link write moves `Payment.xeroRefundCreditNoteId` to the newest other
 live note that may be canonical (never a per-refund note, #3880), or clears it,
 as the #2901 repair apply does, so the nightly missing-link report never sees a
 pointer to an inactive mirror (#4046). A refund left with no live note shows no
-drift in that report, by design; making it visible is #4162. Rows that went
-wrong before #4091 (a voided canonical mirror still active) are #4161.
+drift in that report, by design; making it visible is #4162. A mirror voided
+before #4091 (still active, its pointer naming it) is healed by the nightly
+`link-cleanup` through this same write (#4161).
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
@@ -1092,7 +1093,7 @@ rare. Before rolling back, and after rolling forward, list the rows at risk
 (voided mirrors still active), and
 `SELECT o.id, o."localId", o.status, o."correlationKey" FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND o.status IN ('PENDING', 'RUNNING', 'WAITING_PAYMENT', 'FAILED', 'PARTIAL') AND EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = o."localId" AND l.role = 'REFUND_CREDIT_NOTE' AND upper(trim(l.metadata->>'status')) IN ('VOIDED', 'DELETED'))`
 (unfinished refund-note creates on a payment with a void). Let each listed create
-finish on one colour; a listed mirror is #4161's to heal.
+finish on one colour; the nightly `link-cleanup` heals a listed mirror (#4161).
 
 Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
@@ -1283,9 +1284,17 @@ Scheduled hardening (cron tasks, all idempotent):
   and malformed (wrong `xeroObjectType`) or foreign (no such payment) links
   stay subject to cleanup. The exemption is status-aware: an active link whose
   recorded Xero status is VOIDED/DELETED is stale drift — a cancelled note is
-  never coverage — and cleanup deactivates it (a local flip, never a provider
-  call), which re-arms the credit-reconciliation self-heal after an operator
-  void. Before this, cleanup and that self-heal fed each other an unbounded
+  never coverage — which re-arms the credit-reconciliation self-heal after an
+  operator void. **Every such mirror, on any source (#4161),** is counted
+  first (`cancelledRefundCreditNoteMirrors` in the run's summary) and then
+  healed through `upsertXeroObjectLink` with its recorded status merged, never
+  flipped directly: the link write deactivates it (`INV-ADDPAY-041`) and
+  releases a `Payment.xeroRefundCreditNoteId` that names it (#4046). This
+  catches a bank-transfer payment's canonical note voided before #4091, whose
+  active mirror matched its pointer. Local rows only, no provider call, no
+  money column; each write is its own transaction, and a healed link is
+  inactive, so a second run changes nothing. A write that fails fails the task
+  after the rest are tried. Before this, cleanup and that self-heal fed each other an unbounded
   duplicate-note loop: cleanup deactivated live coverage, reconciliation saw
   the shortfall and minted another provider note, the scalar moved, and the
   next cleanup deactivated the other side. The reconciliation report's
