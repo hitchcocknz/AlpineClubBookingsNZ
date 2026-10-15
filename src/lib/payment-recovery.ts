@@ -36,6 +36,7 @@ import {
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
 import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
+import { closePrePersistedRefundRow } from "@/lib/pre-persisted-refund-close";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
   findWaitingSupplementaryInvoiceOperationForPaymentIntent,
@@ -646,31 +647,21 @@ export async function enqueueEditFinancialReviewRefundRecovery({
 /**
  * Happy-path close of the edit-financial-review refund recovery operation after
  * the inline refund completed. Best-effort, exactly as #1349's is: a lost close
- * leaves a PENDING operation whose replay re-requests the identical frozen slices
- * under the identical Stripe keys, so Stripe answers with the original refunds
- * and the ledger dedupes on refund id. No second movement of money is possible.
+ * leaves the operation open, and its replay re-requests the identical frozen
+ * slices under the identical Stripe keys, so Stripe answers with the original
+ * refunds and the ledger dedupes on refund id. #4144: only on the plan the door
+ * sent (`closePrePersistedRefundRow`), so a re-planned debt stays owed.
  */
 export async function markEditFinancialReviewRefundRecoverySucceeded({
   taskId,
+  sentPlan,
   store = prisma,
 }: {
   taskId: string;
+  sentPlan: ReadonlyArray<RefundAllocationSlice>;
   store?: PaymentRecoveryStore;
 }) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey:
-        buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
+  return closePrePersistedRefundRow({ idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId), sentPlan, store });
 }
 
 /** #3639: a treasurer-approved late-capture refund's debt, as the edit-review one above; replayed under the webhook's own prefix. */
@@ -740,31 +731,21 @@ export async function enqueueBookingCancellationRefundRecovery({
  * Mark the booking-cancellation refund recovery operation SUCCEEDED after the
  * inline refund completed (#1349). The operation is persisted inside the
  * claim transaction BEFORE the Stripe call; this is the happy-path close. If
- * this update is lost (crash, DB blip) the operation stays PENDING and the
+ * this update is lost (crash, DB blip) the operation stays open and the
  * recovery cron replays the frozen plan — Stripe answers the replayed keys
  * with the original refunds and the ledger dedupes on refund id, so the close
- * being best-effort is safe.
+ * being best-effort is safe. #4144: only on the plan the door sent.
  */
 export async function markBookingCancellationRefundRecoverySucceeded({
   bookingId,
+  sentPlan,
   store = prisma,
 }: {
   bookingId: string;
+  sentPlan: ReadonlyArray<RefundAllocationSlice>;
   store?: PaymentRecoveryStore;
 }) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
+  return closePrePersistedRefundRow({ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), sentPlan, store });
 }
 
 /**
@@ -843,36 +824,25 @@ export async function enqueueCapacityClaimFailedRefundRecovery({
 
 /**
  * Happy-path close of the capacity-race refund recovery operation after the
- * inline refund completed. Best-effort (mirrors #1349): a lost close leaves a
- * PENDING operation whose replay re-requests the identical frozen slices under
+ * inline refund completed. Best-effort (mirrors #1349): a lost close leaves an
+ * open operation whose replay re-requests the identical frozen slices under
  * the identical Stripe keys — Stripe answers with the original refunds and the
  * ledger dedupes on refund id, so no second money movement is possible.
+ * #4144: only on the plan the door sent.
  */
 export async function markCapacityClaimFailedRefundRecoverySucceeded({
   bookingId,
   paymentIntentId,
+  sentPlan,
   store = prisma,
 }: {
   bookingId: string;
   paymentIntentId: string;
+  sentPlan: ReadonlyArray<RefundAllocationSlice>;
   store?: PaymentRecoveryStore;
 }) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
-        bookingId,
-        paymentIntentId,
-      ),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
+  const idempotencyKey = buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId);
+  return closePrePersistedRefundRow({ idempotencyKey, sentPlan, store });
 }
 
 /**
@@ -993,35 +963,24 @@ export async function findOtherDuplicateCaptureRefundOperation({
 /**
  * Happy-path close of the duplicate-capture refund recovery operation after
  * the inline refund completed (#1992). Best-effort (mirrors #1349): a lost
- * close leaves a PENDING operation whose replay re-requests the identical
+ * close leaves an open operation whose replay re-requests the identical
  * frozen slice under the identical Stripe keys — Stripe answers with the
- * original refund and the ledger dedupes on refund id.
+ * original refund and the ledger dedupes on refund id. #4144: only on the plan
+ * the door sent.
  */
 export async function markDuplicateCaptureRefundRecoverySucceeded({
   bookingId,
   paymentIntentId,
+  sentPlan,
   store = prisma,
 }: {
   bookingId: string;
   paymentIntentId: string;
+  sentPlan: ReadonlyArray<RefundAllocationSlice>;
   store?: PaymentRecoveryStore;
 }) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
-        bookingId,
-        paymentIntentId,
-      ),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
+  const idempotencyKey = buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId);
+  return closePrePersistedRefundRow({ idempotencyKey, sentPlan, store });
 }
 
 /**

@@ -37,6 +37,7 @@ import {
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
 import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
+import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -2092,25 +2093,21 @@ export async function markBookingPaymentSucceeded({
       if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
-      // close leaves a PENDING row whose replay re-requests the identical
-      // slice/keys, which Stripe answers with the original refund.
-      const markResult = await markDuplicateCaptureRefundRecoverySucceeded({
-        bookingId,
-        paymentIntentId,
-      }).catch((markErr) => {
-        logger.error(
-          { err: markErr, bookingId, paymentIntentId },
-          "Failed to mark duplicate-capture refund recovery succeeded; the cron will replay the frozen plan idempotently"
-        );
-        return null;
-      });
+      // close leaves an open row whose replay re-requests the identical
+      // slice/keys, which Stripe answers with the original refund. #4144: only
+      // on the plan sent, so a row another writer re-planned stays owed.
+      const closed = await closeDoorRow(
+        async () => (await markDuplicateCaptureRefundRecoverySucceeded({ bookingId, paymentIntentId, sentPlan: refundPlan })).count === 1,
+        { door: "duplicate-capture", refundLabel: "The duplicate capture's refund", idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+          bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format },
+      );
 
       // #2008 — record the admin-only history event EXACTLY ONCE, gated on this
-      // call being the one that flipped the operation to SUCCEEDED (count > 0).
-      // If the mark was lost or the cron already closed the operation, this
+      // call being the one that flipped the operation to SUCCEEDED. If the
+      // close was lost or the cron already closed the operation, this
       // path records nothing and the cron-replay path owns the event, so the
       // inline and cron paths never double-record. Post-commit, base client.
-      if (markResult && markResult.count > 0) {
+      if (closed) {
         await recordDuplicateCaptureRefundEvent({
           bookingId,
           amountCents: plannedRefundCents,
@@ -2271,12 +2268,11 @@ export async function markBookingPaymentSucceeded({
       // slices/keys, which Stripe answers with the original refunds - and
       // (#4125) records the REFUNDED event, which commits with this close only
       // when it is the one that closed the row, for what was refunded.
-      await closeCapacityRaceRefundRecordingEvent(
+      await closeDoorRow(() => closeCapacityRaceRefundRecordingEvent(
         { bookingId, amountCents: plannedRefundCents, actorMemberId: bookingOwner(reconciliation.booking).memberId },
-        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId, paymentIntentId, store: tx })).count === 1,
-      ).catch((markErr) =>
-        logger.error({ err: markErr, bookingId, paymentIntentId }, "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently")
-      );
+        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId, paymentIntentId, sentPlan: refundPlan, store: tx })).count === 1,
+      ), { door: "capacity-race", refundLabel: "The capacity race's refund", idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format });
 
       return {
         outcome: "cancelled_refunded",

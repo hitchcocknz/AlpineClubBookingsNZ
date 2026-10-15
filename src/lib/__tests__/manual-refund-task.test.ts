@@ -1666,7 +1666,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     );
     expect(result.stripeRefundId).toBe("re_test");
     expect(mocks.markEditFinancialReviewRefundRecoverySucceeded).toHaveBeenCalledWith(
-      { taskId: "task-1" }
+      { taskId: "task-1", sentPlan: [{ paymentTransactionId: "txn-1", amountCents: 7300 }] }
     );
     expect(mocks.recordBookingEvent).toHaveBeenCalledWith(
       expect.objectContaining({

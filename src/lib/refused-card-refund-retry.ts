@@ -311,6 +311,16 @@ export type RefundAttempt = { refunds: ReadonlyArray<AnsweredRefund> } | { error
 type PrePersistedRow = { id: string; paymentIntentId: string; allocationPlan?: Prisma.JsonValue };
 
 /**
+ * #4126, #4144 (`INV-SSOT`): a pre-persisted row still on `plan` - the plan its
+ * door read or sent. Null or empty is a row raised with none, as the enqueue
+ * stores it (`enqueueLedgerRefundRecovery`).
+ */
+function onPlanWhere(plan: Prisma.JsonValue | ReadonlyArray<RefundAllocationSlice> | null): Prisma.PaymentRecoveryOperationWhereInput {
+  const none = plan === null || (Array.isArray(plan) && plan.length === 0);
+  return { allocationPlan: none ? { equals: Prisma.DbNull } : { equals: plan as Prisma.InputJsonValue } };
+}
+
+/**
  * #4126 (`INV-SSOT`): the one compare-and-set a door writes its own
  * pre-persisted row under - untouched (`UNTOUCHED_PRE_PERSISTED_ROW`) and still
  * on `plan`, the plan the door read or sent (null: a row raised with none). A
@@ -320,11 +330,23 @@ export function untouchedPrePersistedRowWhere(
   idempotencyKey: string,
   plan: Prisma.JsonValue | ReadonlyArray<RefundAllocationSlice> | null,
 ): Prisma.PaymentRecoveryOperationWhereInput {
-  return {
-    idempotencyKey,
-    ...UNTOUCHED_PRE_PERSISTED_ROW,
-    allocationPlan: plan === null ? { equals: Prisma.DbNull } : { equals: plan as Prisma.InputJsonValue },
-  };
+  return { idempotencyKey, ...UNTOUCHED_PRE_PERSISTED_ROW, ...onPlanWhere(plan) };
+}
+
+/**
+ * #4144 (`INV-SSOT`): the row a door may close after its inline refund was made
+ * - open, and still on the plan the door sent. The runner may hold it: it
+ * replays these same keys, Stripe answers with the door's refunds, and its own
+ * close then matches nothing, so the record is written once. A row another
+ * writer re-planned - a refusal moved on, a slice marked made, a refund Stripe
+ * failed later (`card-refund-failed-later.ts`) - is not on that plan, and is
+ * still owed: it is left open.
+ */
+export function sentPlanRowWhere(
+  idempotencyKey: string,
+  plan: ReadonlyArray<RefundAllocationSlice>,
+): Prisma.PaymentRecoveryOperationWhereInput {
+  return { idempotencyKey, status: { not: PaymentRecoveryOperationStatus.SUCCEEDED }, ...onPlanWhere(plan) };
 }
 
 /**

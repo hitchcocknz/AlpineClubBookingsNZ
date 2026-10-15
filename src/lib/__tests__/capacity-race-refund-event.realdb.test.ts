@@ -51,6 +51,8 @@ const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
 const CHARGE_CENTS = 12_000;
 // The ledger showed less refundable than the charge at the claim: the plan, and so the refund, is this.
 const PLANNED_CENTS = 9_000;
+/** The plan the claim froze, and so the plan the inline door sends. */
+const PLAN = [{ paymentTransactionId: TXN_ID, amountCents: PLANNED_CENTS }];
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 function assertSafeRaceDbUrl(url: string): void {
@@ -136,7 +138,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         paymentId: PAYMENT_ID,
         paymentIntentId: INTENT,
         amountCents: PLANNED_CENTS,
-        allocationPlan: [{ paymentTransactionId: TXN_ID, amountCents: PLANNED_CENTS }],
+        allocationPlan: PLAN,
       });
       return prisma.paymentRecoveryOperation.findUniqueOrThrow({
         where: { idempotencyKey: `capacity_claim_failed_refund_recovery_${BOOKING_ID}_${INTENT}` },
@@ -225,7 +227,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await refundedEvents()).toEqual([{ amountCents: PLANNED_CENTS, reason: CAPACITY_RACE_REFUND_EVENT_REASON, actorMemberId: null }]);
 
       // The inline door's close, arriving late, closes nothing - so it records nothing.
-      expect(await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT })).toEqual({ count: 0 });
+      expect(await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT, sentPlan: PLAN })).toEqual({ count: 0 });
       // A second run claims nothing.
       expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("not-claimed");
       expect(await refundedEvents()).toHaveLength(1);
@@ -239,7 +241,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const row = await queueCapacityRaceRefund();
       stripeMakesRefunds(async () => {
         // The inline door's refund, answered by the same Stripe key, closes the row first.
-        expect(await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT })).toEqual({ count: 1 });
+        expect(await markCapacityClaimFailedRefundRecoverySucceeded({ bookingId: BOOKING_ID, paymentIntentId: INTENT, sentPlan: PLAN })).toEqual({ count: 1 });
       });
 
       await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST);

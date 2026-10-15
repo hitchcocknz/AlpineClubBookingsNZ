@@ -2051,7 +2051,7 @@ describe("cancelBooking credit refunds", () => {
 
     await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
-    expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking_1" });
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking_1", sentPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50 }] });
     expect(mocks.recordBookingCancellationRefundRecoveryInlineError).not.toHaveBeenCalled();
   });
 
@@ -2443,7 +2443,7 @@ describe("cancelBooking credit refunds", () => {
       // Happy path closes the operation.
       expect(
         mocks.markBookingCancellationRefundRecoverySucceeded
-      ).toHaveBeenCalledWith({ bookingId: "booking_1" });
+      ).toHaveBeenCalledWith({ bookingId: "booking_1", sentPlan: [{ paymentTransactionId: "ptx_1", amountCents: 5000 }] });
       expect(
         mocks.markBookingCancellationRefundRecoverySucceeded.mock
           .invocationCallOrder[0]
