@@ -622,8 +622,8 @@ const LATE_CAPTURE_KIND = "DELETED_BOOKING_LATE_CAPTURE" satisfies ManualRefundT
  * a cancellation's (`booking-cancel.ts`), an edit's refund (`INV-PAY-117`) and
  * an approved refund request's (`INV-PAY-118`), told apart only by occurrence
  * key (`isNonCancellationHandBackTask`). All count, on any booking, so this
- * reads kind and status only. Only COMPLETING a task writes
- * `refundedAmountCents` (`manual-refund-task-resolution.ts`): nothing twice.
+ * reads kind and status, never the occurrence key. Only COMPLETING a task writes
+ * `refundedAmountCents` (`manual-refund-task-resolution.ts`), so an open one is not yet off the payment.
  *
  * - OPEN tasks only: a COMPLETED one is on `refundedAmountCents`; DISMISSED moved nothing.
  * - A part-payment review shares the kind but carries no amount and records
