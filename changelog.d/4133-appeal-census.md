@@ -14,3 +14,5 @@
   owner decided on #4075, an appeal paid back exactly as recorded is listed
   only and needs no sign-off before the ledger switch-over. The census reads
   only; no money or Xero note changes.
+  An appeal refunded to the group organiser's card now counts only once that
+  refund is actually made, on the refund-requests screen as in the census.
