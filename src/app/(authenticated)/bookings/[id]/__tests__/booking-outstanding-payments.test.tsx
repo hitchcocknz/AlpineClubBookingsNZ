@@ -28,10 +28,10 @@ describe("individual outstanding amounts and audience", () => {
     expect(html).toContain("$56.78"); expect(html).toContain("INV-SECOND"); expect(html).not.toContain("$69.12");
   });
   it("links the owner to their actual card, with a read-only officer audience", () => {
-    expect(render({ ...base, cardDueCents: 2500 })).toContain('href="#additional-payment"');
+    expect(render({ ...base, cardDueCents: 2500 })).toContain("Checking current additional card payment details");
     expect(render({ ...base, cardDueCents: 2500 })).toContain("Card ask 2500");
     const officer = render({ ...base, audience: "officer", cardDueCents: 2500 });
-    expect(officer).toContain("The member has"); expect(officer).not.toContain("Card ask"); expect(officer).not.toContain('href="#additional-payment"');
+    expect(officer).toContain("Our records list"); expect(officer).not.toContain("Card ask"); expect(officer).not.toContain('href="#additional-payment"');
     expect(render({ kind: "hidden" })).toBe("");
   });
   it("never labels incomplete or withdrawn evidence settled", () => {
@@ -46,7 +46,7 @@ describe("individual outstanding amounts and audience", () => {
     expect(screen.getByText("Card ask 2500")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Check more invoices" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("last checked additional card amount was $25.00");
+    expect(alert).toHaveTextContent("Our records last listed an additional card amount of $25.00");
     expect(alert).toHaveTextContent("current payment status could not be confirmed");
     expect(screen.queryByText("Card ask 2500")).not.toBeInTheDocument();
     expect(screen.queryByText(/You have an additional card payment/)).not.toBeInTheDocument();

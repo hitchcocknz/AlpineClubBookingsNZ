@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useCallback, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AdditionalPaymentCard } from "@/components/additional-payment-card";
+import { AdditionalPaymentCard, type AdditionalPaymentCardDisplay } from "@/components/additional-payment-card";
 import { Button } from "@/components/ui/button";
 import { bindClubFormat } from "@/lib/club-format-bound";
 import type { ClubFormat } from "@/lib/club-format";
@@ -17,6 +17,11 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
   zone: ClubTimeZone;
 }) {
   const [view, setView] = useState(initial);
+  const [cardDisplay, setCardDisplay] = useState<{ revision: string | null; display: AdditionalPaymentCardDisplay } | null>(null);
+  const cardRevision = view.kind === "ready" ? view.cardRevision : null;
+  const onCardDisplay = useCallback((display: AdditionalPaymentCardDisplay) => setCardDisplay({ revision: cardRevision, display }), [cardRevision]);
+  // A replacement ask starts unknown; an old intent's projection cannot label it.
+  const currentCard = cardDisplay?.revision === cardRevision ? cardDisplay?.display : null;
   const [continuationFailed, setContinuationFailed] = useState(false);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
@@ -26,7 +31,8 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
   if (continuationFailed) return (
     <div className="space-y-2 rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11" role="alert">
       <p>More invoices could not be checked. Current payment information needs to be checked again before using the payment controls.</p>
-      {view.cardDueCents > 0 ? <p>The last checked additional card amount was {money.cents(view.cardDueCents)}. Its current payment status could not be confirmed.</p> : null}
+      {currentCard?.kind === "payable" ? <p>The last checked additional card amount was {money.cents(currentCard.amountCents)}. Its current payment status could not be confirmed.</p>
+        : view.cardDueCents > 0 && currentCard?.kind !== "paid" && currentCard?.kind !== "processing" ? <p>Our records last listed an additional card amount of {money.cents(view.cardDueCents)}. Its current payment status could not be confirmed.</p> : null}
       <Button variant="outline" disabled={pending} onClick={() => startTransition(() => router.refresh())}>
         {pending ? "Checking…" : "Check current payment information"}
       </Button>{" "}
@@ -39,11 +45,12 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
   return (
     <div className="space-y-3" data-testid="booking-outstanding-payments">
       <div className="space-y-2 rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
-        <p className="font-medium">{view.cardDueCents > 0 || view.observations.some((row) => row.kind === "payable") ? "Additional payment outstanding" : "Additional payment information"}</p>
-        {view.cardDueCents > 0 ? <p>
-          {view.audience === "owner" ? "You have" : "The member has"} an additional card payment of <strong>{money.cents(view.cardDueCents)}</strong> due.{" "}
-          {view.audience === "owner" ? <a className="font-medium underline" href="#additional-payment">Pay the additional amount by card below.</a> : "The member can pay by card on their booking page."}
-        </p> : null}
+        <p className="font-medium">{currentCard?.kind === "payable" || view.observations.some((row) => row.kind === "payable") ? "Additional payment outstanding" : "Additional payment information"}</p>
+        {view.cardDueCents > 0 ? view.audience === "officer" ? <p>Our records list an additional card amount of <strong>{money.cents(view.cardDueCents)}</strong>. The member checks the current amount and pays by card on their booking page.</p>
+          : currentCard?.kind === "payable" ? <p>You have an additional card payment of <strong>{money.cents(currentCard.amountCents)}</strong> due. <a className="font-medium underline" href="#additional-payment">Pay the additional amount by card below.</a></p>
+            : currentCard?.kind === "paid" || currentCard?.kind === "processing" ? <p>{currentCard.message}</p>
+              : currentCard?.kind === "unavailable" ? <p>Our records list an additional card amount of <strong>{money.cents(view.cardDueCents)}</strong>. Current payment details could not be confirmed; see the payment information below.</p>
+                : <p>Checking current additional card payment details…</p> : null}
         {view.observations.map((row) => <div key={row.invoiceId} className="space-y-1">
           {row.kind === "payable" ? <>
             <p><strong>{money.cents(row.dueCents)}</strong> remained due on supplementary invoice <strong>{row.invoiceNumber}</strong>.</p>
@@ -78,7 +85,7 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
       {view.audience === "owner" && view.cardDueCents > 0 &&
         isAdditionalPaymentDoorOpenForBooking({ bookingStatus: view.bookingStatus, bookingDeletedAt: null }) && (
           <div id="additional-payment" className="scroll-mt-20">
-            <AdditionalPaymentCard key={view.cardRevision} bookingId={bookingId} additionalAmountCents={view.cardDueCents} />
+            <AdditionalPaymentCard key={view.cardRevision} bookingId={bookingId} additionalAmountCents={view.cardDueCents} onDisplayChange={onCardDisplay} />
           </div>
         )}
     </div>

@@ -802,6 +802,9 @@ linked guest sees neutral copy matching the current stay status, including
 awaiting confirmation on a pending booking. Known or uncertain extras suppress
 whole-booking no-payment reassurance while historical payment receipts and the
 canonical financial-review clauses remain visible to the financial audience.
+The owner banner shares the actual card's secret-response amount and paid or
+processing projection (`INV-ADDPAY-023`); while a replacement loads it shows no
+old amount. Unavailable details and officer views qualify local record amounts.
 
 A user presses **Check more invoices** to reach subsequent bounded batches.
 Each invoice retains its own timestamp and instructions; batches are never

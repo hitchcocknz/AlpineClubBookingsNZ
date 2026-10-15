@@ -201,6 +201,10 @@ transfer shows the remaining amount on each supplementary invoice, the invoice
 number to use as the payment reference, and the time it was checked. Use the
 bank details on that invoice. A finished stay can still have an amount to pay.
 
+The card amount and pay link appear once the current payment details are loaded.
+If that payment was already made or is processing, the page says so. When current
+details are unavailable, an amount from the club's records is labelled as such.
+
 If there are several invoices, each keeps its own amount and instructions.
 **Check more invoices** checks the next group; the amounts already shown are
 dated observations, rather than a current combined total. Nothing refreshes
