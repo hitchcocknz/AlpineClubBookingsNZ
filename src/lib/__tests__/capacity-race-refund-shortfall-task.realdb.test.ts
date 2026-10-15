@@ -119,6 +119,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await prisma.auditLog.deleteMany({ where: { targetId: BOOKING_ID } });
       await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
+      await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
       await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -620,6 +621,94 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await taskRefundNotes()).toEqual([{ cents: CHARGE_CENTS, taskId: task.id }]);
       expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
       expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
+    });
+    /**
+     * #4154 review: the nightly self-heal's card note, queued for the race's stray refunded total while the task is
+     * OPEN, and not yet sent when the task is marked paid back. Queued through the real self-heal (the payment backdated
+     * past its grace window), as the cron does it.
+     */
+    async function selfHealQueuesCardNote(): Promise<string> {
+      await prisma.$executeRaw`UPDATE "Payment" SET "updatedAt" = '2020-01-01T00:00:00Z' WHERE "id" = ${PAYMENT_ID}`;
+      const { reconcileCreditBalances } = await import("@/lib/cron-credit-reconciliation");
+      await reconcileCreditBalances();
+      const cardNotes = await prisma.xeroSyncOperation.findMany({
+        where: { localModel: "Payment", localId: PAYMENT_ID, entityType: "CREDIT_NOTE", operationType: "CREATE", status: "PENDING" },
+        select: { id: true, requestPayload: true },
+      });
+      const card = cardNotes.filter(({ requestPayload }) => ((requestPayload ?? {}) as Record<string, unknown>).paidAnotherWayTaskId == null);
+      expect(card.map(({ requestPayload }) => ((requestPayload ?? {}) as Record<string, unknown>).refundAmountCents)).toEqual([CHARGE_CENTS]);
+      return card[0]!.id;
+    }
+
+    /** The payment's refund-note coverage in Xero, as every note's send-time cap reads it. */
+    async function xeroCoverage(): Promise<number> {
+      const { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } = await import("@/lib/xero-resolved-in-xero-fences");
+      return sumRefundCreditNoteCoverageCents(PAYMENT_ID, await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, prisma), prisma);
+    }
+
+    /** One pass of the real outbox worker over the oldest queued row, which must be `operationId`. */
+    async function outboxSends(operationId: string) {
+      const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
+      expect(await processQueuedXeroOutboxOperations({ limit: 1 })).toMatchObject({ processed: 1 });
+      return prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { status: true, responsePayload: true } });
+    }
+
+    it("MUTATION (review): the self-heal's card note queued but unsent, then the task marked paid back - sent first, the card note bills nothing; the task's note is sized at the whole charge, so Xero holds X, never 2X", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      const cardNoteId = await selfHealQueuesCardNote();
+
+      // Queued, not sent: nothing covers the payment yet, so the completion's Xero-note guard lets it through.
+      expect(await xeroCoverage()).toBe(0);
+      stripeShowsRefunded(0);
+      await resolve("completed", task.id);
+      expect(await taskRefundNotes()).toEqual([{ cents: CHARGE_CENTS, taskId: task.id }]);
+
+      // The outbox sends oldest first: the card note. At send time the task's paid-back cash is answered by its own
+      // note, so the card note's cap is zero - it completes without billing Xero (no Xero connection exists here, so
+      // any attempt to bill would fail the row).
+      expect(await outboxSends(cardNoteId)).toMatchObject({ status: "SUCCEEDED", responsePayload: expect.objectContaining({ skippedNothingUncovered: true }) });
+      expect(await xeroCoverage()).toBe(0);
+      // The task's own note is sized by its record alone: the whole charge.
+      const { readPaidAnotherWayCloseShare } = await import("@/lib/card-refund-paid-another-way-cash");
+      expect(await readPaidAnotherWayCloseShare(prisma, PAYMENT_ID, task.id)).toMatchObject({ uncoveredCents: CHARGE_CENTS });
+      // And the self-heal, run again, asks for no second card note.
+      await prisma.$executeRaw`UPDATE "Payment" SET "updatedAt" = '2020-01-01T00:00:00Z' WHERE "id" = ${PAYMENT_ID}`;
+      const { reconcileCreditBalances } = await import("@/lib/cron-credit-reconciliation");
+      await reconcileCreditBalances();
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, entityType: "CREDIT_NOTE", status: "PENDING" } })).toBe(1);
+    });
+
+    it("MUTATION (review): the other order - the task's note in Xero first, then the queued card note sent - the card note bills nothing and Xero's coverage is X", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      const cardNoteId = await selfHealQueuesCardNote();
+      stripeShowsRefunded(0);
+      await resolve("completed", task.id);
+
+      // The task's note raised in Xero, recorded as its send records one: its row names the note, and the note's active link covers it.
+      const taskNote = await prisma.xeroSyncOperation.findFirstOrThrow({
+        where: { localId: PAYMENT_ID, entityType: "CREDIT_NOTE", requestPayload: { path: ["paidAnotherWayTaskId"], equals: task.id } },
+        select: { id: true },
+      });
+      await prisma.xeroSyncOperation.update({ where: { id: taskNote.id }, data: { status: "SUCCEEDED", xeroObjectId: "race-4154-cn-task", completedAt: new Date() } });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "race-4154-cn-task", role: "REFUND_CREDIT_NOTE", active: true,
+          metadata: { amountCents: CHARGE_CENTS, watermarkCents: CHARGE_CENTS },
+        },
+      });
+      expect(await xeroCoverage()).toBe(CHARGE_CENTS);
+
+      expect(await outboxSends(cardNoteId)).toMatchObject({ status: "SUCCEEDED" });
+      expect(await prisma.xeroObjectLink.count({ where: { localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", active: true } })).toBe(1);
+      expect(await xeroCoverage()).toBe(CHARGE_CENTS);
     });
   },
 );
