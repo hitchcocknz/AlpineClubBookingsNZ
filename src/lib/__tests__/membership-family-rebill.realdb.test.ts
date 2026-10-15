@@ -12,6 +12,12 @@
  * preview -> confirm -> a new QUEUED family charge. A third proof pins that two
  * LIVE charges for one family/type/season are still refused.
  *
+ * The #4110 review adds two: an exempt member's assignment re-saved after the
+ * close moves their NOT_REQUIRED row to NOT_INVOICED through the real save
+ * path, and the family stays billed (only a reversed PAYMENT re-bills, F1);
+ * and a membership approval, which has no officer to see the partly-reversed
+ * warning, withholds the family for Finance instead of invoicing it (F2).
+ *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
  * (#1881), which imports this file so CI reaches it; it owns and cleans its own
@@ -43,6 +49,7 @@ const DECISION_DATE = new Date("2026-07-01T00:00:00.000Z");
 const YEAR_END_MONTH = 3;
 const MAPPING_KEY = "subscriptionIncome";
 const FAMILY_FEE_CENTS = 30_000;
+const RESAVE_APPLY_FROM = "2026-08-01";
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 function assertSafeRaceDbUrl(url: string): void {
@@ -88,6 +95,10 @@ let createdMapping = false;
     async function deleteFixtures() {
       const chargeIds = await familyChargeIds();
       await prisma.auditLog.deleteMany({ where: { entityId: { in: chargeIds } } });
+      // The assignment re-save's own audit rows (#4110 review F1).
+      await prisma.auditLog.deleteMany({
+        where: { OR: [{ memberId: OFFICER_ID }, { subjectMemberId: { in: [...MEMBER_IDS, JOINER_ID] } }] },
+      });
       await prisma.xeroSyncOperation.deleteMany({
         where: { localModel: "MembershipSubscriptionCharge", localId: { in: chargeIds } },
       });
@@ -230,7 +241,9 @@ let createdMapping = false;
       const confirmed = await billing.confirmSubscriptionBillingPreview({
         preview,
         expectedConfirmationToken: preview.confirmationToken,
-        source: "NEW_MEMBER_APPROVAL",
+        // An officer's confirm of the billing run: it acknowledges a warning
+        // and invoices through it (a membership approval withholds instead).
+        source: "ANNUAL_BATCH",
         confirmedByMemberId: OFFICER_ID,
       });
       return { preview, confirmed };
@@ -307,6 +320,32 @@ let createdMapping = false;
       ).toBe(1);
     });
 
+    it("a membership approval withholds a partly reversed closed family for Finance; Finance's confirm then bills it (#4110 review F2)", async () => {
+      await expect(
+        closeAlreadyPaidSubscriptionCharge({ chargeId: OLD_CHARGE_ID, reason: "Paid in cash", actorMemberId: OFFICER_ID }),
+      ).resolves.toMatchObject({ closed: true });
+      await reverseChildPayment();
+
+      // Approval confirms its own preview with nobody looking at the warning.
+      const approval = await billing.queueApprovedMembershipSubscriptionCharges({
+        memberIds: [CHILD_ID],
+        approvedByMemberId: OFFICER_ID,
+        decisionDate: DECISION_DATE,
+      });
+      expect(approval).toEqual({ chargeIds: [], exceptionCount: 1 });
+      expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
+      const open = await prisma.membershipBillingException.findMany({ where: { familyGroupId: FAMILY_ID } });
+      expect(open).toHaveLength(1);
+      expect(open[0]).toMatchObject({ code: "CLOSED_FAMILY_PARTLY_REVERSED", status: "OPEN", source: "NEW_MEMBER_APPROVAL" });
+      expect(open[0]!.message).toContain("It was not invoiced on membership approval");
+
+      // Finance reviews the warning in the billing run and confirms through it.
+      const { confirmed } = await previewAndConfirm();
+      await expectOneNewFamilyCharge(confirmed.chargeIds);
+      const after = await prisma.membershipBillingException.findUniqueOrThrow({ where: { id: open[0]!.id } });
+      expect(after).toMatchObject({ status: "RESOLVED", resolvedVia: "CONFIRM" });
+    });
+
     it("re-bills the family after Xero voided its charge", async () => {
       await voidOldCharge();
 
@@ -340,6 +379,79 @@ let createdMapping = false;
       expect(preview.entries).toEqual([]);
       expect(preview.exceptions).toEqual([
         expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: JOINER_ID, context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID }) }),
+      ]);
+    });
+
+    it("keeps a closed family billed when an exempt member's assignment is re-saved after the close (#4110 review F1)", async () => {
+      // The child is exempt: NOT_REQUIRED, which the close counts as settled.
+      await prisma.memberSubscription.updateMany({
+        where: { memberId: CHILD_ID, seasonYear: SEASON_YEAR },
+        data: { status: "NOT_REQUIRED", manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+      });
+      await expect(
+        closeAlreadyPaidSubscriptionCharge({ chargeId: OLD_CHARGE_ID, reason: "Paid in cash", actorMemberId: OFFICER_ID }),
+      ).resolves.toMatchObject({ closed: true });
+      const released = await prisma.membershipSubscriptionChargeCoverage.findMany({
+        where: { chargeId: OLD_CHARGE_ID },
+        select: { memberId: true, releasedAt: true, subscriptionStatusAtClose: true },
+        orderBy: { memberId: "asc" },
+      });
+      expect(released.map(({ memberId, subscriptionStatusAtClose }) => ({ memberId, subscriptionStatusAtClose }))).toEqual([
+        { memberId: CHILD_ID, subscriptionStatusAtClose: "NOT_REQUIRED" },
+        { memberId: PARENT_ID, subscriptionStatusAtClose: "PAID" },
+      ]);
+      expect(released.every((row) => row.releasedAt !== null)).toBe(true);
+
+      // An officer re-saves the child's REQUIRED-type assignment through the
+      // real save path (same type, a new apply-from date: an unchanged save is
+      // a no-op). Its reconcile no longer sees an active claim, so it moves the
+      // child's NOT_REQUIRED row to NOT_INVOICED — no payment involved.
+      const assignments = await import("@/lib/seasonal-membership-assignments");
+      const { readClubTimeZoneOutsideRequest } = await import("@/lib/club-time-zone-runtime");
+      const { clubToday, dateOnlyInstantOf } = await import("@/lib/club-time");
+      const { clubSeasonYear } = await import("@/lib/financial-year");
+      const zone = await readClubTimeZoneOutsideRequest();
+      const changePreview = await assignments.getSeasonalMembershipChangePreview({
+        memberId: CHILD_ID,
+        seasonYear: SEASON_YEAR,
+        membershipTypeId: TYPE_ID,
+        applyFrom: RESAVE_APPLY_FROM,
+        now: dateOnlyInstantOf(clubToday(zone)),
+        clubCurrentSeasonYear: clubSeasonYear(zone),
+      });
+      expect(changePreview.init?.status ?? 200).toBe(200);
+      const { previewToken } = (changePreview.body as { preview: { previewToken: string } }).preview;
+      const saved = await assignments.saveSeasonalMembershipAssignment({
+        memberId: CHILD_ID,
+        seasonYear: SEASON_YEAR,
+        membershipTypeId: TYPE_ID,
+        applyFrom: RESAVE_APPLY_FROM,
+        adminMemberId: OFFICER_ID,
+        reason: "Re-saved after the close",
+        previewToken,
+        skipXeroContactGroupSync: true,
+      });
+      expect(saved.init?.status ?? 200).toBe(200);
+      expect(saved.body).toMatchObject({ changed: true });
+      // The defect's trigger did happen: the exempt row is now NOT_INVOICED.
+      const child = await prisma.memberSubscription.findUniqueOrThrow({
+        where: { memberId_seasonYear: { memberId: CHILD_ID, seasonYear: SEASON_YEAR } },
+        select: { status: true },
+      });
+      expect(child.status).toBe("NOT_INVOICED");
+
+      const preview = await billing.buildSubscriptionBillingPreview({
+        seasonYear: SEASON_YEAR,
+        decisionDate: DECISION_DATE,
+        memberIds: [...MEMBER_IDS],
+        yearEndMonth: YEAR_END_MONTH,
+      });
+
+      // Nobody's payment was reversed, so the closed family is still billed:
+      // no re-bill, and no false "reversed (child)" warning.
+      expect(preview.entries).toEqual([]);
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: CHILD_ID, context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID }) }),
       ]);
     });
 

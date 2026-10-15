@@ -165,6 +165,32 @@ export function everyActiveCoveredSubscriptionSettled(
 }
 
 /**
+ * Whether a covered subscription was PAID when an officer's close as already
+ * paid released its claim (#4110 review). The close records the status it saw
+ * on the coverage row; NULL is a close made before that column existed, when
+ * the close accepted only PAID.
+ */
+export function wasPaidAtClose(row: { subscriptionStatusAtClose: SubscriptionStatus | null }): boolean {
+  return (row.subscriptionStatusAtClose ?? "PAID") === "PAID";
+}
+
+/**
+ * #4110 (owner, 15 Oct 2026, decision 3): only a reversal of a covered
+ * member's PAYMENT makes a family whose charge was closed as already paid
+ * billable again. So a released coverage row of such a charge counts as
+ * reversed only when its subscription was PAID at the close and is no longer
+ * settled. An exempt member (NOT_REQUIRED at the close) had no payment to
+ * reverse: a later move to NOT_INVOICED — an assignment re-save, or the
+ * membership sync for a REQUIRED type — is not a reversal (#4110 review F1).
+ */
+export function isClosedCoveragePaymentReversed(row: {
+  subscriptionStatusAtClose: SubscriptionStatus | null;
+  subscription: { status: SubscriptionStatus | string };
+}): boolean {
+  return wasPaidAtClose(row) && !isSubscriptionSettled(row.subscription.status);
+}
+
+/**
  * True for a charge an officer closed as already paid. Confirmation writes
  * `NOT_REQUIRED` only for a `NO_INVOICE` charge, so a `NOT_REQUIRED` charge on
  * any other basis can only have come from the close.

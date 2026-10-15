@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   mapping: vi.fn(),
   fee: vi.fn(),
   familyMode: vi.fn(),
+  audit: vi.fn(),
+  enqueue: vi.fn(),
   client: null as unknown,
 }));
 
@@ -45,11 +47,13 @@ vi.mock("@/lib/prisma", () => {
 });
 vi.mock("@/lib/authoritative-fees", () => ({ getEffectiveMembershipAnnualFee: mocks.fee, getFamilyBillingMode: mocks.familyMode }));
 vi.mock("@/lib/xero-mappings", () => ({ getResolvedAccountMapping: mocks.mapping }));
-vi.mock("@/lib/audit", () => ({ createAuditLog: vi.fn() }));
+vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.audit }));
+vi.mock("@/lib/xero-subscription-invoices", () => ({ enqueueMembershipSubscriptionChargeOperation: mocks.enqueue }));
 
 import {
   buildSubscriptionBillingPreview,
   confirmSubscriptionBillingPreview,
+  queueApprovedMembershipSubscriptionCharges,
   reconcileSubscriptionBillingExceptions,
 } from "@/lib/membership-subscription-billing";
 
@@ -172,7 +176,8 @@ describe("membership subscription confirmation", () => {
     expect(keyV1).not.toBe(keyV0);
   });
 
-  it("confirming through a partly-reversed closed family invoices the family fee and leaves no OPEN warning behind (#4110 owner decision)", async () => {
+  /** A kid whose closed family charge had only the kid's payment reversed (#4110). */
+  function seedPartlyReversedClosedFamily() {
     mocks.fee.mockResolvedValue({ id: "fee-family", amountCents: 30_000, billingBasis: "PER_FAMILY", prorationRule: "NONE" });
     mocks.memberFindMany.mockResolvedValue([{
       id: "member-1", firstName: "Kid", lastName: "Member", email: "kid@example.test",
@@ -192,6 +197,10 @@ describe("membership subscription confirmation", () => {
       ],
     }]);
     mocks.chargeUpsert.mockResolvedValue({ id: "charge-rebill" });
+  }
+
+  it("confirming through a partly-reversed closed family invoices the family fee and leaves no OPEN warning behind (#4110 owner decision)", async () => {
+    seedPartlyReversedClosedFamily();
     const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
     expect(preview.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
 
@@ -204,6 +213,42 @@ describe("membership subscription confirmation", () => {
     }));
     expect(mocks.exceptionUpsert).not.toHaveBeenCalled();
     expect(result).toEqual({ chargeIds: ["charge-rebill"], exceptionCount: 0 });
+    // The officer's confirm bills the family, so a warning an earlier approval
+    // left OPEN is superseded: its fingerprint is not kept out of the resolve.
+    const warningFingerprint = preview.exceptions[0]!.fingerprint;
+    const resolve = mocks.exceptionUpdateMany.mock.calls[0]![0] as { where: { fingerprint?: { notIn: string[] } } };
+    expect(resolve.where.fingerprint?.notIn ?? []).not.toContain(warningFingerprint);
+    expect(mocks.audit).toHaveBeenCalledTimes(0);
+  });
+
+  it("membership approval withholds a partly-reversed closed family: no charge, the warning OPEN for Finance, and counted (#4110 review F2)", async () => {
+    seedPartlyReversedClosedFamily();
+
+    const result = await queueApprovedMembershipSubscriptionCharges({
+      memberIds: ["member-1"],
+      approvedByMemberId: "approver-1",
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    // No officer saw the warning, so the family is not invoiced.
+    expect(mocks.chargeUpsert).not.toHaveBeenCalled();
+    expect(mocks.operationCreate).not.toHaveBeenCalled();
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+    // The warning is left OPEN for Finance, saying why it was not invoiced.
+    expect(mocks.exceptionUpsert).toHaveBeenCalledTimes(1);
+    const upsert = mocks.exceptionUpsert.mock.calls[0]![0] as {
+      update: { status: string; message: string; source: string };
+      create: { code: string; message: string; source: string; familyGroupId: string };
+    };
+    expect(upsert.update).toMatchObject({ status: "OPEN", source: "NEW_MEMBER_APPROVAL" });
+    expect(upsert.create).toMatchObject({ code: "CLOSED_FAMILY_PARTLY_REVERSED", source: "NEW_MEMBER_APPROVAL", familyGroupId: "family-1" });
+    expect(upsert.create.message).toContain("It was not invoiced on membership approval");
+    // Counted, so the approver sees "requires Finance review".
+    expect(result).toEqual({ chargeIds: [], exceptionCount: 1 });
+    // The approver's audit row records it as withheld, not acknowledged.
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    const details = JSON.parse((mocks.audit.mock.calls[0]![0] as { details: string }).details) as Record<string, unknown>;
+    expect(details).toMatchObject({ source: "NEW_MEMBER_APPROVAL", chargeCount: 0, exceptionCount: 1, acknowledgedWarnings: [], totalCents: 0 });
   });
 
   it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {

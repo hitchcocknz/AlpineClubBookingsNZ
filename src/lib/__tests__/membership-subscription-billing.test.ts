@@ -683,15 +683,27 @@ describe("membership subscription billing", () => {
     };
   }
 
-  /** A family charge as the preview's query selects it, with its covered subscriptions. */
-  function familyCharge(status: string, coveredStatuses: Array<[string, string]> = [], overrides: Record<string, unknown> = {}) {
+  /**
+   * A family charge as the preview's query selects it, with its covered
+   * subscriptions: [name, status now, status the close recorded]. An omitted
+   * close status is a close made before the column existed (read as PAID).
+   */
+  function familyCharge(
+    status: string,
+    coveredStatuses: Array<[string, string] | [string, string, string]> = [],
+    overrides: Record<string, unknown> = {},
+  ) {
     return {
       id: `charge-${status.toLowerCase()}`,
       familyGroupId: "family-1",
       membershipTypeId: "type-1",
       billingBasis: "PER_FAMILY",
       status,
-      coverage: coveredStatuses.map(([memberName, subscriptionStatus]) => ({ memberName, subscription: { status: subscriptionStatus } })),
+      coverage: coveredStatuses.map(([memberName, subscriptionStatus, statusAtClose]) => ({
+        memberName,
+        subscriptionStatusAtClose: statusAtClose ?? null,
+        subscription: { status: subscriptionStatus },
+      })),
       ...overrides,
     };
   }
@@ -732,6 +744,27 @@ describe("membership subscription billing", () => {
     expect(preview.exceptions).toEqual([
       expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required" }) }),
     ]);
+  });
+
+  it("an exempt member moved from NOT_REQUIRED to NOT_INVOICED after the close reversed no payment: the family stays billed, with no warning (#4110 review F1)", async () => {
+    // An officer re-saved the exempt member's REQUIRED-type assignment, and the
+    // reconcile flipped their NOT_REQUIRED row; the parent's payment stands.
+    const preview = await previewFamily(
+      [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["Cub Member", "NOT_INVOICED", "NOT_REQUIRED"]])],
+      ["re-billable"],
+    );
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required" }) }),
+    ]);
+  });
+
+  it("every PAYMENT reversed beside an exempt member is a full reversal: billed again, with no partial warning (#4110 review F1)", async () => {
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["Cub Member", "NOT_INVOICED", "NOT_REQUIRED"]]),
+    ]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.exceptions).toEqual([]);
   });
 
   it("a closed family every one of whose payments was reversed is billed again, with no warning (#4110)", async () => {

@@ -74,9 +74,17 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
     mocks.chargeFindUnique.mockResolvedValue(conflictedCharge());
     mocks.chargeUpdateMany.mockResolvedValue({ count: 1 });
     mocks.subscriptionUpdateMany.mockResolvedValue({ count: 2 });
-    mocks.coverageUpdateMany.mockResolvedValue({ count: 2 });
+    releaseClaimsSettledAs({ PAID: 2 });
     mocks.findLiveOperation.mockResolvedValue(null);
   });
+
+  /** The per-status release writes, answering how many claims each status had. */
+  function releaseClaimsSettledAs(counts: Partial<Record<"PAID" | "NOT_REQUIRED", number>>) {
+    mocks.coverageUpdateMany.mockImplementation(
+      async ({ where }: { where: { subscription: { status: "PAID" | "NOT_REQUIRED" } } }) =>
+        ({ count: counts[where.subscription.status] ?? 0 }),
+    );
+  }
 
   it("closes the charge, re-checks PAID in a guarded write, releases the claims and audits the officer and reason", async () => {
     await expect(closeAlreadyPaidSubscriptionCharge(INPUT)).resolves.toEqual({
@@ -92,10 +100,11 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
       where: { id: { in: ["sub-1", "sub-2"] }, status: { in: ["PAID", "NOT_REQUIRED"] } },
       data: { voidGeneration: { increment: 1 } },
     });
-    expect(mocks.coverageUpdateMany).toHaveBeenCalledWith({
-      where: { chargeId: "charge-1", releasedAt: null },
-      data: { releasedAt: expect.any(Date) },
-    });
+    // Each claim records the status it was settled with (#4110 review F1).
+    expect(mocks.coverageUpdateMany.mock.calls.map(([args]) => args)).toEqual([
+      { where: { chargeId: "charge-1", releasedAt: null, subscription: { status: "PAID" } }, data: { releasedAt: expect.any(Date), subscriptionStatusAtClose: "PAID" } },
+      { where: { chargeId: "charge-1", releasedAt: null, subscription: { status: "NOT_REQUIRED" } }, data: { releasedAt: expect.any(Date), subscriptionStatusAtClose: "NOT_REQUIRED" } },
+    ]);
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     const [entry, client] = mocks.audit.mock.calls[0];
     expect(client).toBeDefined();
@@ -190,11 +199,18 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
         { subscriptionId: "sub-2", memberName: "Cub Exempt", subscription: { status: "NOT_REQUIRED", memberId: "member-2" } },
       ],
     }));
+    releaseClaimsSettledAs({ PAID: 1, NOT_REQUIRED: 1 });
     await expect(closeAlreadyPaidSubscriptionCharge(INPUT)).resolves.toMatchObject({ closed: true });
     expect(mocks.subscriptionUpdateMany).toHaveBeenCalledWith({
       where: { id: { in: ["sub-1", "sub-2"] }, status: { in: ["PAID", "NOT_REQUIRED"] } },
       data: { voidGeneration: { increment: 1 } },
     });
+  });
+
+  it("rolls back when the per-status releases do not account for every claim it counted", async () => {
+    releaseClaimsSettledAs({ PAID: 1 });
+    await expectRefusal(409, /changed while you were closing it/);
+    expect(mocks.audit).not.toHaveBeenCalled();
   });
 
   it("refuses a charge with no active coverage", async () => {

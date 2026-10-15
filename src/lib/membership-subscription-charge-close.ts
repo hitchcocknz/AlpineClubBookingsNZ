@@ -29,7 +29,8 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  *     `NOT_REQUIRED` for an exempt member (owner decision on #4110, 15 Oct
  *     2026); the same guarded write bumps its `voidGeneration`.
  *  3. The charge's ACTIVE coverage claims are released (`releasedAt` set, rows
- *     kept), as the void path does (#2147).
+ *     kept), as the void path does (#2147), each recording the status its
+ *     subscription was settled with (`subscriptionStatusAtClose`, #4110 review).
  *  4. An audit row naming the officer, the reason, the charge and the
  *     subscriptions.
  *
@@ -45,10 +46,13 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * collapse onto this closed charge's key and raise nothing. A PER_FAMILY charge
  * re-bills the same way after a reversal (owner decisions, 15 Oct 2026): the
  * preview keeps counting a closed family charge as billed — a new joiner still
- * meets FAMILY_ALREADY_BILLED — until a subscription it covered stops being
- * settled, then bills the family again (warning when only some were reversed),
- * and the family/type/season unique index covers only live charges (#4110), so
- * the new family charge sits beside this retained row.
+ * meets FAMILY_ALREADY_BILLED — until a covered member's PAYMENT is reversed
+ * (PAID at the close, no longer settled), then bills the family again (warning
+ * when only some payments were reversed), and the family/type/season unique
+ * index covers only live charges (#4110), so the new family charge sits beside
+ * this retained row. An exempt member, NOT_REQUIRED at the close, had no
+ * payment to reverse: an assignment save or membership sync that later moves
+ * them to NOT_INVOICED does not re-bill the family (#4110 review F1).
  *
  * GUARDS AND RACES. No advisory lock, like the void release and the family
  * markers: every write is guarded in its own WHERE. The charge claim is a
@@ -92,6 +96,7 @@ export type CloseAlreadyPaidChargeResult = {
   message: string;
 };
 
+const CHANGED_WHILE_CLOSING_MESSAGE = "This charge changed while you were closing it. Refresh and try again.";
 const ALREADY_CLOSED_MESSAGE = "This charge is already closed as paid.";
 
 export async function closeAlreadyPaidSubscriptionCharge(input: {
@@ -178,7 +183,7 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         return { closed: false, message: ALREADY_CLOSED_MESSAGE };
       }
       throw new CloseAlreadyPaidChargeError(
-        "This charge changed while you were closing it. Refresh and try again.",
+        CHANGED_WHILE_CLOSING_MESSAGE,
         409,
       );
     }
@@ -197,10 +202,27 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
       );
     }
 
-    const released = await tx.membershipSubscriptionChargeCoverage.updateMany({
-      where: { chargeId: charge.id, releasedAt: null },
-      data: { releasedAt: new Date() },
-    });
+    // Each claim records the status its subscription was settled with (#4110
+    // review F1): only a later move away from PAID is a reversed payment that
+    // re-bills a closed family, so an exempt member's NOT_REQUIRED moving to
+    // NOT_INVOICED is not. The subscription rows are locked by the write above
+    // until commit, so the statuses cannot move between these writes, and
+    // together they release every active claim the guard above counted.
+    const releasedAt = new Date();
+    let releasedCount = 0;
+    for (const status of SETTLED_SUBSCRIPTION_STATUSES) {
+      const released = await tx.membershipSubscriptionChargeCoverage.updateMany({
+        where: { chargeId: charge.id, releasedAt: null, subscription: { status } },
+        data: { releasedAt, subscriptionStatusAtClose: status },
+      });
+      releasedCount += released.count;
+    }
+    if (releasedCount !== subscriptionIds.length) {
+      throw new CloseAlreadyPaidChargeError(
+        CHANGED_WHILE_CLOSING_MESSAGE,
+        409,
+      );
+    }
 
     await createAuditLog({
       action: "membership-subscription-billing.close-already-paid",
@@ -216,7 +238,7 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         status: "NOT_REQUIRED",
         subscriptionIds,
         memberIds: charge.coverage.map((row) => row.subscription.memberId),
-        coverageReleased: released.count,
+        coverageReleased: releasedCount,
       }),
     }, tx);
 

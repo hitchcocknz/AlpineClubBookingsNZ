@@ -1215,6 +1215,14 @@ model MembershipSubscriptionChargeCoverage {
   // (prisma/partial-unique-indexes.tsv) — Prisma cannot express it, which is
   // why the plain subscriptionId @unique was dropped.
   releasedAt     DateTime?
+  // #4110 review: the covered subscription's status when an officer's close as
+  // already paid (#4098) released this claim — PAID, or NOT_REQUIRED for an
+  // exempt member. Only a later move away from PAID is a reversed payment that
+  // makes a closed family re-billable (owner, 15 Oct 2026); an exempt member
+  // later moved to NOT_INVOICED had no payment to reverse. Null on an active
+  // claim, on a claim the void sync released, and on a close made before the
+  // column existed, when the close accepted only PAID (read as PAID).
+  subscriptionStatusAtClose SubscriptionStatus?
   createdAt      DateTime @default(now())
 
   charge       MembershipSubscriptionCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)

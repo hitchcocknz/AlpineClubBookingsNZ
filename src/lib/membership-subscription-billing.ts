@@ -37,8 +37,9 @@ import { buildXeroIdempotencyKey, startXeroSyncOperation } from "@/lib/xero-sync
 import {
   CLOSED_FAMILY_PARTLY_REVERSED_CODE,
   isChargeClosedAsAlreadyPaid,
+  isClosedCoveragePaymentReversed,
   isInvoicingPreviewWarning,
-  isSubscriptionSettled,
+  wasPaidAtClose,
 } from "@/lib/subscription-charge-already-paid";
 
 export class SubscriptionBillingError extends Error {
@@ -448,8 +449,8 @@ export async function buildSubscriptionBillingPreview(input: {
         // one (an officer closed it as already paid, #4098) IS read: it keeps
         // the family billed — a new joiner still raises FAMILY_ALREADY_BILLED —
         // until a covered member's payment is reversed (owner, #4110). The
-        // decision is `closedFamilyChargeStillBills` below, from the
-        // subscriptions on its (released) coverage.
+        // decision is the `billedFamilyTypes` loop below, from its (released)
+        // coverage through `isClosedCoveragePaymentReversed`.
         status: { not: "VOIDED" },
       },
       select: {
@@ -459,7 +460,11 @@ export async function buildSubscriptionBillingPreview(input: {
         status: true,
         billingBasis: true,
         coverage: {
-          select: { memberName: true, subscription: { select: { status: true } } },
+          select: {
+            memberName: true,
+            subscriptionStatusAtClose: true,
+            subscription: { select: { status: true } },
+          },
         },
       },
     }),
@@ -706,12 +711,15 @@ export async function buildSubscriptionBillingPreview(input: {
     return feeByTypeAndTier.get(memoKey) ?? null;
   };
   // #4110 (owner, 15 Oct 2026): which family charges still bill their family.
-  // A live charge always does. A charge closed as already paid does while
-  // every subscription it covered is still settled; once a covered member's
-  // payment is reversed it stops, so the family is billed again — and when
-  // only SOME were reversed the preview warns the officer that confirming
-  // invoices the whole family fee (CLOSED_FAMILY_PARTLY_REVERSED). A live
-  // charge for the same key wins over a closed one.
+  // A live charge always does. A charge closed as already paid does until a
+  // covered member's PAYMENT is reversed: a member PAID at the close who is no
+  // longer settled. An exempt member (NOT_REQUIRED at the close) later moved to
+  // NOT_INVOICED by an assignment save or the membership sync reversed nothing,
+  // so it never re-bills the family (#4110 review F1). Once a payment is
+  // reversed the family is billed again — and when only SOME of the payments
+  // were reversed the preview warns the officer that confirming invoices the
+  // whole family fee (CLOSED_FAMILY_PARTLY_REVERSED). A live charge for the
+  // same key wins over a closed one.
   const billedFamilyTypes = new Map<string, string>();
   const partlyReversedClosedFamilies = new Map<string, { chargeId: string; reversedMemberNames: string[] }>();
   for (const charge of existingFamilyCharges) {
@@ -720,12 +728,12 @@ export async function buildSubscriptionBillingPreview(input: {
       billedFamilyTypes.set(key, charge.id);
       continue;
     }
-    const reversed = charge.coverage.filter((row) => !isSubscriptionSettled(row.subscription.status));
+    const reversed = charge.coverage.filter(isClosedCoveragePaymentReversed);
     if (reversed.length === 0) {
       if (!billedFamilyTypes.has(key)) billedFamilyTypes.set(key, charge.id);
       continue;
     }
-    if (reversed.length < charge.coverage.length) {
+    if (reversed.length < charge.coverage.filter(wasPaidAtClose).length) {
       partlyReversedClosedFamilies.set(key, {
         chargeId: charge.id,
         reversedMemberNames: reversed.map((row) => row.memberName).sort(compareOrdinal),
@@ -1256,23 +1264,49 @@ async function persistOpenExceptions(
   source: MembershipSubscriptionChargeSource,
   exceptions: SubscriptionBillingPlanException[],
 ) {
+  const withholdWarnings = confirmWithholdsInvoicingWarnings(source);
   for (const item of exceptions) {
-    // #4110: an invoicing warning is acknowledged by the confirm itself, and
-    // the family it names is billed by it, so it is never left OPEN.
-    if (isInvoicingPreviewWarning(item.code)) continue;
+    const warning = isInvoicingPreviewWarning(item.code);
+    // #4110: an officer's confirm acknowledges an invoicing warning and bills
+    // the family it names, so it is never left OPEN. A confirm with no officer
+    // (#4110 review F2) withholds that family instead, so the warning stays
+    // OPEN for Finance, saying why it was not invoiced.
+    if (warning && !withholdWarnings) continue;
+    const message = warning ? `${item.message} ${WITHHELD_ON_APPROVAL_NOTE}` : item.message;
     await tx.membershipBillingException.upsert({
       where: { fingerprint: item.fingerprint },
       update: {
         source,
         status: "OPEN",
-        message: item.message,
+        message,
         context: item.context as Prisma.InputJsonValue,
         lastSeenAt: new Date(),
         resolvedAt: null,
       },
-      create: { ...item, source, context: item.context as Prisma.InputJsonValue },
+      create: { ...item, message, source, context: item.context as Prisma.InputJsonValue },
     });
   }
+}
+
+/**
+ * #4110 review F2 (owner decision 1 on #4110: the preview flags a partly
+ * reversed closed family for the officer BEFORE confirming). Membership
+ * approval confirms its own preview with no officer looking at it, so for that
+ * source an invoicing warning withholds the family entry it names, like any
+ * other exception: it is persisted OPEN for Finance and counted, so the
+ * approver is told Finance must review it. Finance's own confirm of the billing
+ * run then shows the warning and invoices the family.
+ */
+function confirmWithholdsInvoicingWarnings(source: MembershipSubscriptionChargeSource): boolean {
+  return source === "NEW_MEMBER_APPROVAL";
+}
+
+const WITHHELD_ON_APPROVAL_NOTE =
+  "It was not invoiced on membership approval: Finance must review it in Subscription billing and confirm the billing run to invoice it.";
+
+/** The family entry an invoicing warning names. */
+function invoicingWarningEntryKey(item: Pick<SubscriptionBillingPlanException, "familyGroupId" | "membershipTypeId">): string {
+  return `${item.membershipTypeId}:family:${item.familyGroupId}`;
 }
 
 // Resolve every OPEN MembershipBillingException for the season that a fresh
@@ -1394,7 +1428,17 @@ export async function confirmSubscriptionBillingPreview(input: {
       }
       throw new SubscriptionBillingError("Billing preview changed; refresh and confirm the current preview.");
     }
-    const currentFingerprints = preview.exceptions.map((item) => item.fingerprint);
+    const withholdWarnings = confirmWithholdsInvoicingWarnings(input.source);
+    const warnings = preview.exceptions.filter((item) => isInvoicingPreviewWarning(item.code));
+    // #4110 review F2: with no officer in the loop, a warned family is withheld.
+    const withheldFamilyEntryKeys = new Set(withholdWarnings ? warnings.map(invoicingWarningEntryKey) : []);
+    const confirmedEntries = preview.entries.filter((entry) =>
+      entry.familyGroupId === null || !withheldFamilyEntryKeys.has(invoicingWarningEntryKey(entry)));
+    // An officer's confirm bills every warned family, so a warning an earlier
+    // approval left OPEN is superseded: leaving its fingerprint out resolves it.
+    const currentFingerprints = preview.exceptions
+      .filter((item) => withholdWarnings || !isInvoicingPreviewWarning(item.code))
+      .map((item) => item.fingerprint);
     const scopedMemberIds = [...new Set([
       ...preview.entries.flatMap((entry) => entry.coveredMembers.map((member) => member.id)),
       ...preview.exceptions.map((item) => item.memberId).filter((id): id is string => Boolean(id)),
@@ -1412,7 +1456,7 @@ export async function confirmSubscriptionBillingPreview(input: {
       scopedMemberIds: input.source === "NEW_MEMBER_APPROVAL" ? scopedMemberIds : null,
     });
     await persistOpenExceptions(tx, input.source, preview.exceptions);
-    for (const entry of preview.entries) {
+    for (const entry of confirmedEntries) {
       const subscriptions = [];
       for (const covered of entry.coveredMembers) {
         const subscription = await tx.memberSubscription.upsert({
@@ -1569,13 +1613,14 @@ export async function confirmSubscriptionBillingPreview(input: {
           source: input.source,
           confirmationToken: input.expectedConfirmationToken,
           chargeCount: chargeIds.length,
-          exceptionCount: countWithheldExceptions(preview.exceptions),
+          exceptionCount: countWithheldExceptions(preview.exceptions, input.source),
           // #4110: warnings the officer confirmed through, so the audit row
-          // records that a partly reversed family was knowingly re-billed.
-          acknowledgedWarnings: preview.exceptions
-            .filter((item) => isInvoicingPreviewWarning(item.code))
-            .map((item) => ({ code: item.code, familyGroupId: item.familyGroupId, context: item.context })),
-          totalCents: preview.totalCents,
+          // records that a partly reversed family was knowingly re-billed. An
+          // approval withholds them instead (#4110 review F2).
+          acknowledgedWarnings: withholdWarnings
+            ? []
+            : warnings.map((item) => ({ code: item.code, familyGroupId: item.familyGroupId, context: item.context })),
+          totalCents: confirmedEntries.reduce((sum, entry) => sum + entry.chargedAmountCents, 0),
         }),
       }, tx);
     }
@@ -1586,12 +1631,23 @@ export async function confirmSubscriptionBillingPreview(input: {
     // precedent in config-transfer/apply (#1886, F12).
     timeout: 60_000,
   });
-  return { chargeIds: [...new Set(chargeIds)], exceptionCount: countWithheldExceptions(input.preview.exceptions) };
+  return {
+    chargeIds: [...new Set(chargeIds)],
+    exceptionCount: countWithheldExceptions(input.preview.exceptions, input.source),
+  };
 }
 
-/** Exceptions that withheld an invoice; an invoicing warning (#4110) is not one. */
-function countWithheldExceptions(exceptions: readonly SubscriptionBillingPlanException[]): number {
-  return exceptions.filter((item) => !isInvoicingPreviewWarning(item.code)).length;
+/**
+ * Exceptions that withheld an invoice. An invoicing warning (#4110) is not one
+ * on an officer's confirm, which invoices through it; on an approval it is
+ * (#4110 review F2).
+ */
+function countWithheldExceptions(
+  exceptions: readonly SubscriptionBillingPlanException[],
+  source: MembershipSubscriptionChargeSource,
+): number {
+  const withholdWarnings = confirmWithholdsInvoicingWarnings(source);
+  return exceptions.filter((item) => withholdWarnings || !isInvoicingPreviewWarning(item.code)).length;
 }
 
 export async function queueApprovedMembershipSubscriptionCharges(input: {
