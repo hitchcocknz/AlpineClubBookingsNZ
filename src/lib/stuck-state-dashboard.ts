@@ -23,7 +23,7 @@ import { countUnconfirmedSchoolAttendeeLists } from "@/lib/school-attendee-confi
 import { loadHutLeaderLookaheadDays } from "@/lib/lodge-settings";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { SETTLEMENT_MARKER_EVENT_REASONS } from "@/lib/manual-settlement-reversal-event";
-import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 import { formatBookingReference } from "@/lib/booking-reference";
 import { getBedAllocationDashboard } from "@/lib/bed-allocation-board";
@@ -855,12 +855,8 @@ async function getPaymentCounts(
     overduePending,
     cancelledUnrecordedRefunds,
   ] = await Promise.all([
-    deps.db.paymentRecoveryOperation.count({
-      where: {
-        status: "FAILED",
-        attempts: { gte: MAX_PAYMENT_RECOVERY_ATTEMPTS },
-      },
-    }),
+    // #4104: a card refund raised dead is PENDING with its attempts spent.
+    deps.db.paymentRecoveryOperation.count({ where: PAYMENT_RECOVERY_EXHAUSTED_WHERE }),
     deps.db.paymentRecoveryOperation.count({
       where: {
         status: "PROCESSING",
@@ -871,6 +867,7 @@ async function getPaymentCounts(
       where: {
         status: "PENDING",
         nextRetryAt: { lte: pendingOverdueThreshold },
+        attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS },
       },
     }),
     // #1349 (F2) crash-window detector: a CANCELLED booking that kept a fully

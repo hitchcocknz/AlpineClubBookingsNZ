@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { XERO_TOKEN_ROW_ORDER } from "@/lib/xero-token-row-order";
 import { getRuntimeConfigCheck } from "@/lib/runtime-config";
 import { countExhaustedPaymentRecoveryOperations } from "@/lib/payment-recovery-health";
+import { PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE } from "@/lib/payment-recovery-constants";
 import { getOperationalStripeSecretKey } from "@/lib/stripe-config";
 import { readCronRuntimeZone } from "@/lib/cron-runtime-zone";
 
@@ -222,6 +223,8 @@ async function checkPaymentRecoveryQueue(): Promise<CheckResult> {
           where: {
             status: "PENDING",
             createdAt: { lt: staleThreshold },
+            // #4104: a dead row is never claimed; it is counted as exhausted.
+            ...PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE,
           },
         }),
         countExhaustedPaymentRecoveryOperations(),

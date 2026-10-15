@@ -833,7 +833,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
      * own beside any card delta on the payment - never deduplicated into a
      * pending card note that happens to share its watermark. Round 8: sized by
      * the record alone - what it paid back less what its own notes cover
-     * (`readPaidAnotherWayCloseShare`) - so `refundAmountCents` is not read.
+     * (`readPaidAnotherWayCloseShare`), and never above `refundAmountCents`
+     * (#4104: a close a card note partly answers asks for less).
      */
     paidAnotherWayTaskId?: string;
     /**
@@ -942,7 +943,10 @@ export async function enqueueXeroRefundCreditNoteOperation(
           `Refusing to queue a paid-another-way Xero refund note for payment ${paymentId}: its close ${options.paidAnotherWayTaskId} is not on this payment`
         );
       }
-      noteAmountCents = share.uncoveredCents;
+      // #4104 review (MM2, ML1): never more than the caller asks for - a close
+      // of a refund Stripe failed later asks only for what the card refund
+      // note already in Xero does not answer (`queuePaidAnotherWayXero`).
+      noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
     } else {
       // #3635 round-3 R1: the cash a note may answer, which leaves out refunds of
       // late captures the app never recorded in Xero (`INV-PAY-110`).

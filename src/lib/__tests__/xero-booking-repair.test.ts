@@ -296,6 +296,8 @@ function createDependencies(state: {
   // #3924 round 7 (money M2): an approved capture's card refund row, and the
   // record of its close as paid another way.
   lateCaptureApprovalRefunds?: { id: string; idempotencyKey: string }[];
+  // #4104 (#4128 review C5): card refunds Stripe failed later, owed by rows of their own.
+  failedLaterRows?: { paymentId: string; idempotencyKey: string; allocationPlan: unknown }[];
   // #4103: the refunds already recorded on a payment, which the late-capture
   // repair reads for each slice's key generation.
   paymentRefunds?: { paymentId: string; paymentTransactionId: string | null; amountCents: number; status: string }[];
@@ -498,8 +500,13 @@ function createDependencies(state: {
         // open statuses only. The mock discriminates the way the real table
         // would rather than returning one list to both.
         findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+          // #4104 (#4128 review C5): the unsettled failed-later rows, by key prefix.
+          if (where?.idempotencyKey?.startsWith === "card_refund_failed_later_") {
+            return (state.failedLaterRows ?? []).filter((row) => (where.paymentId?.in ?? []).includes(row.paymentId));
+          }
           // #3924 round 7: the approval refund rows, by their exact keys.
-          const askedKeys: string[] = where?.idempotencyKey?.in ?? [];
+          // #4104: asked as an OR with the failed-later rows on the captures' intents.
+          const askedKeys: string[] = where?.idempotencyKey?.in ?? where?.OR?.[0]?.idempotencyKey?.in ?? [];
           if (where?.type === undefined && askedKeys.some((key) => key.startsWith("late_capture_approval_refund"))) {
             return (state.lateCaptureApprovalRefunds ?? []).filter((row) => askedKeys.includes(row.idempotencyKey));
           }
@@ -4020,6 +4027,47 @@ describe("runBookingXeroRepair", () => {
 
     expect(secondRun.summary.bookingsWithFindings).toBe(0);
     expect(deps.enqueueXeroSupplementaryInvoiceOperation).toHaveBeenCalledTimes(1);
+  });
+
+  // #4104 (#4128 review C5): a late capture's refund that Stripe failed later
+  // is owed again by a row of its own; the repair must not offer it as well.
+  it("MUTATION: leaves out of the late-capture refund what a failed-later card refund row still owes", async () => {
+    const transaction = {
+      id: "txn_primary",
+      paymentId: "payment_1",
+      kind: "PRIMARY",
+      source: "STRIPE",
+      stripePaymentIntentId: "pi_primary_captured",
+      amountCents: 10000,
+      refundedAmountCents: 0,
+      status: "SUCCEEDED",
+      paymentMethodId: "pm_123",
+      reason: null,
+      createdAt: new Date("2026-05-01T00:00:00Z"),
+      updatedAt: new Date("2026-05-01T00:00:00Z"),
+    };
+    const booking = makeBooking({
+      status: "CANCELLED",
+      payment: { ...makeBooking().payment, amountCents: 10000, refundedAmountCents: 0, status: "SUCCEEDED", transactions: [transaction] },
+    });
+    const owing = (amountCents: number) =>
+      createDependencies({
+        bookings: [booking],
+        failedLaterRows: [
+          { paymentId: "payment_1", idempotencyKey: "card_refund_failed_later_re_1", allocationPlan: [{ paymentTransactionId: "txn_primary", amountCents }] },
+        ],
+      });
+    const lateCaptureRefund = async (deps: ReturnType<typeof createDependencies>) =>
+      (await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } })).passes[0].bookings[0].actions.find(
+        (action) => action.type === "AUTO_REFUND_LATE_CAPTURED_PAYMENT",
+      );
+
+    expect((await lateCaptureRefund(owing(4000)))?.payload).toMatchObject({
+      refundAmountCents: 6000,
+      allocation: [{ paymentTransactionId: "txn_primary", amountCents: 6000 }],
+    });
+    // All of it owed by the row: nothing is offered.
+    expect(await lateCaptureRefund(owing(10000))).toBeUndefined();
   });
 
   it("classifies cancelled bookings using per-intent transaction state instead of aggregate payment status", async () => {

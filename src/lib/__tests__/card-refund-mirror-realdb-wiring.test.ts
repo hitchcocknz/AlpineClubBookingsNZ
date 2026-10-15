@@ -49,6 +49,23 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("the runner moves a refused slice only on the attempt it holds");
   });
 
+  // #4104: the failed-later refund proof rides the same harness.
+  it("wires the failed-later card refund's real-database proof the same way (#4104)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./card-refund-failed-later.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/card-refund-failed-later.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("two deliveries at once take the refund out once and write one row");
+    expect(suite).toContain("the event before the door's own write");
+    expect(suite).toContain("one a worker holds is refused, and nothing commits");
+  });
+
   // #4097: the cancel's card refund shortfall proof rides the same harness.
   it("wires the card refund shortfall's real-database proof the same way (#4097)", () => {
     const harness = readFileSync(

@@ -15,11 +15,13 @@ export const MAX_PAYMENT_RECOVERY_ATTEMPTS = 5;
  * no retry scheduled, or at the attempt ceiling, is DEAD: the money it was to
  * move will not move without a person, so it is never read as in flight.
  *
- * `PENDING` counts REGARDLESS of `nextRetryAt` and `attempts`, deliberately:
- * the runner's claim additionally requires `nextRetryAt <= now` and
- * `attempts < MAX` (`claimPaymentRecoveryOperation`), but a `PENDING` row is
- * one enqueued or re-armed to run, not one the runner gave up on, and this
- * predicate answers "not yet dead", not "claimable this instant".
+ * `PENDING` counts REGARDLESS of `nextRetryAt`, deliberately: the runner's
+ * claim additionally requires `nextRetryAt <= now` (`claimPaymentRecoveryOperation`),
+ * but a `PENDING` row is one enqueued or re-armed to run, not one the runner
+ * gave up on, and this predicate answers "not yet dead", not "claimable this
+ * instant". Except with its attempts spent (#4104 review, CL5): a card refund
+ * Stripe failed later that is raised dead for the treasurer is written
+ * `PENDING` at the attempt ceiling, which no claim takes again.
  *
  * Its readers: the booking-ledger projection census — the in-flight refund
  * class (`booking-ledger-projection-census-classes.ts`) and the snapshot's
@@ -45,7 +47,10 @@ export function isPaymentRecoveryOperationInFlight(operation: {
   attempts: number;
   nextRetryAt: Date | null;
 }): boolean {
-  if (operation.status === "PENDING" || operation.status === "PROCESSING") return true;
+  if (operation.status === "PROCESSING") return true;
+  // #4104 review (CL5): a card refund raised dead is PENDING with its attempts
+  // spent (`isPaymentRecoveryOperationExhausted`) - never run again, so not in flight.
+  if (operation.status === "PENDING") return operation.attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS;
   return operation.status === "FAILED" && operation.nextRetryAt !== null && operation.attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS;
 }
 
@@ -57,7 +62,41 @@ export function isPaymentRecoveryOperationInFlight(operation: {
  */
 export const PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE = {
   OR: [
-    { status: { in: ["PENDING", "PROCESSING"] } },
+    { status: "PROCESSING" },
+    { status: "PENDING", attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS } },
     { status: "FAILED", nextRetryAt: { not: null }, attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS } },
   ],
 } satisfies Prisma.PaymentRecoveryOperationWhereInput;
+
+/**
+ * #4104 review (ops 7): a recovery the runner will never claim again - in a
+ * claimable status with its attempts spent - as a Prisma filter. A card refund
+ * raised dead (`card-refund-failed-later.ts`) is PENDING with its attempts
+ * spent, so "exhausted" is read on both statuses, and a queue that is only
+ * waiting on dead rows is not a stalled cron (`PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE`).
+ */
+export const PAYMENT_RECOVERY_EXHAUSTED_WHERE = {
+  status: { in: ["PENDING", "FAILED"] },
+  attempts: { gte: MAX_PAYMENT_RECOVERY_ATTEMPTS },
+} satisfies Prisma.PaymentRecoveryOperationWhereInput;
+
+/** The other side of it: a row the runner's claim can still take, once its retry time comes. */
+export const PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE = {
+  attempts: { lt: MAX_PAYMENT_RECOVERY_ATTEMPTS },
+  nextRetryAt: { not: null },
+} satisfies Prisma.PaymentRecoveryOperationWhereInput;
+
+/**
+ * #4104 review (CL4, `INV-SSOT`): {@link PAYMENT_RECOVERY_EXHAUSTED_WHERE} as a
+ * predicate - the one "dead" rule of a card refund row: the "Paid another way"
+ * close's claim (`deadCardRefundOperationWhere`), the card refund shortfall's
+ * "stopped" refusal and the failed-later re-plan's outcome all ask it. A
+ * `FAILED` row with no retry time has its attempts spent too: the worker's
+ * failure is terminal exactly at the ceiling (`failPaymentRecoveryOperation`).
+ */
+export function isPaymentRecoveryOperationExhausted(operation: {
+  status: PaymentRecoveryOperationStatus | string;
+  attempts: number;
+}): boolean {
+  return (operation.status === "PENDING" || operation.status === "FAILED") && operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
+}
