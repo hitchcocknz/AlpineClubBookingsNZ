@@ -72,6 +72,11 @@ function matches(row: Row, where: Row | undefined): boolean {
       if ("notIn" in expected) return !(expected as { notIn: unknown[] }).notIn.includes(actual);
       if ("not" in expected) return actual !== (expected as { not: unknown }).not;
       if ("gte" in expected) return actual instanceof Date && actual >= (expected as { gte: Date }).gte;
+      // A JSON path filter (`paidAnotherWayCloseNoteRowsWhere`): one top-level key.
+      if ("path" in expected) {
+        const { path, equals } = expected as { path: string[]; equals: unknown };
+        return (actual as Row | null)?.[path[0]!] === equals;
+      }
       return true;
     }
     return actual === expected;
@@ -1381,7 +1386,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
   });
 });
 
-describe("#4091 (owner decision: never re-adopt a voided note) - the reissue's Xero key", () => {
+describe("INV-ADDPAY-041 (#4091): the reissue's Xero key names only the voided notes it could replay", () => {
   /** Raise the refund's note, then let Xero void it as the inbound sync records it: mirror off, pointer released. */
   async function raiseThenVoid() {
     queueRefundNote("op_first", 5000, 5000);
@@ -1420,6 +1425,31 @@ describe("#4091 (owner decision: never re-adopt a voided note) - the reissue's X
 
     expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
     expect(row("op_reissue")).toMatchObject({ xeroObjectId: "cn_2" });
+  });
+
+  it("MUTATION: a sibling note voided between a close's lost attempt and its retry leaves the retry's key alone - no duplicate in Xero", async () => {
+    seedPayment(PaymentSource.INTERNET_BANKING);
+    // The payment's own refund note, beside a "Paid another way" close.
+    upsertLink({ localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_C", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 5000, watermarkCents: 5000 } });
+    state.eligibleCents = 7500;
+    state.closes = { close_1: 2500 };
+    queueRefundNote("op_close", 2500, 7500, "internet-banking");
+    row("op_close").requestPayload = { ...(row("op_close").requestPayload as Row), paidAnotherWayTaskId: "close_1" };
+    // Xero raises the close's note but the answer is lost.
+    state.xero.loseNextCreateAnswer = true;
+    await expect(dispatch("op_close")).rejects.toThrow(/socket hang up/);
+    const firstKey = [...state.xero.noteKeys.keys()];
+
+    // Xero voids the OTHER note before anyone retries the close.
+    const sibling = state.links.find((link) => link.xeroObjectId === "cn_C")!;
+    sibling.active = false;
+    sibling.metadata = { ...(sibling.metadata as Row), status: "VOIDED" };
+    await dispatch("op_close");
+
+    // The retry sends the same key, so Xero answers with the note it raised.
+    expect([...state.xero.noteKeys.keys()]).toEqual(firstKey);
+    expect(state.xero.notes.size).toBe(1);
+    expect(row("op_close")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_1" });
   });
 
   it("with no note voided the key is byte-identical to before", async () => {

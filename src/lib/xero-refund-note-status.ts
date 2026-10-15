@@ -6,7 +6,7 @@
 // count?" through these helpers, so no path can treat a VOIDED note as live
 // coverage while its siblings do not. A pure leaf: import it from anywhere.
 import type { Prisma } from "@prisma/client";
-import { asRecord, readString } from "@/lib/xero-json";
+import { asRecord, readNumber, readString } from "@/lib/xero-json";
 
 /**
  * True when a Xero credit-note status still contributes to refund coverage.
@@ -82,35 +82,71 @@ export function canonicalRefundNoteCandidates<
   };
 }
 
+/** The refund-note links of one payment (or several), active or not: the one fetch every reader below shares. */
+async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
+  return (await db.xeroObjectLink.findMany({
+    where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
+    select: { xeroObjectId: true, metadata: true },
+  })) ?? [];
+}
+
 /**
  * The payment's refund notes, active or not, in one read on the caller's client:
  * its per-refund notes (#3880), and the notes Xero recorded VOIDED/DELETED,
- * which are never re-adopted as its one refund note (#4091, owner decision).
+ * which are never re-adopted as its one refund note (`INV-ADDPAY-041`).
  */
 export async function refundNoteIdSets(
   paymentId: string,
-  db: Prisma.TransactionClient,
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
 ): Promise<{ perDelta: Set<string>; cancelled: Set<string> }> {
-  const links = (await db.xeroObjectLink.findMany({
-    where: { localModel: "Payment", localId: paymentId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
-    select: { xeroObjectId: true, metadata: true },
-  })) ?? [];
+  const links = await readRefundNoteLinks(paymentId, db);
   const idsWhere = (keep: (metadata: unknown) => boolean) =>
     new Set(links.filter((link) => keep(link.metadata)).map((link) => link.xeroObjectId));
   return { perDelta: idsWhere(isPerDeltaRefundNoteLink), cancelled: idsWhere(isRefundCreditNoteLinkCancelledInXero) };
 }
 
-/** #4091: the refund notes on these payments a link records VOIDED/DELETED, active or not. */
+/** `refundNoteIdSets(...).cancelled` for several payments at once (the booking repair's loader). */
 export async function cancelledRefundNoteIds(
   paymentIds: readonly string[],
   db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
 ): Promise<Set<string>> {
   if (paymentIds.length === 0) return new Set();
-  const links = (await db.xeroObjectLink.findMany({
-    where: { localModel: "Payment", localId: { in: [...paymentIds] }, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
-    select: { xeroObjectId: true, metadata: true },
-  })) ?? [];
+  const links = await readRefundNoteLinks({ in: [...paymentIds] }, db);
   return new Set(links.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)).map((link) => link.xeroObjectId));
+}
+
+/** What a refund note's idempotency key is built on: a watermark (v2), an amount (v1), or a close's own rows (v3). */
+export type RefundNoteKeyScope =
+  | { watermarkCents: number }
+  | { amountCents: number }
+  | { closeRowsWhere: Prisma.XeroSyncOperationWhereInput };
+
+/**
+ * `INV-ADDPAY-041`: the parts a refund note's key gains after a void - the
+ * voided notes THIS key could replay, sorted, as `after-void:<ids>`: those
+ * recorded at the key's own watermark or amount, or raised by the close's own
+ * rows. None match, and the key is byte-identical, so a void of an unrelated
+ * note never moves a live retry's key. The one home for the enqueue's
+ * correlation key and the executor's Xero key.
+ */
+export async function refundNoteKeyAfterVoidParts(
+  paymentId: string,
+  scope: RefundNoteKeyScope,
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "xeroSyncOperation">,
+): Promise<string[]> {
+  const cancelled = (await readRefundNoteLinks(paymentId, db)).filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata));
+  if (cancelled.length === 0) return [];
+  let replayable: typeof cancelled;
+  if ("closeRowsWhere" in scope) {
+    const rows = (await db.xeroSyncOperation.findMany({ where: scope.closeRowsWhere, select: { xeroObjectId: true } })) ?? [];
+    const own = new Set(rows.map((row) => row.xeroObjectId));
+    replayable = cancelled.filter((link) => own.has(link.xeroObjectId));
+  } else {
+    const [field, cents] = "watermarkCents" in scope ? ["watermarkCents", scope.watermarkCents] : ["amountCents", scope.amountCents];
+    replayable = cancelled.filter((link) => readNumber(asRecord(link.metadata)?.[field]) === cents);
+  }
+  const ids = [...new Set(replayable.map((link) => link.xeroObjectId))].sort();
+  return ids.length > 0 ? ["after-void", ...ids] : [];
 }
 
 /** #3880: the payment's per-refund notes, active or not, read on the caller's client. */
@@ -132,20 +168,29 @@ export function canonicalRefundNoteFromField(
   return fieldNoteId && !perDeltaNoteIds.has(fieldNoteId) ? fieldNoteId : null;
 }
 
-/** #3880: `canonicalRefundNoteFromField`, reading the payment's per-refund notes on the caller's client. */
+/** The notes that are never the payment's one refund note: per-refund (#3880) and voided (`INV-ADDPAY-041`). */
+export async function neverCanonicalRefundNoteIds(paymentId: string, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
+  const { perDelta, cancelled } = await refundNoteIdSets(paymentId, db);
+  return new Set([...perDelta, ...cancelled]);
+}
+
+/** #3880: `canonicalRefundNoteFromField`, never a per-refund or (`INV-ADDPAY-041`) voided note, on the caller's client. */
 export async function readCanonicalRefundNoteField(
   payment: { id: string; xeroRefundCreditNoteId: string | null } | null | undefined,
   db: Prisma.TransactionClient,
 ): Promise<string | null> {
   if (!payment?.xeroRefundCreditNoteId) return null;
-  return canonicalRefundNoteFromField(payment.xeroRefundCreditNoteId, await perDeltaRefundNoteIds(payment.id, db));
+  return canonicalRefundNoteFromField(payment.xeroRefundCreditNoteId, await neverCanonicalRefundNoteIds(payment.id, db));
 }
 
-/** #3880: whether a note may be written into `Payment.xeroRefundCreditNoteId` - never a per-refund one. */
+/**
+ * Whether a note may be written into `Payment.xeroRefundCreditNoteId`: never a
+ * per-refund one (#3880), and never one Xero voided (`INV-ADDPAY-041`).
+ */
 export async function mayRecordAsCanonicalRefundNote(
   paymentId: string,
   creditNoteId: string,
   db: Prisma.TransactionClient,
 ): Promise<boolean> {
-  return !(await perDeltaRefundNoteIds(paymentId, db)).has(creditNoteId);
+  return !(await neverCanonicalRefundNoteIds(paymentId, db)).has(creditNoteId);
 }

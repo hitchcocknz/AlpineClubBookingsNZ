@@ -1402,7 +1402,9 @@ export function classifyBookingContext(
       })
     : null;
 
-  if (payment && refundCreditNote?.conflicts.length) {
+  // `INV-ADDPAY-041`: a voided note is never the payment's note - no conflict, no field backfill.
+  const refundNoteConflicts = refundCreditNote?.conflicts.filter((id) => !context.cancelledRefundNoteIds.has(id)) ?? [];
+  if (payment && refundCreditNote && refundNoteConflicts.length) {
     const action = addAction(
       actionMap,
       buildManualReviewAction(
@@ -1418,14 +1420,13 @@ export function classifyBookingContext(
       details: {
         paymentId: payment.id,
         creditNoteId: refundCreditNote.objectId,
-        conflictingCreditNoteIds: refundCreditNote.conflicts,
+        conflictingCreditNoteIds: refundNoteConflicts,
       },
       actionKeys: [action.key],
     });
   }
 
-  // #4091 (owner decision): a note Xero voided is never written back into the field.
-  const backfillNote = refundCreditNote && !context.cancelledRefundNoteIds?.has(refundCreditNote.objectId) ? refundCreditNote : null;
+  const backfillNote = refundCreditNote && !context.cancelledRefundNoteIds.has(refundCreditNote.objectId) ? refundCreditNote : null;
   if (payment && backfillNote && !payment.xeroRefundCreditNoteId) {
     const action = addAction(actionMap, {
       key: `payment-field:refund-credit-note:${payment.id}:${backfillNote.objectId}`,

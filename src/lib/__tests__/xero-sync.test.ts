@@ -319,7 +319,7 @@ describe("findCanonicalPaymentRefundCreditNote", () => {
     );
   });
 
-  describe("#4091 (owner decision): a note Xero voided is never re-adopted", () => {
+  describe("INV-ADDPAY-041 (#4091): a note Xero voided is never re-adopted", () => {
     // A bank-transfer payment whose one refund note Xero voided: its mirror is
     // inactive and recorded VOIDED, but its refund payment link and its
     // succeeded create still name it.

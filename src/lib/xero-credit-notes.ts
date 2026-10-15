@@ -17,7 +17,7 @@
 
 import { reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import { assertNoRefundCreditNoteInFlight } from "@/lib/xero-refund-note-in-flight";
-import { mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField, refundNoteIdSets } from "@/lib/xero-refund-note-status";
+import { mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField, refundNoteKeyAfterVoidParts, type RefundNoteKeyScope } from "@/lib/xero-refund-note-status";
 import {
   XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
@@ -37,7 +37,7 @@ import { prisma } from "./prisma";
 import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
-import { readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
+import { paidAnotherWayCloseNoteRowsWhere, readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -498,11 +498,13 @@ export async function createXeroCreditNote(
   }
   const noteLinkRole = refundRequestId !== null ? REFUND_REQUEST_CREDIT_NOTE_ROLE : "REFUND_CREDIT_NOTE";
 
-  // #4091 (owner decision: never re-adopt a voided note): once a refund note on
-  // this payment is voided, a reissue's Xero key names the voided notes, so Xero
-  // cannot replay the voided note's create. Byte-identical while none is voided.
-  const voidedNoteIds = refundRequestId !== null ? [] : [...(await refundNoteIdSets(paymentId, prisma)).cancelled].sort();
-  const afterVoid = voidedNoteIds.length > 0 ? ["after-void", ...voidedNoteIds] : [];
+  // `INV-ADDPAY-041`: a reissue's Xero key names the voided notes it could
+  // replay, so Xero never hands one back; byte-identical while none matches.
+  const keyScope: RefundNoteKeyScope | null = refundRequestId !== null ? null
+    : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null
+    ? { closeRowsWhere: paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId) }
+    : isDeltaMode ? { watermarkCents: effectiveWatermarkCents ?? watermarkCents ?? 0 } : { amountCents: refundAmountCents };
+  const afterVoid = keyScope ? await refundNoteKeyAfterVoidParts(paymentId, keyScope, prisma) : [];
   const creditNoteIdempotencyKey = refundRequestId !== null
     ? refundRequestCreditNoteKey(paymentId, refundRequestId)
     : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null

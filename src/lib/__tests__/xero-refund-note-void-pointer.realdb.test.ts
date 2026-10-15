@@ -306,17 +306,18 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
       expect(await state()).toEqual(after);
     });
 
-    it("a refund note requested again after the void raises a fresh note and never re-adopts the voided one (#4091 owner decision)", async () => {
+    it("INV-ADDPAY-041: a refund note requested again after the void raises a fresh note and never re-adopts the voided one", async () => {
       await paymentWithNotes("INTERNET_BANKING", "cn_canonical", [
-        { id: "cn_canonical", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000 } },
+        { id: "cn_canonical", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, watermarkCents: 20_000 } },
       ]);
       await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: "inv-race-4091" } });
+      const ORIGINAL_KEY = `payment:${PAYMENT_ID}:refund-credit-note:20000:v1`;
       // The create that raised it, which the single-note lookup falls back to.
       await prisma.xeroSyncOperation.create({
         data: {
           direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
           status: "SUCCEEDED", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", xeroObjectNumber: "CN-4091",
-          correlationKey: "race-4091-original-create", completedAt: new Date("2026-06-01T00:00:00.000Z"),
+          correlationKey: ORIGINAL_KEY, idempotencyKey: ORIGINAL_KEY, completedAt: new Date("2026-06-01T00:00:00.000Z"),
         },
       });
       const voided = {
@@ -336,13 +337,20 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
       expect(queued.queueOperationId).not.toBeNull();
       const fresh = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: queued.queueOperationId! } });
       expect(fresh).toMatchObject({ operationType: "CREATE", entityType: "CREDIT_NOTE", status: "PENDING", xeroObjectId: null });
+      // INV-ADDPAY-041: its row key names the voided note too, so the failed
+      // panel never reads the voided note's SUCCEEDED create as its repair.
+      expect(fresh.correlationKey).toBe(`${ORIGINAL_KEY}:after-void:cn_canonical`);
+      const { resolveFailedXeroOperationStates } = await import("@/lib/xero-admin-failures");
+      const failed = await prisma.xeroSyncOperation.update({ where: { id: fresh.id }, data: { status: "FAILED" } });
+      expect((await resolveFailedXeroOperationStates([failed])).get(fresh.id)?.state).toBe("ACTIVE");
+      await prisma.xeroSyncOperation.update({ where: { id: fresh.id }, data: { status: "PENDING" } });
       const after = await state();
       expect(after).toEqual({ pointer: null, active: [] });
       expectNoMissingLink(after);
 
-      // Xero is a bank transfer's payment rail, so the void un-refunded the
-      // payment (INV-ADDPAY-021) and the worker would size the note at zero.
-      // The club records the refund again; the worker then raises the note
+      // Xero is a bank transfer's payment rail, so the void undid the refund
+      // (INV-ADDPAY-021, owner decision) and the worker would size the note at
+      // zero. The treasurer records the refund again; the worker then raises the note
       // under a Xero key naming the voided note, so a Xero that still holds
       // the voided note's key cannot replay it back.
       expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).refundedAmountCents).toBe(0);

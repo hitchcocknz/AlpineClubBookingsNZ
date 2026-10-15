@@ -8,8 +8,8 @@ import {
   isPerDeltaRefundNoteLink,
   isRefundCreditNoteLinkCancelledInXero,
   perDeltaRefundNoteIds,
+  neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
-  refundNoteIdSets,
 } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
@@ -359,10 +359,9 @@ export async function findCanonicalPaymentRefundCreditNote(
     ).map((link) => link.xeroObjectId)
   );
   // #3880: a per-refund note is never the canonical one, in any form below.
-  // #4091 (owner decision): nor is a note Xero voided or deleted - a later
+  // `INV-ADDPAY-041`: nor is a note Xero voided or deleted - a later
   // request raises a fresh note rather than re-adopting it.
-  const { perDelta, cancelled } = await refundNoteIdSets(paymentId, db);
-  const neverCanonicalNoteIds = new Set([...perDelta, ...cancelled]);
+  const neverCanonicalNoteIds = await neverCanonicalRefundNoteIds(paymentId, db);
   const refundCreditNoteLinks = allRefundCreditNoteLinks.filter((link) => !neverCanonicalNoteIds.has(link.xeroObjectId));
   const nonCanonicalNoteIds = new Set([...refundRequestNoteIds, ...neverCanonicalNoteIds]);
   const refundPaymentLinks = await db.xeroObjectLink.findMany({
