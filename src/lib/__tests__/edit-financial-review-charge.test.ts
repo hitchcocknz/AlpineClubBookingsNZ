@@ -107,6 +107,8 @@ vi.mock("@/lib/prisma", () => ({
     $transaction: (...a: unknown[]) => mocks.transaction(...a),
     manualRefundTask: {
       findMany: (...a: unknown[]) => mocks.manualRefundTaskFindMany(...a),
+      // #4154 review (M1): the completion's read, before its transaction, of whether the task is a capacity race's - none here.
+      findUnique: async () => null,
     },
     paymentTransaction: {
       findFirst: (...a: unknown[]) => mocks.paymentTransactionFindFirst(...a),
