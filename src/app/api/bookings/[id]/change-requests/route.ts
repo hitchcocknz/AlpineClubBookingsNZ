@@ -5,7 +5,6 @@ import { logAudit } from "@/lib/audit";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
 import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
-import { normalizeGuestStayRange } from "@/lib/booking-guest-stay-range-input";
 import {
   calendarDateOfDateOnlyInstant,
 } from "@/lib/club-time";
@@ -26,6 +25,7 @@ import {
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
 import {
+  addedGuestFirstNights,
   addedGuestNightsRefusal,
   buildChangeRequestSummary,
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
@@ -161,8 +161,7 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      // #4088: each guest's night rows, so a grid night set is compared with
-      // the nights the guest holds and the request records them.
+      // #4088: the night rows, which a grid night set is compared with and the request records.
       guests: { include: { nights: { select: { stayDate: true } } } },
       member: true,
       // #3369: the owner may be an Organisation; bookingOwner() reads both.
@@ -333,20 +332,7 @@ export async function POST(
     requestedCheckIn,
     requestedCheckOut,
     requestedEffectiveDate: effectiveDate,
-    // The canonical range rule (`INV-SSOT`), so a grid night set's first
-    // night is read as the guest's start (#4088). Already validated above.
-    addedGuestStarts: (addGuests ?? []).map(
-      (guest, index) =>
-        normalizeGuestStayRange(
-          {
-            stayStart: guest.stayStart ?? null,
-            stayEnd: guest.stayEnd ?? null,
-            nights: guest.nights ?? null,
-          },
-          { checkIn: nextCheckIn, checkOut: nextCheckOut },
-          index,
-        ).stayStart,
-    ),
+    addedGuestStarts: addedGuestFirstNights(addGuests ?? [], { checkIn: nextCheckIn, checkOut: nextCheckOut }),
   });
 
   if (!touchesLockedPeriod) {
@@ -444,9 +430,7 @@ export async function POST(
             ageTier: guest.ageTier,
             isMember: guest.isMember,
             memberId: guest.memberId,
-            // `stayStart`, `stayEnd` and (#4088) the night rows the guest holds,
-            // which approval's drift check compares and a grid request is read
-            // against.
+            // `stayStart`, `stayEnd` and (#4088) the night rows approval's drift check compares.
             ...storedGuestNightsAsDays(guest),
           })),
         },

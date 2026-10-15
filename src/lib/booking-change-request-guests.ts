@@ -167,6 +167,33 @@ export function addedGuestNightsRefusal(
 }
 
 /**
+ * Each added guest's first night (#4088), by the canonical range rule: a grid
+ * night set's earliest night, else Date In, else the stay's check-in. For the
+ * route's locked-period test, after `addedGuestNightsRefusal` accepted them.
+ */
+export function addedGuestFirstNights(
+  guests: ReadonlyArray<{
+    stayStart?: string | null;
+    stayEnd?: string | null;
+    nights?: ReadonlyArray<string> | null;
+  }>,
+  stay: { checkIn: Date; checkOut: Date },
+): Date[] {
+  return guests.map(
+    (guest, index) =>
+      normalizeGuestStayRange(
+        {
+          stayStart: guest.stayStart ?? null,
+          stayEnd: guest.stayEnd ?? null,
+          nights: guest.nights ?? null,
+        },
+        stay,
+        index,
+      ).stayStart,
+  );
+}
+
+/**
  * #4030 re-review of 72c933ffc: an existing guest's requested nights are read
  * by the same canonical range rule the added guests' are
  * (`normalizeGuestStayRange`): real `yyyy-mm-dd` days, both bounds or neither,
