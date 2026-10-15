@@ -107,7 +107,7 @@ import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
 import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { alertCancelCardShortfall, cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
 import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
-import { LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -1746,7 +1746,6 @@ async function performBookingCancellation(
             paymentId: payment.id,
             stripePaymentIntentId: payment.additionalPaymentIntentId,
           },
-          orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
           select: { id: true, amountCents: true },
         });
         if (additionalTransaction) {

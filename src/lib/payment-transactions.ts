@@ -1183,8 +1183,7 @@ type RefundableStripeTransaction = {
   amountCents: number;
   refundedAmountCents: number;
   createdAt: Date;
-  /** #4132: on a `createdAt` tie, the row inserted last is the newer (`compareLedgerRowsNewestFirst`). */
-  insertionSeq: number;
+  insertionSeq: number; // #4132: breaks a createdAt tie (`compareLedgerRowsNewestFirst`)
 };
 
 /**
@@ -1211,9 +1210,7 @@ function buildRefundAllocationSlices<T extends RefundableStripeTransaction>(
       (transaction) =>
         transaction.amountCents - transaction.refundedAmountCents > 0
     )
-    // #4132 (INV-PAY-133): newest first, and on a `createdAt` tie the row
-    // inserted last first - never the order the rows happened to be read in.
-    .sort(compareLedgerRowsNewestFirst);
+    .sort(compareLedgerRowsNewestFirst); // #4132 (INV-PAY-133): a tie's last-inserted row first
 
   const totalRefundableCents = refundableTransactions.reduce(
     (sum, transaction) =>

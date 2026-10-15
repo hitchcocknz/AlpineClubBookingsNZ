@@ -101,13 +101,7 @@ export async function findEditReviewChargeRequest({
       withdrawnAt: null, // #3528, `INV-ADDPAY-040`: a withdrawn request is closed for good
     },
     orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
-    select: {
-      id: true,
-      stripePaymentIntentId: true,
-      amountCents: true,
-      carriedAskCents: true,
-      status: true,
-    },
+    select: { id: true, stripePaymentIntentId: true, amountCents: true, carriedAskCents: true, status: true },
   });
   if (!row) return null;
   return {

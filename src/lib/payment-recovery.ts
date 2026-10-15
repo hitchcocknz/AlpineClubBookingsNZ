@@ -67,11 +67,7 @@ import { formatCents } from "@/lib/utils";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { finishApprovedLateCaptureRefundAfterReplay } from "@/lib/late-capture-refund-credit-note";
 import { holdSupersededLateCaptureIfRequired } from "@/lib/late-capture-refund-hold";
-import {
-  compareLedgerRowsNewestFirst,
-  LEDGER_ROWS_NEWEST_FIRST,
-  LEDGER_ROWS_OLDEST_FIRST,
-} from "@/lib/payment-ledger-order";
+import { compareLedgerRowsNewestFirst, LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 type PaymentRecoveryStore = Prisma.TransactionClient | typeof prisma;
 
@@ -2052,10 +2048,7 @@ async function processBookingModificationRefundOperation(
         (transaction) =>
           transaction.amountCents - transaction.refundedAmountCents > 0,
       )
-      // #4132 (INV-PAY-133): newest first, and on a `createdAt` tie the row
-      // inserted last first - the slices (and their Stripe keys) never depend
-      // on the order PostgreSQL happened to return tied rows in.
-      .sort(compareLedgerRowsNewestFirst);
+      .sort(compareLedgerRowsNewestFirst); // #4132 (INV-PAY-133): a tie's last-inserted row first
 
     const refundableCents = refundableTransactions.reduce(
       (sum, transaction) =>
