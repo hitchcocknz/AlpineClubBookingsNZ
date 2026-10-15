@@ -25,7 +25,7 @@ import {
   draftBookingLedgerAcknowledgements,
   summarizeBookingLedgerCensus,
 } from "@/lib/booking-ledger-projection-census-report";
-import { evaluateBookingLedgerPages } from "@/lib/booking-ledger-projection-census-store";
+import { evaluateBookingLedgerPages, parseCancelledEventSnapshot } from "@/lib/booking-ledger-projection-census-store";
 import { BOOKING_LEDGER_CENSUS_GATE_POLICY, cancelledOwedComponents } from "@/lib/booking-ledger-projection-census-classes";
 import type { BookingLedgerCensusRow, CensusLedgerLine } from "@/lib/booking-ledger-projection-census-row";
 import { planSettlementLines, type PostedSettlementLine } from "@/lib/booking-ledger-settlement-posting";
@@ -36,8 +36,11 @@ import { cancellationCreditDescription } from "@/lib/cancellation-settled-money"
 import { editReviewHandBackLinesWhere, isEditReviewHandBackLine } from "@/lib/edit-financial-review-charge-shape";
 import {
   buildBookingCancellationRefundIdempotencyKey,
+  buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
+  buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildEditFinancialReviewRefundRecoveryIdempotencyKey,
   buildRefundRequestRefundRecoveryIdempotencyKey,
+  isBookingCancelCardRefundRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
@@ -2328,5 +2331,211 @@ describe("#4120: a paid refund appeal on a cancelled booking is REFUND_APPEAL_PA
   it("two appeals sum: each by what its outcome says went back", () => {
     const subject = bankAppeal("COMPLETED", 2_500);
     expect(identity({ ...subject, appeals: [...subject.appeals, { id: "rr2", refundedCents: 1_500 }] }, "PRICE").explainedBy).toEqual([{ name: "REFUND_APPEAL_PAID", cents: -4_000 }]);
+  });
+});
+
+describe("#4147: a capacity race's cancel is judged by its own refund rows and what it owes back", () => {
+  const RACE_INTENT = "pi-race-4147";
+  const raceOp = (plannedCents: number, refund: "made" | "retrying" | "dead", key = buildCapacityClaimFailedRefundRecoveryIdempotencyKey(B, RACE_INTENT)) => ({
+    type: "REFUND_BOOKING_MODIFICATION" as const,
+    status: refund === "made" ? ("SUCCEEDED" as const) : ("FAILED" as const),
+    attempts: refund === "dead" ? 5 : 1,
+    nextRetryAt: refund === "retrying" ? LATER : null,
+    amountCents: plannedCents,
+    idempotencyKey: key,
+    paymentId: "pay-3583",
+    paymentIntentId: RACE_INTENT,
+  });
+
+  /**
+   * A $190 card charge that completed after the dates filled (`markBookingPaymentSucceeded`'s
+   * capacity void), confirmed on the ledger as the back-post confirms it: the stay reversed with
+   * nothing kept, `plannedCents` frozen under the capacity race's own key (no row for an empty
+   * plan), and refunded if made. Since #4125 the snapshot's settled figure is the plan's total;
+   * before it, the whole charge.
+   */
+  function capacityRace(plannedCents: number, refund: "made" | "retrying" | "dead", snapshot: "since #4125" | "before #4125" = "since #4125", recordedCents = 19_000): BookingLedgerCensusRow {
+    const ledger = confirmedLedger();
+    const base = row({ lines: [], transactions: [txn("t1", recordedCents)] });
+    settle(ledger, base);
+    const cancel = planCancellationChargeLines({ bookingId: B, lodgeId: LODGE, keptCents: 0, chargeLines: ledger.reversible(), adjustmentLines: ledger.adjustments() });
+    if (cancel.kind !== "lines") throw new Error("cancel plan refused");
+    ledger.post(cancel.postings, LATER);
+    const madeCents = refund === "made" ? plannedCents : 0;
+    const subject: BookingLedgerCensusRow = {
+      ...base,
+      booking: { ...base.booking, status: "CANCELLED" },
+      refunds: madeCents > 0 ? [{ id: "r-race", status: "succeeded", amountCents: madeCents, paymentTransactionId: "t1" }] : [],
+      transactions: [txn("t1", recordedCents, { refundedAmountCents: madeCents })],
+      payment: payment({ refundedAmountCents: madeCents }),
+      recoveryOperations: plannedCents > 0 ? [raceOp(plannedCents, refund)] : [],
+      cancellation:
+        snapshot === "since #4125"
+          ? { refundMethod: "card", settledAmountCents: plannedCents, keptCents: null, capacityRace: { paidAmountCents: 19_000, retainedAmountCents: 0 } }
+          : { refundMethod: "card", settledAmountCents: 19_000, keptCents: null },
+      lines: [],
+    };
+    settle(ledger, subject, false, LATER);
+    return { ...subject, lines: ledger.lines };
+  }
+
+  const judged = (subject: BookingLedgerCensusRow) => {
+    const evaluation = evaluateBookingLedgerIdentities(subject);
+    return {
+      price: evaluation.identities.find((each) => each.identity === "PRICE")!,
+      disagreements: evaluation.identities.filter((each) => each.status === "DISAGREE").map((each) => each.identity),
+      coverage: evaluation.coverage,
+      integrity: evaluation.integrity,
+    };
+  };
+
+  /** V5 as a capacity race names it: `detail` says no member cancel or task is behind it (only a snapshot since #4125 says so). */
+  const v5 = (cents: number, snapshot: "since #4125" | "before #4125" = "since #4125") => ({
+    name: "V5_PLANNED_REFUND_SHORT",
+    cents,
+    ...(snapshot === "since #4125" ? { detail: "capacity race" } : {}),
+  });
+
+  describe.each(["since #4125", "before #4125"] as const)("its CANCELLED snapshot written %s", (snapshot) => {
+    it("refunded in full: every identity agrees", () => {
+      const result = judged(capacityRace(19_000, "made", snapshot));
+      expect(result.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(result.disagreements).toEqual([]);
+      expect(result.coverage).toEqual([]);
+      expect(result.integrity).toEqual([]);
+    });
+
+    it("still retrying in full: the whole charge is IN_FLIGHT_REFUND, and nothing is planned short", () => {
+      const result = judged(capacityRace(19_000, "retrying", snapshot));
+      expect(result.price).toMatchObject({ status: "CLASSIFIED", deltaCents: 19_000, explainedBy: [{ name: "IN_FLIGHT_REFUND", cents: 19_000 }] });
+      expect(result.disagreements).toEqual([]);
+    });
+
+    it("a partial plan, made: the rest the plan never carried is V5_PLANNED_REFUND_SHORT", () => {
+      const result = judged(capacityRace(12_000, "made", snapshot));
+      expect(result.price).toMatchObject({ status: "CLASSIFIED", deltaCents: 7_000 });
+      expect(result.price.explainedBy).toEqual([v5(7_000, snapshot)]);
+      expect(result.disagreements).toEqual([]);
+    });
+
+    it("a partial plan, still retrying: its plan in flight and the rest planned short, summing exactly", () => {
+      const result = judged(capacityRace(12_000, "retrying", snapshot));
+      expect(result.price.status).toBe("CLASSIFIED");
+      expect(result.price.deltaCents).toBe(19_000);
+      expect([...result.price.explainedBy].sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+        { name: "IN_FLIGHT_REFUND", cents: 12_000 },
+        v5(7_000, snapshot),
+      ]);
+    });
+
+    it("an empty plan (no refund row at all): the whole charge is V5_PLANNED_REFUND_SHORT", () => {
+      const result = judged(capacityRace(0, "made", snapshot));
+      expect(result.price).toMatchObject({ status: "CLASSIFIED", deltaCents: 19_000 });
+      expect(result.price.explainedBy).toEqual([v5(19_000, snapshot)]);
+      expect(result.disagreements).toEqual([]);
+    });
+
+    it.each([19_000, 12_000])("a dead refund row (retries spent) of a $%i plan still disagrees: nothing will send it", (plannedCents) => {
+      expect(judged(capacityRace(plannedCents, "dead", snapshot)).price).toMatchObject({ status: "DISAGREE", deltaCents: 19_000, explainedBy: [] });
+    });
+
+    it.each([1, -1] as const)("a refund line a cent out (%i) still disagrees", (by) => {
+      for (const subject of [capacityRace(19_000, "made", snapshot), capacityRace(12_000, "made", snapshot)]) {
+        expect(judged(bumpLine(subject, "CARD_REFUND", by)).price.status).toBe("DISAGREE");
+      }
+    });
+  });
+
+  it("a capacity race's snapshot without its paid figure is a plan with nothing short: the rest disagrees", () => {
+    // The evidence that a capacity race owes back all it did not retain, taken away: its settled figure is only the plan's.
+    const subject = capacityRace(12_000, "made");
+    const bare = { ...subject.cancellation!, capacityRace: undefined };
+    expect(judged({ ...subject, cancellation: bare }).price).toMatchObject({ status: "DISAGREE", deltaCents: 7_000 });
+  });
+
+  it("a capacity-race row of another booking whose id this one's begins is never this booking's plan", () => {
+    const subject = capacityRace(19_000, "retrying");
+    const elsewhere = { ...subject, recoveryOperations: [raceOp(19_000, "retrying", buildCapacityClaimFailedRefundRecoveryIdempotencyKey(`${B}x`, RACE_INTENT))] };
+    // Not this booking's plan, so its whole charge reads as planned short beside the row in flight.
+    expect(judged(elsewhere).price.status).toBe("DISAGREE");
+  });
+
+  // F1 (#4153 money lens): the payment's records short of the charge ($190 charged, $120 recorded and planned).
+  // The ledger captured only $120, so the unrecorded $70 never reaches owed(b): the refund due is capped at what
+  // was captured, and the records gap is CAPTURED's to report, never V5's.
+  describe("the payment's records short of the charge: what is due back is capped at what the ledger captured", () => {
+    it("still retrying: the plan alone is in flight, and nothing is planned short", () => {
+      const result = judged(capacityRace(12_000, "retrying", "since #4125", 12_000));
+      expect(result.price).toMatchObject({ status: "CLASSIFIED", deltaCents: 12_000 });
+      expect(result.price.explainedBy).toEqual([{ name: "IN_FLIGHT_REFUND", cents: 12_000 }]);
+      expect(result.disagreements).toEqual(["CAPTURED"]);
+    });
+
+    it("made: PRICE agrees, and only CAPTURED reports the records gap", () => {
+      const result = judged(capacityRace(12_000, "made", "since #4125", 12_000));
+      expect(result.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(result.disagreements).toEqual(["CAPTURED"]);
+    });
+
+    it("an empty plan: what the ledger captured is planned short, never the unrecorded rest", () => {
+      const result = judged(capacityRace(0, "made", "since #4125", 12_000));
+      expect(result.price).toMatchObject({ status: "CLASSIFIED", deltaCents: 12_000 });
+      expect(result.price.explainedBy).toEqual([v5(12_000)]);
+      expect(result.disagreements).toEqual(["CAPTURED"]);
+    });
+  });
+
+  // F4 (#4153 money lens): a member's cancel whose snapshot happens to carry what was paid is no capacity
+  // race - only `cancelledBecause` makes one - so the store must not read it as owing the whole charge back.
+  it("through the store's own page read: a member's cancel carrying paidAmountCents is not a capacity race", async () => {
+    // $190 paid; the cancel refunds $95 to the card and keeps $50 (the rest went back as credit); $90 was planned.
+    const subject = cardCancelled(9_000, true);
+    const readRow = async (cancelledBecause?: string) => {
+      const stored = {
+        id: B,
+        status: subject.booking.status,
+        deletedAt: null,
+        organiserSettled: false,
+        finalPriceCents: subject.booking.finalPriceCents,
+        payment: null,
+        manualRefundTasks: [],
+        modifications: [],
+        paymentRecoveryOperations: subject.recoveryOperations,
+        refundRequests: [],
+        events: [{ snapshot: { refundMethod: "card", refundPercentage: 50, paidAmountCents: 19_000, settledAmountCents: 9_500, retainedAmountCents: 5_000, ...(cancelledBecause ? { cancelledBecause } : {}) } }],
+        ledgerLines: subject.lines,
+      };
+      const tx = { booking: { findMany: vi.fn(async () => [stored]) }, memberCredit: { findMany: vi.fn(async () => []) } };
+      const seen: BookingLedgerCensusRow[] = [];
+      await evaluateBookingLedgerPages(tx as never, 10, (row) => {
+        seen.push(row);
+        return evaluateBookingLedgerIdentities(row);
+      });
+      return seen[0]!;
+    };
+    const v5Of = (row: BookingLedgerCensusRow) => cancelledOwedComponents(row)[0]!.find((component) => component.name === "V5_PLANNED_REFUND_SHORT");
+    const member = await readRow();
+    expect(member.cancellation).toEqual({ refundMethod: "card", settledAmountCents: 9_500, keptCents: null });
+    // Short by the policy refund less the plan: $95 - $90.
+    expect(v5Of(member)).toEqual({ name: "V5_PLANNED_REFUND_SHORT", cents: 500 });
+    // CONTROL: the same snapshot named a capacity race owes back all it did not retain: $190 - $50 - $90.
+    const race = await readRow("capacity_race");
+    expect(race.cancellation).toMatchObject({ capacityRace: { paidAmountCents: 19_000, retainedAmountCents: 5_000 } });
+    expect(v5Of(race)).toEqual({ name: "V5_PLANNED_REFUND_SHORT", cents: 5_000, detail: "capacity race" });
+  });
+
+  it("the one key rule: this booking's cancel's card refund, the member's or the capacity race's, and nothing else", () => {
+    expect(isBookingCancelCardRefundRecoveryKey(B, buildBookingCancellationRefundIdempotencyKey(B))).toBe(true);
+    expect(isBookingCancelCardRefundRecoveryKey(B, buildCapacityClaimFailedRefundRecoveryIdempotencyKey(B, RACE_INTENT))).toBe(true);
+    expect(isBookingCancelCardRefundRecoveryKey(B, buildCapacityClaimFailedRefundRecoveryIdempotencyKey(`${B}x`, RACE_INTENT))).toBe(false);
+    expect(isBookingCancelCardRefundRecoveryKey(B, buildBookingCancellationRefundIdempotencyKey(`${B}x`))).toBe(false);
+    expect(isBookingCancelCardRefundRecoveryKey(B, buildDuplicateCaptureRefundRecoveryIdempotencyKey(B, RACE_INTENT))).toBe(false);
+    expect(isBookingCancelCardRefundRecoveryKey(B, buildRefundRequestRefundRecoveryIdempotencyKey("rr1"))).toBe(false);
+  });
+
+  it("the store's snapshot reader keeps what a capacity race froze, and nothing more of any other cancel", () => {
+    const race = parseCancelledEventSnapshot({ refundMethod: "card", cancelledBecause: "capacity_race", refundPercentage: 100, paidAmountCents: 19_000, settledAmountCents: 12_000, retainedAmountCents: 0 });
+    expect(race).toMatchObject({ cancelledBecause: "capacity_race", paidAmountCents: 19_000, settledAmountCents: 12_000, retainedAmountCents: 0 });
+    expect(parseCancelledEventSnapshot({ refundMethod: "card", settledAmountCents: 9_500, retainedAmountCents: 9_500 })).toMatchObject({ cancelledBecause: null, paidAmountCents: null });
   });
 });
