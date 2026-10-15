@@ -26,6 +26,17 @@ const mocks = vi.hoisted(() => ({
   findCapture: vi.fn(),
   enqueueKeptReceipt: vi.fn(),
   keptReceiptHeldForOfficer: vi.fn(),
+  // #4104: the payment's refund-note coverage and the cash behind it.
+  noteCoverageCents: vi.fn(async () => 0),
+  noteEligibleCashCents: vi.fn(async () => 0),
+}));
+
+vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
+  readResolvedRefundCreditNoteCoverage: async () => ({ coveredCents: 0, unreadableOperationIds: [] }),
+  sumRefundCreditNoteCoverageCents: () => mocks.noteCoverageCents(),
+}));
+vi.mock("@/lib/refund-note-eligible-cash", () => ({
+  resolveRefundNoteEligibleCash: async () => ({ eligibleCashCents: await mocks.noteEligibleCashCents() }),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -416,6 +427,32 @@ describe("closing a dead card refund as paid another way", () => {
       15_000,
       expect.objectContaining({ documentDate: "2026-07-01" }),
     );
+  });
+
+  // #4104 delta review (MH): a re-planned door row whose slice records a refund
+  // Stripe failed later - its card note still in Xero - notes only the rest,
+  // and the outbox is still kicked for the note it did queue.
+  it("MUTATION: a re-planned row's failed refund still noted in Xero: only the rest is noted, and the outbox is kicked", async () => {
+    mocks.findOperation.mockResolvedValue(
+      deadOperation({
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 15_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] }],
+      }),
+    );
+    mocks.noteCoverageCents.mockResolvedValueOnce(9_000);
+    mocks.noteEligibleCashCents.mockResolvedValueOnce(4_000);
+    const result = await close();
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("p-1", 10_000, expect.objectContaining({ paidAnotherWayTaskId: "task-1" }));
+    expect(result.xeroQueued).toBe("refund-note-beyond-card-note");
+    expect(mocks.kick).toHaveBeenCalledTimes(1);
+    // A-F1: the record keeps what the card note answers, so its share counts it covered.
+    expect(mocks.createRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ reviewContext: { paidAnotherWayCardNoteCover: 5_000 } }) }),
+    );
+  });
+
+  it("MUTATION (A-F1): a close no card note answers keeps nothing in its record's review context", async () => {
+    await close(15_000);
+    expect(mocks.createRecord.mock.calls[0]?.[0]?.data).not.toHaveProperty("reviewContext");
   });
 
   it("M3: says honestly when no note was queued", async () => {

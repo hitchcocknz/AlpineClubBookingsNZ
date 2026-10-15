@@ -90,7 +90,7 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
-import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed, markCancellationAttempt } from "@/lib/refused-card-refund-retry";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -2378,8 +2378,10 @@ async function performBookingCancellation(
         // remainder moves money. Do NOT rethrow.
         const completedRefundCents =
           err instanceof PartialRefundError ? err.completedRefundCents : 0;
-        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door.
-        await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
+        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door;
+        // #4104: with none refused, the slices made before it threw are still marked on the row.
+        const refusedBefore = await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
+        if (!refusedBefore) await markCancellationAttempt({ bookingId, plan: cardRefundPlan, error: err });
         await recordBookingCancellationRefundRecoveryInlineError({
           bookingId,
           message: err instanceof Error ? err.message : String(err),

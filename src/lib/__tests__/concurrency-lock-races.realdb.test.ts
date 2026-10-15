@@ -274,6 +274,12 @@ import "./card-refund-paid-another-way.realdb.test";
 // a refused slice to a fresh key only on the attempt it holds. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4083-` fixtures.
 import "./refused-card-refund-retry.realdb.test";
+// #4104 reuses it to prove a card refund Stripe accepted and failed later is
+// owed again: each door's refund taken out once and owed once by one new row,
+// replays and concurrent deliveries write one, the event before the door's own
+// write, the retry's fresh key, and a held row rolling the write back. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4104-` fixtures.
+import "./card-refund-failed-later.realdb.test";
 // #4097 reuses it to prove an own-card cancel whose card refund plan carries
 // less than the refund due raises one hand-back task for the rest in its claim,
 // which "Refunds owed" counts until the treasurer pays it back (its BANK_REFUND

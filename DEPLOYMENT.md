@@ -1364,7 +1364,10 @@ cached across the blue/green web slots + cron-leader for up to ~45s (#2079), the
 wizard's verify polling window runs to 90s so a genuine ping still lands green
 after a key write.
 
-Subscribe the Stripe endpoint to these event types:
+Subscribe the Stripe endpoint to the event types in
+[`src/lib/stripe-webhook-events.ts`](src/lib/stripe-webhook-events.ts) - the one
+list the Stripe setup wizard's **Webhook** step shows, and which the webhook
+handles every event of. Today that is:
 
 - `payment_intent.succeeded`
 - `payment_intent.payment_failed`
@@ -1375,6 +1378,58 @@ Subscribe the Stripe endpoint to these event types:
 - `setup_intent.setup_failed`
 - `setup_intent.canceled`
 - `charge.refunded`
+- `refund.failed` (#4104)
+
+**Upgrading to #4104: add `refund.failed` to an existing endpoint.** In Stripe
+open Workbench → Webhooks (Developers → Webhooks), select the endpoint, choose
+**Edit destination** (or **Update details**) and add the `refund.failed` event.
+It tells the app when a card refund Stripe first accepted has failed, so the
+refund is owed again (it shows under **Refunds owed** and is retried). It is
+**required**: the payments cron reads back only refunds still recorded as
+pending, every 15 minutes, so it catches a pending refund that fails, but a
+refund Stripe reported as succeeded and then failed reaches the app only
+through this event. `refund.updated` and `charge.refund.updated` are also
+understood if an endpoint already sends them; neither is needed. Add it once
+the new release is the only one serving: an older release acknowledges an
+event it does not know and drops it. Such a refund is still recorded pending,
+so the new release's read-back finds it within a run or two. While old and new
+releases both run, an old release's payments cron can claim a row the new
+release raised or re-planned for a refund that failed later: it re-sends the refund under the old metadata reason,
+so a re-send that fails later too is asked for once more rather than raised
+dead, and a plan it rewrites drops the failed refunds it recorded (their Xero
+card note then reads as uncovered when that row is closed as **Paid another
+way**, and the Xero reconciliation report lists the difference). Adding
+`refund.failed` only after the new release alone serves keeps the event's rows
+out of that window, but not every row: the new release raises one from any
+refund status it reads - a `charge.refunded` event, its cron's read-back, a
+door's replay - so finish the switch-over promptly. In the same window an old
+release's "Resolved" on a paid-twice task overwrites the close record where a
+new close keeps its card-note cover, and an old release's card-note executor
+does not subtract a close's cash; the Xero reconciliation report lists any
+resulting difference.
+
+**Refunds Stripe created before the upgrade are not re-sent.** The release
+ships a marker migration (`20261115010000_card_refund_failed_later_cutoff`, no
+schema change). A card refund Stripe CREATED before it finished, found failed
+after the upgrade - most often by the cron's first read-back of older pending
+refunds - is raised with its retries already spent, and the officers are
+emailed: the member may already have been paid back by hand. It is listed
+under **Card refunds Stripe gave up on** on the Stuck states page; check each
+in Stripe and close it there as **Paid another way** once settled. Two
+exceptions: a refund an open card refund row still counts as one of its own
+slices is asked for again with that row, which no close can have settled yet;
+and with a migration history that lacks the marker (rolled back), every
+failed-later refund is raised this way.
+
+**Check once after the upgrade: refunds the old release already saw fail.**
+The old release took a card refund that failed later out of the payment's
+refunded total without owing it again, whenever a later refund on the same
+charge made it re-read the charge's refunds. Those rows already say `failed`,
+so the new release never sees them change, and nothing in the database tells
+one apart from a refund Stripe refused outright (which its door already asked
+for again). In the Stripe dashboard, list the refunds that failed in the last
+few months, and for any the member is still owed, pay them another way and
+record it in Xero by hand.
 
 If Stripe webhook delivery was missed while the endpoint, DNS, TLS, or the
 signing secret stored under **Admin > Integrations > Stripe** was wrong (it is
@@ -1536,7 +1591,7 @@ truth. The public POST endpoints are:
 | Endpoint | Task(s) | Typical cadence | Recorded `CronJobRun.jobName` |
 | -------- | ------- | --------------- | ----------------------------- |
 | `POST /api/cron` | General cron cycle: pending booking confirmation, group-settlement reaper, abandoned policy-exception capacity-hold reaper, pre-arrival reminders, booking-request retention purge, quote-expiry reminders, school attendee confirmations, and placeholder guest-name reminders. | Every 3 hours in the cron leader. | `confirm-pending`, `group-settlement-reaper`, `placeholder-guest-name-reminders`, `policy-exception-hold-reaper`, `pre-arrival-reminders`, `purge-booking-requests`, `quote-expiry-reminders`, `school-attendee-confirmations` |
-| `POST /api/cron/payments?task=recovery` | The payments cycle: durable Stripe payment recovery, expired Internet Banking hold release, stale `WAITING_PAYMENT` Xero outbox reaping, and a retry of the held late-capture alert for any approval still open. The cron leader runs the same cycle itself (`src/lib/payments-cron-runner.ts`), so no external scheduler is needed; each task is error-isolated and records its own run. | Every 15 minutes in the cron leader. | `payment-recovery`, `internet-banking-hold-release`, `xero-waiting-invoice-reaper`, `late-capture-held-alert` |
+| `POST /api/cron/payments?task=recovery` | The payments cycle: durable Stripe payment recovery (with a read-back of card refunds still recorded pending, so one Stripe failed is owed again, #4104), expired Internet Banking hold release, stale `WAITING_PAYMENT` Xero outbox reaping, and a retry of the held late-capture alert for any approval still open. The cron leader runs the same cycle itself (`src/lib/payments-cron-runner.ts`), so no external scheduler is needed; each task is error-isolated and records its own run. | Every 15 minutes in the cron leader. | `payment-recovery`, `internet-banking-hold-release`, `xero-waiting-invoice-reaper`, `late-capture-held-alert` |
 | `POST /api/cron/xero?task=memberships` | Optional Xero-backed membership status refresh. | Daily when `XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH=true` and the Xero module is effectively enabled. | `xero-membership-refresh` |
 | `POST /api/cron/xero?task=outbox` | Process queued outbound Xero operations. | Every 15 minutes when the Xero module is effectively enabled. | `xero-outbox` |
 | `POST /api/cron/xero?task=retries` | Replay failed retryable Xero operations. | Every 15 minutes when the Xero module is effectively enabled. | `xero-operation-replay` |

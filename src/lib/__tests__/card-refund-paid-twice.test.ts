@@ -167,6 +167,17 @@ describe("marking a paid-twice row Resolved", () => {
     });
   });
 
+  it("MUTATION (#4104 A-F1): a close's card-note cover stays beside the resolution, and the write is guarded on it", async () => {
+    mocks.findRecord.mockResolvedValue(closeRecord([STRIPE_BEFORE_CLOSE], { reviewContext: { paidAnotherWayCardNoteCover: 4_000 } }));
+    await resolve();
+    expect(mocks.claim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ reviewContext: { equals: { paidAnotherWayCardNoteCover: 4_000 } } }),
+        data: { reviewContext: expect.objectContaining({ paidAnotherWayCardNoteCover: 4_000, paidTwiceResolved: expect.any(Object) }) },
+      }),
+    );
+  });
+
   it("MUTATION: audits it under payment, on the close's record, with the note - after the write", async () => {
     await resolve();
     expect(mocks.createAuditLog).toHaveBeenCalledWith(

@@ -485,6 +485,17 @@ describe("getStuckStateDashboard", () => {
     });
   });
 
+  // #4104 (ops 7, concurrency C): a card refund raised dead is PENDING with its
+  // attempts spent. It is exhausted - a person's - never an overdue queue.
+  it("MUTATION: counts a dead PENDING row as exhausted, never as overdue (#4104)", async () => {
+    const deps = buildDeps({});
+    vi.mocked(deps.db.paymentRecoveryOperation.count).mockResolvedValue(0);
+    await getStuckStateDashboard({ deps, now: new Date("2026-06-22T00:00:00.000Z") });
+    const wheres = vi.mocked(deps.db.paymentRecoveryOperation.count).mock.calls.map((call) => (call[0] as { where: Record<string, unknown> }).where);
+    expect(wheres).toContainEqual({ status: { in: ["PENDING", "FAILED"] }, attempts: { gte: 5 } });
+    expect(wheres).toContainEqual(expect.objectContaining({ status: "PENDING", attempts: { lt: 5 } }));
+  });
+
   // #2550: the admin-dashboard half of the placeholder-naming feature. Both
   // cases below are acceptance criteria, not incidental coverage — the tile is
   // what an admin sees, and "naming all guests clears the flag" is the whole

@@ -25,6 +25,7 @@ import { PartialRefundError } from "@/lib/payment-transactions";
 import {
   firstRefusals,
   inlineRefundAfterAttempt,
+  markCancellationAttempt,
   keepRefusedPrePersistedRefundOwed,
   keyAfterStripeRefusals,
   type RefundAttempt,
@@ -271,6 +272,50 @@ describe("the runner's refusal alert", () => {
   });
 });
 
+
+// #4104 review (money 1): a failure Stripe reports later is owed by the row that
+// counted the refund, found exactly by its refund id - so the slices made before
+// ANY partial failure are marked, not only those beside a refusal.
+describe("made slices are marked on any partial failure (#4104)", () => {
+  const held = { id: "op_1", bookingId: "b1", paymentIntentId: "pi_row", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") };
+  const made = { paymentTransactionId: "txn_a", amountCents: 1000 };
+  const threw = { paymentTransactionId: "txn_b", amountCents: 500 };
+
+  beforeEach(() => updateMany.mockClear());
+
+  it("MUTATION: the runner marks a slice made before a later one threw, with no refusal among them", async () => {
+    const error = Object.assign(new Error("Stripe timed out"), {
+      refunds: [{ status: "pending", slice: made, refundId: "re_made", paymentIntentId: "pi_a" }],
+    });
+    await expect(
+      refundPlanOrRetryRefusals({ operation: held, plan: [made, threw], format: CLUB_FORMAT_TEST, refund: async () => { throw error; } }),
+    ).rejects.toBe(error);
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect((updateMany.mock.calls[0]?.[0] as { data: { allocationPlan: unknown } }).data.allocationPlan).toEqual([
+      { ...made, madeRefundId: "re_made" },
+      threw,
+    ]);
+  });
+
+  it("MUTATION: a cancellation's inline attempt that failed partway marks its unclaimed row the same way", async () => {
+    await markCancellationAttempt({
+      bookingId: "b1",
+      plan: [made, threw],
+      error: { refunds: [{ status: "pending", slice: made, refundId: "re_made" }] },
+    });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { idempotencyKey: "booking_cancel_refund_recovery_b1", status: "PENDING", attempts: 0, allocationPlan: { equals: Prisma.DbNull } },
+      data: { allocationPlan: [{ ...made, madeRefundId: "re_made" }, threw] },
+    });
+  });
+
+  it("writes nothing when nothing was answered, and never throws", async () => {
+    await markCancellationAttempt({ bookingId: "b1", plan: [made], error: new Error("before any Stripe call") });
+    expect(updateMany).not.toHaveBeenCalled();
+    updateMany.mockRejectedValueOnce(new Error("db down"));
+    await expect(markCancellationAttempt({ bookingId: "b1", plan: [made], error: { refunds: [{ status: "pending", slice: made, refundId: "re_made" }] } })).resolves.toBeUndefined();
+  });
+});
 
 // #4103 (`INV-PAY-130`): every door whose row is written BEFORE its attempt -
 // the cancellation, the edit review, the late-capture approval, the duplicate
