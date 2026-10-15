@@ -11,22 +11,28 @@
 -- The replacement constrains only charges that can still be invoiced: every
 -- status outside MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES
 -- (src/lib/subscription-charge-already-paid.ts), whose two members are the
--- terminal NOT_REQUIRED and VOIDED. No writer ever moves a charge OUT of either
--- status, so a row leaving the predicate never comes back into it, and at most
--- one live family charge per family, type and season still holds.
+-- NOT_REQUIRED and VOIDED, both terminal for the new code: every charge-status
+-- write its invoice pipeline makes is guarded to live charges, so a row leaving
+-- the predicate never comes back into it, and at most one live family charge
+-- per family, type and season still holds.
 --
 -- Blue/green EXPAND, the same keying swap 20260720130000 made for coverage:
 -- * Old code never names this index and never relies on its refusal: a
 --   draining colour's preview still counts a closed family charge as billed
 --   (it filters only VOIDED), so it never tries a second charge for one, and
 --   a re-bill after a void that used to fail now succeeds, which is the fix.
+-- * A draining colour's worker still has unguarded charge-status writes. A late
+--   one onto a closed or voided row either re-enters the index with no live
+--   sibling (the pre-existing stray case) or, if the family already has a live
+--   re-bill, fails P2002 into its retry path, leaving the live charge intact.
 -- * Every existing row already satisfies the full UNIQUE, so the partial index
 --   builds with no collision.
 --
--- LOCK IMPACT: DROP INDEX and CREATE UNIQUE INDEX take ACCESS EXCLUSIVE and
--- SHARE locks on "MembershipSubscriptionCharge" only, a cold billing table of
--- one row per family or member per season, so the build is a short scan. Run
--- in the normal deploy window and let the deploy guard stop on lock timeout.
+-- LOCK IMPACT: Prisma runs this file in one short transaction, so the ACCESS
+-- EXCLUSIVE lock DROP INDEX takes on "MembershipSubscriptionCharge" is held for
+-- the whole transaction, including the CREATE UNIQUE INDEX build: a scan of a
+-- cold billing table with one row per family or member per season. Run in the
+-- normal deploy window and let the deploy guard stop on lock timeout.
 --
 -- Prisma cannot express a predicated index, so the @@unique leaves
 -- prisma/schema.prisma; the index is registered in
