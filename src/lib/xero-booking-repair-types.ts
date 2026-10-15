@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import type { XeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement-rules";
 import type { PaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "MISSING_PRIMARY_INVOICE",
@@ -256,9 +257,7 @@ export const bookingRepairSelect = Prisma.validator<Prisma.BookingSelect>()({
       // #3635: only a Stripe payment's refund gap is read (the note-eligible cash).
       source: true,
       transactions: {
-        orderBy: {
-          createdAt: "asc",
-        },
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
         select: {
           id: true,
           paymentId: true,
@@ -273,6 +272,7 @@ export const bookingRepairSelect = Prisma.validator<Prisma.BookingSelect>()({
           // #3528: a withdrawn charge request must not plan a new invoice.
           withdrawnAt: true,
           createdAt: true,
+          insertionSeq: true,
           updatedAt: true,
         },
       },

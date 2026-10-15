@@ -80,6 +80,8 @@ export type BookingLedgerCensusRow = {
     reason: string | null;
     withdrawnAt: Date | null;
     createdAt: Date;
+    /** #4132: the ledger's tiebreak, so "the latest" row of a kind is the one inserted last. */
+    insertionSeq: number;
   }>;
   refunds: ReadonlyArray<{
     id: string;

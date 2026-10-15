@@ -106,7 +106,8 @@ import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount"
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
 import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { alertCancelCardShortfall, cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
-import { CAPTURED_ROWS_OLDEST_FIRST, foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import {
   alertManualPartPaymentCancel,
   kickClearingNoteForUnpaidRest,
@@ -1588,7 +1589,7 @@ async function performBookingCancellation(
       payment,
       () => tx.paymentTransaction.findMany({
         where: { paymentId: payment.id, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
-        orderBy: CAPTURED_ROWS_OLDEST_FIRST,
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
         select: { id: true, amountCents: true, refundedAmountCents: true },
       }),
       (row, amountCents) => foldIntoTransactionRefundedAmount({ paymentTransactionId: row.id, amountCents, store: tx }),
@@ -1745,7 +1746,7 @@ async function performBookingCancellation(
             paymentId: payment.id,
             stripePaymentIntentId: payment.additionalPaymentIntentId,
           },
-          orderBy: { createdAt: "desc" },
+          orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
           select: { id: true, amountCents: true },
         });
         if (additionalTransaction) {

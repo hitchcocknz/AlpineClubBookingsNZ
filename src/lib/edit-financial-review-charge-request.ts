@@ -19,6 +19,7 @@ import {
   type XeroSupplementaryInvoiceEnqueueOutcome,
 } from "@/lib/xero-operation-outbox";
 import type { ClubFormat } from "@/lib/club-format";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * #3170 (epic #2797): WHAT ONE BOOKING EDIT'S SINGLE CHARGE REQUEST IS, and what
@@ -99,7 +100,7 @@ export async function findEditReviewChargeRequest({
       ...editReviewChargeRequestCriteria(bookingModificationId),
       withdrawnAt: null, // #3528, `INV-ADDPAY-040`: a withdrawn request is closed for good
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
     select: {
       id: true,
       stripePaymentIntentId: true,

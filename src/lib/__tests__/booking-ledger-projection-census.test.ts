@@ -117,8 +117,10 @@ function confirmedLedger(promoAdjustmentCents = -1_000): Ledger {
 }
 
 type Txn = BookingLedgerCensusRow["transactions"][number];
+/** Rows are numbered in the order a test makes them, as the database's sequence would (#4132). */
+let lastInsertionSeq = 0;
 function txn(id: string, amountCents: number, overrides: Partial<Txn> = {}): Txn {
-  return { id, kind: "PRIMARY", status: "SUCCEEDED", source: "STRIPE", xeroInvoiceId: null, amountCents, refundedAmountCents: 0, reason: null, withdrawnAt: null, createdAt: CONFIRMED_AT, ...overrides };
+  return { id, kind: "PRIMARY", status: "SUCCEEDED", source: "STRIPE", xeroInvoiceId: null, amountCents, refundedAmountCents: 0, reason: null, withdrawnAt: null, createdAt: CONFIRMED_AT, insertionSeq: ++lastInsertionSeq, ...overrides };
 }
 
 /** Post what the settlement sync would, from these rows, onto the ledger. */
