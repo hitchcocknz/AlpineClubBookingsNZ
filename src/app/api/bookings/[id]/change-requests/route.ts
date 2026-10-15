@@ -5,6 +5,7 @@ import { logAudit } from "@/lib/audit";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
 import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { normalizeGuestStayRange } from "@/lib/booking-guest-stay-range-input";
 import {
   calendarDateOfDateOnlyInstant,
 } from "@/lib/club-time";
@@ -29,7 +30,9 @@ import {
   buildChangeRequestSummary,
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
   changeRequestAddGuestsSchema,
+  changeRequestGuestStayRangeSchema,
   namesStayRangeChange,
+  storedGuestNightsAsDays,
   guestStayRangesRefusal,
   requestedDatesIgnoredByNightsRefusal,
   CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
@@ -45,16 +48,8 @@ const createChangeRequestSchema = z.object({
   // #4030: the one add-guest shape, shared with the officer's entry.
   addGuests: changeRequestAddGuestsSchema.optional(),
   removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
-  guestStayRanges: z
-    .array(
-      z.object({
-        guestId: z.string().trim().min(1),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-      })
-    )
-    .max(200)
-    .optional(),
+  // #4088: each guest's bounds, or the editor grid's night set (`nights`).
+  guestStayRanges: z.array(changeRequestGuestStayRangeSchema).max(200).optional(),
   requestedEffectiveDate: z.string().optional(),
   reason: z.string().max(2000).optional(),
 });
@@ -166,7 +161,9 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      guests: true,
+      // #4088: each guest's night rows, so a grid night set is compared with
+      // the nights the guest holds and the request records them.
+      guests: { include: { nights: { select: { stayDate: true } } } },
       member: true,
       // #3369: the owner may be an Organisation; bookingOwner() reads both.
       organisation: { select: { name: true, email: true } },
@@ -336,8 +333,19 @@ export async function POST(
     requestedCheckIn,
     requestedCheckOut,
     requestedEffectiveDate: effectiveDate,
-    addedGuestStarts: (addGuests ?? []).map((guest) =>
-      guest.stayStart ? parseDateOnly(guest.stayStart) : nextCheckIn,
+    // The canonical range rule (`INV-SSOT`), so a grid night set's first
+    // night is read as the guest's start (#4088). Already validated above.
+    addedGuestStarts: (addGuests ?? []).map(
+      (guest, index) =>
+        normalizeGuestStayRange(
+          {
+            stayStart: guest.stayStart ?? null,
+            stayEnd: guest.stayEnd ?? null,
+            nights: guest.nights ?? null,
+          },
+          { checkIn: nextCheckIn, checkOut: nextCheckOut },
+          index,
+        ).stayStart,
     ),
   });
 
@@ -436,8 +444,10 @@ export async function POST(
             ageTier: guest.ageTier,
             isMember: guest.isMember,
             memberId: guest.memberId,
-            stayStart: formatBookingDate(guest.stayStart),
-            stayEnd: formatBookingDate(guest.stayEnd),
+            // `stayStart`, `stayEnd` and (#4088) the night rows the guest holds,
+            // which approval's drift check compares and a grid request is read
+            // against.
+            ...storedGuestNightsAsDays(guest),
           })),
         },
         requested: {

@@ -19,6 +19,11 @@ import { isEffectiveStayRangeChange } from "@/lib/booking-change-request-guests"
 // ---------------------------------------------------------------------------
 
 const optionalDate = z.string().nullish();
+/**
+ * A guest's explicit night set (#713) as stored (#4088): `yyyy-mm-dd` nights.
+ * Absent on rows written before grid-mode requests kept their nights.
+ */
+const optionalNights = z.array(z.string()).nullish();
 
 /**
  * What `POST /api/bookings/[id]/change-requests` writes into
@@ -32,8 +37,15 @@ export const storedLockedPeriodRequestSchema = z.object({
     checkOut: z.string(),
     // The guest's stored range is read when present (#4030 review M2), so a
     // range repeating it is not mistaken for a change.
+    // #4088: and the guest's night rows, so a grid night set repeating them is
+    // not a change, and approval sees a night trimmed since as drift.
     guests: z.array(
-      z.object({ id: z.string(), stayStart: z.string().nullish(), stayEnd: z.string().nullish() }),
+      z.object({
+        id: z.string(),
+        stayStart: z.string().nullish(),
+        stayEnd: z.string().nullish(),
+        nights: optionalNights,
+      }),
     ),
   }),
   requested: z.object({
@@ -49,6 +61,7 @@ export const storedLockedPeriodRequestSchema = z.object({
           memberId: z.string().nullish(),
           stayStart: optionalDate,
           stayEnd: optionalDate,
+          nights: optionalNights,
         }),
       )
       .default([]),
@@ -59,6 +72,7 @@ export const storedLockedPeriodRequestSchema = z.object({
           guestId: z.string(),
           stayStart: optionalDate,
           stayEnd: optionalDate,
+          nights: optionalNights,
         }),
       )
       .default([]),
@@ -97,7 +111,12 @@ export function lockedPeriodRequestToBatchInput(
   const currentRanges = new Map(
     stored.original.guests.flatMap((guest) =>
       guest.stayStart && guest.stayEnd
-        ? [[guest.id, { stayStart: guest.stayStart, stayEnd: guest.stayEnd }] as const]
+        ? [
+            [
+              guest.id,
+              { stayStart: guest.stayStart, stayEnd: guest.stayEnd, nights: guest.nights },
+            ] as const,
+          ]
         : [],
     ),
   );
@@ -107,8 +126,12 @@ export function lockedPeriodRequestToBatchInput(
   // the unchanged ones and a request that only shortens the stay and removes a
   // guest leaves range mode, so every remaining guest is stretched to the new
   // envelope and charged for nights they never stayed.
+  //
+  // #4088: a grid-mode range is the guest's night set, passed through as the
+  // planner's `nights` (#713) — the same writer the editor's grid uses — so
+  // approval applies, and prices, exactly the nights the member chose.
   const guestStayRanges = requested.guestStayRanges
-    .filter((range) => Boolean(range.stayStart && range.stayEnd))
+    .filter((range) => Boolean(range.stayStart && range.stayEnd) || hasNights(range))
     // A range for a guest the same request removes is moot, and the planner
     // would refuse it as naming a guest no longer on the booking.
     .filter((range) => !removed.has(range.guestId))
@@ -116,6 +139,7 @@ export function lockedPeriodRequestToBatchInput(
       guestId: range.guestId,
       stayStart: range.stayStart ?? null,
       stayEnd: range.stayEnd ?? null,
+      ...(hasNights(range) ? { nights: range.nights } : {}),
     }));
   const addGuests = requested.addGuests.map((guest) => ({
     firstName: guest.firstName,
@@ -125,6 +149,7 @@ export function lockedPeriodRequestToBatchInput(
     ...(guest.memberId ? { memberId: guest.memberId } : {}),
     stayStart: guest.stayStart ?? null,
     stayEnd: guest.stayEnd ?? null,
+    ...(hasNights(guest) ? { nights: guest.nights } : {}),
   }));
   // #4030 review M2: whether the request names nothing is judged on the ranges
   // that CHANGE something — a range repeating the guest's stored nights is not
@@ -148,6 +173,12 @@ export function lockedPeriodRequestToBatchInput(
     ...(removeGuestIds.length > 0 ? { removeGuestIds } : {}),
     ...(guestStayRanges.length > 0 ? { guestStayRanges } : {}),
   };
+}
+
+function hasNights(entry: {
+  nights?: ReadonlyArray<string> | null;
+}): entry is { nights: ReadonlyArray<string> } {
+  return Boolean(entry.nights && entry.nights.length > 0);
 }
 
 /**

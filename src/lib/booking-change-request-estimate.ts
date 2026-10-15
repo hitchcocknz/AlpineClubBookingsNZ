@@ -2,7 +2,10 @@ import type { AgeTier } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
-import { dateOnlyInstantOf, requireCalendarDate } from "@/lib/club-time";
+import {
+  normalizeGuestStayRange,
+  type NormalizedBookingGuestStayRange,
+} from "@/lib/booking-guest-stay-range-input";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
 import { calculateBookingPrice, getStayNights, type GuestInput } from "@/lib/pricing";
 import { loadActiveSeasonRates } from "@/lib/booking-modify-plan";
@@ -48,9 +51,26 @@ import type {
 export const CHANGE_REQUEST_ESTIMATE_NO_RATE_MESSAGE =
   "These nights can't be priced at the moment (no active season covers them). You can still send the request; the booking officer confirms the price when they approve it.";
 
-/** A request's `yyyy-MM-dd` night bound as the pricing engine's date-only value. */
-function dateOnlyOf(value: string): Date {
-  return dateOnlyInstantOf(requireCalendarDate(value));
+/**
+ * An added guest's nights as the pricing engine reads them: the explicit night
+ * set from the editor's grid (#713, #4088) when it has one, else the two
+ * bounds, else the whole stay — by the canonical range rule (`INV-SSOT`). The
+ * route has already refused a range that rule rejects.
+ */
+function addedGuestRange(
+  guest: ChangeRequestAddGuest,
+  index: number,
+  booking: { checkIn: Date; checkOut: Date },
+): NormalizedBookingGuestStayRange {
+  return normalizeGuestStayRange(
+    {
+      stayStart: guest.stayStart ?? null,
+      stayEnd: guest.stayEnd ?? null,
+      nights: guest.nights ?? null,
+    },
+    booking,
+    index,
+  );
 }
 
 interface EstimateBooking {
@@ -102,6 +122,7 @@ export async function estimateChangeRequestAddedGuests(
   const nonMembers = addGuests
     .map((guest, index) => ({ guest, index }))
     .filter(({ guest }) => !guest.isMember);
+  const addedGuestRanges = addGuests.map((guest, index) => addedGuestRange(guest, index, booking));
   const seasonYear = seasonYearOfStoredDate(checkIn);
   const lodgeId = booking.lodgeId ?? (await getDefaultLodgeId(prisma));
   const [seasons, groupDiscountSetting, subscriptionLockoutMode] = await Promise.all([
@@ -117,13 +138,18 @@ export async function estimateChangeRequestAddedGuests(
   const rated = await resolveGuestRateMembershipTypes(prisma, {
     seasonYear,
     subscriptionLockoutMode,
-    guests: nonMembers.map(({ guest }) => ({
-      ageTier: guest.ageTier as AgeTier,
-      isMember: false,
-      memberId: null,
-      stayStart: guest.stayStart ? dateOnlyOf(guest.stayStart) : checkIn,
-      stayEnd: guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut,
-    })),
+    guests: nonMembers.map(({ guest, index }) => {
+      const range = addedGuestRanges[index] ?? { stayStart: checkIn, stayEnd: checkOut };
+      return {
+        ageTier: guest.ageTier as AgeTier,
+        isMember: false,
+        memberId: null,
+        stayStart: range.stayStart,
+        stayEnd: range.stayEnd,
+        // A grid night set prices exactly those nights (`GuestInput.nights`).
+        ...(range.nights ? { nights: range.nights } : {}),
+      };
+    }),
   });
   // The added guests in the order they were sent: a non-member's rated entry,
   // or a member's count-only one (#4030 review M5).
@@ -131,9 +157,11 @@ export async function estimateChangeRequestAddedGuests(
   const addedEntries = addGuests.map((guest, index) => {
     const ratedEntry = ratedByIndex.get(index);
     if (ratedEntry) return ratedEntry;
-    const start = guest.stayStart ? dateOnlyOf(guest.stayStart) : checkIn;
-    const end = guest.stayEnd ? dateOnlyOf(guest.stayEnd) : checkOut;
-    return countOnly({ ageTier: guest.ageTier as AgeTier, isMember: true }, getStayNights(start, end));
+    const range = addedGuestRanges[index] ?? { stayStart: checkIn, stayEnd: checkOut };
+    return countOnly(
+      { ageTier: guest.ageTier as AgeTier, isMember: true },
+      range.nights ?? getStayNights(range.stayStart, range.stayEnd),
+    );
   });
   let priced;
   try {

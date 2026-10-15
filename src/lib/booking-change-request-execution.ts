@@ -26,6 +26,8 @@ import {
 } from "@/lib/booking-dependant-identity";
 import {
   addedGuestNightsRefusal,
+  guestNightKeys,
+  storedGuestNightsAsDays,
   OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE,
   withOfficerEnteredGuests,
   type OfficerEnteredGuest,
@@ -94,13 +96,22 @@ import {
  * trimmed (and refunded) after the request was sent would have the stale range
  * re-applied and be charged again. A row stored before ranges were recorded
  * names none, and keeps the dates-and-ids check alone.
+ *
+ * #4088: where the request also stored each guest's night rows, a night
+ * trimmed from inside the range since (the range unmoved) is drift too, for
+ * the same reason: a grid request's night set would put it back and charge it.
  */
 function bookingDriftedFromRequest(
   stored: StoredLockedPeriodRequest,
   booking: {
     checkIn: Date;
     checkOut: Date;
-    guests: Array<{ id: string; stayStart: Date; stayEnd: Date }>;
+    guests: Array<{
+      id: string;
+      stayStart: Date;
+      stayEnd: Date;
+      nights: Array<{ stayDate: Date }>;
+    }>;
   },
 ): boolean {
   if (stored.original.checkIn !== calendarDateOfDateOnlyInstant(booking.checkIn)) {
@@ -117,13 +128,13 @@ function bookingDriftedFromRequest(
   const live = new Map(booking.guests.map((guest) => [guest.id, guest]));
   return stored.original.guests.some((guest) => {
     const current = live.get(guest.id);
-    return Boolean(
-      current &&
-        guest.stayStart &&
-        guest.stayEnd &&
-        (guest.stayStart !== calendarDateOfDateOnlyInstant(current.stayStart) ||
-          guest.stayEnd !== calendarDateOfDateOnlyInstant(current.stayEnd)),
-    );
+    if (!current || !guest.stayStart || !guest.stayEnd) return false;
+    const now = storedGuestNightsAsDays(current);
+    if (guest.stayStart !== now.stayStart || guest.stayEnd !== now.stayEnd) return true;
+    if (guest.nights == null) return false;
+    const before = guestNightKeys({ stayStart: guest.stayStart, stayEnd: guest.stayEnd, nights: guest.nights });
+    const after = guestNightKeys(now);
+    return before.length !== after.length || before.some((night, i) => night !== after[i]);
   });
 }
 
@@ -350,7 +361,14 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
           checkIn: true,
           checkOut: true,
           status: true,
-          guests: { select: { id: true, stayStart: true, stayEnd: true } },
+          guests: {
+            select: {
+              id: true,
+              stayStart: true,
+              stayEnd: true,
+              nights: { select: { stayDate: true } },
+            },
+          },
           payment: { select: { amountCents: true, creditAppliedCents: true } },
         },
       });
