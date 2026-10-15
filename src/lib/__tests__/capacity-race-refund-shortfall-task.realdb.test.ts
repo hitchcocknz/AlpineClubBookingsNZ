@@ -8,14 +8,16 @@
  * REAL `resolveManualRefundTask`, the REAL recovery runner
  * (`runPaymentRecoveryOperationNow`) and the booking page's own reads:
  *
- * - A partial plan (the charge's ledger row already reads $60.00 refunded - the
- *   records drift #4125 refunds around): the card refunds $140.00 and the void's
- *   own transaction writes ONE `CANCELLED_BOOKING_HAND_BACK` to CHECK for
- *   $60.00, passing every `ManualRefundTask` CHECK, owed while OPEN. A
- *   redelivered webhook writes no second. Marked paid back, it records the
- *   refund on the payment, posts its `BANK_REFUND` line, queues ONE Xero
- *   refund note keyed on the task, and the member's page reads the whole charge
- *   refunded.
+ * - A partial plan (the charge's ledger row already reads $60.00 refunded with
+ *   no refund row behind it - the records drift #4125 refunds around): the card
+ *   refunds $140.00 and the void's own transaction writes ONE
+ *   `CANCELLED_BOOKING_HAND_BACK` to CHECK for $60.00, passing every
+ *   `ManualRefundTask` CHECK, owed while OPEN. A redelivered webhook writes no
+ *   second. Recording the card refund re-derives the row's refunded total from
+ *   its refund rows, so the $60.00 is back on the ledger: marked paid back, the
+ *   task records it on the charge, posts its `BANK_REFUND` line, queues ONE
+ *   Xero refund note keyed on the task, and the member's page reads the whole
+ *   charge refunded.
  * - The card refund still being sent (Stripe unreachable): the task's
  *   completion is refused until the runner makes the race's refund.
  * - An empty plan (the ledger reads the whole charge refunded): nothing by card,
@@ -47,7 +49,6 @@ const LODGE_ID = "race-4154-lodge";
 const BOOKING_ID = "race-4154-booking";
 const PAYMENT_ID = "race-4154-payment";
 const CARD_TXN = "race-4154-txn-card";
-const BANK_TXN = "race-4154-txn-bank";
 const GUESTS = ["race-4154-g1", "race-4154-g2"];
 const INTENT = "pi_race_4154";
 const CHARGE_CENTS = 20_000;
@@ -109,9 +110,9 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
      * A $200 booking - two guests, two nights at $50 - awaiting its card
      * payment, at a lodge with no beds, so the final capacity claim fails. Its
      * payment's ledger already holds the card charge, reading `refundedCents`
-     * of it refunded (the drift), and (`bankCents`) a captured non-card part.
+     * of it refunded with no refund row (the drift).
      */
-    async function seed({ refundedCents, bankCents }: { refundedCents: number; bankCents: number }): Promise<void> {
+    async function seed({ refundedCents }: { refundedCents: number }): Promise<void> {
       await prisma.booking.create({
         data: { id: BOOKING_ID, memberId: MEMBER_ID, lodgeId: LODGE_ID, checkIn: D1, checkOut: CHECK_OUT, status: "PAYMENT_PENDING", totalPriceCents: CHARGE_CENTS, finalPriceCents: CHARGE_CENTS },
       });
@@ -137,11 +138,6 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await prisma.paymentTransaction.create({
         data: { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CHARGE_CENTS, refundedAmountCents: refundedCents, status: "SUCCEEDED", createdAt: new Date("2026-05-01T00:00:00.000Z") },
       });
-      if (bankCents > 0) {
-        await prisma.paymentTransaction.create({
-          data: { id: BANK_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "INTERNET_BANKING", amountCents: bankCents, status: "SUCCEEDED", createdAt: new Date("2026-04-01T00:00:00.000Z") },
-        });
-      }
     }
 
     /** Stripe makes every refund it is asked for, or (`unreachable`) cannot be reached. */
@@ -250,7 +246,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     });
 
     it("a partial plan: the card refunds what it carries, the rest is ONE task to check, and marked paid back it posts its line and its Xero note", async () => {
-      await seed({ refundedCents: DRIFT_CENTS, bankCents: DRIFT_CENTS });
+      await seed({ refundedCents: DRIFT_CENTS });
       const asked = stripeRefunds("make");
       const owedBefore = await refundsOwedNow();
 
@@ -278,7 +274,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       // Paid back by bank transfer: on the payment, on the booking ledger, in Xero, and owed nowhere.
       await resolve("completed", tasks[0]!.id);
       expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: DRIFT_CENTS });
-      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: BANK_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: DRIFT_CENTS });
+      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
       const handBackLines = await prisma.bookingLedgerLine.findMany({
         where: { bookingId: BOOKING_ID, postingKey: `handback:${tasks[0]!.id}` },
         select: { kind: true, amountCents: true },
@@ -293,7 +289,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     });
 
     it("the card refund still being sent: completion is refused until the runner makes the race's refund", async () => {
-      await seed({ refundedCents: DRIFT_CENTS, bankCents: DRIFT_CENTS });
+      await seed({ refundedCents: DRIFT_CENTS });
       stripeRefunds("unreachable");
 
       expect((await capacityRace()).outcome).not.toBe("cancelled_refunded");
@@ -317,7 +313,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     });
 
     it("an empty plan: nothing by card, the whole charge to check; with nothing on the ledger it is dismissed, and the page says the club closed it", async () => {
-      await seed({ refundedCents: CHARGE_CENTS, bankCents: 0 });
+      await seed({ refundedCents: CHARGE_CENTS });
       const asked = stripeRefunds("make");
 
       await capacityRace();
