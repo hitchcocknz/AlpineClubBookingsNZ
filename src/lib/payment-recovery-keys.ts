@@ -647,12 +647,7 @@ export function isOrganiserChildRefundKey(key: string) {
 export function isOrganiserChildAppealRefundKey(key: string) {
   return key.startsWith(ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX);
 }
-/**
- * #4120 (`INV-PAY-123`): an approved refund appeal's card refund, either spelling
- * - the request's own (`refund_request_refund_`) or its debt to the group
- * organiser's card (#3956). The one test of "this row is an appeal's", so the
- * screen's outcome and the census never disagree on which rows are (`INV-SSOT`).
- */
+/** #4120 (`INV-SSOT`): an appeal's card refund - the request's own row, or its debt to the organiser's card (#3956). */
 export function isAppealRefundRecoveryKey(key: string) {
   return isRefundRequestRefundRecoveryKey(key) || isOrganiserChildAppealRefundKey(key);
 }

@@ -594,8 +594,7 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
       (operation) =>
         (operation.type === "REFUND_BOOKING_MODIFICATION" || operation.type === "REFUND_SUPERSEDED_PAYMENT") &&
         isPaymentRecoveryOperationInFlight(operation) &&
-        // #4120: an appeal's card refund - its own, or its debt to the organiser's card - is not
-        // the cancel's: still to make, it moved nothing.
+        // #4120: an appeal's card refund (its own, or the organiser card's) is not the cancel's.
         !isAppealRefundRecoveryKey(operation.idempotencyKey),
     )
     // #4117: less the slices its plan marks made - those are on the ledger already.

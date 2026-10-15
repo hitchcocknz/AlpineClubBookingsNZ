@@ -2174,6 +2174,7 @@ async function processBookingModificationRefundOperation(
   // (booking_cancel_refund_<bookingId>, #1160), and modification recoveries
   // read the prefix stored at enqueue time (#1152). Legacy modification rows
   // without a stored prefix keep their operation-scoped prefix.
+  // A refund request's own key only: an appeal's organiser-card debt is not this route's.
   const refundRequestId = isRefundRequestRefundRecoveryKey(operation.idempotencyKey)
     ? operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length)
     : null;
