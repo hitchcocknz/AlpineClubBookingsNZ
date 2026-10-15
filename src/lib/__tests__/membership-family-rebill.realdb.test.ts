@@ -31,6 +31,7 @@ const RACE_TEST_TIMEOUT_MS = 30_000;
 const PARENT_ID = "race-4110-parent";
 const CHILD_ID = "race-4110-child";
 const OFFICER_ID = "race-4110-officer";
+const JOINER_ID = "race-4110-joiner";
 const MEMBER_IDS = [PARENT_ID, CHILD_ID] as const;
 const FAMILY_ID = "race-4110-family";
 const BILLING_MEMBERSHIP_ID = "race-4110-family-parent";
@@ -94,17 +95,17 @@ let createdMapping = false;
       await prisma.membershipSubscriptionChargeCoverage.deleteMany({ where: { chargeId: { in: chargeIds } } });
       await prisma.membershipSubscriptionCharge.deleteMany({ where: { id: { in: chargeIds } } });
       await prisma.membershipBillingException.deleteMany({
-        where: { OR: [{ memberId: { in: [...MEMBER_IDS] } }, { familyGroupId: FAMILY_ID }] },
+        where: { OR: [{ memberId: { in: [...MEMBER_IDS, JOINER_ID] } }, { familyGroupId: FAMILY_ID }] },
       });
-      await prisma.memberSubscription.deleteMany({ where: { memberId: { in: [...MEMBER_IDS] } } });
-      await prisma.seasonalMembershipAssignment.deleteMany({ where: { memberId: { in: [...MEMBER_IDS] } } });
+      await prisma.memberSubscription.deleteMany({ where: { memberId: { in: [...MEMBER_IDS, JOINER_ID] } } });
+      await prisma.seasonalMembershipAssignment.deleteMany({ where: { memberId: { in: [...MEMBER_IDS, JOINER_ID] } } });
       await prisma.familyGroup.updateMany({ where: { id: FAMILY_ID }, data: { billingMembershipId: null } });
       await prisma.familyGroupMember.deleteMany({ where: { familyGroupId: FAMILY_ID } });
       await prisma.familyGroup.deleteMany({ where: { id: FAMILY_ID } });
       await prisma.membershipAnnualFeeComponent.deleteMany({ where: { membershipAnnualFeeId: FEE_ID } });
       await prisma.membershipAnnualFee.deleteMany({ where: { id: FEE_ID } });
       await prisma.membershipType.deleteMany({ where: { id: TYPE_ID } });
-      await prisma.member.deleteMany({ where: { id: { in: [...MEMBER_IDS, OFFICER_ID] } } });
+      await prisma.member.deleteMany({ where: { id: { in: [...MEMBER_IDS, OFFICER_ID, JOINER_ID] } } });
     }
 
     /** A family of two, both PAID by hand, whose family charge conflicted. */
@@ -289,6 +290,11 @@ let createdMapping = false;
       const { preview, confirmed } = await previewAndConfirm();
 
       expect(preview.exceptions.map((item) => item.code)).not.toContain("FAMILY_ALREADY_BILLED");
+      // Only the child's payment was reversed; the parent's still stands, so the
+      // officer is warned that confirming invoices the whole family fee (#4110).
+      expect(preview.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
+      expect(confirmed.exceptionCount).toBe(0);
+      expect(await prisma.membershipBillingException.count({ where: { familyGroupId: FAMILY_ID } })).toBe(0);
       const charge = await expectOneNewFamilyCharge(confirmed.chargeIds);
       // Only the reversed child is billed: the parent is still PAID by hand.
       expect(charge.coverage.map((row) => ({ memberId: row.memberId, releasedAt: row.releasedAt }))).toEqual([
@@ -308,6 +314,33 @@ let createdMapping = false;
 
       const charge = await expectOneNewFamilyCharge(confirmed.chargeIds);
       expect(charge.coverage.map((row) => row.memberId).sort()).toEqual([...MEMBER_IDS].sort());
+    });
+
+    it("keeps a closed family billed for a NEW joiner when no covered payment was reversed (#4110 regression)", async () => {
+      await expect(
+        closeAlreadyPaidSubscriptionCharge({ chargeId: OLD_CHARGE_ID, reason: "Paid in cash", actorMemberId: OFFICER_ID }),
+      ).resolves.toMatchObject({ closed: true });
+      // A third member joins the family after the close; nobody's payment changed.
+      await prisma.member.create({
+        data: {
+          id: JOINER_ID, email: `${JOINER_ID}@example.invalid`, passwordHash: "not-a-real-password",
+          firstName: "Rebill", lastName: "joiner", ageTier: "ADULT",
+        },
+      });
+      await prisma.familyGroupMember.create({ data: { familyGroupId: FAMILY_ID, memberId: JOINER_ID } });
+      await prisma.seasonalMembershipAssignment.create({ data: { memberId: JOINER_ID, seasonYear: SEASON_YEAR, membershipTypeId: TYPE_ID } });
+
+      const preview = await billing.buildSubscriptionBillingPreview({
+        seasonYear: SEASON_YEAR,
+        decisionDate: DECISION_DATE,
+        memberIds: [...MEMBER_IDS, JOINER_ID],
+        yearEndMonth: YEAR_END_MONTH,
+      });
+
+      expect(preview.entries).toEqual([]);
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: JOINER_ID, context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID }) }),
+      ]);
     });
 
     it("still refuses a second LIVE charge for one family, type and season", async () => {
@@ -336,7 +369,12 @@ let createdMapping = false;
           invoiceReference: "MEMSUB-RACE-4110-SECOND",
         },
       });
-      await expect(second).rejects.toMatchObject({ code: "P2002" });
+      const error = await second.then(() => null, (caught: unknown) => caught);
+      expect(error).toMatchObject({ code: "P2002" });
+      // The refusal is the partial live-only index's, read the way the app reads
+      // a P2002 target under the driver adapter (meta.target is empty there).
+      const { describeUniqueConstraintTarget } = await import("@/lib/prisma-errors");
+      expect(describeUniqueConstraintTarget(error)?.toLowerCase()).toBe("membershipcharge_family_type_year_live_key");
     });
   },
 );

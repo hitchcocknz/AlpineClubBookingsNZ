@@ -255,6 +255,56 @@ let observerClient: import("@prisma/client").PrismaClient;
       expect(JSON.parse(audits[0]!.details ?? "{}")).toMatchObject({ reason: REASON, subscriptionIds: [...SUBSCRIPTION_IDS] });
     });
 
+    it("a worker's guarded write that waits on a close's uncommitted claim matches no row once the close commits (#4098 review, concurrency F3)", async () => {
+      // Hold the close's transaction open AFTER its claim: the close claims the
+      // charge row (CONFLICT -> NOT_REQUIRED, uncommitted) and then queues on a
+      // subscription row this holder has locked. The invoice worker's recording
+      // write — the real liveChargeWhere guard — then queues on the charge row
+      // the close holds. Releasing lets the close commit, and PostgreSQL
+      // re-evaluates the worker's WHERE against the committed NOT_REQUIRED row.
+      const { liveChargeWhere } = await import("@/lib/subscription-charge-already-paid");
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let locked!: () => void;
+      const lockedInHolder = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      let holderPid = 0;
+      const holder = lockHolderClient.$transaction(
+        async (tx) => {
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+          holderPid = pid;
+          await tx.$queryRaw`SELECT id FROM "MemberSubscription" WHERE id = ${SUBSCRIPTION_IDS[1]} FOR UPDATE`;
+          locked();
+          await released;
+        },
+        { timeout: 15_000 },
+      );
+      await lockedInHolder;
+
+      const closing = close();
+      await waitForBlockedBy(holderPid, 1);
+      // `.then` sends it now: a Prisma query is lazy until awaited or chained.
+      const workerWrite = prisma.membershipSubscriptionCharge.updateMany({
+        where: liveChargeWhere(CHARGE_ID),
+        data: { status: "INVOICE_CREATED", xeroInvoiceId: "race-4098-stray-invoice", xeroInvoiceNumber: "INV-STRAY" },
+      }).then((result) => result);
+      try {
+        // The close behind the holder, and the worker behind the close.
+        await waitForBlockedBy(holderPid, 2);
+      } finally {
+        release();
+      }
+      await holder;
+      await expect(closing).resolves.toMatchObject({ closed: true });
+      await expect(workerWrite).resolves.toEqual({ count: 0 });
+
+      const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
+      expect(charge).toMatchObject({ status: "NOT_REQUIRED", xeroInvoiceId: null });
+    });
+
     it("rolls back whole when a reversal commits while the close waits for the subscription row", async () => {
       let release!: () => void;
       const released = new Promise<void>((resolve) => {
