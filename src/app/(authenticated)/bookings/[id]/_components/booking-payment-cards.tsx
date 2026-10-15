@@ -3,13 +3,8 @@ import type { BoundClubFormat } from "@/lib/club-format-bound";
 import { BookingPaymentSection } from "@/components/booking-payment-section";
 import { SwitchToInternetBankingButton } from "@/components/switch-to-internet-banking-button";
 import { SendGuestPaymentLinkButton } from "@/components/send-guest-payment-link-button";
-import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { BookingAdditionalPaymentPanel } from "@/components/admin/booking-additional-payment-panel";
-import {
-  additionalPaymentEpisodeStartedAt,
-  isAdditionalAmountUncollected,
-  isAdditionalPaymentDoorOpenForBooking,
-} from "@/lib/additional-payment-chase";
+import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { WaitlistOfferCard } from "@/components/waitlist-offer-card";
 import { getBookingPaymentMode } from "@/lib/booking-payment-flow";
@@ -400,38 +395,6 @@ export function BookingPaymentCards({
           canWithdraw={canEditFinance}
         />
       ) : null}
-
-      {/* Additional payment required after a modification that increased the
-          price. Member-personal payment (Stripe card entry) — owner-only so a
-          non-owner admin/officer never sees the member's pay controls (#1303).
-
-          The lifecycle check is load-bearing, not tidiness (#2350): cancelling a
-          booking marks the additional intent FAILED and leaves the amount alone,
-          so an amount-and-status-only condition kept showing the owner of a
-          CANCELLED booking a "pay this extra" card — and the secret route behind
-          it would still hand out a confirmable client secret.
-
-          #3641: the booking half of the member's pay door, the same predicate
-          the secret route's door (`resolveAdditionalPaymentDoor`) is built on,
-          so the card, the route and the Xero reaper share one lifecycle rule.
-          Not the whole door: that needs an intent, and this card is shown for an
-          uncollected amount with none (a failed mint), to say it is owing. */}
-      {booking.payment &&
-        isBookingOwner &&
-        isAdditionalPaymentDoorOpenForBooking({
-          bookingStatus: booking.status,
-          bookingDeletedAt: booking.deletedAt,
-        }) &&
-        // #3340: the ONE uncollected predicate, called not restated
-        // (`INV-SSOT-001`). Arrived from `main`, where it replaced these two
-        // clauses in the pre-split page; re-homed here because #2958 moved this
-        // gate into the section that renders it.
-        isAdditionalAmountUncollected(booking.payment) && (
-          <AdditionalPaymentCard
-            bookingId={booking.id}
-            additionalAmountCents={booking.payment.additionalAmountCents}
-          />
-        )}
     </>
   );
 }

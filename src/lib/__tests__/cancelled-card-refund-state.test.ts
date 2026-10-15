@@ -54,7 +54,7 @@ describe("readCancelledCardRefund (#4125)", () => {
         OR: [
           { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
           // The trailing underscore keeps booking-1's prefix from matching booking-10's rows.
-          { idempotencyKey: { startsWith: "capacity_claim_failed_refund_recovery_booking-1_" } },
+          { idempotencyKey: { startsWith: "capacity\\_claim\\_failed\\_refund\\_recovery\\_booking-1\\_" } }, // #4146: escaped
         ],
       },
     }));

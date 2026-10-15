@@ -36,12 +36,14 @@ export async function loadBookingDetailHistory({
   club,
   viewer,
   format,
+  additionalCollectionPending = false,
 }: {
   booking: BookingDetailRecord;
   club: BoundClubTime;
   viewer: BookingDetailViewer;
   /** The club's format (#3565), resolved once by the page and threaded here. */
   format: ClubFormat;
+  additionalCollectionPending?: boolean;
 }) {
   const { canSeeAdminTools, canSeeOwnerCredit } = viewer;
   const bookingAuditLogs = await prisma.auditLog.findMany({
@@ -137,6 +139,7 @@ export async function loadBookingDetailHistory({
     ownerCreditHidden: !canSeeOwnerCredit,
     // #4097: a card cancel's shortfall tasks, so the narrative says where each part stands.
     cardShortfallStatuses: booking.status === "CANCELLED" ? await readCardShortfallTaskStatuses(booking.id) : {},
+    additionalCollectionPending,
     // #4125: a card cancel's refund with no REFUNDED event - still being sent, made, or stalled;
     // #4145: closed "Paid another way", what the officer paid back.
     ...(booking.status === "CANCELLED" ? await readCancelledCardRefund(booking.id) : {}),

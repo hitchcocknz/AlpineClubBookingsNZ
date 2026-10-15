@@ -554,6 +554,7 @@ export async function enqueueRefundRequestRefundRecovery({
   });
 }
 
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import {
   BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
@@ -916,13 +917,12 @@ export async function findOtherDuplicateCaptureRefundOperation({
 }) {
   return store.paymentRecoveryOperation.findFirst({
     where: {
+      // #4146: on the booking's index, and the prefix matched literally: Prisma's
+      // `startsWith` is `LIKE`, which reads a `_` in the booking id as any character.
+      bookingId,
       idempotencyKey: {
-        startsWith:
-          buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId),
-        not: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
-          bookingId,
-          paymentIntentId,
-        ),
+        ...exactPrefix(buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId)),
+        not: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
       },
     },
   });
