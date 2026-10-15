@@ -21,9 +21,10 @@ vi.mock("@/lib/prisma", () => ({
 
 import { readCancelledCardRefundState } from "@/lib/cancel-card-refund-shortfall-status";
 
-type Row = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
+type Row = { id: string; idempotencyKey: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
 const row = (overrides: Partial<Row> = {}): Row => ({
   id: "op-1",
+  idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_1",
   status: PaymentRecoveryOperationStatus.PENDING,
   attempts: 0,
   nextRetryAt: new Date("2026-07-01T00:05:00.000Z"),
@@ -74,6 +75,17 @@ describe("readCancelledCardRefundState (#4125)", () => {
 
     expect(await readCancelledCardRefundState("booking-1")).toBe("paid-another-way");
     expect(db.count).toHaveBeenCalledWith({ where: { occurrenceKey: { in: expect.arrayContaining([expect.stringContaining("op-1")]) } } });
+  });
+
+  // SQL LIKE reads `_` as any one character, so the database can hand back a
+  // row of booking `booking-1x`'s for booking-1's prefix; it is not this booking's.
+  it("ignores a row the LIKE wildcard matched that is not this booking's, and reads the member's cancel row", async () => {
+    db.findMany.mockResolvedValue([
+      row({ id: "op-other", idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1x_pi_1", status: PaymentRecoveryOperationStatus.FAILED, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null }),
+      row({ id: "op-own", idempotencyKey: "booking_cancel_refund_recovery_booking-1" }),
+    ]);
+
+    expect(await readCancelledCardRefundState("booking-1")).toBe("on-its-way");
   });
 
   it("several rows read as the one furthest from done", async () => {

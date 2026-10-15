@@ -286,6 +286,12 @@ import "./card-refund-failed-later.realdb.test";
 // line posted on the card payment) or dismisses it. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4097-` fixtures.
 import "./cancel-card-refund-shortfall.realdb.test";
+// #4125 reuses it to prove the capacity race's card refund, made by the
+// recovery runner, writes one REFUNDED booking event for the frozen plan's
+// total - none from a late inline close or a second run - and that the booking
+// page's read of the row says still being sent, dead or made. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4125-` fixtures.
+import "./capacity-race-refund-event.realdb.test";
 // #3750 reuses it to prove approving a locked-period change request on a
 // finished stay: the real executor and batch service add, remove, swap and
 // re-date the stay at the same-day tier, two racing approvals make one

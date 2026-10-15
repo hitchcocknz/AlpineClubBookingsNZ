@@ -75,16 +75,21 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
  * the one furthest from done: a dead one first, then one still being sent.
  */
 export async function readCancelledCardRefundState(bookingId: string): Promise<CardRefundState | undefined> {
+  const capacityRacePrefix = `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
   const rows = await prisma.paymentRecoveryOperation.findMany({
     where: {
       OR: [
         { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
-        { idempotencyKey: { startsWith: `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_` } },
+        { idempotencyKey: { startsWith: capacityRacePrefix } },
       ],
     },
-    select: { id: true, status: true, attempts: true, nextRetryAt: true },
+    select: { id: true, idempotencyKey: true, status: true, attempts: true, nextRetryAt: true },
   });
-  const states = await Promise.all(rows.map(cardRefundRowState));
+  // `startsWith` is SQL LIKE, where `_` matches any one character, so the
+  // trailing `_` alone would let booking `ab`'s read take booking `abc`'s rows.
+  // The prefix is checked again here, exactly.
+  const own = rows.filter((row) => row.idempotencyKey === buildBookingCancellationRefundIdempotencyKey(bookingId) || row.idempotencyKey.startsWith(capacityRacePrefix));
+  const states = await Promise.all(own.map(cardRefundRowState));
   return FURTHEST_FROM_DONE_FIRST.find((state) => states.includes(state));
 }
 
