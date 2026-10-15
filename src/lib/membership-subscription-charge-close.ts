@@ -43,10 +43,12 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * gives the new charge a fresh idempotency key. Keeping the claims would leave a
  * reversed member silently unbillable, and without the bump a re-bill would
  * collapse onto this closed charge's key and raise nothing. A PER_FAMILY charge
- * re-bills the same way (owner decision on #4098, 15 Oct 2026): the preview's
- * existing-family-charge filter skips a NOT_REQUIRED row, and the
- * family/type/season unique index covers only live charges (#4110), so the
- * reversed member's new family charge sits beside this retained row.
+ * re-bills the same way after a reversal (owner decisions, 15 Oct 2026): the
+ * preview keeps counting a closed family charge as billed — a new joiner still
+ * meets FAMILY_ALREADY_BILLED — until a subscription it covered stops being
+ * settled, then bills the family again (warning when only some were reversed),
+ * and the family/type/season unique index covers only live charges (#4110), so
+ * the new family charge sits beside this retained row.
  *
  * GUARDS AND RACES. No advisory lock, like the void release and the family
  * markers: every write is guarded in its own WHERE. The charge claim is a

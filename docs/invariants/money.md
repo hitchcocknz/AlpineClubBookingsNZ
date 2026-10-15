@@ -865,7 +865,7 @@ check the others.
   link/push/unlink. An audited finance:edit close (#4098) moves that conflict
   to `NOT_REQUIRED` only while every covered subscription is still `PAID`,
   releasing its coverage claims and bumping `voidGeneration`, so a later
-  reversal re-bills that member, per-family too (#4110). Once a real Xero
+  reversal re-bills that member; a closed family stays billed until then (#4110). Once a real Xero
   subscription invoice links to the row,
   Xero is authoritative again and the linking write clears the manual
   provenance columns (a row can never read "UNPAID (manual)"). Reversal
