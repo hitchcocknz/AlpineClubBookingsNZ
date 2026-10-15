@@ -222,6 +222,17 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
 
     const checkTask = () => prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: CHECK_KEY } });
 
+    /**
+     * The owner's repair of the drift (`payments:audit-refunded-total` reports it;
+     * the app never lowers a refunded total itself): the charge's refunded total
+     * back to its refund rows, and the payment's figures re-derived from its charges.
+     */
+    async function correctTheRecords(): Promise<void> {
+      await prisma.paymentTransaction.update({ where: { id: CARD_TXN }, data: { refundedAmountCents: CHARGE_CENTS - DRIFT_CENTS } });
+      const { reconcilePaymentAggregates } = await import("@/lib/payment-transactions");
+      await reconcilePaymentAggregates({ paymentId: PAYMENT_ID, store: prisma });
+    }
+
     beforeAll(async () => {
       assertSafeRaceDbUrl(RACE_DB_URL);
       process.env.DATABASE_URL = RACE_DB_URL;
@@ -296,7 +307,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await checkTask()).toMatchObject({ status: "OPEN" });
 
       // The records corrected (the owner's repair of the drift), and a later intent's charge captured on the same payment.
-      await prisma.paymentTransaction.update({ where: { id: CARD_TXN }, data: { refundedAmountCents: CHARGE_CENTS - DRIFT_CENTS } });
+      await correctTheRecords();
       await prisma.paymentTransaction.create({
         data: { id: LATE_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: LATE_INTENT, amountCents: 5_000, status: "SUCCEEDED", createdAt: new Date("2026-06-30T00:00:00.000Z") },
       });
