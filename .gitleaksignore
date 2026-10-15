@@ -52,3 +52,8 @@
 # a plain test label for a paid-another-way race case. Not a credential.
 33ab0ed913f8b30f0f10a4eae47bfe3b5c010fd9:src/lib/__tests__/card-refund-paid-another-way.realdb.test.ts:generic-api-key:472
 33ab0ed913f8b30f0f10a4eae47bfe3b5c010fd9:src/lib/__tests__/card-refund-paid-another-way.realdb.test.ts:generic-api-key:473
+
+# #4132: a realdb fixture's recovery idempotency key, a plain test label for the
+# plan-less modification-refund replay case. Not a credential; the file now
+# builds it rather than quoting it.
+c7df5c92c2a2d419538428be36c1618cc7c13d6c:src/lib/__tests__/ledger-insertion-seq.realdb.test.ts:generic-api-key:327

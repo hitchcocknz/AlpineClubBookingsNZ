@@ -5415,6 +5415,7 @@ describe("runBookingXeroRepair", () => {
               paymentMethodId: "pm_123",
               reason: null,
               createdAt: new Date("2026-05-01T00:00:00Z"),
+              insertionSeq: 1,
               updatedAt: new Date("2026-05-01T00:00:00Z"),
             },
             {
@@ -5429,6 +5430,7 @@ describe("runBookingXeroRepair", () => {
               paymentMethodId: null,
               reason: "date_change",
               createdAt: new Date("2026-05-02T00:00:00Z"),
+              insertionSeq: 2,
               updatedAt: new Date("2026-05-02T00:00:00Z"),
             },
           ],
@@ -5476,6 +5478,35 @@ describe("runBookingXeroRepair", () => {
     });
     expect(booking.payment.status).toBe("REFUNDED");
     expect(report.summary.bookingsWithFindings).toBe(0);
+  });
+
+  // #4132 (`INV-PAY-133`): two captures written in one transaction share a
+  // `createdAt`. The pinned allocation is newest first by insertion order, so
+  // the row inserted LAST is refunded first - here the ADDITIONAL, though the
+  // read returns it second (a `createdAt`-only sort keeps the read's order).
+  it("pins a tied pair of late captures newest first by insertion order (#4132)", async () => {
+    const booking = lateCaptureRefundBooking();
+    const tiedAt = new Date("2026-05-01T00:00:00Z");
+    const [primary, additional] = booking.payment.transactions;
+    Object.assign(primary!, { createdAt: tiedAt, insertionSeq: 1 });
+    Object.assign(additional!, { createdAt: tiedAt, insertionSeq: 2 });
+    const deps = createDependencies({ bookings: [booking] });
+
+    await runBookingXeroRepair(CLUB_FORMAT_TEST, {
+      apply: true,
+      applyActionKeys: ["late-capture-refund:booking_1:payment_1:13000"],
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    expect(deps.refundPaymentTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allocation: [
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ],
+      }),
+    );
   });
 
   // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`

@@ -488,7 +488,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/lib/adult-member-hosting-review.ts:3256",
   "src/lib/booking-batch-modification-service.ts:1077",
   "src/lib/booking-cancel.ts:2499",
-  "src/lib/booking-cancel.ts:539",
+  "src/lib/booking-cancel.ts:540",
   "src/lib/booking-date-modification-service.ts:405",
   "src/lib/booking-delete.ts:120",
   "src/lib/booking-delete.ts:69",
@@ -522,8 +522,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1336",
-  "src/lib/payment-recovery.ts:2595",
-  "src/lib/payment-recovery.ts:2647",
+  "src/lib/payment-recovery.ts:2596",
+  "src/lib/payment-recovery.ts:2648",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -785,7 +785,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // as `include` to `bookingChangeRequest.findUnique`, and `organisation` sits
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:88",
-  "src/lib/cron-additional-payment-reminders.ts:437",
+  "src/lib/cron-additional-payment-reminders.ts:440",
   "src/lib/cron-confirm-pending.ts:209",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #4042: the organiser hand-back's owner-name select, shared by its two
@@ -810,6 +810,6 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   "src/lib/payment-link.ts:81",
   "src/lib/payment-reconciliation.ts:99",
   "src/lib/stuck-state-dashboard.ts:616",
-  "src/lib/xero-booking-repair-types.ts:218",
-  "src/lib/xero-inbound/settlement-conflicts.ts:153",
+  "src/lib/xero-booking-repair-types.ts:219",
+  "src/lib/xero-inbound/settlement-conflicts.ts:154",
 ];
