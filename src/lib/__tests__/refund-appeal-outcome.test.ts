@@ -85,6 +85,30 @@ describe("an approved appeal's card refund, read from its recovery row", () => {
   });
 });
 
+describe("#4120: an appeal refunded to the group organiser's card (#3956)", () => {
+  // Its debt hangs on the joiner's own payment under the appeal's own key, its
+  // plan naming the key rather than a transaction (`organiserChildRefundAllocationPlan`).
+  const debt = (status: string) =>
+    operation({
+      idempotencyKey: "organiser_card_appeal_refund_rq-1",
+      amountCents: 4_000,
+      status,
+      allocationPlan: [{ paymentTransactionId: "organiser_card_appeal_refund_rq-1", amountCents: 4_000 }],
+    });
+
+  it("still to be made: the whole debt is owed, so the screen and the census never read it as refunded", async () => {
+    const outcome = await outcomeOf(db({ operations: [debt("PENDING")], refundedAmountCents: 5_000, refunds: [] }));
+    expect(outcome).toMatchObject({ cardRefundState: "retrying", cardRefundOwedCents: 4_000 });
+    expect(approvedAppealRefundedCents(4_000, outcome ?? {})).toBe(0);
+  });
+
+  it("made (the debt closed): nothing owed, all of it refunded", async () => {
+    const outcome = await outcomeOf(db({ operations: [debt("SUCCEEDED")], refundedAmountCents: 5_000, refunds: [] }));
+    expect(outcome).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0 });
+    expect(approvedAppealRefundedCents(4_000, outcome ?? {})).toBe(4_000);
+  });
+});
+
 describe("an approved appeal with no recovery row", () => {
   // The approval's audit: one slice made, one refused, one unanswered (it may
   // have been made at Stripe), attempted a moment before the made refund.

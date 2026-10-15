@@ -18,6 +18,9 @@
  * - Capped per payment, as "Refunds owed" is (`openCardRefundOwedCents`), and
  *   the cap is SHARED by the payment's appeals: together they never read more
  *   than the payment can still give back.
+ * - By the group organiser's card (#3956, `INV-PAY-123`): the appeal's
+ *   `organiser_card_appeal_refund_` debt, which hangs on the joiner's own
+ *   payment, read exactly as the request's own row is (#4120).
  * - By bank transfer: this request's own hand-back task
  *   (`refundRequestHandBackOccurrenceKey`, `INV-PAY-118`) while OPEN, and once
  *   DISMISSED - the club kept that money, so it never went back.
@@ -36,7 +39,7 @@ import {
   type CardRefundOperationRow,
 } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
-import { buildRefundRequestRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { buildOrganiserChildAppealRefundKey, buildRefundRequestRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import type { ApprovedAppealOutcome } from "@/lib/refund-request-card-refund-copy";
 
 const NOTHING_OWED: ApprovedAppealOutcome = {
@@ -68,6 +71,14 @@ function unqueuedOperation(requestId: string, metadata: unknown): CardRefundOper
     createdAt: attemptedAt,
     succeededAt: null,
   };
+}
+
+/** An appeal's card refund row: the request's own, or (#3956) its debt to the group organiser's card. */
+function isAppealRefundRow(operation: { idempotencyKey: string }, requestId: string): boolean {
+  return (
+    operation.idempotencyKey === buildRefundRequestRefundRecoveryIdempotencyKey(requestId) ||
+    operation.idempotencyKey === buildOrganiserChildAppealRefundKey(requestId)
+  );
 }
 
 type OutcomeStore = Pick<PrismaClient, "payment" | "auditLog" | "manualRefundTask">;
@@ -115,7 +126,7 @@ export async function readApprovedAppealOutcomes(
     // Each appeal's card refund: its recovery row, or the operation its audit records.
     const unqueued = new Map<string, CardRefundOperationRow>();
     for (const request of appeals) {
-      const hasRow = payment.recoveryOperations.some((each) => each.idempotencyKey === buildRefundRequestRefundRecoveryIdempotencyKey(request.id));
+      const hasRow = payment.recoveryOperations.some((each) => isAppealRefundRow(each, request.id));
       const operation = hasRow ? null : unqueuedOperation(request.id, audits.find((audit) => audit.entityId === request.id)?.metadata);
       if (operation) unqueued.set(request.id, operation);
     }
@@ -124,7 +135,7 @@ export async function readApprovedAppealOutcomes(
     // The per-payment cap, shared by the payment's appeals in list order.
     let capLeftCents = openCardRefundOwedCents(owing);
     for (const request of appeals) {
-      const row = payment.recoveryOperations.find((each) => each.idempotencyKey === buildRefundRequestRefundRecoveryIdempotencyKey(request.id));
+      const row = payment.recoveryOperations.find((each) => isAppealRefundRow(each, request.id));
       const operation = row ?? unqueued.get(request.id);
       if (!operation || (row && row.status === PaymentRecoveryOperationStatus.SUCCEEDED)) continue;
       const slices = slicesById.get(operation.id) ?? [];
