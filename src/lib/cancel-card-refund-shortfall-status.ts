@@ -18,17 +18,29 @@ import { prisma } from "@/lib/prisma";
 type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
 
 /**
- * #4125: where one card refund recovery row stands. Closed `SUCCEEDED` is made,
- * unless its close is a "Paid another way" record (`closeKeysOf`); a row the
- * runner will still send is on its way (`isPaymentRecoveryOperationInFlight`);
- * any other is dead - stalled until the club acts.
+ * #4125: where a card cancel's refund stands on its recovery row, for the
+ * narrative (`cardRefundState`); #4145: closed "Paid another way", what the
+ * officer recorded paying back (`cardRefundPaidBackCents`) - which can be less
+ * than the row still owed.
  */
-async function cardRefundRowState(row: CardRefundRow): Promise<CardRefundState> {
+export interface CancelledCardRefund {
+  cardRefundState?: CardRefundState;
+  cardRefundPaidBackCents?: number;
+}
+
+/**
+ * #4125: where one card refund recovery row stands. Closed `SUCCEEDED` is made,
+ * unless its close is a "Paid another way" record (`closeKeysOf`), whose amount
+ * is what was paid back; a row the runner will still send is on its way
+ * (`isPaymentRecoveryOperationInFlight`); any other is dead - stalled until the
+ * club acts.
+ */
+async function cardRefundRowState(row: CardRefundRow): Promise<{ state: CardRefundState; paidBackCents: number }> {
   if (row.status === PaymentRecoveryOperationStatus.SUCCEEDED) {
-    const closed = await prisma.manualRefundTask.count({ where: { occurrenceKey: { in: closeKeysOf(row.id) } } });
-    return closed > 0 ? "paid-another-way" : "settled";
+    const close = await prisma.manualRefundTask.findFirst({ where: { occurrenceKey: { in: closeKeysOf(row.id) } }, select: { amountCents: true } });
+    return close ? { state: "paid-another-way", paidBackCents: close.amountCents ?? 0 } : { state: "settled", paidBackCents: 0 };
   }
-  return isPaymentRecoveryOperationInFlight(row) ? "on-its-way" : "stalled";
+  return { state: isPaymentRecoveryOperationInFlight(row) ? "on-its-way" : "stalled", paidBackCents: 0 };
 }
 
 /**
@@ -57,7 +69,7 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
     where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
     select: { id: true, status: true, attempts: true, nextRetryAt: true },
   });
-  if (cardRefund) statuses.card = await cardRefundRowState(cardRefund);
+  if (cardRefund) statuses.card = (await cardRefundRowState(cardRefund)).state;
   return statuses;
 }
 
@@ -67,11 +79,12 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
  * member's cancel (`booking_cancel_refund_recovery_<booking>`) or the capacity
  * race's (`capacity_claim_failed_refund_recovery_<booking>_<intent>`) - plus a
  * second only for a closed row, to tell a "Paid another way" close from a
- * refund made. No row reads as absent (`undefined`), which the narrative
+ * refund made, and read what it paid back (#4145; summed over a capacity race's
+ * rows). No row reads as absent (`undefined`), which the narrative
  * takes as on its way. Several rows (a second intent's capacity race) read as
  * the one furthest from done: a dead one first, then one still being sent.
  */
-export async function readCancelledCardRefundState(bookingId: string): Promise<CardRefundState | undefined> {
+export async function readCancelledCardRefund(bookingId: string): Promise<CancelledCardRefund> {
   const rows = await prisma.paymentRecoveryOperation.findMany({
     // On `@@index([bookingId])`, so the prefix match never scans the table.
     where: bookingCancelCardRefundRecoveryWhere(bookingId),
@@ -80,8 +93,10 @@ export async function readCancelledCardRefundState(bookingId: string): Promise<C
   // `startsWith` is SQL LIKE, where `_` matches any one character, so the query alone
   // would let booking `ab`'s read take booking `abc`'s rows: the exact rule decides (#4147).
   const own = rows.filter((row) => isBookingCancelCardRefundRecoveryKey(bookingId, row.idempotencyKey));
-  const states = await Promise.all(own.map(cardRefundRowState));
-  return FURTHEST_FROM_DONE_FIRST.find((state) => states.includes(state));
+  const standings = await Promise.all(own.map(cardRefundRowState));
+  const cardRefundState = FURTHEST_FROM_DONE_FIRST.find((state) => standings.some((each) => each.state === state));
+  if (cardRefundState !== "paid-another-way") return { cardRefundState };
+  return { cardRefundState, cardRefundPaidBackCents: standings.reduce((sum, each) => sum + each.paidBackCents, 0) };
 }
 
 const FURTHEST_FROM_DONE_FIRST: readonly CardRefundState[] = ["stalled", "on-its-way", "paid-another-way", "settled"];

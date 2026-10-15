@@ -24,7 +24,7 @@ import type { BookingNarrative, NarrativeEvent } from "@/lib/booking-narrative";
 import { formatCents } from "@/lib/utils";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
-import { isCancelCardRefundEvent } from "@/lib/cancel-card-refund-event-reason";
+import { isCancelCardRefundEvent, isMadeBeforePaidAnotherWayEvent } from "@/lib/cancel-card-refund-event-reason";
 
 /**
  * #4125: what the club follows up - a dead card refund, a part no refund
@@ -52,23 +52,42 @@ function cardRefundClause(amount: string, state: CardRefundState, refundedOn: st
   }
 }
 
+/** #4097, #4145: clauses said "a, b and c", or `none` when there are none. */
+function joinClauses(clauses: readonly string[], none: string): string {
+  return clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? none);
+}
+
+/** #4145: what reached the card before a "Paid another way" close, from the events that close marked. */
+type MadeBeforePaidAnotherWay = { cents: number; on: Date } | undefined;
+
+function madeBeforePaidAnotherWay(settlementEvents: readonly NarrativeEvent[]): MadeBeforePaidAnotherWay {
+  const marked = settlementEvents.filter(isMadeBeforePaidAnotherWayEvent);
+  const last = marked[marked.length - 1];
+  return last ? { cents: marked.reduce((sum, event) => sum + (event.amountCents ?? 0), 0), on: last.occurredAt } : undefined;
+}
+
 /**
- * #4145 (`INV-PAY-133`): a member cancel's card refund by where its row stands,
- * dated by its own event. A row closed "Paid another way" after part of it went
- * back to the card has an event for that part only: the two are said apart.
+ * #4145 (`INV-PAY-133`): a cancel's card refund by where its row stands, dated
+ * by its own event. A row closed "Paid another way" is said in its parts: what
+ * reached the card first (only by the event that close marked - an up-front
+ * event a cancel wrote before #4145 was written whatever became of the refund),
+ * what the officer recorded paying back, and any rest the club closed unpaid.
  */
-function ownCardRefundClause(
+function ownCardRefundClauses(
   cents: number,
   state: CardRefundState,
-  cardEvent: NarrativeEvent | undefined,
+  { cardEvent, made, paidBackCents }: { cardEvent: NarrativeEvent | undefined; made: MadeBeforePaidAnotherWay; paidBackCents: number | undefined },
   { club, format }: { club: BoundClubTime; format: ClubFormat },
-): string {
-  const refundedOn = cardEvent ? club.instantDate(cardEvent.occurredAt) : null;
-  const madeCents = cardEvent?.amountCents ?? 0;
-  if (state === "paid-another-way" && madeCents > 0 && madeCents < cents) {
-    return `${cardRefundClause(formatCents(madeCents, format), "settled", refundedOn)} and ${cardRefundClause(formatCents(cents - madeCents, format), state, null)}`;
-  }
-  return cardRefundClause(formatCents(cents, format), state, refundedOn);
+): string[] {
+  const money = (amount: number) => formatCents(amount, format);
+  if (state !== "paid-another-way") return [cardRefundClause(money(cents), state, cardEvent ? club.instantDate(cardEvent.occurredAt) : null)];
+  const madeCents = made && made.cents < cents ? made.cents : 0;
+  const paidBack = Math.min(paidBackCents ?? cents - madeCents, cents - madeCents);
+  const clauses = made && madeCents > 0 ? [cardRefundClause(money(madeCents), "settled", club.instantDate(made.on))] : [];
+  if (paidBack > 0) clauses.push(cardRefundClause(money(paidBack), state, null));
+  const restCents = cents - madeCents - paidBack;
+  if (restCents > 0) clauses.push(`the club checked the ${clauses.length > 0 ? "remaining " : ""}${money(restCents)} and closed it`);
+  return clauses;
 }
 
 /**
@@ -81,13 +100,15 @@ function ownCardRefundClause(
 function cardShortfallClause(
   parts: { cardCents: number; bankCents: number; checkCents: number },
   statuses: CardShortfallTaskStatuses,
-  { cardEvent, retainedAmountCents, club, format }: { cardEvent: NarrativeEvent | undefined; retainedAmountCents: number; club: BoundClubTime; format: ClubFormat },
+  { cardEvent, made, paidBackCents, retainedAmountCents, club, format }: {
+    cardEvent: NarrativeEvent | undefined; made: MadeBeforePaidAnotherWay; paidBackCents: number | undefined; retainedAmountCents: number; club: BoundClubTime; format: ClubFormat;
+  },
 ): string {
   const money = (cents: number) => formatCents(cents, format);
   const clauses: string[] = [];
   if (parts.cardCents > 0) {
     // The card part as its own refund stands, as the cancellation email says it.
-    clauses.push(ownCardRefundClause(parts.cardCents, statuses.card ?? "settled", cardEvent, { club, format }));
+    clauses.push(...ownCardRefundClauses(parts.cardCents, statuses.card ?? "settled", { cardEvent, made, paidBackCents }, { club, format }));
   }
   if (parts.bankCents > 0) {
     const status = statuses.bank ?? "OPEN";
@@ -112,7 +133,7 @@ function cardShortfallClause(
     );
   }
   if (retainedAmountCents > 0) clauses.push(`${money(retainedAmountCents)} was retained`);
-  const joined = clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? "no refund was due");
+  const joined = joinClauses(clauses, "no refund was due");
   // #4125: a dead card part is the club's to follow up.
   return withClubFollowUp(joined, parts.cardCents > 0 && statuses.card === "stalled" ? [STALLED_CARD_REFUND] : []);
 }
@@ -147,6 +168,7 @@ export function buildCancelledPostPaymentNarrative(
   ownerCreditHidden: boolean,
   cardShortfallStatuses: CardShortfallTaskStatuses = {},
   cardRefundState?: CardRefundState,
+  cardRefundPaidBackCents?: number,
 ): BookingNarrative {
   const snapshot = asCancellationSnapshot(cancelEvent?.snapshot);
   // #4125: no policy decided a capacity-race refund, and the club may pay part
@@ -181,16 +203,21 @@ export function buildCancelledPostPaymentNarrative(
 
   let settlementClause: string;
   const followUps: string[] = [];
+  // #4145: what a "Paid another way" close found already made, and what it paid back.
+  const paidAnotherWay = { made: madeBeforePaidAnotherWay(settlementEvents), paidBackCents: cardRefundPaidBackCents };
+  // What the clause below accounts for, refunded or paid back: a capacity race follows up the rest.
+  let accountedCents = settledAmountCents;
   if (snapshot?.cardShortfall) {
     // #4145: the card part's own event - a hand-back completion can land before the runner's refund.
-    settlementClause = cardShortfallClause(snapshot.cardShortfall, cardShortfallStatuses, { cardEvent: settlementEvent, retainedAmountCents, club, format });
+    settlementClause = cardShortfallClause(snapshot.cardShortfall, cardShortfallStatuses, { cardEvent: settlementEvent, ...paidAnotherWay, retainedAmountCents, club, format });
   } else if (
     snapshot?.refundMethod === "card" &&
     settledAmountCents > 0 &&
     // #4145: the row says where a card refund with no event of its own stands -
-    // and where a member cancel's stands while its row is still open or was
-    // paid another way (an up-front event written before #4145 says neither).
-    (!settlementEvent || (ownCard && cardRefundState !== undefined && cardRefundState !== "settled"))
+    // where a member cancel's stands while its row is still open (an up-front
+    // event written before #4145 says neither), and a row paid another way,
+    // whose event covers only the part the card took first.
+    (!settlementEvent || (cardRefundState !== undefined && cardRefundState !== "settled" && (ownCard || cardRefundState === "paid-another-way")))
   ) {
     // #4125, #4145: still being sent (the default when the caller read none),
     // dead, paid another way (said apart from any part the card took), or made
@@ -205,9 +232,10 @@ export function buildCancelledPostPaymentNarrative(
     // (`buildCancelledNarrative`'s `paidEvent`) sends it to the pre-payment
     // narrative. `booking-narrative.test.ts` pins that.
     const state = cardRefundState ?? "on-its-way";
-    const refund = ownCardRefundClause(ownCard ? snapshot.settledAmountCents : settledAmountCents, state, ownCard ? settlementEvent : undefined, { club, format });
-    const retained = retainedAmountCents > 0 ? ` and ${formatCents(retainedAmountCents, format)} was retained` : "";
-    settlementClause = `${refund}${retained}`;
+    accountedCents = ownCard || state === "paid-another-way" ? snapshot.settledAmountCents : settledAmountCents;
+    const clauses = ownCardRefundClauses(accountedCents, state, { cardEvent: ownCard ? settlementEvent : undefined, ...paidAnotherWay }, { club, format });
+    if (retainedAmountCents > 0) clauses.push(`${formatCents(retainedAmountCents, format)} was retained`);
+    settlementClause = joinClauses(clauses, "");
     if (state === "stalled") followUps.push(STALLED_CARD_REFUND);
   } else if (
     settledAmountCents > 0 &&
@@ -248,8 +276,8 @@ export function buildCancelledPostPaymentNarrative(
   // #4125: a capacity race refunds what the payment ledger showed refundable,
   // which can be less than the charge; the snapshot keeps nothing back, so the
   // rest is neither refunded nor retained - say so, never "no further payment".
-  const unaccountedCents = capacityRace ? paidAmountCents - settledAmountCents - retainedAmountCents : 0;
-  if (unaccountedCents > 0) followUps.push(`the ${settledAmountCents > 0 ? "remaining " : ""}${formatCents(unaccountedCents, format)}`);
+  const unaccountedCents = capacityRace ? paidAmountCents - accountedCents - retainedAmountCents : 0;
+  if (unaccountedCents > 0) followUps.push(`the ${accountedCents > 0 ? "remaining " : ""}${formatCents(unaccountedCents, format)}`);
   settlementClause = withClubFollowUp(settlementClause, followUps);
 
   return {

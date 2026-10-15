@@ -22,7 +22,7 @@ import {
 import { PAID_BACK_CHOICES, type PaidBackChoice } from "@/lib/card-refund-paid-back";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { getClubFormat } from "@/lib/club-format-settings";
-import { recordCancelCardRefundMadeBeforePaidAnotherWay } from "@/lib/cancel-card-refund-paid-another-way-event";
+import { recordCardRefundMadeBeforePaidAnotherWay } from "@/lib/cancel-card-refund-paid-another-way-event";
 import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX, normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
@@ -607,8 +607,8 @@ export async function closeCardRefundPaidAnotherWay(
       amountCents: input.amountCents,
       officerMemberId: input.actingMemberId,
     });
-    // #4145 (`INV-PAY-133`): a member cancel's slices made before this close went back to the card.
-    await recordCancelCardRefundMadeBeforePaidAnotherWay(tx, operation, { ownCents, format });
+    // #4145 (`INV-PAY-133`): a cancel's slices made before this close went back to the card.
+    await recordCardRefundMadeBeforePaidAnotherWay(tx, operation, { payment, format });
 
     // M3 / round 5 / round 6: the note now, or the late charge's receipt first.
     let xeroQueued: PaidAnotherWayXeroQueued;

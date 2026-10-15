@@ -19,7 +19,7 @@
  * transition is never rolled back purely because its narrative event failed.
  */
 import { BookingEventType, Prisma } from "@prisma/client";
-import { cancelCardRefundEventReason, isCancelCardRefundEvent } from "@/lib/cancel-card-refund-event-reason";
+import { cancelCardRefundEventReason, isCancelCardRefundEvent, MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT } from "@/lib/cancel-card-refund-event-reason";
 import type { ClubFormat } from "@/lib/club-format";
 import type { CancellationLedgerSnapshot } from "@/lib/paid-cancellation-event";
 import { prisma } from "@/lib/prisma";
@@ -166,17 +166,31 @@ export async function closeRefundRowRecordingEvent(
 ): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
     if (!(await close(tx))) return false;
-    await tx.bookingEvent.create({
-      data: {
-        bookingId: input.bookingId,
-        type: BookingEventType.REFUNDED,
-        actorMemberId: input.actorMemberId,
-        amountCents: input.amountCents,
-        reason: input.reason,
-        snapshot: Prisma.JsonNull,
-      },
-    });
+    await recordRefundRowEvent(tx, input);
     return true;
+  });
+}
+
+/**
+ * The REFUNDED event a card refund row's close writes (`INV-SSOT`): the close
+ * that made it (`closeRefundRowRecordingEvent`), or a "Paid another way" close
+ * for the slices Stripe had made first - dated by Stripe's latest refund and
+ * marked so (`MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT`, #4145).
+ */
+export async function recordRefundRowEvent(
+  tx: Pick<Prisma.TransactionClient, "bookingEvent">,
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null; reason: string; occurredAt?: Date; madeBeforePaidAnotherWay?: boolean },
+): Promise<void> {
+  await tx.bookingEvent.create({
+    data: {
+      bookingId: input.bookingId,
+      type: BookingEventType.REFUNDED,
+      occurredAt: input.occurredAt,
+      actorMemberId: input.actorMemberId,
+      amountCents: input.amountCents,
+      reason: input.reason,
+      snapshot: input.madeBeforePaidAnotherWay ? { ...MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT } : Prisma.JsonNull,
+    },
   });
 }
 
@@ -195,15 +209,16 @@ type CancelEventStore = Pick<Prisma.TransactionClient, "bookingEvent">;
  * #4145: the REFUNDED event of a member cancel's card refund, for `amountCents`
  * of it - its reason the cancel's own (`cancelCardRefundEventReason`), from
  * the figures the cancel's CANCELLED snapshot froze (`writePaidCancellationEvent`),
- * said as a part when `part` (a card refund shortfall's card part, or the slices
- * made before the rest was paid another way). A cancel with no such snapshot
+ * said as a part on a card refund shortfall's card part, or for the slices made
+ * before the rest was paid another way (`madeBeforePaidAnotherWay`: dated by
+ * Stripe's refund and marked so). A cancel with no such snapshot
  * (one made before #3639) is named by its amount. Writes nothing - and says so -
  * when the booking already has one: a cancel made before #4145 wrote its event
  * up front, whatever became of the refund (the deploy boundary).
  */
 export async function recordCancelCardRefundEvent(
   store: CancelEventStore,
-  input: { bookingId: string; amountCents: number; actorMemberId: string | null; part: boolean; format: ClubFormat; occurredAt?: Date },
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null; madeBeforePaidAnotherWay: boolean; format: ClubFormat; occurredAt?: Date },
 ): Promise<boolean> {
   const events = await store.bookingEvent.findMany({
     where: { bookingId: input.bookingId, type: { in: [BookingEventType.CANCELLED, BookingEventType.REFUNDED] } },
@@ -217,20 +232,10 @@ export async function recordCancelCardRefundEvent(
   const reason = cancelCardRefundEventReason({
     cardRefundCents: input.amountCents,
     policy: snapshot ? { refundPercentage: snapshot.refundPercentage as number, refundAmountCents: snapshot.settledAmountCents as number } : null,
-    shortfall: input.part || Boolean(snapshot?.cardShortfall),
+    shortfall: input.madeBeforePaidAnotherWay || Boolean(snapshot?.cardShortfall),
     format: input.format,
   });
-  await store.bookingEvent.create({
-    data: {
-      bookingId: input.bookingId,
-      type: BookingEventType.REFUNDED,
-      occurredAt: input.occurredAt,
-      actorMemberId: input.actorMemberId,
-      amountCents: input.amountCents,
-      reason,
-      snapshot: Prisma.JsonNull,
-    },
-  });
+  await recordRefundRowEvent(store, { ...input, reason });
   return true;
 }
 
@@ -246,7 +251,7 @@ export async function closeCancellationRefundAfterReplay(
 ): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
     if (!(await close(tx))) return false;
-    await recordCancelCardRefundEvent(tx, { bookingId, amountCents, actorMemberId: null, part: false, format });
+    await recordCancelCardRefundEvent(tx, { bookingId, amountCents, actorMemberId: null, madeBeforePaidAnotherWay: false, format });
     return true;
   });
 }

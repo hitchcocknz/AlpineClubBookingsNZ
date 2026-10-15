@@ -7,7 +7,7 @@
  *
  * What a mock can only imitate, run here against the database through the REAL
  * `cancelBooking`, `runPaymentRecoveryOperationNow`,
- * `closeCardRefundPaidAnotherWay`, `readCancelledCardRefundState` and
+ * `closeCardRefundPaidAnotherWay`, `readCancelledCardRefund` and
  * `resolveBookingNarrative`:
  *
  * - Inline success: the cancel's own close writes the one event, as the member
@@ -21,7 +21,8 @@
  * - Paid another way: the dead row is closed by an officer and no REFUNDED
  *   event is written - nothing went back to the card - and the narrative says
  *   it was paid back another way. Where part did go back first, that close
- *   records the part, dated by Stripe's refund, and the page says both.
+ *   records the part, dated by Stripe's refund and marked as its own, and the
+ *   page says both - and, paid back in part, the rest the club closed.
  * - The deploy boundary: a cancel made before #4145 wrote its event up front;
  *   the runner then closes the row and writes no second one.
  * - The cancel's close landing while the runner holds the row: only the close
@@ -98,7 +99,9 @@ let runPaymentRecoveryOperationNow: (typeof import("@/lib/payment-recovery"))["r
 let markBookingCancellationRefundRecoverySucceeded: (typeof import("@/lib/payment-recovery"))["markBookingCancellationRefundRecoverySucceeded"];
 let closeRefundRowRecordingEvent: (typeof import("@/lib/booking-events"))["closeRefundRowRecordingEvent"];
 let closeCardRefundPaidAnotherWay: (typeof import("@/lib/card-refund-paid-another-way"))["closeCardRefundPaidAnotherWay"];
-let readCancelledCardRefundState: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCancelledCardRefundState"];
+let readCancelledCardRefund: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCancelledCardRefund"];
+/** Where the row stands, as the page reads it. */
+const readCancelledCardRefundState = async (bookingId: string) => (await readCancelledCardRefund(bookingId)).cardRefundState;
 let readCardShortfallTaskStatuses: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCardShortfallTaskStatuses"];
 let resolveBookingNarrative: (typeof import("@/lib/booking-narrative"))["resolveBookingNarrative"];
 let parseRefundAllocationPlan: (typeof import("@/lib/open-card-refund-owed"))["parseRefundAllocationPlan"];
@@ -229,7 +232,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           },
           events,
           cardShortfallStatuses: await readCardShortfallTaskStatuses(BOOKING_ID),
-          cardRefundState: await readCancelledCardRefundState(BOOKING_ID),
+          ...(await readCancelledCardRefund(BOOKING_ID)),
         },
         CLUB_FORMAT_TEST,
       ).message;
@@ -245,7 +248,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       ({ runPaymentRecoveryOperationNow, markBookingCancellationRefundRecoverySucceeded } = await import("@/lib/payment-recovery"));
       ({ closeRefundRowRecordingEvent } = await import("@/lib/booking-events"));
       ({ closeCardRefundPaidAnotherWay } = await import("@/lib/card-refund-paid-another-way"));
-      ({ readCancelledCardRefundState, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status"));
+      ({ readCancelledCardRefund, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status"));
       ({ resolveBookingNarrative } = await import("@/lib/booking-narrative"));
       ({ parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
@@ -430,9 +433,42 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await refundedEvents()).toEqual([
         { amountCents: 6_000, reason: "$60.00 of the 50% refund ($100.00) refunded to the original payment method.", actorMemberId: null, occurredAt: FROZEN_AT },
       ]);
+      // Marked as the close's own, so the page reads it as the card's part.
+      expect(await prisma.bookingEvent.count({ where: { bookingId: BOOKING_ID, type: "REFUNDED", snapshot: { path: ["kind"], equals: "card_refund_made_before_paid_another_way" } } })).toBe(1);
+      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundPaidBackCents: 4_000 });
       expect(await narrative()).toContain(
-        `$60.00 was refunded to your card on ${club.instantDate(FROZEN_AT)} and $40.00 could not go back to your card and was paid back to you another way and $100.00 was retained`,
+        `$60.00 was refunded to your card on ${club.instantDate(FROZEN_AT)}, $40.00 could not go back to your card and was paid back to you another way and $100.00 was retained`,
       );
+    });
+
+    it("paid back in part after part went to the card: the page names the card's part, what the officer paid back, and the rest the club closed", async () => {
+      // $30.00 on the top-up goes back to the card; the $70.00 on the main charge never does.
+      await paidBooking({ topUpCents: 3_000 });
+      stripeAnswers((intent) => (intent === PRIMARY_INTENT ? "throws" : "succeeded"));
+
+      await cancel();
+
+      const row = await rowNow();
+      await prisma.paymentRecoveryOperation.update({ where: { id: row.id }, data: { status: "FAILED", attempts: 5, nextRetryAt: null } });
+      vi.setSystemTime(RUNNER_AT);
+      await closeCardRefundPaidAnotherWay({
+        operationId: row.id,
+        amountCents: 5_000,
+        paidBack: "partial",
+        expectedOwedCents: 7_000,
+        note: "Bank transfer, ref RACE 4145 in part",
+        actingMemberId: OFFICER_ID,
+      });
+
+      expect(await refundedEvents()).toEqual([
+        { amountCents: 3_000, reason: "$30.00 of the 50% refund ($100.00) refunded to the original payment method.", actorMemberId: null, occurredAt: FROZEN_AT },
+      ]);
+      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundPaidBackCents: 5_000 });
+      const message = await narrative();
+      expect(message).toContain(
+        `$30.00 was refunded to your card on ${club.instantDate(FROZEN_AT)}, $50.00 could not go back to your card and was paid back to you another way, the club checked the remaining $20.00 and closed it and $100.00 was retained`,
+      );
+      expect(message).not.toContain("$70.00 could not go back");
     });
 
     it("the deploy boundary: a cancel made before #4145 wrote its event up front - the page says on its way while the row is open, and the runner closes the row with no second event", async () => {

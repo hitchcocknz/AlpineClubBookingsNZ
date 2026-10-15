@@ -7,7 +7,7 @@
  *
  * What a mock can only imitate, run here against the database through the REAL
  * `enqueueCapacityClaimFailedRefundRecovery`, `runPaymentRecoveryOperationNow`
- * and `readCancelledCardRefundState`:
+ * and `readCancelledCardRefund`:
  *
  * - The runner's replay makes the refund and writes ONE REFUNDED event for the
  *   plan's total; the inline close then closes nothing (count 0), and a second
@@ -21,6 +21,9 @@
  * - The row's state for the narrative, by the real `startsWith` read: still
  *   being sent, dead (retries spent) - which the narrative says the club will
  *   follow up - and made.
+ * - #4145: a dead row closed "Paid another way" after one slice was made
+ *   (`closeCardRefundPaidAnotherWay`): that slice is recorded once, as the
+ *   capacity race's event, dated by Stripe's refund and marked as the close's.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -83,7 +86,10 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let enqueueCapacityClaimFailedRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueCapacityClaimFailedRefundRecovery"];
 let markCapacityClaimFailedRefundRecoverySucceeded: (typeof import("@/lib/payment-recovery"))["markCapacityClaimFailedRefundRecoverySucceeded"];
 let runPaymentRecoveryOperationNow: (typeof import("@/lib/payment-recovery"))["runPaymentRecoveryOperationNow"];
-let readCancelledCardRefundState: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCancelledCardRefundState"];
+let readCancelledCardRefund: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCancelledCardRefund"];
+let closeCardRefundPaidAnotherWay: (typeof import("@/lib/card-refund-paid-another-way"))["closeCardRefundPaidAnotherWay"];
+/** Where the row stands, as the page reads it. */
+const readCancelledCardRefundState = async (bookingId: string) => (await readCancelledCardRefund(bookingId)).cardRefundState;
 let CAPACITY_RACE_REFUND_EVENT_REASON: (typeof import("@/lib/booking-events"))["CAPACITY_RACE_REFUND_EVENT_REASON"];
 let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixture"))["CLUB_FORMAT_TEST"];
 
@@ -96,6 +102,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await prisma.auditLog.deleteMany({ where: { targetId: { in: [BOOKING_ID, PAYMENT_ID] } } });
       await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
+      await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.paymentRefund.deleteMany({ where: { paymentId: PAYMENT_ID } });
       await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
@@ -157,7 +164,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ enqueueCapacityClaimFailedRefundRecovery, markCapacityClaimFailedRefundRecoverySucceeded, runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery"));
-      ({ readCancelledCardRefundState } = await import("@/lib/cancel-card-refund-shortfall-status"));
+      ({ readCancelledCardRefund } = await import("@/lib/cancel-card-refund-shortfall-status"));
+      ({ closeCardRefundPaidAnotherWay } = await import("@/lib/card-refund-paid-another-way"));
       ({ CAPACITY_RACE_REFUND_EVENT_REASON } = await import("@/lib/booking-events"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
 
@@ -186,7 +194,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           finalPriceCents: CHARGE_CENTS,
         },
       });
-    });
+      // #4145: the real "paid another way" close loads cold here too: past the 10s default under load.
+    }, 120_000);
 
     beforeEach(async () => {
       resetStripeRaceHooks();
@@ -277,6 +286,59 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(asked.count).toBe(2);
       expect(await refundedEvents()).toEqual([{ amountCents: PLANNED_CENTS, reason: CAPACITY_RACE_REFUND_EVENT_REASON, actorMemberId: null }]);
       expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBe(1);
+    });
+
+    it("#4145: a dead row closed \"Paid another way\" after one slice was made records that slice once, as the capacity race's event dated by Stripe's refund", async () => {
+      // Two slices on the charge: Stripe makes the $60.00 one and refuses to answer for the $30.00 one.
+      const plan = [
+        { paymentTransactionId: TXN_ID, amountCents: 6_000 },
+        { paymentTransactionId: TXN_ID, amountCents: 3_000 },
+      ];
+      stripeRaceHooks.refund = async (args) => {
+        if (args.amountCents === 3_000) throw new Error("Stripe is unavailable (503)");
+        return {
+          id: `re_race_4125_${args.idempotencyKey}`,
+          object: "refund",
+          amount: args.amountCents,
+          currency: "nzd",
+          status: "succeeded",
+          reason: "requested_by_customer",
+          // Stripe's own time, a day past the app's frozen clock: the event is dated by this, not by the app's record.
+          created: Math.floor(Date.UTC(2026, 6, 2) / 1000),
+          charge: "ch_race_4125",
+          payment_intent: args.paymentIntentId,
+          metadata: args.metadata ?? {},
+        };
+      };
+      await enqueueCapacityClaimFailedRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: INTENT, amountCents: PLANNED_CENTS, allocationPlan: plan });
+      const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: ROW_KEY } });
+      await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST);
+      expect(await refundedEvents()).toEqual([]);
+      await prisma.paymentRecoveryOperation.update({ where: { id: row.id }, data: { status: "FAILED", attempts: 5, nextRetryAt: null } });
+
+      await closeCardRefundPaidAnotherWay({
+        operationId: row.id,
+        amountCents: 3_000,
+        paidBack: "full",
+        expectedOwedCents: 3_000,
+        note: "Bank transfer, ref RACE 4125",
+        actingMemberId: MEMBER_ID,
+      });
+
+      const events = await prisma.bookingEvent.findMany({
+        where: { bookingId: BOOKING_ID, type: "REFUNDED" },
+        select: { amountCents: true, reason: true, actorMemberId: true, occurredAt: true, snapshot: true },
+      });
+      expect(events).toEqual([
+        {
+          amountCents: 6_000,
+          reason: CAPACITY_RACE_REFUND_EVENT_REASON,
+          actorMemberId: null,
+          occurredAt: new Date("2026-07-02T00:00:00.000Z"),
+          snapshot: { kind: "card_refund_made_before_paid_another_way" },
+        },
+      ]);
+      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundPaidBackCents: 3_000 });
     });
 
     it("a dead row reads as stalled - never on its way - and a row of another booking is not read", async () => {

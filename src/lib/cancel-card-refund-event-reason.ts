@@ -50,3 +50,22 @@ export function cancelCardRefundEventReason({
 export function isCancelCardRefundEvent(event: { type: BookingEventType; reason: string | null }): boolean {
   return event.type === BookingEventType.REFUNDED && (event.reason?.endsWith(CANCEL_CARD_REFUND_REASON_END) ?? false);
 }
+
+/**
+ * #4145 (`INV-PAY-133`): the snapshot a "Paid another way" close leaves on the
+ * REFUNDED event it writes for the slices Stripe had already made - a member
+ * cancel's or a capacity race's. The narrative splits a paid-another-way
+ * refund only by an event carrying it: an up-front event a cancel wrote before
+ * #4145 was written whatever became of the refund, and proves nothing.
+ */
+export const MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT = { kind: "card_refund_made_before_paid_another_way" } as const;
+
+/** The REFUNDED event a "Paid another way" close wrote for the part Stripe had made. */
+export function isMadeBeforePaidAnotherWayEvent(event: { type: BookingEventType; snapshot: unknown }): boolean {
+  return (
+    event.type === BookingEventType.REFUNDED &&
+    typeof event.snapshot === "object" &&
+    event.snapshot !== null &&
+    (event.snapshot as { kind?: unknown }).kind === MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT.kind
+  );
+}
