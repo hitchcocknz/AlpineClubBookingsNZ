@@ -67,3 +67,33 @@ export const XERO_DOT_ACTIONS_THE_CENSUS_CANNOT_NAME: readonly string[] = [
   "xero.allocation.reconciled",
   "xero.allocation.restored-booking-change-refused",
 ];
+
+/**
+ * Written actions the PostgreSQL proof seeds beside the #2581 history: at
+ * least one under every legacy prefix, and the `xero.` actions a writer spells
+ * literally. The unit replay checks each is in the population it reads, so
+ * this list cannot hold an action nothing writes.
+ */
+export const LEGACY_FILTER_PREFIX_WITNESSES: readonly string[] = [
+  "member.profile.updated",
+  "membership_cancellation.requested",
+  "MEMBERSHIP_APPLICATION_APPROVED",
+  "EMAIL_CHANGED",
+  "EMAIL_CHANGE_REQUESTED",
+  "EMAIL_TEMPLATE_OVERRIDE_UPDATED",
+  "booking.created",
+  "BOOKING_MESSAGE_OVERRIDE_UPDATED",
+  "waitlist.offer_sent",
+  "FAMILY_GROUP_CREATED",
+  "family-group.login-holder-swapped",
+  "ADMIN_NOTIFICATION_PREFERENCES_UPDATED",
+  "LODGE_UPDATED",
+  "XERO_PUSH",
+  "xero_account_mappings_updated",
+  "xero.operation.marked_failed",
+  "xero.operation.marked_non_replayable",
+  "xero.operation.manually_resolved",
+  "xero.contact.synced_to_member",
+  "xero.contact.moved_to_organisation",
+  "member_lifecycle.delete_requested",
+];

@@ -21,6 +21,11 @@
  * migrations for #4165 found none but the `xero.` family whose old match ran
  * through a wildcard. `audit-query-exact-prefix.realdb.test.ts` proves the
  * same equality against PostgreSQL itself.
+ *
+ * WHAT IT DOES NOT PIN. Both sides are built from the CURRENT prefix list, so
+ * this measures the escaping and nothing else: editing a prefix moves both
+ * sides at once and passes here. The member-boundary of the #2581 history is
+ * pinned against the real filters by `historical-audit-category-backfill.test.ts`.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,6 +48,7 @@ import {
 } from "../../../scripts/audit/audit-writer-census-manifest";
 import { matchesWhere } from "./support/prisma-where";
 import {
+  LEGACY_FILTER_PREFIX_WITNESSES,
   LEGACY_FILTER_WILDCARD_DECOYS,
   XERO_DOT_ACTIONS_THE_CENSUS_CANNOT_NAME,
   unescapeLikeOperands,
@@ -137,6 +143,8 @@ describe("the audit category filters match their action prefixes literally (#416
     ]) {
       expect(actions).toContain(action);
     }
+    // The PostgreSQL proof seeds these as real actions; each must be one.
+    expect(LEGACY_FILTER_PREFIX_WITNESSES.filter((action) => !actions.has(action))).toEqual([]);
   }, 180_000);
 
   it("puts every known action in the same categories, and on the same member timelines, as the wildcard filter did", () => {
@@ -166,6 +174,16 @@ describe("the audit category filters match their action prefixes literally (#416
       expect(matchesWhere(rowOf(action), buildAuditCategoryWhere("xero")!), action).toBe(true);
     }
   }, 180_000);
+
+  it("stays wired into the race harness CI runs against a real database", () => {
+    // The PostgreSQL proof self-skips without the race flag; hosted CI reaches
+    // it only through the harness's import.
+    const harness = readFileSync(join(process.cwd(), "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"), "utf8");
+    expect(harness).toContain('import "./audit-query-exact-prefix.realdb.test";');
+    const suite = readFileSync(join(process.cwd(), "src/lib/__tests__/audit-query-exact-prefix.realdb.test.ts"), "utf8");
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("is answered by the shared matchesWhere exactly as PostgreSQL answers it");
+  });
 
   it("no longer files a wildcard decoy anywhere (non-vacuity)", () => {
     for (const { action, oldCategories } of LEGACY_FILTER_WILDCARD_DECOYS) {
