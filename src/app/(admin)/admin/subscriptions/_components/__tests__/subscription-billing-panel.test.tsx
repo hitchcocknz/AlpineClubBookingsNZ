@@ -575,6 +575,19 @@ describe("subscription billing panel", () => {
     expect(screen.queryByRole("button", { name: "Close: already paid" })).toBeNull();
   });
 
+  it("a closed charge with a stray invoice does not claim no invoice was raised (#4098 review)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    servePayload(chargePayload({
+      status: "NOT_REQUIRED",
+      lastErrorCode: "STRAY_INVOICE_AFTER_CLOSE",
+      lastErrorMessage: "This charge was closed as already paid while Xero invoice INV-9 was being raised for it.",
+    }));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText("This charge was closed as already paid while Xero invoice INV-9 was being raised for it.")).toBeTruthy();
+    expect(screen.getByText("Closed as already paid.")).toBeTruthy();
+    expect(screen.queryByText(/No Xero invoice is raised for this charge/)).toBeNull();
+  });
+
   it("does not label a zero-cent NO_INVOICE charge as closed (#4098)", async () => {
     mocks.canEdit.mockReturnValue(true);
     servePayload(chargePayload({ status: "NOT_REQUIRED", billingBasis: "NO_INVOICE", lastErrorCode: null, lastErrorMessage: null }));

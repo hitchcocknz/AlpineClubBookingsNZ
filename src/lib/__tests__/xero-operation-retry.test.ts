@@ -305,6 +305,23 @@ describe("getXeroOperationRetryMeta", () => {
     });
   });
 
+  it("gives a stray subscription invoice (raised after its charge was closed as paid) its own reason, not a payload repair (#4098 review)", () => {
+    expect(
+      getXeroOperationRetryMeta(
+        makeOperation({
+          status: "PARTIAL",
+          localModel: "MembershipSubscriptionCharge",
+          localId: "charge-1",
+          xeroObjectId: "inv_stray",
+          responsePayload: { conflict: "STRAY_INVOICE_AFTER_CLOSE", invoice: { invoiceID: "inv_stray" }, adopted: false, email: null },
+        })
+      )
+    ).toEqual({
+      supported: false,
+      reason: expect.stringMatching(/^The membership charge was closed as already paid while this invoice was being raised.*Void it in Xero promptly.*then mark this operation resolved\. There is nothing to retry\.$/),
+    });
+  });
+
   it("marks repairable partial invoice operations as supported", () => {
     expect(
       getXeroOperationRetryMeta(

@@ -33,6 +33,17 @@ export function membershipChargeNeedsNoInvoice(charge: {
   );
 }
 
+/**
+ * The WHERE for every charge-status write the invoice pipeline makes — the
+ * enqueue, the worker and the outbox failure handler: this charge, and still
+ * able to be invoiced. A charge in a no-invoice status (closed as already paid,
+ * #4098, or VOIDED, #2147) matches nothing, so no pipeline write can reopen it,
+ * however late it lands.
+ */
+export function liveChargeWhere(chargeId: string) {
+  return { id: chargeId, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } };
+}
+
 /** The `lastErrorCode` the invoice worker writes when a covered subscription is already PAID. */
 export const SUBSCRIPTION_ALREADY_PAID_CODE = "SUBSCRIPTION_ALREADY_PAID";
 
@@ -46,9 +57,26 @@ export const STRAY_INVOICE_AFTER_CLOSE_CODE = "STRAY_INVOICE_AFTER_CLOSE";
 export function strayInvoiceAfterCloseMessage(invoiceLabel: string): string {
   return (
     `This charge was closed as already paid while Xero invoice ${invoiceLabel} was being raised for it. ` +
-    "That invoice is not linked to any member and was not emailed: void it in Xero."
+    "That invoice was not emailed and is not recorded against any member here. Void it in Xero promptly: " +
+    "until then the membership sync may attach it to the recipient's subscription. " +
+    "This note stays on the closed charge as the record; once the invoice is voided there is nothing more to do."
   );
 }
+
+/** True for the outcome the worker records on its operation for a stray invoice. */
+export function isStrayInvoiceAfterCloseOutcome(responsePayload: unknown): boolean {
+  return (
+    typeof responsePayload === "object" &&
+    responsePayload !== null &&
+    (responsePayload as { conflict?: unknown }).conflict === STRAY_INVOICE_AFTER_CLOSE_CODE
+  );
+}
+
+/** Xero Operations' reason for that operation (#4098 review, money F4). */
+export const STRAY_INVOICE_AFTER_CLOSE_OPERATION_REASON =
+  "The membership charge was closed as already paid while this invoice was being raised, so the invoice " +
+  "was not emailed and is not recorded against any member. Void it in Xero promptly (the membership sync " +
+  "may otherwise attach it to the recipient), then mark this operation resolved. There is nothing to retry.";
 
 /** The longest reason an officer may give for closing an already-paid charge. */
 export const CLOSE_ALREADY_PAID_REASON_MAX = 500;
