@@ -1394,24 +1394,26 @@ capacity race's card refund door).
   refundable; drift can leave it short of the charge, or empty.
   - **The capacity void's claim raises ONE `CANCELLED_BOOKING_HAND_BACK`**
     for the rest, as `INV-PAY-129`'s `check` part, keyed on the booking and
-    inserted on no conflict. A key the booking already holds is logged and
+    the race's intent (`capacityRaceShortfallOccurrenceKey`), inserted on no
+    conflict. A key the booking already holds is logged and
     left, never thrown: the webhook must not wedge with the charge taken. A
     redelivered webhook finds the booking cancelled and raises nothing.
   - **Only a part to check, never a bank-transfer part**: the gap is the card
     charge's own records, which may already have gone back another way, and
     other charges are not what this refund was for. The task's reason and the
     once-ever officers' alert say to check Stripe and the bank first.
-  - **Marked paid back**, it completes as `INV-PAY-129`'s part does, its
-    `BANK_REFUND` line and one Xero note keyed on the task. It is refused
-    while any of the race's own card refund rows (one per intent) is
-    unsettled, and, where the payment's records hold nothing for it, told to
-    dismiss.
+  - **Marked paid back**, it lands only on the race intent's own captured
+    charge (`onlyTransactionIds`), never a non-card or later charge, then
+    completes as `INV-PAY-129`'s part does: its `BANK_REFUND` line and one
+    Xero note keyed on the task. It is refused while any of the race's card
+    refund rows is unsettled; where that charge holds nothing for it, the
+    refusal says to dismiss it and raise the Xero note by hand.
   - **The member's page follows it**: OPEN, the club will be in touch about
     the rest; paid back, its REFUNDED event counts as refunded; dismissed,
     the club checked it and closed it.
   - Proven by `capacity-race-refund-shortfall.test.ts`,
     `payment-reconciliation.test.ts`, `manual-refund-task.test.ts`,
-    `booking-narrative.test.ts` and
+    `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts` and
     `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
 ## INV-PAY-031

@@ -1561,26 +1561,25 @@ export class RefundAllocationExceedsCapturedError extends Error {
 export async function applyLocalRefundAllocation({
   paymentId,
   amountCents,
-  preferTransactionIds = [],
+  preferTransactionIds = [], onlyTransactionIds,
   store = prisma,
 }: {
   paymentId: string;
   amountCents: number;
   /** #3372 ("Paid another way"): placed FIRST, in order - the charges an unsent card refund was for. */
   preferTransactionIds?: readonly string[];
+  /** #4154: placed on these charges and no other; short of headroom there, it throws as any shortfall does. */ onlyTransactionIds?: readonly string[];
   store?: PaymentStore;
 }) {
   await withStoreTransaction(store, async (db) => {
     await lockPaymentForRefundedTotal(db, paymentId);
     const payment = await ensurePaymentTransactionsBackfilled(db, paymentId);
-    if (!payment) {
-      throw new Error("Payment not found");
-    }
+    if (!payment) throw new Error("Payment not found");
 
     const preferredRank = (id: string) =>
       preferTransactionIds.includes(id) ? preferTransactionIds.indexOf(id) : preferTransactionIds.length;
     const capturedTransactions = [...payment.transactions]
-      .filter((transaction) => isCapturedTransactionStatus(transaction.status))
+      .filter((transaction) => isCapturedTransactionStatus(transaction.status) && (!onlyTransactionIds || onlyTransactionIds.includes(transaction.id)))
       .sort(
         (a, b) =>
           preferredRank(a.id) - preferredRank(b.id) ||

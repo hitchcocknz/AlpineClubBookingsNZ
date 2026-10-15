@@ -1146,6 +1146,34 @@ describe("#3032 - applyLocalRefundAllocation cannot lose an update", () => {
   });
 });
 
+/**
+ * #4154 (`INV-PAY-133`, PR #4159 F2/F4): a capacity race's hand-back may land
+ * only on the race's own card charge. `onlyTransactionIds` narrows the charges
+ * the allocation may use; short there, it refuses as any shortfall does, and
+ * never spills onto a charge outside the list, however much that one holds.
+ */
+describe("#4154 - applyLocalRefundAllocation onlyTransactionIds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("MUTATION: a charge outside the list is never used, though it holds the whole amount", async () => {
+    const { store, transaction } = createRefundStore();
+
+    await expect(
+      applyLocalRefundAllocation({ paymentId: "payment_1", amountCents: 2000, onlyTransactionIds: ["txn_race"], store: store as never }),
+    ).rejects.toThrow("Refund amount exceeds captured payments");
+    expect(transaction.refundedAmountCents).toBe(0);
+  });
+
+  it("a charge on the list takes it", async () => {
+    const { store, transaction } = createRefundStore();
+
+    await applyLocalRefundAllocation({ paymentId: "payment_1", amountCents: 2000, onlyTransactionIds: ["txn_1"], store: store as never });
+    expect(transaction.refundedAmountCents).toBe(2000);
+  });
+});
+
 describe("#3268 - reconcilePaymentAggregates and the saved-card column (INV-PAY-054)", () => {
   /*
     The failure this pins: the cron retires an unusable card (nulling the pm on

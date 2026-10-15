@@ -106,11 +106,12 @@ function shortfallReason(part: CancelCardShortfallPart, bookingId: string, figur
  */
 export async function raiseCardShortfallPart(
   tx: Prisma.TransactionClient,
-  params: { bookingId: string; paymentId: string; part: CancelCardShortfallPart; cents: number; reason: string; format: ClubFormat },
+  params: { bookingId: string; paymentId: string; part: CancelCardShortfallPart; cents: number; reason: string; format: ClubFormat; occurrenceKey?: string },
   onKeyHeld: "throw" | "keep" = "throw",
 ): Promise<{ taskId: string; cents: number } | null> {
   if (params.cents <= 0) return null;
-  const occurrenceKey = cancelCardShortfallOccurrenceKey(params.bookingId, params.part);
+  // #4154: a capacity race's part names its intent (`capacityRaceShortfallOccurrenceKey`).
+  const occurrenceKey = params.occurrenceKey ?? cancelCardShortfallOccurrenceKey(params.bookingId, params.part);
   const inserted = await tx.manualRefundTask.createMany({
     data: [
       {

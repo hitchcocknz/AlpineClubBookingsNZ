@@ -176,11 +176,14 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
       viewerCanViewBookings: true,
     });
     const intro = screen.getByTestId("manual-refund-task-card-shortfall-check-intro");
-    expect(intro.textContent).toMatch(/Check Stripe and the bank before paying anything, then\s+contact the member with what you found/);
+    expect(intro.textContent).toMatch(/Check Stripe and\s+the bank before paying anything, then contact the member with what you found/);
     expect(intro.textContent).toMatch(/dismiss it with a note/);
-    // Paying it is only the answer once the check shows it is owed.
-    expect(intro.textContent).toMatch(/if it really is owed, pay it\s+by bank transfer/);
-    expect(intro.textContent).toMatch(/on their booking page, and by\s+email unless emails were turned off/);
+    // Paying it is only the answer once the check shows it is owed - and once the app has said it can record it.
+    expect(intro.textContent).toMatch(/If it really is owed, try\s+marking it paid back before paying/);
+    expect(intro.textContent).toMatch(/if the app accepts, pay it by bank transfer/);
+    // #4154: a capacity race's too - whose member is told on the booking page only, never by email.
+    expect(intro.textContent).toMatch(/from a booking cancelled because its dates filled up during the card payment/);
+    expect(intro.textContent).toMatch(/on their booking page,\s+and for a cancellation by email unless emails were turned off/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
   });

@@ -2179,8 +2179,10 @@ payment's ledger has nothing left to allocate, COMPLETED is refused with a
 message naming DISMISSED, which the treasurer then uses. See
 [`INV-PAY-129`](invariants/payment-and-settlement.md#inv-pay-129).
 A capacity race whose card refund plan is short of the charge raises the
-part to check alone, OPEN inside the void's claim (#4154); its COMPLETED is
-refused while any of the race's own card refund rows is not SUCCEEDED. See
+part to check alone, OPEN inside the void's claim and keyed on the race's
+intent (#4154); its COMPLETED is refused while any of the race's own card
+refund rows is not SUCCEEDED, and settles only on that intent's own charge,
+refused (DISMISSED and a Xero note by hand) where that charge holds nothing. See
 [`INV-PAY-133`](invariants/payment-and-settlement.md#inv-pay-133).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED

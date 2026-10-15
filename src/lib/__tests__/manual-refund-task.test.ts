@@ -301,8 +301,10 @@ const tx = {
       const asksFailedLater = args.where.OR.some(
         (arm) => arm.paymentId === "payment-1" && JSON.stringify(arm.idempotencyKey) === JSON.stringify({ startsWith: "card_refund_failed_later_" }),
       );
+      // Read through any LIKE escaping (#4158's `exactPrefix`), so the arm is recognised however it is spelled.
+      const prefixOf = (key: unknown) => String((key as { startsWith?: string } | undefined)?.startsWith ?? "").replace(/\\(.)/g, "$1");
       const asksCapacityRace = args.where.OR.some(
-        (arm) => arm.bookingId === "booking-1" && JSON.stringify(arm.idempotencyKey) === JSON.stringify({ startsWith: "capacity_claim_failed_refund_recovery_booking-1_" }),
+        (arm) => arm.bookingId === "booking-1" && prefixOf(arm.idempotencyKey) === "capacity_claim_failed_refund_recovery_booking-1_",
       );
       return [...(cancelRow ? [cancelRow] : []), ...(asksCapacityRace ? mocks.capacityRaceRecoveryRows() : []), ...(asksFailedLater ? mocks.failedLaterRecoveryRows() : [])];
     }),
@@ -2527,7 +2529,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
   // part has settled, its BANK_REFUND on the card payment, and ONE Xero note of
   // its own.
   describe("a cancellation's card refund shortfall (#4097)", () => {
-    function shortfallTask(part: "bank" | "check" = "bank", xeroInvoiceId: string | null = "inv-1") {
+    function shortfallTask(part: "bank" | "check" | "race" = "bank", xeroInvoiceId: string | null = "inv-1") {
       mocks.manualRefundTaskFindUnique.mockResolvedValue({
         id: "task-9",
         bookingId: "booking-1",
@@ -2535,7 +2537,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
         amountCents: 2000,
         raisedAmountCents: 2000,
         kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
-        occurrenceKey: part === "bank" ? "cancel-card-shortfall:booking-1" : "cancel-card-shortfall:booking-1:check",
+        occurrenceKey: { bank: "cancel-card-shortfall:booking-1", check: "cancel-card-shortfall:booking-1:check", race: RACE_KEY }[part],
         status: ManualRefundTaskStatus.OPEN,
         payment: { source: "STRIPE" },
         booking: { memberId: "member-1", lodgeId: "lodge-1", status: "CANCELLED", payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId } },
@@ -2554,6 +2556,8 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       );
     }
     let siblingBankStatus = "COMPLETED";
+    // #4154: a capacity race's part to check names the race's card intent.
+    const RACE_KEY = "cancel-card-shortfall:booking-1:capacity-race:pi_race:check";
     const complete = () =>
       resolveManualRefundTask({
         taskId: "task-9", resolution: "completed", note: null, actingMemberId: "admin-1",
@@ -2628,9 +2632,10 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     // #4154 (`INV-PAY-133`): a capacity race's task to check waits for that race's own card refund row(s), one per intent.
     it.each([
       ["still being sent", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: null }, /still being refunded; mark this once it settles/],
-      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way/],
+      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way on the Stuck States page/],
     ] as const)("MUTATION: a capacity race's part to check is refused while its card refund is %s, and completes once it is made", async (_label, row, message) => {
-      shortfallTask("check");
+      shortfallTask("race");
+      raceChargeRows();
       mocks.capacityRaceRecoveryRows.mockReturnValueOnce([row]);
 
       await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
@@ -2638,9 +2643,54 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
       mocks.capacityRaceRecoveryRows.mockReturnValueOnce([{ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, lastError: null }]);
       await complete();
-      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-bank"] });
       expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(expect.objectContaining({ manualRefundTaskId: "task-9", amountCents: 2000, cardShortfall: true }));
       expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-1", 2000, expect.objectContaining({ refundMethod: "internet-banking", paidAnotherWayTaskId: "task-9" }));
+    });
+
+    /** The payment's captured charges as the store answers a query: the race's own card charge, a bank-paid one, and a later intent's. */
+    function raceChargeRows() {
+      const rows = [
+        { id: "txn-race", source: "STRIPE", stripePaymentIntentId: "pi_race", amountCents: 3000, refundedAmountCents: 1000 },
+        { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 2000, refundedAmountCents: 0 },
+        { id: "txn-late", source: "STRIPE", stripePaymentIntentId: "pi_late", amountCents: 5000, refundedAmountCents: 0 },
+      ];
+      mocks.paymentTransactionFindMany.mockImplementation(async (args?: { where?: { stripePaymentIntentId?: string } }) =>
+        args?.where?.stripePaymentIntentId ? rows.filter((row) => row.stripePaymentIntentId === args.where!.stripePaymentIntentId) : rows,
+      );
+    }
+
+    it("MUTATION (PR #4159 F2/F4): a capacity race's part to check settles on the race's own card charge and no other - never a non-card or later-captured one", async () => {
+      shortfallTask("race");
+      raceChargeRows();
+
+      await complete();
+
+      expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ paymentId: "payment-1", stripePaymentIntentId: "pi_race" }) }));
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-race"], onlyTransactionIds: ["txn-race"] });
+    });
+
+    it.each([
+      ["an empty plan (no captured row for the race's intent)", false],
+      ["a short charge row (the race's charge holds less than the task)", true],
+    ] as const)("MUTATION: %s - refused, still OPEN, naming the dismissal and the Xero note by hand", async (_label, hasRow) => {
+      shortfallTask("race");
+      if (hasRow) raceChargeRows();
+      else mocks.paymentTransactionFindMany.mockResolvedValue([]);
+      // The allocator refuses a shortfall on the charges it may use, as it does any.
+      mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
+
+      await expect(complete()).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/^The payment's records show none of this card charge left to refund.*dismiss this task with a note saying when and how much, and raise its refund credit note in Xero by hand/),
+      });
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ onlyTransactionIds: hasRow ? ["txn-race"] : [] }));
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
+
+    it("a member cancel's part to check keeps #4097's settlement: non-card charges first, any charge after", async () => {
+      shortfallTask("check");
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ preferTransactionIds: ["txn-bank"], onlyTransactionIds: undefined }));
     });
 
     it("MUTATION: a part to check is refused while its bank-transfer part is open, and completes once it is closed", async () => {

@@ -408,7 +408,7 @@ export async function resolveManualRefundTask(
           await applyLocalRefundAllocation({
             paymentId: settlementRoute.paymentId,
             amountCents: settlementRoute.refundCents,
-            store: tx, preferTransactionIds: settlementRoute.cardShortfall?.preferTransactionIds, // #4097
+            store: tx, preferTransactionIds: settlementRoute.cardShortfall?.preferTransactionIds, onlyTransactionIds: settlementRoute.cardShortfall?.onlyTransactionIds, // #4097, #4154
           });
         }
         // `account-credit` is written by the closure's re-price below, once the

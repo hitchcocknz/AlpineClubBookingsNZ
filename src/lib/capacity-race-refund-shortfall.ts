@@ -17,21 +17,25 @@
  * still says the club will be in touch.
  *
  * #4154 (`INV-PAY-133`): the rest is also recorded, as #4097's card refund
- * shortfall part to CHECK (`cancelCardShortfallOccurrenceKey(booking, "check")`,
- * a `CANCELLED_BOOKING_HAND_BACK`), raised in the capacity void's own claim so
- * it commits with the cancel. Only that part: the rest is drift in the card
- * charge's own records, which may already have gone back by another route, so
- * the treasurer checks before paying - never a bank-transfer part sized from
- * other charges, which this refund was never for. Marked paid back, it records
- * the hand refund as #4097's does (its `BANK_REFUND` line and Xero note, and a
- * REFUNDED event the member's page counts); dismissed, the page says the club
- * checked it and closed it. One per booking, as the alert is: a booking is
- * cancelled once.
+ * shortfall part to CHECK (a `CANCELLED_BOOKING_HAND_BACK` keyed
+ * `capacityRaceShortfallOccurrenceKey(booking, intent)`), raised in the
+ * capacity void's own claim so it commits with the cancel. Only that part: the
+ * rest is drift in the card charge's own records, which may already have gone
+ * back by another route, so the treasurer checks before paying - never a
+ * bank-transfer part sized from other charges, which this refund was never
+ * for. Marked paid back, it records the hand refund only on the race's own
+ * charge (`cardShortfallSettlement`), as #4097's does otherwise (its
+ * `BANK_REFUND` line and Xero note, and a REFUNDED event the member's page
+ * counts); where that charge's records hold nothing for it, the app refuses
+ * and says to dismiss it and raise the Xero note by hand. Dismissed, the page
+ * says the club checked it and closed it. One per booking in practice, as the
+ * alert is: a booking is cancelled once.
  */
 import type { Prisma } from "@prisma/client";
 
 import { sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
 import { raiseCardShortfallPart } from "@/lib/cancel-card-refund-shortfall";
+import { capacityRaceShortfallOccurrenceKey } from "@/lib/capacity-race-shortfall-task-key";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
@@ -62,9 +66,19 @@ export function capacityRaceRefundShortfallMessage(figures: ShortfallFigures, fo
   const remainder = formatCents(figures.chargedCents - figures.plannedRefundCents, format);
   const lead = "The dates filled up while this card payment was going through, so the booking was cancelled.";
   const todo = taskRaised
-    ? `It is on the payments board as a task to check: the records may be wrong and it may already have gone back. Check Stripe and the bank first. If the member has had it, dismiss the task with a note saying how; if it really is owed, refund the ${remainder} by bank transfer and mark the task paid back once the card refund has gone through.`
+    ? `It is under Money to settle on the payments board, as a task to check: the records may be wrong, and it may already have gone back. Check Stripe and the bank first. If the member has had it, dismiss the task with a note saying how. If it really is owed, try marking the task paid back before you pay, once the card refund has gone through - the app can record it only while the payment's records still hold that much. If it accepts, refund the ${remainder} by bank transfer straight away; if it refuses, refund it anyway, dismiss the task with a note saying how, and raise its refund credit note in Xero by hand.`
     : `Check the payment and refund the member the ${remainder} by hand if it has not already gone back.`;
   return `${lead} ${refundedSentence(figures, format)} ${todo} The member's booking page says the club will be in touch about it.`;
+}
+
+/**
+ * #4154: the task's reason - what went back automatically, and the two ways to
+ * close it. Its longest (every figure at $9,999,999.99) fits
+ * `MANUAL_REFUND_TASK_REASON_MAX` with room to spare; the booking is the
+ * task's own column, so it is not repeated here.
+ */
+export function capacityRaceShortfallTaskReason(figures: ShortfallFigures, format: ClubFormat): string {
+  return `Cancelled because the dates filled up while this card payment was going through. ${refundedSentence(figures, format)} Check Stripe and the bank before paying: dismiss this with a note if it was refunded. If it is owed, pay it by bank transfer and mark this paid back once the card refund has gone through (#4154).`;
 }
 
 /**
@@ -77,14 +91,19 @@ export function capacityRaceRefundShortfallMessage(figures: ShortfallFigures, fo
  */
 export async function raiseCapacityRaceRefundShortfallTask(
   tx: Prisma.TransactionClient,
-  input: ShortfallFigures & { bookingId: string; paymentId: string; format: ClubFormat },
+  input: ShortfallFigures & { bookingId: string; paymentId: string; paymentIntentId: string; format: ClubFormat },
 ): Promise<boolean> {
   const cents = input.chargedCents - input.plannedRefundCents;
   if (cents <= 0) return false;
-  const reason = `Booking ${input.bookingId} was cancelled because the dates filled up while its card payment was going through. ${refundedSentence(input, input.format)} Check Stripe and the bank before paying: dismiss this with a note if it was refunded (#4154).`;
+  const reason = capacityRaceShortfallTaskReason(input, input.format);
+  if (reason.length > MANUAL_REFUND_TASK_REASON_MAX) logger.warn({ bookingId: input.bookingId, length: reason.length }, "Capacity-race shortfall task reason is over its limit; it is cut to fit (#4154)");
   const raised = await raiseCardShortfallPart(
     tx,
-    { bookingId: input.bookingId, paymentId: input.paymentId, part: "check", cents, reason: reason.slice(0, MANUAL_REFUND_TASK_REASON_MAX), format: input.format },
+    {
+      bookingId: input.bookingId, paymentId: input.paymentId, part: "check", cents, format: input.format,
+      reason: reason.slice(0, MANUAL_REFUND_TASK_REASON_MAX),
+      occurrenceKey: capacityRaceShortfallOccurrenceKey(input.bookingId, input.paymentIntentId),
+    },
     "keep",
   );
   return raised !== null;

@@ -3214,8 +3214,9 @@ lodge key, the member's credit-ledger key where it takes one), on no
 conflict under its unique
 `occurrenceKey`. A key already held is logged, never thrown, so the webhook's
 settle never rolls back on it. Its completion is the one above, reading the
-race's own recovery rows (one per intent, on the booking) beside the cancel's
-(`INV-PAY-133`).
+race's own recovery rows (one per intent, on the booking) beside the cancel's,
+and it reads the race intent's captured charge under the same `Payment` row
+lock its allocation then writes, on that charge alone (`INV-PAY-133`).
 
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path

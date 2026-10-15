@@ -1613,15 +1613,15 @@ export function ManualRefundTaskQueue() {
                 className="text-sm text-muted-foreground"
                 data-testid="manual-refund-task-card-shortfall-check-intro"
               >
-                Some of these are the rest of a card cancellation&apos;s refund
-                that the payment&apos;s records show already refunded, or that
-                nothing holds. The member is told (on their booking page, and by
-                email unless emails were turned off) only that the club will be
-                in touch. Check Stripe and the bank before paying anything, then
-                contact the member with what you found. If they were refunded,
-                dismiss it with a note saying how; if it really is owed, pay it
-                by bank transfer and mark it paid back, once the bank-transfer
-                part and the card refund are done.
+                Some of these are the rest of a card refund that the payment&apos;s records show
+                already refunded, or that nothing holds: from a card cancellation, or
+                from a booking cancelled because its dates filled up during the card payment.
+                The member is told only that the club will be in touch: on their booking page,
+                and for a cancellation by email unless emails were turned off. Check Stripe and
+                the bank before paying anything, then contact the member with what you found. If
+                they were refunded, dismiss it with a note saying how. If it really is owed, try
+                marking it paid back before paying, once any bank-transfer part and the card refund
+                are done: if the app accepts, pay it by bank transfer; if not, follow what it says.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (

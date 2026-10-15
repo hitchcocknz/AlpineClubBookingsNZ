@@ -36,8 +36,11 @@ import {
   alertCapacityRaceRefundShortfall,
   capacityRaceRefundShortfallAlertKey,
   capacityRaceRefundShortfallMessage,
+  capacityRaceShortfallTaskReason,
   raiseCapacityRaceRefundShortfallTask,
 } from "@/lib/capacity-race-refund-shortfall";
+import { capacityRaceShortfallIntentId, capacityRaceShortfallOccurrenceKey } from "@/lib/capacity-race-shortfall-task-key";
+import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart, isCancelCardShortfallTask } from "@/lib/manual-refund-task-settlement-rules";
 
 const SENT = { deliveryAllowed: true, recipients: 1, sent: 1, queuedForRetry: 0, notDelivered: 0 };
@@ -117,29 +120,42 @@ function claimTx(existing: Record<string, Partial<Row>> = {}) {
   };
 }
 
-const CHECK_KEY = "cancel-card-shortfall:booking-1:check";
+const CHECK_KEY = "cancel-card-shortfall:booking-1:capacity-race:pi_1:check";
 const raiseTask = (store: ReturnType<typeof claimTx>, plannedRefundCents: number, chargedCents = 10000) =>
-  raiseCapacityRaceRefundShortfallTask(store as never, { bookingId: "booking-1", paymentId: "payment-1", chargedCents, plannedRefundCents, format: CLUB_FORMAT_TEST });
+  raiseCapacityRaceRefundShortfallTask(store as never, { bookingId: "booking-1", paymentId: "payment-1", paymentIntentId: "pi_1", chargedCents, plannedRefundCents, format: CLUB_FORMAT_TEST });
 
 describe("the capacity race's refund shortfall task (#4154, INV-PAY-133)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("MUTATION: a partial plan raises ONE card shortfall part to CHECK for the remainder, keyed on the booking", async () => {
+  it("MUTATION: a partial plan raises ONE card shortfall part to CHECK for the remainder, keyed on the booking and the race's intent", async () => {
     const store = claimTx();
 
     expect(await raiseTask(store, 8000)).toBe(true);
 
-    expect(cancelCardShortfallOccurrenceKey("booking-1", "check")).toBe(CHECK_KEY);
+    expect(capacityRaceShortfallOccurrenceKey("booking-1", "pi_1")).toBe(CHECK_KEY);
     expect(Object.keys(store.rows)).toEqual([CHECK_KEY]);
     const task = store.rows[CHECK_KEY]!;
     expect(task).toMatchObject({ status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", paymentId: "payment-1", amountCents: 2000, raisedAmountCents: 2000 });
     // The marker every completion, ledger, Xero and census reader asks: a part to check, never a bank-transfer part.
     expect(isCancelCardShortfallTask({ kind: task.kind!, occurrenceKey: CHECK_KEY })).toBe(true);
     expect(cancelCardShortfallPart({ kind: task.kind!, occurrenceKey: CHECK_KEY })).toBe("check");
+    // The completion reads the race's intent back from it, and only on its own booking.
+    expect(capacityRaceShortfallIntentId({ kind: task.kind!, occurrenceKey: CHECK_KEY, bookingId: "booking-1" })).toBe("pi_1");
+    expect(capacityRaceShortfallIntentId({ kind: task.kind!, occurrenceKey: CHECK_KEY, bookingId: "booking" })).toBeNull();
+    expect(capacityRaceShortfallIntentId({ kind: task.kind!, occurrenceKey: cancelCardShortfallOccurrenceKey("booking-1", "check"), bookingId: "booking-1" })).toBeNull();
+    expect(capacityRaceShortfallIntentId({ kind: "EDIT_FINANCIAL_REVIEW", occurrenceKey: CHECK_KEY, bookingId: "booking-1" })).toBeNull();
     // The officer is told it is records drift to check first, and how to close it either way.
     expect(task.reason).toContain("only $80.00 of the $100.00 charge refundable");
-    expect(task.reason).toContain("Check Stripe and the bank before paying: dismiss this with a note if it was refunded");
-    expect(task.reason!.length).toBeLessThanOrEqual(500);
+    expect(task.reason).toContain("Check Stripe and the bank before paying: dismiss this with a note if it was refunded.");
+    expect(task.reason).toContain("If it is owed, pay it by bank transfer and mark this paid back once the card refund has gone through");
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("the reason fits its limit at its longest, so nothing is cut", () => {
+    const most = 999_999_999;
+    for (const planned of [0, most - 1]) {
+      expect(capacityRaceShortfallTaskReason({ chargedCents: most, plannedRefundCents: planned }, CLUB_FORMAT_TEST).length).toBeLessThanOrEqual(MANUAL_REFUND_TASK_REASON_MAX);
+    }
   });
 
   it("an empty plan raises the whole charge as the task", async () => {
@@ -177,9 +193,10 @@ describe("the capacity race's refund shortfall task (#4154, INV-PAY-133)", () =>
 
   it("MUTATION: the alert names the task to check once it is raised, and only then", () => {
     const raised = capacityRaceRefundShortfallMessage({ chargedCents: 10000, plannedRefundCents: 8000 }, CLUB_FORMAT_TEST, true);
-    expect(raised).toContain("It is on the payments board as a task to check");
+    expect(raised).toContain("It is under Money to settle on the payments board, as a task to check");
     expect(raised).toContain("dismiss the task with a note saying how");
-    expect(raised).toContain("refund the $20.00 by bank transfer and mark the task paid back once the card refund has gone through");
+    expect(raised).toContain("try marking the task paid back before you pay, once the card refund has gone through");
+    expect(raised).toContain("If it accepts, refund the $20.00 by bank transfer straight away; if it refuses, refund it anyway, dismiss the task with a note saying how, and raise its refund credit note in Xero by hand.");
     const none = capacityRaceRefundShortfallMessage({ chargedCents: 10000, plannedRefundCents: 8000 }, CLUB_FORMAT_TEST);
     expect(none).not.toContain("payments board");
     expect(none).toContain("refund the member the $20.00 by hand");

@@ -2,6 +2,7 @@ import "server-only";
 
 import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 
+import { capacityRaceShortfallIntentId } from "@/lib/capacity-race-shortfall-task-key";
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationExhausted, isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
@@ -43,11 +44,11 @@ export const CARD_SHORTFALL_CARD_STILL_REFUNDING_MESSAGE =
 
 /** The card refund failed and its runner will try again. */
 export const CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE =
-  "The card part of this cancellation's refund failed and is waiting to retry: wait for its retry to go through, then mark this. If its retries run out, close it as Paid another way on the payments board first.";
+  "The card part of this cancellation's refund failed and is waiting to retry: wait for its retry to go through, then mark this. If its retries run out, close it as Paid another way on the Stuck States page first.";
 
 /** The card refund's retries are spent (`deadCardRefundOperationWhere`'s rule). */
 export const CARD_SHORTFALL_CARD_STOPPED_MESSAGE =
-  "The card part of this cancellation's refund has stopped retrying: close it as Paid another way on the payments board (once the member has had that money back another way), then mark this.";
+  "The card part of this cancellation's refund has stopped retrying: close it as Paid another way on the Stuck States page (once the member has had that money back another way), then mark this.";
 
 /** A part to check, while its sibling bank-transfer part is still open. */
 export const CARD_SHORTFALL_BANK_PART_FIRST_MESSAGE =
@@ -55,6 +56,14 @@ export const CARD_SHORTFALL_BANK_PART_FIRST_MESSAGE =
 
 export const CARD_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE =
   "The payment's records show nothing left to refund for this - it may already have gone back. Check Stripe and the bank: if the member has been refunded, dismiss this task with a note saying how.";
+
+/**
+ * #4154 (`INV-PAY-133`): a capacity race's part to check, when the race's own
+ * card charge holds nothing for it. The app cannot record a bank refund there,
+ * so it says what to do with money the treasurer pays anyway.
+ */
+export const CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE =
+  "The payment's records show none of this card charge left to refund, so the app cannot record this as paid back - it may already have gone back. Check Stripe and the bank. If the member has had it, dismiss this task with a note saying how. If it is really owed, refund it by bank transfer, dismiss this task with a note saying when and how much, and raise its refund credit note in Xero by hand: the app will not raise one.";
 
 /**
  * The payment's captured charges the card refund cannot carry, newest first:
@@ -98,7 +107,7 @@ function cardRefundRefusal(cardRefund: { status: PaymentRecoveryOperationStatus;
 export async function cardShortfallSettlement(
   task: { kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null },
   store: Prisma.TransactionClient,
-): Promise<{ preferTransactionIds: string[] } | null> {
+): Promise<{ preferTransactionIds: string[]; onlyTransactionIds?: string[]; nothingToAllocateMessage?: string } | null> {
   const part = cancelCardShortfallPart(task);
   if (part === null || task.paymentId === null) return null;
   await lockPaymentForRefundedTotal(store, task.paymentId);
@@ -106,6 +115,7 @@ export async function cardShortfallSettlement(
   // this payment Stripe failed later and that is owed again by a row of its own
   // (`card_refund_failed_later_<refund>`) - card money still moving either way.
   // #4154: a capacity race's cancel's own rows are one per intent, on its booking.
+  // TODO(#4153, #4158): one spelling - `bookingCancelCardRefundRecoveryWhere`, through `exactPrefix`.
   const cardRefunds = await store.paymentRecoveryOperation.findMany({
     where: {
       OR: [
@@ -119,6 +129,19 @@ export async function cardShortfallSettlement(
   });
   const refusal = (cardRefunds ?? []).map(cardRefundRefusal).find((message) => message !== null);
   if (refusal) throw new ManualBookingPaymentError(refusal, 409);
+  // #4154 (`INV-PAY-133`, PR #4159 review F2/F4): a capacity race's settles on
+  // the race's own card charge and nowhere else - never a non-card charge, nor
+  // a charge captured later on the same payment. Short there, the allocation
+  // refuses (`onlyTransactionIds`) with the race's own way out.
+  const raceIntentId = capacityRaceShortfallIntentId(task);
+  if (raceIntentId !== null) {
+    const own = await store.paymentTransaction.findMany({
+      where: { paymentId: task.paymentId, stripePaymentIntentId: raceIntentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+      select: { id: true },
+    });
+    const ids = (own ?? []).map((row) => row.id);
+    return { preferTransactionIds: ids, onlyTransactionIds: ids, nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE };
+  }
   // A part to check settles only on what the bank-transfer part leaves (coordinator, PR #4122).
   if (part === "check") {
     const bank = await store.manualRefundTask.findUnique({
