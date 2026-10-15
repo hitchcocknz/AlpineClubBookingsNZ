@@ -9,7 +9,9 @@ import "server-only";
  * the `censusBookingMoneyReconciliation` shape (`INV-MONEY-031`). It takes no
  * lock: a snapshot is the whole point, and a lock would make an operator's
  * read wait behind, or hold up, a settle. Every collection is read in `id`
- * order so two runs over the same data produce the same report.
+ * order so two runs over the same data produce the same report, except the
+ * capture ledger, which is read in its own order (`LEDGER_ROWS_OLDEST_FIRST`,
+ * #4132), the order the mirror the census checks was derived in.
  */
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { z } from "zod";
@@ -26,6 +28,7 @@ import type { BookingLedgerCensusRow } from "@/lib/booking-ledger-projection-cen
 import type { CancellationEventSnapshot } from "@/lib/booking-events";
 import { INTERNET_BANKING_SETTLEMENT_EVIDENCE_SELECT } from "@/lib/internet-banking-settlement-evidence";
 import { bookingIdOfCreditRow, bookingsCreditRowsWhere } from "@/lib/member-credit-booking-rows";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
 import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
 import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
@@ -55,7 +58,7 @@ const CENSUS_SELECT = {
       // #3632: whether an internet-banking payment is proven paid.
       ...INTERNET_BANKING_SETTLEMENT_EVIDENCE_SELECT,
       transactions: {
-        orderBy: ASC,
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
         select: {
           ...INTERNET_BANKING_SETTLEMENT_EVIDENCE_SELECT.transactions.select,
           id: true,
@@ -66,6 +69,7 @@ const CENSUS_SELECT = {
           reason: true,
           withdrawnAt: true,
           createdAt: true,
+          insertionSeq: true,
         },
       },
       refunds: { orderBy: ASC, select: { id: true, status: true, amountCents: true, paymentTransactionId: true } },

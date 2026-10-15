@@ -69,6 +69,7 @@ import {
 import { closeWaitingAskRecoveries } from "@/lib/additional-ask-recovery-close";
 import { isEditReviewChargeRequestRow } from "@/lib/edit-financial-review-charge-shape";
 import logger from "@/lib/logger";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import {
@@ -271,7 +272,9 @@ export async function readUnpaidPriceAsk(
   }
   const transactions = await db.paymentTransaction.findMany({
     where: { paymentId: payment.id, kind: PaymentTransactionKind.ADDITIONAL },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    // #4132 (INV-PAY-133): insertion order on a tie, so the chain's last row
+    // is the row the mirror was derived from (`latestTransactionOfKind`).
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: {
       id: true,
       kind: true,

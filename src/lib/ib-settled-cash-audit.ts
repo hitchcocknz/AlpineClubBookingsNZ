@@ -49,6 +49,7 @@ import {
   PRIMARY_INVOICE_CASH_ALLOCATIONS_KEY,
 } from "@/lib/xero-inbound/object-links";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 export type IbSettledCashEvidence =
   /** The invoice's recorded payments were read; `cashCents` is their sum. */
@@ -159,7 +160,7 @@ export async function auditIbSettledCash(db: Pick<typeof prisma, "payment" | "xe
           xeroInvoiceId: true,
           xeroInvoiceNumber: true,
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
       },
     },
     orderBy: { createdAt: "asc" },
