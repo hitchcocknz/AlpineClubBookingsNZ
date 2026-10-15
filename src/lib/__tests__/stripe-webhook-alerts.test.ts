@@ -38,9 +38,6 @@ const {
   mockListRefundsForPaymentIntent,
   mockProcessRefund,
   mockGetPaymentMethod,
-  mockGetPaymentIntent,
-  mockPaymentRecoveryOperationFindMany,
-  mockReadMigrationFinishedAt,
   mockApplyGroupSettlementSucceeded,
   mockMarkGroupSettlementIntentFailed,
   mockMarkGroupSettlementIntentRefunded,
@@ -51,7 +48,6 @@ const {
   mockSendAdminLateCaptureHandBackConflictAlert,
   mockPaymentTransactionFindFirst,
   mockPaymentTransactionFindUnique,
-  mockPaymentTransactionFindMany,
   mockPaymentTransactionUpdateMany,
   mockPaymentTransactionDeleteMany,
   mockReconcilePaymentAggregates,
@@ -102,8 +98,6 @@ const {
   // left REAL here so the guarded write it makes is the one asserted.
   mockPaymentTransactionFindFirst: vi.fn().mockResolvedValue(null),
   mockPaymentTransactionFindUnique: vi.fn().mockResolvedValue(null),
-  // #4131: the charges newer than a late capture, read for a deploy replay.
-  mockPaymentTransactionFindMany: vi.fn().mockResolvedValue([]),
   mockPaymentTransactionUpdateMany: vi.fn().mockResolvedValue({ count: 1 }),
   mockPaymentTransactionDeleteMany: vi.fn().mockResolvedValue({ count: 0 }),
   mockReconcilePaymentAggregates: vi.fn().mockResolvedValue(null),
@@ -160,11 +154,6 @@ const {
   // #3266 — read by `setup-intent-card.ts`, which is left REAL so the "is the
   // card still attached" verdict runs for real over this double.
   mockGetPaymentMethod: vi.fn(),
-  // #4131: the late capture's own charge time, the CANCEL_PAYMENT_INTENT and
-  // failed-later rows, and the release cutoff a deploy replay reads.
-  mockGetPaymentIntent: vi.fn(),
-  mockPaymentRecoveryOperationFindMany: vi.fn().mockResolvedValue([]),
-  mockReadMigrationFinishedAt: vi.fn(),
   mockApplyGroupSettlementSucceeded: vi.fn().mockResolvedValue({
     outcome: "settled",
     settledBookingIds: [],
@@ -222,10 +211,6 @@ vi.mock("@/lib/stripe", () => ({
   listRefundsForPaymentIntent: (...args: unknown[]) => mockListRefundsForPaymentIntent(...args),
   processRefund: (...args: unknown[]) => mockProcessRefund(...args),
   getPaymentMethod: (...args: unknown[]) => mockGetPaymentMethod(...args),
-  getPaymentIntent: (...args: unknown[]) => mockGetPaymentIntent(...args),
-}));
-vi.mock("@/lib/migration-finished-at", () => ({
-  readMigrationFinishedAt: (...args: unknown[]) => mockReadMigrationFinishedAt(...args),
 }));
 // DB-only (#2082): the webhook route resolves its signing secret via
 // stripe-config and records the webhook-verified marker; mock both so the route
@@ -308,7 +293,6 @@ vi.mock("@/lib/prisma", () => ({
         mockPaymentRecoveryOperationFindUnique(...args),
       findFirst: (...args: unknown[]) =>
         mockPaymentRecoveryOperationFindFirst(...args),
-      findMany: (...args: unknown[]) => mockPaymentRecoveryOperationFindMany(...args),
     },
     groupBooking: {
       findUnique: (...args: unknown[]) => mockGroupBookingFindUnique(...args),
@@ -331,7 +315,6 @@ vi.mock("@/lib/prisma", () => ({
     paymentTransaction: {
       findFirst: (...args: unknown[]) => mockPaymentTransactionFindFirst(...args),
       findUnique: (...args: unknown[]) => mockPaymentTransactionFindUnique(...args),
-      findMany: (...args: unknown[]) => mockPaymentTransactionFindMany(...args),
       updateMany: (...args: unknown[]) => mockPaymentTransactionUpdateMany(...args),
       deleteMany: (...args: unknown[]) => mockPaymentTransactionDeleteMany(...args),
     },
@@ -347,8 +330,6 @@ vi.mock("@/lib/webhook-log", () => ({
 const mockRecordRefusedCardRefund = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>(async () => "recorded"));
 vi.mock("@/lib/card-refund-status-sync", () => ({
   recordRefusedCardRefund: (...args: unknown[]) => mockRecordRefusedCardRefund(...args),
-  // #4131: the bound the late capture's Stripe reads share.
-  READ_BACK_TIMEOUT_MS: 10_000,
 }));
 
 vi.mock("@/lib/xero", () => ({
@@ -430,10 +411,6 @@ vi.mock("@/lib/logger", () => ({
 import { POST } from "@/app/api/webhooks/stripe/route";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
-/** #4131: the late capture's charge, and the release cutoff a deploy replay is bounded by. */
-const LATE_CHARGED_AT_S = Math.floor(Date.parse("2026-06-25T00:00:00.000Z") / 1000);
-const CUTOFF_FINISHED_AT_S = Math.floor(Date.parse("2026-06-26T00:00:00.000Z") / 1000);
-
 describe("Stripe webhook Xero alerting", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -492,12 +469,8 @@ describe("Stripe webhook Xero alerting", () => {
     mockMarkBookingSetupIntentSucceeded.mockResolvedValue({ stamped: true });
     mockListRefundsForCharge.mockResolvedValue([]);
     mockListRefundsForPaymentIntent.mockResolvedValue([]);
-    // #4131: the late capture's own row and the charges newer than it, per test.
+    // #4131: the late capture's own row, per test.
     mockPaymentTransactionFindUnique.mockResolvedValue(null);
-    mockPaymentTransactionFindMany.mockResolvedValue([]);
-    mockPaymentRecoveryOperationFindMany.mockResolvedValue([]);
-    mockGetPaymentIntent.mockResolvedValue({ id: "pi_primary_late", created: LATE_CHARGED_AT_S - 600, latest_charge: { created: LATE_CHARGED_AT_S } });
-    mockReadMigrationFinishedAt.mockResolvedValue({ history: true, finishedAtSeconds: CUTOFF_FINISHED_AT_S });
     mockProcessRefund.mockResolvedValue({ id: "re_1" });
     mockApplyGroupSettlementSucceeded.mockResolvedValue({
       outcome: "settled",
@@ -2941,6 +2914,12 @@ describe("Stripe webhook Xero alerting", () => {
       });
     }
 
+    /** #4131: the details of the one `refunded_after_cancellation` audit entry. */
+    const refundAuditOf = () =>
+      JSON.parse(
+        (mockLogAudit.mock.calls.find(([entry]) => (entry as { action: string }).action === "booking.payment.refunded_after_cancellation")?.[0] as { details: string }).details,
+      ) as Record<string, unknown>;
+
     it("records the refund and sends the unmuteable alert instead of 'Payment Failed' (#2773)", async () => {
       mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent());
       armCancelledBooking();
@@ -2958,10 +2937,7 @@ describe("Stripe webhook Xero alerting", () => {
           idempotencyKeyPrefix: "late_cancel_refund_booking-7_pi_primary_late",
         }),
       );
-      expect(mockPaymentTransactionFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ paymentId: "payment-7", createdAt: { gt: new Date("2026-05-01") } }) }),
-      );
-      expect(mockListRefundsForPaymentIntent).not.toHaveBeenCalled();
+      expect(refundAuditOf()).toMatchObject({ refundId: "re_primary_7", amountCents: 12000, refundedNowCents: 12000 });
       // The record this path never had, with its OWN reason sentence — "primary",
       // not the booking-change one, which would print a false sentence on the card.
       expect(
@@ -3009,19 +2985,6 @@ describe("Stripe webhook Xero alerting", () => {
     // its own charge only - never a fee the cancel kept on another charge, which
     // no per-capture Xero note answers.
     describe("refunded from the capture's own charge only (#4131)", () => {
-      /** A refund Stripe holds on a newer charge, by default one the previous release's plan sent for THIS capture. */
-      const olderPlanRefund = (
-        amount: number,
-        options: { status?: string; reason?: string; bookingId?: string; created?: number; id?: string } = {},
-      ) => {
-        const { status = "succeeded", reason = "cancelled_booking_late_capture", bookingId = "booking-7", created = LATE_CHARGED_AT_S + 60 } = options;
-        return { id: options.id ?? `re_newer_${amount}_${status}`, amount, status, created, metadata: { bookingId, reason } };
-      };
-      const newerCharge = (intent = "pi_newer", extra: Record<string, unknown> = {}) => ({ stripePaymentIntentId: intent, status: "PARTIALLY_REFUNDED", reason: null, ...extra });
-      const refundAudit = () =>
-        JSON.parse(
-          (mockLogAudit.mock.calls.find(([entry]) => (entry as { action: string }).action === "booking.payment.refunded_after_cancellation")?.[0] as { details: string }).details,
-        ) as Record<string, unknown>;
       const asksFor = (amountCents: number) =>
         expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -3043,183 +3006,18 @@ describe("Stripe webhook Xero alerting", () => {
 
         expect(mockRefundPaymentTransactions).toHaveBeenCalledTimes(1);
         asksFor(10000);
-        expect(refundAudit()).toMatchObject({ refundId: "re_part", amountCents: 12000, refundedNowCents: 10000, alreadyRefundedOnCaptureCents: 2000 });
+        expect(refundAuditOf()).toMatchObject({ refundId: "re_part", amountCents: 12000, refundedNowCents: 10000, alreadyRefundedOnCaptureCents: 2000 });
       });
 
-      it("a deploy replay of the previous release's plan subtracts every slice it sent elsewhere, so the ask and its key are that attempt's own", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_replay_old_plan"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge(), newerCharge("pi_newer_failed", { status: "FAILED" })]);
-        mockListRefundsForPaymentIntent.mockImplementation(async (intent: string) =>
-          intent === "pi_newer"
-            ? [
-                olderPlanRefund(3000),
-                // The cancel's own refund of that charge: not this capture's.
-                olderPlanRefund(8000, { reason: "booking_cancellation", created: LATE_CHARGED_AT_S - 86_400 }),
-              ]
-            : [],
-        );
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        // Only the captured newer charge is read, bounded, with no retries.
-        expect(mockListRefundsForPaymentIntent).toHaveBeenCalledTimes(1);
-        expect(mockListRefundsForPaymentIntent).toHaveBeenCalledWith("pi_newer", { timeoutMs: 10_000 });
-        expect(mockGetPaymentIntent).toHaveBeenCalledWith("pi_primary_late", { timeoutMs: 10_000, expand: ["latest_charge"] });
-        asksFor(9000); // `..._txn-7_9000`, the capture slice that attempt asked for
-        expect(refundAudit()).toMatchObject({ amountCents: 12000, refundedElsewhereCents: 3000 });
-      });
-
-      it("a slice of that plan Stripe refused is still subtracted for the key, and held for a treasurer as owed", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_replay_refused_elsewhere"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { status: "failed", id: "re_old_refused" })]);
-        mockRefundPaymentTransactions.mockResolvedValue({
-          refunds: [{ paymentIntentId: "pi_primary_late", refundId: "re_rest", amountCents: 9000, status: "succeeded" }],
-          totalRefundedAmountCents: 9000,
-        });
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        asksFor(9000);
-        expect(mockManualRefundTaskCreate).toHaveBeenCalledWith({
-          data: expect.objectContaining({ amountCents: 3000, lateCaptureApprovalIntentId: "pi_primary_late", status: "OPEN" }),
-          select: { id: true },
-        });
-        expect(mockLogAudit).not.toHaveBeenCalledWith(expect.objectContaining({ action: "booking.payment.refunded_after_cancellation" }));
-      });
-
-      it("a slice of that plan that failed later is subtracted but never held: its #4104 row already owes it on its own charge", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_replay_failed_later"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { status: "failed", id: "re_old_failed_later" })]);
-        mockPaymentRecoveryOperationFindMany.mockImplementation(async ({ where }: { where: { idempotencyKey?: { in: string[] } } }) =>
-          where.idempotencyKey ? [{ idempotencyKey: "card_refund_failed_later_re_old_failed_later" }] : [],
-        );
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        asksFor(9000);
-        expect(mockManualRefundTaskCreate).not.toHaveBeenCalled();
-        expect(refundAudit()).toMatchObject({ amountCents: 12000, owedElsewhereCents: 3000 });
-        expect(refundAudit()).not.toHaveProperty("refundedElsewhereCents");
-      });
-
-      it("(a) an EARLIER capture's old-plan slice on the same charge, made before this capture's charge, is never taken off this one", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_earlier_capture_slice"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { created: LATE_CHARGED_AT_S - 1 })]);
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        asksFor(12000);
-      });
-
-      it("a slice the draining previous release sent after the marker finished, within the blue/green overlap, is still read as its plan's", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_within_overlap"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        // Migrated before the charge; the old colour kept serving and refunded an hour after.
-        mockReadMigrationFinishedAt.mockResolvedValue({ history: true, finishedAtSeconds: LATE_CHARGED_AT_S - 60 });
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { created: LATE_CHARGED_AT_S + 3600 })]);
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        asksFor(9000);
-      });
-
-      it("a refund made after the previous release stopped serving is never read as its plan's slice", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_after_cutoff"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { created: CUTOFF_FINISHED_AT_S + 86_400 })]);
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        asksFor(12000);
-      });
-
-      it("a capture charged after the previous release stopped reads nothing at Stripe", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_charged_after_cutoff"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockReadMigrationFinishedAt.mockResolvedValue({ history: true, finishedAtSeconds: LATE_CHARGED_AT_S - 86_400 * 2 });
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        expect(mockListRefundsForPaymentIntent).not.toHaveBeenCalled();
-        asksFor(12000);
-      });
-
-      it("fail-safe: with the marker unfinished, an old-plan slice is still read as one; with no migration history at all, nothing is read", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_marker_missing"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { created: CUTOFF_FINISHED_AT_S + 86_400 * 30 })]);
-        mockReadMigrationFinishedAt.mockResolvedValue({ history: true, finishedAtSeconds: null });
-        expect((await POST(makeRequest())).status).toBe(200);
-        asksFor(9000);
-
-        vi.clearAllMocks();
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_no_history"));
-        mockProcessedWebhookCreate.mockResolvedValue({});
-        mockProcessedWebhookUpdateMany.mockResolvedValue({ count: 1 });
-        armCancelledBooking();
-        mockReadMigrationFinishedAt.mockResolvedValue({ history: false });
-        expect((await POST(makeRequest())).status).toBe(200);
-        expect(mockListRefundsForPaymentIntent).not.toHaveBeenCalled();
-        asksFor(12000);
-      });
-
-      it("a refund with another booking's late-capture metadata is ignored", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_other_booking"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { bookingId: "booking-other" })]);
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        asksFor(12000);
-      });
-
-      it("a deploy replay whose old plan refunded the whole capture elsewhere sends nothing, and its audit says so", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_replay_all_elsewhere"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge("pi_newer", { status: "SUCCEEDED" })]);
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(12000)]);
+      it("a capture that holds nothing more sends nothing, and its audit says why", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_holds_nothing"));
+        armCancelledBooking(null, new Date("2026-06-20"), 12000);
 
         expect((await POST(makeRequest())).status).toBe(200);
 
         expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
-        expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenCalledWith(
-          expect.objectContaining({ paymentIntentId: "pi_primary_late", amountCents: 12000 }),
-        );
-        expect(refundAudit()).toMatchObject({ refundId: null, amountCents: 12000, refundedNowCents: 0, refundedElsewhereCents: 12000 });
-        expect(refundAudit().noRefundSentReason).toEqual(expect.stringContaining("already made"));
-      });
-
-      it("(b) a sibling late capture's own refund is never taken off this one: by its task, its handler's write, or its cancel-intent recovery", async () => {
-        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_sibling_late_captures"));
-        armCancelledBooking();
-        mockPaymentTransactionFindMany.mockResolvedValue([
-          newerCharge("pi_sibling_task", { status: "REFUNDED" }),
-          newerCharge("pi_sibling_primary_write", { status: "REFUNDED", reason: "cancelled_booking_late_capture" }),
-          // A change payment the cancel marked for cancellation, whose own refund landed before its task was written.
-          newerCharge("pi_sibling_change", { status: "REFUNDED" }),
-        ]);
-        mockFindLateCapturePaymentIntents.mockImplementation(async (ids: string[]) => new Set(ids.filter((id) => id === "pi_sibling_task")));
-        mockPaymentRecoveryOperationFindMany.mockImplementation(async ({ where }: { where: { type?: string } }) =>
-          where.type === "CANCEL_PAYMENT_INTENT" ? [{ paymentIntentId: "pi_sibling_change" }] : [],
-        );
-        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(4000)]);
-
-        expect((await POST(makeRequest())).status).toBe(200);
-
-        expect(mockListRefundsForPaymentIntent).not.toHaveBeenCalled();
-        asksFor(12000);
+        expect(refundAuditOf()).toMatchObject({ refundId: null, amountCents: 12000, refundedNowCents: 0, alreadyRefundedOnCaptureCents: 12000 });
+        expect(refundAuditOf().noRefundSentReason).toEqual(expect.stringContaining("already been refunded"));
       });
 
       it("a capture row the handler cannot read back fails the webhook for Stripe to redeliver, refunding nothing", async () => {

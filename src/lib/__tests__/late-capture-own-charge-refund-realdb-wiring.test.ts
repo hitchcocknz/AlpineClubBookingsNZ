@@ -26,8 +26,5 @@ describe("the late-capture own-charge refund real-database proof stays wired int
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("refunds the whole capture from its own charge");
     expect(suite).toContain("refunds a capture already part refunded on its own row only for what it holds");
-    expect(suite).toContain("asks only for the rest, under that attempt's own key");
-    expect(suite).toContain("a slice of that old plan Stripe refused is subtracted for the key, and held for a treasurer as owed");
-    expect(suite).toContain("(b) a sibling change payment captured late");
   });
 });

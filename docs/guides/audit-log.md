@@ -842,20 +842,15 @@ booker's own activity history shows the entry's title and nothing else.
 When a card payment goes through after its booking was cancelled, the app
 refunds it automatically and writes one `booking.payment.refunded_after_cancellation`
 entry, category `payment`. The refund always comes off that payment's own card
-charge. Its details add up: `amountCents`, the whole late payment, is the sum of
-the fields below that are present.
+charge. On the booking's own payment the details add up: `amountCents`, the
+whole late payment, is `refundedNowCents` plus `alreadyRefundedOnCaptureCents`
+when that is present.
 
 | Field | What it means |
 | --- | --- |
 | `refundId` | The Stripe refund this event made, or `null` when it sent nothing (then `noRefundSentReason` says why) |
-| `refundedNowCents` | What went back to the card now (the booking's own payment only) |
-| `alreadyRefundedOnCaptureCents` | Present only when part of the payment had already been refunded, for example in the Stripe dashboard. Not asked for again |
-| `refundedElsewhereCents` | Present only on a payment whose refund started on the release before #4131 and finished on this one: what that older attempt had already refunded from the booking's other card charge |
-| `owedElsewhereCents` | Present only in that same case: part of the older attempt's refund that Stripe failed later, which a "Refunds owed" entry already asks for again on its own charge |
-
-If Stripe refused part of the older attempt's refund, there is no
-`refunded_after_cancellation` entry. The payment is held for a treasurer to
-approve instead, as any refused refund is.
+| `refundedNowCents` | What went back to the card now |
+| `alreadyRefundedOnCaptureCents` | Present only when part of the payment had already been refunded, for example in the Stripe dashboard. Not asked for again, and never taken from another card charge instead |
 
 ### Issue-report screenshot entries (#2703)
 

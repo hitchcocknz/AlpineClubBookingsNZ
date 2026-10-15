@@ -323,10 +323,9 @@ import "./xero-refund-note-void-pointer.realdb.test";
 import "./membership-subscription-charge-close.realdb.test";
 // #4131 reuses it to prove the booking's own payment captured after its booking
 // was cancelled is refunded from its own charge through the real webhook
-// processor: never a fee the cancel kept on another charge, only what a part
-// refunded capture still holds, and a deploy replay of the old newest-first plan
-// asks only for the rest under that attempt's own key. Skipped unless
-// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4131-` fixtures.
+// processor: never a fee the cancel kept on another charge, and only what a part
+// refunded capture still holds. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it
+// owns and cleans its own `race-4131-` fixtures.
 import "./late-capture-own-charge-refund.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster

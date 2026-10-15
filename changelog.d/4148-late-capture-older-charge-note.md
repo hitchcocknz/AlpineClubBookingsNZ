@@ -10,10 +10,13 @@
   still holds, so the cancellation fee stays where it was and no extra credit note
   is raised for any late payment refunded on this release. A refund the previous
   release had already split this way is unchanged and is still noted by the
-  nightly check, as before.
+  nightly check, as before. The refund's activity entry now also says how much
+  went back now, and how much of the payment had already been refunded.
 
-  A late payment whose refund was part-way through when this release was deployed
-  finishes as it started, without refunding anything twice. The refund's activity
-  entry now says how much went back now and where the rest of the payment went
-  back. **Deploy limit:** do not roll back across this release while a late
-  payment on a cancelled booking is waiting to be refunded (see `docs/UPGRADING.md`).
+  **Before deploying:** the previous release kept no record of a refund it had
+  only started. If it crashed part-way through refunding a late payment just
+  before the deploy, the new release refunds the whole payment again on its own
+  charge, so part of it could be refunded twice. Check the Stripe dashboard for
+  failing `payment_intent.succeeded` deliveries on cancelled bookings and let
+  them settle first, and do not roll back across this release while late
+  payments are arriving (see `docs/UPGRADING.md`).

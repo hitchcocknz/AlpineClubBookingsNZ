@@ -1811,10 +1811,10 @@ async function handleCancelledBookingPaymentSucceeded(
   // #3639: the same setting and ownership check as the sibling handler.
   if (await holdLateCaptureForTreasurerIfRequired(lateCapture)) return;
 
-  // #4131 (`INV-PAY-106`): from the capture's OWN charge only, capped at what it holds (a deploy replay asks only for the rest).
-  const { refunds, answers, audit } = await refundLateCaptureFromOwnCharge({ format, bookingId: booking.id, paymentId: booking.payment.id, paymentIntentId: paymentIntent.id, amountCents: paymentIntent.amount });
-  if (await holdLateCaptureRefusedByStripe(lateCapture, answers)) {
-    // #4103: whatever this one slice on the capture's own charge made is noted, sized by what was made.
+  // #4131 (`INV-PAY-106`): from the capture's OWN charge only, capped at what it holds.
+  const { refunds, audit } = await refundLateCaptureFromOwnCharge({ format, bookingId: booking.id, paymentId: booking.payment.id, paymentIntentId: paymentIntent.id, amountCents: paymentIntent.amount });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refunds)) {
+    // #4103: the one slice on the capture's own charge was refused, so it made nothing; the note still answers the capture's own earlier refunds.
     await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
     return;
   }
@@ -1838,7 +1838,7 @@ async function handleCancelledBookingPaymentSucceeded(
       // the row itself rather than by knowing which handler writes which shape.
       // The sibling has carried `kind: "modification_additional"` since #1350.
       kind: "primary",
-      ...audit, // #4131: what went back now, and where the rest of `amountCents` went back.
+      ...audit, // #4131: what went back now, and any part of `amountCents` already refunded on the capture.
     }),
   });
 
