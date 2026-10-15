@@ -16,7 +16,7 @@ import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
-import { isDateOnlyString } from "@/lib/date-only";
+import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 import logger from "@/lib/logger";
 import {
   createNewBookingExceptionRequest,
@@ -34,9 +34,7 @@ import { dependantIdentityDeclarationSchema } from "@/lib/booking-dependant-iden
  * night, and the officer then reviewed (and an approval reserved, priced and
  * booked) nights nobody asked for.
  */
-const nightList = z
-  .array(z.string().refine(isDateOnlyString, { message: "Night must be YYYY-MM-DD" }))
-  .max(370);
+const nightList = guestNightListSchema;
 
 const createSchema = z.object({
   lodgeId: z.string().trim().min(1).optional(),
