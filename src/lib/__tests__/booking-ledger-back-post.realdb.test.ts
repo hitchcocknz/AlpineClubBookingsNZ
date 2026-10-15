@@ -857,8 +857,8 @@ async function lines(bookingId: string) {
         // The cancellation line still records what the cancel kept, not that less the appeal. The
         // census names the appeal's refund itself (#4120, the gap #4075 reported): a cancelled
         // booking's PRICE reads owed(b) == 0, and `REFUND_APPEAL_PAID` names the money the approved
-        // appeal has given back since, as its outcome reads it - a class to acknowledge, no longer a
-        // disagreement.
+        // appeal has given back since, as its outcome reads it - a class listed only (#4075), no
+        // longer a disagreement.
         const appealPaid = { ...NOTHING, classes: ["REFUND_APPEAL_PAID:PRICE"] };
         expect(about(await census(), id!)).toEqual(appealPaid);
 

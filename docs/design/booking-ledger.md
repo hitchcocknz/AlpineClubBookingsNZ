@@ -595,13 +595,19 @@ is missing; `CHANGE_FEE_REVERSED_BY_CANCELLATION`;
 `REFUND_APPEAL_PAID` (#4120). That last is a refund appeal paid back after the
 cancel: it returns more than the cancel kept and no charge line says so. It is
 sized from each approved appeal's own outcome as the refund-requests screen
-reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by card
-(its own, or the group organiser's, #3956) or by its own completed hand-back, and never from the lines. An appeal's
-hand-back is never the cancel's in-flight or dismissed one, nor is its card
-refund still retrying the cancel's in-flight refund, because the cancel never
-netted either. An unpaid, dismissed or declined appeal explains nothing, nor
-does one paid for a different amount than the ledger shows. A
-refund is in flight while the recovery runner will still make it — pending,
+reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by
+card (its own, or the group organiser's, #3956) or by its own completed
+hand-back, and never from the lines. An appeal's hand-back is never the
+cancel's in-flight or dismissed one, nor is its card refund still retrying the
+cancel's in-flight refund, because the cancel never netted either. An unpaid,
+dismissed or declined appeal explains nothing, nor does one paid for a
+different amount than the ledger shows. The class checks a booking's total
+against its appeals' outcomes, not which ledger lines are the appeal's. One
+case it cannot classify: a card payment whose refund plan covers less than the
+approved amount refunds only the planned part, and with no recovery row left
+the outcome reads the whole approved amount, so PRICE stays a disagreement for
+an officer to look at (the approval records no planned amount to read
+instead). A refund is in flight while the recovery runner will still make it — pending,
 processing, or failed with a retry scheduled and attempts left
 (`isPaymentRecoveryOperationInFlight`, #3854 K1); an exhausted one is not, and
 the money it owes back is a disagreement.

@@ -1507,7 +1507,7 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   - **Then `INV-PAY-114`'s executor runs it** after commit; a failure leaves
     it owed for the recovery runner. The route plans no card refund and
     queues no Xero note: the executor queues one once Stripe answers. No
-    booking event is written, as for any card appeal refund.
+    booking event is written.
   - **Both are emailed**, under the one notify choice: the joiner that the
     refund went, or is on its way, to the organiser's card; the organiser
     (`group-organiser-joiner-refund`) that it is being refunded to theirs,
@@ -1516,8 +1516,8 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
     takes these debts back out of the child's refunds
     (`organiserCardAppealRefundsFromRows`).
   - **Read as the request's own refund row** (`readApprovedAppealOutcomes`,
-    #4120): for the refund-requests screen's "Refunded" figure and the
-    census's `REFUND_APPEAL_PAID`.
+    #4120), still owed until it succeeds: by the refund-requests screen's
+    "Refunded" figure and the census's `REFUND_APPEAL_PAID`.
   - Proven by `admin-refund-request-organiser-card.test.ts`,
     `organiser-card-appeal-refund-key.test.ts` and
     `organiser-child-refund.realdb.test.ts`.
