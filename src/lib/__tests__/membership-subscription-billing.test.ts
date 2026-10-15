@@ -785,6 +785,17 @@ describe("membership subscription billing", () => {
     ]);
   });
 
+  it("with two closed charges for one family, the still-settled one wins: a reversal covered only by the older charge raises FAMILY_ALREADY_BILLED (#4110 review F4)", async () => {
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["Kid Member", "NOT_INVOICED", "PAID"]], { id: "charge-older" }),
+      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"]], { id: "charge-newer" }),
+    ], ["re-billable"]);
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-newer" }) }),
+    ]);
+  });
+
   it("a moved member is left out of the partial-reversal count too: every payment still in the family reversed is a full reversal (#4110 review F2)", async () => {
     const preview = await previewFamily([
       familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["Moved Member", "PAID", "PAID", "family-2"]]),
