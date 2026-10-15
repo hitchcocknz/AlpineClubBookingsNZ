@@ -8,16 +8,24 @@
   a card cancellation's. Check Stripe and the bank first, since the records may
   be wrong and the money may already have gone back: dismiss it with a note if
   it has, and the member's page says the club checked it and closed it. If it
-  really is owed, try **Mark paid back** before you pay, once the card refund
-  has gone through. The app records it only on that card charge. Where the
-  charge's records read more refunded than the card refunds on record, it
-  corrects them itself first and logs that in the audit log (under Payment,
-  which finance officers read), but only for a
-  charge made since the app kept a record of each card refund, on a booking
-  with no account credit given back and no other refund task. If it accepts,
-  pay it by bank transfer straight away: the app records the refund on the
-  booking's ledger, queues its Xero refund credit note, and the member's page
-  says the whole payment was refunded. If it refuses, it says why: pay the
-  member anyway if they are owed, dismiss the task with a note saying when and
-  how much, and raise the Xero refund credit note by hand. The officers' email
-  now points at the task.
+  really is owed, use **Mark paid back** first, once the card refund has gone
+  through, and pay by bank transfer straight after the app accepts: it first
+  checks it can record it, only on that card charge. It asks Stripe what the
+  charge has refunded, and waits while Stripe shows a refund the app has not
+  recorded yet, or cannot be reached. Where the charge's records read more
+  refunded than the card refunds on record, it corrects them itself first and
+  logs that in the audit log (under Payment, which finance officers read), but
+  only for a charge made since the app kept a record of each card refund, on a
+  booking with no account credit given back, no other refund task and no Xero
+  refund credit note beyond its card refunds. Accepted, it records the refund
+  on the booking's ledger, queues its Xero refund credit note, and the member's
+  page says the whole payment was refunded; a booking with no Xero invoice to
+  credit gets no note. If it refuses, it says why and what to do: dismiss the
+  task with a note saying when and how much, and raise the Xero note by hand
+  only where it says to. The officers' email now points at the task.
+- **Parts to check are marked first, then paid (#4154).** For a card
+  cancellation's part to check too, the queue, the confirm dialog and the
+  refusal now all say the same: mark it paid back first, and pay straight after
+  the app accepts, so a refusal never comes after the money has gone. Where
+  the records show nothing left to refund, the refusal now also says what to
+  do if the member really is owed.

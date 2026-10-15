@@ -1395,23 +1395,23 @@ refunded total it corrects).
 - **What a capacity race's card refund plan does not carry is a task to
   check** (#4154): ONE `CANCELLED_BOOKING_HAND_BACK`, `INV-PAY-129`'s `check`
   part, raised in the void's claim, keyed on the booking and race intent,
-  inserted on no conflict; a held key is logged, never thrown. The reason and
-  the officers' alert say to check Stripe and the bank first.
-  - **Marked paid back**, it lands only on the race intent's captured charge
-    (`onlyTransactionIds`), refused while any of the race's card refunds is
-    unsettled, then completes as `INV-PAY-129`'s part does.
+  inserted on no conflict; a held key is logged, never thrown.
+  - **Marked paid back** (marked first, paid after), it lands only on the race
+    intent's captured charge (`onlyTransactionIds`), refused while the race's
+    card refund is unsettled, or while Stripe, read before the transaction,
+    shows more of that charge refunded than its refund rows, or cannot be
+    read. Then it completes as `INV-PAY-129`'s part does.
   - **Where that charge holds too little, it is first corrected** (owner,
-    15 Oct 2026, "Guarded recalculation"): under the completion's `Payment`
-    row lock, its refunded total is LOWERED to its recorded, non-refused
-    refund rows - never raised (`compareAndSetRefundedAmount`, taking the
-    smaller) - the payment's figures re-derived and the correction audited
-    before and after. Only when the charge was made after the refund ledger
-    started (`refundLedgerStartSeconds`), every refund row on it is dated
-    after that, the booking gave back no account credit, the booking and
-    payment have no other refund task, and the corrected charge then holds
-    the task. `INV-PAY-103`'s floor is the refund rows; where nothing else
-    can be in the total, the floor is the total. Otherwise it is refused,
-    naming the blocker: dismiss it and raise the Xero note by hand.
+    15 Oct 2026, "Guarded recalculation"): under the `Payment` row lock, its
+    refunded total is LOWERED to its recorded, non-refused refund rows - never
+    raised (`compareAndSetRefundedAmount`, taking the smaller) - and audited
+    before and after. Only when the charge and every refund row on it postdate
+    the refund ledger, the booking gave back no account credit, the booking
+    and payment have no other refund task, no Xero refund note covers more
+    than the payment's refund rows, and the corrected charge then holds the
+    task. Otherwise it is refused, naming the blocker: dismiss it with a note,
+    and raise a Xero note by hand only where the booking is invoiced and none
+    covers it.
   - **The member's page follows it**: OPEN, the club will be in touch; paid
     back, refunded; dismissed, checked and closed.
   - Proven by `capacity-race-refund-shortfall.test.ts`,

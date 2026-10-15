@@ -3222,10 +3222,20 @@ lock its allocation then writes, on that charge alone (`INV-PAY-133`).
 takes no new key.** Where the race's charge holds too little for the task, the
 completion lowers that one charge's `refundedAmountCents` to its recorded refund
 rows before allocating, inside the same transaction and under the `Payment` row
-lock the completion took first (`lockPaymentForRefundedTotal`) - the lock every
-writer of that column takes before touching it (`INV-PAY-103`). It runs after
-the card refund gate, so never while a card refund on the payment is still
-moving, and writes through the shared compare-and-set
+lock (`lockPaymentForRefundedTotal`) - the lock every writer of that column
+takes before touching it (`INV-PAY-103`), and which the writer
+(`capacityRaceChargeForHandBack`) takes itself as well as its caller. It runs
+after the card refund gate, which refuses only while the race's own card refund
+recovery row, or a card refund on the payment that Stripe failed later, is not
+SUCCEEDED. No other refund reaches the race's charge meanwhile: the booking is
+cancelled, so no member cancel or edit refunds it; the correction refuses while
+the booking or payment has any other refund task, which shuts out every
+hand-back and "Paid another way" close; and a refund made in the Stripe
+dashboard is checked before the transaction against Stripe's own
+`amount_refunded` (read outside it, bounded, no retries), while its later
+`charge.refunded` recording (`recordStripeRefundsAgainstTransaction`) queues on
+the same row lock. Two completions of one task serialise on that lock too, and
+the second loses the task's status claim. It writes through the shared compare-and-set
 (`compareAndSetRefundedAmount`) taking the smaller of the row's total and the
 rows' sum, so a writer that slipped past cannot be undone into a raise. The
 payment's aggregate is re-derived in the same transaction

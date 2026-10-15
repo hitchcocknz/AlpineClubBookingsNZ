@@ -292,10 +292,13 @@ by the club", worked out the same way the cancel works them out.
   records show it already refunded, or nothing holds it. The member is told
   only that the club will be in touch. Check Stripe and the bank, then contact
   the member with what you found. If they have had the money, dismiss it with
-  a note saying how. If it really is owed, pay it by bank transfer and mark it
-  paid back - after the bank-transfer part, which the app requires, since both
-  are settled on the same money. Where the payment's records show nothing left
-  to refund, the app refuses to mark it and says to dismiss it.
+  a note saying how. If it really is owed, mark it paid back first - after the
+  bank-transfer part, which the app requires, since both are settled on the
+  same money. The app first checks it can record it: pay it by bank transfer
+  straight after it accepts. Where the payment's records show nothing left to
+  refund, the app refuses and says what to do instead: dismiss it with a note,
+  and if the member really is owed, pay them anyway and raise the refund credit
+  note in Xero by hand where the booking has a Xero invoice.
 
 **Neither part can be marked paid back until the card refund itself has gone
 through.** While Stripe is still making it, the app says to mark the part once
@@ -313,18 +316,34 @@ officers are emailed once. The member's booking page says the club will be in
 touch about it; no email goes to the member about it. Check Stripe and the
 bank first, because the records may be wrong and the money may already have
 gone back. If it has, dismiss it with a note saying how, and the member's
-page then says the club checked it and closed it. If it really is owed, try
-**Mark paid back** before you pay, once the card refund has gone through: the
-app records it only on that card charge. Where the charge's records read more
-refunded than its card refunds on record, the app corrects them itself first,
-and logs the correction in the audit log, but only for a charge made since the
-app has kept a record of each card refund, on a booking with no account credit
-given back and no other refund task. If it accepts, pay the member by bank
-transfer straight away; it records the refund, queues its Xero refund credit
-note, and the member's page says the whole payment was refunded. If it
-refuses, it says why: pay the member anyway if they are owed, dismiss the task
-with a note saying when and how much, and raise the refund credit note in Xero
-by hand, because the app will not.
+page then says the club checked it and closed it. If it really is owed, use
+**Mark paid back** first, once the card refund has gone through, and pay
+straight after the app accepts. The app first checks it can record it, only on
+that card charge:
+
+- It asks Stripe what the charge has refunded. If Stripe shows more than the
+  app has recorded (a refund made in the Stripe dashboard that has not reached
+  the app yet), or Stripe cannot be reached, it refuses for now: try again in a
+  few minutes, and do not pay until it accepts.
+- Where the charge's records read more refunded than its card refunds on
+  record, it corrects them itself first, and logs the correction in the audit
+  log, but only for a charge made since the app has kept a record of each card
+  refund, on a booking with no account credit given back, no other refund task,
+  and no Xero refund credit note beyond its card refunds.
+
+If it accepts, pay the member by bank transfer straight away; it records the
+refund, queues its Xero refund credit note, and the member's page says the
+whole payment was refunded. A booking with no Xero invoice to credit gets no
+note - usual here, since a payment that lost the race is rarely invoiced. If it
+refuses, it says why: pay the member anyway if they are owed, and dismiss the
+task with a note saying when and how much. Raise the refund credit note in Xero
+by hand only where it says to (the booking has an invoice and no note covers it
+yet).
+
+If the card refund itself stopped retrying, close it as **Paid another way**
+on Stuck States once the member has had that money back, but do not then mark
+this part: that close is another refund task, so the app cannot record this
+one. Dismiss it with a note instead, as the app says.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
