@@ -297,7 +297,8 @@ export async function processOrganiserChildRefundOperation(
  * settlement's status - and its debt is reopened, so the money stays owed (and
  * spoken for against the combined capture) and the recovery runner asks again,
  * alerting on exhaustion. One that succeeded just has its row brought up to
- * date. Never inside a transaction with the provider call.
+ * date. Least recently read first, each read stamped, and bounded (#4130).
+ * Never inside a transaction with the provider call.
  */
 export async function reconcilePendingOrganiserChildRefunds(
   stripe: { retrieveRefund: typeof retrieveRefund } = { retrieveRefund },
@@ -342,6 +343,8 @@ export async function reconcilePendingOrganiserChildRefunds(
       continue;
     }
     const key = refund.metadata?.organiserChildRefundKey ?? null;
+    // #4130: one row whose record step keeps failing is logged and stamped, so
+    // it neither ends the sweep nor comes first again on every run.
     const reversedCents = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       await lockPaymentForRefundedTotal(tx, row.paymentId);
@@ -414,6 +417,10 @@ export async function reconcilePendingOrganiserChildRefunds(
         });
       }
       return entry.reversedCents;
+    }).catch(async (err: unknown) => {
+      logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not record an organiser child refund's new status; the next run reads it again");
+      await stamp(row);
+      return 0;
     });
     if (reversedCents > 0) {
       reversed += 1;
