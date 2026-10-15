@@ -559,6 +559,32 @@ describe("subscription billing panel", () => {
     expect(mocks.confirm.mock.calls[0]![0].description).toMatch(/1 exception will be recorded without invoicing\. 1 warning below: confirming invoices that charge\./);
   });
 
+  it("asks the officer to decide for a closed family's member, counted and listed apart from the other exceptions (#4110 decision 4)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    mocks.confirm.mockResolvedValue(false);
+    const base = payload({ decisionDate: CLUB_TODAY });
+    const decide = "Cub Member was not required to pay when the family's Family charge was closed as already paid, and now needs a subscription. The family is not billed again. Decide how to bill Cub Member: if the family fee already covers everyone in the family, mark them Paid; otherwise invoice just the difference in Xero by hand.";
+    servePayload({
+      ...base,
+      preview: {
+        ...base.preview,
+        exceptions: [
+          { fingerprint: "same", message: "Configure billing", code: "MISSING_FEE_SCHEDULE" },
+          { fingerprint: "decide", message: decide, code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION" },
+        ],
+      },
+    });
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText("Needs your decision — no invoice created")).toBeTruthy();
+    expect(screen.getByText(decide)).toBeTruthy();
+    expect(screen.getByText("Needs your decision").nextSibling?.textContent).toBe("1");
+    // Still a withheld exception: counted with the others too.
+    expect(screen.getByText("Open exceptions").nextSibling?.textContent).toBe("2");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and queue annual batch" }));
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+    expect(mocks.confirm.mock.calls[0]![0].description).toMatch(/2 exceptions will be recorded without invoicing, 1 of them needing your decision\./);
+  });
+
   it("keeps the close disabled for a view-only admin (#4098)", async () => {
     mocks.canEdit.mockReturnValue(false);
     servePayload(chargePayload({}));

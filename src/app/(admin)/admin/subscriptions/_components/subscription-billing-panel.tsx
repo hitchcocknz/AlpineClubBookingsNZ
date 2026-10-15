@@ -22,6 +22,7 @@ import {
   everyActiveCoveredSubscriptionSettled,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
+  isOfficerDecisionException,
   isInvoicingPreviewWarning,
   STRAY_INVOICE_AFTER_CLOSE_CODE,
 } from "@/lib/subscription-charge-already-paid";
@@ -146,6 +147,10 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
   // #4110: a warning about a charge confirming still invoices is shown apart
   // from the exceptions that withhold an invoice, and is not counted with them.
   const visibleExceptions = visibleItems.filter((item) => !isInvoicingPreviewWarning(item.code ?? ""));
+  // #4110 decision 4: a member Finance must decide how to bill is counted and
+  // listed apart, so the officer is asked rather than left to find it.
+  const needsDecision = visibleExceptions.filter((item) => isOfficerDecisionException(item.code ?? ""));
+  const otherExceptions = visibleExceptions.filter((item) => !isOfficerDecisionException(item.code ?? ""));
   const previewWarnings = visibleItems.filter((item) => isInvoicingPreviewWarning(item.code ?? ""));
 
   const load = useCallback(async () => {
@@ -262,9 +267,10 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
     if (!data || data.preview.seasonYear !== seasonYear || data.preview.decisionDate !== decisionDate) return;
     const warningCount = data.preview.exceptions.filter((item) => isInvoicingPreviewWarning(item.code ?? "")).length;
     const withheldCount = data.preview.exceptions.length - warningCount;
+    const decisionCount = data.preview.exceptions.filter((item) => isOfficerDecisionException(item.code ?? "")).length;
     const accepted = await confirm({
       title: `Create ${data.preview.entries.length} annual membership charge${data.preview.entries.length === 1 ? "" : "s"}?`,
-      description: `${formatCents(data.preview.totalCents, format)} will be snapshotted. This creates durable Xero invoice work and cannot be undone by later fee or family changes. ${withheldCount} exception${withheldCount === 1 ? "" : "s"} will be recorded without invoicing.${warningCount > 0 ? ` ${warningCount} warning${warningCount === 1 ? "" : "s"} below: confirming invoices ${warningCount === 1 ? "that charge" : "those charges"}.` : ""}`,
+      description: `${formatCents(data.preview.totalCents, format)} will be snapshotted. This creates durable Xero invoice work and cannot be undone by later fee or family changes. ${withheldCount} exception${withheldCount === 1 ? "" : "s"} will be recorded without invoicing${decisionCount > 0 ? `, ${decisionCount} of them needing your decision` : ""}.${warningCount > 0 ? ` ${warningCount} warning${warningCount === 1 ? "" : "s"} below: confirming invoices ${warningCount === 1 ? "that charge" : "those charges"}.` : ""}`,
       confirmLabel: "Confirm annual batch",
     });
     if (!accepted) return;
@@ -338,10 +344,11 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
         {loadFeedback ? <Alert variant="error">{loadFeedback.text}</Alert> : null}
         {loading ? <Spinner label="Building subscription billing preview…" /> : data ? (
           <>
-            <div className="grid gap-3 sm:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-5">
               <div><p className="text-xs text-muted-foreground">Charges</p><p className="text-xl font-semibold tabular-nums">{data.preview.entries.length}</p></div>
               <div><p className="text-xs text-muted-foreground">Preview total</p><p className="text-xl font-semibold tabular-nums">{formatCents(data.preview.totalCents, format)}</p></div>
               <div><p className="text-xs text-muted-foreground">Open exceptions</p><p className="text-xl font-semibold tabular-nums">{visibleExceptions.length}</p></div>
+              <div><p className="text-xs text-muted-foreground">Needs your decision</p><p className="text-xl font-semibold tabular-nums">{needsDecision.length}</p></div>
               <div><p className="text-xs text-muted-foreground">Due</p><p className="text-xl font-semibold tabular-nums">{data.preview.dueDays} days</p></div>
             </div>
             {data.preview.entries.length > 0 ? (
@@ -452,8 +459,11 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                 ) : null}
               </details>
             ) : null}
-            {visibleExceptions.length > 0 ? (
-              <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Billing exceptions — no invoice created</p>{visibleExceptions.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
+            {needsDecision.length > 0 ? (
+              <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Needs your decision — no invoice created</p>{needsDecision.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
+            ) : null}
+            {otherExceptions.length > 0 ? (
+              <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Billing exceptions — no invoice created</p>{otherExceptions.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
             ) : null}
             {previewWarnings.length > 0 ? (
               <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Check before confirming — these charges will be invoiced</p>{previewWarnings.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
