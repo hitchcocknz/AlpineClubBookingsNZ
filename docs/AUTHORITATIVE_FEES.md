@@ -184,12 +184,18 @@ billing workflow below.
    `FAMILY_ALREADY_BILLED` exception; the old family snapshot is not expanded
    and a second family invoice is not created. A family charge closed as
    already paid (#4098) still counts as billing its family, so a new joiner
-   gets the same exception; it stops counting only when a subscription it
-   covered is no longer settled (`PAID` or `NOT_REQUIRED`) — a reversal — and
-   the family is then billed again on a new charge. When only some of its
+   gets the same exception; it stops counting only when a covered member's
+   payment is reversed — a member `PAID` at the close is no longer settled
+   (`PAID` or `NOT_REQUIRED`) — and the family is then billed again on a new
+   charge. A member exempt (`NOT_REQUIRED`) at the close had no payment to
+   reverse, so a later move to `NOT_INVOICED` (an assignment save, the
+   membership sync) does not re-bill the family; the close records each
+   member's status on the released claim for this. When only some of the
    payments were reversed, the preview warns (`CLOSED_FAMILY_PARTLY_REVERSED`)
-   that confirming invoices the full family fee (#4110). A family charge Xero
-   voided never counts: nobody paid it.
+   that confirming invoices the full family fee (#4110). A membership approval
+   confirms with no officer to see that warning, so it withholds the family
+   instead and leaves the warning open for Finance. A family charge Xero voided
+   never counts: nobody paid it.
 5. Watch the durable charge queue. `EMAIL_FAILED` can be retried safely because
    the Xero invoice identifier is persisted before email. `CONFLICT` means an
    invoice with the immutable reference exists but its contact, account, amount,

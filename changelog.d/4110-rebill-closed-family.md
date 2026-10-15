@@ -5,12 +5,17 @@
   confirming it works. Before, a closed family stayed listed as already billed
   even after a reversal, and confirming a voided family's re-bill failed the
   whole confirmation. Until a payment is reversed, a closed family still counts
-  as billed, so a member who joins later is not invoiced for it. If only some
-  members' payments were reversed, the preview shows a **Check before
-  confirming** warning that confirming invoices the full family fee. The
-  club's database gets one small change to allow this: a family can still have
-  only one charge that is waiting to be invoiced or has been, per membership
-  type and season.
+  as billed, so a member who joins later is not invoiced for it, and an exempt
+  (**Not required**) member whose membership type is changed later doesn't
+  count as a reversal: they paid nothing. If only some members' payments were
+  reversed, the preview shows a **Check before confirming** warning that
+  confirming invoices the full family fee. Approving a membership application
+  never confirms through that warning: the family is left for Finance as an
+  open exception, and the approver is told Finance must review it. The
+  club's database gets two small changes to allow this: a family can still
+  have only one charge that is waiting to be invoiced or has been, per
+  membership type and season; and closing a charge records whether each member
+  had paid or was exempt at the time.
 
   The Subscriptions page also offers **Close: already paid** only when every
   member on the charge has paid or is exempt (**Not required**). When only some have, the conflict message says

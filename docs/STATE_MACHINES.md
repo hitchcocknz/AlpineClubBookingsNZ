@@ -2422,9 +2422,14 @@ CONFLICT (SUBSCRIPTION_ALREADY_PAID) -> officer "Close: already paid" (finance e
   any covered subscription is unsettled (advice: pay the rest then close, or unpay every one then Retry);
   Close is offered only where every active covered subscription is settled
 NOT_REQUIRED (closed) family charge -> still counts as billing its family (a new joiner -> FAMILY_ALREADY_BILLED)
-  until a subscription it covered stops being settled (a reversal) -> the next preview re-bills the family on a
-  NEW charge beside the retained row; only SOME reversed -> CLOSED_FAMILY_PARTLY_REVERSED warning, and
-  confirming still invoices the full family fee (#4110; the unique index covers live charges only)
+  until a covered member's PAYMENT is reversed (PAID at the close, recorded on the released claim, and no longer
+  settled) -> the next preview re-bills the family on a NEW charge beside the retained row; only SOME payments
+  reversed -> CLOSED_FAMILY_PARTLY_REVERSED warning, and an officer's confirm still invoices the full family fee
+  (#4110; the unique index covers live charges only); a member NOT_REQUIRED at the close later moved to
+  NOT_INVOICED (assignment save, membership sync) is no reversal -> the family stays billed
+membership approval (NEW_MEMBER_APPROVAL) preview with a CLOSED_FAMILY_PARTLY_REVERSED warning -> that family is
+  withheld (no charge), the warning persisted OPEN for Finance and counted -> Finance's confirm invoices it and
+  RESOLVES the warning (resolvedVia CONFIRM)
 VOIDED family charge -> never counts as billing its family -> re-billed by the next preview (#2147, #4110)
 invoice attempt in Xero when the close lands -> guarded INVOICE_CREATED write matches nothing -> no link,
   no downgrade, no email; the closed charge carries STRAY_INVOICE_AFTER_CLOSE naming the invoice to void
@@ -2520,10 +2525,14 @@ bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
 fresh idempotency key. Closing a charge as already paid (#4098) releases its
 claims and bumps the generation the same way, leaving the row `PAID`. A voided
 per-family charge never counts as the family's charge in the preview; a closed
-one does until a subscription it covered stops being settled (`PAID` or
-`NOT_REQUIRED`), so a new joiner is still refused but a reversed member is
+one does until a covered member's payment is reversed — `PAID` at the close
+(the close records each claim's status in `subscriptionStatusAtClose`) and no
+longer settled — so a new joiner is still refused but a reversed member is
 billed again on a new family charge, with a warning when only some payments
-were reversed (owner decisions, 15 Oct 2026; #4110).
+were reversed (owner decisions, 15 Oct 2026; #4110). An exempt member,
+`NOT_REQUIRED` at the close, had no payment to reverse: an assignment save or
+membership sync that later moves them to `NOT_INVOICED` leaves the family
+billed.
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
 sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero

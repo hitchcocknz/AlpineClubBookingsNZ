@@ -100,15 +100,16 @@ export const PARTLY_PAID_CHARGE_ADVICE =
 /**
  * The conflict message the invoice worker stores, naming the real choices
  * (#4098). The worker conflicts when ANY covered subscription is PAID, but the
- * close needs EVERY one paid, so a partly paid charge gets different advice.
+ * close needs EVERY one settled (PAID, or NOT_REQUIRED for an exempt member),
+ * so a charge that is not wholly settled gets different advice.
  */
 export function subscriptionAlreadyPaidConflictMessage(
   paidMemberNames: readonly string[],
-  everyCoveredSubscriptionPaid: boolean,
+  everyCoveredSubscriptionSettled: boolean,
 ): string {
   const subject = paidMemberNames.length === 1 ? "subscription is" : "subscriptions are";
   const head = `Covered ${subject} already PAID (${paidMemberNames.join(", ")}); no Xero invoice was created. `;
-  if (everyCoveredSubscriptionPaid) {
+  if (everyCoveredSubscriptionSettled) {
     return (
       head +
       `Close it as already paid on the Subscriptions page, or reverse the payment (${REVERSE_PAYMENT_HOW}) and Retry.`
@@ -120,7 +121,8 @@ export function subscriptionAlreadyPaidConflictMessage(
 /**
  * True when an officer may close this charge as already paid: it sits in
  * `CONFLICT` with `SUBSCRIPTION_ALREADY_PAID` and no Xero invoice. The server
- * also re-reads every covered subscription as PAID before it closes.
+ * also re-reads every covered subscription as settled (PAID, or NOT_REQUIRED
+ * for an exempt member) before it closes.
  */
 export function isChargeClosableAsAlreadyPaid(charge: {
   status: MembershipSubscriptionChargeStatus | string;
