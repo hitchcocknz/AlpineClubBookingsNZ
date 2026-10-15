@@ -136,6 +136,29 @@ from your pre-upgrade backup.
 **Rollback.** Rolling the code back restores the old predicate and stops further
 deletions, but does not bring back rows the new release already pruned.
 
+### Settle failing late-payment notices before you deploy the late-payment refund change (#4131)
+
+**What changes.** When a card payment goes through after its booking was
+cancelled, the new version refunds it only from that payment's own card charge,
+and only for what that charge still holds. The previous version refunded it
+newest charge first, so part of the refund could come from another card charge
+on the same booking. No migration runs.
+
+**The limit.** The previous version keeps no record of a refund it has only
+started. If it crashed part-way through such a refund just before the deploy,
+Stripe redelivers the payment's notice to the new version, which refunds the
+whole late payment on its own charge. The part the previous version had already
+refunded from the other charge is then refunded twice.
+
+**Before deployment.** In the Stripe dashboard, open **Developers → Webhooks**
+and check for failing `payment_intent.succeeded` deliveries for bookings that
+are cancelled. Let them retry and succeed on the current version (or resolve
+them) before you deploy. If one is still failing at deploy time, check that
+booking's payments in Stripe afterwards and recover any double refund by hand.
+
+**Rollback.** Do not roll back across this release while late payments on
+cancelled bookings are arriving: the same gap opens in the other direction.
+
 ### Do not mark an edit's refund task paid back until cutover completes (#3827)
 
 **What changes.** When a change lowers the price of a booking paid by internet

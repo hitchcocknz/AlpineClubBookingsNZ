@@ -837,6 +837,21 @@ predates guest consent), are ever read, and the booker sees only each code and
 its benefit. The
 booker's own activity history shows the entry's title and nothing else.
 
+### Late card payments refunded automatically (#4131)
+
+When a card payment goes through after its booking was cancelled, the app
+refunds it automatically and writes one `booking.payment.refunded_after_cancellation`
+entry, category `payment`. The refund always comes off that payment's own card
+charge. On the booking's own payment the details add up: `amountCents`, the
+whole late payment, is `refundedNowCents` plus `alreadyRefundedOnCaptureCents`
+when that is present.
+
+| Field | What it means |
+| --- | --- |
+| `refundId` | The Stripe refund this event made, or `null` when it sent nothing (then `noRefundSentReason` says why) |
+| `refundedNowCents` | What went back to the card now |
+| `alreadyRefundedOnCaptureCents` | Present only when part of the payment had already been refunded, for example in the Stripe dashboard. Not asked for again, and never taken from another card charge instead |
+
 ### Issue-report screenshot entries (#2703)
 
 A screenshot taken by somebody who had admin access is shown only to a Full

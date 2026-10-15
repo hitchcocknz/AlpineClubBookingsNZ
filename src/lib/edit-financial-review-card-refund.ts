@@ -14,6 +14,7 @@ import {
   buildEditFinancialReviewRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
 import { refundPaymentTransactions, type RefundAllocationSlice } from "@/lib/payment-transactions";
+import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { keepRefusedPrePersistedRefundOwed, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 
 /**
@@ -89,14 +90,20 @@ export async function executeEditReviewCardRefund({
     if (refused) throw refused;
     stripeRefundId = refundResult.refunds[0]?.refundId ?? null;
     // Best-effort close, exactly as #1349's is: a lost close leaves the
-    // operation PENDING and the cron replays the identical frozen slices, which
-    // Stripe answers with the original refunds.
-    await markEditFinancialReviewRefundRecoverySucceeded({ taskId }).catch(
-      (err) =>
-        logger.error(
-          { err, bookingId, taskId },
-          "Failed to close the edit-financial-review refund recovery operation after an inline refund succeeded",
-        ),
+    // operation open and the cron replays the identical frozen slices, which
+    // Stripe answers with the original refunds. #4144: only on the plan sent.
+    await closeDoorRow(
+      {
+        door: "edit-review",
+        idempotencyKey: buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),
+        bookingId,
+        paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "",
+        amountCents: refundAmountCents,
+        refundId: stripeRefundId,
+        format,
+        context: { taskId },
+      },
+      async (idempotencyKey) => (await markEditFinancialReviewRefundRecoverySucceeded({ idempotencyKey, sentPlan: route.allocation })).count === 1,
     );
   } catch (err) {
     // The debt is already durable, so there is nothing to enqueue here and
