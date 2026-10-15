@@ -257,7 +257,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       }
       await prisma.lodge.create({ data: { id: LODGE_ID, name: "Race 4145 Lodge", slug: "race-4145" } });
       await prisma.cancellationPolicy.create({ data: { lodgeId: LODGE_ID, daysBeforeStay: 0, refundPercentage: 50, fixedFeeCents: 0 } });
-    });
+      // The real cancel, runner and paid-another-way modules load cold here: past the 10s default under load.
+    }, 120_000);
 
     beforeEach(async () => {
       resetStripeRaceHooks();
