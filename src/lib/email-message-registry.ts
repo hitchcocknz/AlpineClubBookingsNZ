@@ -937,25 +937,23 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     // would tell an admin the other kind sends nothing.
     triggerSummary:
       "Stripe captured a payment after the booking had already been cancelled (deleted or not) - either the booking's own payment or one for a change to it - so the capture was refunded in full automatically and recorded on the payments board",
-    // The frequency sentence used to claim "webhook redeliveries do not
-    // re-send", and that was not true. The record write is idempotent on the
-    // payment intent; this mail is not. A Stripe redelivery re-enters the
-    // handler whenever the first attempt failed AFTER the alert — the COMPLETED
-    // stamp or the webhook log throwing sends the request to the outer catch,
-    // which deletes the lease claim and answers 500 — and a lease takeover after
-    // expiry does the same (`stripe-webhook-service.ts` says outright that a
-    // handler may legitimately run more than once for one event).
+    // The delivery that refunds sends it, even when its record write is lost
+    // (#4149); since #3639 a redelivery after the refund never refunds or sends
+    // again, and the lost-record recovery sends it only when the refunding
+    // delivery died before sending (`late-capture-record-recovery.ts`). Two
+    // deliveries racing one event before either refunded can each send it.
     //
-    // The honest wording is shipped rather than the send being deduped, and that
-    // is a deliberate choice on a money notification: the alert is the event's
-    // ONE notification (`INV-ADDPAY-037`), it is fire-and-forget with a `.catch`
-    // that only logs, and gating it on the record writer's `alreadyRecorded`
-    // outcome would mean a redelivery after a FAILED send is silent — trading a
-    // rare duplicate for a rare silence, on the path where the owner's #2761
-    // decision was that this must not be silenceable. A duplicate says the same
-    // true thing twice; a silence says nothing about money that moved.
+    // That duplicate is shipped rather than deduped, deliberately, on a money
+    // notification: the alert is the event's ONE notification (`INV-ADDPAY-037`),
+    // it is fire-and-forget with a `.catch` that only logs, and gating it on the
+    // record writer's `alreadyRecorded` outcome would make the racing delivery
+    // silent whenever the first one's send FAILED — trading a rare duplicate for
+    // a rare silence, on the path where the owner's #2761 decision was that this
+    // must not be silenceable. A duplicate says the same true thing twice; a
+    // silence says nothing about money that moved. The recovery's own skip reads
+    // the refund-time audit entry, so a send that never happened is never assumed.
     frequency:
-      "On each late capture the webhook refunds automatically — rare; once per payment intent per delivery, and a Stripe redelivery of the same event can re-send it",
+      "On each late capture the webhook refunds automatically — rare; once per refund, sent when the money goes back even if its record is saved later, and two deliveries racing the same event can each send it",
   },
   "admin-late-capture-hand-back-conflict": {
     triggerSummary:

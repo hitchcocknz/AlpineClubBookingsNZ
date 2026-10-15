@@ -505,7 +505,7 @@ and the data download rather than every page that happens to quote an entry.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-502 now record a category, measured on every build rather than estimated.
+503 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
 now refused three separate ways. Giving the 82 places a category and stopping the
@@ -527,7 +527,7 @@ that order and both landing in this release; this is the second:
    maintenance script outside the normal path.
 
 The practical effect for you: an entry recorded the ordinary way — through the
-platform’s own recording step, which is how every one of the 502 places does it —
+platform’s own recording step, which is how every one of the 503 places does it —
 cannot be born without a category any more. **It is not a mathematical
 guarantee**, and it is worth saying so rather than overclaiming: someone writing
 directly to the database table in a migration, or building a query by hand, is
@@ -851,6 +851,22 @@ when that is present.
 | `refundId` | The Stripe refund this event made, or `null` when it sent nothing (then `noRefundSentReason` says why) |
 | `refundedNowCents` | What went back to the card now |
 | `alreadyRefundedOnCaptureCents` | Present only when part of the payment had already been refunded, for example in the Stripe dashboard. Not asked for again, and never taken from another card charge instead |
+| `recordLost` | Present (`true`) when the app could not save the "Refunded automatically" row at the time. The email still went out; the row is saved later, as below |
+| `recoveredLostRecord` | Present (`true`) only on an entry written late, because the server stopped before it could write this entry or send the email at the time of the refund. Then `refundedCents` is what Stripe shows went back, and the email is sent with it |
+
+**When the row is saved later (#4149).** If the "Refunded automatically" row
+could not be saved at the moment of the refund, the app saves it when Stripe
+sends the payment notice again, or overnight at the latest, and writes one
+`booking.payment.auto_refund_record_recovered` entry, category `payment`. It
+sends no second email.
+
+| Field | What it means |
+| --- | --- |
+| `paymentIntentId`, `refundId` | The late payment, and the first refund Stripe shows the app sent for it |
+| `amountCents` | The whole late payment |
+| `refundedCents` | What Stripe shows went back, across the refunds the app sent for it |
+| `kind` | `primary` for the booking's own payment, `modification_additional` for a payment for a change |
+| `reportedAtRefund` | `true` when the refund's own entry and email went out at the time; `false` when the recovery wrote them too |
 
 ### Issue-report screenshot entries (#2703)
 

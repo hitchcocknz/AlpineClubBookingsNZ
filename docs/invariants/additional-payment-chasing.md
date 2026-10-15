@@ -1053,9 +1053,9 @@ same `cancelled_booking_late_capture` reason, wrote the same
 `booking.payment.refunded_after_cancellation` audit entry, and left no
 `ManualRefundTask` and no unmuteable mail — so an operator holding a
 `refunded_after_cancellation` entry with no card row had to know which handler wrote
-it before they could tell whether the card was broken. **Both now route through the
-same shared epilogue** (`src/lib/cancelled-booking-late-capture.ts`), which is one
-implementation rather than a copy per handler: one record writer, one `deletedAt`
+it before they could tell whether the card was broken. **Both now route through one
+shared epilogue** (`finishAutomaticLateCaptureRefund`,
+`src/lib/late-capture-record-recovery.ts`): one record writer, one `deletedAt`
 re-read, one alert decision.
 
 **WHAT "EVERY ORDERING" MEANS ON THE PRIMARY PATH, checked rather than assumed.**
@@ -1127,11 +1127,12 @@ is worse than the partial claim it replaced:
   **`COMPLETED`** variant of the same ordering is a different matter entirely and is
   now `INV-ADDPAY-039`: it means the club has already paid the member back, and it
   is fenced.
-- **The record write itself failing.** Since #4149 the caller answers 500: a
-  replay no longer refunds again, so Stripe's redelivery (or else the nightly
-  self-heal) writes the row, the `refunded_after_cancellation` entry and the
-  alert, once (`late-capture-record-recovery.ts`). A container log is not a record
-  meanwhile, so the writer adds
+- **The record write itself failing.** Since #4149 the delivery still writes the
+  `refunded_after_cancellation` entry (`recordLost`) and the alert, then answers
+  500; a replay never refunds again, so the redelivery or the nightly self-heal
+  writes the missing row once, with a `booking.payment.auto_refund_record_recovered`
+  entry and no second alert (`late-capture-record-recovery.ts`). Meanwhile the
+  writer adds
   `booking.payment.auto_refund_record_failed` (`severity: "critical"`,
   `outcome: "failure"`, `category: "payment"`, carrying the booking and the
   payment intent). **That audit row is the recovery surface** while the row is

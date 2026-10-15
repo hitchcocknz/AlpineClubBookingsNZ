@@ -1440,9 +1440,10 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
     // 375 -> 376 (#4104 review, CL3): a failed-later card refund not re-sent,
     // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
-    // 127 -> 126 pinned (#4149): the two late-capture handlers' pinned refund
-    // entries became one pinned shared writer, `finishAutomaticLateCaptureRefund`.
-    ).toEqual({ pinned: 126, unpinned: 376 });
+    // 127 -> 127 pinned (#4149): the two late-capture handlers' pinned refund
+    // entries became one pinned shared writer, `reportAutomaticLateCaptureRefund`,
+    // and the lost-record recovery's own entry is pinned beside it.
+    ).toEqual({ pinned: 127, unpinned: 376 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {
@@ -1532,9 +1533,10 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "That publishes an event on a member-facing surface, or withdraws one " +
         "from it — never a side effect of a refactor. Say which way it moved and " +
         "why the row is safe for the member it is about.",
-      // 57 -> 56 (#4149): two pinned `payment` refund entries became one; it
-      // carries a booking id and no member, so no member sees it either way.
-    ).toBe(56);
+      // 57 -> 57 (#4149): two pinned `payment` refund entries became one, and
+      // the recovery's pinned `payment` entry joined them; each carries a
+      // booking id and no member, so no member sees any of them.
+    ).toBe(57);
     expect([...new Set(hidden)].sort()).toEqual(["admin", "lodge", "xero"]);
     expect(hidden).toHaveLength(29);
   });

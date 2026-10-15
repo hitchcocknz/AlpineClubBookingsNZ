@@ -657,11 +657,12 @@ export const AUDIT_CENSUS_TOTALS = {
   // a card refund Stripe failed later that the app did not make for the
   // booking, awaited on the ledger writer's transaction under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
-  // 503 -> 502 (#4149): the two late-capture handlers'
-  // `booking.payment.refunded_after_cancellation` writers became ONE, in the
-  // shared epilogue `finishAutomaticLateCaptureRefund`, which a redelivery's
-  // lost-record recovery also runs. RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 502,
+  // 503 -> 503 (#4149): the two late-capture handlers'
+  // `booking.payment.refunded_after_cancellation` writers became ONE shared
+  // writer (`reportAutomaticLateCaptureRefund`, -1), and the lost-record
+  // recovery adds `booking.payment.auto_refund_record_recovered` (+1).
+  // RE-MEASURED with `pnpm run audit:census`.
+  writeSites: 503,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -761,8 +762,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // 271 -> 272 (#3827, composed by #3829): the guest-acceptance re-price record, above.
     // 272 -> 273 (#3750): the executed change-request approval, above. `logAudit`
     // because it is written after the approval has committed.
-    // 273 -> 272 (#4149): the two handlers' refund entries, one shared writer.
-    logAudit: { total: 272, uncategorised: 0 },
+    // 273 -> 273 (#4149): the two handlers' refund entries, one shared writer,
+    // and the lost-record recovery's own entry.
+    logAudit: { total: 273, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -1059,8 +1061,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // officer and reason beside the billing actions the same people read.
     // 55 -> 56 (#4104 review, CL3): a card refund Stripe failed later that the
     // app did not make for the booking - read by the people who reconcile it.
-    // 56 -> 55 (#4149): the two handlers' refund entries, one shared writer.
-    payment: 55,
+    // 56 -> 56 (#4149): the two handlers' refund entries, one shared writer,
+    // and the lost-record recovery's own entry, read by the same people.
+    payment: 56,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -1473,12 +1476,14 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#1": "payment",
   "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0": "payment",
   // #4149 MOVED BOTH HANDLERS' `booking.payment.refunded_after_cancellation`
-  // WRITERS into the one shared epilogue, so neither handler writes an audit row
-  // of its own any more and both `#0` identities are gone (#2760 and #2773 had
-  // each renumbered them; their history is in git). A redelivery that finds a
-  // refund's record lost runs the same epilogue, so the entry is written by the
-  // delivery that writes the record and by no other.
-  "src/lib/late-capture-record-recovery.ts::finishAutomaticLateCaptureRefund#0": "payment",
+  // WRITERS into one shared writer, so neither handler writes an audit row of
+  // its own any more and both `#0` identities are gone (#2760 and #2773 had
+  // each renumbered them; their history is in git). The delivery that refunded
+  // writes it, and the lost-record recovery only when that delivery died first.
+  "src/lib/late-capture-record-recovery.ts::reportAutomaticLateCaptureRefund#0": "payment",
+  // #4149: the recovery's own `booking.payment.auto_refund_record_recovered`
+  // entry, beside it. A booking id in `targetId` and no member column, as above.
+  "src/lib/late-capture-record-recovery.ts::recoverLostLateCaptureRecord#0": "payment",
   /*
     #2773 / #2774 — the three write sites of the shared late-capture epilogue,
     pinned on arrival rather than left unlisted.
