@@ -160,6 +160,8 @@ export interface ResolveBookingNarrativeInput {
   ownerCreditHidden?: boolean;
   /** #4097 (`INV-PAY-129`): a card cancel's shortfall tasks, by part, read by the caller. Absent reads as still owed. */
   cardShortfallStatuses?: CardShortfallTaskStatuses;
+  /** #4047: positive, pending or incomplete extra collection evidence on this surface. */
+  additionalCollectionPending?: boolean;
   /** #4125: where a card cancel's refund stands on its recovery row, read by the caller. Absent reads as on its way. */
   cardRefundState?: CardRefundState;
 }
@@ -217,7 +219,8 @@ function asBumpSnapshot(value: unknown): BumpEventSnapshot | null {
 function buildPaidNarrative(
   booking: NarrativeBooking,
   events: NarrativeEvent[],
-  club: BoundClubTime, format: ClubFormat
+  club: BoundClubTime, format: ClubFormat,
+  additionalCollectionPending = false,
 ): BookingNarrative {
   const paidEvent =
     events.find(
@@ -231,7 +234,7 @@ function buildPaidNarrative(
       state: "paid",
       headline: "Payment received",
       message: `Thanks ${booking.firstName} — we've received your payment of ${formatCents(amountCents, format)} on ${club.instantDate(paidEvent.occurredAt)}. Your stay from ${range} is confirmed.`,
-      nextStep:
+      nextStep: additionalCollectionPending ? "See the additional-payment information below." :
         "Nothing more to do — we'll see you at the lodge. You can view the full booking details any time from your bookings page.",
     };
   }
@@ -239,8 +242,8 @@ function buildPaidNarrative(
   return {
     state: "paid",
     headline: "Booking confirmed",
-    message: `Thanks ${booking.firstName} — your stay from ${range} is confirmed. No payment was required.`,
-    nextStep:
+    message: `Thanks ${booking.firstName} — your stay from ${range} is confirmed.${additionalCollectionPending ? "" : " No payment was required."}`,
+    nextStep: additionalCollectionPending ? "See the additional-payment information below." :
       "Nothing more to do — we'll see you at the lodge. You can view the full booking details any time from your bookings page.",
   };
 }
@@ -340,10 +343,17 @@ function buildCancelledNarrative(
 function buildPayableNarrative(
   booking: NarrativeBooking,
   link: NarrativeLinkState | null | undefined,
-  now: Date, format: ClubFormat, ownerCreditHidden: boolean,
+  now: Date, format: ClubFormat, ownerCreditHidden: boolean, additionalCollectionPending = false,
 ): BookingNarrative {
   const range = dateRange(booking, format);
-  if (booking.amountOwed.owedCents <= 0) return nothingToPayNarrative(range, !ownerCreditHidden && booking.amountOwed.appliedCreditCents > 0);
+  if (booking.amountOwed.owedCents <= 0) {
+    if (additionalCollectionPending) return {
+      state: "nothing_to_pay", headline: "Primary booking amount covered",
+      message: `The primary amount for your booking from ${range} has nothing left to pay. See the separate additional-payment information below.`,
+      nextStep: "See the additional-payment information below.",
+    };
+    return nothingToPayNarrative(range, !ownerCreditHidden && booking.amountOwed.appliedCreditCents > 0);
+  }
   const amountDue = formatCents(booking.amountOwed.dueCents, format);
 
   const linkUnusable =
@@ -507,8 +517,9 @@ function buildPaidWithFinancialReviewNarrative(
   booking: NarrativeBooking,
   events: NarrativeEvent[],
   club: BoundClubTime, format: ClubFormat,
+  additionalCollectionPending = false,
 ): BookingNarrative {
-  const paid = buildPaidNarrative(booking, events, club, format);
+  const paid = buildPaidNarrative(booking, events, club, format, additionalCollectionPending);
 
   return {
     state: "financial_review_pending",
@@ -531,9 +542,9 @@ function buildPaidWithFinancialReviewNarrative(
 function buildPayableWithFinancialReviewNarrative(
   booking: NarrativeBooking,
   link: NarrativeLinkState | null | undefined,
-  now: Date, format: ClubFormat, ownerCreditHidden: boolean,
+  now: Date, format: ClubFormat, ownerCreditHidden: boolean, additionalCollectionPending = false,
 ): BookingNarrative {
-  const payable = buildPayableNarrative(booking, link, now, format, ownerCreditHidden);
+  const payable = buildPayableNarrative(booking, link, now, format, ownerCreditHidden, additionalCollectionPending);
   if (payable.state === "nothing_to_pay") return nothingToPayWithFinancialReviewNarrative(payable); // #3991: no figure to qualify
 
   return {
@@ -567,6 +578,7 @@ export function resolveBookingNarrative({
   financialReviewPending = false,
   ownerCreditHidden = false,
   cardShortfallStatuses = {},
+  additionalCollectionPending = false,
   cardRefundState,
 }: ResolveBookingNarrativeInput, format: ClubFormat): BookingNarrative {
   const ordered = sortedByOccurredAt(events);
@@ -619,7 +631,7 @@ export function resolveBookingNarrative({
       to pay.
     */
     if (PAYABLE_STATUSES.has(status)) {
-      return buildPayableWithFinancialReviewNarrative(booking, link, now, format, ownerCreditHidden);
+      return buildPayableWithFinancialReviewNarrative(booking, link, now, format, ownerCreditHidden, additionalCollectionPending);
     }
     /*
       And a PAID booking keeps its payment facts and gains the review ones, for
@@ -628,17 +640,17 @@ export function resolveBookingNarrative({
       public payment link, the only thing that page had to say.
     */
     if (status === "PAID" || status === "COMPLETED") {
-      return buildPaidWithFinancialReviewNarrative(booking, ordered, club, format);
+      return buildPaidWithFinancialReviewNarrative(booking, ordered, club, format, additionalCollectionPending);
     }
     return buildFinancialReviewPendingNarrative(booking, format);
   }
 
   if (status === "PAID" || status === "COMPLETED") {
-    return buildPaidNarrative(booking, ordered, club, format);
+    return buildPaidNarrative(booking, ordered, club, format, additionalCollectionPending);
   }
 
   if (PAYABLE_STATUSES.has(status)) {
-    return buildPayableNarrative(booking, link, now, format, ownerCreditHidden);
+    return buildPayableNarrative(booking, link, now, format, ownerCreditHidden, additionalCollectionPending);
   }
 
   // DRAFT / WAITLISTED / WAITLIST_OFFERED and any unexpected state: a clear,
