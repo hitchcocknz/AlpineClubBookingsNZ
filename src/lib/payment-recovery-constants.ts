@@ -9,6 +9,22 @@ import type { PaymentRecoveryOperationStatus, Prisma } from "@prisma/client";
 export const MAX_PAYMENT_RECOVERY_ATTEMPTS = 5;
 
 /**
+ * #4126 (`INV-SSOT`): a pre-persisted door's row no worker has touched - still
+ * PENDING, never attempted. The runner's claim (PENDING -> PROCESSING, attempts
+ * + 1) ends it, and from then the runner owns the row. The door's
+ * compare-and-set (`untouchedPrePersistedRowWhere`) and the reads
+ * (`isUntouchedPrePersistedRow`) both spell it from here.
+ */
+export const UNTOUCHED_PRE_PERSISTED_ROW = { status: "PENDING", attempts: 0 } as const satisfies {
+  status: PaymentRecoveryOperationStatus;
+  attempts: number;
+};
+
+export function isUntouchedPrePersistedRow(row: { status: PaymentRecoveryOperationStatus; attempts: number }): boolean {
+  return row.status === UNTOUCHED_PRE_PERSISTED_ROW.status && row.attempts === UNTOUCHED_PRE_PERSISTED_ROW.attempts;
+}
+
+/**
  * IS A RECOVERY OPERATION STILL IN FLIGHT — will the runner still make it?
  * (#3854 K1): `PENDING` and `PROCESSING`, and a `FAILED` row with a retry
  * still scheduled (`nextRetryAt` set) and attempts left. A `FAILED` row with

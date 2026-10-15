@@ -47,6 +47,7 @@ import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
+import { UNTOUCHED_PRE_PERSISTED_ROW } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey, nextRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { PartialRefundError, type RefundAllocationSlice } from "@/lib/payment-transactions";
@@ -310,6 +311,23 @@ export type RefundAttempt = { refunds: ReadonlyArray<AnsweredRefund> } | { error
 type PrePersistedRow = { id: string; paymentIntentId: string; allocationPlan?: Prisma.JsonValue };
 
 /**
+ * #4126 (`INV-SSOT`): the one compare-and-set a door writes its own
+ * pre-persisted row under - untouched (`UNTOUCHED_PRE_PERSISTED_ROW`) and still
+ * on `plan`, the plan the door read or sent (null: a row raised with none). A
+ * claim, an attempt or a re-plan in between fails it.
+ */
+export function untouchedPrePersistedRowWhere(
+  idempotencyKey: string,
+  plan: Prisma.JsonValue | ReadonlyArray<RefundAllocationSlice> | null,
+): Prisma.PaymentRecoveryOperationWhereInput {
+  return {
+    idempotencyKey,
+    ...UNTOUCHED_PRE_PERSISTED_ROW,
+    allocationPlan: plan === null ? { equals: Prisma.DbNull } : { equals: plan as Prisma.InputJsonValue },
+  };
+}
+
+/**
  * The one re-plan write of a pre-persisted door's row (#4103 review C2, #4104):
  * from the plan the row holds, compare-and-set on it, while no worker has
  * touched it (PENDING, no attempt). Says whether it moved the row.
@@ -334,12 +352,7 @@ async function replanPrePersistedRow({
   const next = planAfterAttempt(base, answered);
   if (JSON.stringify(next) === JSON.stringify(base)) return { moved: false, row };
   const written = await prisma.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey,
-      status: PaymentRecoveryOperationStatus.PENDING,
-      attempts: 0,
-      allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue },
-    },
+    where: untouchedPrePersistedRowWhere(idempotencyKey, held),
     data: { allocationPlan: next as unknown as Prisma.InputJsonValue, ...(lastError ? { lastError } : {}) },
   });
   return { moved: written.count === 1, row };
@@ -468,6 +481,11 @@ async function moveRefusedSlices(
  * The recovery runner's refund of a frozen plan. Returns when Stripe made every
  * slice; otherwise moves what it refused to fresh keys and throws, so the
  * attempt fails and is retried (or, retries spent, dies owed).
+ *
+ * Returns the refund of the plan's first slice - one made beside an earlier
+ * refusal (`madeRefundId`), or the one Stripe answered now - as the inline
+ * doors read theirs (`refunds[0]`), so a record the runner writes names it
+ * (#4126).
  */
 export async function refundPlanOrRetryRefusals({
   operation,
@@ -480,7 +498,7 @@ export async function refundPlanOrRetryRefusals({
   format: ClubFormat;
   /** Sends the slices still to send (`refundPaymentTransactions` with them as the allocation). */
   refund: (plan: RefundAllocationSlice[]) => Promise<{ refunds: ReadonlyArray<AnsweredRefund> }>;
-}): Promise<void> {
+}): Promise<string | null> {
   // Alerted for each slice refused on its first key, once this attempt moved it.
   const alertIfFirst = async (moved: boolean, answers: ReadonlyArray<AnsweredRefund>) => {
     const first = firstRefusals(refusedAnswers(answers));
@@ -509,7 +527,7 @@ export async function refundPlanOrRetryRefusals({
     throw err;
   }
   const refused = refusedRefundSlices(answered);
-  if (refused.length === 0) return;
+  if (refused.length === 0) return plan[0]?.madeRefundId ?? answered[0]?.refundId ?? null;
   await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, answered)), answered);
   throw new Error(refusedRefundMessage(refusedRefundCents(refused), format));
 }

@@ -11,7 +11,8 @@ vi.mock("server-only", () => ({}));
 
 const updateMany = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ count: number }>>(async () => ({ count: 1 })));
 const findUnique = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string; paymentIntentId: string }>>(async () => ({ id: "op_row", paymentIntentId: "pi_row" })));
-vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique } } }));
+const findBooking = vi.hoisted(() => vi.fn<(args: unknown) => Promise<{ id: string } | null>>(async () => ({ id: "b1" })));
+vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany, findUnique }, booking: { findUnique: findBooking } } }));
 
 const refundPaymentTransactions = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
@@ -34,7 +35,10 @@ const finishApprovedLateCaptureRefund = vi.hoisted(() => vi.fn<(args: unknown) =
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({ finishApprovedLateCaptureRefund }));
 
 const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn<(args: unknown, format: unknown) => Promise<void>>(async () => undefined));
-vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
+vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers, NOBODY_ALERTED: { deliveryAllowed: true, recipients: 0, sent: 0, queuedForRetry: 0, notDelivered: 0 } }));
+
+const sendAdminAlertOnceEver = vi.hoisted(() => vi.fn<(args: { key: string; send: () => Promise<unknown> }) => Promise<boolean>>(async () => true));
+vi.mock("@/lib/admin-alert-once", () => ({ sendAdminAlertOnceEver }));
 
 import { executeEditReviewSettlement } from "@/lib/edit-financial-review-settlement";
 import { executeLateCaptureApprovalRefund, type LateCaptureRefundRoute } from "@/lib/late-capture-refund-approval";
@@ -75,6 +79,7 @@ function replanOn(idempotencyKey: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   updateMany.mockResolvedValue({ count: 1 });
+  findUnique.mockResolvedValue({ id: "op_row", paymentIntentId: "pi_row" });
 });
 
 describe("the edit financial review's card refund (#4103)", () => {
@@ -213,5 +218,72 @@ describe("the treasurer-approved late-capture refund (#4103)", () => {
     expect(await approve()).toBe("re_txn_a");
     expect(closed()).toBe(true);
     expect(finishApprovedLateCaptureRefund).toHaveBeenCalledTimes(1);
+  });
+
+  it("#4126: the close claims only the row this approval left - PENDING, never attempted, on the plan it sent", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+
+    await approve();
+    const close = updateMany.mock.calls.find(([args]) => (args as { data?: { status?: string } }).data?.status === "SUCCEEDED");
+    expect(close?.[0]).toMatchObject({
+      where: { idempotencyKey: key, status: "PENDING", attempts: 0, allocationPlan: { equals: [a, b] } },
+    });
+  });
+
+  it("#4126: a row another writer moved on (claimed, tried or re-planned) is not closed, and the approval is left to its replay", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+
+    expect(await approve()).toBe("re_txn_a");
+    expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+    // The row read back (the default double) is not untouched: no anomaly alert.
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
+  });
+
+  it("#4126: a close that loses on a row still PENDING and never attempted is an anomaly - logged and alerted once for the row, naming the refund", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 } as never);
+
+    expect(await approve()).toBe("re_txn_a");
+    expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+    expect(sendAdminAlertOnceEver).toHaveBeenCalledTimes(1);
+    const [{ key: alertKey, send }] = sendAdminAlertOnceEver.mock.calls[0]!;
+    expect(alertKey).toBe("late-capture-approval-close-lost:op_row");
+    await send();
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ operationId: "op_row", errorMessage: expect.stringContaining("re_txn_a") }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("#4126: a close that threw is no anomaly - logged, left to the runner, no alert and no re-read", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockRejectedValue(new Error("pool timeout"));
+    findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 } as never);
+
+    expect(await approve()).toBe("re_txn_a");
+    expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
+  });
+
+  it("#4126: an anomalous lost close for a booking that no longer exists is logged, not alerted", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 } as never);
+    findBooking.mockResolvedValueOnce(null);
+
+    await approve();
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
+  });
+
+  it("#4126: a lost close on a row the runner claimed raises no anomaly alert", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "op_row", status: "PROCESSING", attempts: 1 } as never);
+
+    await approve();
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
   });
 });
