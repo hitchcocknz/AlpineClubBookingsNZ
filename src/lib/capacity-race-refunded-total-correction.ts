@@ -9,11 +9,10 @@ import { READ_BACK_TIMEOUT_MS } from "@/lib/card-refund-status-sync";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
-import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { CAPTURED_TRANSACTION_STATUS_LIST, predatesRefundLedger } from "@/lib/payment-transaction-status";
 import {
   compareAndSetRefundedAmount,
   lockPaymentForRefundedTotal,
-  predatesRefundLedger,
   reconcilePaymentAggregates,
   refundLedgerStartSeconds,
   sumRecordedRefundsForPayment,
@@ -45,11 +44,12 @@ import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents 
  *
  * - **One captured charge for the race's intent** (`no-charge`).
  * - **Stripe has refunded no more of it than its recorded refund rows** (#4154
- *   review M1, `CapacityRaceStripeRefusal`): read before the transaction, with
+ *   review M1): read before the transaction, with
  *   a bounded timeout and no retries (`readCapacityRaceStripeRefundedForTask`).
  *   A refund made in the Stripe dashboard whose `charge.refunded` has not yet
  *   arrived would otherwise be paid again by bank, and the late webhook capped
- *   away. Stripe unread, it refuses too: fail closed.
+ *   away (`capacityRaceStripeAheadMessage`). Stripe unread, it refuses too:
+ *   fail closed (`CAPACITY_RACE_STRIPE_UNREADABLE_MESSAGE`).
  *
  * Then, only where the charge holds too little, every condition below must
  * hold, or the completion is refused with the one that blocked it
@@ -144,9 +144,6 @@ export function capacityRaceCorrectionRefusal(blocked: CapacityRaceCorrectionBlo
 
 /** Stripe's own refunded figure for the race's charge, read before the completion's transaction (review M1). */
 export type CapacityRaceStripeRefunded = { readable: true; refundedCents: number } | { readable: false };
-
-/** Why Stripe stopped the completion (review M1): unread, or ahead of the refund rows. */
-export type CapacityRaceStripeRefusal = "stripe-unreadable" | "stripe-ahead";
 
 export const CAPACITY_RACE_STRIPE_UNREADABLE_MESSAGE =
   "The app could not reach Stripe to check this card charge's refunds, so it cannot record this yet. Try again in a few minutes, and do not pay it until the app accepts.";

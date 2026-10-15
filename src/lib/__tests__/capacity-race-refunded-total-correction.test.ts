@@ -26,10 +26,9 @@ const doubles = vi.hoisted(() => ({
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/payment-transactions", async (importOriginal) => {
-  // The pure ledger-date rule and the refund-row sums are the real ones: the sums read the store's aggregate.
+  // The refund-row sums are the real ones: they read the store's aggregate.
   const actual = (await importOriginal()) as typeof import("@/lib/payment-transactions");
   return {
-    predatesRefundLedger: actual.predatesRefundLedger,
     sumRecordedRefundsForTransaction: actual.sumRecordedRefundsForTransaction,
     sumRecordedRefundsForPayment: actual.sumRecordedRefundsForPayment,
     refundLedgerStartSeconds: doubles.ledgerStart,

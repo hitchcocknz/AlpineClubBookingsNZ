@@ -180,8 +180,8 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     expect(intro.textContent).toMatch(/dismiss it with a note/);
     // Paying it is only the answer once the check shows it is owed - and (#4154 review M3) only after the
     // app has accepted the mark: mark first, then pay, on every surface.
-    expect(intro.textContent).toMatch(/If it really is owed, mark it\s+paid back first/);
-    expect(intro.textContent).toMatch(/Pay it by bank transfer straight after it accepts/);
+    expect(intro.textContent).toMatch(/If it really is owed, mark it\s+paid\s+back first/);
+    expect(intro.textContent).toMatch(/pay it by bank transfer\s+straight after the app accepts/);
     expect(intro.textContent).not.toMatch(/pay it by bank transfer,? (then|and) mark/i);
     // #4154: a capacity race's too - whose member is told on the booking page only, never by email.
     expect(intro.textContent).toMatch(/from a booking cancelled because its dates filled up during the card payment/);

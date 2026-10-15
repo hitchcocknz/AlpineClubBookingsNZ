@@ -226,3 +226,19 @@ export function expectedRefundedFloorCents(input: {
 }): number {
   return Math.min(input.amountCents, input.cardRefundCents + input.accountCreditCents);
 }
+
+/**
+ * #3640, #4154: whether a card refund made at `createdSeconds` predates the
+ * install's refund ledger. A null start (no migration history) predates
+ * nothing. An undated refund is the caller's to read: the refund sync takes it
+ * as made since (`since-ledger`, the safe direction for adding it), #4154's
+ * correction as made before (`pre-ledger`, the safe direction for lowering).
+ */
+export function predatesRefundLedger(
+  createdSeconds: number | null | undefined,
+  ledgerStartSeconds: number | null,
+  undated: "pre-ledger" | "since-ledger",
+): boolean {
+  if (typeof createdSeconds !== "number") return undated === "pre-ledger";
+  return ledgerStartSeconds !== null && createdSeconds < ledgerStartSeconds;
+}

@@ -41,13 +41,13 @@ import {
   markPaymentIntentTransactionFailed,
   PartialRefundError,
   planStripeRefundAllocation,
-  predatesRefundLedger,
   reconcilePaymentAggregates,
   recordInternetBankingPaymentTransaction,
   RefundAllocationRacedError,
   refundPaymentTransactions,
   syncRefundsFromStripeCharge,
 } from "@/lib/payment-transactions";
+import { predatesRefundLedger } from "@/lib/payment-transaction-status";
 import {
   cancelRefundableBaseCents,
   getRemainingRefundableCents,

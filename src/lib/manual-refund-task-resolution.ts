@@ -126,10 +126,8 @@ export async function resolveManualRefundTask(
       400
     );
   }
-  const confirmedAmountCents =
-    resolution === "completed" ? input.confirmedAmountCents : null;
-  const requestedDirection =
-    resolution === "completed" ? (input.direction ?? null) : null;
+  const confirmedAmountCents = resolution === "completed" ? input.confirmedAmountCents : null;
+  const requestedDirection = resolution === "completed" ? (input.direction ?? null) : null;
   if (
     confirmedAmountCents !== null &&
     !isNonNegativeIntegerCents(confirmedAmountCents)
@@ -148,8 +146,7 @@ export async function resolveManualRefundTask(
   // and (#3635) the day a kept late capture's Xero receipt is dated.
   const clubZone = await readClubTimeZoneOutsideRequest();
   const todayAtClub = clubToday(clubZone);
-  // #4154 review (M1): a capacity race's part to check asks Stripe what its charge refunded - a provider call, so here, bounded.
-  const capacityRaceStripe = resolution === "completed" ? await readCapacityRaceStripeRefundedForTask(taskId) : null;
+  const capacityRaceStripe = resolution === "completed" ? await readCapacityRaceStripeRefundedForTask(taskId) : null; // #4154 review (M1): a provider call, so here, bounded
   const result = await prisma.$transaction(async (tx) => {
     // #3740 (concurrency F1): only the immutable `kind` is read unlocked. An
     // edit review takes lock(1) as this transaction's FIRST lock (INV-LOCK-002)
@@ -334,8 +331,7 @@ export async function resolveManualRefundTask(
           handedBackInCash:
             input.resolution === "completed" && input.handedBackInCash === true,
           club: { zone: clubZone, format },
-          store: tx, actingMemberId,
-          capacityRace: { stripe: capacityRaceStripe, invoiced: cancelledBookingRefundInvoiceId(task) !== null }, // #4154 review M1, M4
+          store: tx, actingMemberId, capacityRace: { stripe: capacityRaceStripe, invoiced: cancelledBookingRefundInvoiceId(task) !== null }, // #4154 review M1, M4
         })
       : null;
     // #3835: what actually goes back - by card or by hand, netted against a cancellation.
