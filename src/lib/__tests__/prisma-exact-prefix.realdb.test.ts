@@ -27,6 +27,9 @@ const LODGE_ID = "race-4146-lodge";
 // Differ only at the position where BOOKING_A has a `_`.
 const BOOKING_A = "race-4146-b_1";
 const BOOKING_B = "race-4146-bx1";
+// Starts with BOOKING_A and its `_` delimiter, so even a literal prefix match
+// takes its keys: only the lookup's booking scope keeps them apart.
+const BOOKING_C = "race-4146-b_1_x";
 const NIGHT = new Date("2026-08-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
 
@@ -61,7 +64,7 @@ let keys: typeof import("@/lib/payment-recovery-keys");
 let handBack: typeof import("@/lib/group-organiser-hand-back-rules");
 
 async function clean(): Promise<void> {
-  const bookingIds = [BOOKING_A, BOOKING_B];
+  const bookingIds = [BOOKING_A, BOOKING_B, BOOKING_C];
   await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: { in: bookingIds } } });
   await prisma.manualRefundTask.deleteMany({ where: { bookingId: { in: bookingIds } } });
   await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: ["race-4146-p_1", "race-4146-px1"] } } });
@@ -97,7 +100,7 @@ async function clean(): Promise<void> {
         },
       });
       await prisma.lodge.create({ data: { id: LODGE_ID, name: "Race 4146 Lodge", slug: "race-4146" } });
-      for (const bookingId of [BOOKING_A, BOOKING_B]) {
+      for (const bookingId of [BOOKING_A, BOOKING_B, BOOKING_C]) {
         await prisma.booking.create({
           data: {
             id: bookingId,
@@ -161,7 +164,24 @@ async function clean(): Promise<void> {
     });
 
     it("the duplicate-capture adjudication lookup no longer takes another booking's refund row", async () => {
-      // B's row is in place from the contrast case; A has none of its own.
+      const recoveryRow = (bookingId: string, idempotencyKey: string) => ({
+        type: "REFUND_BOOKING_MODIFICATION" as const,
+        bookingId,
+        paymentId: paymentOf[bookingId],
+        paymentIntentId: "pi_race_4146_x",
+        amountCents: 100,
+        idempotencyKey,
+      });
+      // B's row is in place from the contrast case. C's key starts with A's
+      // prefix literally (its id carries A's id and `_`), and A's own other row
+      // is no duplicate-capture key at all but LIKE-matches A's prefix at every
+      // `_`: the booking scope rules out C, the escape rules out the other.
+      await prisma.paymentRecoveryOperation.createMany({
+        data: [
+          recoveryRow(BOOKING_C, keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_C, "pi_race_4146_c")),
+          recoveryRow(BOOKING_A, "duplicate-capture-race-4146-b-1-not-a-duplicate-capture-key"),
+        ],
+      });
       expect(await findOtherDuplicateCaptureRefundOperation({ bookingId: BOOKING_A, paymentIntentId: "pi_race_4146_a" })).toBeNull();
       // A's own row for a different intent is still found.
       await prisma.paymentRecoveryOperation.create({

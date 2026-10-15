@@ -406,6 +406,21 @@ describe("Xero admin bulk routes", () => {
     );
   });
 
+  it("matches a typed id prefix literally, so its `_` or `%` cannot resolve another record (#4146)", async () => {
+    mocks.prisma.member.findMany.mockResolvedValue([]);
+    mocks.prisma.booking.findMany.mockResolvedValue([]);
+
+    await forceSync(makeJsonRequest("http://localhost/api/admin/xero/force-sync", { syncType: "CONTACT", query: "mem_1%" }));
+    await forceSync(makeJsonRequest("http://localhost/api/admin/xero/force-sync", { syncType: "INVOICE", query: "bk_1" }));
+
+    expect(mocks.prisma.member.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { startsWith: "mem\\_1\\%" } } }),
+    );
+    expect(mocks.prisma.booking.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { startsWith: "bk\\_1" } } }),
+    );
+  });
+
   it("returns a client error when a force-sync member lookup is ambiguous", async () => {
     mocks.prisma.member.findMany.mockResolvedValue([
       {
