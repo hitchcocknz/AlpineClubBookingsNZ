@@ -325,7 +325,7 @@ vi.mock("@/lib/email", () => ({
 
 // #4125: the capacity race's close-and-record runs for real, on the prisma double below.
 vi.mock("@/lib/booking-events", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/booking-events")>()),
+  ...((await importOriginal()) as typeof import("@/lib/booking-events")),
   recordDuplicateCaptureRefundEvent: (...args: unknown[]) =>
     mockRecordDuplicateCaptureRefundEvent(...args),
 }));
