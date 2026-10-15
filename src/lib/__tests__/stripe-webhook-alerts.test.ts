@@ -3118,6 +3118,19 @@ describe("Stripe webhook Xero alerting", () => {
         asksFor(12000);
       });
 
+      it("a slice the draining previous release sent after the marker finished, within the blue/green overlap, is still read as its plan's", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_within_overlap"));
+        armCancelledBooking();
+        mockPaymentTransactionFindMany.mockResolvedValue([newerCharge()]);
+        // Migrated before the charge; the old colour kept serving and refunded an hour after.
+        mockReadMigrationFinishedAt.mockResolvedValue({ history: true, finishedAtSeconds: LATE_CHARGED_AT_S - 60 });
+        mockListRefundsForPaymentIntent.mockResolvedValue([olderPlanRefund(3000, { created: LATE_CHARGED_AT_S + 3600 })]);
+
+        expect((await POST(makeRequest())).status).toBe(200);
+
+        asksFor(9000);
+      });
+
       it("a refund made after the previous release stopped serving is never read as its plan's slice", async () => {
         mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_after_cutoff"));
         armCancelledBooking();
