@@ -6,7 +6,7 @@ import { capacityRaceShortfallIntentId } from "@/lib/capacity-race-shortfall-tas
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationExhausted, isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
-import { buildBookingCancellationRefundIdempotencyKey, buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } from "@/lib/payment-recovery-keys";
+import { bookingCancelCardRefundRecoveryWhere, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX, isBookingCancelCardRefundRecoveryKey } from "@/lib/payment-recovery-keys";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 
@@ -114,20 +114,22 @@ export async function cardShortfallSettlement(
   // #4104 review (MM3): the cancel's own recovery row, and any card refund on
   // this payment Stripe failed later and that is owed again by a row of its own
   // (`card_refund_failed_later_<refund>`) - card money still moving either way.
-  // #4154: a capacity race's cancel's own rows are one per intent, on its booking.
-  // TODO(#4153, #4158): one spelling - `bookingCancelCardRefundRecoveryWhere`, through `exactPrefix`.
+  // #4154: the cancel's own rows are #4147's one rule - a member cancel's row, or a capacity race's per intent.
+  // TODO(#4158): its prefix arm through `exactPrefix` once that lands; the exact key test below decides meanwhile.
   const cardRefunds = await store.paymentRecoveryOperation.findMany({
     where: {
       OR: [
-        { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(task.bookingId) },
-        { bookingId: task.bookingId, idempotencyKey: { startsWith: buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(task.bookingId) } },
+        bookingCancelCardRefundRecoveryWhere(task.bookingId),
         { paymentId: task.paymentId, idempotencyKey: { startsWith: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } },
       ],
     },
     orderBy: { createdAt: "asc" },
-    select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
+    select: { idempotencyKey: true, status: true, attempts: true, nextRetryAt: true, lastError: true },
   });
-  const refusal = (cardRefunds ?? []).map(cardRefundRefusal).find((message) => message !== null);
+  const ownOrFailedLater = (cardRefunds ?? []).filter(
+    (row) => row.idempotencyKey.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) || isBookingCancelCardRefundRecoveryKey(task.bookingId, row.idempotencyKey),
+  );
+  const refusal = ownOrFailedLater.map(cardRefundRefusal).find((message) => message !== null);
   if (refusal) throw new ManualBookingPaymentError(refusal, 409);
   // #4154 (`INV-PAY-133`, PR #4159 review F2/F4): a capacity race's settles on
   // the race's own card charge and nowhere else - never a non-card charge, nor

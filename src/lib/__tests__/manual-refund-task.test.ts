@@ -265,7 +265,7 @@ import { requireCalendarDate } from "@/lib/club-time";
 // NOT mocked: the Stripe key prefix is the exactly-once boundary this suite is
 // about, so it is asserted against the real builder rather than a stub that
 // could agree with a wrong caller.
-import { buildEditFinancialReviewRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
+import { bookingCancelCardRefundRecoveryWhere, buildEditFinancialReviewRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
 import { deletedBookingModificationRefundReason } from "@/lib/deleted-booking-modification-payment";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
@@ -294,19 +294,25 @@ const tx = {
     // paid-another-way close for less counts only what it paid back.
     // #4097, #4104 review (MM3): the shortfall's preflight reads the cancel's card
     // refund row and the payment's failed-later rows in one query (`where.OR`).
-    findMany: vi.fn(async (args?: { where?: { OR?: Array<{ paymentId?: string; bookingId?: string; idempotencyKey?: unknown }> } }) => {
+    findMany: vi.fn(async (args?: { where?: { OR?: Array<{ paymentId?: string; bookingId?: string; idempotencyKey?: unknown; OR?: Array<{ idempotencyKey?: unknown }> }> } }) => {
       if (!args?.where?.OR) return [];
-      const cancelRow = await mocks.paymentRecoveryOperationFindUnique(args);
-      // Only a query that asks for them is answered with the payment's failed-later rows.
-      const asksFailedLater = args.where.OR.some(
-        (arm) => arm.paymentId === "payment-1" && JSON.stringify(arm.idempotencyKey) === JSON.stringify({ startsWith: "card_refund_failed_later_" }),
-      );
-      // Read through any LIKE escaping (#4158's `exactPrefix`), so the arm is recognised however it is spelled.
+      // Read through any LIKE escaping (#4158's `exactPrefix`), so an arm is recognised however it is spelled.
       const prefixOf = (key: unknown) => String((key as { startsWith?: string } | undefined)?.startsWith ?? "").replace(/\\(.)/g, "$1");
-      const asksCapacityRace = args.where.OR.some(
-        (arm) => arm.bookingId === "booking-1" && prefixOf(arm.idempotencyKey) === "capacity_claim_failed_refund_recovery_booking-1_",
+      // #4147/#4154: the booking's own cancel rows are ONE arm (`bookingCancelCardRefundRecoveryWhere`), nesting the member
+      // cancel's key and the capacity race's prefix; each is answered only when the query asks for it.
+      const ownArm = args.where.OR.find((arm) => arm.bookingId === "booking-1" && Array.isArray(arm.OR));
+      const asksCancel = ownArm?.OR?.some((each) => each.idempotencyKey === "booking_cancel_refund_recovery_booking-1") ?? false;
+      const asksCapacityRace = ownArm?.OR?.some((each) => prefixOf(each.idempotencyKey) === "capacity_claim_failed_refund_recovery_booking-1_") ?? false;
+      const asksFailedLater = args.where.OR.some(
+        (arm) => arm.paymentId === "payment-1" && prefixOf(arm.idempotencyKey) === "card_refund_failed_later_",
       );
-      return [...(cancelRow ? [cancelRow] : []), ...(asksCapacityRace ? mocks.capacityRaceRecoveryRows() : []), ...(asksFailedLater ? mocks.failedLaterRecoveryRows() : [])];
+      const cancelRow = asksCancel ? await mocks.paymentRecoveryOperationFindUnique(args) : null;
+      const keyed = (rows: unknown[], idempotencyKey: string) => rows.map((row) => ({ idempotencyKey, ...(row as object) }));
+      return [
+        ...(cancelRow ? keyed([cancelRow], "booking_cancel_refund_recovery_booking-1") : []),
+        ...(asksCapacityRace ? keyed(mocks.capacityRaceRecoveryRows(), "capacity_claim_failed_refund_recovery_booking-1_pi_race") : []),
+        ...(asksFailedLater ? keyed(mocks.failedLaterRecoveryRows(), "card_refund_failed_later_re_1") : []),
+      ];
     }),
     findUnique: (...a: unknown[]) => mocks.paymentRecoveryOperationFindUnique(...a),
   },
@@ -2574,13 +2580,12 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       expect(mocks.paymentRecoveryOperationFindUnique).toHaveBeenCalledWith({
         where: {
           OR: [
-            { idempotencyKey: "booking_cancel_refund_recovery_booking-1" },
-            { bookingId: "booking-1", idempotencyKey: { startsWith: "capacity_claim_failed_refund_recovery_booking-1_" } },
+            bookingCancelCardRefundRecoveryWhere("booking-1"),
             { paymentId: "payment-1", idempotencyKey: { startsWith: "card_refund_failed_later_" } },
           ],
         },
         orderBy: { createdAt: "asc" },
-        select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
+        select: { idempotencyKey: true, status: true, attempts: true, nextRetryAt: true, lastError: true },
       });
       expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-bank"] });
       expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(
@@ -2645,6 +2650,18 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       await complete();
       expect(vi.mocked(postHandBackLedgerLine)).toHaveBeenCalledWith(expect.objectContaining({ manualRefundTaskId: "task-9", amountCents: 2000, cardShortfall: true }));
       expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-1", 2000, expect.objectContaining({ refundMethod: "internet-banking", paidAnotherWayTaskId: "task-9" }));
+    });
+
+    // #4147's exact test: SQL LIKE reads the prefix's `_` as any one character, so `booking-10`'s row can come back.
+    it("MUTATION: a dead capacity-race row of a booking whose id this one's begins is never this task's card refund", async () => {
+      shortfallTask("race");
+      raceChargeRows();
+      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([
+        { idempotencyKey: "capacity_claim_failed_refund_recovery_booking-10_pi_other", status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" },
+      ]);
+
+      await complete();
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledTimes(1);
     });
 
     /** The payment's captured charges as the store answers a query: the race's own card charge, a bank-paid one, and a later intent's. */

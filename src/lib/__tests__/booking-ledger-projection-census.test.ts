@@ -2446,6 +2446,42 @@ describe("#4147: a capacity race's cancel is judged by its own refund rows and w
     });
   });
 
+  // #4154 (`INV-PAY-133`): the rest the plan did not carry is #4097's part to check, raised with the cancel.
+  describe("its task to check (#4154)", () => {
+    /** $190 charged, $120 planned and made; the $70 rest a task to check, closed `task`; paid back, its own line. */
+    function withTask(task: "OPEN" | "COMPLETED" | "DISMISSED"): BookingLedgerCensusRow {
+      const race = capacityRace(12_000, "made");
+      const handBack = new Ledger();
+      if (task === "COMPLETED") {
+        handBack.post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: "task-race", amountCents: 7_000, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+      }
+      const refunded = 12_000 + (task === "COMPLETED" ? 7_000 : 0);
+      return {
+        ...race,
+        lines: [...race.lines, ...handBack.lines.map((line) => ({ ...line, id: `handback-${line.id}` }))],
+        transactions: [txn("t1", 19_000, { refundedAmountCents: refunded })],
+        payment: payment({ refundedAmountCents: refunded }),
+        tasks: [{ id: "task-race", kind: "CANCELLED_BOOKING_HAND_BACK", status: task, amountCents: 7_000, settlementDirection: null, paymentId: "pay-3583", lateCaptureApprovalIntentId: null, occurrenceKey: "cancel-card-shortfall:" + B + ":capacity-race:" + RACE_INTENT + ":check" }],
+      };
+    }
+
+    it.each(["OPEN", "DISMISSED"] as const)("%s: the rest is still V5 with the capacity-race detail, and nothing disagrees", (task) => {
+      const result = judged(withTask(task));
+      expect(result.price).toMatchObject({ status: "CLASSIFIED", deltaCents: 7_000 });
+      expect(result.price.explainedBy).toEqual([v5(7_000)]);
+      expect(result.disagreements).toEqual([]);
+    });
+
+    it("MUTATION: paid back with its line, nothing is left short and nothing disagrees", () => {
+      const subject = withTask("COMPLETED");
+      const result = judged(subject);
+      expect(result.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(result.disagreements).toEqual([]);
+      expect(result.integrity).toEqual([]);
+      expect(identity(subject, "REFUNDED").explainedBy).toEqual([{ name: "REFUND_MIRROR_HAND_BACK", cents: 7_000 }]);
+    });
+  });
+
   it("a capacity race's snapshot without its paid figure is a plan with nothing short: the rest disagrees", () => {
     // The evidence that a capacity race owes back all it did not retain, taken away: its settled figure is only the plan's.
     const subject = capacityRace(12_000, "made");

@@ -222,6 +222,21 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
 
     const checkTask = () => prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: CHECK_KEY } });
 
+    /** #4147's census of the booking, after the back-post confirms it on the ledger (`apply`). */
+    async function census(backPost?: "apply") {
+      const { runBookingLedgerBackPost } = await import("@/lib/booking-ledger-back-post");
+      const { readBookingLedgerCensusRow } = await import("@/lib/booking-ledger-projection-census-store");
+      const { evaluateBookingLedgerIdentities } = await import("@/lib/booking-ledger-projection-census");
+      const posted = backPost ? (await runBookingLedgerBackPost({ client: prisma, apply: true, bookingIds: [BOOKING_ID] })).outcomes[0]! : null;
+      const evaluation = evaluateBookingLedgerIdentities((await readBookingLedgerCensusRow(prisma, BOOKING_ID))!);
+      return {
+        posted,
+        price: evaluation.identities.find((each) => each.identity === "PRICE")!,
+        disagreements: evaluation.identities.filter((each) => each.status === "DISAGREE").map((each) => each.identity),
+        integrity: evaluation.integrity,
+      };
+    }
+
     /**
      * The owner's repair of the drift (`payments:audit-refunded-total` reports it;
      * the app never lowers a refunded total itself): the charge's refunded total
@@ -329,6 +344,28 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const page = await memberPage();
       expect(page).toContain("$200.00 was refunded on 1 Jul 2026.");
       expect(page).not.toContain("in touch");
+    });
+
+    it("on the ledger census (#4147): the drift itself disagrees until corrected; then OPEN is V5 with the capacity-race detail, and paid back nothing is short", async () => {
+      await seed({ refundedCents: DRIFT_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+
+      // The phantom $60.00 on the charge's records is REFUNDED's to report: the back-post will not confirm over it.
+      expect((await census("apply")).posted).toMatchObject({ kind: "CANNOT_POST", disagreements: [{ identity: "REFUNDED", deltaCents: DRIFT_CENTS }] });
+
+      // The records corrected: confirmed, the rest the plan never carried is V5, named a capacity race's.
+      await correctTheRecords();
+      const open = await census("apply");
+      expect(open.posted).toMatchObject({ kind: "POSTED", classes: ["V5_PLANNED_REFUND_SHORT"] });
+      expect(open.price).toMatchObject({ status: "CLASSIFIED", deltaCents: DRIFT_CENTS, explainedBy: [{ name: "V5_PLANNED_REFUND_SHORT", cents: DRIFT_CENTS, detail: "capacity race" }] });
+      expect(open.disagreements).toEqual([]);
+
+      await resolve("completed", (await checkTask()).id);
+      const paid = await census();
+      expect(paid.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(paid.disagreements).toEqual([]);
+      expect(paid.integrity).toEqual([]);
     });
 
     it("MUTATION (PR #4159 F4): the race's own charge short, a later-captured charge holding plenty: refused, and nothing lands on the later one", async () => {

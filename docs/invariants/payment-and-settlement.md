@@ -1415,7 +1415,8 @@ capacity race's card refund door).
     the club checked it and closed it.
   - Proven by `capacity-race-refund-shortfall.test.ts`,
     `payment-reconciliation.test.ts`, `manual-refund-task.test.ts`,
-    `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts` and
+    `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts`,
+    `booking-ledger-projection-census.test.ts` and
     `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
 ## INV-PAY-031
