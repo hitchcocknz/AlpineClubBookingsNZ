@@ -556,8 +556,10 @@ never `{ startsWith: prefix }`. #4146.
 - **A census keeps it one.** `prisma-exact-prefix-census.test.ts` reads `src/`
   and fails on a bare `startsWith:` whose value is anything but a string literal
   or an UPPER_SNAKE constant, unless an allow-list entry says why that value
-  can carry neither. It judges spelling, not value: a computed string bound to
-  an UPPER_SNAKE name passes, and a reviewer catches that.
+  carries no id. A literal `_` still matches any one character; a bare literal
+  passes only because no sibling prefix differs from it at an underscore. The
+  census judges spelling, not value: a computed string bound to an UPPER_SNAKE
+  name passes, and a reviewer catches that.
 - **Scope the query as well where an indexed column allows.** An exact prefix
   still matches a longer id that begins with the same id and delimiter, so the
   duplicate-capture lookup is also scoped by `bookingId`.

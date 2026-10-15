@@ -26,10 +26,8 @@ const HELPER = "src/lib/prisma-exact-prefix.ts";
 
 /** `file|value` -> why that value never carries an id or user input. */
 const ALLOWED: Record<string, string> = {
-  "src/lib/alert-cooldown.ts|prefix":
-    "listOwedAlertKeys' one caller passes the constant OWED_ALERT_PREFIX",
   "src/lib/audit-query.ts|prefix":
-    "actionStartsWith is module-private and called only with literal action-name prefixes",
+    "module-private, called only with literal action-name prefixes; a literal `_` there still wildcards, and escaping it changes which rows the member timeline shows (INV-OPS-012), so that is its own issue",
   "src/lib/manual-refund-task-settlement-rules.ts|prefix":
     "iterates NON_CANCELLATION_HAND_BACK_KEY_PREFIXES, a list of three constants",
   "src/lib/edit-financial-review-cancel-netting.ts|buildEditFinancialReviewRefundRecoveryIdempotencyKey(\"\")":
@@ -75,10 +73,14 @@ function bareValueAllowed(value: string): boolean {
 function census(): { unexplained: string[]; allowedSeen: Set<string>; scanned: number } {
   const unexplained: string[] = [];
   const allowedSeen = new Set<string>();
-  const files = sourceFiles(SRC).filter((file) => relative(REPO_ROOT, file) !== HELPER);
+  const files = sourceFiles(SRC).filter((file) => relative(REPO_ROOT, file).split("\\").join("/") !== HELPER);
   for (const file of files) {
     const rel = relative(REPO_ROOT, file).split("\\").join("/");
     const source = stripComments(readFileSync(file, "utf8"));
+    // #4146 review: the shorthand `{ startsWith }` and a computed key are refused outright.
+    for (const shorthand of source.matchAll(/(?:\{|,)\s*startsWith\s*[,}]|\[\s*["'`]startsWith["'`]\s*\]/g)) {
+      unexplained.push(`${rel}|${shorthand[0].trim()}`);
+    }
     for (const match of source.matchAll(/\bstartsWith\s*:\s*/g)) {
       const value = valueAt(source, (match.index ?? 0) + match[0].length);
       if (bareValueAllowed(value)) continue;
