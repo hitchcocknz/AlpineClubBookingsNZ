@@ -2108,7 +2108,7 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 ## INV-PAY-118
 
 - **An approved refund appeal's non-card part raises ONE officer refund task**
-  (#3827; owner decision D-3813-7). Approving a refund request plans
+  (#3827; owner decision D-3813-7 on #3492). Approving a refund request plans
   the Stripe refund inside the approval's own transaction, under `lock(1)`;
   on an internet-banking payment whatever that plan cannot carry raises a
   `ManualRefundTask` in the same transaction through
@@ -2117,9 +2117,9 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   logged, never a task. A task that cannot be raised refuses the approval.
   - **One task per request**: occurrence key
     `refund-request-hand-back:<RefundRequest id>`, unique, inserted
-    `ON CONFLICT DO NOTHING`. If the approval's claim is released (Stripe and
-    its recovery enqueue both failed), the OPEN task is deleted in the same
-    locked transaction.
+    `ON CONFLICT DO NOTHING`. A released claim (Stripe and its recovery
+    enqueue both failed) deletes the OPEN task in the same locked
+    transaction.
   - **The same kind and marker as an edit's.** `isNonCancellationHandBackTask`
     and `NOT_NON_CANCELLATION_HAND_BACK_WHERE` cover both. Completion records
     the refund on the payment, the bank-refund ledger line and a `REFUNDED`
@@ -2131,11 +2131,11 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     (`enqueueXeroRefundRequestCreditNoteOperation`), keyed by the request and
     linked as `REFUND_REQUEST_CREDIT_NOTE`, outside `INV-ADDPAY-020`'s one note.
   - **An appeal's ceiling nets everything already handed back**
-    (`refundableCashForRefundAppeal`; screens `refundAppealCeiling`): every
-    OPEN hand-back on the payment, any kind, late-cash member credit, and
-    card refunds still owed (`openCardRefundOwedCents`, #4124). None moves
-    `refundedAmountCents`. Edits and cancels still exclude the
-    cancellation's own task.
+    (`refundAppealHandedBackParts`; screens `refundAppealCeilingParts`): every
+    OPEN hand-back, any kind, late-cash member credit, and card refunds still
+    owed (`openCardRefundOwedCents`, #4124), read under `lock(1)` and the
+    Payment row. None moves `refundedAmountCents`. Edits and cancels exclude
+    the cancellation's own task.
   - **Dismissal stays open**, unlike an edit's after a cancel: an appeal
     exists only on a cancelled booking, so the cancel never counted it.
   - **A cash-settled payment is still refused**: a dismissed cancellation

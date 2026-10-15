@@ -2987,7 +2987,7 @@ guarded recovery claim is the guarded claim before the provider effect.
 
 **#3956 adds a fourth writer of a child refund debt, and no key: a refund
 appeal's approval (`INV-PAY-123`).** `PUT /api/admin/refund-requests/[id]#1`
-already holds `lock(1)` alone. Under it the approval first re-reads the
+already holds `lock(1)`, then (#4124) the child's Payment row. Under them the approval first re-reads the
 request's status, so one another review settled while it waited answers
 "already reviewed" rather than a cap refusal. On a booking the organiser paid
 for by card it then reads the same headroom (`organiserCardAppealCap`), refuses
@@ -3492,9 +3492,10 @@ does too, and both would post. So `resolveManualRefundTask` takes
   `lock(1)` the completion cannot commit between the two reads. A reopen of
   one already holds `lock(1)` and is refused past that same net cash, and a
   refund appeal's approval reads ITS net cash (`INV-PAY-118`: every open
-  hand-back and the late-cash credit, `refundAppealHandedBackCents`, read
-  BEFORE the payment so a cancellation hand-back's lock-free completion in
-  between errs the cap low) under `lock(1)` and claims
+  hand-back, the late-cash credit and, #4124, the card refunds still owed,
+  `refundAppealHandedBackParts`) under `lock(1)` and then the Payment row
+  (#4124 review F2; see the #4104 section), so a cancellation hand-back's
+  completion, which holds only that row, cannot land between its reads; it claims
   the request in that transaction, planning the card refund and raising the
   bank-transfer task for the rest there too, before its Stripe refund and Xero
   note (`PUT /api/admin/refund-requests/[id]#1`, `INV-LOCK-001`). A released
@@ -4988,7 +4989,24 @@ then the Payment row, then its claim) - or touches only the row (the runner's
 claim and re-plan), so Payment row -> operation row is no cycle. A reader that
 sizes a refund net of promised card refunds (the edit review's cap,
 `unfinishedCardRefundDebts`) reads the payment's refundable total before the
-debts, so straddling this commit errs towards refusing. The provider calls - the
+debts, so straddling this commit errs towards refusing.
+
+**Refund appeal caps read under the Payment row (#4124).** A refund appeal's
+ceiling nets the payment's open card refund debts (`INV-PAY-118`,
+`refundAppealHandedBackParts`) beside its open hand-backs and late-cash credit,
+then reads the payment. Two readers hold the money decision and take the
+Payment row (`lockPaymentForRefundedTotal`) after `lock(1)` and BEFORE those
+reads: the approval (`PUT /api/admin/refund-requests/[id]#1`) and the reopen
+of a dismissed appeal task (`reopenManualRefundTask#1`, for that task only).
+`lock(1)`, then the Payment row, is the order every holder of both already
+takes (`INV-LOCK-002`; the paid cancel, "Paid another way", the organiser
+child refund recorder), and no holder of the Payment row takes `lock(1)` after
+it, so it closes no cycle. Under both, nothing that writes those figures can
+commit between the reads: this writer, every other refunded-total writer and a
+cancellation hand-back's completion hold the row; every other hand-back writer
+and the late-cash mint hold `lock(1)`. Re-taking the row later in the same
+transaction (the approval's allocation) waits on nothing. The member's request,
+the review screen and the booking page read the same figure unlocked, as advice. The provider calls - the
 webhook's own Stripe payload, and the cron's read-back
 (`reconcilePendingCardRefunds`) - run outside the transaction, and the officers'
 alert after its commit.
