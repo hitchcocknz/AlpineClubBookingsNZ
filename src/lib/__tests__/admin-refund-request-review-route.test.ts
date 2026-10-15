@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   paymentFindUnique: vi.fn(),
   paymentUpdate: vi.fn(),
   executeRaw: vi.fn(),
+  // #4124 review F2: the Payment row, after lock(1) and before the cap's reads.
+  lockPaymentForRefundedTotal: vi.fn(),
   manualRefundTaskAggregate: vi.fn(),
   manualRefundTaskCreateMany: vi.fn(),
   manualRefundTaskDeleteMany: vi.fn(),
@@ -105,6 +107,7 @@ vi.mock("@/lib/payment-recovery", () => ({
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
+  lockPaymentForRefundedTotal: mocks.lockPaymentForRefundedTotal,
   refundPaymentTransactions: mocks.refundPaymentTransactions,
   planStripeRefundAllocation: mocks.planStripeRefundAllocation,
   // The real class's shape: what the route reads off a partial failure.
@@ -167,6 +170,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
     mocks.refundRequestUpdateMany.mockResolvedValue({ count: 1 });
     // #3827: the approval re-reads the payment under lock(1) for its cap.
     mocks.paymentFindUnique.mockResolvedValue({
+      recoveryOperations: [],
+      refunds: [],
       id: "payment_1",
       bookingId: "booking_1",
       source: "STRIPE",
@@ -342,6 +347,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       // The route's pre-lock read (approvedRefundRequest) still says nothing
       // was refunded: the cap must come from the re-read under the lock.
       mocks.paymentFindUnique.mockResolvedValue({
+        recoveryOperations: [],
+        refunds: [],
         id: "payment_1",
         bookingId: "booking_1",
         source: "STRIPE",
@@ -388,6 +395,34 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
     });
 
+    it("#4124: also nets a card refund still owed on the payment, so an appeal cannot promise it twice", async () => {
+      lockedPaymentAfterEditAndCancel();
+      const locked = await mocks.paymentFindUnique();
+      mocks.paymentFindUnique.mockResolvedValue({
+        ...locked,
+        recoveryOperations: [
+          {
+            id: "op_refused",
+            type: "REFUND_BOOKING_MODIFICATION",
+            status: "FAILED",
+            idempotencyKey: "refund_request_refund_rr0",
+            amountCents: 2500,
+            allocationPlan: [{ paymentTransactionId: "txn_1", amountCents: 2500, stripeKeySuffix: "refused1" }],
+            paymentTransactionId: null,
+            createdAt: new Date("2026-06-20T00:00:00.000Z"),
+            succeededAt: null,
+          },
+        ],
+      });
+
+      const response = await PUT(approveFor(7500), { params: Promise.resolve({ id: "refund_1" }) });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "Amount exceeds maximum refundable of $50.00" });
+      expect(mocks.refundRequestUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    });
+
     it("approves up to that net figure, reading it and claiming under lock(1)", async () => {
       lockedPaymentAfterEditAndCancel();
 
@@ -398,15 +433,23 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       expect(response.status).toBe(200);
       const lockSql = (mocks.executeRaw.mock.calls[0]?.[0] as TemplateStringsArray).join("?");
       expect(lockSql).toContain("pg_advisory_xact_lock(1)");
-      const lockedAt = mocks.executeRaw.mock.invocationCallOrder[0];
-      expect(lockedAt).toBeLessThan(mocks.manualRefundTaskAggregate.mock.invocationCallOrder[0]);
-      // `INV-PAY-118`: the handed-back sums are read BEFORE the payment, so a
-      // cancellation hand-back completing between them errs the cap low.
+      const lockedAt = mocks.executeRaw.mock.invocationCallOrder[0]!;
+      // #4124 review F2 (`INV-LOCK-002`): lock(1), then the Payment row, then
+      // every read the cap makes - the hand-back and credit sums, the card
+      // refund debts and the payment - so no writer holding either lands
+      // between them.
+      expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(expect.anything(), "payment_1");
+      const paymentRowAt = mocks.lockPaymentForRefundedTotal.mock.invocationCallOrder[0]!;
+      expect(lockedAt).toBeLessThan(paymentRowAt);
+      const reads = [
+        ...mocks.manualRefundTaskAggregate.mock.invocationCallOrder,
+        ...mocks.memberCreditAggregate.mock.invocationCallOrder,
+        ...mocks.paymentFindUnique.mock.invocationCallOrder,
+      ];
+      expect(reads).toHaveLength(4); // the two sums, the card-debt read and the payment
+      for (const readAt of reads) expect(paymentRowAt).toBeLessThan(readAt);
       expect(mocks.manualRefundTaskAggregate.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.paymentFindUnique.mock.invocationCallOrder[0],
-      );
-      expect(mocks.memberCreditAggregate.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.paymentFindUnique.mock.invocationCallOrder[0],
+        mocks.paymentFindUnique.mock.invocationCallOrder[0]!,
       );
       expect(mocks.manualRefundTaskAggregate.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.refundRequestUpdateMany.mock.invocationCallOrder[0],
@@ -443,6 +486,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
     }
     function paidBy(source: "INTERNET_BANKING" | "STRIPE") {
       mocks.paymentFindUnique.mockResolvedValue({
+        recoveryOperations: [],
+        refunds: [],
         id: "payment_1",
         bookingId: "booking_1",
         source,
@@ -552,6 +597,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       // $200 by internet banking; the cancel credited back $100; the first
       // appeal's $100 task is still OPEN. Nothing is left to approve.
       mocks.paymentFindUnique.mockResolvedValue({
+        recoveryOperations: [],
+        refunds: [],
         id: "payment_1",
         bookingId: "booking_1",
         source: "INTERNET_BANKING",
@@ -718,6 +765,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       // $100 arrived by bank transfer after the cancel and became $100 of
       // account credit; the payment still reads $100 refundable.
       mocks.paymentFindUnique.mockResolvedValue({
+        recoveryOperations: [],
+        refunds: [],
         id: "payment_1",
         bookingId: "booking_1",
         source: "INTERNET_BANKING",
@@ -748,6 +797,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
     it("late cash on an organisation booking: its open cancellation hand-back is netted", async () => {
       mocks.paymentFindUnique.mockResolvedValue({
+        recoveryOperations: [],
+        refunds: [],
         id: "payment_1",
         bookingId: "booking_1",
         source: "INTERNET_BANKING",

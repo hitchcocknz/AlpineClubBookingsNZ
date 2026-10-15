@@ -29,6 +29,23 @@ export const SUPERSEDED_PAYMENT_REFUND_RECOVERY_PREFIX = "payment_recovery_refun
 /** A booking edit's card refund (`enqueueBookingModificationRefundRecovery`). */
 export const BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX =
   "payment_recovery_modification_refund_";
+/**
+ * #4104 (`INV-PAY-128`): a card refund Stripe accepted (`pending`) and failed
+ * later, owed again. One row per failed Stripe refund; the key doubles as the
+ * Stripe key prefix, so its retry is a request Stripe has never seen.
+ */
+export const CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX = "card_refund_failed_later_";
+export function buildCardRefundFailedLaterRecoveryKey(stripeRefundId: string) {
+  return `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}${stripeRefundId}`;
+}
+/** The failed Stripe refund a failed-later row owes; null for any other key. */
+export function cardRefundFailedLaterRefundId(key: string): string | null {
+  return key.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) && key.length > CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX.length
+    ? key.slice(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX.length)
+    : null;
+}
+/** The Stripe `reason` metadata of that retry; a failed refund carrying it was itself a retry. */
+export const CARD_REFUND_FAILED_LATER_REASON = "card_refund_failed_later";
 
 export function buildBookingCancellationRefundIdempotencyKey(bookingId: string) {
   return `${BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX}${bookingId}`;
@@ -58,17 +75,32 @@ export function buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId: 
   return `${REFUND_REQUEST_REFUND_RECOVERY_PREFIX}${refundRequestId}`;
 }
 
-// Capacity-race auto-refund durability: the recovery-operation dedup key for a
-// payment that succeeded AFTER the final capacity claim failed (the booking was
-// cancelled inside the reconciliation transaction and the full charge must be
-// handed back). One row per (booking, intent): a Stripe event redelivery for
-// the same intent upserts the same row, never a second refund debt.
-export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
-  bookingId: string,
-  paymentIntentId: string,
-) {
-  return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_${paymentIntentId}`;
+/** #4120: is this an approved refund appeal's card refund (`buildRefundRequestRefundRecoveryIdempotencyKey`)? */
+export function isRefundRequestRefundRecoveryKey(key: string) {
+  return key.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX);
 }
+
+// Capacity-race auto-refund durability: the recovery-operation dedup key for a payment that
+// succeeded AFTER the final capacity claim failed (the booking was cancelled inside the reconciliation
+// transaction and the full charge must be handed back). One row per (booking, intent): a Stripe
+// event redelivery for the same intent upserts the same row, never a second refund debt.
+export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId: string, paymentIntentId: string) {
+  return `${buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)}${paymentIntentId}`;
+}
+
+// #4125: every capacity-race refund row of one booking starts with this; the trailing `_` ends its id.
+export function buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId: string) {
+  return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
+}
+
+// #4147 (`INV-SSOT`): THIS booking's cancel's card refund (a member cancel's row; a capacity race's per intent), as the
+// booking page and census V5 read it. The query narrows; the exact test decides (SQL `LIKE` reads `_` as a wildcard).
+export const bookingCancelCardRefundRecoveryWhere = (bookingId: string) => ({
+  bookingId,
+  OR: [{ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) }, { idempotencyKey: { startsWith: buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId) } }],
+});
+export const isBookingCancelCardRefundRecoveryKey = (bookingId: string, key: string): boolean =>
+  key === buildBookingCancellationRefundIdempotencyKey(bookingId) || key.startsWith(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId));
 
 // The Stripe idempotency-key prefix the INLINE capacity-race auto-refund has
 // always used (payment-reconciliation.ts). The recovery cron replays the frozen
@@ -76,10 +108,7 @@ export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
 // `capacity_claim_failed_<bookingId>_<pi>_<txn>_<amount>` are identical between
 // the inline attempt and any replay — Stripe answers a repeat with the original
 // refund and the ledger dedupes on refund id, never a double refund.
-export function buildCapacityClaimFailedRefundStripeKeyPrefix(
-  bookingId: string,
-  paymentIntentId: string,
-) {
+export function buildCapacityClaimFailedRefundStripeKeyPrefix(bookingId: string, paymentIntentId: string) {
   return `capacity_claim_failed_${bookingId}_${paymentIntentId}`;
 }
 
@@ -483,6 +512,42 @@ export function buildBookingModificationRefundMetadata(
   return { bookingId, reason };
 }
 
+/** #3340: the `reason` a superseded payment's refund carries (`REFUND_SUPERSEDED_PAYMENT`). */
+export const SUPERSEDED_PAYMENT_REFUND_METADATA_REASON = "zero_dollar_batch_modification_superseded";
+
+/**
+ * #4104 review (CM, `INV-SSOT`): THE STRIPE REFUND METADATA A CARD REFUND ROW'S
+ * RUNNER SENDS - an approved refund request's, a cancellation's, a superseded
+ * payment's, or any other's by its stored Stripe key prefix
+ * (`bookingModificationRefundReasonForKeyPrefix`). The runner builds its body
+ * here, and a refund Stripe failed later is matched to an open row's unmarked
+ * slice only when it carries exactly this (`card-refund-failed-later.ts`), so a
+ * refund some other door or the Stripe dashboard made is never taken for it.
+ */
+export function cardRefundOperationRefundMetadata(operation: {
+  type: string;
+  idempotencyKey: string;
+  stripeKeyPrefix: string | null;
+  bookingId: string;
+}): Record<string, string> {
+  if (operation.type === "REFUND_SUPERSEDED_PAYMENT") {
+    return { bookingId: operation.bookingId, reason: SUPERSEDED_PAYMENT_REFUND_METADATA_REASON };
+  }
+  if (operation.idempotencyKey.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX)) {
+    return buildRefundRequestRefundMetadata(
+      operation.bookingId,
+      operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length),
+    );
+  }
+  if (operation.idempotencyKey.startsWith(BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX)) {
+    return buildBookingCancellationRefundMetadata(operation.bookingId);
+  }
+  return buildBookingModificationRefundMetadata(
+    operation.bookingId,
+    bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),
+  );
+}
+
 // #1507: map a modification refund's Stripe idempotency-key prefix to the
 // Stripe metadata `reason`. THE ONE SPELLING (`INV-MOD-061`, #4101): the inline
 // settlement helper (executeBookingModificationRefund) stamps the reason this
@@ -546,6 +611,10 @@ export function bookingModificationRefundReasonForKeyPrefix(
   if (isLateCaptureRefundStripeKeyPrefix(keyPrefix)) {
     return LATE_CAPTURE_REFUND_METADATA_REASON;
   }
+  // #4104: a refund Stripe accepted and failed later, asked for again.
+  if (keyPrefix?.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX)) {
+    return CARD_REFUND_FAILED_LATER_REASON;
+  }
   return "booking_modification_refund_recovery";
 }
 
@@ -584,6 +653,10 @@ export function isOrganiserChildRefundKey(key: string) {
 /** #3956: an approved refund appeal's refund out of the combined payment - not the cancellation's money. */
 export function isOrganiserChildAppealRefundKey(key: string) {
   return key.startsWith(ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX);
+}
+/** #4120 (`INV-SSOT`): an appeal's card refund - the request's own row, or its debt to the organiser's card (#3956). */
+export function isAppealRefundRecoveryKey(key: string) {
+  return isRefundRequestRefundRecoveryKey(key) || isOrganiserChildAppealRefundKey(key);
 }
 /**
  * `isOrganiserChildRefundKey` as a `PaymentRecoveryOperation` where fragment -

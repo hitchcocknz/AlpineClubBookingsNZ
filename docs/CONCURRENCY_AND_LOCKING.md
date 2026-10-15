@@ -2987,7 +2987,7 @@ guarded recovery claim is the guarded claim before the provider effect.
 
 **#3956 adds a fourth writer of a child refund debt, and no key: a refund
 appeal's approval (`INV-PAY-123`).** `PUT /api/admin/refund-requests/[id]#1`
-already holds `lock(1)` alone. Under it the approval first re-reads the
+already holds `lock(1)`, then (#4124) the child's Payment row. Under them the approval first re-reads the
 request's status, so one another review settled while it waited answers
 "already reviewed" rather than a cap refusal. On a booking the organiser paid
 for by card it then reads the same headroom (`organiserCardAppealCap`), refuses
@@ -3492,9 +3492,10 @@ does too, and both would post. So `resolveManualRefundTask` takes
   `lock(1)` the completion cannot commit between the two reads. A reopen of
   one already holds `lock(1)` and is refused past that same net cash, and a
   refund appeal's approval reads ITS net cash (`INV-PAY-118`: every open
-  hand-back and the late-cash credit, `refundAppealHandedBackCents`, read
-  BEFORE the payment so a cancellation hand-back's lock-free completion in
-  between errs the cap low) under `lock(1)` and claims
+  hand-back, the late-cash credit and, #4124, the card refunds still owed,
+  `refundAppealHandedBackParts`) under `lock(1)` and then the Payment row
+  (#4124 review F2; see the #4104 section), so a cancellation hand-back's
+  completion, which holds only that row, cannot land between its reads; it claims
   the request in that transaction, planning the card refund and raising the
   bank-transfer task for the rest there too, before its Stripe refund and Xero
   note (`PUT /api/admin/refund-requests/[id]#1`, `INV-LOCK-001`). A released
@@ -4890,9 +4891,9 @@ not stopped by any lock either, so the request carries the card figure the
 dialog showed (`expectedRefundedByCardCents`, round 8) and a different figure
 is a 409: a refund the treasurer never saw is never marked resolved.
 
-## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103)
+## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103, #4144)
 
-A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds four
+A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds these
 writes to a `PaymentRecoveryOperation`, all lock-free and each fenced in its
 own `where`, because none moves booking status, capacity or a payment's
 refunded total (`INV-LOCK-001`), and none runs inside a transaction with the
@@ -4914,6 +4915,34 @@ Stripe call:
   never re-plans a row a worker has picked up. A fresh plan with no refusal in
   it never replaces one a refusal moved, and is written compare-and-set on the
   plan it read (#4103).
+- **A pre-persisted door's happy-path close** (`closePrePersistedRefundRow`,
+  `pre-persisted-refund-close.ts`, #4144) is a compare-and-set on the plan the
+  door sent. The cancellation, the edit financial review, the duplicate
+  capture and the capacity race close a row that is open and still on that
+  plan (`sentPlanRowWhere`). A row the runner holds on the same plan is
+  closed: its replay of the same keys is answered with the door's refunds, and
+  only the close that moved the row writes a record - the duplicate capture's
+  event and the capacity race's REFUNDED event (`closeCapacityRaceRefundRecordingEvent`,
+  close and event in one transaction) - so it is written once. A row another
+  writer re-planned is not on that plan and is left open: one moved after a
+  refusal, or after Stripe's later report that a refund failed, is still owed;
+  one re-planned only by the runner marking a slice made is left to the
+  runner, whose replay closes it without moving money. The window this shuts:
+  the door's refund is made, the runner claims the row and its attempt fails,
+  Stripe's later report that the refund failed re-plans it
+  (`card-refund-failed-later.ts` writes only a tried row), and only then the
+  door's close runs. The row's key is built once per door (`closeDoorRow`
+  hands it to the close and to the read-back).
+  The late-capture approval closes only a row still `PENDING` with `attempts`
+  0 on the plan it sent (#4126, `untouchedPrePersistedRowWhere`, the
+  compare-and-set it shares with the doors' refusal re-plan,
+  `replanPrePersistedRow`), as its record is written by whichever close moves
+  the row. Every door reads a lost close back (`reportLostPrePersistedClose`):
+  closed, held or re-planned is logged and left to the runner; a row that is
+  gone (nothing deletes one) is logged as an error; a row still `PENDING`
+  with `attempts` 0 is an anomaly, logged and alerted to officers once for
+  the row (`<door>-close-lost:<row id>`), naming the refund.
+  A close that threw is logged and left to the runner's replay.
 - **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
   the attempt's `attempts` and a live claim, so an attempt the reaper gave up
   on cannot write `FAILED` over a reclaimed one. Not on the claim time: an
@@ -4938,6 +4967,119 @@ replays the slice's first key and reads Stripe's cached refusal. Nothing is
 refunded twice within Stripe's 24-hour key window; a row it closed is found by
 a recorded `failed` or `canceled` refund with no later one, and checked against
 the Stripe dashboard.
+
+## A card refund that failed later: the Payment row lock, no advisory key (#4104)
+
+A refund Stripe accepted (`pending`) and failed later (`INV-PAY-128`) is kept
+owed inside the one writer of a charge's refund rows,
+`recordStripeRefundsAgainstTransaction`, in the transaction that sees it fail.
+That writer already takes the refunded-total order - the Payment row
+(`lockPaymentForRefundedTotal`), then refund rows, then the transaction row -
+and the debt's writes come last, on `PaymentRecoveryOperation`:
+
+- **Exactly one writer sees the failure**: the guarded counted -> refused write
+  (`recordStripeRefundLedgerEntry`), or a door told `pending` by a replayed key
+  while the row already says refused. Two deliveries of one event queue on the
+  Payment row; the second sees the row refused and writes nothing.
+- **One row owes it.** The owner search reads every card refund row of the
+  payment under that lock: a row of its own, or a slice that already records
+  the failure (`failedRefundIds`), means another observer decided - nothing is
+  written. Otherwise the open row that counted it (marked `madeRefundId`, or
+  the unmarked slice the owed figure fills with it as the payment stood before
+  the failure, when the refund carries exactly that row's runner metadata) is
+  re-planned, and with none a row is inserted keyed on the Stripe refund
+  (`card_refund_failed_later_<refund>`, `skipDuplicates`). A refund that names
+  no booking writes an audit row on the same transaction instead.
+- **A re-plan** is a compare-and-set on the plan, status, `attempts` and
+  `nextRetryAt` it read (a claim or re-arm between moves one), never on a row
+  someone may be writing: a worker mid-attempt (`PROCESSING`), or a row no
+  worker has claimed yet (`PENDING`, no attempt - a door's inline attempt may
+  still close or re-plan it). There, or when the plan moved since the read, a
+  failure seen by its own counted -> refused write throws
+  (`FailedLaterRefundHeldError`): the whole transaction - refund row and
+  refunded total too - rolls back, and the webhook answers 500 or the cron
+  reads it back again next run. A failure a door or worker meets replaying its
+  own key is handed back to it as refused, and it moves its own row
+  (`INV-PAY-128`'s refusal path).
+- **A door that marks a slice made after the failure was handed to a row of
+  its own** (the event between the door's record and its plan write) leaves a
+  marked slice whose refund is refused: the owed figure reads it filled by the
+  failed-later row, and the runner never sends a marked slice, so it is owed once.
+
+**The cancel card refund shortfall's completion** (`cardShortfallSettlement`,
+#4097) reads these rows under the same Payment row lock beside the cancel's
+own: a failed-later row still unsettled refuses the completion (409), as the
+cancel's own row would.
+
+No advisory key: it moves no booking status or capacity, and every other writer
+of that row takes the Payment row before it - "Paid another way" (`lock(1)`,
+then the Payment row, then its claim) - or touches only the row (the runner's
+claim and re-plan), so Payment row -> operation row is no cycle. A reader that
+sizes a refund net of promised card refunds (the edit review's cap,
+`unfinishedCardRefundDebts`) reads the payment's refundable total before the
+debts, so straddling this commit errs towards refusing.
+
+**Refund appeal caps read under the Payment row (#4124).** A refund appeal's
+ceiling nets the payment's open card refund debts (`INV-PAY-118`,
+`refundAppealHandedBackParts`) beside its open hand-backs and late-cash credit,
+then reads the payment. Two readers hold the money decision and take the
+Payment row (`lockPaymentForRefundedTotal`) after `lock(1)` and BEFORE those
+reads: the approval (`PUT /api/admin/refund-requests/[id]#1`) and the reopen
+of a dismissed appeal task (`reopenManualRefundTask#1`, for that task only).
+`lock(1)`, then the Payment row, is the order every holder of both already
+takes (`INV-LOCK-002`; the paid cancel, "Paid another way", the organiser
+child refund recorder), and no holder of the Payment row takes `lock(1)` after
+it, so it closes no cycle. Under both, nothing that writes those figures can
+commit between the reads: this writer, every other refunded-total writer and a
+cancellation hand-back's completion hold the row; every other hand-back writer
+and the late-cash mint hold `lock(1)`. Re-taking the row later in the same
+transaction (the approval's allocation) waits on nothing. The member's request,
+the review screen and the booking page read the same figure unlocked, as advice. The provider calls - the
+webhook's own Stripe payload, and the cron's read-back
+(`reconcilePendingCardRefunds`) - run outside the transaction, and the officers'
+alert after its commit.
+
+**Stated limit: a failure seen before the refund was ever recorded** (delta
+review B-2). `recordRefusedCardRefund` writes a refund it has never seen as
+refused, and owes nothing for it: the door that asked for it, told `pending`,
+then reads the row refused and keeps its own debt (`INV-PAY-128`'s refusal
+path). A first-seen failure cannot tell that door, merely slower than the
+webhook, from one that crashed between Stripe and its record; owing it there
+would owe it twice whenever the door lives. So a door with no row persisted
+before its call that crashes there, its refund then failing, leaves no debt -
+as the same crash before the call would. Its booking's state, not this event,
+is what an officer reconciles.
+
+**The deploy window** (delta review B-1): the previous release's runner claims
+any due card refund row, and knows neither the failed-later key's Stripe reason
+(`bookingModificationRefundReasonForKeyPrefix`) nor a slice's `failedRefundIds`
+(`parseRefundAllocationPlan`). A failed-later row it claims is re-sent under
+the old reason - so if that re-send fails later too it is asked for once more,
+not raised dead - and a re-planned row's plan it rewrites loses the failed
+refunds it recorded,
+so a later "Paid another way" close reads no card-note cover and Xero is
+credited twice (listed as over-coverage). Subscribing to `refund.failed` only
+once the new release alone serves keeps that event's rows out of the window;
+it does not close it, because the new release raises a row from any refund
+status it reads - `charge.refunded`, the cron's read-back, a door's replay
+(`DEPLOYMENT.md`). In the same window an old release's "Resolved" on a
+paid-twice task writes that close record's `reviewContext` whole, dropping the
+card-note cover a new close kept there, and an old release's card-note
+executor does not subtract the closes' uncovered cash. Either way Xero's total
+can drift from the refunds by that close's amount; the Xero reconciliation
+report lists the difference for the treasurer to correct.
+
+**Stated limits: the close's card-note cover and the card note's sizing**
+(delta review 2). The cover is what the failed refund's card note answered when
+the close was planned, kept on the record. It is not re-read: if an officer
+later voids or reduces that note in Xero, the close still counts it as covered,
+and the reconciliation report shows the gap rather than any note filling it. A
+card note the outbox is already *sending* while the close plans is not yet a
+link, so the close notes its full share too and Xero is credited twice for that
+refund; the report lists it as over-coverage. The card note sizes itself from
+two unlocked reads (eligible cash and the closes' uncovered cash) and re-reads
+the closes' figure either side of the cash until both agree, so a close that
+commits between them is counted on both sides or neither.
 
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 

@@ -785,14 +785,14 @@ async function lines(bookingId: string) {
       const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: { payment: true } });
       const payment = booking.payment!;
       const request = await prisma.refundRequest.create({ data: { bookingId, memberId: NAMES.memberId, reason: "appeal after the organiser cancelled" } });
-      const { refundAppealHandedBackCents } = await import("@/lib/edit-refund-hand-back");
+      const { refundAppealHandedBackParts } = await import("@/lib/edit-refund-hand-back");
       const { organiserCardAppealCap, reserveOrganiserChildAppealRefund } = await import("@/lib/organiser-child-refund");
       const debt = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         expect((await tx.refundRequest.findUniqueOrThrow({ where: { id: request.id } })).status).toBe("PENDING");
-        const handedBackCents = await refundAppealHandedBackCents(tx, { id: payment.id, bookingId });
+        const handedBack = await refundAppealHandedBackParts(tx, { id: payment.id, bookingId });
         const locked = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
-        const cap = await organiserCardAppealCap(tx, booking, locked, handedBackCents);
+        const cap = await organiserCardAppealCap(tx, booking, locked, handedBack);
         expect(cap?.settlement).toBeTruthy();
         expect(amountCents).toBeLessThanOrEqual(cap!.maxRefundableCents);
         expect((await tx.refundRequest.updateMany({ where: { id: request.id, status: "PENDING" }, data: { status: "APPROVED", approvedAmountCents: amountCents } })).count).toBe(1);
@@ -855,28 +855,22 @@ async function lines(bookingId: string) {
         const withAppeal = [...live, "CARD_REFUND -1000"].sort();
         expect(await posted()).toEqual(withAppeal);
         // The cancellation line still records what the cancel kept, not that less the appeal. The
-        // census's one finding is the appeal's refund itself: a cancelled booking's PRICE reads
-        // owed(b) == 0, and no component names money an approved appeal gives back after the cancel.
-        // That gap is every card appeal's, an ordinary card booking's included, and predates #3956
-        // (filed as #4075); it is pinned here exactly, so a fix to it (or a new disagreement) shows.
-        const appealGap = {
-          ...NOTHING,
-          disagreements: [{ bookingId: id!, identity: "PRICE", columnCents: 0, ledgerCents: 1_000, deltaCents: -1_000 }],
-        };
-        expect(about(await census(), id!)).toEqual(appealGap);
+        // census names the appeal's refund itself (#4120, the gap #4075 reported): a cancelled
+        // booking's PRICE reads owed(b) == 0, and `REFUND_APPEAL_PAID` names the money the approved
+        // appeal has given back since, as its outcome reads it - a class listed only (#4075), no
+        // longer a disagreement.
+        const appealPaid = { ...NOTHING, classes: ["REFUND_APPEAL_PAID:PRICE"] };
+        expect(about(await census(), id!)).toEqual(appealPaid);
 
         // History: the same child with its lines gone. The back-post plans what the live cancel kept
         // (were the appeal counted as the cancel's, PRICE would be off by more than the appeal), and
-        // refuses on the census's one finding above, posting nothing: the same gap holds the gate.
+        // now posts it, the census naming the appeal's class as it does on the live child.
         await stripGroupLines(prisma, g);
-        for (const apply of [false, true]) {
-          expect(await runOne(id!, apply)).toMatchObject({
-            kind: "CANNOT_POST",
-            reason: "CENSUS_WOULD_NOT_PASS",
-            disagreements: [{ identity: "PRICE", columnCents: 0, ledgerCents: 1_000, deltaCents: -1_000 }],
-          });
-        }
+        expect(await runOne(id!, false)).toMatchObject({ kind: "POSTED", lineIds: [], classes: ["REFUND_APPEAL_PAID"] });
         expect(await lines(id!)).toEqual([]);
+        expect(await runOne(id!, true)).toMatchObject({ kind: "POSTED", classes: ["REFUND_APPEAL_PAID"] });
+        expect(await posted()).toEqual(withAppeal);
+        expect(about(await census(), id!)).toEqual(appealPaid);
       },
       300_000,
     );

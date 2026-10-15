@@ -11,12 +11,17 @@ import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references
 import Stripe from "stripe";
 import { formatCents } from "@/lib/utils";
 import { compareOrdinal } from "@/lib/ordinal-order";
-import { withStoreTransaction } from "@/lib/db-transaction";
-import { decodeRawRows } from "@/lib/raw-sql-rows";
+import { isRootPrismaClient, withStoreTransaction } from "@/lib/db-transaction";
+import {
+  alertFailedLaterCardRefunds,
+  keepFailedLaterCardRefundsOwed,
+  type FailedLaterCardRefundDebt,
+  type FailedLaterKind,
+} from "@/lib/card-refund-failed-later";
+import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import logger from "@/lib/logger";
-import { writeEditAttributedTransaction } from "@/lib/edit-attributed-ask-write";
+import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
-import { z } from "zod";
 import type { ClubFormat } from "@/lib/club-format";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
 import { CAPTURED_ROWS_OLDEST_FIRST } from "@/lib/mirror-refund-fold";
@@ -49,6 +54,7 @@ type StripeRefundLedgerInput = {
   created?: number | null;
   charge?: StripeReference;
   payment_intent?: StripeReference;
+  metadata?: Record<string, string> | null; // #4104: whose refund it is, and a retry's generation
 };
 
 function stripeCreatedAtToDate(created: number | null | undefined) {
@@ -476,6 +482,7 @@ export async function recordStripeRefundLedgerEntry({
     skipDuplicates: true,
   });
   let reversedCents = 0;
+  let failedLater: FailedLaterKind | null = null;
   if (inserted.count === 0) {
     // The refresh is guarded on the row still being COUNTED, for two reasons:
     //
@@ -497,10 +504,13 @@ export async function recordStripeRefundLedgerEntry({
     if (refreshed.count === 1 && !isRecordedRefundStatus(data.status)) {
       reversedCents = refund.amount;
     }
+    // #4104: seen failed after it counted - that write, or a caller told it counts (a replayed key) that the row holds refused.
+    failedLater = reversedCents > 0 ? "transition" : refreshed.count === 0 && isRecordedRefundStatus(data.status) ? "replayed" : null;
   }
 
   return {
     created: inserted.count > 0,
+    failedLater,
     reversedCents,
     amountCents: refund.amount,
     status: data.status,
@@ -596,8 +606,6 @@ export function refundHeadroomIncrementCents(row: { amountCents: number; refunde
  */
 const REFUND_LEDGER_WRITERS_MIGRATION = "20260509090000_enrich_payment_refund_ledger";
 
-const REFUND_LEDGER_START_ROW = z.object({ finished_at: z.date() });
-const REFUND_LEDGER_HISTORY_PRESENT_ROW = z.object({ present: z.boolean() });
 
 /**
  * #3640: THE lock order for a payment's refunded total - the `Payment` row
@@ -683,36 +691,20 @@ async function reversalFloorForTransaction(
  * a refund made there is counted twice (safe direction: the member is
  * under-refunded, never over-refunded; the Xero note is capped by cash evidence).
  *
- * A one-row lookup, read raw because no Prisma model covers `_prisma_migrations`
- * (`INV-OPS-001`: the row is decoded, never cast).
+ * Read through the one reader of migration history (`readMigrationFinishedAt`).
  */
 async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null> {
   // A database built with `prisma db push` (a dev convenience) has no
-  // `_prisma_migrations` table, and naming a missing table aborts the whole
-  // transaction - every card-refund write with it. Such a database never ran
-  // pre-ledger code either, so a missing table reads like a missing row
-  // (#3640 delta review, D4). Production, CI and e2e all `migrate deploy`.
-  const presence = decodeRawRows(
-    await db.$queryRaw`SELECT to_regclass('"_prisma_migrations"') IS NOT NULL AS "present"`,
-    REFUND_LEDGER_HISTORY_PRESENT_ROW,
-    "refund ledger history present"
-  );
-  if (!presence[0]?.present) {
+  // migration history; it never ran pre-ledger code either, so it reads like
+  // a missing row (#3640 delta review, D4). Production, CI and e2e all `migrate deploy`.
+  const started = await readMigrationFinishedAt(db, REFUND_LEDGER_WRITERS_MIGRATION);
+  if (!started.history) {
     logger.warn(
       "No _prisma_migrations table: treating every card refund as made since the refund ledger started (#3640)"
     );
     return null;
   }
-  const rows = await db.$queryRaw`
-    SELECT "finished_at" FROM "_prisma_migrations"
-    WHERE "migration_name" = ${REFUND_LEDGER_WRITERS_MIGRATION}
-      AND "finished_at" IS NOT NULL
-      AND "rolled_back_at" IS NULL
-    ORDER BY "finished_at" ASC
-    LIMIT 1
-  `;
-  const [row] = decodeRawRows(rows, REFUND_LEDGER_START_ROW, "refund ledger start");
-  return row ? Math.floor(row.finished_at.getTime() / 1000) : null;
+  return started.finishedAtSeconds;
 }
 
 /**
@@ -741,8 +733,9 @@ async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null
  *   counted (`reversalFloorForTransaction`) - so a refund the OLD arithmetic
  *   never added cannot be taken out of money that was never its.
  *
- * The card refunds on record - and, from the webhook, Stripe's own
- * `amount_refunded` - remain a FLOOR, never the value: the mirror never reads
+ * The card refunds on record remain a FLOOR, never the value (#4104: Stripe's
+ * own `amount_refunded` no longer is - the sync reads every refund live, and a
+ * snapshot from before a refund failed would undo it): the mirror never reads
  * below the cash the card has demonstrably returned. For a transaction with no
  * credit on it, that also lifts a row a pre-#3640 crash left between its ledger
  * row and its mirror write; with a credit the floor cannot, and the refunded-
@@ -758,7 +751,8 @@ async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null
  *   aggregate would otherwise leave a retry that records nothing new, reports
  *   no delta and queues no Xero note. Lock order: the Payment row FIRST
  *   (`lockPaymentForRefundedTotal`), then refund rows, then the transaction
- *   row - the one order every writer of the mirror takes.
+ *   row - the one order every writer of the mirror takes - then, for a refund
+ *   seen failing after it counted, its `PaymentRecoveryOperation` (#4104).
  * - Refunds are inserted in id order, so two writers inserting overlapping sets
  *   take the unique-index locks in one order.
  *
@@ -783,9 +777,10 @@ export async function recordStripeRefundsAgainstTransaction({
   stripeRefundedAmountCents?: number;
   store?: PaymentStore;
 }) {
-  return withStoreTransaction(store, async (db) => {
+  const recorded = await withStoreTransaction(store, async (db) => {
     await lockPaymentForRefundedTotal(db, paymentId);
     const ledgerStartSeconds = await refundLedgerStartSeconds(db);
+    const failedLater: Array<{ refund: StripeRefundLedgerInput; kind: FailedLaterKind }> = [];
     let createdRefundsCount = 0;
     let createdRefundAmountCents = 0;
     let newlyCountedCents = 0;
@@ -801,6 +796,7 @@ export async function recordStripeRefundsAgainstTransaction({
         store: db,
       });
       reversedCents += recorded.reversedCents;
+      if (recorded.failedLater) failedLater.push({ refund, kind: recorded.failedLater });
       if (!recorded.created) {
         continue;
       }
@@ -825,6 +821,17 @@ export async function recordStripeRefundsAgainstTransaction({
         ? await reversalFloorForTransaction(db, paymentId, paymentTransactionId)
         : 0;
 
+    // #4104 review (ML4): Stripe's cumulative `amount_refunded` is no longer a
+    // floor. The sync records every refund Stripe lists for the charge, read
+    // live, so the ledger floor above already holds each one that counts; the
+    // event's figure is a snapshot, and one taken before a refund failed would
+    // lift the total back up. Above the ledger it is only logged.
+    if (stripeRefundedAmountCents > ledgerRefundedAmountCents) {
+      logger.info(
+        { paymentId, paymentTransactionId, stripeRefundedAmountCents, ledgerRefundedAmountCents },
+        "Stripe's refunded figure is above the card refunds on record; the refunds on record stand (#4104)",
+      );
+    }
     const { previousCents, nextCents } = await compareAndSetRefundedAmount(
       db,
       paymentTransactionId,
@@ -834,7 +841,6 @@ export async function recordStripeRefundsAgainstTransaction({
           Math.max(
             row.refundedAmountCents + newlyCountedCents - reversedCents,
             ledgerRefundedAmountCents,
-            stripeRefundedAmountCents,
             // A subtraction never goes below the payment's floor - and the
             // floor never RAISES a mirror (that would be the repair the audit
             // leaves to a person).
@@ -847,6 +853,9 @@ export async function recordStripeRefundsAgainstTransaction({
 
     const payment = await reconcilePaymentAggregates({ paymentId, store: db });
 
+    // #4104 (`INV-PAY-128`): a refund seen failing after it counted is owed again, in this transaction.
+    const { debts: failedLaterDebts, readAsRefused } = await keepFailedLaterCardRefundsOwed(db, { paymentId, paymentTransactionId, seen: failedLater, fallbackPaymentIntentId });
+
     return {
       payment,
       createdRefundsCount,
@@ -854,8 +863,14 @@ export async function recordStripeRefundsAgainstTransaction({
       ledgerRefundedAmountCents,
       refundedAmountCents: nextCents,
       appliedCents: nextCents - previousCents,
+      failedLaterDebts,
+      /** #4104: refunds its caller was told counted that a row it is moving owns; the caller reads them as refused. */
+      readAsRefused,
     };
   });
+  // Alerted once its commit is ours; joined to a caller's transaction, returned for the caller to alert after its commit.
+  if (isRootPrismaClient(store)) await alertFailedLaterCardRefunds(recorded.failedLaterDebts);
+  return recorded;
 }
 
 /**
@@ -931,7 +946,7 @@ export async function upsertPaymentIntentTransaction({
   stripeCustomerId?: string | null;
   /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
-  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. #4036: given, `writeEditAttributedTransaction`. */
+  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. #4036: given, `writePaymentIntentTransaction` keeps it to that edit's row. */
   bookingModificationId?: string;
   store?: PaymentStore;
 }) {
@@ -949,12 +964,8 @@ export async function upsertPaymentIntentTransaction({
     ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
     ...provenance,
   };
-  // #4036 review: an ask write naming its edit never lands on another edit's row.
-  if (bookingModificationId !== undefined) {
-    await writeEditAttributedTransaction(store, { paymentIntentId, bookingModificationId, create, update });
-  } else {
-    await store.paymentTransaction.upsert({ where: { stripePaymentIntentId: paymentIntentId }, create, update });
-  }
+  // #4036 review: an ask write naming its edit never lands on another edit's row; #4081: no write lowers a captured status.
+  await writePaymentIntentTransaction(store, { paymentIntentId, bookingModificationId, create, update });
 
   if (stripeCustomerId) {
     await store.payment.update({
@@ -1159,6 +1170,8 @@ export async function syncRefundsFromStripeCharge({
     createdRefundsCount: recorded.createdRefundsCount,
     createdRefundAmountCents: recorded.createdRefundAmountCents,
     ledgerRefundedAmountCents: recorded.ledgerRefundedAmountCents,
+    /** #4104: alerted already unless `store` was the caller's transaction. */
+    failedLaterDebts: recorded.failedLaterDebts,
   };
 }
 
@@ -1284,6 +1297,8 @@ export interface RefundAllocationSlice {
   stripeKeySuffix?: string;
   /** #4083: Stripe made it (this refund) on an attempt that met a refusal: never sent again, still this plan's. */
   madeRefundId?: string;
+  /** #4104: the refunds that made this slice and that Stripe failed later, each moving it to its next key; it is still owed. */
+  failedRefundIds?: string[];
 }
 
 /**
@@ -1408,6 +1423,7 @@ export async function refundPaymentTransactions({
   const refunds: Array<PartialRefundError["refunds"][number] & { status: string | null; slice: RefundAllocationSlice }> = [];
   const refusedSlices: RefundAllocationSlice[] = [];
   let completedRefundCents = 0;
+  const failedLaterDebts: FailedLaterCardRefundDebt[] = [];
 
   for (const { transaction, amountCents: refundAmountForTransaction, stripeKeySuffix } of slices) {
     const slice: RefundAllocationSlice = { paymentTransactionId: transaction.id, amountCents: refundAmountForTransaction, ...(stripeKeySuffix ? { stripeKeySuffix } : {}) };
@@ -1433,14 +1449,17 @@ export async function refundPaymentTransactions({
       });
     }
 
+    let readAsRefused = false;
     try {
-      await recordStripeRefundsAgainstTransaction({
+      const recorded = await recordStripeRefundsAgainstTransaction({
         paymentId,
         paymentTransactionId: transaction.id,
         refunds: [refund],
         fallbackPaymentIntentId: transaction.stripePaymentIntentId,
         store,
       });
+      failedLaterDebts.push(...recorded.failedLaterDebts);
+      readAsRefused = recorded.readAsRefused.includes(refund.id);
     } catch (err) {
       // #3924 round 4 (C2): Stripe refunded this slice but it could not be
       // recorded. It is reported as a partial failure like a Stripe one, carrying
@@ -1462,17 +1481,23 @@ export async function refundPaymentTransactions({
       paymentIntentId: transaction.stripePaymentIntentId,
       refundId: refund.id,
       amountCents: refund.amount,
-      status: refund.status,
+      // #4104: a replayed key reads Stripe's original answer; the row knows it failed since.
+      status: readAsRefused ? "failed" : refund.status,
       slice,
     });
     // #4083: a refused slice sent nothing back, so it is owed, never completed.
-    if (isRefusedRefundStatus(refund.status)) refusedSlices.push(slice);
+    if (readAsRefused || isRefusedRefundStatus(refund.status)) refusedSlices.push(slice);
     else completedRefundCents += refundAmountForTransaction;
   }
 
+  if (failedLaterDebts.length > 0 && !isRootPrismaClient(store)) {
+    logger.warn({ paymentId, failedLaterDebts }, "Card refunds that failed later were kept owed in the caller's transaction; the caller alerts after its commit (#4104)");
+  }
   return {
     refunds,
     totalRefundedAmountCents: amountCents,
+    /** #4104: decided as this call recorded its refunds; alerted already unless `store` was the caller's transaction. */
+    failedLaterDebts,
   };
 }
 

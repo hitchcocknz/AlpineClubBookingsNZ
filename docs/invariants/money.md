@@ -682,8 +682,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   fee, credit row, capture or refund no live line records. Every class holds
   the gate until the owner's `--acknowledged` file, kept outside the
   repository, names its instance to the cent — `KNOWN_DEFECT_HISTORY` too —
-  except `GROUP_SETTLEMENT_OFF_LEDGER`, listed only (owner decisions,
-  #3583) while #3854's lines agree. A moved figure is stale and still holds. `booking-ledger-projection-census.realdb.test.ts` proves it
+  except `GROUP_SETTLEMENT_OFF_LEDGER` (#3583, while #3854's lines agree) and
+  `REFUND_APPEAL_PAID` (#4075), listed only. A moved figure is stale and still holds. `booking-ledger-projection-census.realdb.test.ts` proves it
   on real-writer bookings.
 
 ## INV-MONEY-006

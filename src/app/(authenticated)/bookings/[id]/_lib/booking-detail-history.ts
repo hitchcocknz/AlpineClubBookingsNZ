@@ -16,7 +16,7 @@ import {
 import { settlementMarkerTimelineEntries } from "@/lib/manual-settlement-reversal-event";
 import { bookingHasOpenFinancialReview } from "@/lib/booking-financial-review-visibility";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
-import { readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
+import { readCancelledCardRefundState, readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
 import type { BookingDetailRecord } from "./load-booking-detail";
 import type { BookingDetailViewer } from "./booking-detail-viewer";
 
@@ -137,6 +137,8 @@ export async function loadBookingDetailHistory({
     ownerCreditHidden: !canSeeOwnerCredit,
     // #4097: a card cancel's shortfall tasks, so the narrative says where each part stands.
     cardShortfallStatuses: booking.status === "CANCELLED" ? await readCardShortfallTaskStatuses(booking.id) : {},
+    // #4125: a card cancel's refund with no REFUNDED event - still being sent, made, or stalled.
+    cardRefundState: booking.status === "CANCELLED" ? await readCancelledCardRefundState(booking.id) : undefined,
     booking: {
       status: booking.status,
       finalPriceCents: booking.finalPriceCents,

@@ -505,7 +505,7 @@ and the data download rather than every page that happens to quote an entry.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-502 now record a category, measured on every build rather than estimated.
+503 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
 now refused three separate ways. Giving the 82 places a category and stopping the
@@ -527,7 +527,7 @@ that order and both landing in this release; this is the second:
    maintenance script outside the normal path.
 
 The practical effect for you: an entry recorded the ordinary way — through the
-platform’s own recording step, which is how every one of the 502 places does it —
+platform’s own recording step, which is how every one of the 503 places does it —
 cannot be born without a category any more. **It is not a mathematical
 guarantee**, and it is worth saying so rather than overclaiming: someone writing
 directly to the database table in a migration, or building a query by hand, is
@@ -836,6 +836,21 @@ Only the codes of family guests, or of guests the booking treats as confirmed
 predates guest consent), are ever read, and the booker sees only each code and
 its benefit. The
 booker's own activity history shows the entry's title and nothing else.
+
+### Late card payments refunded automatically (#4131)
+
+When a card payment goes through after its booking was cancelled, the app
+refunds it automatically and writes one `booking.payment.refunded_after_cancellation`
+entry, category `payment`. The refund always comes off that payment's own card
+charge. On the booking's own payment the details add up: `amountCents`, the
+whole late payment, is `refundedNowCents` plus `alreadyRefundedOnCaptureCents`
+when that is present.
+
+| Field | What it means |
+| --- | --- |
+| `refundId` | The Stripe refund this event made, or `null` when it sent nothing (then `noRefundSentReason` says why) |
+| `refundedNowCents` | What went back to the card now |
+| `alreadyRefundedOnCaptureCents` | Present only when part of the payment had already been refunded, for example in the Stripe dashboard. Not asked for again, and never taken from another card charge instead |
 
 ### Issue-report screenshot entries (#2703)
 

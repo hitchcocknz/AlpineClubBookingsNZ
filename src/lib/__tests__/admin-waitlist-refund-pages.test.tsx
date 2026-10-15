@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminWaitlistPage from "@/app/(admin)/admin/waitlist/page";
 import RefundRequestsPage from "@/app/(admin)/admin/refund-requests/page";
 import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
+import { refundAppealCeilingParts } from "@/lib/manual-refund-task-settlement-rules";
 
 const mocks = vi.hoisted(() => ({
   currentSearch: "",
@@ -600,6 +601,7 @@ describe("Admin refund and credit review page", () => {
                   finalPriceCents: 10000,
                   status: "CANCELLED",
                   creditsFromCancellation: [],
+                  appealCeilingCents: 10000, // #4124: the list route's `refundAppealCeilingParts`
                   payment: {
                     status: "SUCCEEDED",
                     amountCents: 10000,
@@ -711,6 +713,7 @@ describe("Admin refund and credit review page", () => {
                   finalPriceCents: 13000,
                   status: "CANCELLED",
                   creditsFromCancellation: [],
+                  appealCeilingCents: 6500, // #4124: the list route's `refundAppealCeilingParts`
                   // The #3340 booking: $130.00 captured, $65.00 refunded.
                   payment: {
                     status: "PARTIALLY_REFUNDED",
@@ -801,6 +804,8 @@ describe("Admin refund and credit review page", () => {
         status: "CANCELLED",
         noEmails: false,
         creditsFromCancellation: [],
+        // #4124: the list route's `refundAppealCeilingParts` of this payment.
+        appealCeilingCents: refundAppealCeilingParts(payment && ({ ...payment, recoveryOperations: [], refunds: [] } as never), []).ceilingCents,
         payment,
       },
       member: {
@@ -890,13 +895,8 @@ describe("Admin refund and credit review page", () => {
     expect(screen.getByText("Max refundable: $0.00")).toBeTruthy();
   });
 
-  // #3827 (`INV-PAY-117`): the ceiling the screen offers is the one the approve
-  // route enforces - the remaining refundable cash LESS the edit refunds still
-  // promised back by bank transfer. Paid 200, refunded 75 at cancel, a 50 edit
-  // refund still open: 75, not the gross 125.
-  it("offers the ceiling net of open edit refunds, the figure the approve route caps at", async () => {
-    mocks.currentSearch = "";
-    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+  /** Paid 200, refunded 75 at cancel, a 50 edit refund still open: one pending appeal, ceiling 75. */
+  function mockEditedPendingAppeal(appealCardRefundOwedCents = 0) {
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/admin/refund-requests?status=PENDING") {
@@ -923,12 +923,13 @@ describe("Admin refund and credit review page", () => {
                   status: "CANCELLED",
                   noEmails: false,
                   creditsFromCancellation: [],
+                  appealCeilingCents: 7500, // #4124: the list route's `refundAppealCeilingParts`
+                  appealCardRefundOwedCents,
                   payment: {
                     status: "PARTIALLY_REFUNDED",
                     amountCents: 20000,
                     refundedAmountCents: 7500,
                     stripePaymentIntentId: null,
-                    manualRefundTasks: [{ amountCents: 5000 }],
                   },
                 },
                 member: { id: "member-edited", firstName: "Jane", lastName: "edited", email: "e@example.com" },
@@ -945,6 +946,16 @@ describe("Admin refund and credit review page", () => {
       }
       return Promise.reject(new Error(`Unexpected fetch: ${url}`));
     });
+  }
+
+  // #3827 (`INV-PAY-117`): the ceiling the screen offers is the one the approve
+  // route enforces - the remaining refundable cash LESS the edit refunds still
+  // promised back by bank transfer. Paid 200, refunded 75 at cancel, a 50 edit
+  // refund still open: 75, not the gross 125.
+  it("offers the ceiling net of open edit refunds, the figure the approve route caps at", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    mockEditedPendingAppeal();
 
     render(<RefundRequestsPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
@@ -955,6 +966,36 @@ describe("Admin refund and credit review page", () => {
     // gross capture labelled as gross.
     expect(screen.getByText("Remaining refundable:").parentElement).toHaveTextContent("Remaining refundable: $75.00");
     expect(screen.getByText("Gross paid:").parentElement).toHaveTextContent("Gross paid: $200.00");
+  });
+
+  // #4124: a card refund not yet made is netted from the ceiling, and the
+  // officer is told why it is lower, and where that refund is tracked.
+  it("says under the ceiling how much of it is a card refund not yet made", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    mockEditedPendingAppeal(2500);
+
+    render(<RefundRequestsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+    expect(screen.getByText("Max refundable: $75.00")).toBeTruthy();
+    const note = screen.getByText("Less $25.00 of card refund not yet made for this payment (retrying, or stopped and listed on Stuck states).");
+    // The note and the maximum describe the amount box.
+    const limits = document.getElementById("approvedAmountLimits");
+    expect(limits?.contains(note)).toBe(true);
+    expect(screen.getByRole("textbox", { name: /Refund Amount/i }).getAttribute("aria-describedby")).toContain("approvedAmountLimits");
+  });
+
+  it("CONTROL: shows no card refund line when none was netted", async () => {
+    mocks.currentSearch = "";
+    mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
+    mockEditedPendingAppeal(0);
+
+    render(<RefundRequestsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+    expect(screen.getByText("Max refundable: $75.00")).toBeTruthy();
+    expect(screen.queryByText(/card refund not yet made/)).toBeNull();
   });
 
   /*
@@ -984,6 +1025,10 @@ describe("Admin refund and credit review page", () => {
         status: "CANCELLED",
         noEmails: false,
         creditsFromCancellation: [],
+        appealCeilingCents: 15000, // #4124: the list route's `refundAppealCeilingParts`
+        // #4124 delta review: a card refund owed on the child's own payment is
+        // already in the organiser cap's room, so no "Less ..." line here.
+        appealCardRefundOwedCents: 2_500,
         payment: { status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, stripePaymentIntentId: null },
         organiserCardMaxRefundableCents: pending ? 0 : 4_000,
         organiserCardCombinedRefundPending: pending,
@@ -1021,6 +1066,8 @@ describe("Admin refund and credit review page", () => {
       } else {
         expect(screen.getByText("Max refundable: $40.00")).toBeTruthy();
         expect(screen.queryByText(/still being made or reconciled/)).toBeNull();
+        expect(screen.getByText("Refunded to the group organiser's card; the most that payment can still return for this booking.")).toBeTruthy();
+        expect(screen.queryByText(/card refund not yet made/)).toBeNull();
       }
       view.unmount();
     }
@@ -1060,6 +1107,7 @@ describe("an approved appeal whose card refund is still partly owed (#4117)", ()
         status: "CANCELLED",
         noEmails: false,
         creditsFromCancellation: [],
+        appealCeilingCents: 10000, // #4124: the list route's `refundAppealCeilingParts`
         payment: { status: "SUCCEEDED", amountCents: 10000, refundedAmountCents: 0, stripePaymentIntentId: "pi_1" },
       },
       member: { id: "member-1", firstName: "Jane", lastName: "Doe", email: "jane@example.com" },

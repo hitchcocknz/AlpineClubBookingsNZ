@@ -37,6 +37,7 @@ import {
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
 import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
+import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -52,10 +53,8 @@ import {
   MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
   type ManualSettlementReversalEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
-import {
-  recordBookingEvent,
-  recordDuplicateCaptureRefundEvent,
-} from "@/lib/booking-events";
+import { closeCapacityRaceRefundRecordingEvent, recordBookingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { alertCapacityRaceRefundShortfall } from "@/lib/capacity-race-refund-shortfall";
 import {
   sendAdminDuplicateCaptureRefundAlert,
   sendAdminPaymentFailureAlert,
@@ -2094,25 +2093,21 @@ export async function markBookingPaymentSucceeded({
       if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
-      // close leaves a PENDING row whose replay re-requests the identical
-      // slice/keys, which Stripe answers with the original refund.
-      const markResult = await markDuplicateCaptureRefundRecoverySucceeded({
-        bookingId,
-        paymentIntentId,
-      }).catch((markErr) => {
-        logger.error(
-          { err: markErr, bookingId, paymentIntentId },
-          "Failed to mark duplicate-capture refund recovery succeeded; the cron will replay the frozen plan idempotently"
-        );
-        return null;
-      });
+      // close leaves an open row whose replay re-requests the identical
+      // slice/keys, which Stripe answers with the original refund. #4144: only
+      // on the plan sent, so a row another writer re-planned stays owed.
+      const closed = await closeDoorRow(
+        { door: "duplicate-capture", idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+          bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format },
+        async (idempotencyKey) => (await markDuplicateCaptureRefundRecoverySucceeded({ idempotencyKey, sentPlan: refundPlan })).count === 1,
+      );
 
       // #2008 — record the admin-only history event EXACTLY ONCE, gated on this
-      // call being the one that flipped the operation to SUCCEEDED (count > 0).
-      // If the mark was lost or the cron already closed the operation, this
+      // call being the one that flipped the operation to SUCCEEDED. If the
+      // close was lost or the cron already closed the operation, this
       // path records nothing and the cron-replay path owns the event, so the
       // inline and cron paths never double-record. Post-commit, base client.
-      if (markResult && markResult.count > 0) {
+      if (closed) {
         await recordDuplicateCaptureRefundEvent({
           bookingId,
           amountCents: plannedRefundCents,
@@ -2210,15 +2205,15 @@ export async function markBookingPaymentSucceeded({
       type: BookingEventType.CANCELLED,
       actorMemberId: bookingOwner(reconciliation.booking).memberId,
       amountCents,
-      reason:
-        "These dates filled up before payment could be secured, so the booking was cancelled and refunded.",
+      reason: // #4125: written before the attempt, so "being refunded"; REFUNDED records it made.
+        "These dates filled up before payment could be secured, so the booking was cancelled and the full amount is being refunded.",
       snapshot: {
         policySummary:
-          "These dates were no longer available when payment completed, so the full amount was refunded.",
-        refundMethod: "card",
+          "These dates were no longer available when payment completed, so the full amount is being refunded.",
+        refundMethod: "card", cancelledBecause: "capacity_race",
         refundPercentage: 100,
         paidAmountCents: amountCents,
-        settledAmountCents: amountCents,
+        settledAmountCents: reconciliation.plannedRefundCents, // #4125: what the plan refunds; any rest is the club's to follow up.
         retainedAmountCents: 0,
       },
     });
@@ -2229,14 +2224,9 @@ export async function markBookingPaymentSucceeded({
     // operation for the recovery cron — never a stranded charge that only an
     // alert email knows about.
     const { refundPlan, plannedRefundCents } = reconciliation;
-    if (plannedRefundCents < amountCents) {
-      // Mirror-vs-ledger drift (same guard as booking-cancel): refund what
-      // the payment ledger actually shows refundable and surface the gap.
-      logger.error(
-        { bookingId, paymentIntentId, amountCents, plannedRefundCents },
-        "Capacity-race refund plan covers less than the captured amount; refunding what the payment ledger shows refundable"
-      );
-    }
+    // Mirror-vs-ledger drift (same guard as booking-cancel): refund what the
+    // payment ledger actually shows refundable; #4125: the officers are told the rest, once.
+    await alertCapacityRaceRefundShortfall({ bookingId, paymentIntentId, chargedCents: amountCents, plannedRefundCents }, format);
 
     const keepRefusalOwed = (attempt: RefundAttempt) =>
       keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
@@ -2275,24 +2265,14 @@ export async function markBookingPaymentSucceeded({
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
-      // slices/keys, which Stripe answers with the original refunds.
-      await markCapacityClaimFailedRefundRecoverySucceeded({
-        bookingId,
-        paymentIntentId,
-      }).catch((markErr) =>
-        logger.error(
-          { err: markErr, bookingId, paymentIntentId },
-          "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently"
-        )
-      );
-
-      await recordBookingEvent({
-        bookingId,
-        type: BookingEventType.REFUNDED,
-        actorMemberId: bookingOwner(reconciliation.booking).memberId,
-        amountCents,
-        reason: "Automatic refund after lodge capacity was no longer available.",
-      });
+      // slices/keys, which Stripe answers with the original refunds - and
+      // (#4125) records the REFUNDED event, which commits with this close only
+      // when it is the one that closed the row, for what was refunded.
+      await closeDoorRow({ door: "capacity-race", idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format }, (idempotencyKey) => closeCapacityRaceRefundRecordingEvent(
+        { bookingId, amountCents: plannedRefundCents, actorMemberId: bookingOwner(reconciliation.booking).memberId },
+        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey, sentPlan: refundPlan, store: tx })).count === 1,
+      ));
 
       return {
         outcome: "cancelled_refunded",

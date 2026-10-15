@@ -26,6 +26,9 @@
  * lock/rollback behavior.
  */
 import type { Prisma, PrismaClient } from "@prisma/client";
+// #4107: FIRST, so its snapshot predates every imported suite's hooks and its
+// afterAll runs last: the harness leaves `process.env` as it found it.
+import "./support/race-harness-env-guard";
 // #2363 reuses this suite's already-guarded, disposable hosted PostgreSQL but
 // creates/drops its own unique schema. Importing registers the trigger proofs in
 // the explicit CI race command without changing the workflow or making ordinary
@@ -274,12 +277,30 @@ import "./card-refund-paid-another-way.realdb.test";
 // a refused slice to a fresh key only on the attempt it holds. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4083-` fixtures.
 import "./refused-card-refund-retry.realdb.test";
+// #4104 reuses it to prove a card refund Stripe accepted and failed later is
+// owed again: each door's refund taken out once and owed once by one new row,
+// replays and concurrent deliveries write one, the event before the door's own
+// write, the retry's fresh key, and a held row rolling the write back. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4104-` fixtures.
+import "./card-refund-failed-later.realdb.test";
 // #4097 reuses it to prove an own-card cancel whose card refund plan carries
 // less than the refund due raises one hand-back task for the rest in its claim,
 // which "Refunds owed" counts until the treasurer pays it back (its BANK_REFUND
 // line posted on the card payment) or dismisses it. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4097-` fixtures.
 import "./cancel-card-refund-shortfall.realdb.test";
+// #4125 reuses it to prove the capacity race's card refund, made by the
+// recovery runner, writes one REFUNDED booking event for the frozen plan's
+// total - none from a late inline close or a second run - and that the booking
+// page's read of the row says still being sent, dead or made. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4125-` fixtures.
+import "./capacity-race-refund-event.realdb.test";
+// #4147 reuses it to prove the booking-ledger census reads a capacity race's
+// cancel by its own refund rows: through the REAL capacity race, back-post and
+// recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post
+// posts it), a made one agrees and a dead one disagrees. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4147-` fixtures.
+import "./booking-ledger-census-capacity-race.realdb.test";
 // #3750 reuses it to prove approving a locked-period change request on a
 // finished stay: the real executor and batch service add, remove, swap and
 // re-date the stay at the same-day tier, two racing approvals make one
@@ -318,6 +339,12 @@ import "./membership-subscription-charge-close.realdb.test";
 // index that still refuses a second LIVE family charge. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4110-` fixtures.
 import "./membership-family-rebill.realdb.test";
+// #4131 reuses it to prove the booking's own payment captured after its booking
+// was cancelled is refunded from its own charge through the real webhook
+// processor: never a fee the cancel kept on another charge, and only what a part
+// refunded capture still holds. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it
+// owns and cleans its own `race-4131-` fixtures.
+import "./late-capture-own-charge-refund.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

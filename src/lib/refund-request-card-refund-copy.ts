@@ -29,6 +29,8 @@ export interface ApprovedAppealOutcome {
   handBackOwedCents: number
   /** Promised back by bank transfer, its task dismissed: the club kept it. */
   handBackDismissedCents: number
+  /** #4120: its card refund closed as paid another way in part - the part not paid back. */
+  cardRefundClosedUnpaidCents: number
 }
 
 /** The part of an approved appeal's card refund not made, split by what is known. */
@@ -68,10 +70,16 @@ export function refundAppealApprovedNotice(
 
 /**
  * What an approved appeal has refunded so far: the approved amount less every
- * part that has not gone back - by card (queued, dead or not queued) and by
- * bank transfer while this request's own task is open or once it is dismissed.
+ * part of its outcome (`readApprovedAppealOutcomes`) that has not gone back -
+ * by card (queued, dead, not queued, or closed as paid another way for less)
+ * and by bank transfer while this request's own task is open or once it is
+ * dismissed. The one sum, read by
+ * the screen's "Refunded" and by the booking-ledger census's
+ * `REFUND_APPEAL_PAID` (#4120).
  */
-export function refundAppealRefundedCents(approvedAmountCents: number, stillOwedCents: number): number {
+export function approvedAppealRefundedCents(approvedAmountCents: number, outcome: Partial<ApprovedAppealOutcome>): number {
+  const stillOwedCents =
+    (outcome.cardRefundOwedCents ?? 0) + (outcome.handBackOwedCents ?? 0) + (outcome.handBackDismissedCents ?? 0) + (outcome.cardRefundClosedUnpaidCents ?? 0)
   return Math.max(0, approvedAmountCents - Math.max(0, stillOwedCents))
 }
 
@@ -93,8 +101,31 @@ export function refundAppealOutstandingLines(
     )
   }
   if ((outcome.handBackOwedCents ?? 0) > 0) lines.push(`${formatAmount(outcome.handBackOwedCents ?? 0)} is still to be refunded by bank transfer.`)
+  if ((outcome.cardRefundClosedUnpaidCents ?? 0) > 0) {
+    lines.push(`${formatAmount(outcome.cardRefundClosedUnpaidCents ?? 0)} of the card refund was closed without being paid back.`)
+  }
   if ((outcome.handBackDismissedCents ?? 0) > 0) {
     lines.push(`${formatAmount(outcome.handBackDismissedCents ?? 0)} was not refunded: its bank-transfer task was dismissed.`)
   }
   return lines
+}
+
+/**
+ * #4124 (`INV-PAY-118`): why an appeal's ceiling is lower than the payment's
+ * refundable cash - a card refund on the payment not yet made (being retried
+ * after a refusal or a later failure, or stopped and listed on Stuck states for
+ * "Paid another way"), which the ceiling nets so the money is not promised
+ * twice (`refundAppealCeilingParts`). To the officer under "Max refundable",
+ * and to the booking's owner in the appeal form. The owner is not told "to your
+ * card": a stopped one may be paid back another way.
+ */
+export function appealCardRefundOwedOfficerNote(amount: string): string {
+  return `Less ${amount} of card refund not yet made for this payment (retrying, or stopped and listed on Stuck states).`
+}
+
+/** The owner's line, beside the form's maximum; `ceilingIsZero` when that refund is everything still refundable. */
+export function appealCardRefundOwedMemberNote(amount: string, ceilingIsZero: boolean): string {
+  return ceilingIsZero
+    ? `${amount} is still owed back to you, so there is nothing more to appeal for while that refund is outstanding.`
+    : `${amount} is still owed back to you, so it is not part of this maximum.`
 }

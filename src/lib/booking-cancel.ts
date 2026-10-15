@@ -90,7 +90,8 @@ import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
-import { keepRefusedPrePersistedRefundOwed } from "@/lib/refused-card-refund-retry";
+import { keepRefusedPrePersistedRefundOwed, markCancellationAttempt } from "@/lib/refused-card-refund-retry";
+import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
@@ -2359,15 +2360,11 @@ async function performBookingCancellation(
         // Happy-path close of the pre-persisted operation. Best-effort: if
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
-        // completes with no second money movement.
-        await markBookingCancellationRefundRecoverySucceeded({
-          bookingId,
-        }).catch((markErr) =>
-          logger.error(
-            { err: markErr, bookingId, paymentId },
-            "Failed to mark booking cancellation refund recovery succeeded; the cron will replay the frozen plan idempotently"
-          )
-        );
+        // completes with no second money movement. #4144: only on the plan sent.
+        await closeDoorRow({
+          door: "cancellation", idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), bookingId,
+          paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "", amountCents: plannedCardRefundCents, refundId: stripeRefundId ?? null, format, context: { paymentId },
+        }, async (idempotencyKey) => (await markBookingCancellationRefundRecoverySucceeded({ idempotencyKey, sentPlan: cardRefundPlan })).count === 1);
       } catch (err) {
         // The claim already committed and the recovery operation already
         // exists with the frozen plan, so there is nothing to enqueue here
@@ -2378,8 +2375,10 @@ async function performBookingCancellation(
         // remainder moves money. Do NOT rethrow.
         const completedRefundCents =
           err instanceof PartialRefundError ? err.completedRefundCents : 0;
-        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door.
-        await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
+        // #4103: a slice refused before a later one threw is re-planned now, as at every pre-persisted door;
+        // #4104: with none refused, the slices made before it threw are still marked on the row.
+        const refusedBefore = await keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), plan: cardRefundPlan, attempt: { error: err }, format });
+        if (!refusedBefore) await markCancellationAttempt({ bookingId, plan: cardRefundPlan, error: err });
         await recordBookingCancellationRefundRecoveryInlineError({
           bookingId,
           message: err instanceof Error ? err.message : String(err),

@@ -23,9 +23,12 @@ import {
 } from "@/lib/booking-ledger-projection-census-report";
 import { isGroupSettlementOffLedger } from "@/lib/booking-ledger-projection-census-classes";
 import type { BookingLedgerCensusRow } from "@/lib/booking-ledger-projection-census-row";
+import type { CancellationEventSnapshot } from "@/lib/booking-events";
 import { INTERNET_BANKING_SETTLEMENT_EVIDENCE_SELECT } from "@/lib/internet-banking-settlement-evidence";
 import { bookingIdOfCreditRow, bookingsCreditRowsWhere } from "@/lib/member-credit-booking-rows";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
+import { readApprovedAppealOutcomes } from "@/lib/refund-appeal-outcome";
+import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { buildGroupSettlementRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 
@@ -97,6 +100,12 @@ const CENSUS_SELECT = {
       },
     },
   },
+  // #4120: its approved refund appeals, whose refunds `REFUND_APPEAL_PAID` explains.
+  refundRequests: {
+    where: { status: "APPROVED" },
+    orderBy: ASC,
+    select: { id: true, status: true, approvedAmountCents: true },
+  },
   events: {
     where: { type: "CANCELLED" },
     orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
@@ -137,6 +146,9 @@ const CANCELLATION_SNAPSHOT = z.object({
   settledAmountCents: z.number().int().nullable().optional(),
   // The paid-but-not-refunded figure every paid-path snapshot froze (`INV-PAY-106`).
   retainedAmountCents: z.number().int().nullable().optional(),
+  // #4147: what was paid, and why the system cancelled (`cancelledBecause`, #4125's capacity race).
+  paidAmountCents: z.number().int().nullable().optional(),
+  cancelledBecause: z.string().nullable().optional(),
   // #3611's frozen ledger figures; absent on a snapshot written before it.
   ledger: z.object({ keptCents: z.number().int(), policyKeptCents: z.number().int().optional() }).nullable().optional(),
 });
@@ -145,9 +157,14 @@ export type CancelledEventSnapshot = {
   refundMethod: string | null;
   settledAmountCents: number | null;
   retainedAmountCents: number | null;
+  paidAmountCents: number | null;
+  cancelledBecause: string | null;
   keptCents: number | null;
   policyKeptCents: number | null;
 };
+
+/** #4125's capacity race, as its writer spells it: the type keeps the two the same. */
+const CAPACITY_RACE_CANCELLED_BECAUSE: NonNullable<CancellationEventSnapshot["cancelledBecause"]> = "capacity_race";
 
 /** The one parser of that snapshot; null where it is not one. */
 export function parseCancelledEventSnapshot(snapshot: unknown): CancelledEventSnapshot | null {
@@ -158,6 +175,8 @@ export function parseCancelledEventSnapshot(snapshot: unknown): CancelledEventSn
     refundMethod: parsed.data.refundMethod ?? null,
     settledAmountCents: parsed.data.settledAmountCents ?? null,
     retainedAmountCents: parsed.data.retainedAmountCents ?? null,
+    paidAmountCents: parsed.data.paidAmountCents ?? null,
+    cancelledBecause: parsed.data.cancelledBecause ?? null,
     keptCents: parsed.data.ledger?.keptCents ?? null,
     policyKeptCents: parsed.data.ledger?.policyKeptCents ?? null,
   };
@@ -186,7 +205,10 @@ export function cancelledSnapshotKept(
 function cancellationOf(booking: StoredCensusBooking): BookingLedgerCensusRow["cancellation"] {
   const parsed = parseCancelledEventSnapshot(booking.events[0]?.snapshot);
   if (!parsed) return null;
-  return { refundMethod: parsed.refundMethod, settledAmountCents: parsed.settledAmountCents, keptCents: parsed.keptCents };
+  const cancellation = { refundMethod: parsed.refundMethod, settledAmountCents: parsed.settledAmountCents, keptCents: parsed.keptCents };
+  // #4147: a capacity race's whole charge is due back, whatever its plan refunds.
+  if (parsed.cancelledBecause !== CAPACITY_RACE_CANCELLED_BECAUSE || parsed.paidAmountCents === null) return cancellation;
+  return { ...cancellation, capacityRace: { paidAmountCents: parsed.paidAmountCents, retainedAmountCents: parsed.retainedAmountCents ?? 0 } };
 }
 
 /** What the census reads of a review closure's `PRICE_REBASE` row (`recordBookingPriceRebaseHistory`). */
@@ -220,6 +242,7 @@ export function toCensusRow(
   credits: BookingLedgerCensusRow["credits"],
   inFlightGroupRefundSettlementIds: ReadonlySet<string> = new Set(),
   groupChildren: ReadonlyMap<string, NonNullable<BookingLedgerCensusRow["groupChild"]>> = new Map(),
+  appeals: ReadonlyMap<string, BookingLedgerCensusRow["appeals"]> = new Map(),
 ): BookingLedgerCensusRow {
   const { payment } = booking;
   const settlement = booking.organiserSettled ? (booking.parentBooking?.groupBookingAsOrganiser?.settlement ?? null) : null;
@@ -260,6 +283,7 @@ export function toCensusRow(
     })),
     recoveryOperations: booking.paymentRecoveryOperations,
     cancellation: cancellationOf(booking),
+    appeals: appeals.get(booking.id) ?? [],
     groupSettlement: settlement
       ? { ...settlement, refundRecoveryInFlight: inFlightGroupRefundSettlementIds.has(settlement.id) }
       : null,
@@ -311,7 +335,37 @@ export async function readBookingLedgerCensusRow(
 /** Bookings read per page inside the snapshot: bounds memory on a whole history. */
 export const CENSUS_PAGE_SIZE = 500;
 
-type CensusReadStore = Pick<Prisma.TransactionClient, "booking" | "memberCredit" | "paymentRecoveryOperation">;
+type CensusReadStore = Pick<
+  Prisma.TransactionClient,
+  "booking" | "memberCredit" | "paymentRecoveryOperation" | "payment" | "auditLog" | "manualRefundTask"
+>;
+
+/**
+ * #4120: what each of a page's approved refund appeals has refunded so far,
+ * read as the refund-requests screen reads it (`readApprovedAppealOutcomes`,
+ * `approvedAppealRefundedCents`), inside the same snapshot. Most pages hold
+ * none, and then nothing more is read.
+ */
+async function approvedAppeals(
+  tx: CensusReadStore,
+  page: readonly StoredCensusBooking[],
+): Promise<Map<string, BookingLedgerCensusRow["appeals"]>> {
+  const requests = page.flatMap((booking) =>
+    booking.refundRequests.map((request) => ({
+      ...request,
+      bookingId: booking.id,
+      booking: { payment: booking.payment ? { id: booking.payment.id } : null },
+    })),
+  );
+  const appeals = new Map<string, BookingLedgerCensusRow["appeals"]>();
+  if (requests.length === 0) return appeals;
+  const outcomes = await readApprovedAppealOutcomes(tx, requests);
+  for (const request of requests) {
+    const refundedCents = approvedAppealRefundedCents(request.approvedAmountCents ?? 0, outcomes.get(request.id) ?? {});
+    appeals.set(request.bookingId, [...(appeals.get(request.bookingId) ?? []), { id: request.id, refundedCents }]);
+  }
+  return appeals;
+}
 
 /** #3854: which of a page's group settlements have their one pre-#3653 refund-plan retry still in flight. */
 async function inFlightGroupRefunds(tx: CensusReadStore, page: readonly StoredCensusBooking[]): Promise<Set<string>> {
@@ -345,11 +399,12 @@ async function censusRows(
   creditsOf: (bookingId: string) => BookingLedgerCensusRow["credits"],
 ): Promise<BookingLedgerCensusRow[]> {
   const inFlight = await inFlightGroupRefunds(tx, page);
-  const rows = page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight));
+  const appeals = await approvedAppeals(tx, page);
+  const rows = page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight, new Map(), appeals));
   const candidates = page.filter((_, index) => rows[index]!.groupSettlement !== null && isGroupSettlementOffLedger(rows[index]!));
   if (candidates.length === 0) return rows;
   const groupChildren = await groupChildEvidence(tx, candidates);
-  return page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight, groupChildren));
+  return page.map((booking) => toCensusRow(booking, creditsOf(booking.id), inFlight, groupChildren, appeals));
 }
 
 /**

@@ -28,7 +28,6 @@ import {
 } from "@/hooks/use-admin-area-edit-access"
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice"
 import { getCancellationSettlementBreakdown, type CancellationCreditEntry } from "@/lib/payment-status-display"
-import { refundAppealCeiling } from "@/lib/manual-refund-task-settlement-rules"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { useClubTime } from "@/components/club-time-provider"
 import { parseInstant, type BoundClubTime, formatStayDateOrNull } from "@/lib/club-time"
@@ -36,9 +35,10 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents, formatCentsPlain } from "@/lib/utils"
 import {
+  appealCardRefundOwedOfficerNote,
   refundAppealApprovedNotice,
   refundAppealOutstandingLines,
-  refundAppealRefundedCents,
+  approvedAppealRefundedCents,
   type AppealCardRefundState,
 } from "@/lib/refund-request-card-refund-copy"
 import { useClubFormat } from "@/components/club-format-provider"
@@ -72,6 +72,7 @@ interface RefundRequestData {
   cardRefundUnansweredCents?: number
   handBackOwedCents?: number
   handBackDismissedCents?: number
+  cardRefundClosedUnpaidCents?: number
   booking: {
     id: string
     checkIn: string
@@ -89,9 +90,9 @@ interface RefundRequestData {
       amountCents: number
       refundedAmountCents: number
       stripePaymentIntentId: string | null
-      // #3827: every hand-back still promised back by bank transfer.
-      manualRefundTasks?: Array<{ amountCents: number | null }>
     } | null
+    appealCeilingCents: number // #4124: the list route's `refundAppealCeilingParts`, card debts netted
+    appealCardRefundOwedCents: number // ...and the card refund still owed it netted (0: none, or not why)
     // #3956 (`INV-PAY-123`): on a pending appeal for a booking the group
     // organiser paid for by card, the server's `organiserCardAppealCap` - the
     // most the organiser's combined payment can still return. Null otherwise.
@@ -111,13 +112,10 @@ interface RefundRequestData {
 /**
  * The figure the approve route caps an appeal at: the organiser-card cap the
  * server read for a booking the group organiser paid for by card (#3956), and
- * otherwise `refundAppealCeiling` (#3827).
+ * otherwise `refundAppealCeilingParts` (#3827).
  */
 function appealCeiling(req: RefundRequestData): number {
-  return (
-    req.booking.organiserCardMaxRefundableCents ??
-    refundAppealCeiling(req.booking.payment, req.booking.creditsFromCancellation)
-  )
+  return req.booking.organiserCardMaxRefundableCents ?? req.booking.appealCeilingCents
 }
 
 interface AdminActor {
@@ -538,7 +536,7 @@ export default function RefundRequestsPage() {
                             <>
                               {/* #3372: GROSS - captured before any refund - so
                                   the label says so. "Remaining refundable" is
-                                  `refundAppealCeiling` (#3827). */}
+                                  `refundAppealCeilingParts` (#3827). */}
                               <div>
                                 <span className="text-muted-foreground">Gross paid:</span>{" "}
                                 {formatCents(payment.amountCents, format)}
@@ -592,10 +590,7 @@ export default function RefundRequestsPage() {
                                   <span className="text-muted-foreground">Refunded:</span>{" "}
                                   <strong>
                                     {formatCents(
-                                      refundAppealRefundedCents(
-                                        req.approvedAmountCents,
-                                        (req.cardRefundOwedCents ?? 0) + (req.handBackOwedCents ?? 0) + (req.handBackDismissedCents ?? 0),
-                                      ),
+                                      approvedAppealRefundedCents(req.approvedAmountCents, req),
                                       format,
                                     )}
                                   </strong>
@@ -649,13 +644,14 @@ export default function RefundRequestsPage() {
                                     : undefined
                                 }
                                 className="w-40"
+                                aria-describedby="approvedAmountLimits"
                               />
                               {req.booking.organiserCardCombinedRefundPending ? (
                                 <p className="text-xs text-muted-foreground">
                                   {ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE}
                                 </p>
                               ) : (
-                                <>
+                                <div id="approvedAmountLimits" className="space-y-2">
                                   <p className="text-xs text-muted-foreground">
                                     Max refundable: {formatCents(maxRefundable, format)}
                                   </p>
@@ -664,7 +660,8 @@ export default function RefundRequestsPage() {
                                       {ORGANISER_CARD_APPEAL_CEILING_NOTE}
                                     </p>
                                   )}
-                                </>
+                                  {req.booking.organiserCardMaxRefundableCents == null && req.booking.appealCardRefundOwedCents > 0 && <p className="text-xs text-muted-foreground">{appealCardRefundOwedOfficerNote(formatCents(req.booking.appealCardRefundOwedCents, format))}</p>}
+                                </div>
                               )}
                             </div>
                             <div className="space-y-2">

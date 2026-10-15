@@ -35,7 +35,8 @@ import {
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
-import { refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
+import { onPlanWhere, refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
+import { closePrePersistedRefundRow, type DoorCloseArgs } from "@/lib/pre-persisted-refund-close";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
   findWaitingSupplementaryInvoiceOperationForPaymentIntent,
@@ -52,13 +53,14 @@ import {
 } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
 import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
+import { unretryableRecoveryCause } from "@/lib/recovery-unretryable-cause";
 import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
-import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { closeCapacityRaceRefundRecordingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
-import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE } from "@/lib/payment-recovery-constants";
 import { stripeReferenceId } from "@/lib/stripe-references";
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
 import { formatCents } from "@/lib/utils";
@@ -291,7 +293,7 @@ async function enqueueLedgerRefundRecovery({
     if (allocationPlanJson !== undefined && !progressed(allocationPlan)) {
       const held = (await store.paymentRecoveryOperation.findUnique({ where: { idempotencyKey }, select: { allocationPlan: true } }))?.allocationPlan ?? null;
       if (progressed(parseRefundAllocationPlan(held))) return { created: false, paymentIntentId: representativePaymentIntentId };
-      planFence = { allocationPlan: held === null ? { equals: Prisma.DbNull } : { equals: held as Prisma.InputJsonValue } };
+      planFence = onPlanWhere(held);
     }
     // #4083: a repeat enqueue refreshes only a row no worker has picked up
     // (PENDING). One a worker has claimed, failed or closed keeps its amount,
@@ -554,6 +556,7 @@ export async function enqueueRefundRequestRefundRecovery({
 
 import {
   BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
+  CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
   buildBookingCancellationRefundIdempotencyKey,
   buildBookingCancellationRefundMetadata,
   buildBookingModificationRefundMetadata,
@@ -573,6 +576,7 @@ import {
   buildPaymentIntentCancelRecoveryIdempotencyKey,
   buildRefundRequestRefundMetadata,
   buildRefundRequestRefundRecoveryIdempotencyKey,
+  cardRefundOperationRefundMetadata,
   buildSupersededPaymentRefundRecoveryIdempotencyKey,
   buildLegacyModificationRefundStripeKeyPrefix,
   REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
@@ -583,6 +587,7 @@ import {
   groupSettlementIdForRefundRecoveryKey,
   isGroupSettlementRefundRecoveryKey,
   isOrganiserChildRefundKey,
+  isRefundRequestRefundRecoveryKey,
 } from "./payment-recovery-keys";
 export {
   buildBookingCancellationRefundMetadata,
@@ -642,32 +647,13 @@ export async function enqueueEditFinancialReviewRefundRecovery({
 /**
  * Happy-path close of the edit-financial-review refund recovery operation after
  * the inline refund completed. Best-effort, exactly as #1349's is: a lost close
- * leaves a PENDING operation whose replay re-requests the identical frozen slices
- * under the identical Stripe keys, so Stripe answers with the original refunds
- * and the ledger dedupes on refund id. No second movement of money is possible.
+ * leaves the operation open, and its replay re-requests the identical frozen
+ * slices under the identical Stripe keys, so Stripe answers with the original
+ * refunds and the ledger dedupes on refund id. #4144: only on the plan the door
+ * sent (`closePrePersistedRefundRow`), on the key its `closeDoorRow` builds
+ * once. Each door keeps a named close, as the seam its suites observe.
  */
-export async function markEditFinancialReviewRefundRecoverySucceeded({
-  taskId,
-  store = prisma,
-}: {
-  taskId: string;
-  store?: PaymentRecoveryStore;
-}) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey:
-        buildEditFinancialReviewRefundRecoveryIdempotencyKey(taskId),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
-}
+export const markEditFinancialReviewRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /** #3639: a treasurer-approved late-capture refund's debt, as the edit-review one above; replayed under the webhook's own prefix. */
 export async function enqueueLateCaptureApprovalRefundRecovery({
@@ -736,32 +722,12 @@ export async function enqueueBookingCancellationRefundRecovery({
  * Mark the booking-cancellation refund recovery operation SUCCEEDED after the
  * inline refund completed (#1349). The operation is persisted inside the
  * claim transaction BEFORE the Stripe call; this is the happy-path close. If
- * this update is lost (crash, DB blip) the operation stays PENDING and the
+ * this update is lost (crash, DB blip) the operation stays open and the
  * recovery cron replays the frozen plan — Stripe answers the replayed keys
  * with the original refunds and the ledger dedupes on refund id, so the close
- * being best-effort is safe.
+ * being best-effort is safe. #4144: only on the plan the door sent.
  */
-export async function markBookingCancellationRefundRecoverySucceeded({
-  bookingId,
-  store = prisma,
-}: {
-  bookingId: string;
-  store?: PaymentRecoveryStore;
-}) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
-}
+export const markBookingCancellationRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /**
  * Record why the inline cancellation refund failed on the already-persisted
@@ -839,37 +805,13 @@ export async function enqueueCapacityClaimFailedRefundRecovery({
 
 /**
  * Happy-path close of the capacity-race refund recovery operation after the
- * inline refund completed. Best-effort (mirrors #1349): a lost close leaves a
- * PENDING operation whose replay re-requests the identical frozen slices under
+ * inline refund completed. Best-effort (mirrors #1349): a lost close leaves an
+ * open operation whose replay re-requests the identical frozen slices under
  * the identical Stripe keys — Stripe answers with the original refunds and the
  * ledger dedupes on refund id, so no second money movement is possible.
+ * #4144: only on the plan the door sent.
  */
-export async function markCapacityClaimFailedRefundRecoverySucceeded({
-  bookingId,
-  paymentIntentId,
-  store = prisma,
-}: {
-  bookingId: string;
-  paymentIntentId: string;
-  store?: PaymentRecoveryStore;
-}) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
-        bookingId,
-        paymentIntentId,
-      ),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
-}
+export const markCapacityClaimFailedRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /**
  * Record why the inline capacity-race refund failed on the already-persisted
@@ -989,36 +931,12 @@ export async function findOtherDuplicateCaptureRefundOperation({
 /**
  * Happy-path close of the duplicate-capture refund recovery operation after
  * the inline refund completed (#1992). Best-effort (mirrors #1349): a lost
- * close leaves a PENDING operation whose replay re-requests the identical
+ * close leaves an open operation whose replay re-requests the identical
  * frozen slice under the identical Stripe keys — Stripe answers with the
- * original refund and the ledger dedupes on refund id.
+ * original refund and the ledger dedupes on refund id. #4144: only on the plan
+ * the door sent.
  */
-export async function markDuplicateCaptureRefundRecoverySucceeded({
-  bookingId,
-  paymentIntentId,
-  store = prisma,
-}: {
-  bookingId: string;
-  paymentIntentId: string;
-  store?: PaymentRecoveryStore;
-}) {
-  return store.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
-        bookingId,
-        paymentIntentId,
-      ),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
-}
+export const markDuplicateCaptureRefundRecoverySucceeded = (args: DoorCloseArgs) => closePrePersistedRefundRow(args);
 
 /**
  * Record why the inline duplicate-capture refund failed on the
@@ -1200,12 +1118,16 @@ async function enqueueSupersededPaymentRefundRecovery({
  * Because the fence lets exactly one concurrent or repeated attempt match, that
  * verdict is a claim a caller can hang a once-only epilogue off - rather than
  * off a re-derived condition that a partially-applied replay can make true
- * twice.
+ * twice. #4125: `store` closes it inside a caller's transaction; `lossExpected`
+ * logs a lost close at debug, for a replay whose inline door can close the same
+ * row first - the duplicate capture, the treasurer-approved late capture and
+ * the capacity race - where losing is an expected outcome, not an anomaly.
  */
 async function completePaymentRecoveryOperation(
   operationId: string,
+  { store = prisma, lossExpected = false }: { store?: PaymentRecoveryStore; lossExpected?: boolean } = {},
 ): Promise<boolean> {
-  const closed = await prisma.paymentRecoveryOperation.updateMany({
+  const closed = await store.paymentRecoveryOperation.updateMany({
     where: {
       id: operationId,
       status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
@@ -1219,7 +1141,7 @@ async function completePaymentRecoveryOperation(
     },
   });
   if (closed.count === 0) {
-    logger.warn(
+    logger[lossExpected ? "debug" : "warn"](
       { operationId },
       "Payment recovery completion matched no live operation (already succeeded, or deleted by a manual mark-paid reversal); nothing was resurrected"
     );
@@ -1232,7 +1154,7 @@ async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, 
     bookingId: operation.bookingId,
     operationId: operation.id,
     amountCents: await cardRefundStillOwedCents(operation), // #4117: read after the final attempt
-    errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempts: ${message}`,
+    errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempt${operation.attempts === 1 ? "" : "s"}: ${message}`,
     paymentIntentId: operation.paymentIntentId,
   }, format);
 }
@@ -1252,12 +1174,12 @@ async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, 
  * than one place, so anything that has to happen when a recovery dies had to be
  * bolted onto each of them and would silently miss the ones nobody remembered.
  *
- * TERMINAL IS AN ARGUMENT, NOT A DERIVATION. The two callers know different
- * things - the worker knows it has just burnt an attempt, the reaper knows the
- * row never came back - and a shared re-derivation from `attempts` would be a
- * fourth opinion. `nextRetryAt` is forced to `null` when terminal rather than
- * trusted from the caller, because a terminal row that keeps a retry time is
- * re-claimable and is therefore not terminal at all.
+ * TERMINAL IS AN ARGUMENT, NOT A DERIVATION. The worker knows it has burnt an
+ * attempt, or met a failure no retry fixes (#4081); the reaper knows the row
+ * never came back; a re-derivation from `attempts` would be a fourth opinion.
+ * When terminal, `nextRetryAt` is forced `null` (a row keeping a retry time is
+ * re-claimable, so not terminal) and `attempts` to the ceiling every dead-row
+ * reader tests (`INV-PAY-092`).
  *
  * STATUS-FENCED, like `completePaymentRecoveryOperation` and for the same
  * reason. The worker's arm used `update` by id, which throws `P2025` when a
@@ -1302,9 +1224,9 @@ async function markPaymentRecoveryOperationFailed({
    * replaced could not do that: its own `where` carried
    * `processingStartedAt < staleBefore`, so a freshly re-claimed row fell out of
    * it. Pinning the exact value restores that and is stricter than restating the
-   * threshold, because it also fences `attempts` - the only writer that
-   * increments `attempts` is the claim, and the claim is what rewrites
-   * `processingStartedAt`.
+   * threshold, because it also fences `attempts`: the claim increments it as it
+   * rewrites `processingStartedAt`, and a terminal failure raises it to the
+   * ceiling in the write that sets FAILED and clears `processingStartedAt`.
    */
   fromProcessingStartedAt?: Date | null;
   /**
@@ -1333,7 +1255,7 @@ async function markPaymentRecoveryOperationFailed({
       status: PaymentRecoveryOperationStatus.FAILED,
       lastError: message,
       processingStartedAt: null,
-      nextRetryAt: terminal ? null : nextRetryAt,
+      ...(terminal ? { nextRetryAt: null, attempts: Math.max(operation.attempts, MAX_PAYMENT_RECOVERY_ATTEMPTS) } : { nextRetryAt }),
     },
   });
 
@@ -1624,14 +1546,13 @@ async function failPaymentRecoveryOperation(
   error: unknown,
   format: ClubFormat,
 ) {
-  const message = errorMessage(error);
-  const exhausted = operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
-
+  const cause = await unretryableRecoveryCause(operation, error);
+  const terminal = cause !== null || operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
   const outcome = await markPaymentRecoveryOperationFailed({
     operation,
     format,
-    message,
-    terminal: exhausted,
+    message: cause ?? errorMessage(error),
+    terminal,
     nextRetryAt: nextRetryDate(operation.attempts),
     // Everything but SUCCEEDED, matching `completePaymentRecoveryOperation`'s
     // fence: the row was PROCESSING when this worker claimed it, but the
@@ -1656,7 +1577,7 @@ async function failPaymentRecoveryOperation(
    * it; a fourth outcome for the caller to sum would buy a more precise figure
    * that no reader has asked for.
    */
-  return outcome === "gone" ? (exhausted ? "failed" : "retry") : outcome;
+  return outcome === "gone" ? (terminal ? "failed" : "retry") : outcome;
 }
 
 async function claimPaymentRecoveryOperation(operationId: string) {
@@ -1706,8 +1627,8 @@ async function claimPaymentRecoveryOperation(operationId: string) {
  * `nextRetryAt` of NOW, and the very next queue read claims it - and taking it
  * would kill a live attempt and leave the terminality this loop read one attempt
  * out of date. `fromProcessingStartedAt` pins the exact attempt, which fences
- * `attempts` too: the claim is the only writer that increments `attempts`, and
- * it is the same write that replaces `processingStartedAt`.
+ * `attempts` too: the claim increments it as it replaces `processingStartedAt`,
+ * and a terminal failure raises it to the ceiling as it sets FAILED and clears it.
  */
 async function resetStaleProcessingOperations(format: ClubFormat) {
   const staleBefore = new Date(
@@ -1969,10 +1890,7 @@ async function processRefundSupersededPaymentOperation(
     return;
   }
 
-  const metadata = {
-    bookingId: operation.bookingId,
-    reason: "zero_dollar_batch_modification_superseded",
-  };
+  const metadata = cardRefundOperationRefundMetadata(operation);
   // #4103 (`INV-PAY-130`): a refusal is never closed or reported. The first ask
   // keeps the row's own key, so a refund made but unrecorded is replayed; a
   // refusal moves to a one-slice plan on a fresh key, which later attempts send.
@@ -2007,14 +1925,17 @@ async function processRefundSupersededPaymentOperation(
       // commit together. A row an older attempt left behind still lifts a mirror
       // with no credit on it to the card refunds on record (the ledger floor); with
       // a credit it cannot, and the refunded-total audit lists it.
-      await recordStripeRefundsAgainstTransaction({
+      const recorded = await recordStripeRefundsAgainstTransaction({
         paymentId: operation.paymentId,
         paymentTransactionId: refreshedTransaction.id,
         refunds: [refund],
         fallbackPaymentIntentId: operation.paymentIntentId,
       });
+      // #4104 review (ML2): a replayed key reads Stripe's original answer; the
+      // ledger knows the refund failed since, and this row moves it itself.
+      const status = recorded.readAsRefused.includes(refund.id) ? "failed" : (refund.status ?? null);
       return {
-        refunds: [{ status: refund.status ?? null, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
+        refunds: [{ status, slice: plan[0]!, refundId: refund.id, paymentIntentId: operation.paymentIntentId }],
       };
     },
   });
@@ -2172,16 +2093,17 @@ async function processBookingModificationRefundOperation(
   // (booking_cancel_refund_<bookingId>, #1160), and modification recoveries
   // read the prefix stored at enqueue time (#1152). Legacy modification rows
   // without a stored prefix keep their operation-scoped prefix.
-  const refundRequestId = operation.idempotencyKey.startsWith(
-    REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
-  )
+  // A refund request's own key only: an appeal's organiser-card debt is not this route's.
+  const refundRequestId = isRefundRequestRefundRecoveryKey(operation.idempotencyKey)
     ? operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length)
     : null;
   const isBookingCancellationRecovery = operation.idempotencyKey.startsWith(
     BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   );
 
-  let metadata: Record<string, string>;
+  // #4104 review (CM): the body comes from the one builder a failed-later
+  // refund's owner check reads too (`cardRefundOperationRefundMetadata`).
+  const metadata = cardRefundOperationRefundMetadata(operation);
   let idempotencyKeyPrefix: string;
   if (refundRequestId) {
     // #1507: replay the inline appeal-refund body VERBATIM. The admin approve
@@ -2194,10 +2116,6 @@ async function processBookingModificationRefundOperation(
     // bookingId + refundRequestId, so pre-fix rows replay through this same path
     // (the inline body — reason:"refund_appeal_approved" — is unchanged, so no
     // pre-deploy sliver).
-    metadata = buildRefundRequestRefundMetadata(
-      operation.bookingId,
-      refundRequestId,
-    );
     idempotencyKeyPrefix = `refund_request_${refundRequestId}`;
   } else if (isBookingCancellationRecovery) {
     // #1494: replay the inline cancel body VERBATIM. Both callers build the
@@ -2211,7 +2129,6 @@ async function processBookingModificationRefundOperation(
     // reconcile). The metadata reconstructs purely from the persisted
     // bookingId, so an operation enqueued BEFORE this fix replays through the
     // same code path (there is no separate persisted-metadata to miss).
-    metadata = buildBookingCancellationRefundMetadata(operation.bookingId);
     idempotencyKeyPrefix = `booking_cancel_refund_${operation.bookingId}`;
   } else {
     // #1507: replay the inline modification-refund body VERBATIM. The inline
@@ -2227,14 +2144,10 @@ async function processBookingModificationRefundOperation(
     idempotencyKeyPrefix =
       operation.stripeKeyPrefix ??
       buildLegacyModificationRefundStripeKeyPrefix(operation.id);
-    metadata = buildBookingModificationRefundMetadata(
-      operation.bookingId,
-      bookingModificationRefundReasonForKeyPrefix(operation.stripeKeyPrefix),
-    );
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
+  const refundId = await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
     format,
     paymentId: operation.paymentId,
     amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
@@ -2248,28 +2161,20 @@ async function processBookingModificationRefundOperation(
   // REFUND_BOOKING_MODIFICATION carrying a `duplicate_capture_<bookingId>_<pi>`
   // idempotency key). On this recovery-replay path record the admin-only
   // history event, gated on the terminal SUCCEEDED transition actually flipping
-  // the operation (count > 0) so it lands EXACTLY ONCE across the inline and
-  // cron paths: if the inline refund already closed the operation and recorded
-  // the event, this replay sees count 0 and records nothing. The guarded
-  // updateMany sets the identical terminal fields completePaymentRecoveryOperation
-  // would.
+  // the operation (`completePaymentRecoveryOperation` true) so it lands EXACTLY
+  // ONCE across the inline and cron paths: if the inline refund already closed
+  // the operation and recorded the event, this replay records nothing. #4125:
+  // the capacity race's REFUNDED event, the same way, for what the plan refunded.
+  if (operation.idempotencyKey.startsWith(CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX)) {
+    const refundedCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
+    await closeCapacityRaceRefundRecordingEvent({ bookingId: operation.bookingId, amountCents: refundedCents, actorMemberId: null }, (tx) =>
+      completePaymentRecoveryOperation(operation.id, { store: tx, lossExpected: true }));
+    return;
+  }
   const duplicateCapturePrefix =
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(operation.bookingId);
   if (operation.idempotencyKey.startsWith(duplicateCapturePrefix)) {
-    const transition = await prisma.paymentRecoveryOperation.updateMany({
-      where: {
-        id: operation.id,
-        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-      },
-      data: {
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-        nextRetryAt: null,
-        lastError: null,
-        processingStartedAt: null,
-        succeededAt: new Date(),
-      },
-    });
-    if (transition.count > 0) {
+    if (await completePaymentRecoveryOperation(operation.id, { lossExpected: true })) {
       await recordDuplicateCaptureRefundEvent({
         bookingId: operation.bookingId,
         amountCents: operation.amountCents,
@@ -2291,21 +2196,9 @@ async function processBookingModificationRefundOperation(
   // replay that actually moves the operation to SUCCEEDED (delta D6), so an
   // inline success whose close was lost is not recorded twice.
   if (isLateCaptureRefundStripeKeyPrefix(operation.stripeKeyPrefix)) {
-    const transition = await prisma.paymentRecoveryOperation.updateMany({
-      where: { id: operation.id, status: { not: PaymentRecoveryOperationStatus.SUCCEEDED } },
-      data: {
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-        nextRetryAt: null,
-        lastError: null,
-        processingStartedAt: null,
-        succeededAt: new Date(),
-      },
-    });
-    if (transition.count > 0) {
-      await finishApprovedLateCaptureRefundAfterReplay({
-        ...operation,
-        amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
-      });
+    if (await completePaymentRecoveryOperation(operation.id, { lossExpected: true })) {
+      const amountCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
+      await finishApprovedLateCaptureRefundAfterReplay({ ...operation, amountCents, refundId });
     }
     return;
   }
@@ -3207,6 +3100,7 @@ async function alertStalePaymentRecoveryQueueIfNeeded(format: ClubFormat, charge
     where: {
       status: PaymentRecoveryOperationStatus.PENDING,
       createdAt: { lt: staleThreshold },
+      ...PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE, // #4104: a dead row is not a stalled cron
       ...(quietCharges ? { type: { not: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT } } : {}),
     },
     orderBy: { createdAt: "asc" },
@@ -3330,9 +3224,11 @@ export async function runPaymentRecoveryOperationNow(
 export async function processPaymentRecoveryOperations(options?: {
   limit?: number;
   /**
-   * #3653: also read pending organiser child refunds back from Stripe. The
-   * payments cron passes it; the inline drain after an edit does not, so a
-   * member's request never waits on those provider reads.
+   * #3653, #4104: also read card refunds still recorded pending back from
+   * Stripe - organiser children's (`reconcilePendingOrganiserChildRefunds`)
+   * and every other one (`reconcilePendingCardRefunds`) - despite the name,
+   * kept for its callers. The payments cron passes it; the inline drain after
+   * an edit does not, so a member's request never waits on those provider reads.
    */
   reconcilePendingChildRefunds?: boolean;
 }): Promise<PaymentRecoveryProcessResult> {
@@ -3408,6 +3304,10 @@ export async function processPaymentRecoveryOperations(options?: {
     } catch (err) {
       logger.error({ err }, "Could not re-read pending organiser child refunds (#3653)");
     }
+    // #4104: and every other pending card refund, so one that failed later is owed again.
+    await import("@/lib/card-refund-status-sync")
+      .then(({ reconcilePendingCardRefunds }) => reconcilePendingCardRefunds())
+      .catch((err: unknown) => logger.error({ err }, "Could not re-read pending card refunds (#4104)"));
   }
 
   return result;

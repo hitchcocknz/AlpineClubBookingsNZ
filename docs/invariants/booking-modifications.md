@@ -98,7 +98,8 @@ second ask for the same money. Not recorded means not raised.
   customer as it was. The door's own mint looks nothing up.
 - **An edit's ask row is never written over another edit's**: the ask write
   refuses, atomically, a row naming another `bookingModificationId`, and the
-  runner also refuses an adopted intent that any row holds.
+  runner also refuses an adopted intent that any row holds. That refusal ends
+  the runner's recovery at once, cause named, one alert (#4081, `INV-PAY-092`).
 - **Not** a review charge (`INV-PAY-112`) or a re-issued ask (`INV-PAY-120`).
 
 ## INV-MOD-061

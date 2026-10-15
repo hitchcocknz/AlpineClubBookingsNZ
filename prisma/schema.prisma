@@ -3153,7 +3153,8 @@ model ManualRefundTask {
   /// and each read only by its own kind's reader: `groupOrganiserHandBack` (a
   /// group organiser's hand-back's joiner shares and alert record, #4042,
   /// `readGroupOrganiserHandBackShares`) and `paidTwiceResolved` (#3924,
-  /// `readPaidTwiceResolution`). Neither is edit-review evidence.
+  /// `readPaidTwiceResolution`, beside the close's own
+  /// `paidAnotherWayCardNoteCover`, #4104). Neither is edit-review evidence.
   reviewContext       Json?
   /// #3170 (epic #2797): which way this completion's money went. See
   /// `ManualRefundTaskDirection`.

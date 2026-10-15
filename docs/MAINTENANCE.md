@@ -1780,7 +1780,8 @@ owed — against the ledger lines that project them, and prints:
   booking's own rows (in-flight refunds and hand-backs, a review share kept by
   the club, the refunded total's credit and hand-back allocations, and so on).
   Each instance holds the gate until the owner acknowledges it to the cent,
-  except `GROUP_SETTLEMENT_OFF_LEDGER`, which is listed only. One class is the
+  except `GROUP_SETTLEMENT_OFF_LEDGER` and `REFUND_APPEAL_PAID`, which are
+  listed only. One class is the
   census failing closed rather than an expected difference:
   `AMBIGUOUS_REVIEW_GIVE_BACK`, a booking whose #3791 review give-back
   rows it cannot attribute to their reviews (a sibling review's price drop, a
@@ -2069,7 +2070,8 @@ unclassified disagreement, any coverage gap (a booking the back-post listed
 `CANNOT POST` still has one), any integrity finding, every
 `KNOWN_DEFECT_HISTORY` booking until an officer corrects it or you write it off
 in the acknowledgement file on #3583 (owner decision 1), and every other class
-instance until you acknowledge it to the cent. `GROUP_SETTLEMENT_OFF_LEDGER` is
+instance until you acknowledge it to the cent. `REFUND_APPEAL_PAID` (an appeal
+paid back exactly as recorded, #4075) is listed only. `GROUP_SETTLEMENT_OFF_LEDGER` is
 listed only; a group-settled child whose planned lines would not agree
 outright — refused by the back-post (correct the history), or posted with a
 class to acknowledge (run the back-post, then acknowledge) — is never in it,
