@@ -1371,7 +1371,16 @@ short).
     fails its re-checked WHERE and lands in the second; else an insert with
     `skipDuplicates`, then the update again. An edit's write also lands only on
     its own or an unattributed row (`INV-MOD-060`).
-  - Proven by `intent-ledger-row-write.test.ts` and, on PostgreSQL,
+  - **The other writer of these rows** is the saved-card attempt's settle
+    (`forwardOnlyStatusGuard`, `saved-card-charge-settle.ts`, #3267). It
+    records Stripe's answer for its own attempt row: an answer the row has
+    moved past is refused whole and read back, and FAILED counts as resolved.
+    This write must still land a row's attribution and provenance, and FAILED
+    stays payable, so only the status is held back. Different rules, so no
+    shared predicate.
+  - **Deploy window**: until the old image drains, old code can still lower a
+    captured row, and the new code does not repair one already lowered.
+  - Proven by `payment-intent-ledger-row-write.test.ts` and, on PostgreSQL,
     `additional-ask-reduction.realdb.test.ts` ("#4081").
 
 ## INV-PAY-031
@@ -3075,7 +3084,8 @@ _Split from `INV-PAY-055` (#3267, epic #3270)._
 _Split from `INV-PAY-056` (#3220)._
 
 - **Terminality is an argument, not a re-derivation**: the worker
-  knows it has just burnt an attempt and the stale-worker reaper knows the row
+  knows it has just burnt an attempt, or has met a failure no retry fixes
+  (`INV-PAY-092`, #4081), and the stale-worker reaper knows the row
   never came back, and a shared re-derivation from `attempts` would be a third
   opinion on a fact its callers already hold. `nextRetryAt` is forced to `null`
   when terminal rather than trusted from the caller, because a terminal row
@@ -3117,7 +3127,8 @@ _Split from `INV-PAY-056` (#3220)._
   Anyone reading the two-readings rule into that query will predict a deferral
   that is not there; `INV-PAY-057` states what follows from the gap.
 - **A terminal row is always at the attempt ceiling**, so "attempts spent" stays
-  exact for every reader, the stuck-state page and health check included. A
+  exact for every reader, the stuck-state page, health check and finance
+  diagnostics included; a row stopped at once also shows the ceiling. A
   failure no retry can fix ends the recovery on its first attempt (#4081,
   `unretryableRecoveryCause`): today, an edit's ask write refused because its
   intent is another edit's (`INV-MOD-060`). The cause goes on `lastError` and in

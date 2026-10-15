@@ -1,9 +1,9 @@
 /**
  * #4081: A RECOVERY FAILURE A RETRY CANNOT FIX STOPS THE RECOVERY AT ONCE.
  *
- * The recovery runner retries a failed attempt on a backoff (about seventeen
- * hours over five attempts) and alerts an officer only when the attempts run
- * out. That suits a provider outage, which passes. It does not suit a refusal
+ * The recovery runner retries a failed attempt on a backoff (5, 15, 60 and 240
+ * minutes between five attempts, about 5h20m) and alerts an officer only when
+ * the attempts run out. That suits a provider outage, which passes. It does not suit a refusal
  * the next attempt will meet again, which only burns the backoff before anyone
  * hears of it.
  *
@@ -22,18 +22,32 @@
  */
 import { PaymentRecoveryOperationType, type PaymentRecoveryOperation } from "@prisma/client";
 
-import { AdditionalAskAttributionConflictError } from "@/lib/intent-ledger-row-write";
+import { bookingModificationTypeLabel } from "@/lib/booking-money-lines";
+import logger from "@/lib/logger";
+import { AdditionalAskAttributionConflictError } from "@/lib/payment-intent-ledger-row-write";
+import { prisma } from "@/lib/prisma";
 
-/** The officer-facing cause when `error` ends `operation` now, else null (retry as usual). */
-export function unretryableRecoveryCause(
+/**
+ * The officer-facing cause when `error` ends `operation` now, else null (retry
+ * as usual). It names the booking change by the label the booking's history
+ * shows; never throws, since the runner's failure path calls it.
+ */
+export async function unretryableRecoveryCause(
   operation: Pick<PaymentRecoveryOperation, "type">,
   error: unknown,
-): string | null {
+): Promise<string | null> {
   if (
-    operation.type === PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT &&
-    error instanceof AdditionalAskAttributionConflictError
+    operation.type !== PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT ||
+    !(error instanceof AdditionalAskAttributionConflictError)
   ) {
-    return `This ask's card payment request (${error.paymentIntentId}) is already recorded for another booking edit, so it was not recorded for edit ${error.bookingModificationId}. A retry would be refused the same way, so retries stopped. The money is still owed: check this booking's additional payments against Stripe and collect it by hand (#4081).`;
+    return null;
   }
-  return null;
+  const change = await prisma.bookingModification
+    .findUnique({ where: { id: error.bookingModificationId }, select: { modificationType: true } })
+    .catch((err: unknown) => {
+      logger.warn({ err, bookingModificationId: error.bookingModificationId }, "Could not read the booking change a stopped recovery names");
+      return null;
+    });
+  const named = change?.modificationType ? `the "${bookingModificationTypeLabel(change.modificationType)}" change` : "a change";
+  return `The card request for ${named} to this booking could not be recorded: Stripe returned card request ${error.paymentIntentId}, which is already recorded for another change to the same booking. Retrying would be refused the same way, so the app stopped. The money for this change is still owed: find it in the booking's history, check its card requests against Stripe, and collect what is missing by hand.`;
 }

@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   AdditionalAskAttributionConflictError,
+  IntentLedgerRowVanishedError,
   writePaymentIntentTransaction,
-} from "@/lib/intent-ledger-row-write";
+} from "@/lib/payment-intent-ledger-row-write";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 
 /**
@@ -39,6 +40,10 @@ function ledger(rows: Row[]) {
         // As Prisma: an `undefined` field is left as it is.
         for (const row of hit) for (const [field, value] of Object.entries(data)) if (value !== undefined) row[field] = value;
         return { count: hit.length };
+      },
+      findUnique: async ({ where, select }: { where: Row; select: Row }) => {
+        const row = rows.find((candidate) => matches(candidate, where));
+        return row ? Object.fromEntries(Object.keys(select).map((key) => [key, row[key]])) : null;
       },
       createMany: async ({ data, skipDuplicates }: { data: Row[]; skipDuplicates: boolean }) => {
         if (!skipDuplicates) refuse("createMany without skipDuplicates");
@@ -128,6 +133,22 @@ describe("#4081: writing an intent's ledger row never lowers a captured status",
       await expect(write(ledger(rows), PaymentStatus.PENDING, "mod-y")).rejects.toBeInstanceOf(AdditionalAskAttributionConflictError);
 
       expect(rows).toEqual([before]);
+    },
+  );
+
+  it.each([["an edit's write", "mod-y"], ["a plain write", undefined]] as const)(
+    "%s whose row vanishes after the insert's conflict throws the retryable error, never the attribution refusal",
+    async (_writer, bookingModificationId) => {
+      // The insert meets a concurrent writer's row (ON CONFLICT DO NOTHING),
+      // which is deleted before the update that follows it.
+      const rows: Row[] = [];
+      const store = ledger(rows) as unknown as { paymentTransaction: { createMany: (args: unknown) => Promise<{ count: number }> } };
+      store.paymentTransaction.createMany = async () => ({ count: 0 });
+
+      const written = write(store as never, PaymentStatus.PENDING, bookingModificationId);
+
+      await expect(written).rejects.toBeInstanceOf(IntentLedgerRowVanishedError);
+      await expect(written).rejects.not.toBeInstanceOf(AdditionalAskAttributionConflictError);
     },
   );
 });

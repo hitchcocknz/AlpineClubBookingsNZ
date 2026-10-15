@@ -2,8 +2,8 @@
   the same booking now reaches an administrator at once (#4081).** In a rare
   order, two changes to one booking can end up with the same card request
   recorded for the first. The automatic retry for the second used to be refused
-  the same way on each of its five attempts, about seventeen hours, before
-  anyone was told. It now stops on the first refusal, keeps the money owed on
+  the same way on each of its five attempts, over about five hours and twenty
+  minutes, before anyone was told. It now stops on the first refusal, keeps the money owed on
   record, and sends one alert that names the cause; the "Exhausted recovery
   operations" item on the stuck-state page lists it.
 - **A card payment already taken can no longer read as unpaid again (#4081).**

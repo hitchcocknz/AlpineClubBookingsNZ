@@ -79,9 +79,26 @@ export async function writePaymentIntentTransaction(
   if (await updateOurs()) return;
   if ((await store.paymentTransaction.createMany({ data: [create], skipDuplicates: true })).count === 1) return;
   if (await updateOurs()) return;
-  if (bookingModificationId !== undefined) {
+  // Refused only when the row is there and names another edit: a refusal ends
+  // the recovery at once (#4081), so a row merely gone is the retryable error.
+  const row = await store.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: paymentIntentId },
+    select: { bookingModificationId: true },
+  });
+  if (bookingModificationId !== undefined && row?.bookingModificationId != null && row.bookingModificationId !== bookingModificationId) {
     throw new AdditionalAskAttributionConflictError(paymentIntentId, bookingModificationId);
   }
-  // Only a row deleted between the insert's conflict and this update gets here.
-  throw new Error(`PaymentIntent ${paymentIntentId}'s ledger row could not be written: it vanished mid-write (#4081)`);
+  throw new IntentLedgerRowVanishedError(paymentIntentId);
+}
+
+/**
+ * The intent's row was deleted between the insert's conflict and the update
+ * that followed it. Nothing was refused, so the caller retries as for any
+ * other failure.
+ */
+export class IntentLedgerRowVanishedError extends Error {
+  constructor(readonly paymentIntentId: string) {
+    super(`PaymentIntent ${paymentIntentId}'s ledger row could not be written: it vanished mid-write (#4081)`);
+    this.name = "IntentLedgerRowVanishedError";
+  }
 }

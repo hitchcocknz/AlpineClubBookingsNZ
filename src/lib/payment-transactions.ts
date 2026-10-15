@@ -14,7 +14,7 @@ import { compareOrdinal } from "@/lib/ordinal-order";
 import { withStoreTransaction } from "@/lib/db-transaction";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
 import logger from "@/lib/logger";
-import { writePaymentIntentTransaction } from "@/lib/intent-ledger-row-write";
+import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import { z } from "zod";
 import type { ClubFormat } from "@/lib/club-format";

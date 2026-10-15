@@ -2906,7 +2906,8 @@ describe("payment recovery worker", () => {
 
     it("#4081: an ask write refused for another edit's row ends the recovery at once - one alert naming the cause, no retry", async () => {
       primeQueue(additionalIntentOperation({ attempts: 1 }));
-      const { AdditionalAskAttributionConflictError } = await import("@/lib/intent-ledger-row-write");
+      mockBookingModificationFindUnique.mockResolvedValue({ priceDiffCents: 3000, changeFeeCents: 0, modificationType: "GUEST_ADD" });
+      const { AdditionalAskAttributionConflictError } = await import("@/lib/payment-intent-ledger-row-write");
       mockUpsertPaymentIntentTransaction.mockRejectedValueOnce(
         new AdditionalAskAttributionConflictError("pi_recovered", "mod-9"),
       );
@@ -2921,7 +2922,7 @@ describe("payment recovery worker", () => {
       expect(failureWrites[0]!.where).toMatchObject({ id: "recovery-additional", attempts: 1 });
       expect(failureWrites[0]!.data).toEqual({
         status: PaymentRecoveryOperationStatus.FAILED,
-        lastError: expect.stringContaining("already recorded for another booking edit"),
+        lastError: expect.stringContaining("which is already recorded for another change to the same booking"),
         processingStartedAt: null,
         nextRetryAt: null,
         // The claim refuses a row here (`attempts < MAX`), and every dead-row reader counts it.
@@ -2930,7 +2931,7 @@ describe("payment recovery worker", () => {
       expect(failureWrites[0]!.data.lastError).toContain("pi_recovered");
       // One failure alert (the stale-queue alert this fixture's old row also raises is not one).
       expect(recoveryFailureAlerts()).toEqual([
-        expect.stringMatching(/failed after 1 attempt: This ask's card payment request \(pi_recovered\) is already recorded for another booking edit/),
+        expect.stringMatching(/failed after 1 attempt: The card request for the "Guests Added" change to this booking could not be recorded: Stripe returned card request pi_recovered, which is already recorded for another change/),
       ]);
       // An ordinary ask's dead recovery withdraws nothing: the intent is the other edit's ask.
       expect(mockCancelPaymentIntentIfCancellableWithResult).not.toHaveBeenCalled();

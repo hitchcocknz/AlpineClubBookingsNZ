@@ -1786,7 +1786,7 @@ let webhookClient: PrismaClient;
     // door asked (here the frozen fallback: Y's own net reads zero), so Stripe
     // hands back the intent X recorded and the write is refused again. A retry
     // can only repeat that, so the recovery ends on the first refusal and an
-    // officer hears now, not after five attempts (about seventeen hours).
+    // officer hears now, not after five attempts (about 5h20m of backoff).
     it("#4081: Y's retry re-derives Y's own figure and is handed X's recorded intent - the recovery ends at once, one alert naming the cause, no further attempt", async () => {
       const { stripe, x, y, xRecovery, recoveryOf } = await twoEditsOneFigure({ yDoorFails: false });
       const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
@@ -1821,9 +1821,9 @@ let webhookClient: PrismaClient;
         status: "FAILED", nextRetryAt: null, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, processingStartedAt: null,
         amountCents: 6_000, paymentIntentId: `mod_guest_${BOOKING_ID}_${y.id}`,
       });
-      expect(dead.lastError).toContain(`(${xIntent!.id}) is already recorded for another booking edit`);
+      expect(dead.lastError).toContain(`card request ${xIntent!.id}, which is already recorded for another change to the same booking`);
       expect(recoveryAlerts.sent).toEqual([
-        { operationId: yRecovery.id, errorMessage: expect.stringContaining(`failed after 1 attempt: This ask's card payment request (${xIntent!.id})`) },
+        { operationId: yRecovery.id, errorMessage: expect.stringContaining(`failed after 1 attempt: The card request for the "Guests Added" change to this booking`) },
       ]);
       // X's row is untouched, and Stripe was asked nothing new.
       expect(await xRow()).toEqual({ bookingModificationId: x.id, status: "PENDING", amountCents: 6_000 });
