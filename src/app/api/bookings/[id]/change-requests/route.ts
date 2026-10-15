@@ -30,6 +30,7 @@ import {
   buildChangeRequestSummary,
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
   changeRequestAddGuestsSchema,
+  changeRequestValidationMessage,
   changeRequestGuestStayRangeSchema,
   namesStayRangeChange,
   storedGuestNightsAsDays,
@@ -210,7 +211,7 @@ export async function POST(
   const parsed = createChangeRequestSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
+      { error: changeRequestValidationMessage(parsed.error), details: parsed.error.flatten() },
       { status: 400 }
     );
   }
@@ -269,7 +270,7 @@ export async function POST(
   const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
   const nightsRefusal =
     addedGuestNightsRefusal(addGuests ?? [], stay) ??
-    guestStayRangesRefusal(guestStayRanges ?? [], stay) ??
+    guestStayRangesRefusal(guestStayRanges ?? [], stay, booking.guests) ??
     requestedDatesIgnoredByNightsRefusal({
       booking,
       guests: booking.guests,

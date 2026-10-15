@@ -5,6 +5,9 @@ import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import type { BatchModifyInput } from "@/lib/booking-modify";
 import { isEffectiveStayRangeChange } from "@/lib/booking-change-request-guests";
+import { collapseNightRuns } from "@/lib/bed-allocation-board-window";
+import { addDaysDateOnly, formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 
 /**
  * A LOCKED_PERIOD change request's stored `requestedChanges`, read back, and
@@ -20,10 +23,11 @@ import { isEffectiveStayRangeChange } from "@/lib/booking-change-request-guests"
 
 const optionalDate = z.string().nullish();
 /**
- * A guest's explicit night set (#713) as stored (#4088): `yyyy-mm-dd` nights.
- * Absent on rows written before grid-mode requests kept their nights.
+ * A guest's explicit night set (#713) as stored (#4088), read by the request's
+ * own schema so a malformed night makes the row unreadable rather than throwing
+ * later. Absent on rows written before grid-mode requests kept their nights.
  */
-const optionalNights = z.array(z.string()).nullish();
+const optionalNights = guestNightListSchema.nullish();
 
 /**
  * What `POST /api/bookings/[id]/change-requests` writes into
@@ -45,6 +49,9 @@ export const storedLockedPeriodRequestSchema = z.object({
         stayStart: z.string().nullish(),
         stayEnd: z.string().nullish(),
         nights: optionalNights,
+        // Shown to the officer beside the nights asked for (#4088).
+        firstName: z.string().nullish(),
+        lastName: z.string().nullish(),
       }),
     ),
   }),
@@ -131,7 +138,9 @@ export function lockedPeriodRequestToBatchInput(
   // planner's `nights` (#713) — the same writer the editor's grid uses — so
   // approval applies, and prices, exactly the nights the member chose.
   const guestStayRanges = requested.guestStayRanges
-    .filter((range) => Boolean(range.stayStart && range.stayEnd) || hasNights(range))
+    // Not `entryHasStayRange`: that admits a one-bound range, which a row stored
+    // before #4030 refused them may still hold, and this has always dropped.
+    .filter((range) => Boolean(range.stayStart && range.stayEnd) || Boolean(range.nights?.length))
     // A range for a guest the same request removes is moot, and the planner
     // would refuse it as naming a guest no longer on the booking.
     .filter((range) => !removed.has(range.guestId))
@@ -139,7 +148,7 @@ export function lockedPeriodRequestToBatchInput(
       guestId: range.guestId,
       stayStart: range.stayStart ?? null,
       stayEnd: range.stayEnd ?? null,
-      ...(hasNights(range) ? { nights: range.nights } : {}),
+      ...(range.nights?.length ? { nights: range.nights } : {}),
     }));
   const addGuests = requested.addGuests.map((guest) => ({
     firstName: guest.firstName,
@@ -149,7 +158,7 @@ export function lockedPeriodRequestToBatchInput(
     ...(guest.memberId ? { memberId: guest.memberId } : {}),
     stayStart: guest.stayStart ?? null,
     stayEnd: guest.stayEnd ?? null,
-    ...(hasNights(guest) ? { nights: guest.nights } : {}),
+    ...(guest.nights?.length ? { nights: guest.nights } : {}),
   }));
   // #4030 review M2: whether the request names nothing is judged on the ranges
   // that CHANGE something — a range repeating the guest's stored nights is not
@@ -175,12 +184,6 @@ export function lockedPeriodRequestToBatchInput(
   };
 }
 
-function hasNights(entry: {
-  nights?: ReadonlyArray<string> | null;
-}): entry is { nights: ReadonlyArray<string> } {
-  return Boolean(entry.nights && entry.nights.length > 0);
-}
-
 /**
  * #4030: whether a stored request names nothing the booking can be changed by —
  * the free-text requests the officer may enter guests for on approval. `false`
@@ -196,4 +199,59 @@ export function storedRequestNamesNoChange(
 ): boolean {
   const stored = storedLockedPeriodRequestSchema.safeParse(requestedChanges);
   return stored.success && lockedPeriodRequestToBatchInput(stored.data, booking) === null;
+}
+
+/** One guest's nights as a request asks for them, for the officer's card (#4088). */
+export interface RequestedGuestNights {
+  name: string;
+  /** Runs of consecutive nights, first and last night inclusive; empty for the whole stay. */
+  runs: Array<{ firstNight: string; lastNight: string }>;
+  /** The guest is one the request adds, not one already on the booking. */
+  added: boolean;
+  /** An existing guest whose requested nights are the ones they already hold. */
+  unchanged: boolean;
+}
+
+type StoredNights = { stayStart?: string | null; stayEnd?: string | null; nights?: string[] | null };
+
+/** A grid night set as runs; else the two bounds as one run, never expanded. */
+function requestedRuns(entry: StoredNights): RequestedGuestNights["runs"] | null {
+  if (entry.nights?.length) {
+    return collapseNightRuns(entry.nights).map(({ firstNight, lastNight }) => ({ firstNight, lastNight }));
+  }
+  if (!entry.stayStart || !entry.stayEnd) return null;
+  if (!isDateOnlyString(entry.stayStart) || !isDateOnlyString(entry.stayEnd)) return null;
+  return [{ firstNight: entry.stayStart, lastNight: formatDateOnly(addDaysDateOnly(parseDateOnly(entry.stayEnd), -1)) }];
+}
+
+/**
+ * Each guest's requested nights, read from the stored request by the
+ * executor's own schema, so the officer's card shows the nights approving
+ * would apply (#4088): a grid night set as chosen, else Date In to the last
+ * night. Guests the request does not name are not listed; an unreadable row
+ * lists nobody.
+ */
+export function describeRequestedGuestNights(requestedChanges: unknown): RequestedGuestNights[] {
+  const parsed = storedLockedPeriodRequestSchema.safeParse(requestedChanges);
+  if (!parsed.success) return [];
+  const { original, requested } = parsed.data;
+  const removed = new Set(requested.removeGuests.map((guest) => guest.id));
+  const existing = requested.guestStayRanges.flatMap((range) => {
+    const runs = removed.has(range.guestId) ? null : requestedRuns(range);
+    if (!runs) return [];
+    const guest = original.guests.find((candidate) => candidate.id === range.guestId);
+    const current =
+      guest?.stayStart && guest.stayEnd
+        ? { stayStart: guest.stayStart, stayEnd: guest.stayEnd, nights: guest.nights }
+        : undefined;
+    const name = `${guest?.firstName ?? ""} ${guest?.lastName ?? ""}`.trim() || "A guest on the booking";
+    return [{ name, runs, added: false, unchanged: Boolean(current) && !isEffectiveStayRangeChange(range, current) }];
+  });
+  const added = requested.addGuests.map((guest) => ({
+    name: `${guest.firstName} ${guest.lastName}`.trim(),
+    runs: requestedRuns(guest) ?? [],
+    added: true,
+    unchanged: false,
+  }));
+  return [...existing, ...added];
 }

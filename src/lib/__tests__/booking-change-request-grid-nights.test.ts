@@ -53,7 +53,9 @@ vi.mock("@/lib/club-time/server", () => ({
 
 import { POST } from "@/app/api/bookings/[id]/change-requests/route";
 import { CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE } from "@/lib/booking-change-request-guests";
+import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
 import {
+  describeRequestedGuestNights,
   lockedPeriodRequestToBatchInput,
   storedLockedPeriodRequestSchema,
   storedRequestNamesNoChange,
@@ -205,7 +207,8 @@ describe("POST /api/bookings/[id]/change-requests keeps a grid request's night s
       requestedEffectiveDate: "2026-06-30",
     });
     expect(malformed.status).toBe(400);
-    expect((await malformed.json()).error).toBe("Validation failed");
+    // Said in the member's terms, not as a schema failure.
+    expect((await malformed.json()).error).toBe(GUEST_NIGHT_INVALID_MESSAGE);
 
     // An added guest's nights must fall inside the stay, as their dates must.
     const outside = await post({
@@ -221,6 +224,22 @@ describe("POST /api/bookings/[id]/change-requests keeps a grid request's night s
     });
     expect(unreached.status).toBe(400);
     expect((await unreached.json()).error).toBe(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE);
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("names the guest in a refusal, not their position in the list", async () => {
+    const existing = await post({
+      guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-07-02", stayEnd: "2026-07-01" }],
+      requestedEffectiveDate: "2026-06-30",
+    });
+    expect(existing.status).toBe(400);
+    expect((await existing.json()).error).toBe("Alex Example: Date Out must be after Date In.");
+
+    const added = await post({
+      addGuests: [{ ...grandchild, stayStart: "2026-06-30", stayEnd: "2026-06-30" }],
+    });
+    expect(added.status).toBe(400);
+    expect((await added.json()).error).toBe("Ari Example: Date Out must be after Date In.");
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
   });
 });
@@ -283,5 +302,76 @@ describe("the stored grid request, read back for approval (#4088)", () => {
     expect(lockedPeriodRequestToBatchInput(stored, live)).toEqual({
       guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-01" }],
     });
+  });
+});
+
+describe("each guest's requested nights, for the officer's card (#4088)", () => {
+  it("lists a grid night set as runs, an added guest's nights, and the guest's name", async () => {
+    const response = await post({
+      addGuests: [{ ...grandchild, nights: ["2026-06-30", "2026-07-01"] }, { ...grandchild, firstName: "Bo" }],
+      guestStayRanges: [{ guestId: "guest-1", nights: ["2026-06-30", "2026-07-02"] }],
+    });
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
+    expect(describeRequestedGuestNights(storedChanges())).toEqual([
+      {
+        name: "Alex Example",
+        runs: [
+          { firstNight: "2026-06-30", lastNight: "2026-06-30" },
+          { firstNight: "2026-07-02", lastNight: "2026-07-02" },
+        ],
+        added: false,
+        unchanged: false,
+      },
+      {
+        name: "Ari Example",
+        runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-01" }],
+        added: true,
+        unchanged: false,
+      },
+      // No nights of their own: the whole stay.
+      { name: "Bo Example", runs: [], added: true, unchanged: false },
+    ]);
+  });
+
+  it("shows a two-bound range as Date In to the last night, and marks nights the guest already holds", () => {
+    const original = {
+      checkIn: "2026-06-30",
+      checkOut: "2026-07-03",
+      guests: [
+        { id: "guest-1", firstName: "Alex", lastName: "Example", stayStart: "2026-06-30", stayEnd: "2026-07-03", nights: STAY_NIGHTS },
+        { id: "guest-2", firstName: "Sam", lastName: "Example", stayStart: "2026-06-30", stayEnd: "2026-07-03" },
+      ],
+    };
+    expect(
+      describeRequestedGuestNights({
+        original,
+        requested: {
+          guestStayRanges: [
+            { guestId: "guest-1", nights: STAY_NIGHTS },
+            { guestId: "guest-2", stayStart: "2026-06-30", stayEnd: "2026-07-01" },
+          ],
+        },
+      }),
+    ).toEqual([
+      {
+        name: "Alex Example",
+        runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-02" }],
+        added: false,
+        unchanged: true,
+      },
+      {
+        name: "Sam Example",
+        runs: [{ firstNight: "2026-06-30", lastNight: "2026-06-30" }],
+        added: false,
+        unchanged: false,
+      },
+    ]);
+    // An unreadable row (a night that is not a day) lists nobody.
+    expect(
+      describeRequestedGuestNights({
+        original,
+        requested: { guestStayRanges: [{ guestId: "guest-1", nights: ["not-a-night"] }] },
+      }),
+    ).toEqual([]);
   });
 });

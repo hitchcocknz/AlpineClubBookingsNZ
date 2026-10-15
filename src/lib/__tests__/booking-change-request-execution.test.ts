@@ -445,6 +445,39 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     expect(await run()).toMatchObject({ outcome: "executed" });
   });
 
+  it("a snapshot with a guest's range but no night rows is not drift for a sparse guest (#4088)", async () => {
+    // Stored by a route before #4088 recorded night rows: the range matches the
+    // live guest, whose own nights have a gap the snapshot never described.
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+              ],
+            },
+          },
+        }),
+      );
+    const sparse = ["2026-06-10", "2026-06-13"].map((night) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) }));
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: ["g1", "g2"].map((id) => ({
+        id,
+        stayStart: new Date("2026-06-10T00:00:00.000Z"),
+        stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+        nights: sparse,
+      })),
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+  });
+
   it("keeps the request pending when the booking has moved since the request (drift)", async () => {
     mocks.bookingFindUnique.mockResolvedValue({
       ...finishedBooking,

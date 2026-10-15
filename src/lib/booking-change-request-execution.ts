@@ -24,6 +24,7 @@ import {
   checkOwnDependantIdentityForParty,
   claimedMemberPathIds,
 } from "@/lib/booking-dependant-identity";
+import { sameNightKeys } from "@/lib/booking-guest-stay-ranges";
 import {
   addedGuestNightsRefusal,
   guestNightKeys,
@@ -131,10 +132,10 @@ function bookingDriftedFromRequest(
     if (!current || !guest.stayStart || !guest.stayEnd) return false;
     const now = storedGuestNightsAsDays(current);
     if (guest.stayStart !== now.stayStart || guest.stayEnd !== now.stayEnd) return true;
+    // A row stored before #4088 recorded no night rows: nothing to compare.
     if (guest.nights == null) return false;
     const before = guestNightKeys({ stayStart: guest.stayStart, stayEnd: guest.stayEnd, nights: guest.nights });
-    const after = guestNightKeys(now);
-    return before.length !== after.length || before.some((night, i) => night !== after[i]);
+    return !sameNightKeys(before, guestNightKeys(now));
   });
 }
 

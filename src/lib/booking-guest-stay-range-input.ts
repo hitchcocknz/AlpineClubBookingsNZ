@@ -7,6 +7,10 @@ import {
 import { storedDateOnly } from "@/lib/stored-calendar-day";
 import { z } from "zod";
 
+/** What a member is told about a night that is not a real day (#4088). */
+export const GUEST_NIGHT_INVALID_MESSAGE =
+  "One of the nights chosen isn't a valid date. Please choose the nights again.";
+
 /**
  * A guest's explicit night set (#713) as a request carries it: `yyyy-mm-dd`
  * nights, at most a year of them. The one request shape for `nights`, shared by
@@ -17,7 +21,7 @@ import { z } from "zod";
  * `normalizeGuestStayRange` below.
  */
 export const guestNightListSchema = z
-  .array(z.string().refine(isDateOnlyString, { message: "Night must be YYYY-MM-DD" }))
+  .array(z.string().refine(isDateOnlyString, { message: GUEST_NIGHT_INVALID_MESSAGE }))
   .max(370);
 
 export type BookingGuestStayRangeInput = {

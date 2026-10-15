@@ -9,3 +9,9 @@
   changed on the booking after the member sent the request, nothing is applied
   and the officer is told the booking has changed. Requests sent with ordinary
   Date In and Date Out work as before.
+
+  The officer's card on Booking Requests now lists the nights each guest is
+  asked for, in runs (for example "3 Jul – 4 Jul, 6 Jul"), marking a guest
+  whose nights would not change. A request with a night that isn't a real date
+  is refused in plain words, and a refusal about a guest's dates names the
+  guest rather than their place in the list.

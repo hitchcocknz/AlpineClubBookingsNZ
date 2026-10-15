@@ -9,11 +9,18 @@ import {
 } from "@/lib/club-time";
 import {
   BookingGuestStayRangeValidationError,
+  GUEST_NIGHT_INVALID_MESSAGE,
   guestNightListSchema,
   normalizeGuestStayRange,
+  type BookingGuestStayRangeInput,
+  type NormalizedBookingGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
 import { parseDateOnly } from "@/lib/date-only";
-import { expandStayEnvelopeToNightKeys } from "@/lib/booking-guest-stay-ranges";
+import {
+  getExplicitGuestBedNightKeys,
+  getGuestBedNightKeys,
+  sameNightKeys,
+} from "@/lib/booking-guest-stay-ranges";
 import {
   resolveModificationStayRanges,
   type LiveGuestStayRow,
@@ -86,6 +93,17 @@ export const officerEnteredGuestsSchema = z
 export type OfficerEnteredGuest = z.infer<typeof officerEnteredGuestsSchema>[number];
 
 /**
+ * The `error` a request the schema refuses is answered with (#4088): a bad
+ * night is said in the member's terms, anything else stays "Validation failed"
+ * with the details beside it.
+ */
+export function changeRequestValidationMessage(error: z.ZodError): string {
+  return error.issues.some((issue) => issue.path.includes("nights"))
+    ? GUEST_NIGHT_INVALID_MESSAGE
+    : "Validation failed";
+}
+
+/**
  * The refusal a request with no structured change gets. A note alone cannot be
  * applied to the booking, so it is no longer a request (owner decision on #4030:
  * "a structured delta is required"). Said in the member's terms, pointing at the
@@ -122,6 +140,34 @@ export interface ChangeRequestStay {
   checkOut: string;
 }
 
+/** A guest's name as a refusal says it (#4088), or `null` when it is not known. */
+function guestName(guest: { firstName?: string | null; lastName?: string | null } | undefined) {
+  const name = `${guest?.firstName ?? ""} ${guest?.lastName ?? ""}`.trim();
+  return name || null;
+}
+
+/**
+ * One guest's nights read by the canonical `normalizeGuestStayRange`, or its
+ * refusal said with the guest's name in place of the position label ("Guest
+ * 2") the shared rule writes (#4088), as the within-stay refusal below does.
+ */
+function readNamedStayRange(
+  entry: BookingGuestStayRangeInput,
+  bounds: { checkIn: Date; checkOut: Date },
+  index: number,
+  name: string | null,
+): NormalizedBookingGuestStayRange | { refusal: string } {
+  try {
+    return normalizeGuestStayRange(entry, bounds, index);
+  } catch (error) {
+    if (!(error instanceof BookingGuestStayRangeValidationError)) throw error;
+    const label = `Guest ${index + 1}`;
+    return {
+      refusal: name && error.message.startsWith(label) ? `${name}${error.message.slice(label.length)}` : error.message,
+    };
+  }
+}
+
 /**
  * Why an added guest's nights cannot be requested, or `null` when every one is
  * a run of nights inside the stay.
@@ -144,24 +190,11 @@ export function addedGuestNightsRefusal(
     checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
   };
   for (const [index, guest] of guests.entries()) {
-    let range;
-    try {
-      range = normalizeGuestStayRange(
-        {
-          stayStart: guest.stayStart ?? null,
-          stayEnd: guest.stayEnd ?? null,
-          nights: guest.nights ?? null,
-        },
-        bounds,
-        index,
-      );
-    } catch (error) {
-      if (error instanceof BookingGuestStayRangeValidationError) return error.message;
-      throw error;
-    }
+    const name = guestName(guest);
+    const range = readNamedStayRange(guest, bounds, index, name);
+    if ("refusal" in range) return range.refusal;
     if (range.stayStart < bounds.checkIn || range.stayEnd > bounds.checkOut) {
-      const name = `${guest.firstName} ${guest.lastName}`.trim();
-      return `${name}'s nights must fall within the stay (${stay.checkIn} to ${stay.checkOut}).`;
+      return `${name ?? `Guest ${index + 1}`}'s nights must fall within the stay (${stay.checkIn} to ${stay.checkOut}).`;
     }
   }
   return null;
@@ -180,55 +213,36 @@ export function addedGuestFirstNights(
   }>,
   stay: { checkIn: Date; checkOut: Date },
 ): Date[] {
-  return guests.map(
-    (guest, index) =>
-      normalizeGuestStayRange(
-        {
-          stayStart: guest.stayStart ?? null,
-          stayEnd: guest.stayEnd ?? null,
-          nights: guest.nights ?? null,
-        },
-        stay,
-        index,
-      ).stayStart,
-  );
+  return guests.map((guest, index) => normalizeGuestStayRange(guest, stay, index).stayStart);
 }
 
 /**
  * #4030 re-review of 72c933ffc: an existing guest's requested nights are read
  * by the same canonical range rule the added guests' are
  * (`normalizeGuestStayRange`): real `yyyy-mm-dd` days, both bounds or neither,
- * Date Out after Date In. The refusal message, or `null`. A range may still
- * reach outside the stay: the planner widens the stay to cover it, as an edit
- * does (#713).
+ * Date Out after Date In. The refusal message, naming the guest from `guests`
+ * (#4088), or `null`. A range or night set may still reach outside the stay:
+ * the planner widens the stay to cover it, as an edit does (#713), and a moved
+ * date it does not reach is refused by `requestedDatesIgnoredByNightsRefusal`.
  */
 export function guestStayRangesRefusal(
   ranges: ReadonlyArray<{
+    guestId?: string;
     stayStart?: string | null;
     stayEnd?: string | null;
     nights?: ReadonlyArray<string> | null;
   }>,
   stay: ChangeRequestStay,
+  guests: ReadonlyArray<{ id: string; firstName: string; lastName: string }> = [],
 ): string | null {
   const bounds = {
     checkIn: dateOnlyInstantOf(requireCalendarDate(stay.checkIn)),
     checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
   };
   for (const [index, range] of ranges.entries()) {
-    try {
-      normalizeGuestStayRange(
-        {
-          stayStart: range.stayStart ?? null,
-          stayEnd: range.stayEnd ?? null,
-          nights: range.nights ?? null,
-        },
-        bounds,
-        index,
-      );
-    } catch (error) {
-      if (error instanceof BookingGuestStayRangeValidationError) return error.message;
-      throw error;
-    }
+    const name = guestName(guests.find((guest) => guest.id === range.guestId));
+    const read = readNamedStayRange(range, bounds, index, name);
+    if ("refusal" in read) return read.refusal;
   }
   return null;
 }
@@ -277,15 +291,14 @@ export interface GuestNightsAsDays {
 }
 
 /**
- * A guest's nights as sorted, distinct `yyyy-mm-dd` keys (#4088): the explicit
- * night set (#713) when it has one, else every night of `[stayStart, stayEnd)`.
- * Read only from STORED values (the booking's own rows, or the request's
- * snapshot of them), never from a member's unvalidated bounds.
+ * A guest's nights as sorted, distinct `yyyy-mm-dd` keys (#4088): the canonical
+ * `getGuestBedNightKeys` (INV-DATE-020) over calendar days. Read only from
+ * STORED values (the booking's own rows, or the request's snapshot of them).
  */
 export function guestNightKeys(guest: GuestNightsAsDays): string[] {
-  if (guest.nights && guest.nights.length > 0) return [...new Set(guest.nights)].sort();
-  // The one envelope expansion (INV-DATE-020), half-open by contract.
-  return expandStayEnvelopeToNightKeys(parseDateOnly(guest.stayStart), parseDateOnly(guest.stayEnd));
+  const stayStart = parseDateOnly(guest.stayStart);
+  const stayEnd = parseDateOnly(guest.stayEnd);
+  return getGuestBedNightKeys({ stayStart, stayEnd, nights: guest.nights }, { checkIn: stayStart, checkOut: stayEnd });
 }
 
 /** A live guest's stored range and night rows, as {@link GuestNightsAsDays}. */
@@ -319,12 +332,8 @@ export function isEffectiveStayRangeChange(
   range: { stayStart?: string | null; stayEnd?: string | null; nights?: ReadonlyArray<string> | null },
   current: GuestNightsAsDays | undefined,
 ): boolean {
-  if (range.nights && range.nights.length > 0) {
-    if (!current) return true;
-    const requested = [...new Set(range.nights)].sort();
-    const now = guestNightKeys(current);
-    return requested.length !== now.length || requested.some((night, i) => night !== now[i]);
-  }
+  const requested = getExplicitGuestBedNightKeys({ nights: range.nights });
+  if (requested) return !current || !sameNightKeys(requested, guestNightKeys(current));
   if (!range.stayStart || !range.stayEnd) return false;
   if (!current) return true;
   return range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd;

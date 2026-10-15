@@ -2,10 +2,7 @@ import type { AgeTier } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
-import {
-  normalizeGuestStayRange,
-  type NormalizedBookingGuestStayRange,
-} from "@/lib/booking-guest-stay-range-input";
+import { normalizeGuestStayRange } from "@/lib/booking-guest-stay-range-input";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
 import { calculateBookingPrice, getStayNights, type GuestInput } from "@/lib/pricing";
 import { loadActiveSeasonRates } from "@/lib/booking-modify-plan";
@@ -50,28 +47,6 @@ import type {
 
 export const CHANGE_REQUEST_ESTIMATE_NO_RATE_MESSAGE =
   "These nights can't be priced at the moment (no active season covers them). You can still send the request; the booking officer confirms the price when they approve it.";
-
-/**
- * An added guest's nights as the pricing engine reads them: the explicit night
- * set from the editor's grid (#713, #4088) when it has one, else the two
- * bounds, else the whole stay — by the canonical range rule (`INV-SSOT`). The
- * route has already refused a range that rule rejects.
- */
-function addedGuestRange(
-  guest: ChangeRequestAddGuest,
-  index: number,
-  booking: { checkIn: Date; checkOut: Date },
-): NormalizedBookingGuestStayRange {
-  return normalizeGuestStayRange(
-    {
-      stayStart: guest.stayStart ?? null,
-      stayEnd: guest.stayEnd ?? null,
-      nights: guest.nights ?? null,
-    },
-    booking,
-    index,
-  );
-}
 
 interface EstimateBooking {
   checkIn: Date;
@@ -122,7 +97,10 @@ export async function estimateChangeRequestAddedGuests(
   const nonMembers = addGuests
     .map((guest, index) => ({ guest, index }))
     .filter(({ guest }) => !guest.isMember);
-  const addedGuestRanges = addGuests.map((guest, index) => addedGuestRange(guest, index, booking));
+  // Each added guest's nights as the pricing engine reads them: the editor
+  // grid's night set (#713, #4088), else the two bounds, else the whole stay,
+  // by the canonical range rule (`INV-SSOT`); the route refused anything else.
+  const addedGuestRanges = addGuests.map((guest, index) => normalizeGuestStayRange(guest, booking, index));
   const seasonYear = seasonYearOfStoredDate(checkIn);
   const lodgeId = booking.lodgeId ?? (await getDefaultLodgeId(prisma));
   const [seasons, groupDiscountSetting, subscriptionLockoutMode] = await Promise.all([
