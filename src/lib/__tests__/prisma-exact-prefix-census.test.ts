@@ -32,8 +32,6 @@ const ALLOWED: Record<string, string> = {
     "iterates NON_CANCELLATION_HAND_BACK_KEY_PREFIXES, a list of three constants",
   "src/lib/edit-financial-review-cancel-netting.ts|buildEditFinancialReviewRefundRecoveryIdempotencyKey(\"\")":
     "built with an empty task id, so it is the constant family prefix",
-  "src/lib/cancel-card-refund-shortfall-status.ts|capacityRacePrefix":
-    "scoped by bookingId on the same query and re-checked exactly after the read; #4153 rewrites this reader and will wrap it",
 };
 
 function sourceFiles(dir: string): string[] {

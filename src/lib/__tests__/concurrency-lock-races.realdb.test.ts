@@ -295,6 +295,12 @@ import "./cancel-card-refund-shortfall.realdb.test";
 // page's read of the row says still being sent, dead or made. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4125-` fixtures.
 import "./capacity-race-refund-event.realdb.test";
+// #4147 reuses it to prove the booking-ledger census reads a capacity race's
+// cancel by its own refund rows: through the REAL capacity race, back-post and
+// recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post
+// posts it), a made one agrees and a dead one disagrees. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4147-` fixtures.
+import "./booking-ledger-census-capacity-race.realdb.test";
 // #3750 reuses it to prove approving a locked-period change request on a
 // finished stay: the real executor and batch service add, remove, swap and
 // re-date the stay at the same-day tier, two racing approvals make one
@@ -327,6 +333,12 @@ import "./xero-refund-note-void-pointer.realdb.test";
 // subscription row rolls the close back whole. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4098-` fixtures.
 import "./membership-subscription-charge-close.realdb.test";
+// #4131 reuses it to prove the booking's own payment captured after its booking
+// was cancelled is refunded from its own charge through the real webhook
+// processor: never a fee the cancel kept on another charge, and only what a part
+// refunded capture still holds. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it
+// owns and cleans its own `race-4131-` fixtures.
+import "./late-capture-own-charge-refund.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans

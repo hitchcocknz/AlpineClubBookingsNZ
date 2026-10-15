@@ -23,6 +23,7 @@ import {
 } from "@/lib/booking-ledger-projection-census-report";
 import { isGroupSettlementOffLedger } from "@/lib/booking-ledger-projection-census-classes";
 import type { BookingLedgerCensusRow } from "@/lib/booking-ledger-projection-census-row";
+import type { CancellationEventSnapshot } from "@/lib/booking-events";
 import { INTERNET_BANKING_SETTLEMENT_EVIDENCE_SELECT } from "@/lib/internet-banking-settlement-evidence";
 import { bookingIdOfCreditRow, bookingsCreditRowsWhere } from "@/lib/member-credit-booking-rows";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
@@ -145,6 +146,9 @@ const CANCELLATION_SNAPSHOT = z.object({
   settledAmountCents: z.number().int().nullable().optional(),
   // The paid-but-not-refunded figure every paid-path snapshot froze (`INV-PAY-106`).
   retainedAmountCents: z.number().int().nullable().optional(),
+  // #4147: what was paid, and why the system cancelled (`cancelledBecause`, #4125's capacity race).
+  paidAmountCents: z.number().int().nullable().optional(),
+  cancelledBecause: z.string().nullable().optional(),
   // #3611's frozen ledger figures; absent on a snapshot written before it.
   ledger: z.object({ keptCents: z.number().int(), policyKeptCents: z.number().int().optional() }).nullable().optional(),
 });
@@ -153,9 +157,14 @@ export type CancelledEventSnapshot = {
   refundMethod: string | null;
   settledAmountCents: number | null;
   retainedAmountCents: number | null;
+  paidAmountCents: number | null;
+  cancelledBecause: string | null;
   keptCents: number | null;
   policyKeptCents: number | null;
 };
+
+/** #4125's capacity race, as its writer spells it: the type keeps the two the same. */
+const CAPACITY_RACE_CANCELLED_BECAUSE: NonNullable<CancellationEventSnapshot["cancelledBecause"]> = "capacity_race";
 
 /** The one parser of that snapshot; null where it is not one. */
 export function parseCancelledEventSnapshot(snapshot: unknown): CancelledEventSnapshot | null {
@@ -166,6 +175,8 @@ export function parseCancelledEventSnapshot(snapshot: unknown): CancelledEventSn
     refundMethod: parsed.data.refundMethod ?? null,
     settledAmountCents: parsed.data.settledAmountCents ?? null,
     retainedAmountCents: parsed.data.retainedAmountCents ?? null,
+    paidAmountCents: parsed.data.paidAmountCents ?? null,
+    cancelledBecause: parsed.data.cancelledBecause ?? null,
     keptCents: parsed.data.ledger?.keptCents ?? null,
     policyKeptCents: parsed.data.ledger?.policyKeptCents ?? null,
   };
@@ -194,7 +205,10 @@ export function cancelledSnapshotKept(
 function cancellationOf(booking: StoredCensusBooking): BookingLedgerCensusRow["cancellation"] {
   const parsed = parseCancelledEventSnapshot(booking.events[0]?.snapshot);
   if (!parsed) return null;
-  return { refundMethod: parsed.refundMethod, settledAmountCents: parsed.settledAmountCents, keptCents: parsed.keptCents };
+  const cancellation = { refundMethod: parsed.refundMethod, settledAmountCents: parsed.settledAmountCents, keptCents: parsed.keptCents };
+  // #4147: a capacity race's whole charge is due back, whatever its plan refunds.
+  if (parsed.cancelledBecause !== CAPACITY_RACE_CANCELLED_BECAUSE || parsed.paidAmountCents === null) return cancellation;
+  return { ...cancellation, capacityRace: { paidAmountCents: parsed.paidAmountCents, retainedAmountCents: parsed.retainedAmountCents ?? 0 } };
 }
 
 /** What the census reads of a review closure's `PRICE_REBASE` row (`recordBookingPriceRebaseHistory`). */

@@ -794,15 +794,17 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   including a change payment the superseded-intent hand-off catches: refunded
   automatically (default) or held as one #2700-kind task per intent, marked by
   `lateCaptureApprovalIntentId`. Approval is the automatic refund, same Stripe
-  keys; a task of any status owns its capture, and the repair tool offers no
-  refund behind it. A #2700 hand-back is refused once its capture was refunded.
+  keys, and both refund only the capture's own charge, capped at what it
+  holds (#4131, `lateCaptureOwnChargeSlice`); a task of any status owns its capture, and the
+  repair tool offers no refund behind it. A #2700 hand-back is refused once its
+  capture was refunded.
   Kept money is recorded in Xero (`INV-PAY-110`).
 - **The repair tool's cancelled-open-invoice arm** asks "was money captured?"
   of every source and skips a payment already carrying a refund or
   account-credit note, or such an operation queued or failed.
 - Pinned by `cancellation-settled-money.test.ts`, `stripe-webhook-alerts.test.ts`,
-  `payment-recovery.test.ts`, `manual-refund-task.test.ts` and
-  `xero-booking-repair.test.ts`.
+  `payment-recovery.test.ts`, `manual-refund-task.test.ts`,
+  `xero-booking-repair.test.ts` and `late-capture-own-charge-refund.realdb.test.ts`.
 
 ## INV-PAY-110
 

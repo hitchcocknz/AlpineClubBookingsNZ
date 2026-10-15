@@ -266,4 +266,22 @@ describe("the ledger idempotency proof stays wired into CI (#3595)", () => {
       expect(suite).toContain(caseName);
     }
   });
+
+  it("carries #4147's capacity-race census proof into the same harness", () => {
+    const harness = source(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+    );
+    expect(harness).toContain('import "./booking-ledger-census-capacity-race.realdb.test";');
+    const suite = source(
+      resolve(REPO_ROOT, "src/lib/__tests__/booking-ledger-census-capacity-race.realdb.test.ts"),
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    for (const caseName of [
+      "the refund still being sent: the back-post posts it as IN_FLIGHT_REFUND, and once the runner makes it every identity agrees",
+      "the refund row dead (retries spent) disagrees: nothing will send it",
+      "the refund made inline: the back-post posts it and every identity agrees",
+    ]) {
+      expect(suite).toContain(caseName);
+    }
+  });
 });

@@ -33,7 +33,7 @@ import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-ru
 import { isCancelCardShortfallTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOperationUnmadeCents } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
-import { buildBookingCancellationRefundIdempotencyKey, isAppealRefundRecoveryKey } from "@/lib/payment-recovery-keys";
+import { isAppealRefundRecoveryKey, isBookingCancelCardRefundRecoveryKey } from "@/lib/payment-recovery-keys";
 import {
   LEGACY_BACKFILL_REASONS,
   isCapturedTransactionStatus,
@@ -599,28 +599,28 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     )
     // #4117: less the slices its plan marks made - those are on the ledger already.
     .reduce((sum, operation) => sum + cardRefundOperationUnmadeCents(operation), 0);
-  // V5: the card refund plan paid less than the policy refund the snapshot froze.
-  const cancelRefundKey = buildBookingCancellationRefundIdempotencyKey(row.booking.id);
+  // V5: the card refund plan - a member cancel's row, or a capacity race's per intent (#4147) - paid less than the
+  // refund due: the snapshot's, or all a capacity race did not retain that the ledger captured (its settled is the plan's, #4125).
   const plannedCents = row.recoveryOperations
-    .filter((operation) => operation.idempotencyKey === cancelRefundKey)
+    .filter((operation) => isBookingCancelCardRefundRecoveryKey(row.booking.id, operation.idempotencyKey))
     .reduce((sum, operation) => sum + operation.amountCents, 0);
-  const policyRefundCents = row.cancellation?.refundMethod === "card" ? (row.cancellation.settledAmountCents ?? 0) : 0;
-  // #4097 (`INV-PAY-129`): a shortfall part paid back by bank posted its own `BANK_REFUND`,
-  // so the plan's shortfall is short by only what is not yet paid back that way.
+  const card = row.cancellation?.refundMethod === "card" ? row.cancellation : null;
+  const race = card?.capacityRace;
+  const policyRefundCents = race ? Math.min(race.paidAmountCents - race.retainedAmountCents, sumKinds(row.lines, CAPTURE_KINDS)) : (card?.settledAmountCents ?? 0);
+  // #4097 (`INV-PAY-129`): less a shortfall part already paid back by bank, which posted its own `BANK_REFUND`.
   const shortfallPaidCents = row.tasks
     .filter((task) => isCancelCardShortfallTask(task) && task.status === "COMPLETED" && row.lines.some((line) => line.postingKey === handBackKey(task.id)))
     .reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
   const v5 = Math.max(0, policyRefundCents - plannedCents - shortfallPaidCents);
-  // #4120: an approved refund appeal gives back more than the cancel kept, and no charge line
-  // says so: what each has refunded, by card or by its own completed hand-back, as its
-  // outcome reads (`approvedAppealRefundedCents`) - never the approved amount, nor the lines.
+  // #4120: an approved refund appeal gives back more than the cancel kept, and no charge line says so: what each
+  // has refunded, by card or its own completed hand-back (`approvedAppealRefundedCents`) - never the approved amount, nor the lines.
   const appealPaidCents = row.appeals.reduce((sum, appeal) => sum + appeal.refundedCents, 0);
   return [
     [
       { name: "IN_FLIGHT_HAND_BACK", cents: handBacks("OPEN") },
       { name: "D2_DISMISSED_HAND_BACK", cents: handBacks("DISMISSED") },
       { name: "IN_FLIGHT_REFUND", cents: inFlightRefund + inFlightGroupPlanRefundCents(row) },
-      { name: "V5_PLANNED_REFUND_SHORT", cents: v5 },
+      { name: "V5_PLANNED_REFUND_SHORT", cents: v5, ...(race ? { detail: "capacity race" } : {}) },
       { name: "REFUND_APPEAL_PAID", cents: -appealPaidCents },
       { name: "UNPOSTED_CREDIT", cents: unpostedCredits(row).reduce((sum, credit) => sum + credit.amountCents, 0) },
       ...knownDefectHistory(row),

@@ -202,6 +202,8 @@ async function seed(
     card?: boolean;
     /** #3954 round 6: paid wholly with account credit - nothing captured, a card on file. */
     creditPaid?: boolean;
+    /** #4088: the snapshot the route now writes — each guest's range and night rows. */
+    originalNights?: boolean;
   } = {},
 ): Promise<void> {
   const guestIds = options.secondGuest ? [GUEST_ID, GUEST_2_ID] : [GUEST_ID];
@@ -255,7 +257,18 @@ async function seed(
         original: {
           checkIn: "2026-06-10",
           checkOut: "2026-06-12",
-          guests: guestIds.map((id) => ({ id })),
+          guests: guestIds.map((id) =>
+            options.originalNights
+              ? {
+                  id,
+                  firstName: id === GUEST_ID ? "Original" : "Second",
+                  lastName: "Guest",
+                  stayStart: "2026-06-10",
+                  stayEnd: "2026-06-12",
+                  nights: ["2026-06-10", "2026-06-11"],
+                }
+              : { id },
+          ),
         },
         requested: { ...ADD_LATE_FRIEND, ...options.requested },
       },
@@ -1302,6 +1315,73 @@ function deferred() {
       priceDiffCents: NIGHT_CENTS,
       changeFeeCents: 0,
     });
+  }, 60_000);
+
+  it("#4088: a grid request's night sets are applied and charged exactly, gap and all", async () => {
+    // From the editor's per-night grid: the stay runs a night longer, the
+    // existing guest swaps their second night for the new third one, and the
+    // added friend stays the first and third nights only — gaps no two-bound
+    // range can express.
+    await seed({
+      requested: {
+        checkOut: "2026-06-13",
+        addGuests: [
+          { ...ADD_LATE_FRIEND.addGuests[0], nights: ["2026-06-10", "2026-06-12"] },
+        ],
+        guestStayRanges: [{ guestId: GUEST_ID, nights: ["2026-06-10", "2026-06-12"] }],
+        summary: "check-out to 2026-06-13; add Late Friend; update 1 guest stay range",
+      },
+      originalNights: true,
+    });
+    const result = await approve(OFFICER_ID);
+    // Three nights added at the season rate (the friend's two, the guest's
+    // 12 June) and one removed (the guest's 11 June, sold at 4,321), which is
+    // charged the same-day tier's retention as the change fee.
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      addedGuestCount: 1,
+      priceDiffCents: 3 * NIGHT_CENTS - STORED_NIGHT_CENTS,
+      changeFeeCents: STORED_NIGHT_CENTS - Math.round(STORED_NIGHT_CENTS / 2),
+    });
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: BOOKING_ID },
+      include: { guests: { include: { nights: { orderBy: { stayDate: "asc" } } } } },
+    });
+    expect(booking.checkOut.toISOString()).toBe("2026-06-13T00:00:00.000Z");
+    const original = booking.guests.find((guest) => guest.id === GUEST_ID)!;
+    expect(original.nights.map((night) => [night.stayDate.toISOString(), night.priceCents])).toEqual([
+      [CHECK_IN.toISOString(), STORED_NIGHT_CENTS],
+      ["2026-06-12T00:00:00.000Z", NIGHT_CENTS],
+    ]);
+    const added = booking.guests.find((guest) => guest.id !== GUEST_ID)!;
+    expect(added.nights.map((night) => [night.stayDate.toISOString(), night.priceCents])).toEqual([
+      [CHECK_IN.toISOString(), NIGHT_CENTS],
+      ["2026-06-12T00:00:00.000Z", NIGHT_CENTS],
+    ]);
+    expect(added.priceCents).toBe(2 * NIGHT_CENTS);
+  }, 60_000);
+
+  it("#4088: a night row removed since a grid request was sent is drift, and nothing is applied", async () => {
+    await seed({
+      // Adds the friend, and keeps the guest on both nights as the grid sent them.
+      requested: {
+        guestStayRanges: [{ guestId: GUEST_ID, nights: ["2026-06-10", "2026-06-11"] }],
+        summary: "add Late Friend; update 1 guest stay range",
+      },
+      originalNights: true,
+    });
+    // An officer took 11 June off the guest after the request: the guest's
+    // range is unmoved, only the night row is gone. Applying the request would
+    // put the night back and charge for it.
+    await prisma.bookingGuestNight.deleteMany({ where: { bookingGuestId: GUEST_ID, stayDate: NIGHT_2 } });
+    const result = await approve(OFFICER_ID);
+    expect(result, JSON.stringify(result)).toEqual({
+      outcome: "keptPending",
+      message: executor.LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE,
+    });
+    expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+    const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(request).toMatchObject({ status: "REQUESTED", version: 1 });
   }, 60_000);
 
   it("trimming a kept guest while adding another is charged on the trimmed night (F3/F4)", async () => {

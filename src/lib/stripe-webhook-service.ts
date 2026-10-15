@@ -35,6 +35,7 @@ import {
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
 import { holdLateCaptureForTreasurerIfRequired, holdLateCaptureRefusedByStripe } from "@/lib/late-capture-refund-hold";
 import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
+import { lateCaptureOwnChargeSlice, refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
   buildLateCaptureRefundMetadata,
@@ -1562,14 +1563,9 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     format,
     paymentId: booking.payment.id,
     amountCents: paymentIntent.amount,
-    // Pin the refund to THIS transaction so replays mint identical Stripe
-    // keys regardless of the payment's other transactions.
-    allocation: [
-      {
-        paymentTransactionId: paymentTransaction.id,
-        amountCents: paymentIntent.amount,
-      },
-    ],
+    // Pinned to THIS transaction (#4131, the one rule), so replays mint identical Stripe keys regardless of the
+    // payment's other transactions. Unrefunded: `acknowledgeSettledLateNotice` above returns on any refund of it.
+    allocation: [lateCaptureOwnChargeSlice({ id: paymentTransaction.id, status: PaymentStatus.SUCCEEDED, amountCents: paymentIntent.amount, refundedAmountCents: 0 }, paymentIntent.amount).slice],
     metadata: buildLateCaptureRefundMetadata(booking.id),
     idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
   });
@@ -1674,7 +1670,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
  * Late Stripe capture of a booking's OWN (PRIMARY) payment on a booking that is
  * already CANCELLED (#1350). The sibling of
  * `handleCancelledBookingAdditionalPaymentSucceeded` above: record the capture
- * truthfully, refund it in full under an idempotent per-intent key, alert the
+ * truthfully, refund it in full from its own charge only (#4131), alert the
  * admins, and skip Xero invoice creation.
  *
  * WHAT #2773 CHANGED HERE (the orchestrator's call on that issue's Recommended
@@ -1815,19 +1811,14 @@ async function handleCancelledBookingPaymentSucceeded(
   // #3639: the same setting and ownership check as the sibling handler.
   if (await holdLateCaptureForTreasurerIfRequired(lateCapture)) return;
 
-  const refundResult = await refundPaymentTransactions({
-    format,
-    paymentId: booking.payment.id,
-    amountCents: paymentIntent.amount,
-    metadata: buildLateCaptureRefundMetadata(booking.id),
-    idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
-  });
-  if (await holdLateCaptureRefusedByStripe(lateCapture, refundResult.refunds)) {
-    // #4103: a slice made beside the refusal on this capture's own charge is still noted (sized by what was made there); one made on an older charge is in the audit only.
+  // #4131 (`INV-PAY-106`): from the capture's OWN charge only, capped at what it holds.
+  const { refunds, audit } = await refundLateCaptureFromOwnCharge({ format, bookingId: booking.id, paymentId: booking.payment.id, paymentIntentId: paymentIntent.id, amountCents: paymentIntent.amount });
+  if (await holdLateCaptureRefusedByStripe(lateCapture, refunds)) {
+    // #4103: the one slice on the capture's own charge was refused, so it made nothing; the note still answers the capture's own earlier refunds.
     await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
     return;
   }
-  const refundId = refundResult.refunds[0]?.refundId;
+  const refundId = refunds[0]?.refundId;
 
   // #2773: the record this path never had. Awaited, and its failure audited rather
   // than thrown — see `recordAutomaticLateCaptureRefund`.
@@ -1841,12 +1832,13 @@ async function handleCancelledBookingPaymentSucceeded(
     targetId: booking.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
-      refundId,
+      refundId: refundId ?? null,
       amountCents: paymentIntent.amount,
       // #2773: named on this handler too, so the two audit rows are told apart by
       // the row itself rather than by knowing which handler writes which shape.
       // The sibling has carried `kind: "modification_additional"` since #1350.
       kind: "primary",
+      ...audit, // #4131: what went back now, and any part of `amountCents` already refunded on the capture.
     }),
   });
 

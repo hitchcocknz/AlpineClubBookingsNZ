@@ -7,6 +7,7 @@
 // The Diagnostics finance pack classifies a `PaymentRecoveryOperation` by these
 // and its test fails when an export here is neither mapped to a scenario nor
 // declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
 export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
   "capacity_claim_failed_refund_recovery_";
@@ -80,24 +81,26 @@ export function isRefundRequestRefundRecoveryKey(key: string) {
   return key.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX);
 }
 
-// Capacity-race auto-refund durability: the recovery-operation dedup key for a
-// payment that succeeded AFTER the final capacity claim failed (the booking was
-// cancelled inside the reconciliation transaction and the full charge must be
-// handed back). One row per (booking, intent): a Stripe event redelivery for
-// the same intent upserts the same row, never a second refund debt.
-export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
-  bookingId: string,
-  paymentIntentId: string,
-) {
+// Capacity-race auto-refund durability: the recovery-operation dedup key for a payment that
+// succeeded AFTER the final capacity claim failed (the booking was cancelled inside the reconciliation
+// transaction and the full charge must be handed back). One row per (booking, intent): a Stripe
+// event redelivery for the same intent upserts the same row, never a second refund debt.
+export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId: string, paymentIntentId: string) {
   return `${buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)}${paymentIntentId}`;
 }
 
-// #4125: every capacity-race refund row of one booking starts with this - the
-// one spelling the full key above and the booking page's read of its rows
-// (`readCancelledCardRefundState`) share. The trailing `_` ends the booking id.
+// #4125: every capacity-race refund row of one booking starts with this; the trailing `_` ends its id.
 export function buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId: string) {
   return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
 }
+
+// #4147 (`INV-SSOT`): THIS booking's cancel's card refund (member cancel's row; capacity race's per intent); exact (#4146).
+export const bookingCancelCardRefundRecoveryWhere = (bookingId: string) => ({
+  bookingId,
+  OR: [{ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) }, { idempotencyKey: exactPrefix(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)) }],
+});
+export const isBookingCancelCardRefundRecoveryKey = (bookingId: string, key: string): boolean =>
+  key === buildBookingCancellationRefundIdempotencyKey(bookingId) || key.startsWith(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId));
 
 // The Stripe idempotency-key prefix the INLINE capacity-race auto-refund has
 // always used (payment-reconciliation.ts). The recovery cron replays the frozen
@@ -105,10 +108,7 @@ export function buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookin
 // `capacity_claim_failed_<bookingId>_<pi>_<txn>_<amount>` are identical between
 // the inline attempt and any replay — Stripe answers a repeat with the original
 // refund and the ledger dedupes on refund id, never a double refund.
-export function buildCapacityClaimFailedRefundStripeKeyPrefix(
-  bookingId: string,
-  paymentIntentId: string,
-) {
+export function buildCapacityClaimFailedRefundStripeKeyPrefix(bookingId: string, paymentIntentId: string) {
   return `capacity_claim_failed_${bookingId}_${paymentIntentId}`;
 }
 
