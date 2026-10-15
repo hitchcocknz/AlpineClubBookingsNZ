@@ -106,6 +106,17 @@ started, so the hold is not cancelled at all: it is left for you to reconcile by
 hand, with one email saying so. The cron does not read Xero for a stay that has
 started, whatever the invoice shows.
 
+**An extra amount after a booking change.** The booking's confirmation shows
+what each issued supplementary invoice still owed when it was checked, with its
+own invoice number and bank-transfer instructions. A part payment or applied
+credit reduces that invoice's remaining amount; its original price increase is
+not presented as what remains due. **Check more invoices** reaches the rest
+when there are many, without combining observations from different checks into
+one total. If Xero cannot confirm an amount, or the invoice has not yet been
+issued, the page says so. A voided invoice may have a replacement: check Xero
+before treating its withdrawal as money waived. The group's combined invoice
+remains the organiser's responsibility.
+
 **Groups work the same way.** When an organiser pays for a group with one
 combined Internet Banking invoice and the settlement runs out of time while Xero
 cannot show that invoice, the group keeps its beds for up to seven days past the
