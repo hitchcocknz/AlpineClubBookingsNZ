@@ -95,7 +95,7 @@ const OLD_CLIENT_ROW = `
 `;
 
 const verification: DataMigrationVerification = {
-  migration: "20261116010000_add_payment_transaction_insertion_seq",
+  migration: "20261117010000_add_payment_transaction_insertion_seq",
   intent:
     "Add PaymentTransaction.insertionSeq, NOT NULL, defaulted from an owned INTEGER sequence; number every stored row by createdAt, then the heap order a tie is read in today; and set the sequence so the next row is numbered above every stored row.",
   // The migration carries an explicit BEGIN/COMMIT envelope: this mode.

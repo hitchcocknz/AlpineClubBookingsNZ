@@ -23,7 +23,7 @@ import dropPaymentRefundCurrencyDefault from "./20261012010000_drop_payment_refu
 import addSchoolTeacherHutLeaderPolicy from "./20261101010000_add_school_teacher_hut_leader_policy";
 import addPendingSchoolAdultCapacity from "./20261101020000_add_pending_school_adult_capacity";
 import addLodgeSchoolHutLeaderKinds from "./20261114020000_add_lodge_school_hut_leader_kinds";
-import addPaymentTransactionInsertionSeq from "./20261116010000_add_payment_transaction_insertion_seq";
+import addPaymentTransactionInsertionSeq from "./20261117010000_add_payment_transaction_insertion_seq";
 import type { DataMigrationVerification } from "./types";
 
 /**
