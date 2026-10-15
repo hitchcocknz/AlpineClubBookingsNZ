@@ -536,7 +536,13 @@ the shared `buildBookingCancellationRefundMetadata` helper
 per-cancellation value the cron cannot reconstruct from the persisted
 operation), so a Stripe-succeeded-but-unrecorded refund (or a cron tick racing
 the inline call) is replayed by Stripe, never repeated and never rejected as an
-`idempotency_error` for a reused key with mismatched parameters. An outstanding additional
+`idempotency_error` for a reused key with mismatched parameters. The
+`REFUNDED` booking event commits with whichever close moves that operation to
+`SUCCEEDED` - the inline refund's, or the cron's when the inline refund threw,
+was refused or made only some slices - in the close's own transaction, dated by
+it and for the frozen plan's total, so it is written once and never for a
+refund still owed (#4145, `INV-PAY-133`); a "Paid another way" close writes
+none. An outstanding additional
 PaymentIntent is retired durably (#1350): the claim transaction persists a
 `CANCEL_PAYMENT_INTENT` recovery operation alongside the FAILED flip, the
 Phase-2 inline Stripe cancel stays best-effort (logged, never allowed to
@@ -1701,7 +1707,8 @@ says the full amount "is being refunded" and carries
 cancelled it. The `REFUNDED` event is written once the refund is made, for the
 plan's total (never the full charge), by whichever close moves the row to
 `SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
-same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+same transaction as that close (`closeRefundRowRecordingEvent`, which a member
+cancel's close shares since #4145), so a
 crash cannot leave the row closed without its event, and a failed insert
 leaves the row open for the runner's replay. A close that finds the row
 already closed writes nothing, so the event lands exactly once. The inline
@@ -1714,7 +1721,8 @@ page and the payment-link page read the row
 sent says "on its way to your original payment method"; a dead row (retries
 spent, or failed with no retry) says the club will be in touch - as does a
 dead card part of a card refund shortfall; a row closed without the event says
-it was refunded, or paid back another way. No cancellation policy decided a
+it was paid back another way, or (a row closed before #4145) that it was
+refunded. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
 snapshot, whose `settledAmountCents` is the plan's total: when the payment

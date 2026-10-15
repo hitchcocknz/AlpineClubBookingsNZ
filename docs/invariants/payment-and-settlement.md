@@ -1386,6 +1386,36 @@ short).
   - Proven by `payment-intent-ledger-row-write.test.ts` and, on PostgreSQL,
     `additional-ask-reduction.realdb.test.ts` ("#4081").
 
+## INV-PAY-133
+
+**Related: `INV-PAY-130`** (no door says "refunded" on a refusal).
+
+- **A cancel's card refund is recorded by the close that made it, once**
+  (#4125, #4145). The member's cancel and the capacity race write their
+  REFUNDED booking event only with the close that moves their pre-persisted
+  recovery row to `SUCCEEDED` - the door's after its inline refund, or the
+  recovery runner's after a replay - in that close's own transaction
+  (`closeRefundRowRecordingEvent`). A close that moves nothing writes nothing,
+  so the door and the runner never both record it.
+  - **Never on a failure.** An inline refund that threw, was refused or made
+    only some slices writes no event; the booking page reads the row instead
+    (`readCancelledCardRefundState`): on its way, or stalled.
+  - **Dated by that close, for the frozen plan's total**, slices made earlier
+    included. The member's cancel says it as the cancel did: the runner
+    rebuilds the reason from the CANCELLED snapshot
+    (`cancelCardRefundEventReason`), with no member as actor.
+  - **A failed insert rolls the close back**: the row stays open and the
+    runner's replay, answered by Stripe with the original refunds, records it.
+  - **Paid another way writes none**: nothing went back to the card, and the
+    page says it was paid back another way.
+  - **A shortfall's card part is dated by its own event**
+    (`isCancelCardRefundEvent`), never by a hand-back completion that landed
+    first.
+  - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,
+    `booking-narrative-card-shortfall.test.ts`,
+    `capacity-race-refund-event.realdb.test.ts` and
+    `cancel-card-refund-event.realdb.test.ts`.
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the

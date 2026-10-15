@@ -143,10 +143,10 @@ export async function recordBookingEvent(
 export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge capacity was no longer available.";
 
 /**
- * #4125, #4145: a pre-persisted card refund, made - its recovery row's close
- * and the REFUNDED event the member's narrative reads as the cancellation's
- * settlement, in ONE transaction, so a crash between them cannot lose the
- * event. `close` is the status-guarded move to `SUCCEEDED` (true when THIS
+ * #4125, #4145 (`INV-PAY-133`): a pre-persisted card refund, made - its
+ * recovery row's close and the REFUNDED event the member's narrative reads as
+ * the cancellation's settlement, in ONE transaction, so a crash between them
+ * cannot lose the event. `close` is the status-guarded move to `SUCCEEDED` (true when THIS
  * close moved the row) - the door's own after its inline attempt, or the
  * recovery runner's (`payment-recovery.ts`). The event is written only when it
  * did, dated by that close and for the amount actually refunded (the frozen

@@ -1,0 +1,13 @@
+- **A cancelled booking's card refund now shows in its history on the day it
+  was actually made (#4145).** When a member cancelled a card-paid booking,
+  its history recorded "refunded" straight away, even when the card refund had
+  failed and was still waiting to be retried. When the automatic retry later
+  made the refund, nothing new was recorded, so the history never showed the
+  real date.
+
+  The refund is now recorded once, when it is actually made: at the cancel
+  when the card refund goes through first time, or when the automatic retry
+  makes it later, with the date and amount of that refund. Until then the
+  booking page says the refund is on its way, or that the club will be in
+  touch if the retries have run out. A refund an officer closes as "Paid
+  another way" is shown as paid back another way, not as refunded to the card.
