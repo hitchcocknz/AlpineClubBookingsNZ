@@ -136,9 +136,11 @@ async function recordedRefundNoteFigure(
 ): Promise<number | null> {
   const onLink = readNumber(asRecord(link.metadata)?.[field]);
   if (onLink !== null) return onLink;
+  // Oldest first: the row that raised the note. A later row closed as covered
+  // by it carries its own enqueue figures, not the note's.
   const create = await db.xeroSyncOperation.findFirst({
     where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: link.xeroObjectId },
-    orderBy: { createdAt: "desc" },
+    orderBy: { createdAt: "asc" },
     select: { requestPayload: true },
   });
   const payload = asRecord(create?.requestPayload);

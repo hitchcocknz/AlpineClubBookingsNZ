@@ -8,14 +8,19 @@ import { describe, expect, it } from "vitest";
 import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 
 type Link = { xeroObjectId: string; metadata: unknown };
-type Create = { xeroObjectId: string; requestPayload: unknown };
+type Create = { xeroObjectId: string; requestPayload: unknown; createdAt?: Date };
 
 function client(links: Link[], creates: Create[] = []) {
   return {
     xeroObjectLink: { findMany: async () => links },
     xeroSyncOperation: {
-      findFirst: async ({ where }: { where: { xeroObjectId: string } }) =>
-        creates.find((create) => create.xeroObjectId === where.xeroObjectId) ?? null,
+      // Honours the read's createdAt order, as the database does.
+      findFirst: async ({ where, orderBy }: { where: { xeroObjectId: string }; orderBy?: { createdAt?: "asc" | "desc" } }) => {
+        const matching = creates.filter((create) => create.xeroObjectId === where.xeroObjectId);
+        const time = (create: Create) => create.createdAt?.getTime() ?? 0;
+        matching.sort((a, b) => (orderBy?.createdAt === "desc" ? time(b) - time(a) : time(a) - time(b)));
+        return matching[0] ?? null;
+      },
       findMany: async () => [],
     },
   } as never;
@@ -44,6 +49,18 @@ describe("INV-ADDPAY-041: the after-void key parts", () => {
     );
     expect(await refundNoteKeyAfterVoidParts("pay_1", { watermarkCents: 8000 }, db)).toEqual(["after-void", "cn_voided"]);
     expect(await refundNoteKeyAfterVoidParts("pay_1", { watermarkCents: 5000 }, db)).toEqual([]);
+  });
+
+  it("MUTATION (final-round check): a link with no figures reads the create that RAISED it, not a later row closed as covered by it", async () => {
+    const db = client(
+      [{ xeroObjectId: "cn_voided", metadata: { status: "VOIDED" } }],
+      [
+        { xeroObjectId: "cn_voided", createdAt: new Date("2026-06-01T00:00:00.000Z"), requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 3000, watermarkCents: 8000 } },
+        { xeroObjectId: "cn_voided", createdAt: new Date("2026-06-02T00:00:00.000Z"), requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 1000, watermarkCents: 9000 } },
+      ],
+    );
+    expect(await refundNoteKeyAfterVoidParts("pay_1", { watermarkCents: 8000 }, db)).toEqual(["after-void", "cn_voided"]);
+    expect(await refundNoteKeyAfterVoidParts("pay_1", { watermarkCents: 9000 }, db)).toEqual([]);
   });
 
   it("MUTATION (final lens F2): a link whose figure nothing records fails closed - it is named whatever the base", async () => {
