@@ -67,7 +67,7 @@ function madeBeforePaidAnotherWay(settlementEvents: readonly NarrativeEvent[]): 
 }
 
 /**
- * #4145 (`INV-PAY-133`): what a "Paid another way" close recorded, read off its
+ * #4145 (`INV-PAY-134`): what a "Paid another way" close recorded, read off its
  * record by the page (`readCancelledCardRefund`): what the officer paid back,
  * what it left unpaid and the club closed (`paidAnotherWayUnpaidCents`), and
  * what the row still owed when it closed (`raisedCents`), summed over the rows.
@@ -80,7 +80,7 @@ export interface PaidAnotherWayClose {
 }
 
 /**
- * #4145 (`INV-PAY-133`): a cancel's card refund by where its row stands, dated
+ * #4145 (`INV-PAY-134`): a cancel's card refund by where its row stands, dated
  * by its own event. A row closed "Paid another way" is said in its parts, each
  * from where it is recorded: what reached the card first - dated by the event
  * that close marked, or, with none, the due less what the row still owed

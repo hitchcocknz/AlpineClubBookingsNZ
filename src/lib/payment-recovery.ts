@@ -67,6 +67,7 @@ import { formatCents } from "@/lib/utils";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { finishApprovedLateCaptureRefundAfterReplay } from "@/lib/late-capture-refund-credit-note";
 import { holdSupersededLateCaptureIfRequired } from "@/lib/late-capture-refund-hold";
+import { compareLedgerRowsNewestFirst, LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 type PaymentRecoveryStore = Prisma.TransactionClient | typeof prisma;
 
@@ -238,7 +239,7 @@ async function enqueueLedgerRefundRecovery({
     where: { id: paymentId },
     include: {
       transactions: {
-        orderBy: { createdAt: "desc" },
+        orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
       },
     },
   });
@@ -2015,7 +2016,7 @@ async function processBookingModificationRefundOperation(
 
   const payment = await prisma.payment.findUnique({
     where: { id: operation.paymentId },
-    include: { transactions: true },
+    include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } },
   });
 
   if (!payment) {
@@ -2047,7 +2048,7 @@ async function processBookingModificationRefundOperation(
         (transaction) =>
           transaction.amountCents - transaction.refundedAmountCents > 0,
       )
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      .sort(compareLedgerRowsNewestFirst); // #4132 (INV-PAY-133): a tie's last-inserted row first
 
     const refundableCents = refundableTransactions.reduce(
       (sum, transaction) =>
@@ -2693,7 +2694,7 @@ async function processCreateAdditionalPaymentIntentOperation(
   const payment = await prisma.payment.findUnique({
     where: { id: operation.paymentId },
     include: {
-      transactions: true,
+      transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] },
       // #3369: the owner may be an Organisation; bookingOwner() reads both.
       booking: { include: { member: true, organisation: { select: { name: true, email: true } } } },
     },

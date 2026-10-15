@@ -65,6 +65,10 @@ description = "The repeating-hex placeholder used for AUTH_SECRET/NEXTAUTH_SECRE
 regexes = ['''^(?:0123456789abcdef){4}$''']
 
 [[allowlists]]
+description = "The fabricated temporary AUTH_SECRET used only by the #4164 teardown failure fixtures. This readable label replaces no real credential and encrypts or signs nothing; the tests only verify that their saved environment value is restored. Forgive this exact literal, including its existing historical commit, without exempting any path or credential shape."
+regexes = ['''^race-4164-temporary-secret$''']
+
+[[allowlists]]
 description = "The three Stripe TEST-mode placeholders this repository writes down, as exact literals: the diagnostics knowledge-bundle fixtures, the Playwright environment's publishable placeholder, and the booking-payment wrapper's fixture key. Any OTHER Stripe test key still fails the gate — `sk_test_` is a real test-mode credential and only these three named strings are forgiven. Live keys (`sk_live_`, `pk_live_`, `rk_live_`) are never allowlisted by shape. 51 findings across history."
 regexes = [
   '''^sk_test_placeholder$''',

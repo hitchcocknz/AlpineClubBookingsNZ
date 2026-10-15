@@ -1342,7 +1342,7 @@ short).
   in the one wording home's sentence, said before anything is asked of the card.
   - **Sized by the cancel's own steps, in its order**: the claim's mirror fold
     (one walk, `foldMirrorRefundIntoLedger`, over rows read in one order,
-    `CAPTURED_ROWS_OLDEST_FIRST`), a pre-ledger payment's
+    `LEDGER_ROWS_OLDEST_FIRST`, `INV-PAY-133`), a pre-ledger payment's
     charges as its backfill would write them (`legacyBackfillRows`), the
     claim's planner (`planCardRefundFromLedger`), and the split
     (`sizeCancelCardShortfall`). Asked only behind the cancel's own gate
@@ -1387,6 +1387,39 @@ short).
     `additional-ask-reduction.realdb.test.ts` ("#4081").
 
 ## INV-PAY-133
+
+**Related: `INV-PAY-127`** (the same rule for credit lots).
+
+- **A payment's ledger rows have one order: `createdAt`, then `insertionSeq`**
+  (#4132, owner decision 15 Oct 2026). `createdAt` alone is not an order. Rows
+  written in one transaction share it, and PostgreSQL returns a tie in heap
+  order, which an update of an indexed column, such as a capture, changes. A
+  cuid `id` is no insertion order either.
+  - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
+    sequence the column owns. The database assigns it and code never writes
+    it. Stored rows had no insertion order, so the migration numbered
+    each tie retired rows first (FAILED, withdrawn, or an ask queued for
+    cancellation), live rows last, then physical order. A stored tie can
+    change order at that release; the owner counts the ties before deploying.
+  - **One home**: `LEDGER_ROWS_OLDEST_FIRST` and `LEDGER_ROWS_NEWEST_FIRST`,
+    with their comparators, in `payment-ledger-order.ts`. Every money read uses
+    them: the loader, the cancel's fold, the ask chain, the refund slices and
+    their replay, the census store and the repair passes.
+  - **"The latest" row of a kind, on a tie, is the one inserted last**
+    (`latestTransactionOfKind`). The mirror, the ask a reduction sets against
+    and the census now pick the same row (formerly the earliest).
+  - **Newest-first refund slices** take a tie's last-inserted row first. A
+    refund recovery with no frozen `allocationPlan` derives its slices at
+    replay, so on a tied payment its Stripe keys can change at this release;
+    check for open ones after the old colour drains.
+  - **The settling capture** the Xero second-instrument conflict names
+    (#4163) is the oldest-inserted one no duplicate-capture refund owns;
+    #1765 refund history is skipped when paid, ranked last when cancelled.
+  - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
+    `ledger-insertion-seq.realdb.test.ts` and the migration's fixture, and
+    the settling capture by `issue-3638-second-instrument-conflict.test.ts`.
+
+## INV-PAY-134
 
 **Related: `INV-PAY-130`** (no door says "refunded" on a refusal).
 

@@ -4924,7 +4924,7 @@ Stripe call:
   only the close that moved the row writes a record - the duplicate capture's
   event, and the capacity race's and the member cancel's REFUNDED event
   (`closeRefundRowRecordingEvent`, close and event in one transaction, the
-  runner's close the same way; #4125, #4145, `INV-PAY-133`) - so it is written
+  runner's close the same way; #4125, #4145, `INV-PAY-134`) - so it is written
   once. A row another
   writer re-planned is not on that plan and is left open: one moved after a
   refusal, or after Stripe's later report that a refund failed, is still owed;

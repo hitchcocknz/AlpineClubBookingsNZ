@@ -24,7 +24,7 @@ import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-w
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import type { ClubFormat } from "@/lib/club-format";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
-import { CAPTURED_ROWS_OLDEST_FIRST } from "@/lib/mirror-refund-fold";
+import { compareLedgerRowsNewestFirst, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 // Moved to a leaf so the booking ledger's settlement sync can share them
 // without an import cycle (#3581); re-exported so existing importers stand.
 import {
@@ -120,13 +120,13 @@ function applyRefundStatus(
   return baseStatus;
 }
 
-/** The payment and its capture ledger, oldest first (`CAPTURED_ROWS_OLDEST_FIRST`). Read-only. */
+/** The payment and its capture ledger, oldest first (`LEDGER_ROWS_OLDEST_FIRST`, #4132). Read-only. */
 export async function loadPaymentWithTransactions(store: PaymentStore, paymentId: string) {
   return store.payment.findUnique({
     where: { id: paymentId },
     include: {
       transactions: {
-        orderBy: CAPTURED_ROWS_OLDEST_FIRST,
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
       },
     },
   });
@@ -156,7 +156,7 @@ export function isStripeTransaction<
  */
 export function legacyBackfillRows(
   payment: NonNullable<Awaited<ReturnType<typeof loadPaymentWithTransactions>>>
-): Array<Prisma.PaymentTransactionUncheckedCreateInput & Omit<RefundableStripeTransaction, "id" | "createdAt">> {
+): Array<Prisma.PaymentTransactionUncheckedCreateInput & Omit<RefundableStripeTransaction, "id" | "createdAt" | "insertionSeq">> {
   const knownIntentIds = new Set(
     payment.transactions.flatMap((transaction) =>
       transaction.stripePaymentIntentId ? [transaction.stripePaymentIntentId] : []
@@ -1183,6 +1183,7 @@ type RefundableStripeTransaction = {
   amountCents: number;
   refundedAmountCents: number;
   createdAt: Date;
+  insertionSeq: number; // #4132: breaks a createdAt tie (`compareLedgerRowsNewestFirst`)
 };
 
 /**
@@ -1209,7 +1210,7 @@ function buildRefundAllocationSlices<T extends RefundableStripeTransaction>(
       (transaction) =>
         transaction.amountCents - transaction.refundedAmountCents > 0
     )
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    .sort(compareLedgerRowsNewestFirst); // #4132 (INV-PAY-133): a tie's last-inserted row first
 
   const totalRefundableCents = refundableTransactions.reduce(
     (sum, transaction) =>
@@ -1584,7 +1585,7 @@ export async function applyLocalRefundAllocation({
       .sort(
         (a, b) =>
           preferredRank(a.id) - preferredRank(b.id) ||
-          b.createdAt.getTime() - a.createdAt.getTime()
+          compareLedgerRowsNewestFirst(a, b)
       );
 
     const totalRefundableCents = capturedTransactions.reduce(

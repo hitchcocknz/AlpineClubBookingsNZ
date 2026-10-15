@@ -334,7 +334,7 @@ describe("closing a dead card refund as paid another way", () => {
     expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 10_000, preferTransactionIds: ["txn-2"] }),
     );
-    // #4145 (`INV-PAY-133`): the $50.00 Stripe made went back to the card - the
+    // #4145 (`INV-PAY-134`): the $50.00 Stripe made went back to the card - the
     // cancel's card refund event records that part, inside the close, dated by
     // the refund and marked as made before the rest was paid another way.
     expect(mocks.createBookingEvent).toHaveBeenCalledTimes(1);
