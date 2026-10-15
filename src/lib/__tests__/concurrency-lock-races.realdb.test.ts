@@ -327,6 +327,11 @@ import "./xero-refund-note-void-pointer.realdb.test";
 // subscription row rolls the close back whole. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4098-` fixtures.
 import "./membership-subscription-charge-close.realdb.test";
+// #4146 reuses it to prove a key-prefix lookup built from an id matches only
+// its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
+// a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
+// its own `race-4146-` fixtures.
+import "./prisma-exact-prefix.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

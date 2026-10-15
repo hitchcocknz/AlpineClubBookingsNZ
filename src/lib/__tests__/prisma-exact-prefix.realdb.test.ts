@@ -1,0 +1,220 @@
+/**
+ * Real-PostgreSQL proof for #4146: a key-prefix lookup built from an id matches
+ * only its own rows.
+ *
+ * Prisma sends `startsWith` as SQL `LIKE 'prefix%'` and does not escape the
+ * prefix, so a `_` in it matches any one character. Each fixture below holds
+ * two ids that differ only where the other's prefix has a `_`, and each fixed
+ * lookup is driven through its production function (or, for a lookup inline in
+ * a larger writer, the same fragment on the same column) to show it no longer
+ * reads the other id's row. The CONTRAST case pins the premise: if Prisma ever
+ * starts escaping `startsWith` itself, `exactPrefix` would double-escape and
+ * match nothing, and that case fails first.
+ *
+ * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
+ * loopback PostgreSQL that `concurrency-lock-races.realdb.test.ts` provisions
+ * (#1881), which imports this file so hosted CI reaches it, and it cleans its
+ * own `race-4146-` fixtures.
+ */
+import type { PrismaClient } from "@prisma/client";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
+const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
+
+const MEMBER_ID = "race-4146-member";
+const LODGE_ID = "race-4146-lodge";
+// Differ only at the position where BOOKING_A has a `_`.
+const BOOKING_A = "race-4146-b_1";
+const BOOKING_B = "race-4146-bx1";
+const NIGHT = new Date("2026-08-01T00:00:00.000Z");
+const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
+
+/** Standalone fail-closed copy: importing this file must not register another suite. */
+export function assertSafeExactPrefixRaceDbUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Exact-prefix proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
+  }
+  const port = Number.parseInt(parsed.port, 10);
+  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
+    throw new Error(
+      `Refusing to run exact-prefix proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
+    );
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+    throw new Error("Exact-prefix proof DB must be loopback-only.");
+  }
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+  if (!databaseName.includes("concurrency_race_1881")) {
+    throw new Error("Exact-prefix proof DB name must contain 'concurrency_race_1881'.");
+  }
+}
+
+let prisma: PrismaClient;
+let exactPrefix: typeof import("@/lib/prisma-exact-prefix")["exactPrefix"];
+let findOtherDuplicateCaptureRefundOperation: typeof import("@/lib/payment-recovery")["findOtherDuplicateCaptureRefundOperation"];
+let keys: typeof import("@/lib/payment-recovery-keys");
+let handBack: typeof import("@/lib/group-organiser-hand-back-rules");
+
+async function clean(): Promise<void> {
+  const bookingIds = [BOOKING_A, BOOKING_B];
+  await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: { in: bookingIds } } });
+  await prisma.manualRefundTask.deleteMany({ where: { bookingId: { in: bookingIds } } });
+  await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: ["race-4146-p_1", "race-4146-px1"] } } });
+  await prisma.payment.deleteMany({ where: { bookingId: { in: bookingIds } } });
+  await prisma.booking.deleteMany({ where: { id: { in: bookingIds } } });
+  await prisma.lodge.deleteMany({ where: { id: LODGE_ID } });
+  await prisma.member.deleteMany({ where: { id: MEMBER_ID } });
+}
+
+(RUN ? describe : describe.skip)(
+  "a key-prefix lookup built from an id matches only its own rows (#4146)",
+  () => {
+    const paymentOf: Record<string, string> = {};
+
+    beforeAll(async () => {
+      assertSafeExactPrefixRaceDbUrl(RACE_DB_URL);
+      process.env.DATABASE_URL = RACE_DB_URL;
+      ({ prisma } = await import("@/lib/prisma"));
+      ({ exactPrefix } = await import("@/lib/prisma-exact-prefix"));
+      ({ findOtherDuplicateCaptureRefundOperation } = await import("@/lib/payment-recovery"));
+      keys = await import("@/lib/payment-recovery-keys");
+      handBack = await import("@/lib/group-organiser-hand-back-rules");
+
+      await clean();
+      await prisma.member.create({
+        data: {
+          id: MEMBER_ID,
+          email: "race-4146@example.invalid",
+          passwordHash: "not-a-real-password",
+          firstName: "Prefix",
+          lastName: "Proof",
+          ageTier: "ADULT",
+        },
+      });
+      await prisma.lodge.create({ data: { id: LODGE_ID, name: "Race 4146 Lodge", slug: "race-4146" } });
+      for (const bookingId of [BOOKING_A, BOOKING_B]) {
+        await prisma.booking.create({
+          data: {
+            id: bookingId,
+            memberId: MEMBER_ID,
+            lodgeId: LODGE_ID,
+            checkIn: NIGHT,
+            checkOut: CHECK_OUT,
+            status: "CONFIRMED",
+            totalPriceCents: 5000,
+            finalPriceCents: 5000,
+          },
+        });
+        const payment = await prisma.payment.create({ data: { bookingId, amountCents: 5000 } });
+        paymentOf[bookingId] = payment.id;
+      }
+    });
+
+    afterAll(async () => {
+      if (!prisma) return;
+      await clean();
+    });
+
+    it("CONTRAST: Prisma's bare startsWith still reads `_` as a wildcard, so exactPrefix is not double-escaping", async () => {
+      // B's duplicate-capture row, under A's prefix: a bare `startsWith` takes it.
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION",
+          bookingId: BOOKING_B,
+          paymentId: paymentOf[BOOKING_B],
+          paymentIntentId: "pi_race_4146_b",
+          amountCents: 100,
+          idempotencyKey: keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_B, "pi_race_4146_b"),
+        },
+      });
+      const prefixA = keys.buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(BOOKING_A);
+      const bare = await prisma.paymentRecoveryOperation.findMany({
+        where: { idempotencyKey: { startsWith: prefixA } },
+        select: { bookingId: true },
+      });
+      expect(bare.map((row) => row.bookingId)).toEqual([BOOKING_B]);
+      const exact = await prisma.paymentRecoveryOperation.findMany({
+        where: { idempotencyKey: exactPrefix(prefixA) },
+        select: { bookingId: true },
+      });
+      expect(exact).toEqual([]);
+      // ...and it still matches the text it spells, `%` and `\` included.
+      const own = await prisma.paymentRecoveryOperation.findMany({
+        where: { idempotencyKey: exactPrefix(keys.buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(BOOKING_B)) },
+        select: { bookingId: true },
+      });
+      expect(own.map((row) => row.bookingId)).toEqual([BOOKING_B]);
+      await prisma.alertCooldown.createMany({
+        data: ["race-4146:%_\\:x", "race-4146:ab\\:y"].map((key) => ({ key, lastAlertedAt: NIGHT })),
+      });
+      try {
+        const literal = await prisma.alertCooldown.findMany({ where: { key: exactPrefix("race-4146:%_\\") }, select: { key: true } });
+        expect(literal.map((row) => row.key)).toEqual(["race-4146:%_\\:x"]);
+      } finally {
+        await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: "race-4146:" } } });
+      }
+    });
+
+    it("the duplicate-capture adjudication lookup no longer takes another booking's refund row", async () => {
+      // B's row is in place from the contrast case; A has none of its own.
+      expect(await findOtherDuplicateCaptureRefundOperation({ bookingId: BOOKING_A, paymentIntentId: "pi_race_4146_a" })).toBeNull();
+      // A's own row for a different intent is still found.
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION",
+          bookingId: BOOKING_A,
+          paymentId: paymentOf[BOOKING_A],
+          paymentIntentId: "pi_race_4146_a2",
+          amountCents: 100,
+          idempotencyKey: keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_A, "pi_race_4146_a2"),
+        },
+      });
+      const found = await findOtherDuplicateCaptureRefundOperation({ bookingId: BOOKING_A, paymentIntentId: "pi_race_4146_a" });
+      expect(found?.bookingId).toBe(BOOKING_A);
+    });
+
+    it("a group settlement's hand-back tasks exclude another settlement's supplementary task", async () => {
+      const settlementA = "race-4146-s_1";
+      const settlementB = "race-4146-sx1";
+      // B's supplementary task: its key starts with A's `${key}:` prefix under LIKE.
+      await prisma.manualRefundTask.create({
+        data: {
+          bookingId: BOOKING_B,
+          reason: "race-4146 supplementary hand-back",
+          amountCents: 100,
+          kind: "CANCELLED_BOOKING_HAND_BACK",
+          occurrenceKey: handBack.groupOrganiserHandBackOccurrenceKey(settlementB, BOOKING_B),
+        },
+      });
+      const bare = await prisma.manualRefundTask.count({
+        where: { occurrenceKey: { startsWith: `${handBack.groupOrganiserHandBackOccurrenceKey(settlementA)}:` } },
+      });
+      expect(bare).toBe(1);
+      expect(await prisma.manualRefundTask.count({ where: handBack.groupOrganiserHandBackTasksWhere(settlementA) })).toBe(0);
+      expect(await prisma.manualRefundTask.count({ where: handBack.groupOrganiserHandBackTasksWhere(settlementB) })).toBe(1);
+    });
+
+    it("a payment's refund-credit-note correlation key excludes another payment's", async () => {
+      // The fragment `invoice-paid-effects.ts` retires a pending clearing note with.
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND",
+          entityType: "CREDIT_NOTE",
+          operationType: "CREATE",
+          status: "PENDING",
+          localModel: "Payment",
+          localId: "race-4146-px1",
+          correlationKey: "payment:race-4146-px1:refund-credit-note:1",
+        },
+      });
+      const prefixA = "payment:race-4146-p_1:refund-credit-note:";
+      expect(await prisma.xeroSyncOperation.count({ where: { correlationKey: { startsWith: prefixA } } })).toBe(1);
+      expect(await prisma.xeroSyncOperation.count({ where: { correlationKey: exactPrefix(prefixA) } })).toBe(0);
+    });
+  },
+);
