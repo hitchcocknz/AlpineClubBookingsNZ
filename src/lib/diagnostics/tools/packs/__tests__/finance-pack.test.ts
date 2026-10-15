@@ -1192,6 +1192,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     buildReissuedAskStripeIdempotencyKey: "Stripe idempotency key",
     buildRefundRequestRefundMetadata: "Stripe metadata",
     groupSettlementIdForRefundRecoveryKey: "parser of a mapped key",
+    isAppealRefundRecoveryKey: "predicate over mapped keys",
     isEditFinancialReviewAdditionalIntentRecoveryKey: "predicate over a mapped key",
     isGroupSettlementRefundRecoveryKey: "predicate over a mapped key",
     isLateCaptureRefundStripeKeyPrefix: "predicate over a Stripe key prefix",

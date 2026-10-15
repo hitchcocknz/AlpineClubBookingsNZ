@@ -358,6 +358,22 @@ describe("K1: a FAILED refund the runner will retry is in flight; an exhausted o
     expect(exhausted.identities.find((result) => result.identity === "PRICE")).toMatchObject({ status: "DISAGREE", deltaCents: 4_500 });
     expect(census([backPostedCancelledChild(EXHAUSTED)]).verdict).toBe("GATE_CLOSED");
   });
+
+  it("MUTATION (#4120): an appeal's pending debt to the organiser's card is not the cancel's in-flight refund", () => {
+    // The cancel's $45 debt in flight, and a $10 appeal approved after it, its debt not yet made.
+    const subject = backPostedCancelledChild(PENDING);
+    const withAppeal: BookingLedgerCensusRow = {
+      ...subject,
+      recoveryOperations: [...subject.recoveryOperations, { ...childDebt(1_000, PENDING), idempotencyKey: buildOrganiserChildAppealRefundKey("rr1") }],
+    };
+    const result = evaluateBookingLedgerIdentities(withAppeal);
+    expect(result.identities.find((identity) => identity.identity === "PRICE")).toMatchObject({
+      status: "CLASSIFIED",
+      deltaCents: 4_500,
+      explainedBy: [{ name: "IN_FLIGHT_REFUND", cents: 4_500 }],
+    });
+    expect(result.identities.filter((identity) => identity.status === "DISAGREE")).toEqual([]);
+  });
 });
 
 describe("K2: a share's evidence is that the settlement captured, a REFUNDED one included (#3854)", () => {

@@ -648,6 +648,15 @@ export function isOrganiserChildAppealRefundKey(key: string) {
   return key.startsWith(ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX);
 }
 /**
+ * #4120 (`INV-PAY-123`): an approved refund appeal's card refund, either spelling
+ * - the request's own (`refund_request_refund_`) or its debt to the group
+ * organiser's card (#3956). The one test of "this row is an appeal's", so the
+ * screen's outcome and the census never disagree on which rows are (`INV-SSOT`).
+ */
+export function isAppealRefundRecoveryKey(key: string) {
+  return isRefundRequestRefundRecoveryKey(key) || isOrganiserChildAppealRefundKey(key);
+}
+/**
  * `isOrganiserChildRefundKey` as a `PaymentRecoveryOperation` where fragment -
  * the one spelling a query uses, so no reader counts one prefix and misses the
  * other (`INV-SSOT`).
