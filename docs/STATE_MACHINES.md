@@ -1704,7 +1704,10 @@ plan's total (never the full charge), by whichever close moves the row to
 same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
 crash cannot leave the row closed without its event, and a failed insert
 leaves the row open for the runner's replay. A close that finds the row
-already closed writes nothing, so the event lands exactly once. Until it lands, the booking
+already closed writes nothing, so the event lands exactly once. The inline
+close takes the row only while it is still on the plan the attempt sent
+(#4144), so a row re-planned after Stripe later failed the refund stays open
+and owed, with no event. Until it lands, the booking
 page and the payment-link page read the row
 (`readCancelledCardRefundState`, which reads a member cancel's
 `booking_cancel_refund_recovery_<bookingId>` row the same way): still being

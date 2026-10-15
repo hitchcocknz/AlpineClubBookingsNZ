@@ -1133,8 +1133,7 @@ describe("markBookingPaymentSucceeded", () => {
         mocks.markCapacityClaimFailedRefundRecoverySucceeded
       ).toHaveBeenCalledWith(
         expect.objectContaining({
-          bookingId: "booking-1",
-          paymentIntentId: "pi_race",
+          idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_race",
         })
       );
       expect(
@@ -1165,7 +1164,7 @@ describe("markBookingPaymentSucceeded", () => {
         CLUB_FORMAT_TEST,
       );
       // The close runs in the event's transaction, so the two commit together.
-      expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).toHaveBeenCalledWith({ bookingId: "booking-1", paymentIntentId: "pi_race", store: tx });
+      expect(mocks.markCapacityClaimFailedRefundRecoverySucceeded).toHaveBeenCalledWith({ idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_race", sentPlan: [{ paymentTransactionId: "txn-1", amountCents: 9000 }], store: tx });
       const refunded = bookingEvents.create.mock.calls
         .map(([args]) => (args as { data: { type: string; amountCents: number | null; reason: string | null } }).data)
         .filter((event) => event.type === "REFUNDED");
@@ -1220,7 +1219,7 @@ describe("markBookingPaymentSucceeded", () => {
       expect(result.outcome).toBe("cancelled_refunded");
       expect(logger.error).toHaveBeenCalledWith(
         expect.objectContaining({ bookingId: "booking-1", paymentIntentId: "pi_race", err: expect.objectContaining({ message: "insert refused" }) }),
-        "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently",
+        "Failed to close the capacity race's refund recovery operation after its inline refund was made; the recovery runner will replay the frozen plan idempotently",
       );
       expect(bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string } }).data.type)).toEqual(["CANCELLED", "REFUNDED"]);
     });
