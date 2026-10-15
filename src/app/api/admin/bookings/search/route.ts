@@ -6,6 +6,7 @@ import {
   parseBookingDeletedVisibility,
 } from "@/lib/booking-delete-visibility";
 import { prisma } from "@/lib/prisma";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
 import { formatDateOnly } from "@/lib/date-only";
@@ -138,7 +139,7 @@ export async function GET(request: NextRequest) {
         ...buildBookingDeletedWhere(deleted),
         OR: [
           ...bookingIdSearchTerms.map((term) => ({
-            id: { startsWith: term },
+            id: exactPrefix(term),
           })),
           {
             member: {

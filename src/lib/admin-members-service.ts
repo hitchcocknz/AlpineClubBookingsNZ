@@ -5,6 +5,7 @@ import type { AgeTier, Prisma } from "@prisma/client";
 import { hash } from "bcryptjs";
 import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import {
   computeAgeTier,
   getAgeTierSettings,
@@ -435,7 +436,7 @@ export async function listAdminMembers(
   const textSearchCondition: Prisma.MemberWhereInput | null = trimmedQuery
     ? {
         OR: [
-          { id: { startsWith: trimmedQuery } },
+          { id: exactPrefix(trimmedQuery) },
           { firstName: { contains: trimmedQuery, mode: "insensitive" } },
           { lastName: { contains: trimmedQuery, mode: "insensitive" } },
           { email: { contains: trimmedQuery, mode: "insensitive" } },

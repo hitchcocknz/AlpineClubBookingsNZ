@@ -538,3 +538,26 @@ that module's docblock.
   A reviewer's job; no guard claims otherwise.
 - **Measure all three site lists by running the census** — one restated by hand
   has already drifted (`INV-SSOT-004`).
+
+## INV-SSOT-006
+Every Prisma `startsWith` whose prefix carries an id, or text a person typed,
+is written `field: exactPrefix(prefix)` (`src/lib/prisma-exact-prefix.ts`),
+never `{ startsWith: prefix }`. #4146.
+
+- **Why one helper.** Prisma sends `startsWith` as SQL `LIKE prefix || '%'`
+  without escaping the prefix, so `_` matches any one character and `%` any
+  run. A recovery key prefix such as `duplicate_capture_<booking>_` could take
+  another booking's row, and a member typing `%%` in the guest search matched
+  every name. The helper escapes `\`, `%` and `_`; one spelling means one
+  place to change if Prisma's behaviour does.
+- **The premise is pinned.** `prisma-exact-prefix.realdb.test.ts` fails if
+  Prisma ever starts escaping on its own, which would double-escape the helper's
+  prefixes and make them match nothing.
+- **A census keeps it one.** `prisma-exact-prefix-census.test.ts` reads `src/`
+  and fails on a bare `startsWith:` whose value is anything but a string literal
+  or an UPPER_SNAKE constant, unless an allow-list entry says why that value
+  can carry neither. It judges spelling, not value: a computed string bound to
+  an UPPER_SNAKE name passes, and a reviewer catches that.
+- **Scope the query as well where an indexed column allows.** An exact prefix
+  still matches a longer id that begins with the same id and delimiter, so the
+  duplicate-capture lookup is also scoped by `bookingId`.

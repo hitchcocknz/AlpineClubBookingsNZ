@@ -3,11 +3,13 @@
  * only its own rows.
  *
  * Prisma sends `startsWith` as SQL `LIKE 'prefix%'` and does not escape the
- * prefix, so a `_` in it matches any one character. Each fixture below holds
- * two ids that differ only where the other's prefix has a `_`, and each fixed
- * lookup is driven through its production function (or, for a lookup inline in
- * a larger writer, the same fragment on the same column) to show it no longer
- * reads the other id's row. The CONTRAST case pins the premise: if Prisma ever
+ * prefix, so a `_` in it matches any one character. The fixtures hold ids that
+ * differ only where the other's prefix has a `_`. Two lookups are driven
+ * through their production functions (the duplicate-capture adjudication and
+ * the group hand-back fragment); the Xero retire is inline in a larger writer,
+ * so its fragment is run on the same column. The search and force-sync sites
+ * are pinned by their unit tests and `prisma-exact-prefix-census.test.ts`, not
+ * here. The CONTRAST case pins the premise: if Prisma ever
  * starts escaping `startsWith` itself, `exactPrefix` would double-escape and
  * match nothing, and that case fails first.
  *
@@ -67,6 +69,7 @@ async function clean(): Promise<void> {
   const bookingIds = [BOOKING_A, BOOKING_B, BOOKING_C];
   await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: { in: bookingIds } } });
   await prisma.manualRefundTask.deleteMany({ where: { bookingId: { in: bookingIds } } });
+  await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: "race-4146:" } } });
   await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: ["race-4146-p_1", "race-4146-px1"] } } });
   await prisma.payment.deleteMany({ where: { bookingId: { in: bookingIds } } });
   await prisma.booking.deleteMany({ where: { id: { in: bookingIds } } });
@@ -146,7 +149,7 @@ async function clean(): Promise<void> {
         select: { bookingId: true },
       });
       expect(exact).toEqual([]);
-      // ...and it still matches the text it spells, `%` and `\` included.
+      // ...and it still matches its own row.
       const own = await prisma.paymentRecoveryOperation.findMany({
         where: { idempotencyKey: exactPrefix(keys.buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(BOOKING_B)) },
         select: { bookingId: true },
@@ -156,6 +159,7 @@ async function clean(): Promise<void> {
         data: ["race-4146:%_\\:x", "race-4146:ab\\:y"].map((key) => ({ key, lastAlertedAt: NIGHT })),
       });
       try {
+        // A prefix holding `%`, `_` and `\` matches only the key that spells them.
         const literal = await prisma.alertCooldown.findMany({ where: { key: exactPrefix("race-4146:%_\\") }, select: { key: true } });
         expect(literal.map((row) => row.key)).toEqual(["race-4146:%_\\:x"]);
       } finally {
@@ -173,9 +177,9 @@ async function clean(): Promise<void> {
         idempotencyKey,
       });
       // B's row is in place from the contrast case. C's key starts with A's
-      // prefix literally (its id carries A's id and `_`), and A's own other row
-      // is no duplicate-capture key at all but LIKE-matches A's prefix at every
-      // `_`: the booking scope rules out C, the escape rules out the other.
+      // prefix literally (C's id is A's id plus `_x`), so only the booking scope
+      // rules it out. The A row below is no duplicate-capture key; it matches
+      // A's prefix only as a LIKE pattern, so only the escape rules it out.
       await prisma.paymentRecoveryOperation.createMany({
         data: [
           recoveryRow(BOOKING_C, keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_C, "pi_race_4146_c")),
