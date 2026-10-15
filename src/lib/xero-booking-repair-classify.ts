@@ -106,6 +106,7 @@ import {
   bookingHasPrimaryXeroInvoice,
   keptLateCaptureRecordRoute,
 } from "@/lib/late-capture-kept-xero-rules";
+import { compareLedgerRowsNewestFirst } from "@/lib/payment-ledger-order";
 
 /**
  * #3643: a booking's invoice-clearing credit note create that still stands -
@@ -2163,9 +2164,7 @@ export function classifyBookingContext(
     const pinnable = lateCaptureTransactions.every((transaction) => transaction.id !== null);
     const lateCaptureAllocation: { paymentTransactionId: string; amountCents: number }[] = [];
     let unallocatedCents = Math.max(unheldOutstandingCents, 0);
-    for (const transaction of [...lateCaptureTransactions].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    )) {
+    for (const transaction of [...lateCaptureTransactions].sort(compareLedgerRowsNewestFirst)) {
       if (!pinnable || transaction.id === null || unallocatedCents <= 0) break;
       const sliceCents = Math.min(headroomCents(transaction), unallocatedCents);
       lateCaptureAllocation.push({ paymentTransactionId: transaction.id, amountCents: sliceCents });

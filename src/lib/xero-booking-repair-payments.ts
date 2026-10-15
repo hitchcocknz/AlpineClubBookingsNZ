@@ -22,6 +22,8 @@ interface RepairPaymentTransaction {
   refundedAmountCents: number;
   status: PaymentStatus;
   createdAt: Date;
+  /** #4132: the ledger's tiebreak; a legacy slice is numbered in the order it is reconstructed. */
+  insertionSeq: number;
 }
 
 const CANCELLABLE_REPAIR_PAYMENT_STATUSES = new Set<PaymentStatus>([
@@ -97,6 +99,7 @@ function buildRepairPaymentTransactions(
       refundedAmountCents: transaction.refundedAmountCents,
       status: transaction.status,
       createdAt: transaction.createdAt,
+      insertionSeq: transaction.insertionSeq,
     })
   );
 
@@ -145,6 +148,7 @@ function buildRepairPaymentTransactions(
         primaryRefundedAmountCents
       ),
       createdAt: payment.createdAt,
+      insertionSeq: 0,
     });
   }
 
@@ -165,6 +169,7 @@ function buildRepairPaymentTransactions(
         payment.updatedAt.getTime() >= payment.createdAt.getTime()
           ? payment.updatedAt
           : payment.createdAt,
+      insertionSeq: 1,
     });
   }
 

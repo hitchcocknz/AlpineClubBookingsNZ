@@ -286,6 +286,7 @@ function seedPaidBooking() {
     carriedAskCents: 0,
     reason: null,
     createdAt: new Date(Date.UTC(2026, 7, 1)),
+    insertionSeq: ++ledger.seq,
   });
 }
 
@@ -461,6 +462,7 @@ describe("an ask's ledger write keeps each edit's row its own (#4036 review)", (
       stripePaymentIntentId: "pi_add_1", amountCents: 7000, refundedAmountCents: 0, status: PaymentStatus.PENDING,
       paymentMethodId: null, reference: null, xeroInvoiceId: null, xeroInvoiceNumber: null, withdrawnAt: null,
       carriedAskCents: 0, reason: null, bookingModificationId: null, createdAt: new Date(Date.UTC(2026, 7, 2)),
+      insertionSeq: ++ledger.seq,
     });
 
     const first = await editUp("mod_1", 7000);

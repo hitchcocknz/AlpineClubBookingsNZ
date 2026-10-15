@@ -22,6 +22,11 @@
  *   be declared in `UNORDERED_ROW_SETS` with the reason its consumer cannot
  *   depend on the row order. A new unordered read feeding a fold, a plan or a
  *   "first/last" pick fails here until someone orders it or says why not;
+ * - an unordered `findFirst` must be a lookup of one row - a unique key
+ *   (`id`, `stripePaymentIntentId`) in its `where`, or `id` alone selected for
+ *   an existence check - or be declared in `UNPROVEN_FIRST_READS`;
+ * - an in-memory `.sort` over ledger rows whose comparator reads `createdAt`
+ *   must also read the tiebreak (the shared comparators do);
  * - raw SQL that orders `PaymentTransaction` by `"createdAt"` must also name
  *   `"insertionSeq"`.
  *
@@ -32,11 +37,12 @@
  *
  * - A read through an aliased delegate (`const rows = tx.paymentTransaction;
  *   rows.findMany(...)`).
- * - An unordered `findFirst`: it is read as a lookup by a (near-)unique key -
- *   an intent id, a row id, an edit's request. Which row a non-unique
- *   unordered `findFirst` returns is still unspecified.
- * - An in-memory sort of ledger rows. The ones that exist use
- *   `compareLedgerRowsOldestFirst` / `compareLedgerRowsNewestFirst`.
+ * - An in-memory sort whose receiver is not named for transactions, captures
+ *   or the ledger (`rows.sort(...)` over ledger rows), or whose comparator is a
+ *   named function that reads `createdAt` alone. The sorts over ledger rows
+ *   that exist use `compareLedgerRowsOldestFirst` / `compareLedgerRowsNewestFirst`.
+ * - A first-row pick in memory (`.find`, `[0]`) over an unordered read: the
+ *   unordered reads themselves are declared, each with why order cannot matter.
  *
  * The walk REFUSES what it cannot read rather than passing it: a query passed
  * whole (`findMany(query)`), a spread in the query object, a shorthand
@@ -114,10 +120,35 @@ const UNORDERED_ROW_SETS: Record<string, string> = {
     "planInternetBankingCashSettlement filters and sums the rows (the IB primary rows, the ledger's " +
     "refunded total, the captured non-IB cash); no figure depends on the order.",
   "src/lib/xero-inbound/settlement-conflicts.ts > findSecondInstrumentSettlement":
-    "KNOWN, PRE-EXISTING and out of #4132's scope: this read has no order and a later `.find()` picks a " +
-    "candidate, so on two holding captures which one is named is unspecified. Tracked separately; " +
+    "KNOWN, PRE-EXISTING and out of #4132's scope (#4163): this read has no order and a later `.find()` " +
+    "picks a candidate, so on two holding captures which one is named is unspecified. Tracked in #4163; " +
     "remove this entry when that fix orders the read.",
 };
+
+/**
+ * Unordered `findFirst` reads the walk cannot prove return at most one row (no
+ * unique key in the `where`, and more than `id` selected), by `file > function`,
+ * with why the row it happens to meet cannot matter.
+ */
+const UNPROVEN_FIRST_READS: Record<string, string> = {
+  "src/lib/saved-card-charge-settle.ts > adoptSavedCardChargeAttemptForIntent":
+    "looks the attempt row up by `reference`, the saved-card idempotency key, which embeds the row's own id " +
+    "(savedCardChargeIdempotencyKey(bookingId, row.id)), and re-checks that key against the row it got, so " +
+    "only that one row can be adopted.",
+  "src/lib/payment-reconciliation.ts > settleBookingPaymentInTransaction":
+    "KNOWN, PRE-EXISTING and out of #4132's scope (#4177): `otherSettledCapture` reads one of several " +
+    "captures with no order. Tracked in #4177; remove this entry when that fix orders the read.",
+};
+
+/**
+ * In-memory sorts of ledger rows (a receiver named for transactions, captures
+ * or the ledger) whose comparator reads `createdAt` without the tiebreak, by
+ * `file > function`, with why a tie cannot matter. A newest-first slicer that
+ * sorts on `createdAt` alone takes a tie in the order it was read (#4132 money
+ * review F1, `xero-booking-repair-classify.ts`): use
+ * `compareLedgerRowsOldestFirst` / `compareLedgerRowsNewestFirst`.
+ */
+const CREATED_AT_ONLY_COMPARATORS: Record<string, string> = {};
 
 /** Raw SQL allowed to order `PaymentTransaction` by `"createdAt"` without `"insertionSeq"`, by file, with why. */
 const RAW_SQL_WITHOUT_INSERTION_SEQ: Record<string, string> = {
@@ -127,7 +158,41 @@ const RAW_SQL_WITHOUT_INSERTION_SEQ: Record<string, string> = {
 };
 
 type Order = "ledger" | "other" | "none" | "unreadable";
-type Site = { key: string; kind: "read" | "relation"; method: string; order: Order };
+/** For an unordered `findFirst`: how the walk knows at most one row can answer, if it does. */
+type Lookup = "unique-key" | "existence" | "unproven";
+type Site = { key: string; kind: "read" | "relation"; method: string; order: Order; lookup?: Lookup };
+
+/** Columns a `findFirst` may name in its `where` to be read as a lookup of at most one row. */
+const UNIQUE_KEYS = new Set(["id", "stripePaymentIntentId"]);
+
+/**
+ * An unordered `findFirst` is a lookup of one row when its `where` names a
+ * unique column with a plain value (not `{ not: null }` or `{ in: [...] }`), or
+ * an existence check when it selects `id` alone. Anything else returns
+ * whichever matching row PostgreSQL meets first.
+ */
+function classifyLookup(query: ts.Expression | undefined): Lookup {
+  if (!query || !ts.isObjectLiteralExpression(query)) return "unproven";
+  const where = property(query, "where")?.initializer;
+  if (
+    where &&
+    ts.isObjectLiteralExpression(where) &&
+    where.properties.some(
+      (candidate) =>
+        ts.isPropertyAssignment(candidate) &&
+        UNIQUE_KEYS.has(candidate.name.getText()) &&
+        !ts.isObjectLiteralExpression(candidate.initializer) &&
+        candidate.initializer.kind !== ts.SyntaxKind.NullKeyword,
+    )
+  ) {
+    return "unique-key";
+  }
+  const select = property(query, "select")?.initializer;
+  if (select && ts.isObjectLiteralExpression(select) && select.properties.length === 1 && property(select, "id")) {
+    return "existence";
+  }
+  return "unproven";
+}
 
 /** `file > function`, or the module-level `const` a select is declared in. */
 function siteName(node: ts.Node): string {
@@ -203,7 +268,15 @@ function scanTree(): Site[] {
         ts.isPropertyAccessExpression(node.expression.expression) &&
         node.expression.expression.name.text === "paymentTransaction"
       ) {
-        sites.push({ key: key(node), kind: "read", method: node.expression.name.text, order: classifyQuery(node.arguments[0]) });
+        const method = node.expression.name.text;
+        const order = classifyQuery(node.arguments[0]);
+        sites.push({
+          key: key(node),
+          kind: "read",
+          method,
+          order,
+          ...(order === "none" && method !== "findMany" ? { lookup: classifyLookup(node.arguments[0]) } : {}),
+        });
       }
       if (ts.isPropertyAssignment(node) && node.name.getText() === "transactions" && !isUnderCount(node)) {
         const initializer = node.initializer;
@@ -224,6 +297,31 @@ function scanTree(): Site[] {
 }
 
 const unique = (keys: string[]) => [...new Set(keys)].sort();
+
+const LEDGER_RECEIVER = /transaction|capture|ledger/i;
+
+/** Each `.sort(...)` over a ledger-row receiver whose comparator reads `createdAt` but not the tiebreak. */
+function createdAtOnlyComparators(): string[] {
+  const offenders = new Set<string>();
+  for (const file of sourceFiles()) {
+    const code = readFileSync(file, "utf8");
+    if (!code.includes(".sort(") || !code.includes("createdAt")) continue;
+    const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
+    const walk = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "sort") {
+        const [comparator] = node.arguments;
+        const receiver = node.expression.expression.getText(source);
+        const body = comparator?.getText(source) ?? "";
+        if (comparator && LEDGER_RECEIVER.test(receiver) && /\bcreatedAt\b/.test(body) && !/insertionSeq|compareLedgerRows/.test(body)) {
+          offenders.add(`${relativeSource(file)} > ${siteName(node)}`);
+        }
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(source);
+  }
+  return [...offenders].sort();
+}
 
 /** Each raw-SQL `ORDER BY` after `"PaymentTransaction"` that names `"createdAt"` and not `"insertionSeq"`. */
 function rawSqlOrdersWithoutInsertionSeq(): string[] {
@@ -282,8 +380,31 @@ describe("every capture-ledger read is ordered by the ledger's order, or declare
     ).toEqual(Object.keys(UNORDERED_ROW_SETS).sort());
   });
 
+  it("reads every unordered findFirst as a lookup of one row, or declares why", () => {
+    expect(
+      unique(sites.filter((site) => site.lookup === "unproven").map((site) => site.key)),
+      "INV-PAY-133: an unordered PaymentTransaction findFirst names no unique key (id, stripePaymentIntentId) " +
+        "in its where and selects more than id, so it returns whichever matching row PostgreSQL meets first. " +
+        "Order it by LEDGER_ROWS_OLDEST_FIRST / LEDGER_ROWS_NEWEST_FIRST, or declare it in UNPROVEN_FIRST_READS.",
+    ).toEqual(Object.keys(UNPROVEN_FIRST_READS).sort());
+  });
+
+  it("finds no in-memory sort of ledger rows that reads createdAt without the tiebreak", () => {
+    expect(
+      createdAtOnlyComparators(),
+      "INV-PAY-133: a sort over ledger rows compares createdAt alone, so a tie keeps the order it was read in. " +
+        "Use compareLedgerRowsOldestFirst / compareLedgerRowsNewestFirst from payment-ledger-order.ts, or " +
+        "declare it in CREATED_AT_ONLY_COMPARATORS with the reason a tie cannot matter.",
+    ).toEqual(Object.keys(CREATED_AT_ONLY_COMPARATORS).sort());
+  });
+
   it("keeps a reason against every entry", () => {
-    for (const [entry, reason] of Object.entries({ ...UNORDERED_ROW_SETS, ...RAW_SQL_WITHOUT_INSERTION_SEQ })) {
+    for (const [entry, reason] of Object.entries({
+      ...UNORDERED_ROW_SETS,
+      ...UNPROVEN_FIRST_READS,
+      ...CREATED_AT_ONLY_COMPARATORS,
+      ...RAW_SQL_WITHOUT_INSERTION_SEQ,
+    })) {
       expect(reason.length, `INV-PAY-133: ${entry} needs a stated reason`).toBeGreaterThan(40);
     }
   });
