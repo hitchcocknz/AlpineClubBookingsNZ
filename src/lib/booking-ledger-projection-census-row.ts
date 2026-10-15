@@ -142,7 +142,18 @@ export type BookingLedgerCensusRow = {
    * the refund it decided and, since #3611, the kept figure it froze for the
    * ledger. Null where there is none.
    */
-  cancellation: { refundMethod: string | null; settledAmountCents: number | null; keptCents: number | null } | null;
+  cancellation: {
+    refundMethod: string | null;
+    settledAmountCents: number | null;
+    keptCents: number | null;
+    /**
+     * #4147: a capacity race's cancel (`cancelledBecause`, #4125) - what was
+     * paid and what was retained, as its snapshot froze them. Its
+     * `settledAmountCents` is the refund PLAN's total, not what is due back.
+     * Absent on any other cancel, and on a capacity race written before #4125.
+     */
+    capacityRace?: { paidAmountCents: number; retainedAmountCents: number };
+  } | null;
   /**
    * #4120: the booking's APPROVED refund appeals, each with what it has
    * refunded so far as the refund-requests screen reads it
