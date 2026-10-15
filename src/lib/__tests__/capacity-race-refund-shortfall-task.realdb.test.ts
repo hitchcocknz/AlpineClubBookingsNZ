@@ -648,8 +648,12 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       return sumRefundCreditNoteCoverageCents(PAYMENT_ID, await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, prisma), prisma);
     }
 
-    /** One pass of the real outbox worker over the oldest queued row, which must be `operationId`. */
+    /**
+     * One pass of the real outbox worker over its oldest queued row, made `operationId`: the shared harness database
+     * can hold other suites' queued rows, so this one is dated before them all, and the worker sends nothing else.
+     */
     async function outboxSends(operationId: string) {
+      await prisma.xeroSyncOperation.update({ where: { id: operationId }, data: { createdAt: new Date("2000-01-01T00:00:00.000Z") } });
       const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
       expect(await processQueuedXeroOutboxOperations({ limit: 1 })).toMatchObject({ processed: 1 });
       return prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { status: true, responsePayload: true } });
