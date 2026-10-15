@@ -7,6 +7,8 @@ import type { BatchModifyInput } from "@/lib/booking-modify";
 import {
   guestNightKeys,
   isEffectiveStayRangeChange,
+  nightsKeptByRepeatedRange,
+  storedGuestNightsAsDays,
   type GuestNightsAsDays,
 } from "@/lib/booking-change-request-guests";
 import { guestName } from "@/lib/bed-allocation-display-names";
@@ -97,11 +99,23 @@ export type StoredLockedPeriodRequest = z.infer<typeof storedLockedPeriodRequest
  * for nothing the booking can be changed by — a request that only named an
  * effective date, or whose dates equal the booking's own.
  *
- * The executor and `storedRequestNamesNoChange` are its callers.
+ * The executor and `storedRequestNamesNoChange` are its callers. The executor
+ * passes the booking's live guest rows, read under its locks, so a guest's
+ * kept nights (#4157) are the ones they hold now; without them the request's
+ * own snapshot of the guest's nights is read.
  */
 export function lockedPeriodRequestToBatchInput(
   stored: StoredLockedPeriodRequest,
-  booking: { checkIn: Date; checkOut: Date },
+  booking: {
+    checkIn: Date;
+    checkOut: Date;
+    guests?: ReadonlyArray<{
+      id: string;
+      stayStart: Date;
+      stayEnd: Date;
+      nights?: ReadonlyArray<{ stayDate: Date }> | null;
+    }>;
+  },
 ): Pick<
   BatchModifyInput,
   "checkIn" | "checkOut" | "addGuests" | "removeGuestIds" | "guestStayRanges"
@@ -141,7 +155,7 @@ export function lockedPeriodRequestToBatchInput(
   // #4088: a grid-mode range is the guest's night set, passed through as the
   // planner's `nights` (#713) — the same writer the editor's grid uses — so
   // approval applies, and prices, exactly the nights the member chose.
-  const guestStayRanges = requested.guestStayRanges
+  const requestedRanges = requested.guestStayRanges
     // Not `entryHasStayRange`: that admits a one-bound range, which a row stored
     // before #4030 refused them may still hold, and this has always dropped.
     .filter((range) => Boolean(range.stayStart && range.stayEnd) || Boolean(range.nights?.length))
@@ -167,9 +181,23 @@ export function lockedPeriodRequestToBatchInput(
   // #4030 review M2: whether the request names nothing is judged on the ranges
   // that CHANGE something — a range repeating the guest's stored nights is not
   // a change. This test decides only that; it never filters what is applied.
-  const namesRangeChange = guestStayRanges.some((range) =>
+  // It reads the ranges as the member sent them, before #4157 below.
+  const namesRangeChange = requestedRanges.some((range) =>
     isEffectiveStayRangeChange(range, currentRanges.get(range.guestId)),
   );
+  // #4157 (owner decision "Keep their nights"): a two-bound range that only
+  // repeats a gapped guest's own Date In and Date Out is applied as the nights
+  // they hold, so approval neither fills nor charges their gaps. It stays in
+  // the list, as an explicit night set, for the reason above: range mode must
+  // not switch off. A range that moves a bound is applied as written.
+  const guestStayRanges = requestedRanges.map((range) => {
+    const live = booking.guests?.find((guest) => guest.id === range.guestId);
+    const kept = nightsKeptByRepeatedRange(
+      range,
+      live ? storedGuestNightsAsDays(live) : currentRanges.get(range.guestId),
+    );
+    return kept ? { ...range, nights: kept } : range;
+  });
   if (
     !checkIn &&
     !checkOut &&
@@ -217,9 +245,10 @@ export interface RequestedGuestNights {
   /** An existing guest whose requested nights are the ones they already hold. */
   unchanged: boolean;
   /**
-   * An existing guest with gaps in their stay whose request is a Date In and
-   * Date Out rather than a night set: approving writes every night of that
-   * range, so the gaps inside it are filled (and charged).
+   * An existing guest with gaps in their stay whose request MOVES their Date In
+   * or Date Out (a range rather than a night set): approving writes every night
+   * of that range, so the gaps inside it are filled (and charged). A range that
+   * only repeats their own dates keeps their nights (#4157) and is `unchanged`.
    */
   fillsGaps: boolean;
 }
@@ -249,9 +278,12 @@ function requestedRuns(
 /**
  * Whether a two-bound range covers a night inside the guest's stored stay that
  * the guest does not hold. Walks only the STORED envelope, never the member's.
+ * A range repeating the guest's own dates fills nothing: approval keeps the
+ * nights they hold (#4157, `nightsKeptByRepeatedRange`).
  */
 function rangeFillsGaps(range: StoredNights, current: GuestNightsAsDays | undefined): boolean {
   if (range.nights?.length || !range.stayStart || !range.stayEnd || !current?.nights?.length) return false;
+  if (nightsKeptByRepeatedRange(range, current)) return false;
   const held = new Set(guestNightKeys(current));
   const { stayStart, stayEnd } = range;
   return guestNightKeys({ stayStart: current.stayStart, stayEnd: current.stayEnd }).some(
@@ -262,9 +294,10 @@ function rangeFillsGaps(range: StoredNights, current: GuestNightsAsDays | undefi
 /**
  * Each guest's requested nights, read from the stored request by the
  * executor's own schema, so the officer's card shows the nights approving
- * would apply (#4088): a grid night set as chosen, else Date In to the last
- * night. Guests the request does not name are not listed; an unreadable row
- * lists nobody.
+ * would apply (#4088): a grid night set as chosen, the nights a guest
+ * already holds where their range only repeats their own dates (#4157), else
+ * Date In to the last night. Guests the request does not name are not listed;
+ * an unreadable row lists nobody.
  */
 export function describeRequestedGuestNights(requestedChanges: unknown): RequestedGuestNights[] {
   const parsed = storedLockedPeriodRequestSchema.safeParse(requestedChanges);
@@ -272,13 +305,15 @@ export function describeRequestedGuestNights(requestedChanges: unknown): Request
   const { original, requested } = parsed.data;
   const removed = new Set(requested.removeGuests.map((guest) => guest.id));
   const existing = requested.guestStayRanges.flatMap((range) => {
-    const nights = removed.has(range.guestId) ? null : requestedRuns(range);
-    if (!nights) return [];
+    if (removed.has(range.guestId)) return [];
     const guest = original.guests.find((candidate) => candidate.id === range.guestId);
     const current =
       guest?.stayStart && guest.stayEnd
         ? { stayStart: guest.stayStart, stayEnd: guest.stayEnd, nights: guest.nights }
         : undefined;
+    const kept = nightsKeptByRepeatedRange(range, current);
+    const nights = requestedRuns(kept ? { nights: kept } : range);
+    if (!nights) return [];
     const fillsGaps = rangeFillsGaps(range, current);
     const unchanged = Boolean(current) && !fillsGaps && !isEffectiveStayRangeChange(range, current);
     const name = (guest && guestName(guest)) || "A guest on the booking";

@@ -421,9 +421,10 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
     ).toEqual([]);
   });
 
-  it("marks a guest with gaps whose request repeats their Date In and Date Out as filling the gaps, not unchanged", () => {
-    // Approving writes every night of a two-bound range (the planner reads no
-    // night set from it), so 1 July would be added and charged.
+  it("marks a guest with gaps whose request repeats their Date In and Date Out as no change, listing the nights they keep (#4157)", () => {
+    // Approval keeps the nights the guest holds where their range only repeats
+    // their own dates (owner decision on #4157), so 1 July is neither added
+    // nor charged, and the card shows the two nights that stand.
     const requestedChanges = {
       original: {
         checkIn: "2026-06-30",
@@ -444,8 +445,27 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
     expect(describeRequestedGuestNights(requestedChanges)).toEqual([
       {
         name: "Alex Example",
-        runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-02" }],
-        nightCount: 3,
+        runs: [
+          { firstNight: "2026-06-30", lastNight: "2026-06-30" },
+          { firstNight: "2026-07-02", lastNight: "2026-07-02" },
+        ],
+        nightCount: 2,
+        added: false,
+        unchanged: true,
+        fillsGaps: false,
+      },
+    ]);
+    // A range that really moves a bound re-spreads the guest's nights: every
+    // night of it, the gap included, which the card still flags.
+    const moved = {
+      ...requestedChanges,
+      requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-04" }] },
+    };
+    expect(describeRequestedGuestNights(moved)).toEqual([
+      {
+        name: "Alex Example",
+        runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-03" }],
+        nightCount: 4,
         added: false,
         unchanged: false,
         fillsGaps: true,

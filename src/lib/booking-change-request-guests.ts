@@ -340,6 +340,33 @@ export function isEffectiveStayRangeChange(
 }
 
 /**
+ * The nights a guest keeps when their requested range only repeats their own
+ * Date In and Date Out (#4157, owner decision "Keep their nights"), as sorted
+ * `yyyy-mm-dd` keys, or `null` when the range is applied as it is written.
+ *
+ * A two-bound range carries no night set, so applied as written it puts the
+ * guest on every night inside it and fills (and charges) the gaps in a stay
+ * like nights {10, 12}. Range mode cannot express gaps, so the member's form
+ * sends a gapped guest's own bounds back unchanged; that is no change to their
+ * dates, and their nights stand. Only a moved bound re-spreads them.
+ *
+ * `null` for a grid night set, a one-bound range, a moved bound, an unknown
+ * guest, a guest with no night rows, and a guest who already holds every night
+ * of the range (applied by its two bounds, exactly as before).
+ */
+export function nightsKeptByRepeatedRange(
+  range: { stayStart?: string | null; stayEnd?: string | null; nights?: ReadonlyArray<string> | null },
+  current: GuestNightsAsDays | undefined,
+): string[] | null {
+  if (range.nights?.length || !range.stayStart || !range.stayEnd || !current) return null;
+  if (range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd) return null;
+  const held = getExplicitGuestBedNightKeys({ nights: current.nights });
+  if (!held) return null;
+  const everyNight = guestNightKeys({ stayStart: current.stayStart, stayEnd: current.stayEnd });
+  return sameNightKeys(held, everyNight) ? null : held;
+}
+
+/**
  * #4030 review M2: whether any of a request's stay ranges changes a guest's
  * nights, against the guests' stored `@db.Date` ranges.
  */
