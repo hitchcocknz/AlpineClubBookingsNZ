@@ -51,11 +51,11 @@ describe("individual outstanding amounts and audience", () => {
     expect(screen.queryByText("Card ask 2500")).not.toBeInTheDocument();
     expect(screen.queryByText(/You have an additional card payment/)).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining("cursor=signed"), { cache: "no-store" });
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
     const retry = await screen.findByRole("button", { name: "Check current payment information" });
     await waitFor(() => expect(retry).toBeEnabled());
     fireEvent.click(retry);
-    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("link", { name: "Reload this booking" })).toHaveAttribute("href", "/bookings/booking");
   });
   it.each([2500, 0, null])("uses the revalidated server view after failure, including captured or withdrawn asks (current amount %s)", async (cardDueCents) => {

@@ -75,9 +75,8 @@ export function BookingOutstandingPayments({ bookingId, initial, format, zone }:
                 : next);
             } catch {
               // Transport failure gives no new card authority. Retain its last
-              // observation, mark uncertainty separately and revalidate the page.
+              // observation and wait for an explicit retry before another read.
               setContinuationFailed(true);
-              router.refresh();
             }
           })}>{pending ? "Checking…" : "Check more invoices"}</Button>
         </> : null}

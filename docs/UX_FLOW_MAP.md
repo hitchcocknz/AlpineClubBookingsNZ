@@ -811,7 +811,7 @@ Each invoice retains its own timestamp and instructions; batches are never
 combined into a current total. Incomplete evidence says amounts/instructions
 cannot yet be confirmed and offers re-entry. Cancelled/bumped/deleted bookings
 suppress collection. A failed continuation marks payment authority uncertain,
-requests a page refresh and offers an explicit current-payment retry or reload;
+offers an explicit current-payment retry or reload without an automatic read;
 it never treats an unknown card ask as zero or leaves old pay controls current.
 See [the member guide](user-guide/booking-a-stay.md#additional-money-after-a-booking-change)
 and [the provider reader contract](xero/ARCHITECTURE.md#booking-page-supplementary-invoice-observations-4047).
