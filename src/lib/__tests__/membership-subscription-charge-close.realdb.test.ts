@@ -85,6 +85,7 @@ let observerClient: import("@prisma/client").PrismaClient;
     async function deleteFixtures() {
       await prisma.auditLog.deleteMany({ where: { entityId: CHARGE_ID } });
       await prisma.xeroSyncOperation.deleteMany({ where: { OR: [{ localId: CHARGE_ID }, { correlationKey: CORRELATION_KEY }] } });
+      await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [CHARGE_ID, ...SUBSCRIPTION_IDS] } } });
       await prisma.membershipSubscriptionChargeComponent.deleteMany({ where: { chargeId: CHARGE_ID } });
       await prisma.membershipSubscriptionChargeCoverage.deleteMany({ where: { chargeId: CHARGE_ID } });
       await prisma.membershipSubscriptionCharge.deleteMany({ where: { id: CHARGE_ID } });
@@ -470,13 +471,13 @@ let observerClient: import("@prisma/client").PrismaClient;
       expect(updates[markerAt]).toMatchObject({ row_count: 1 });
       expect(updates[markerAt - 1]).toMatchObject({ row_count: 0, tx: updates[markerAt]!.tx });
       // Nothing else of the invoice was recorded: no subscription link or
-      // downgrade, and no object link for the charge.
+      // downgrade, and no object link for the charge or its subscriptions.
       const subscriptions = await prisma.memberSubscription.findMany({
         where: { id: { in: [...SUBSCRIPTION_IDS] } },
         select: { status: true, xeroInvoiceId: true },
       });
       expect(subscriptions).toEqual([{ status: "PAID", xeroInvoiceId: null }, { status: "PAID", xeroInvoiceId: null }]);
-      expect(await prisma.xeroObjectLink.count({ where: { localId: CHARGE_ID } })).toBe(0);
+      expect(await prisma.xeroObjectLink.count({ where: { localId: { in: [CHARGE_ID, ...SUBSCRIPTION_IDS] } } })).toBe(0);
       // The attempt's own outcome is the stray, for Xero Operations.
       const attempt = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: STALE_ATTEMPT_ID } });
       expect(attempt).toMatchObject({ status: "PARTIAL", xeroObjectId: STRAY_INVOICE_ID });

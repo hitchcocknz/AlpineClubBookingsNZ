@@ -464,9 +464,18 @@ export async function buildSubscriptionBillingPreview(input: {
         billingBasis: true,
         coverage: {
           select: {
+            memberId: true,
             memberName: true,
             subscriptionStatusAtClose: true,
-            subscription: { select: { status: true } },
+            // #4110 review: whether the covered member is STILL in this family —
+            // a member who moved to another family and then had their payment
+            // reversed does not re-bill the family they left.
+            subscription: {
+              select: {
+                status: true,
+                member: { select: { familyGroupMemberships: { select: { familyGroupId: true } } } },
+              },
+            },
           },
         },
       },
@@ -723,20 +732,34 @@ export async function buildSubscriptionBillingPreview(input: {
   // were reversed the preview warns the officer that confirming invoices the
   // whole family fee (CLOSED_FAMILY_PARTLY_REVERSED). A live charge for the
   // same key wins over a closed one.
+  //
+  // Only members STILL in the family count (#4110 review): a covered member
+  // who moved to another family is not this family's to re-bill. Members a
+  // closed, still-billing charge covered while exempt are remembered, so one
+  // who later needs a subscription gets an exception that says so rather than
+  // the late-joiner wording (and is never silently unbilled).
   const billedFamilyTypes = new Map<string, string>();
   const partlyReversedClosedFamilies = new Map<string, { chargeId: string; reversedMemberNames: string[] }>();
+  const exemptAtCloseByFamilyKey = new Map<string, Set<string>>();
   for (const charge of existingFamilyCharges) {
     const key = `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`;
     if (!isChargeClosedAsAlreadyPaid(charge)) {
       billedFamilyTypes.set(key, charge.id);
       continue;
     }
-    const reversed = charge.coverage.filter(isClosedCoveragePaymentReversed);
+    const stillInFamily = charge.coverage.filter((row) =>
+      row.subscription.member.familyGroupMemberships.some((membership) => membership.familyGroupId === charge.familyGroupId));
+    const reversed = stillInFamily.filter(isClosedCoveragePaymentReversed);
     if (reversed.length === 0) {
-      if (!billedFamilyTypes.has(key)) billedFamilyTypes.set(key, charge.id);
+      if (!billedFamilyTypes.has(key)) {
+        billedFamilyTypes.set(key, charge.id);
+        exemptAtCloseByFamilyKey.set(key, new Set(
+          stillInFamily.filter((row) => !wasPaidAtClose(row)).map((row) => row.memberId),
+        ));
+      }
       continue;
     }
-    if (reversed.length < charge.coverage.filter(wasPaidAtClose).length) {
+    if (reversed.length < stillInFamily.filter(wasPaidAtClose).length) {
       partlyReversedClosedFamilies.set(key, {
         chargeId: charge.id,
         reversedMemberNames: reversed.map((row) => row.memberName).sort(compareOrdinal),
@@ -1050,14 +1073,20 @@ export async function buildSubscriptionBillingPreview(input: {
       : `${input.seasonYear}:${fee.id}:member:${member.id}`;
     const existingFamilyChargeId = billedFamilyTypes.get(groupingKey);
     if (existingFamilyChargeId) {
+      // #4110 review: a member the closed charge covered while exempt, who now
+      // needs a subscription, is told apart from a late joiner. No payment was
+      // reversed, so the family stays billed; Finance decides what they owe.
+      const exemptAtClose = exemptAtCloseByFamilyKey.get(groupingKey)?.has(member.id) ?? false;
       exceptions.push(exception({
         code: "FAMILY_ALREADY_BILLED",
-        message: `${memberName} joined family ${familyGroupId} after its ${membershipType.name} fee was billed. The immutable family charge was not changed and no second invoice was created.`,
+        message: exemptAtClose
+          ? `${memberName} was not required to pay when family ${familyGroupId}'s ${membershipType.name} charge was closed as already paid, and now needs a subscription. The closed family charge was not reopened and no invoice was created: if the family fee covers ${memberName}, mark their subscription paid; if not, reverse a family member's manual payment so the next billing run bills the family again.`
+          : `${memberName} joined family ${familyGroupId} after its ${membershipType.name} fee was billed. The immutable family charge was not changed and no second invoice was created.`,
         seasonYear: input.seasonYear,
         memberId: member.id,
         familyGroupId,
         membershipTypeId: membershipType.id,
-        context: { memberName, existingFamilyChargeId, membershipAnnualFeeId: fee.id },
+        context: { memberName, existingFamilyChargeId, membershipAnnualFeeId: fee.id, ...(exemptAtClose ? { exemptAtClose: true } : {}) },
       }));
       continue;
     }
@@ -1170,7 +1199,7 @@ export async function buildSubscriptionBillingPreview(input: {
     if (!partly) continue;
     exceptions.push(exception({
       code: CLOSED_FAMILY_PARTLY_REVERSED_CODE,
-      message: `This family's ${entry.membershipTypeName} charge was closed as already paid, and only some members' payments have since been reversed (${partly.reversedMemberNames.join(", ")}). Confirming invoices the full family fee to ${entry.recipient.name}.`,
+      message: `This family's ${entry.membershipTypeName} charge was closed as already paid, and since then only some of the members who were paid at the close are no longer paid or not required (${partly.reversedMemberNames.join(", ")}). Confirming invoices the full family fee to ${entry.recipient.name}.`,
       seasonYear: input.seasonYear,
       memberId: null,
       familyGroupId: entry.familyGroupId,

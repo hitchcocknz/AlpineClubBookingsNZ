@@ -450,8 +450,15 @@ let createdMapping = false;
       // Nobody's payment was reversed, so the closed family is still billed:
       // no re-bill, and no false "reversed (child)" warning.
       expect(preview.entries).toEqual([]);
+      // The child now needs a subscription and is never silently unbilled: the
+      // officer sees an exception naming why (exempt at the close) and what to do.
       expect(preview.exceptions).toEqual([
-        expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: CHILD_ID, context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID }) }),
+        expect.objectContaining({
+          code: "FAMILY_ALREADY_BILLED",
+          memberId: CHILD_ID,
+          message: expect.stringContaining("was not required to pay when family"),
+          context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID, exemptAtClose: true }),
+        }),
       ]);
     });
 

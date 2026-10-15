@@ -192,8 +192,8 @@ describe("membership subscription confirmation", () => {
     mocks.chargeFindMany.mockResolvedValue([{
       id: "charge-closed", familyGroupId: "family-1", membershipTypeId: "type-1", billingBasis: "PER_FAMILY", status: "NOT_REQUIRED",
       coverage: [
-        { memberName: "Parent Member", subscription: { status: "PAID" } },
-        { memberName: "Kid Member", subscription: { status: "NOT_INVOICED" } },
+        { memberId: "parent-1", memberName: "Parent Member", subscription: { status: "PAID", member: { familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
+        { memberId: "member-1", memberName: "Kid Member", subscription: { status: "NOT_INVOICED", member: { familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
       ],
     }]);
     mocks.chargeUpsert.mockResolvedValue({ id: "charge-rebill" });

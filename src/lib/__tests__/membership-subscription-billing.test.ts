@@ -690,7 +690,7 @@ describe("membership subscription billing", () => {
    */
   function familyCharge(
     status: string,
-    coveredStatuses: Array<[string, string] | [string, string, string]> = [],
+    coveredStatuses: Array<[string, string] | [string, string, string | null] | [string, string, string | null, string]> = [],
     overrides: Record<string, unknown> = {},
   ) {
     return {
@@ -699,10 +699,16 @@ describe("membership subscription billing", () => {
       membershipTypeId: "type-1",
       billingBasis: "PER_FAMILY",
       status,
-      coverage: coveredStatuses.map(([memberName, subscriptionStatus, statusAtClose]) => ({
+      // The fourth element is the family the covered member is in NOW (default:
+      // still this one).
+      coverage: coveredStatuses.map(([memberName, subscriptionStatus, statusAtClose, nowInFamily]) => ({
+        memberId: memberName,
         memberName,
         subscriptionStatusAtClose: statusAtClose ?? null,
-        subscription: { status: subscriptionStatus },
+        subscription: {
+          status: subscriptionStatus,
+          member: { familyGroupMemberships: [{ familyGroupId: nowInFamily ?? "family-1" }] },
+        },
       })),
       ...overrides,
     };
@@ -750,13 +756,41 @@ describe("membership subscription billing", () => {
     // An officer re-saved the exempt member's REQUIRED-type assignment, and the
     // reconcile flipped their NOT_REQUIRED row; the parent's payment stands.
     const preview = await previewFamily(
-      [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["Cub Member", "NOT_INVOICED", "NOT_REQUIRED"]])],
+      // "re-billable" is the member being previewed: covered while exempt, now
+      // needing a subscription.
+      [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["re-billable", "NOT_INVOICED", "NOT_REQUIRED"]])],
+      ["re-billable"],
+    );
+    expect(preview.entries).toHaveLength(0);
+    // Never silently unbilled: the officer gets an exception that says why,
+    // and what to do, rather than the late-joiner wording.
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({
+        code: "FAMILY_ALREADY_BILLED",
+        memberId: "re-billable",
+        message: expect.stringMatching(/^First-re-billable Member was not required to pay when family family-1's .* charge was closed as already paid, and now needs a subscription\. .*mark their subscription paid; if not, reverse a family member's manual payment/),
+        context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required", exemptAtClose: true }),
+      }),
+    ]);
+  });
+
+  it("a covered member who moved to another family and was then reversed does not re-bill the family they left (#4110 review F2)", async () => {
+    const preview = await previewFamily(
+      [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["Moved Member", "NOT_INVOICED", "PAID", "family-2"]])],
       ["re-billable"],
     );
     expect(preview.entries).toHaveLength(0);
     expect(preview.exceptions).toEqual([
-      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required" }) }),
+      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", memberId: "re-billable", context: expect.not.objectContaining({ exemptAtClose: true }) }),
     ]);
+  });
+
+  it("a moved member is left out of the partial-reversal count too: every payment still in the family reversed is a full reversal (#4110 review F2)", async () => {
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["Moved Member", "PAID", "PAID", "family-2"]]),
+    ]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.exceptions).toEqual([]);
   });
 
   it("every PAYMENT reversed beside an exempt member is a full reversal: billed again, with no partial warning (#4110 review F1)", async () => {
@@ -783,7 +817,7 @@ describe("membership subscription billing", () => {
         code: "CLOSED_FAMILY_PARTLY_REVERSED",
         familyGroupId: "family-1",
         memberId: null,
-        message: expect.stringMatching(/only some members' payments have since been reversed \(Kid Member\)\. Confirming invoices the full family fee to Bill Member\./),
+        message: expect.stringMatching(/since then only some of the members who were paid at the close are no longer paid or not required \(Kid Member\)\. Confirming invoices the full family fee to Bill Member\./),
         context: { closedChargeId: "charge-not_required", reversedMemberNames: ["Kid Member"] },
       }),
     ]);
