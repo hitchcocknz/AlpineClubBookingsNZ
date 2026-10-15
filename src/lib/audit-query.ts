@@ -6,7 +6,7 @@ import {
   type AuditCategory,
 } from "./audit-categories";
 import { readDeclaredMemberText } from "./audit-member-disclosure";
-import { exactPrefix } from "./prisma-exact-prefix"; // #4165: legacy action prefixes are literal
+import { exactContains, exactPrefix } from "./prisma-exact-prefix"; // #4165: legacy action names are literal
 import {
   isReservedDetailKey,
   recoverTruncatedStructuredDetail,
@@ -163,7 +163,7 @@ function getAuditLogSubjectMemberId(
 const actionStartsWith = (prefix: string): Prisma.AuditLogWhereInput => ({ action: exactPrefix(prefix) });
 
 function actionContains(value: string): Prisma.AuditLogWhereInput {
-  return { action: { contains: value } };
+  return { action: exactContains(value) };
 }
 
 const LEGACY_AUDIT_CATEGORY_ACTION_FILTERS: Record<

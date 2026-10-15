@@ -1,6 +1,6 @@
 /**
  * Real-PostgreSQL proof for #4165: the audit category filters' literal action
- * prefixes select the same real rows the wildcard ones did, and refuse the
+ * prefixes and fragments select the same real rows the wildcard ones did, and refuse the
  * rows only a wildcard `_` reached.
  *
  * `actionStartsWith` (`audit-query.ts`) now writes its prefix through
@@ -14,8 +14,8 @@
  * it. It then checks the shared `matchesWhere` answers every one of those
  * questions as PostgreSQL did, which is what lets the unit replay
  * (`audit-legacy-filter-exact-prefix.test.ts`) and the #2581 member-boundary
- * test stand in for the database. The `contains` witness pins that Prisma
- * leaves a `contains` operand unescaped too.
+ * test stand in for the database. The `DATA_EXPORT` rows pin the same for
+ * `actionContains`, whose operand Prisma also leaves unescaped (`exactContains`).
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL that `concurrency-lock-races.realdb.test.ts` provisions
@@ -44,8 +44,8 @@ const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
 const REQUEST_ID = "race-4165";
 const MEMBER = "race-4165-member";
-/** Filed under `privacy` by `contains: "DATA_EXPORT"` only if `_` is a wildcard there too. */
-const CONTAINS_WILDCARD_WITNESS = "race4165.DATAXEXPORT.witness";
+/** Filed under `privacy` by `actionContains("DATA_EXPORT")` literally, old filter and new. */
+const CONTAINS_LITERAL_WITNESS = "race4165.DATA_EXPORT.witness";
 
 const REAL_ACTIONS = [
   ...new Set([
@@ -110,7 +110,7 @@ function withoutDecoys(actions: string[]): string[] {
       audit = await import("@/lib/audit-query");
       await clean();
       await prisma.auditLog.createMany({
-        data: [...REAL_ACTIONS, ...DECOY_ACTIONS, CONTAINS_WILDCARD_WITNESS].map((action) => ({
+        data: [...REAL_ACTIONS, ...DECOY_ACTIONS, CONTAINS_LITERAL_WITNESS].map((action) => ({
           action,
           category: null,
           subjectMemberId: MEMBER,
@@ -174,8 +174,12 @@ function withoutDecoys(actions: string[]): string[] {
           expect(simulated(where), `${label} (${shape})`).toEqual(await selected(where));
         }
       }
-      // Prisma leaves a `contains` operand unescaped as well, and the evaluator says so.
-      expect(await selected(audit.buildAuditCategoryWhere("privacy")!)).toContain(CONTAINS_WILDCARD_WITNESS);
+      // Prisma leaves a `contains` operand unescaped as well: the old fragment's
+      // `_` takes the decoy, and the escaped one still takes the literal text.
+      const privacy = audit.buildAuditCategoryWhere("privacy")!;
+      expect(await selected(unescapeLikeOperands(privacy))).toContain("DATAXEXPORTfoo");
+      expect(await selected(privacy)).not.toContain("DATAXEXPORTfoo");
+      expect(await selected(privacy)).toContain(CONTAINS_LITERAL_WITNESS);
     });
   },
 );

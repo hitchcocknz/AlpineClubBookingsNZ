@@ -2,9 +2,9 @@
  * #4165: what the audit category filters' legacy action-name leg matched
  * BEFORE its prefixes became literal, and the rows that tell the two apart.
  *
- * `audit-query.ts`'s `actionStartsWith` used to hand Prisma a bare prefix,
- * which PostgreSQL reads as `LIKE prefix || '%'`, so each `_` matched any one
- * character. It now escapes them (`exactPrefix`). `unescapeLikeOperands`
+ * `audit-query.ts`'s `actionStartsWith` and `actionContains` used to hand
+ * Prisma a bare string, which PostgreSQL reads as `LIKE`, so each `_` matched
+ * any one character. They now escape them (`exactPrefix`, `exactContains`). `unescapeLikeOperands`
  * rebuilds the old filter from the new one by stripping those escapes, so the
  * unit replay (`audit-legacy-filter-exact-prefix.test.ts`) and the PostgreSQL
  * proof (`audit-query-exact-prefix.realdb.test.ts`) compare the same two
@@ -31,7 +31,7 @@ export function unescapeLikeOperands<T>(where: T): T {
 /**
  * An action no writer spells, which the OLD filter put in `category` only
  * through a wildcard `_` and the literal filter puts nowhere. One per prefix
- * that has a `_`, except `XERO_`: anything starting `XERO` also contains
+ * or fragment that has a `_`, except `XERO_`: anything starting `XERO` also contains
  * `XERO`, which the same category matches anyway, so no decoy can separate
  * the two there.
  */
@@ -48,6 +48,8 @@ export const LEGACY_FILTER_WILDCARD_DECOYS: readonly {
   { action: "ADMINXfoo", oldCategories: ["admin"] },
   { action: "LODGEXfoo", oldCategories: ["lodge"] },
   { action: "memberXlifecycle.delete_requested", oldCategories: ["privacy"] },
+  // The one `contains` fragment with a `_` (`actionContains("DATA_EXPORT")`).
+  { action: "DATAXEXPORTfoo", oldCategories: ["privacy"] },
 ];
 
 /**
