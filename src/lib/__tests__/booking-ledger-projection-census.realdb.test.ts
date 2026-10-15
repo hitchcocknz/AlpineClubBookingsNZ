@@ -24,7 +24,9 @@
  *     the real refund writer (the rest queued by the real recovery enqueue), is
  *     `REFUND_APPEAL_PAID` on PRICE for the part made, read through the store's
  *     own appeal-outcome read; declined, or approved for a different amount,
- *     it still disagrees.
+ *     it still disagrees. Paid by internet banking instead, the appeal's own
+ *     hand-back (the real raiser and resolver) is read the same way: nothing
+ *     while open, `REFUND_APPEAL_PAID` once paid back.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -52,7 +54,8 @@ const CREDIT = "race-3583-credit";
 const CASH = "race-3583-cash";
 const LEGACY = "race-3583-legacy";
 const APPEAL = "race-3583-appeal";
-const BOOKINGS = [CARD, CREDIT, CASH, LEGACY, APPEAL];
+const BANK_APPEAL = "race-3583-bank-appeal";
+const BOOKINGS = [CARD, CREDIT, CASH, LEGACY, APPEAL, BANK_APPEAL];
 // A stay well after today, in the policy's one tier.
 const D1 = new Date("2027-08-01T00:00:00.000Z");
 const D2 = new Date("2027-08-02T00:00:00.000Z");
@@ -398,5 +401,42 @@ const NOTHING = { disagreements: [], coverage: [], integrity: [], classes: [] };
     // amount on the row that would match (the store reads APPROVED requests only).
     await prisma.refundRequest.update({ where: { id: request.id }, data: { approvedAmountCents: 4_000, status: "REJECTED" } });
     expect(about(await census(), APPEAL).disagreements.map((row) => [row.identity, row.deltaCents])).toEqual([["PRICE", -4_000]]);
+  }, 120_000);
+
+  it("#4120: an internet-banking appeal's own hand-back is nothing while open and REFUND_APPEAL_PAID once paid back", async () => {
+    await createBooking(BANK_APPEAL, { amountCents: 20_000, source: "INTERNET_BANKING" });
+    const { markBookingPaymentManuallySettled } = await import("@/lib/payment-reconciliation");
+    await markBookingPaymentManuallySettled({ bookingId: BANK_APPEAL, actingAdminMemberId: OFFICER_ID, note: "bank transfer", expectedAmountCents: 20_000, notifyMember: false, format: CLUB_FORMAT_TEST });
+    const { cancelBooking } = await import("@/lib/booking-cancel");
+    expect((await cancelBooking(BANK_APPEAL, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card")).status).toBe(200);
+    const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
+    const complete = (taskId: string) =>
+      resolveManualRefundTask(
+        { taskId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null },
+        CLUB_FORMAT_TEST,
+      );
+    const cancelTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BANK_APPEAL }, select: { id: true } });
+    await complete(cancelTask.id);
+    const cancelOnly = { ...NOTHING, classes: ["REFUND_MIRROR_HAND_BACK:REFUNDED"] };
+    expect(about(await census(), BANK_APPEAL)).toEqual(cancelOnly);
+
+    // A $40 appeal approved, its hand-back raised by the approval's own writer: open, it moved
+    // nothing, and it is not the cancel's in-flight hand-back.
+    const request = await prisma.refundRequest.create({
+      data: { bookingId: BANK_APPEAL, memberId: MEMBER_ID, reason: "race 3583 bank appeal", requestedAmountCents: 4_000, status: "APPROVED", approvedAmountCents: 4_000, reviewedBy: OFFICER_ID, reviewedAt: new Date("2026-06-20T00:00:00.000Z") },
+      select: { id: true },
+    });
+    const { raiseRefundRequestHandBack } = await import("@/lib/edit-refund-hand-back");
+    expect(await prisma.$transaction((tx) => raiseRefundRequestHandBack(tx, { bookingId: BANK_APPEAL, paymentId: `${BANK_APPEAL}-payment`, refundRequestId: request.id, amountCents: 4_000 }))).toBe(1);
+    expect(about(await census(), BANK_APPEAL)).toEqual(cancelOnly);
+
+    // Paid back by the real resolver: the outcome reads $40 refunded, and PRICE names it.
+    const appealTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BANK_APPEAL, status: "OPEN" }, select: { id: true } });
+    await complete(appealTask.id);
+    const paid = await census();
+    expect(about(paid, BANK_APPEAL)).toEqual({ ...NOTHING, classes: ["REFUND_MIRROR_HAND_BACK:REFUNDED", "REFUND_APPEAL_PAID:PRICE"] });
+    expect(paid.classes.REFUND_APPEAL_PAID.instances.filter((instance) => instance.bookingId === BANK_APPEAL)).toEqual([
+      expect.objectContaining({ identity: "PRICE", cents: -4_000 }),
+    ]);
   }, 120_000);
 });
