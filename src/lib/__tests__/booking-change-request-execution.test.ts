@@ -445,6 +445,41 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     expect(await run()).toMatchObject({ outcome: "executed" });
   });
 
+  it("keeps the request pending when a guest holds as many nights as the request saw, but other ones (#4088)", async () => {
+    const at = (night: string) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) });
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14", nights: ["2026-06-10", "2026-06-12", "2026-06-13"] },
+                { id: "g2" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        {
+          id: "g1",
+          stayStart: new Date("2026-06-10T00:00:00.000Z"),
+          stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+          nights: ["2026-06-10", "2026-06-11", "2026-06-13"].map(at),
+        },
+        { id: "g2" },
+      ],
+    });
+    expect(await run()).toEqual({ outcome: "keptPending", message: LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
   it("a snapshot with a guest's range but no night rows is not drift for a sparse guest (#4088)", async () => {
     // Stored by a route before #4088 recorded night rows: the range matches the
     // live guest, whose own nights have a gap the snapshot never described.

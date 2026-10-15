@@ -192,6 +192,15 @@ describe("POST /api/bookings/[id]/change-requests keeps a grid request's night s
     });
   });
 
+  it("counts a night set the same size as the guest's own, but on other nights, as a change", async () => {
+    const response = await post({
+      guestStayRanges: [{ guestId: "guest-1", nights: ["2026-06-30", "2026-07-01", "2026-07-03"] }],
+      checkOut: "2026-07-04",
+      requestedEffectiveDate: "2026-06-30",
+    });
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
+  });
+
   it("does not count a night set repeating the guest's own nights as a change", async () => {
     const response = await post({
       guestStayRanges: [{ guestId: "guest-1", nights: [...STAY_NIGHTS].reverse() }],
@@ -366,6 +375,16 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
         unchanged: false,
       },
     ]);
+    // A guest the same request removes is not listed: their range is moot.
+    expect(
+      describeRequestedGuestNights({
+        original,
+        requested: {
+          removeGuests: [{ id: "guest-2" }],
+          guestStayRanges: [{ guestId: "guest-2", stayStart: "2026-06-30", stayEnd: "2026-07-01" }],
+        },
+      }),
+    ).toEqual([]);
     // An unreadable row (a night that is not a day) lists nobody.
     expect(
       describeRequestedGuestNights({
