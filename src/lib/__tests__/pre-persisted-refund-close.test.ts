@@ -64,7 +64,8 @@ describe("closePrePersistedRefundRow (#4144)", () => {
 
   it("an empty plan is a row raised with none, as the enqueue stores it", async () => {
     await closePrePersistedRefundRow({ idempotencyKey: "op_key", sentPlan: [] });
-    expect(closeArgs().where).toMatchObject({ allocationPlan: { equals: Prisma.DbNull } });
+    // `toBe`: DbNull has no fields of its own, so a structural match would accept any value.
+    expect((closeArgs().where.allocationPlan as { equals: unknown }).equals).toBe(Prisma.DbNull);
   });
 
   it("#4126: the late-capture approval's close takes only an untouched row on the plan it sent", async () => {
