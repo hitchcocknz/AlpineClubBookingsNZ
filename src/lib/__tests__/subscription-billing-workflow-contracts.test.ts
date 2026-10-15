@@ -394,6 +394,19 @@ describe("subscription invoice delivery behavior", () => {
     expect(mocks.complete).toHaveBeenCalledWith("op-1", { responsePayload: { skipped: true, reason: "VOIDED" } });
   });
 
+  it("a resume never marks a stray even if it reads the charge closed: it raised no new invoice (#4098 review)", async () => {
+    mocks.chargeFind.mockResolvedValue(charge({
+      xeroInvoiceId: "invoice-1", xeroInvoiceNumber: "INV-1", invoicePersistedAt: new Date("2026-07-13T00:00:00.000Z"),
+    }));
+    mocks.txChargeUpdateMany.mockResolvedValueOnce({ count: 0 });
+    mocks.txChargeFindUnique.mockResolvedValue({ status: "NOT_REQUIRED", billingBasis: "PER_MEMBER" });
+
+    await createXeroMembershipSubscriptionInvoice({ chargeId: "charge-1", syncOperationId: "op-1" });
+
+    expect(mocks.txChargeUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mocks.complete).toHaveBeenCalledWith("op-1", { responsePayload: { skipped: true, reason: "NOT_REQUIRED" } });
+  });
+
   it("skips a charge an officer closed as already paid, with no provider call (#4098)", async () => {
     mocks.chargeFind.mockResolvedValue(charge({ status: "NOT_REQUIRED" }));
 
