@@ -32,7 +32,9 @@
  *   no note (M4); a dashboard refund Stripe shows and the app has not recorded,
  *   or Stripe unread, refuses until it is - then the charge cannot hold the task
  *   (M1); a completion racing the refund sync, and two completions of one task,
- *   leave the totals agreeing and one of everything (M7).
+ *   leave the totals agreeing and one of everything (M7). The nightly
+ *   self-heal's card note, queued but unsent when the task is paid back, bills
+ *   nothing at send time in either outbox order: Xero holds X, never 2X.
  *
  * "Refunds owed" is not read: it is club-wide, and capped at what a payment's
  * records still hold, which here read the whole charge refunded.

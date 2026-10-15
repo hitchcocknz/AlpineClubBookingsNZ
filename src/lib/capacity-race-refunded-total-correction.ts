@@ -68,6 +68,10 @@ import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents 
  *    nightly self-heal notes a refunded total with no refund rows as a card
  *    refund, so a note covering more of the payment than its recorded refund
  *    rows (`sumRefundCreditNoteCoverageCents`) may already be this money's.
+ *    A self-heal note queued but not yet sent is not counted, and need not
+ *    be: the completed task is a noted bank-cash record
+ *    (`readPaidAnotherWayUncoveredCents`), so that note's send-time cap
+ *    (`createXeroCreditNote`) takes it to nothing.
  * 5. **Every refund row on the charge dated after the ledger started**
  *    (an undated one read as before): a pre-ledger refund's row may not have
  *    counted.
