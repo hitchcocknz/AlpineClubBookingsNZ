@@ -3258,6 +3258,15 @@ model PaymentTransaction {
   /// not recorded (older rows, review charges, and every other kind of row).
   bookingModificationId String?
   createdAt             DateTime               @default(now())
+  /// #4132 (INV-PAY-133): the order rows were inserted in, from an owned
+  /// INTEGER sequence. Rows written in one transaction share a `createdAt`, so
+  /// every money read orders by `createdAt`, then this column
+  /// (`LEDGER_ROWS_OLDEST_FIRST` / `LEDGER_ROWS_NEWEST_FIRST` in
+  /// `payment-ledger-order.ts`), and "the latest" row of a kind on a tie is the
+  /// one inserted last. Never written by code: the database assigns it. The
+  /// migration numbered stored rows by `(createdAt, ctid)` and created the
+  /// sequence by hand; never accept a generated `SERIAL` for it.
+  insertionSeq          Int                    @default(autoincrement())
   updatedAt             DateTime               @updatedAt
 
   payment            Payment                    @relation(fields: [paymentId], references: [id], onDelete: Cascade)
