@@ -917,7 +917,8 @@ export async function findOtherDuplicateCaptureRefundOperation({
 }) {
   return store.paymentRecoveryOperation.findFirst({
     where: {
-      // #4146: on the booking's index, and the prefix matched literally (`LIKE` reads `_` as any character).
+      // #4146: on the booking's index, and the prefix matched literally: Prisma's
+      // `startsWith` is `LIKE`, which reads a `_` in the booking id as any character.
       bookingId,
       idempotencyKey: {
         ...exactPrefix(buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId)),
