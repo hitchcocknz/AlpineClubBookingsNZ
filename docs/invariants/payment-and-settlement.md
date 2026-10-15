@@ -1356,6 +1356,34 @@ short).
     `card-refund-shortfall.test.ts`, `cancel-booking-button.test.tsx` and
     `cancel-card-refund-shortfall.realdb.test.ts`.
 
+## INV-PAY-132
+
+- **No write of a Stripe intent's ledger row lowers a captured status** (#4081).
+  A webhook can mark the row captured (`CAPTURED_TRANSACTION_STATUS_LIST`)
+  before a door's, a recovery's or a card attach's PENDING or PROCESSING write
+  lands, and a refund can move it on before a late SUCCEEDED write. Each such
+  write (`upsertPaymentIntentTransaction`, through
+  `writePaymentIntentTransaction`) keeps a captured row's status and writes the
+  rest; the refund writers own a captured row's moves. A row not captured,
+  FAILED included, takes the write's status as before: a declined intent stays
+  payable, and a card attach retries it.
+  - **Atomic, with no lock**: two guarded `updateMany`s split on the row's
+    status, so a capture committing while the first waits on the row's lock
+    fails its re-checked WHERE and lands in the second; else an insert with
+    `skipDuplicates`, then the update again. An edit's write also lands only on
+    its own or an unattributed row (`INV-MOD-060`).
+  - **The other writer of these rows** is the saved-card attempt's settle
+    (`forwardOnlyStatusGuard`, `saved-card-charge-settle.ts`, #3267). It
+    records Stripe's answer for its own attempt row: an answer the row has
+    moved past is refused whole and read back, and FAILED counts as resolved.
+    This write must still land a row's attribution and provenance, and FAILED
+    stays payable, so only the status is held back. Different rules, so no
+    shared predicate.
+  - **Deploy window**: until the old image drains, old code can still lower a
+    captured row, and the new code does not repair one already lowered.
+  - Proven by `payment-intent-ledger-row-write.test.ts` and, on PostgreSQL,
+    `additional-ask-reduction.realdb.test.ts` ("#4081").
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the
@@ -1494,9 +1522,7 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
 
 - **An approved refund appeal on a booking the group organiser paid for by
   card is refunded out of the organiser's combined payment, to the
-  organiser's card** (#3956; owner decision 13 Oct 2026). Such a booking has
-  no transaction of its own, so the ordinary appeal refunded $0 while
-  queuing a full Xero note and promising the money.
+  organiser's card** (#3956; owner decision 13 Oct 2026).
   - **One cap** (`organiserCardAppealCap`): the room a child refund debt may
     take, less open hand-backs and late-cash credit
     (`refundAppealHandedBackParts`); the room already nets the child's own
@@ -1511,7 +1537,7 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   - **Then `INV-PAY-114`'s executor runs it** after commit; a failure leaves
     it owed for the recovery runner. The route plans no card refund and
     queues no Xero note: the executor queues one once Stripe answers. No
-    booking event is written, as for any card appeal refund.
+    booking event is written.
   - **Both are emailed**, under the one notify choice: the joiner that the
     refund went, or is on its way, to the organiser's card; the organiser
     (`group-organiser-joiner-refund`) that it is being refunded to theirs,
@@ -1519,6 +1545,9 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   - **The ledger's kept figure stays the cancel's**: the group child planner
     takes these debts back out of the child's refunds
     (`organiserCardAppealRefundsFromRows`).
+  - **Read as the request's own refund row** (`readApprovedAppealOutcomes`,
+    #4120), still owed until it succeeds: by the refund-requests screen's
+    "Refunded" figure and the census's `REFUND_APPEAL_PAID`.
   - Proven by `admin-refund-request-organiser-card.test.ts`,
     `organiser-card-appeal-refund-key.test.ts` and
     `organiser-child-refund.realdb.test.ts`.
@@ -3059,7 +3088,8 @@ _Split from `INV-PAY-055` (#3267, epic #3270)._
 _Split from `INV-PAY-056` (#3220)._
 
 - **Terminality is an argument, not a re-derivation**: the worker
-  knows it has just burnt an attempt and the stale-worker reaper knows the row
+  knows it has just burnt an attempt, or has met a failure no retry fixes
+  (`INV-PAY-092`, #4081), and the stale-worker reaper knows the row
   never came back, and a shared re-derivation from `attempts` would be a third
   opinion on a fact its callers already hold. `nextRetryAt` is forced to `null`
   when terminal rather than trusted from the caller, because a terminal row
@@ -3100,6 +3130,13 @@ _Split from `INV-PAY-056` (#3220)._
   the repair tool stops deferring at the first failure rather than at death.
   Anyone reading the two-readings rule into that query will predict a deferral
   that is not there; `INV-PAY-057` states what follows from the gap.
+- **A terminal row is always at the attempt ceiling**, so "attempts spent" stays
+  exact for every reader, the stuck-state page, health check and finance
+  diagnostics included; a row stopped at once also shows the ceiling. A
+  failure no retry can fix ends the recovery on its first attempt (#4081,
+  `unretryableRecoveryCause`): today, an edit's ask write refused because its
+  intent is another edit's (`INV-MOD-060`). The cause goes on `lastError` and in
+  the officers' one alert; the debt stays on the row.
 
 ## INV-PAY-057
 

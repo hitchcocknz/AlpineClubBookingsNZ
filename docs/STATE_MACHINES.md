@@ -1540,6 +1540,10 @@ REFUNDED/PARTIALLY_REFUNDED -> (repay, #1765) fresh PRIMARY transaction on the
   same Payment: PENDING/PROCESSING -> SUCCEEDED
 ```
 
+No write of an intent's ledger row moves a captured transaction back
+(`INV-PAY-132`, #4081): a PENDING or PROCESSING write, or a late SUCCEEDED one,
+that lands on a SUCCEEDED or refunded row keeps that row's status.
+
 Booking cancellation honors these transitions (#1473): only a never-captured
 payment flips to FAILED at cancel, decided on transaction-ledger capture
 evidence — the aggregate mirror alone can lie, because inbound reconciliation
@@ -1687,6 +1691,37 @@ unaffected"), while the shared member/guest narrative and every member-facing
 surface show nothing new. The rest of the audit trail (recovery-operation row,
 `PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
 is unchanged.
+
+Capacity race (#740, #4125): a payment that succeeds after the final capacity
+claim failed cancels the booking in the claim, which also writes the
+`capacity_claim_failed_refund_recovery_<bookingId>_<pi>` row with the frozen
+refund plan. The `CANCELLED` event (written before the refund is attempted)
+says the full amount "is being refunded" and carries
+`cancelledBecause: "capacity_race"`, so the member is never told they
+cancelled it. The `REFUNDED` event is written once the refund is made, for the
+plan's total (never the full charge), by whichever close moves the row to
+`SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
+same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+crash cannot leave the row closed without its event, and a failed insert
+leaves the row open for the runner's replay. A close that finds the row
+already closed writes nothing, so the event lands exactly once. Until it lands, the booking
+page and the payment-link page read the row
+(`readCancelledCardRefundState`, which reads a member cancel's
+`booking_cancel_refund_recovery_<bookingId>` row the same way): still being
+sent says "on its way to your original payment method"; a dead row (retries
+spent, or failed with no retry) says the club will be in touch - as does a
+dead card part of a card refund shortfall; a row closed without the event says
+it was refunded, or paid back another way. No cancellation policy decided a
+capacity-race refund, so its narrative names none. That settle records no
+`MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
+snapshot, whose `settledAmountCents` is the plan's total: when the payment
+ledger showed less refundable than the charge (or nothing - an empty plan,
+which never reads "no refund was due"), the rest is neither refunded nor
+retained, and the narrative says the club will be in touch about it. That
+promise is backed by a once-ever officers' alert on the booking naming the
+rest (`alertCapacityRaceRefundShortfall`). The narrative counts every
+settlement event of a capacity race, so a later refund of the rest removes
+the follow-up line.
 
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 
@@ -3434,6 +3469,26 @@ server's last answer, so the first run after either side is upgraded records a
 matching answer and resumes with no manual step. A SKIPPED run with reason
 `server-version-mismatch` is therefore the expected state while the two sides
 differ, not a failure to recover from; the setup page shows both numbers.
+
+### A recovery failure no retry fixes (#4081)
+
+A failed attempt normally backs off and retries; a refusal the next attempt
+would meet again does not:
+
+```text
+PROCESSING -> attempt throws
+  ordinary failure            -> FAILED, nextRetryAt set (retry), no alert until attempts run out
+  attempts spent              -> FAILED terminal + one officer alert
+  CREATE_ADDITIONAL_PAYMENT_INTENT whose ask write found its intent recorded
+  for another edit            -> FAILED terminal at once: nextRetryAt null, attempts set
+                                 to the ceiling, the cause on lastError + one officer alert
+```
+
+Every terminal row sits at the attempt ceiling, so the claim, the health check
+and the stuck-state page's "Exhausted recovery operations" read it as dead; the
+debt stays on the row (`INV-PAY-092`, `INV-MOD-060`). To verify:
+`payment-recovery.test.ts` and `additional-ask-reduction.realdb.test.ts`
+("#4081").
 
 ### Edit review-charge recovery row (#3402)
 

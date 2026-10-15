@@ -1141,6 +1141,8 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
       "booking_modification_refund",
     buildCapacityClaimFailedRefundRecoveryIdempotencyKey:
       "capacity_claim_failed_refund",
+    buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking:
+      "capacity_claim_failed_refund",
     buildCardRefundFailedLaterRecoveryKey: "card_refund_failed_later",
     buildDuplicateCaptureRefundRecoveryIdempotencyKey: "duplicate_capture_refund",
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking:
@@ -1192,11 +1194,13 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     buildReissuedAskStripeIdempotencyKey: "Stripe idempotency key",
     buildRefundRequestRefundMetadata: "Stripe metadata",
     groupSettlementIdForRefundRecoveryKey: "parser of a mapped key",
+    isAppealRefundRecoveryKey: "predicate over mapped keys",
     isEditFinancialReviewAdditionalIntentRecoveryKey: "predicate over a mapped key",
     isGroupSettlementRefundRecoveryKey: "predicate over a mapped key",
     isLateCaptureRefundStripeKeyPrefix: "predicate over a Stripe key prefix",
     isOrganiserChildAppealRefundKey: "predicate over a mapped key",
     isOrganiserChildRefundKey: "predicate over mapped keys",
+    isRefundRequestRefundRecoveryKey: "predicate over a mapped key",
     isRefusedRefundKeySuffix: "predicate over a Stripe idempotency key suffix",
     lateCaptureIntentOfApprovalRefundRecoveryKey: "parser of a mapped key",
     lateCaptureRefundPaymentIntentId: "parser of a Stripe key prefix",

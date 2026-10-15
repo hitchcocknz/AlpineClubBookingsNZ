@@ -57,7 +57,7 @@ vi.mock("@/lib/prisma", () => {
     the supersede query would otherwise over-select, and this witness would keep
     passing over a ledger that no longer behaves like Postgres.
   */
-  const OPERATORS = new Set(["in", "not", "gt", "lt", "lte"]);
+  const OPERATORS = new Set(["in", "notIn", "not", "gt", "lt", "lte"]);
   const refuse = (what: string): never => {
     throw new Error(`in-memory ledger: unsupported ${what}; teach the fake before relying on it`);
   };
@@ -67,7 +67,7 @@ vi.mock("@/lib/prisma", () => {
 
   const matches: (row: Row, where?: Row) => boolean = (row, where = {}) =>
     Object.entries(where).every(([field, condition]) => {
-      // #4036 review: the ask write's guard (`writeEditAttributedTransaction`) reads OR.
+      // #4036 review: the ask write's guard (`writePaymentIntentTransaction`) reads OR.
       if (field === "OR") return (condition as Row[]).some((branch) => matches(row, branch));
       if (field === "AND" || field === "NOT") refuse(`combinator "${field}"`);
       const value = row[field];
@@ -77,6 +77,8 @@ vi.mock("@/lib/prisma", () => {
           if (!OPERATORS.has(operator)) refuse(`operator "${operator}" on "${field}"`);
         }
         if ("in" in c && !(c.in as unknown[]).includes(value)) return false;
+        // #4081: the same write splits on whether the row is captured.
+        if ("notIn" in c && (c.notIn as unknown[]).includes(value)) return false;
         if ("not" in c && (value === null || value === c.not)) return false;
         if ("gt" in c && !((value as number) > (c.gt as number))) return false;
         if ("lt" in c && !((value as number) < (c.lt as number))) return false;

@@ -30,10 +30,10 @@ import { cancellationCreditDescription } from "@/lib/cancellation-settled-money"
 import { internetBankingSettlementEvidence, type InternetBankingSettlementEvidence } from "@/lib/internet-banking-settlement-evidence";
 import { isCreditAppliedToBooking, isCreditIssuedFromBooking } from "@/lib/member-credit-booking-rows";
 import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
-import { isCancelCardShortfallTask } from "@/lib/manual-refund-task-settlement-rules";
+import { isCancelCardShortfallTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOperationUnmadeCents } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
-import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, isAppealRefundRecoveryKey } from "@/lib/payment-recovery-keys";
 import {
   LEGACY_BACKFILL_REASONS,
   isCapturedTransactionStatus,
@@ -42,7 +42,7 @@ import {
 } from "@/lib/payment-transaction-status";
 
 // ---------------------------------------------------------------------------
-// The owner's two decisions on #3583 (3 Oct 2026, both A). Each is ONE line.
+// The owner's decisions on #3583 (3 Oct 2026) and #4075 (15 Oct 2026). Each is ONE line.
 // ---------------------------------------------------------------------------
 
 export const BOOKING_LEDGER_CENSUS_GATE_POLICY = {
@@ -64,6 +64,13 @@ export const BOOKING_LEDGER_CENSUS_GATE_POLICY = {
    * outright (#3854 F1); any other is `GROUP_SETTLEMENT_UNPOSTABLE`, a coverage gap.
    */
   groupSettlementOffLedgerHoldsGate: false,
+  /**
+   * Owner decision, #4075 (15 Oct 2026): a paid refund appeal on a cancelled
+   * booking is a separate, named give-back (the kept fee stays as charged), and
+   * one that matches its recorded outcome to the cent agrees, so it is listed
+   * only: `REFUND_APPEAL_PAID` is never acknowledged one by one. A mismatch still disagrees.
+   */
+  refundAppealPaidHoldsGate: false,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -84,6 +91,7 @@ export const BOOKING_LEDGER_CENSUS_CLASSES = [
   "IN_FLIGHT_REFUND",
   "V5_PLANNED_REFUND_SHORT",
   "D2_DISMISSED_HAND_BACK",
+  "REFUND_APPEAL_PAID",
   "AMBIGUOUS_REVIEW_GIVE_BACK",
   "KNOWN_DEFECT_HISTORY",
   "GROUP_SETTLEMENT_OFF_LEDGER",
@@ -126,13 +134,15 @@ export type BookingLedgerCoverageKind = (typeof BOOKING_LEDGER_COVERAGE_KINDS)[n
  *   expected state — an in-flight refund included — is signed off, never
  *   waved through, and one that moves goes stale.
  * - `OPEN`: `GROUP_SETTLEMENT_OFF_LEDGER` (owner decision 2), listed only — a
- *   child the poster will post and the census will then agree on (#3854 F1).
+ *   child the poster will post and the census will then agree on (#3854 F1) —
+ *   and `REFUND_APPEAL_PAID` (#4075), an appeal paid back exactly as recorded.
  */
 export type BookingLedgerClassGateRule = "HOLDS" | "ACKNOWLEDGE" | "OPEN";
 
 export function classGateRule(name: BookingLedgerCensusClass): BookingLedgerClassGateRule {
   if (name === "KNOWN_DEFECT_HISTORY") return BOOKING_LEDGER_CENSUS_GATE_POLICY.knownDefectHistoryHoldsGate ? "HOLDS" : "ACKNOWLEDGE";
   if (name === "GROUP_SETTLEMENT_OFF_LEDGER") return BOOKING_LEDGER_CENSUS_GATE_POLICY.groupSettlementOffLedgerHoldsGate ? "HOLDS" : "OPEN";
+  if (name === "REFUND_APPEAL_PAID") return BOOKING_LEDGER_CENSUS_GATE_POLICY.refundAppealPaidHoldsGate ? "HOLDS" : "OPEN";
   return "ACKNOWLEDGE";
 }
 
@@ -568,14 +578,24 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     nonCardPayment
       ? row.tasks
           // #4042: a group organiser's hand-back repays the joiners' refunds, not this booking's.
-          .filter((task) => task.kind === "CANCELLED_BOOKING_HAND_BACK" && task.status === status && !isGroupOrganiserHandBackTask(task))
+          // #4120: nor is a refund appeal's the cancel's: raised after it, never netted by it, so
+          // open or dismissed it moves nothing; paid back, it is `REFUND_APPEAL_PAID`.
+          .filter(
+            (task) =>
+              task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+              task.status === status &&
+              !isGroupOrganiserHandBackTask(task) &&
+              !isRefundRequestHandBackTask(task),
+          )
           .reduce((sum, task) => sum + (task.amountCents ?? 0), 0)
       : 0;
   const inFlightRefund = row.recoveryOperations
     .filter(
       (operation) =>
         (operation.type === "REFUND_BOOKING_MODIFICATION" || operation.type === "REFUND_SUPERSEDED_PAYMENT") &&
-        isPaymentRecoveryOperationInFlight(operation),
+        isPaymentRecoveryOperationInFlight(operation) &&
+        // #4120: an appeal's card refund (its own, or the organiser card's) is not the cancel's.
+        !isAppealRefundRecoveryKey(operation.idempotencyKey),
     )
     // #4117: less the slices its plan marks made - those are on the ledger already.
     .reduce((sum, operation) => sum + cardRefundOperationUnmadeCents(operation), 0);
@@ -591,12 +611,17 @@ export function cancelledOwedComponents(row: BookingLedgerCensusRow): ResidualCo
     .filter((task) => isCancelCardShortfallTask(task) && task.status === "COMPLETED" && row.lines.some((line) => line.postingKey === handBackKey(task.id)))
     .reduce((sum, task) => sum + (task.amountCents ?? 0), 0);
   const v5 = Math.max(0, policyRefundCents - plannedCents - shortfallPaidCents);
+  // #4120: an approved refund appeal gives back more than the cancel kept, and no charge line
+  // says so: what each has refunded, by card or by its own completed hand-back, as its
+  // outcome reads (`approvedAppealRefundedCents`) - never the approved amount, nor the lines.
+  const appealPaidCents = row.appeals.reduce((sum, appeal) => sum + appeal.refundedCents, 0);
   return [
     [
       { name: "IN_FLIGHT_HAND_BACK", cents: handBacks("OPEN") },
       { name: "D2_DISMISSED_HAND_BACK", cents: handBacks("DISMISSED") },
       { name: "IN_FLIGHT_REFUND", cents: inFlightRefund + inFlightGroupPlanRefundCents(row) },
       { name: "V5_PLANNED_REFUND_SHORT", cents: v5 },
+      { name: "REFUND_APPEAL_PAID", cents: -appealPaidCents },
       { name: "UNPOSTED_CREDIT", cents: unpostedCredits(row).reduce((sum, credit) => sum + credit.amountCents, 0) },
       ...knownDefectHistory(row),
     ],

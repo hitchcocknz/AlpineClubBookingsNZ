@@ -117,6 +117,7 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.paymentRefund.deleteMany({ where: { paymentId: PAYMENT_ID } });
+      await prisma.refundRequest.deleteMany({ where: { bookingId: BOOKING_ID } });
     }
 
     async function deleteFixtures() {
@@ -323,6 +324,34 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
       expect(notes).toHaveLength(1);
       expect(notes[0]!.correlationKey).toContain(records[0]!.id);
       expect(notes[0]!.requestPayload).toMatchObject({ refundAmountCents: REFUND_CENTS, refundMethod: "internet-banking" });
+    });
+
+    it("#4120: an appeal's dead card refund closed in part reads its unpaid rest through the appeal's outcome", async () => {
+      // The same dead row, as an approved refund appeal's own card refund.
+      const request = await prisma.refundRequest.create({
+        data: { bookingId: BOOKING_ID, memberId: MEMBER_ID, reason: "race 3372 paw appeal", requestedAmountCents: REFUND_CENTS, status: "APPROVED", approvedAmountCents: REFUND_CENTS, reviewedBy: OFFICER_ID, reviewedAt: new Date("2026-06-20T00:00:00.000Z") },
+        select: { id: true },
+      });
+      const { buildRefundRequestRefundRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      await prisma.paymentRecoveryOperation.update({ where: { id: OPERATION_ID }, data: { idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey(request.id) } });
+      const { readApprovedAppealOutcomes } = await import("@/lib/refund-appeal-outcome");
+      const { approvedAppealRefundedCents } = await import("@/lib/refund-request-card-refund-copy");
+      const read = async () =>
+        (await readApprovedAppealOutcomes(prisma, [{ id: request.id, status: "APPROVED", booking: { payment: { id: PAYMENT_ID } } }])).get(request.id);
+      expect(await read()).toMatchObject({ cardRefundState: "dead", cardRefundOwedCents: REFUND_CENTS });
+
+      const paidCents = 2_000;
+      await closeCardRefundPaidAnotherWay({
+        operationId: OPERATION_ID,
+        amountCents: paidCents,
+        paidBack: "partial",
+        expectedOwedCents: REFUND_CENTS,
+        note: "Bank transfer, part, ref RACE",
+        actingMemberId: OFFICER_ID,
+      });
+      const outcome = await read();
+      expect(outcome).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0, cardRefundClosedUnpaidCents: REFUND_CENTS - paidCents });
+      expect(approvedAppealRefundedCents(REFUND_CENTS, outcome ?? {})).toBe(paidCents);
     });
 
     it("C1: a card refund recorded while the close waits for the payment row is read by the close, which refuses - the member is not paid twice", async () => {

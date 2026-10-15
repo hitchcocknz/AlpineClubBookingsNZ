@@ -29,6 +29,8 @@ export interface ApprovedAppealOutcome {
   handBackOwedCents: number
   /** Promised back by bank transfer, its task dismissed: the club kept it. */
   handBackDismissedCents: number
+  /** #4120: its card refund closed as paid another way in part - the part not paid back. */
+  cardRefundClosedUnpaidCents: number
 }
 
 /** The part of an approved appeal's card refund not made, split by what is known. */
@@ -68,10 +70,16 @@ export function refundAppealApprovedNotice(
 
 /**
  * What an approved appeal has refunded so far: the approved amount less every
- * part that has not gone back - by card (queued, dead or not queued) and by
- * bank transfer while this request's own task is open or once it is dismissed.
+ * part of its outcome (`readApprovedAppealOutcomes`) that has not gone back -
+ * by card (queued, dead, not queued, or closed as paid another way for less)
+ * and by bank transfer while this request's own task is open or once it is
+ * dismissed. The one sum, read by
+ * the screen's "Refunded" and by the booking-ledger census's
+ * `REFUND_APPEAL_PAID` (#4120).
  */
-export function refundAppealRefundedCents(approvedAmountCents: number, stillOwedCents: number): number {
+export function approvedAppealRefundedCents(approvedAmountCents: number, outcome: Partial<ApprovedAppealOutcome>): number {
+  const stillOwedCents =
+    (outcome.cardRefundOwedCents ?? 0) + (outcome.handBackOwedCents ?? 0) + (outcome.handBackDismissedCents ?? 0) + (outcome.cardRefundClosedUnpaidCents ?? 0)
   return Math.max(0, approvedAmountCents - Math.max(0, stillOwedCents))
 }
 
@@ -93,6 +101,9 @@ export function refundAppealOutstandingLines(
     )
   }
   if ((outcome.handBackOwedCents ?? 0) > 0) lines.push(`${formatAmount(outcome.handBackOwedCents ?? 0)} is still to be refunded by bank transfer.`)
+  if ((outcome.cardRefundClosedUnpaidCents ?? 0) > 0) {
+    lines.push(`${formatAmount(outcome.cardRefundClosedUnpaidCents ?? 0)} of the card refund was closed without being paid back.`)
+  }
   if ((outcome.handBackDismissedCents ?? 0) > 0) {
     lines.push(`${formatAmount(outcome.handBackDismissedCents ?? 0)} was not refunded: its bank-transfer task was dismissed.`)
   }

@@ -591,8 +591,26 @@ and `V3_LEGACY_HAND_BACK` — the last
 two on the refunded column only, since on `owed(b)` they are money the ledger
 is missing; `CHANGE_FEE_REVERSED_BY_CANCELLATION`;
 `RETAINED_REVIEW_SHARE` (§5.3); and a cancelled booking's `IN_FLIGHT_HAND_BACK`,
-`IN_FLIGHT_REFUND`, `V5_PLANNED_REFUND_SHORT` and `D2_DISMISSED_HAND_BACK`. A
-refund is in flight while the recovery runner will still make it — pending,
+`IN_FLIGHT_REFUND`, `V5_PLANNED_REFUND_SHORT`, `D2_DISMISSED_HAND_BACK` and
+`REFUND_APPEAL_PAID` (#4120). That last is a refund appeal paid back after the
+cancel: it returns more than the cancel kept and no charge line says so. It is
+sized from each approved appeal's own outcome as the refund-requests screen
+reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by
+card (its own, or the group organiser's, #3956) or by its own completed
+hand-back, and never from the lines. An appeal's hand-back is never the
+cancel's in-flight or dismissed one, nor is its card refund still retrying the
+cancel's in-flight refund, because the cancel never netted either. An unpaid,
+dismissed or declined appeal explains nothing, nor does one paid for a
+different amount than the ledger shows. The class checks a booking's total
+against its appeals' outcomes, not which ledger lines are the appeal's. An
+appeal's card refund closed as paid another way counts only what was paid
+back: a part close's unpaid rest is read from the close's task as not refunded
+(`cardRefundClosedUnpaidCents`). One case it cannot classify, left a
+disagreement for an officer to look at: a card payment whose refund plan
+covers less than the approved amount refunds only the planned part; once that
+refund succeeds (or when nothing could be planned) no record holds the rest,
+so the outcome reads the whole approved amount and PRICE disagrees by the
+unplanned part — the drift `INV-PAY-118` logs at approval. A refund is in flight while the recovery runner will still make it — pending,
 processing, or failed with a retry scheduled and attempts left
 (`isPaymentRecoveryOperationInFlight`, #3854 K1); an exhausted one is not, and
 the money it owes back is a disagreement.
@@ -636,7 +654,8 @@ coverage gaps, zero integrity findings and no booking in a class that holds
 the gate, every other class acknowledged by the owner on #3583 — instance by
 instance, to the cent, in the acknowledgement file, save
 `GROUP_SETTLEMENT_OFF_LEDGER`, which the owner decided is listed only (and
-which names only a child whose planned lines agree) — because a
+which names only a child whose planned lines agree), and `REFUND_APPEAL_PAID`,
+listed only too (owner decision on #4075) — because a
 literal zero is not reachable on a live history (in-flight refunds and the
 classes above are expected states). A disagreement is a poster bug, fixed and
 re-run. It

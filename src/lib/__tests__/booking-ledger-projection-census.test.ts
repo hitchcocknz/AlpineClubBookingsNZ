@@ -9,6 +9,8 @@
  * integrity, paging, acknowledgements and the verdict.
  */
 import { describe, expect, it, vi } from "vitest";
+import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
+import { approvedAppealRefundedCents } from "@/lib/refund-request-card-refund-copy";
 
 vi.mock("server-only", () => ({}));
 
@@ -32,7 +34,11 @@ import type { ModificationPricingSide } from "@/lib/booking-modification-lines";
 import type { ReversibleChargeLine } from "@/lib/booking-ledger-charge-line";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
 import { editReviewHandBackLinesWhere, isEditReviewHandBackLine } from "@/lib/edit-financial-review-charge-shape";
-import { buildBookingCancellationRefundIdempotencyKey, buildEditFinancialReviewRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import {
+  buildBookingCancellationRefundIdempotencyKey,
+  buildEditFinancialReviewRefundRecoveryIdempotencyKey,
+  buildRefundRequestRefundRecoveryIdempotencyKey,
+} from "@/lib/payment-recovery-keys";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const B = "bk-3583";
@@ -182,6 +188,7 @@ function row(overrides: Partial<BookingLedgerCensusRow> & { lines: CensusLedgerL
     recoveryOperations: [],
     cancellation: null,
     groupSettlement: null,
+    appeals: [],
     groupChild: null,
     ...overrides,
   };
@@ -1736,6 +1743,7 @@ describe("paging inside the snapshot", () => {
       manualRefundTasks: [],
       modifications: [],
       paymentRecoveryOperations: [],
+      refundRequests: [],
       events: [],
       ledgerLines: [],
     }));
@@ -1831,7 +1839,7 @@ describe("the verdict", () => {
   });
 
   it("the owner's two decisions on #3583 (both A) are the policy: KNOWN_DEFECT_HISTORY holds, GROUP_SETTLEMENT_OFF_LEDGER is listed only", () => {
-    expect(BOOKING_LEDGER_CENSUS_GATE_POLICY).toEqual({ knownDefectHistoryHoldsGate: true, groupSettlementOffLedgerHoldsGate: false });
+    expect(BOOKING_LEDGER_CENSUS_GATE_POLICY).toEqual({ knownDefectHistoryHoldsGate: true, groupSettlementOffLedgerHoldsGate: false, refundAppealPaidHoldsGate: false });
     const summary = report([offLedgerChild()]);
     expect(summary.classes.GROUP_SETTLEMENT_OFF_LEDGER).toMatchObject({ gateRule: "OPEN", holdsGate: false, bookings: 1, unacknowledged: 0 });
     expect(summary.unacknowledgedClassInstances).toBe(0);
@@ -2145,5 +2153,180 @@ describe("#4097 (`INV-PAY-129`): a cancellation's card refund shortfall is a han
   it("both parts paid back: nothing left short, nothing disagrees", () => {
     const results = evaluateBookingLedgerIdentities(twoParts("COMPLETED", "COMPLETED"));
     expect(results.identities.filter((each) => each.status === "DISAGREE")).toEqual([]);
+  });
+});
+
+describe("#4120: a paid refund appeal on a cancelled booking is REFUND_APPEAL_PAID", () => {
+  /**
+   * $190 paid, cancelled at 50% ($95 back), then a $40 appeal approved. Paid
+   * by internet banking, the appeal's own hand-back is completed and posts its
+   * bank-refund line; paid by card, Stripe refunds it and the refund row posts
+   * its card-refund line. Either way the member got $40 more back than the
+   * cancel kept, and `refundedCents` is what the appeal's outcome says went
+   * back (`approvedAppealRefundedCents`).
+   */
+  const APPEAL = { id: "task-appeal", kind: "CANCELLED_BOOKING_HAND_BACK" as const, settlementDirection: null, paymentId: "pay-3583", lateCaptureApprovalIntentId: null, occurrenceKey: "refund-request-hand-back:rr1" };
+
+  function bankAppeal(status: "OPEN" | "COMPLETED" | "DISMISSED", refundedCents: number, cancelTask: "OPEN" | "COMPLETED" | "DISMISSED" = "COMPLETED"): BookingLedgerCensusRow {
+    const base = cashCancelled(cancelTask);
+    const ledger = new Ledger();
+    if (status === "COMPLETED") {
+      ledger.post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: APPEAL.id, amountCents: 4_000, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+    }
+    return {
+      ...base,
+      lines: [...base.lines, ...ledger.lines.map((line) => ({ ...line, id: `appeal-${line.id}` }))],
+      payment: payment({ source: "INTERNET_BANKING", refundedAmountCents: base.payment!.refundedAmountCents + (status === "COMPLETED" ? 4_000 : 0) }),
+      tasks: [...base.tasks, { ...APPEAL, status, amountCents: 4_000 }],
+      appeals: [{ id: "rr1", refundedCents }],
+    };
+  }
+
+  function cardAppeal(refundedCents: number | null, made = true): BookingLedgerCensusRow {
+    const base = cardCancelled(9_500, true);
+    const ledger = new Ledger();
+    for (const line of base.lines) ledger.lines.push(line as Line);
+    const refunds = [...base.refunds, ...(made ? [{ id: "r-appeal", status: "succeeded", amountCents: 4_000, paymentTransactionId: "t1" }] : [])];
+    const refunded = 9_500 + (made ? 4_000 : 0);
+    const subject: BookingLedgerCensusRow = {
+      ...base,
+      refunds,
+      transactions: [txn("t1", 19_000, { refundedAmountCents: refunded })],
+      payment: payment({ refundedAmountCents: refunded }),
+      appeals: refundedCents === null ? [] : [{ id: "rr1", refundedCents }],
+    };
+    settle(ledger, subject, false, LATER);
+    return { ...subject, lines: ledger.lines };
+  }
+
+  const disagreements = (subject: BookingLedgerCensusRow) =>
+    evaluateBookingLedgerIdentities(subject).identities.filter((each) => each.status === "DISAGREE").map((each) => each.identity);
+
+  it("by internet banking, its hand-back paid back: PRICE is REFUND_APPEAL_PAID and nothing disagrees", () => {
+    const subject = bankAppeal("COMPLETED", 4_000);
+    expect(identity(subject, "PRICE")).toMatchObject({ status: "CLASSIFIED", deltaCents: -4_000, explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -4_000 }] });
+    expect(disagreements(subject)).toEqual([]);
+    expect(evaluateBookingLedgerIdentities(subject).integrity).toEqual([]);
+  });
+
+  it("owner decision #4075: an appeal paid back exactly as recorded is listed, never acknowledged one by one; a cent off still holds the gate", () => {
+    // The internet-banking fixture's own cancel hand-back is a separate class to sign off, so only the appeal's class is read there.
+    const bank = report([bankAppeal("COMPLETED", 4_000)]);
+    expect(bank.classes.REFUND_APPEAL_PAID).toMatchObject({ gateRule: "OPEN", holdsGate: false, bookings: 1, unacknowledged: 0 });
+    expect(bank.gateClosedBecause.join(" ")).not.toContain("REFUND_APPEAL_PAID");
+    const card = report([cardAppeal(4_000)]);
+    expect(card.classes.REFUND_APPEAL_PAID).toMatchObject({ gateRule: "OPEN", holdsGate: false, bookings: 1, unacknowledged: 0 });
+    expect(card).toMatchObject({ verdict: "GATE_OPEN", gateClosedBecause: [] });
+    expect(report([cardAppeal(4_001)]).verdict).toBe("GATE_CLOSED");
+    expect(report([cardAppeal(3_999)]).verdict).toBe("GATE_CLOSED");
+  });
+
+  it("by card, refunded through Stripe: PRICE is REFUND_APPEAL_PAID and nothing disagrees", () => {
+    const subject = cardAppeal(4_000);
+    expect(identity(subject, "PRICE")).toMatchObject({ status: "CLASSIFIED", deltaCents: -4_000, explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -4_000 }] });
+    expect(disagreements(subject)).toEqual([]);
+  });
+
+  it("MUTATION: paid for a different amount than the ledger shows still disagrees, a cent either way", () => {
+    for (const cents of [3_999, 4_001]) {
+      expect(disagreements(bankAppeal("COMPLETED", cents)), `bank ${cents}`).toEqual(["PRICE"]);
+      expect(disagreements(cardAppeal(cents)), `card ${cents}`).toEqual(["PRICE"]);
+    }
+  });
+
+  it("MUTATION: an appeal its outcome reads as unpaid (card refund still owed, hand-back open) explains no refund the ledger shows", () => {
+    expect(disagreements(cardAppeal(0))).toEqual(["PRICE"]);
+    const lineWithoutOutcome = { ...bankAppeal("COMPLETED", 0) };
+    expect(disagreements(lineWithoutOutcome)).toEqual(["PRICE"]);
+  });
+
+  it("MUTATION: a declined or pending appeal is not an approved one, so the refund the ledger shows still disagrees", () => {
+    expect(disagreements(cardAppeal(null))).toEqual(["PRICE"]);
+    expect(disagreements({ ...bankAppeal("COMPLETED", 4_000), appeals: [] })).toEqual(["PRICE"]);
+  });
+
+  it("MUTATION: a dismissed appeal hand-back sent nothing; a refund line beside it still disagrees", () => {
+    const dismissed = bankAppeal("DISMISSED", 0);
+    expect(identity(dismissed, "PRICE").status).toBe("AGREE");
+    const lined = new Ledger().post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: APPEAL.id, amountCents: 4_000, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+    expect(disagreements({ ...dismissed, lines: [...dismissed.lines, ...lined.lines.map((line) => ({ ...line, id: `stray-${line.id}` }))] })).toContain("PRICE");
+  });
+
+  it("an appeal not yet paid back moves nothing: the ledger and the census agree", () => {
+    expect(identity(bankAppeal("OPEN", 0), "PRICE").status).toBe("AGREE");
+    expect(identity(cardAppeal(0, false), "PRICE").status).toBe("AGREE");
+  });
+
+  it("MUTATION: the appeal's own hand-back is never the cancel's - open or dismissed beside the cancel's, only the cancel's is in flight or kept", () => {
+    expect(identity(bankAppeal("OPEN", 0, "OPEN"), "PRICE")).toMatchObject({ status: "CLASSIFIED", explainedBy: [{ name: "IN_FLIGHT_HAND_BACK", cents: 9_500 }] });
+    expect(identity(bankAppeal("DISMISSED", 0, "DISMISSED"), "PRICE")).toMatchObject({ status: "CLASSIFIED", explainedBy: [{ name: "D2_DISMISSED_HAND_BACK", cents: 9_500 }] });
+    expect(identity(bankAppeal("COMPLETED", 4_000, "OPEN"), "PRICE")).toMatchObject({
+      status: "CLASSIFIED",
+      explainedBy: [
+        { name: "IN_FLIGHT_HAND_BACK", cents: 9_500 },
+        { name: "REFUND_APPEAL_PAID", cents: -4_000 },
+      ],
+    });
+  });
+
+  it("MUTATION: part made, part still retrying - the appeal's own card refund is not the cancel's in-flight refund", () => {
+    // $50 approved; Stripe made $40 and refused $10, which its recovery row retries.
+    const subject = cardAppeal(4_000);
+    const retrying: BookingLedgerCensusRow = {
+      ...subject,
+      recoveryOperations: [
+        ...subject.recoveryOperations,
+        {
+          type: "REFUND_BOOKING_MODIFICATION",
+          status: "PENDING",
+          attempts: 1,
+          nextRetryAt: LATER,
+          amountCents: 5_000,
+          allocationPlan: [
+            { paymentTransactionId: "t1", amountCents: 4_000, madeRefundId: "r-appeal" },
+            { paymentTransactionId: "t1", amountCents: 1_000, stripeKeySuffix: "refused1" },
+          ],
+          idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey("rr1"),
+          paymentId: "pay-3583",
+          paymentIntentId: "pi-3583",
+        },
+      ],
+    };
+    expect(identity(retrying, "PRICE")).toMatchObject({ status: "CLASSIFIED", explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -4_000 }] });
+    expect(disagreements(retrying)).toEqual([]);
+  });
+
+  it("MUTATION: an appeal card refund closed as paid another way in part agrees once the unpaid part is read as not refunded", () => {
+    // $40 approved; its card refund died, and the treasurer closed it having paid $25 back by bank.
+    // The close: the row SUCCEEDED, a COMPLETED task for $25 (raised at the $40 still owed), and
+    // its bank-refund line; the payment's refunded total rose by $25 (`card-refund-paid-another-way.ts`).
+    const subject = cardAppeal(null, false);
+    const close = new Ledger().post([planHandBackLine({ bookingId: B, lodgeId: LODGE, manualRefundTaskId: "task-paw-appeal", amountCents: 2_500, settlementMethod: "INTERNET_BANKING", officerMemberId: "officer" })], LATER);
+    const closedInPart = (refundedCents: number): BookingLedgerCensusRow => ({
+      ...subject,
+      lines: [...subject.lines, ...close.lines.map((line) => ({ ...line, id: `paw-${line.id}` }))],
+      transactions: [txn("t1", 19_000, { refundedAmountCents: 9_500 + 2_500 })],
+      payment: payment({ refundedAmountCents: 9_500 + 2_500 }),
+      tasks: [
+        ...subject.tasks,
+        { id: "task-paw-appeal", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", amountCents: 2_500, settlementDirection: null, paymentId: "pay-3583", lateCaptureApprovalIntentId: null, occurrenceKey: cardRefundPaidAnotherWayOccurrenceKey("op-appeal", { xeroRefundNote: "now" }) },
+      ],
+      recoveryOperations: [
+        ...subject.recoveryOperations,
+        { type: "REFUND_BOOKING_MODIFICATION", status: "SUCCEEDED", attempts: 5, nextRetryAt: null, amountCents: 4_000, idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey("rr1"), paymentId: "pay-3583", paymentIntentId: "pi-3583" },
+      ],
+      appeals: [{ id: "rr1", refundedCents }],
+    });
+    const refunded = approvedAppealRefundedCents(4_000, { cardRefundClosedUnpaidCents: 1_500 });
+    expect(refunded).toBe(2_500);
+    expect(identity(closedInPart(refunded), "PRICE")).toMatchObject({ status: "CLASSIFIED", deltaCents: -2_500, explainedBy: [{ name: "REFUND_APPEAL_PAID", cents: -2_500 }] });
+    expect(disagreements(closedInPart(refunded))).toEqual([]);
+    // Read as the whole approved amount (the unpaid part ignored), PRICE disagrees by that part.
+    expect(disagreements(closedInPart(4_000))).toEqual(["PRICE"]);
+  });
+
+  it("two appeals sum: each by what its outcome says went back", () => {
+    const subject = bankAppeal("COMPLETED", 2_500);
+    expect(identity({ ...subject, appeals: [...subject.appeals, { id: "rr2", refundedCents: 1_500 }] }, "PRICE").explainedBy).toEqual([{ name: "REFUND_APPEAL_PAID", cents: -4_000 }]);
   });
 });

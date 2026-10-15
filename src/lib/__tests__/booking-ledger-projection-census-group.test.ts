@@ -111,6 +111,7 @@ function settledChild(source: "STRIPE" | "INTERNET_BANKING"): { row: BookingLedg
       recoveryOperations: [],
       cancellation: null,
       groupSettlement: { id: "gs1", source, status: "SUCCEEDED", amountCents: 4_500, stripePaymentIntentId: source === "STRIPE" ? PI : null, refundPlan: null, refundRecoveryInFlight: false },
+      appeals: [],
       groupChild: null,
       lines: toLines([...charges, ...share]),
     },
@@ -332,6 +333,7 @@ function backPostedCancelledChild(debt: Pick<Op, "status" | "attempts" | "nextRe
   if (cancellation.kind !== "lines") throw new Error("expected cancellation lines");
   return {
     ...offLedgerCancelledChild(4_500, debt),
+    appeals: [],
     groupChild: null,
     lines: [...row.lines, ...toLines(cancellation.postings)],
   };
@@ -355,6 +357,22 @@ describe("K1: a FAILED refund the runner will retry is in flight; an exhausted o
     const exhausted = evaluateBookingLedgerIdentities(backPostedCancelledChild(EXHAUSTED));
     expect(exhausted.identities.find((result) => result.identity === "PRICE")).toMatchObject({ status: "DISAGREE", deltaCents: 4_500 });
     expect(census([backPostedCancelledChild(EXHAUSTED)]).verdict).toBe("GATE_CLOSED");
+  });
+
+  it("MUTATION (#4120): an appeal's pending debt to the organiser's card is not the cancel's in-flight refund", () => {
+    // The cancel's $45 debt in flight, and a $10 appeal approved after it, its debt not yet made.
+    const subject = backPostedCancelledChild(PENDING);
+    const withAppeal: BookingLedgerCensusRow = {
+      ...subject,
+      recoveryOperations: [...subject.recoveryOperations, { ...childDebt(1_000, PENDING), idempotencyKey: buildOrganiserChildAppealRefundKey("rr1") }],
+    };
+    const result = evaluateBookingLedgerIdentities(withAppeal);
+    expect(result.identities.find((identity) => identity.identity === "PRICE")).toMatchObject({
+      status: "CLASSIFIED",
+      deltaCents: 4_500,
+      explainedBy: [{ name: "IN_FLIGHT_REFUND", cents: 4_500 }],
+    });
+    expect(result.identities.filter((identity) => identity.status === "DISAGREE")).toEqual([]);
   });
 });
 

@@ -489,6 +489,9 @@ const TRANSACTION_OPENERS = [
   // hold each write their caller's rows inside their fenced transaction.
   "writeReissuedAskUnderRecovery(",
   "holdAdditionalIntentRecoveryClaim(",
+  // #4125: the capacity race's refund close runs its caller's close callback in
+  // the transaction that also writes the REFUNDED event.
+  "closeCapacityRaceRefundRecordingEvent(",
 ] as const;
 
 /**
