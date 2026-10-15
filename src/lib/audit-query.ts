@@ -6,6 +6,7 @@ import {
   type AuditCategory,
 } from "./audit-categories";
 import { readDeclaredMemberText } from "./audit-member-disclosure";
+import { exactPrefix } from "./prisma-exact-prefix";
 import {
   isReservedDetailKey,
   recoverTruncatedStructuredDetail,
@@ -159,8 +160,17 @@ function getAuditLogSubjectMemberId(
   return null;
 }
 
+/**
+ * #4165 (`INV-SSOT-006`): the prefix matches literally. Prisma sends
+ * `startsWith` as an unescaped SQL `LIKE`, so a bare `"xero_"` also took
+ * every `xero.` action and `"EMAIL_"` any `EMAIL` plus one character. Escaping
+ * changed no category and no member's timeline for any action this tree
+ * writes or the #2581 history recorded (`audit-legacy-filter-exact-prefix.test.ts`
+ * replays all of them), once the one family the wildcard was carrying is
+ * named below: `xero.`.
+ */
 function actionStartsWith(prefix: string): Prisma.AuditLogWhereInput {
-  return { action: { startsWith: prefix } };
+  return { action: exactPrefix(prefix) };
 }
 
 function actionContains(value: string): Prisma.AuditLogWhereInput {
@@ -213,6 +223,11 @@ const LEGACY_AUDIT_CATEGORY_ACTION_FILTERS: Record<
   xero: [
     actionStartsWith("XERO_"),
     actionStartsWith("xero_"),
+    // #4165: the `xero.operation.*`, `xero.contact.*` and `xero.<type>.reconciled`
+    // rows reached this filter only through `"xero_"`'s wildcard `_`. Their
+    // writers record `xero` and the display inference reads them as `xero`, so
+    // the family is named rather than dropped when the prefix became literal.
+    actionStartsWith("xero."),
     actionContains("XERO"),
   ],
   communication: [

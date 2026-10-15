@@ -1,0 +1,69 @@
+/**
+ * #4165: what the audit category filters' legacy action-name leg matched
+ * BEFORE its prefixes became literal, and the rows that tell the two apart.
+ *
+ * `audit-query.ts`'s `actionStartsWith` used to hand Prisma a bare prefix,
+ * which PostgreSQL reads as `LIKE prefix || '%'`, so each `_` matched any one
+ * character. It now escapes them (`exactPrefix`). `unescapeLikeOperands`
+ * rebuilds the old filter from the new one by stripping those escapes, so the
+ * unit replay (`audit-legacy-filter-exact-prefix.test.ts`) and the PostgreSQL
+ * proof (`audit-query-exact-prefix.realdb.test.ts`) compare the same two
+ * shapes. The rebuilt filter also carries the `xero.` prefix #4165 named
+ * explicitly; that matches a subset of what the wildcard `xero_` already did,
+ * so it answers exactly as the pre-#4165 filter did.
+ */
+import type { AuditCategory } from "@/lib/audit-categories";
+
+/** The same where object with every `startsWith` / `contains` backslash escape removed. */
+export function unescapeLikeOperands<T>(where: T): T {
+  if (Array.isArray(where)) return where.map((item) => unescapeLikeOperands(item)) as T;
+  if (typeof where !== "object" || where === null || where instanceof Date) return where;
+  return Object.fromEntries(
+    Object.entries(where).map(([key, value]) => [
+      key,
+      (key === "startsWith" || key === "contains") && typeof value === "string"
+        ? value.replace(/\\(.)/gs, "$1")
+        : unescapeLikeOperands(value),
+    ]),
+  ) as T;
+}
+
+/**
+ * An action no writer spells, which the OLD filter put in `category` only
+ * through a wildcard `_` and the literal filter puts nowhere. One per prefix
+ * that has a `_`, except `XERO_`: anything starting `XERO` also contains
+ * `XERO`, which the same category matches anyway, so no decoy can separate
+ * the two there.
+ */
+export const LEGACY_FILTER_WILDCARD_DECOYS: readonly {
+  action: string;
+  oldCategories: readonly AuditCategory[];
+}[] = [
+  { action: "xeroXfoo", oldCategories: ["xero"] },
+  { action: "MEMBERSHIPXAPPLICATIONXAPPROVED", oldCategories: ["account"] },
+  { action: "EMAILSfoo", oldCategories: ["account"] },
+  { action: "EMAILXCHANGED", oldCategories: ["account", "security"] },
+  { action: "BOOKINGXfoo", oldCategories: ["booking"] },
+  { action: "FAMILYXfoo", oldCategories: ["family"] },
+  { action: "ADMINXfoo", oldCategories: ["admin"] },
+  { action: "LODGEXfoo", oldCategories: ["lodge"] },
+  { action: "memberXlifecycle.delete_requested", oldCategories: ["privacy"] },
+];
+
+/**
+ * Actions the audit-writer census cannot name as literals (a template, or a
+ * constant it does not resolve) whose old match ran through a wildcard `_`:
+ * the inbound reconcile's `xero.<type>.reconciled` (`xero-inbound/audit.ts`,
+ * one per object type its summary switch names) and the #3792 refusal
+ * (`xero-inbound/credit-note-repairs.ts`). Each writes `xero`, and each must
+ * still answer to the `xero` filter.
+ */
+export const XERO_DOT_ACTIONS_THE_CENSUS_CANNOT_NAME: readonly string[] = [
+  "xero.contact.reconciled",
+  "xero.invoice.reconciled",
+  "xero.subscription.reconciled",
+  "xero.payment.reconciled",
+  "xero.credit_note.reconciled",
+  "xero.allocation.reconciled",
+  "xero.allocation.restored-booking-change-refused",
+];
