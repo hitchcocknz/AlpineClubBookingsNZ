@@ -35,7 +35,7 @@ import {
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
 import { holdLateCaptureForTreasurerIfRequired, holdLateCaptureRefusedByStripe } from "@/lib/late-capture-refund-hold";
 import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
-import { planAutomaticLateCaptureRefund } from "@/lib/late-capture-own-charge-refund";
+import { refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
   buildLateCaptureRefundMetadata,
@@ -1675,9 +1675,8 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
  * Late Stripe capture of a booking's OWN (PRIMARY) payment on a booking that is
  * already CANCELLED (#1350). The sibling of
  * `handleCancelledBookingAdditionalPaymentSucceeded` above: record the capture
- * truthfully, refund it in full from its own charge under an idempotent
- * per-intent key (#4131: never from another of the booking's charges), alert
- * the admins, and skip Xero invoice creation.
+ * truthfully, refund it in full from its own charge only (#4131), alert the
+ * admins, and skip Xero invoice creation.
  *
  * WHAT #2773 CHANGED HERE (the orchestrator's call on that issue's Recommended
  * option; the owner has not ruled — `INV-ADDPAY-039`'s authority line), and why it
@@ -1817,41 +1816,12 @@ async function handleCancelledBookingPaymentSucceeded(
   // #3639: the same setting and ownership check as the sibling handler.
   if (await holdLateCaptureForTreasurerIfRequired(lateCapture)) return;
 
-  // #4131 (`INV-PAY-106`): refunded from the capture's OWN charge, as the
-  // sibling handler and the approval refund it - never a newest-first plan that
-  // takes a fee the cancel kept on another charge, which no per-capture Xero
-  // note answers. Capped at what the capture still holds; a deploy replay of an
-  // attempt whose old plan did reach another charge asks only for the rest,
-  // under that attempt's own key (`planAutomaticLateCaptureRefund`).
-  const plan = await planAutomaticLateCaptureRefund({
-    bookingId: booking.id,
-    paymentId: booking.payment.id,
-    paymentIntentId: paymentIntent.id,
-    amountCents: paymentIntent.amount,
-  });
-  const [ownSlice] = plan.allocation;
-  const refunds = !ownSlice
-    ? []
-    : (
-          await refundPaymentTransactions({
-            format,
-            paymentId: booking.payment.id,
-            amountCents: ownSlice.amountCents,
-            allocation: plan.allocation,
-            metadata: buildLateCaptureRefundMetadata(booking.id),
-            idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(booking.id, paymentIntent.id),
-          })
-        ).refunds;
+  // #4131 (`INV-PAY-106`): from the capture's OWN charge only, capped at what it holds (a deploy replay asks only for the rest).
+  const { refunds, shortfall } = await refundLateCaptureFromOwnCharge({ format, bookingId: booking.id, paymentId: booking.payment.id, paymentIntentId: paymentIntent.id, amountCents: paymentIntent.amount });
   if (await holdLateCaptureRefusedByStripe(lateCapture, refunds)) {
-    // #4103: nothing beside the refusal can have been made - the plan is one slice on the capture's own charge.
+    // #4103: whatever this one slice on the capture's own charge made is noted, sized by what was made.
     await queueLateCaptureRefundCreditNote({ paymentId: booking.payment.id, paymentIntentId: paymentIntent.id });
     return;
-  }
-  if (plan.refundedElsewhereCents > 0 || plan.alreadyRefundedOnCaptureCents > 0) {
-    logger.warn(
-      { bookingId: booking.id, paymentIntentId: paymentIntent.id, ...plan },
-      "Late capture's automatic refund asked Stripe for less than the capture: the rest was already refunded (#4131)",
-    );
   }
   const refundId = refunds[0]?.refundId;
 
@@ -1873,9 +1843,7 @@ async function handleCancelledBookingPaymentSucceeded(
       // the row itself rather than by knowing which handler writes which shape.
       // The sibling has carried `kind: "modification_additional"` since #1350.
       kind: "primary",
-      // #4131: only when the refund asked for less than the capture, saying where the rest went back.
-      ...(plan.refundedElsewhereCents > 0 ? { refundedElsewhereCents: plan.refundedElsewhereCents } : {}),
-      ...(plan.alreadyRefundedOnCaptureCents > 0 ? { alreadyRefundedOnCaptureCents: plan.alreadyRefundedOnCaptureCents } : {}),
+      ...shortfall, // #4131: only when it asked for less than the capture, saying where the rest went back.
     }),
   });
 

@@ -1,12 +1,18 @@
 import { PaymentSource } from "@prisma/client";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
-import { LATE_CAPTURE_REFUND_METADATA_REASON } from "@/lib/payment-recovery-keys";
+import type { ClubFormat } from "@/lib/club-format";
+import logger from "@/lib/logger";
+import {
+  buildLateCaptureRefundMetadata,
+  buildLateCaptureRefundStripeKeyPrefix,
+  LATE_CAPTURE_REFUND_METADATA_REASON,
+} from "@/lib/payment-recovery-keys";
 import {
   captureRefundState,
   isCapturedTransactionStatus,
   isRefusedRefundStatus,
 } from "@/lib/payment-transaction-status";
-import type { RefundAllocationSlice } from "@/lib/payment-transactions";
+import { refundPaymentTransactions, type RefundAllocationSlice } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { listRefundsForPaymentIntent } from "@/lib/stripe";
 
@@ -132,4 +138,47 @@ async function readPreviousPlanRefundsOnNewerCharges(params: {
     }
   }
   return cents;
+}
+
+/**
+ * The primary webhook handler's automatic refund of a late capture: planned on
+ * its own charge (`planAutomaticLateCaptureRefund`), sent under the late-capture
+ * Stripe key and body the approval shares, and nothing sent when nothing is
+ * left to send. A plan for less than the capture is logged, and `shortfall`
+ * carries where the rest went back, for the refund's audit entry (empty when
+ * the refund was the whole capture). Throws as `refundPaymentTransactions` does:
+ * the webhook answers 500 and Stripe redelivers under the same keys.
+ */
+export async function refundLateCaptureFromOwnCharge(params: {
+  format: ClubFormat;
+  bookingId: string;
+  paymentId: string;
+  paymentIntentId: string;
+  amountCents: number;
+}) {
+  const plan = await planAutomaticLateCaptureRefund(params);
+  const [slice] = plan.allocation;
+  const refunds = slice
+    ? (
+        await refundPaymentTransactions({
+          format: params.format,
+          paymentId: params.paymentId,
+          amountCents: slice.amountCents,
+          allocation: plan.allocation,
+          metadata: buildLateCaptureRefundMetadata(params.bookingId),
+          idempotencyKeyPrefix: buildLateCaptureRefundStripeKeyPrefix(params.bookingId, params.paymentIntentId),
+        })
+      ).refunds
+    : [];
+  const shortfall = {
+    ...(plan.refundedElsewhereCents > 0 ? { refundedElsewhereCents: plan.refundedElsewhereCents } : {}),
+    ...(plan.alreadyRefundedOnCaptureCents > 0 ? { alreadyRefundedOnCaptureCents: plan.alreadyRefundedOnCaptureCents } : {}),
+  };
+  if (Object.keys(shortfall).length > 0) {
+    logger.warn(
+      { bookingId: params.bookingId, paymentIntentId: params.paymentIntentId, allocation: plan.allocation, ...shortfall },
+      "Late capture's automatic refund asked Stripe for less than the capture: the rest was already refunded (#4131)",
+    );
+  }
+  return { refunds, shortfall };
 }
