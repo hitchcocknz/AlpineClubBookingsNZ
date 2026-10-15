@@ -536,7 +536,39 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await nothingMoved();
     });
 
-    it("MUTATION (review M7): a completion racing the refund sync recording a new refund on the race's charge - both commit or the completion refuses, and the totals agree either way", async () => {
+    /**
+     * Runs `first` then `second` against a `Payment` row lock held by a third transaction, each started only once
+     * the one before it is queued on that lock, then releases it: the lock's queue, not timing, decides the order.
+     */
+    async function queuedOnPaymentLock<A, B>(first: () => Promise<A>, second: () => Promise<B>) {
+      const waiting = async (count: number) => {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+          if (Number(row!.n) >= count) return;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        throw new Error("race-4154: a writer never queued on the Payment row lock");
+      };
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      let held!: () => void;
+      const holding = new Promise<void>((resolve) => (held = resolve));
+      const blocker = prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT 1 FROM "Payment" WHERE "id" = ${PAYMENT_ID} FOR UPDATE`;
+        held();
+        await released;
+      }, { timeout: 30_000 });
+      await holding;
+      const a = first().then((value) => ({ status: "fulfilled" as const, value }), (reason: unknown) => ({ status: "rejected" as const, reason }));
+      await waiting(1);
+      const b = second().then((value) => ({ status: "fulfilled" as const, value }), (reason: unknown) => ({ status: "rejected" as const, reason }));
+      await waiting(2);
+      release();
+      await blocker;
+      return [await a, await b] as const;
+    }
+
+    it.each(["completion", "sync"] as const)("MUTATION (review M7): a completion racing the refund sync recording a new refund on the race's charge, the %s first on the Payment row lock - the totals agree either way", async (firstOnLock) => {
       await seed({ refundedCents: CHARGE_CENTS });
       stripeRefunds("make");
       await capacityRace();
@@ -544,22 +576,26 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const task = await checkTask();
       stripeShowsRefunded(0);
 
-      const [completion, sync] = await Promise.allSettled([resolve("completed", task.id), dashboardRefundRecorded("re_race_4154_concurrent", 3_000)]);
-      expect(sync.status).toBe("fulfilled");
+      const complete = () => resolve("completed", task.id);
+      const sync = () => dashboardRefundRecorded("re_race_4154_concurrent", 3_000);
+      const [completion, synced] =
+        firstOnLock === "completion" ? await queuedOnPaymentLock(complete, sync) : await queuedOnPaymentLock(sync, complete).then(([s, c]) => [c, s] as const);
+      expect(synced.status).toBe("fulfilled");
       const charge = await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } });
       const paymentRow = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } });
       expect(paymentRow.refundedAmountCents).toBe(charge.refundedAmountCents);
       expect(charge.refundedAmountCents).toBe(CHARGE_CENTS);
       expect(await prisma.paymentRefund.count({ where: { paymentTransactionId: CARD_TXN, stripeRefundId: "re_race_4154_concurrent" } })).toBe(1);
       const lines = await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } });
-      if (completion.status === "fulfilled") {
-        // The completion first: corrected to nothing, the whole charge handed back; the sync's refund then capped (and logged).
+      if (firstOnLock === "completion") {
+        // Corrected to nothing, the whole charge handed back; the sync's refund then capped at the charge (and logged).
+        expect(completion.status).toBe("fulfilled");
         expect(await checkTask()).toMatchObject({ status: "COMPLETED" });
         expect(await corrections()).toHaveLength(1);
         expect(lines).toBe(1);
       } else {
-        // The sync first: its refund row is on the charge, so even corrected the charge cannot hold the task.
-        expect(completion.reason).toMatchObject({ status: 400, message: expect.stringContaining("even corrected, the charge would not hold this amount") });
+        // The sync's refund row is on the charge first, so even corrected the charge cannot hold the task.
+        expect(completion).toMatchObject({ status: "rejected", reason: { status: 400, message: expect.stringContaining("even corrected, the charge would not hold this amount") } });
         expect(await checkTask()).toMatchObject({ status: "OPEN" });
         expect(await corrections()).toEqual([]);
         expect(lines).toBe(0);
