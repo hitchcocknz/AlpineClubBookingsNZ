@@ -16,7 +16,7 @@ import {
   type ResolveBookingNarrativeInput,
 } from "@/lib/booking-narrative";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
-import { readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
+import { readCancelledCardRefundState, readCardShortfallTaskStatuses } from "@/lib/cancel-card-refund-shortfall-status";
 import { bindClubTime } from "@/lib/club-time";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import logger from "@/lib/logger";
@@ -161,6 +161,8 @@ export async function getPaymentLinkContext(
     club,
     // #4097: a card cancel's shortfall parts, so the page says which are done.
     cardShortfallStatuses: booking.status === BookingStatus.CANCELLED ? await readCardShortfallTaskStatuses(booking.id) : {},
+    // #4125: a card cancel's refund with no REFUNDED event - still being sent, made, or stalled.
+    cardRefundState: booking.status === BookingStatus.CANCELLED ? await readCancelledCardRefundState(booking.id) : undefined,
     booking: {
       status: booking.status,
       finalPriceCents: booking.finalPriceCents,

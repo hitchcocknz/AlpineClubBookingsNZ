@@ -212,9 +212,18 @@ function ownCardRefundPlannedClause(amount: string, whose: OwnCardWhose = "your"
   return `A refund of ${amount} will be processed to ${whose} original payment method`;
 }
 
+/**
+ * #4125: a card refund not made yet, as the words after its amount - the one
+ * wording the emails' clause below and the booking narrative's
+ * (`booking-narrative-cancelled-post-payment.ts`) both say it in (`INV-SSOT`).
+ */
+export function cardRefundOnItsWay(amount: string, whose: OwnCardWhose = "your"): string {
+  return `${amount} is on its way to ${whose} original payment method`;
+}
+
 /** #4097: the card refund not made yet, as a clause (`INV-SSOT`). */
 function ownCardRefundPendingClause(amount: string, whose: OwnCardWhose = "your"): string {
-  return `A refund of ${amount} is on its way to ${whose} original payment method`;
+  return `A refund of ${cardRefundOnItsWay(amount, whose)}`;
 }
 
 /**

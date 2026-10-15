@@ -1692,6 +1692,37 @@ surface show nothing new. The rest of the audit trail (recovery-operation row,
 `PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
 is unchanged.
 
+Capacity race (#740, #4125): a payment that succeeds after the final capacity
+claim failed cancels the booking in the claim, which also writes the
+`capacity_claim_failed_refund_recovery_<bookingId>_<pi>` row with the frozen
+refund plan. The `CANCELLED` event (written before the refund is attempted)
+says the full amount "is being refunded" and carries
+`cancelledBecause: "capacity_race"`, so the member is never told they
+cancelled it. The `REFUNDED` event is written once the refund is made, for the
+plan's total (never the full charge), by whichever close moves the row to
+`SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
+same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+crash cannot leave the row closed without its event, and a failed insert
+leaves the row open for the runner's replay. A close that finds the row
+already closed writes nothing, so the event lands exactly once. Until it lands, the booking
+page and the payment-link page read the row
+(`readCancelledCardRefundState`, which reads a member cancel's
+`booking_cancel_refund_recovery_<bookingId>` row the same way): still being
+sent says "on its way to your original payment method"; a dead row (retries
+spent, or failed with no retry) says the club will be in touch - as does a
+dead card part of a card refund shortfall; a row closed without the event says
+it was refunded, or paid back another way. No cancellation policy decided a
+capacity-race refund, so its narrative names none. That settle records no
+`MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
+snapshot, whose `settledAmountCents` is the plan's total: when the payment
+ledger showed less refundable than the charge (or nothing - an empty plan,
+which never reads "no refund was due"), the rest is neither refunded nor
+retained, and the narrative says the club will be in touch about it. That
+promise is backed by a once-ever officers' alert on the booking naming the
+rest (`alertCapacityRaceRefundShortfall`). The narrative counts every
+settlement event of a capacity race, so a later refund of the rest removes
+the follow-up line.
+
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 
 A PENDING booking with non-member guests is not charged at booking time; the

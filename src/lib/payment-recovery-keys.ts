@@ -89,7 +89,14 @@ export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(
   bookingId: string,
   paymentIntentId: string,
 ) {
-  return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_${paymentIntentId}`;
+  return `${buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)}${paymentIntentId}`;
+}
+
+// #4125: every capacity-race refund row of one booking starts with this - the
+// one spelling the full key above and the booking page's read of its rows
+// (`readCancelledCardRefundState`) share. The trailing `_` ends the booking id.
+export function buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId: string) {
+  return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
 }
 
 // The Stripe idempotency-key prefix the INLINE capacity-race auto-refund has

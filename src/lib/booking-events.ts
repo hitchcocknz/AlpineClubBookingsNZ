@@ -61,6 +61,11 @@ export interface CancellationEventSnapshot {
    * the part the club checks first. Absent otherwise.
    */
   cardShortfall?: { cardCents: number; bankCents: number; checkCents: number };
+  /**
+   * #4125: the system cancelled it, not the member - the dates filled up while
+   * payment was completing (the capacity race). Absent on a member's cancel.
+   */
+  cancelledBecause?: "capacity_race";
 }
 
 /** Frozen bump facts stored on a BUMPED event. */
@@ -103,7 +108,9 @@ type BookingEventClient = Pick<typeof prisma, "bookingEvent">;
  * paid-path CANCELLED snapshot (`writePaidCancellationEvent`, #3639,
  * `INV-PAY-106`), so the cancel cannot commit without its decision, and
  * #3672's group payer-switch marker (`releaseUnpaidJoinersToMemberPaysInTx`,
- * `INV-PAY-109`), which must commit or roll back with the switch.
+ * `INV-PAY-109`), which must commit or roll back with the switch, and #4125's
+ * capacity-race REFUNDED event (`closeCapacityRaceRefundRecordingEvent`), which
+ * commits with the recovery row's close that records the refund made.
  */
 export async function recordBookingEvent(
   input: RecordBookingEventInput,
@@ -127,6 +134,43 @@ export async function recordBookingEvent(
       "Failed to record booking event"
     );
   }
+}
+
+/** #4125: the capacity race's refund, made - inline or by the recovery runner. */
+export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge capacity was no longer available.";
+
+/**
+ * #4125: the capacity race's card refund, made - its recovery row's close and
+ * the REFUNDED event the member's narrative reads as the cancellation's
+ * settlement, in ONE transaction, so a crash between them cannot lose the
+ * event. `close` is the status-guarded move to `SUCCEEDED` (true when THIS
+ * close moved the row) - the inline attempt's (`payment-reconciliation.ts`) or
+ * the recovery runner's (`payment-recovery.ts`). The event is written only
+ * when it did, for the amount actually refunded (the frozen plan's total), so
+ * it lands EXACTLY ONCE across the two; a closed row is never reopened
+ * (`card-refund-failed-later.ts`). A decision record, not narrative: the
+ * insert is NOT swallowed, so a failed one rolls the close back, the row stays
+ * open, and the runner's replay - answered by Stripe with the original
+ * refunds - closes it and records it.
+ */
+export async function closeCapacityRaceRefundRecordingEvent(
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null },
+  close: (tx: Prisma.TransactionClient) => Promise<boolean>
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    if (!(await close(tx))) return false;
+    await tx.bookingEvent.create({
+      data: {
+        bookingId: input.bookingId,
+        type: BookingEventType.REFUNDED,
+        actorMemberId: input.actorMemberId,
+        amountCents: input.amountCents,
+        reason: CAPACITY_RACE_REFUND_EVENT_REASON,
+        snapshot: Prisma.JsonNull,
+      },
+    });
+    return true;
+  });
 }
 
 /**

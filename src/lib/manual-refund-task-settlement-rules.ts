@@ -100,13 +100,21 @@ export function cancelCardShortfallOccurrenceKey(bookingId: string, part: Cancel
 }
 
 /**
+ * #4125: where a cancel's card refund stands, read live from its recovery row
+ * (`cardRefundRowState`): made (`settled`), still being sent (`on-its-way`),
+ * closed as "Paid another way" (`INV-PAY-122`), or `stalled` - the row is dead
+ * (its retries are spent, or it failed with no retry scheduled), so nothing
+ * will send it without the club.
+ */
+export type CardRefundState = "settled" | "on-its-way" | "paid-another-way" | "stalled";
+
+/**
  * #4097: where a card refund shortfall's cancel stands, read by the booking and
  * payment-link pages and handed to the pure narrative: each part's task status,
- * and the card part's own refund - settled, still on its way, or closed as
- * "Paid another way" (`INV-PAY-122`).
+ * and the card part's own refund (#4125: a dead one too, `stalled`).
  */
 export type CardShortfallTaskStatuses = Partial<Record<CancelCardShortfallPart, "OPEN" | "COMPLETED" | "DISMISSED">> & {
-  card?: "settled" | "on-its-way" | "paid-another-way";
+  card?: CardRefundState;
 };
 
 /** Which part of a card refund shortfall this task is, or null for any other task. */

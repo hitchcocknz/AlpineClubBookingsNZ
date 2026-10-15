@@ -1141,6 +1141,8 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
       "booking_modification_refund",
     buildCapacityClaimFailedRefundRecoveryIdempotencyKey:
       "capacity_claim_failed_refund",
+    buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking:
+      "capacity_claim_failed_refund",
     buildCardRefundFailedLaterRecoveryKey: "card_refund_failed_later",
     buildDuplicateCaptureRefundRecoveryIdempotencyKey: "duplicate_capture_refund",
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking:
