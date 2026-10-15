@@ -3592,6 +3592,30 @@ describe("Stripe webhook Xero alerting", () => {
       );
     }
 
+    it("acknowledges a notice without reading the booking's owner, so an unreadable owner row cannot fail it (#4149)", async () => {
+      mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_ack_no_owner"));
+      armCancelledBooking("xero-inv-7", null);
+      // The owner row could not be read: describing the capture would throw.
+      mockBookingFindUnique.mockResolvedValue({
+        id: "booking-7",
+        status: "CANCELLED",
+        deletedAt: null,
+        checkIn: new Date("2026-09-01"),
+        checkOut: new Date("2026-09-04"),
+        member: null,
+        payment: { id: "payment-7", xeroInvoiceId: "xero-inv-7" },
+      });
+      armCaptureRow("SUCCEEDED");
+      mockBookingEventFindMany.mockResolvedValue([
+        { type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 0, settledAmountCents: 0, retainedAmountCents: 12000 } },
+      ]);
+
+      const response = await POST(makeRequest());
+
+      expectAcknowledgedWithoutMovingMoney(response);
+      expectAcknowledgementRecorded("settled_by_cancellation");
+    });
+
     it("acknowledges a delayed notice for money a 0%-tier cancellation kept: no refund, no note, no status write (#3639)", async () => {
       mockConstructWebhookEvent.mockReturnValue(
         primarySucceededEvent("evt_primary_paid_then_cancelled_zero_tier"),

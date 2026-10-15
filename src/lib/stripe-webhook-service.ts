@@ -1480,10 +1480,12 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
 
   // #2773: one shape carrying everything the fence, the record, the audit rows
   // and the alert need, so the row and the mail cannot disagree about which
-  // capture this was.
-  const lateCapture: CancelledBookingLateCapture = {
+  // capture this was. Built on demand: an acknowledged notice never reads the
+  // owner, so an unreadable owner row cannot fail it.
+  const latePaymentId = booking.payment.id;
+  const describeLateCapture = (): CancelledBookingLateCapture => ({
     bookingId: booking.id,
-    paymentId: booking.payment.id,
+    paymentId: latePaymentId,
     paymentIntentId: paymentIntent.id,
     amountCents: paymentIntent.amount,
     memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
@@ -1491,7 +1493,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     checkOut: booking.checkOut,
     openingDeletedAt: booking.deletedAt,
     captureKind: "modification",
-  };
+  });
 
   // #3639: the same question as the primary handler, first. A change payment
   // captured before a cancel that kept it — or a replay of one this handler
@@ -1503,7 +1505,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
       paymentId: booking.payment.id,
       paymentIntent,
       captureKind: "modification",
-      recoverLostRecord: () => recoverLostLateCaptureRecord(lateCapture, { format }),
+      recoverLostRecord: () => recoverLostLateCaptureRecord(describeLateCapture(), { format }),
     })
   ) {
     return;
@@ -1520,6 +1522,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
       paymentMethodId: getStripePaymentMethodId(paymentIntent),
     });
   }
+  const lateCapture = describeLateCapture();
 
   // #2774 — THE FENCE, and its position is deliberate on both sides. AFTER the
   // capture is recorded above, because withholding the refund must not also mean
@@ -1673,10 +1676,12 @@ async function handleCancelledBookingPaymentSucceeded(
   }
 
   // #2773: the same shape the sibling handler builds, so the record, the audit
-  // rows and the alert all read one description of this capture.
-  const lateCapture: CancelledBookingLateCapture = {
+  // rows and the alert all read one description of this capture (on demand, as
+  // the sibling's).
+  const latePaymentId = booking.payment.id;
+  const describeLateCapture = (): CancelledBookingLateCapture => ({
     bookingId: booking.id,
-    paymentId: booking.payment.id,
+    paymentId: latePaymentId,
     paymentIntentId: paymentIntent.id,
     amountCents: paymentIntent.amount,
     memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
@@ -1684,7 +1689,7 @@ async function handleCancelledBookingPaymentSucceeded(
     checkOut: booking.checkOut,
     openingDeletedAt: booking.deletedAt,
     captureKind: "primary",
-  };
+  });
 
   // #4149: a replay of a refund whose record was lost writes the record.
   if (
@@ -1693,7 +1698,7 @@ async function handleCancelledBookingPaymentSucceeded(
       paymentId: booking.payment.id,
       paymentIntent,
       captureKind: "primary",
-      recoverLostRecord: () => recoverLostLateCaptureRecord(lateCapture, { format }),
+      recoverLostRecord: () => recoverLostLateCaptureRecord(describeLateCapture(), { format }),
     })
   ) {
     return;
@@ -1714,6 +1719,7 @@ async function handleCancelledBookingPaymentSucceeded(
     // #3639: marks this handler's own write, so a crash-and-retry still refunds.
     reason: CANCELLED_BOOKING_LATE_CAPTURE_REASON,
   });
+  const lateCapture = describeLateCapture();
 
   // #2774 — the same fence as the sibling handler, in the same position: after the
   // capture is recorded, before the refund, and with a read failure left to
