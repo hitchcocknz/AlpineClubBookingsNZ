@@ -20,7 +20,7 @@ import {
 } from "@/lib/card-refund-failed-later";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import logger from "@/lib/logger";
-import { writeEditAttributedTransaction } from "@/lib/edit-attributed-ask-write";
+import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import type { ClubFormat } from "@/lib/club-format";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
@@ -946,7 +946,7 @@ export async function upsertPaymentIntentTransaction({
   stripeCustomerId?: string | null;
   /** #3954 round 7: a mint stamps its edit's invoice answer (`unpaidAskBillingEvidence`); omitted, left alone. */
   hadIssuedXeroInvoice?: boolean;
-  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. #4036: given, `writeEditAttributedTransaction`. */
+  /** #3954 round 8: the edit whose price ask the row is, named by a reduction that retires it; omitted, left alone. #4036: given, `writePaymentIntentTransaction` keeps it to that edit's row. */
   bookingModificationId?: string;
   store?: PaymentStore;
 }) {
@@ -964,12 +964,8 @@ export async function upsertPaymentIntentTransaction({
     ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
     ...provenance,
   };
-  // #4036 review: an ask write naming its edit never lands on another edit's row.
-  if (bookingModificationId !== undefined) {
-    await writeEditAttributedTransaction(store, { paymentIntentId, bookingModificationId, create, update });
-  } else {
-    await store.paymentTransaction.upsert({ where: { stripePaymentIntentId: paymentIntentId }, create, update });
-  }
+  // #4036 review: an ask write naming its edit never lands on another edit's row; #4081: no write lowers a captured status.
+  await writePaymentIntentTransaction(store, { paymentIntentId, bookingModificationId, create, update });
 
   if (stripeCustomerId) {
     await store.payment.update({

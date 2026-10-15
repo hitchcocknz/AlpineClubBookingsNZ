@@ -76,6 +76,20 @@ vi.mock("@/lib/ordinary-ask-mint", async (importOriginal) => {
   };
 });
 
+// #4081: the officers' recovery alert, counted. Pass-through; no other file
+// in the harness doubles this module.
+const recoveryAlerts = vi.hoisted(() => ({ sent: [] as Array<{ operationId?: string; errorMessage: string }> }));
+vi.mock("@/lib/payment-recovery-alert", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@/lib/payment-recovery-alert");
+  return {
+    ...actual,
+    alertPaymentRecoveryOfficers: async (...args: Parameters<typeof actual.alertPaymentRecoveryOfficers>) => {
+      recoveryAlerts.sent.push({ operationId: args[0].operationId, errorMessage: args[0].errorMessage });
+      return actual.alertPaymentRecoveryOfficers(...args);
+    },
+  };
+});
+
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
@@ -379,6 +393,7 @@ let webhookClient: PrismaClient;
     afterEach(() => {
       resetStripeRaceHooks();
       ordinaryAskMintHooks.afterMint = null;
+      recoveryAlerts.sent = [];
     });
 
     afterAll(async () => {
@@ -1765,6 +1780,145 @@ let webhookClient: PrismaClient;
       expect(await liveAsks()).toEqual([
         expect.objectContaining({ amountCents: 7_000, carriedAskCents: 6_000, reason: ORDINARY_ASK_RECOVERY_REASON }),
       ]);
+    });
+
+    // #4081. The same X-adopts-Y order, but Y's retry re-derives the figure Y's
+    // door asked (here the frozen fallback: Y's own net reads zero), so Stripe
+    // hands back the intent X recorded and the write is refused again. A retry
+    // can only repeat that, so the recovery ends on the first refusal and an
+    // officer hears now, not after five attempts (about 5h20m of backoff).
+    it("#4081: Y's retry re-derives Y's own figure and is handed X's recorded intent - the recovery ends at once, one alert naming the cause, no further attempt", async () => {
+      const { stripe, x, y, xRecovery, recoveryOf } = await twoEditsOneFigure({ yDoorFails: false });
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      let xOutcome: string | null = null;
+      ordinaryAskMintHooks.afterMint = async ({ adopted }) => {
+        if (adopted || xOutcome !== null) return;
+        xOutcome = await runPaymentRecoveryOperationNow(xRecovery.id, CLUB_FORMAT_TEST);
+      };
+      expect((await mintIncreaseAtDoor(y)).additionalPaymentIntentId).toBeUndefined();
+      expect(xOutcome).toBe("succeeded");
+      ordinaryAskMintHooks.afterMint = null;
+      const [xIntent] = [...stripe.intents.values()].filter((intent) => intent.status !== "canceled");
+      const xRow = () =>
+        prisma.paymentTransaction.findUniqueOrThrow({
+          where: { stripePaymentIntentId: xIntent!.id },
+          select: { bookingModificationId: true, status: true, amountCents: true },
+        });
+      expect(await xRow()).toEqual({ bookingModificationId: x.id, status: "PENDING", amountCents: 6_000 });
+      // Y's retry falls back to the frozen figure, the one its door asked for.
+      await prisma.bookingModification.update({ where: { id: y.id }, data: { priceDiffCents: 0, changeFeeCents: 0 } });
+      const yRecovery = await recoveryOf(y.id);
+      await prisma.paymentRecoveryOperation.update({ where: { id: yRecovery.id }, data: { nextRetryAt: new Date("2026-06-01T00:00:00.000Z") } });
+      const intentsBefore = stripe.intents.size;
+      recoveryAlerts.sent = [];
+
+      expect(await runPaymentRecoveryOperationNow(yRecovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+
+      const { MAX_PAYMENT_RECOVERY_ATTEMPTS } = await import("@/lib/payment-recovery-constants");
+      const dead = await recoveryOf(y.id);
+      // Dead at once, at the ceiling every dead-row reader tests, and the debt still on the row.
+      expect(dead).toMatchObject({
+        status: "FAILED", nextRetryAt: null, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, processingStartedAt: null,
+        amountCents: 6_000, paymentIntentId: `mod_guest_${BOOKING_ID}_${y.id}`,
+      });
+      expect(dead.lastError).toContain(`card request ${xIntent!.id}, which is already recorded for another change to the same booking`);
+      expect(recoveryAlerts.sent).toEqual([
+        { operationId: yRecovery.id, errorMessage: expect.stringContaining(`failed after 1 attempt: The card request for the "Guests Added" change to this booking`) },
+      ]);
+      // X's row is untouched, and Stripe was asked nothing new.
+      expect(await xRow()).toEqual({ bookingModificationId: x.id, status: "PENDING", amountCents: 6_000 });
+      expect(stripe.intents.size).toBe(intentsBefore);
+
+      // No further attempt: the runner will not claim it again, and its queue read skips it.
+      expect(await runPaymentRecoveryOperationNow(yRecovery.id, CLUB_FORMAT_TEST)).toBe("not-claimed");
+      const { processPaymentRecoveryOperations } = await import("@/lib/payment-recovery");
+      await processPaymentRecoveryOperations({ limit: 50 });
+      expect(await recoveryOf(y.id)).toMatchObject({ status: "FAILED", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null });
+      expect(recoveryAlerts.sent.filter((alert) => alert.operationId === yRecovery.id)).toHaveLength(1);
+      expect(stripe.intents.size).toBe(intentsBefore);
+      // The stuck-state page counts it with the recoveries that ran out.
+      const { countExhaustedPaymentRecoveryOperations } = await import("@/lib/payment-recovery-health");
+      expect(await countExhaustedPaymentRecoveryOperations()).toBeGreaterThanOrEqual(1);
+    });
+
+    // #4081: an edit's write claims a row naming no edit - a webhook's - and
+    // never lowers its status. Sequentially, and with the capture committing
+    // while the claim waits on the row's lock.
+    const WEBHOOK_INTENT = "pi_race_4081_webhook";
+    async function webhookRowFor(increaseId: string | null) {
+      await webhookClient.paymentTransaction.create({
+        data: {
+          paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: WEBHOOK_INTENT,
+          status: "PENDING", amountCents: 6_000, ...(increaseId ? { bookingModificationId: increaseId } : {}),
+        },
+      });
+    }
+    async function claimAsEdit(increaseId: string | undefined) {
+      const { upsertPaymentIntentTransaction } = await import("@/lib/payment-transactions");
+      await upsertPaymentIntentTransaction({
+        paymentId: PAYMENT_ID, kind: "ADDITIONAL", paymentIntentId: WEBHOOK_INTENT, amountCents: 6_000, carriedAskCents: 5_000,
+        status: "PENDING", reason: "modification_additional_recovery", bookingModificationId: increaseId, store: prisma,
+      });
+    }
+    const webhookRow = () =>
+      prisma.paymentTransaction.findUniqueOrThrow({
+        where: { stripePaymentIntentId: WEBHOOK_INTENT },
+        select: { status: true, bookingModificationId: true, carriedAskCents: true, reason: true },
+      });
+
+    it.each(["an edit's claim", "a plain write"] as const)(
+      "#4081: a webhook marks the row SUCCEEDED, then %s lands on it - the status stays SUCCEEDED",
+      async (writer) => {
+        await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+        const increase = await ordinaryIncrease(1_000);
+        await webhookRowFor(null);
+        await webhookClient.paymentTransaction.update({ where: { stripePaymentIntentId: WEBHOOK_INTENT }, data: { status: "SUCCEEDED" } });
+
+        await claimAsEdit(writer === "an edit's claim" ? increase.id : undefined);
+
+        expect(await webhookRow()).toEqual({
+          status: "SUCCEEDED", bookingModificationId: writer === "an edit's claim" ? increase.id : null,
+          carriedAskCents: 5_000, reason: "modification_additional_recovery",
+        });
+        // The mirror reads it as paid, not as an open ask.
+        expect((await payment()).additionalPaymentStatus).not.toBe("PENDING");
+      },
+    );
+
+    it("#4081: a capture committing while an edit's claim waits on the row's lock - the claim's re-checked WHERE keeps SUCCEEDED", async () => {
+      await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
+      const increase = await ordinaryIncrease(1_000);
+      await webhookRowFor(null);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let locked!: () => void;
+      const rowLocked = new Promise<void>((resolve) => (locked = resolve));
+      const capture = webhookClient.$transaction(async (tx) => {
+        await tx.paymentTransaction.update({ where: { stripePaymentIntentId: WEBHOOK_INTENT }, data: { status: "SUCCEEDED" } });
+        locked();
+        await held;
+      }, { maxWait: 10_000, timeout: 20_000 });
+      await rowLocked;
+
+      const claim = claimAsEdit(increase.id);
+      // The claim's first statement queues behind the capture's row lock.
+      const startedAt = process.hrtime.bigint();
+      for (;;) {
+        const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+          SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+          WHERE application_name IS DISTINCT FROM 'race-3954-webhook' AND wait_event_type = 'Lock' AND query ILIKE '%PaymentTransaction%'
+        `;
+        if ((rows[0]?.count ?? 0) > 0) break;
+        if (realElapsedMs(startedAt) > 5_000) throw new Error("The edit's claim never queued behind the capture");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      release();
+      await capture;
+      await claim;
+
+      expect(await webhookRow()).toEqual({
+        status: "SUCCEEDED", bookingModificationId: increase.id, carriedAskCents: 5_000, reason: "modification_additional_recovery",
+      });
     });
 
     // #4036, the other ordering. An ordinary ask's recovery row is written only

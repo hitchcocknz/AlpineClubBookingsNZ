@@ -1540,6 +1540,10 @@ REFUNDED/PARTIALLY_REFUNDED -> (repay, #1765) fresh PRIMARY transaction on the
   same Payment: PENDING/PROCESSING -> SUCCEEDED
 ```
 
+No write of an intent's ledger row moves a captured transaction back
+(`INV-PAY-132`, #4081): a PENDING or PROCESSING write, or a late SUCCEEDED one,
+that lands on a SUCCEEDED or refunded row keeps that row's status.
+
 Booking cancellation honors these transitions (#1473): only a never-captured
 payment flips to FAILED at cancel, decided on transaction-ledger capture
 evidence — the aggregate mirror alone can lie, because inbound reconciliation
@@ -3434,6 +3438,26 @@ server's last answer, so the first run after either side is upgraded records a
 matching answer and resumes with no manual step. A SKIPPED run with reason
 `server-version-mismatch` is therefore the expected state while the two sides
 differ, not a failure to recover from; the setup page shows both numbers.
+
+### A recovery failure no retry fixes (#4081)
+
+A failed attempt normally backs off and retries; a refusal the next attempt
+would meet again does not:
+
+```text
+PROCESSING -> attempt throws
+  ordinary failure            -> FAILED, nextRetryAt set (retry), no alert until attempts run out
+  attempts spent              -> FAILED terminal + one officer alert
+  CREATE_ADDITIONAL_PAYMENT_INTENT whose ask write found its intent recorded
+  for another edit            -> FAILED terminal at once: nextRetryAt null, attempts set
+                                 to the ceiling, the cause on lastError + one officer alert
+```
+
+Every terminal row sits at the attempt ceiling, so the claim, the health check
+and the stuck-state page's "Exhausted recovery operations" read it as dead; the
+debt stays on the row (`INV-PAY-092`, `INV-MOD-060`). To verify:
+`payment-recovery.test.ts` and `additional-ask-reduction.realdb.test.ts`
+("#4081").
 
 ### Edit review-charge recovery row (#3402)
 

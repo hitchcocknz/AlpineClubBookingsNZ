@@ -2937,6 +2937,70 @@ describe("payment recovery worker", () => {
       );
     });
 
+    /**
+     * #4081: an ask write refused because its intent is another edit's
+     * (`AdditionalAskAttributionConflictError`) meets the same row on every
+     * retry, so the recovery ends on the first refusal: FAILED with no retry,
+     * at the attempt ceiling the claim and the stuck-state page read, the cause
+     * named for the officer, and one alert now rather than after five attempts.
+     */
+    const recoveryFailureAlerts = () =>
+      mockSendAdminPaymentFailureAlert.mock.calls
+        .map(([alert]) => (alert as { errorMessage: string }).errorMessage)
+        .filter((message) => message.startsWith("Stripe payment recovery CREATE_ADDITIONAL_PAYMENT_INTENT failed"));
+
+    it("#4081: an ask write refused for another edit's row ends the recovery at once - one alert naming the cause, no retry", async () => {
+      primeQueue(additionalIntentOperation({ attempts: 1 }));
+      mockBookingModificationFindUnique.mockResolvedValue({ priceDiffCents: 3000, changeFeeCents: 0, modificationType: "GUEST_ADD" });
+      const { AdditionalAskAttributionConflictError } = await import("@/lib/payment-intent-ledger-row-write");
+      mockUpsertPaymentIntentTransaction.mockRejectedValueOnce(
+        new AdditionalAskAttributionConflictError("pi_recovered", "mod-9"),
+      );
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ processed: 1, failed: 1, retried: 0, succeeded: 0 });
+      const failureWrites = mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => args.data?.status === PaymentRecoveryOperationStatus.FAILED);
+      expect(failureWrites).toHaveLength(1);
+      expect(failureWrites[0]!.where).toMatchObject({ id: "recovery-additional", attempts: 1 });
+      expect(failureWrites[0]!.data).toEqual({
+        status: PaymentRecoveryOperationStatus.FAILED,
+        lastError: expect.stringContaining("which is already recorded for another change to the same booking"),
+        processingStartedAt: null,
+        nextRetryAt: null,
+        // The claim refuses a row here (`attempts < MAX`), and every dead-row reader counts it.
+        attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS,
+      });
+      expect(failureWrites[0]!.data.lastError).toContain("pi_recovered");
+      // One failure alert (the stale-queue alert this fixture's old row also raises is not one).
+      expect(recoveryFailureAlerts()).toEqual([
+        expect.stringMatching(/failed after 1 attempt: The card request for the "Guests Added" change to this booking could not be recorded: Stripe returned card request pi_recovered, which is already recorded for another change/),
+      ]);
+      // An ordinary ask's dead recovery withdraws nothing: the intent is the other edit's ask.
+      expect(mockCancelPaymentIntentIfCancellableWithResult).not.toHaveBeenCalled();
+    });
+
+    it("#4081: any other failure of the same replay still backs off and retries, silently", async () => {
+      primeQueue(additionalIntentOperation({ attempts: 1 }));
+      mockUpsertPaymentIntentTransaction.mockRejectedValueOnce(new Error("connection reset"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ processed: 1, failed: 0, retried: 1 });
+      const failure = mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { data: Record<string, unknown> })
+        .find((args) => args.data?.status === PaymentRecoveryOperationStatus.FAILED);
+      expect(failure!.data).toEqual({
+        status: PaymentRecoveryOperationStatus.FAILED,
+        lastError: "connection reset",
+        processingStartedAt: null,
+        nextRetryAt: expect.any(Date),
+      });
+      expect(recoveryFailureAlerts()).toEqual([]);
+    });
+
     it("re-creates the intent with the stored modification-scoped Stripe key", async () => {
       primeQueue(additionalIntentOperation());
 

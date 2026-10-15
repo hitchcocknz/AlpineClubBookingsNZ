@@ -52,6 +52,7 @@ import {
 } from "@/lib/reissued-ask-mint";
 import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional-ask-recovery-replay";
 import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
+import { unretryableRecoveryCause } from "@/lib/recovery-unretryable-cause";
 import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
@@ -1234,7 +1235,7 @@ async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, 
     bookingId: operation.bookingId,
     operationId: operation.id,
     amountCents: await cardRefundStillOwedCents(operation), // #4117: read after the final attempt
-    errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempts: ${message}`,
+    errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempt${operation.attempts === 1 ? "" : "s"}: ${message}`,
     paymentIntentId: operation.paymentIntentId,
   }, format);
 }
@@ -1254,12 +1255,12 @@ async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, 
  * than one place, so anything that has to happen when a recovery dies had to be
  * bolted onto each of them and would silently miss the ones nobody remembered.
  *
- * TERMINAL IS AN ARGUMENT, NOT A DERIVATION. The two callers know different
- * things - the worker knows it has just burnt an attempt, the reaper knows the
- * row never came back - and a shared re-derivation from `attempts` would be a
- * fourth opinion. `nextRetryAt` is forced to `null` when terminal rather than
- * trusted from the caller, because a terminal row that keeps a retry time is
- * re-claimable and is therefore not terminal at all.
+ * TERMINAL IS AN ARGUMENT, NOT A DERIVATION. The worker knows it has burnt an
+ * attempt, or met a failure no retry fixes (#4081); the reaper knows the row
+ * never came back; a re-derivation from `attempts` would be a fourth opinion.
+ * When terminal, `nextRetryAt` is forced `null` (a row keeping a retry time is
+ * re-claimable, so not terminal) and `attempts` to the ceiling every dead-row
+ * reader tests (`INV-PAY-092`).
  *
  * STATUS-FENCED, like `completePaymentRecoveryOperation` and for the same
  * reason. The worker's arm used `update` by id, which throws `P2025` when a
@@ -1304,9 +1305,9 @@ async function markPaymentRecoveryOperationFailed({
    * replaced could not do that: its own `where` carried
    * `processingStartedAt < staleBefore`, so a freshly re-claimed row fell out of
    * it. Pinning the exact value restores that and is stricter than restating the
-   * threshold, because it also fences `attempts` - the only writer that
-   * increments `attempts` is the claim, and the claim is what rewrites
-   * `processingStartedAt`.
+   * threshold, because it also fences `attempts`: the claim increments it as it
+   * rewrites `processingStartedAt`, and a terminal failure raises it to the
+   * ceiling in the write that sets FAILED and clears `processingStartedAt`.
    */
   fromProcessingStartedAt?: Date | null;
   /**
@@ -1335,7 +1336,7 @@ async function markPaymentRecoveryOperationFailed({
       status: PaymentRecoveryOperationStatus.FAILED,
       lastError: message,
       processingStartedAt: null,
-      nextRetryAt: terminal ? null : nextRetryAt,
+      ...(terminal ? { nextRetryAt: null, attempts: Math.max(operation.attempts, MAX_PAYMENT_RECOVERY_ATTEMPTS) } : { nextRetryAt }),
     },
   });
 
@@ -1626,14 +1627,13 @@ async function failPaymentRecoveryOperation(
   error: unknown,
   format: ClubFormat,
 ) {
-  const message = errorMessage(error);
-  const exhausted = operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
-
+  const cause = await unretryableRecoveryCause(operation, error);
+  const terminal = cause !== null || operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
   const outcome = await markPaymentRecoveryOperationFailed({
     operation,
     format,
-    message,
-    terminal: exhausted,
+    message: cause ?? errorMessage(error),
+    terminal,
     nextRetryAt: nextRetryDate(operation.attempts),
     // Everything but SUCCEEDED, matching `completePaymentRecoveryOperation`'s
     // fence: the row was PROCESSING when this worker claimed it, but the
@@ -1658,7 +1658,7 @@ async function failPaymentRecoveryOperation(
    * it; a fourth outcome for the caller to sum would buy a more precise figure
    * that no reader has asked for.
    */
-  return outcome === "gone" ? (exhausted ? "failed" : "retry") : outcome;
+  return outcome === "gone" ? (terminal ? "failed" : "retry") : outcome;
 }
 
 async function claimPaymentRecoveryOperation(operationId: string) {
@@ -1708,8 +1708,8 @@ async function claimPaymentRecoveryOperation(operationId: string) {
  * `nextRetryAt` of NOW, and the very next queue read claims it - and taking it
  * would kill a live attempt and leave the terminality this loop read one attempt
  * out of date. `fromProcessingStartedAt` pins the exact attempt, which fences
- * `attempts` too: the claim is the only writer that increments `attempts`, and
- * it is the same write that replaces `processingStartedAt`.
+ * `attempts` too: the claim increments it as it replaces `processingStartedAt`,
+ * and a terminal failure raises it to the ceiling as it sets FAILED and clears it.
  */
 async function resetStaleProcessingOperations(format: ClubFormat) {
   const staleBefore = new Date(

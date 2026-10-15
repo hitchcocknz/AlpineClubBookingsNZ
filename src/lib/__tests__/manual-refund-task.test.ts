@@ -1582,7 +1582,9 @@ describe("#2262 guard 3 — the self-match refutation, pinned", () => {
     // PaymentTransaction.source and this writer hardcodes STRIPE. Pinned here
     // so a future "derive the source from the payment" refactor fails loudly
     // instead of quietly making a Stripe capture refund itself.
-    const upsert = vi.fn().mockResolvedValue(undefined);
+    // #4081: the write is two status-split updates, then an insert.
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
     const { upsertPaymentIntentTransaction } = (await vi.importActual("@/lib/payment-transactions")) as typeof import("@/lib/payment-transactions");
 
     await upsertPaymentIntentTransaction({
@@ -1592,20 +1594,22 @@ describe("#2262 guard 3 — the self-match refutation, pinned", () => {
       amountCents: 1000,
       status: "SUCCEEDED",
       store: {
-        paymentTransaction: { upsert },
+        paymentTransaction: { updateMany, createMany },
         payment: { update: vi.fn() },
       } as never,
     }).catch(() => {
       // reconcilePaymentAggregates runs against the same stub and is not the
-      // subject of this pin; the upsert shape below is.
+      // subject of this pin; the write's shape below is.
     });
 
-    expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({ source: PaymentSource.STRIPE }),
-        update: expect.objectContaining({ source: PaymentSource.STRIPE }),
-      })
-    );
+    expect(updateMany).toHaveBeenCalled();
+    for (const [args] of updateMany.mock.calls) {
+      expect(args).toEqual(expect.objectContaining({ data: expect.objectContaining({ source: PaymentSource.STRIPE }) }));
+    }
+    expect(createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ source: PaymentSource.STRIPE })],
+      skipDuplicates: true,
+    });
   });
 });
 
