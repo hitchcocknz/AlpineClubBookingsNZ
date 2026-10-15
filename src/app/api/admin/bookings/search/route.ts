@@ -138,9 +138,7 @@ export async function GET(request: NextRequest) {
         status: { not: "DRAFT" },
         ...buildBookingDeletedWhere(deleted),
         OR: [
-          ...bookingIdSearchTerms.map((term) => ({
-            id: exactPrefix(term),
-          })),
+          ...bookingIdSearchTerms.map((term) => ({ id: exactPrefix(term) })),
           {
             member: {
               is: {
