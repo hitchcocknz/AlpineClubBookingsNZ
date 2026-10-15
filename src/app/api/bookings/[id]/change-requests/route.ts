@@ -25,11 +25,15 @@ import {
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
 import {
+  addedGuestFirstNights,
   addedGuestNightsRefusal,
   buildChangeRequestSummary,
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
   changeRequestAddGuestsSchema,
+  changeRequestValidationMessage,
+  changeRequestGuestStayRangeSchema,
   namesStayRangeChange,
+  storedGuestNightsAsDays,
   guestStayRangesRefusal,
   requestedDatesIgnoredByNightsRefusal,
   CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
@@ -45,16 +49,8 @@ const createChangeRequestSchema = z.object({
   // #4030: the one add-guest shape, shared with the officer's entry.
   addGuests: changeRequestAddGuestsSchema.optional(),
   removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
-  guestStayRanges: z
-    .array(
-      z.object({
-        guestId: z.string().trim().min(1),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-      })
-    )
-    .max(200)
-    .optional(),
+  // #4088: each guest's bounds, or the editor grid's night set (`nights`).
+  guestStayRanges: z.array(changeRequestGuestStayRangeSchema).max(200).optional(),
   requestedEffectiveDate: z.string().optional(),
   reason: z.string().max(2000).optional(),
 });
@@ -166,7 +162,8 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      guests: true,
+      // #4088: the night rows, which a grid night set is compared with and the request records.
+      guests: { include: { nights: { select: { stayDate: true } } } },
       member: true,
       // #3369: the owner may be an Organisation; bookingOwner() reads both.
       organisation: { select: { name: true, email: true } },
@@ -214,7 +211,7 @@ export async function POST(
   const parsed = createChangeRequestSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
+      { error: changeRequestValidationMessage(parsed.error), details: parsed.error.flatten() },
       { status: 400 }
     );
   }
@@ -273,7 +270,7 @@ export async function POST(
   const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
   const nightsRefusal =
     addedGuestNightsRefusal(addGuests ?? [], stay) ??
-    guestStayRangesRefusal(guestStayRanges ?? [], stay) ??
+    guestStayRangesRefusal(guestStayRanges ?? [], stay, booking.guests) ??
     requestedDatesIgnoredByNightsRefusal({
       booking,
       guests: booking.guests,
@@ -336,9 +333,7 @@ export async function POST(
     requestedCheckIn,
     requestedCheckOut,
     requestedEffectiveDate: effectiveDate,
-    addedGuestStarts: (addGuests ?? []).map((guest) =>
-      guest.stayStart ? parseDateOnly(guest.stayStart) : nextCheckIn,
-    ),
+    addedGuestStarts: addedGuestFirstNights(addGuests ?? [], { checkIn: nextCheckIn, checkOut: nextCheckOut }),
   });
 
   if (!touchesLockedPeriod) {
@@ -436,8 +431,8 @@ export async function POST(
             ageTier: guest.ageTier,
             isMember: guest.isMember,
             memberId: guest.memberId,
-            stayStart: formatBookingDate(guest.stayStart),
-            stayEnd: formatBookingDate(guest.stayEnd),
+            // `stayStart`, `stayEnd` and (#4088) the night rows approval's drift check compares.
+            ...storedGuestNightsAsDays(guest),
           })),
         },
         requested: {

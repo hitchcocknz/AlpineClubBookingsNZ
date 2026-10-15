@@ -6,6 +6,7 @@
  */
 import type { FinishedStaySettlementMethod } from "@/components/admin/booking-requests/booking-change-request-finished-stay";
 import type { NewGuest } from "@/components/edit-booking/types";
+import type { RequestedGuestNights } from "@/lib/booking-change-request-stored";
 
 export interface BookingChangeRequestData {
   id: string;
@@ -26,6 +27,8 @@ export interface BookingChangeRequestData {
    * it describes. Answered by the list route through the executor's mapping.
    */
   acceptsOfficerGuests?: boolean;
+  /** #4088: each guest's requested nights, from the list route. */
+  requestedGuestNights?: RequestedGuestNights[];
   requestedChanges: {
     requested?: {
       summary?: string | null;

@@ -10,6 +10,7 @@ import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import {
   addedGuestNightsRefusal,
   changeRequestAddGuestSchema,
+  changeRequestValidationMessage,
 } from "@/lib/booking-change-request-guests";
 import { estimateChangeRequestAddedGuests } from "@/lib/booking-change-request-estimate";
 import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -95,7 +96,7 @@ export async function POST(
   const parsed = estimateSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
+      { error: changeRequestValidationMessage(parsed.error), details: parsed.error.flatten() },
       { status: 400 },
     );
   }

@@ -63,6 +63,7 @@ import {
   readCashSettlementNotice,
   type CashSettlementMarker,
 } from "@/lib/xero-inbound/settle-from-cash-notice";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 
 function isPaidXeroInvoice(invoice: Invoice): boolean {
   const status = String(invoice.status ?? "").toUpperCase();
@@ -1015,9 +1016,8 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               entityType: "CREDIT_NOTE",
               operationType: "CREATE",
               status: "PENDING",
-              correlationKey: {
-                startsWith: `payment:${settlementPayment.id}:refund-credit-note:`,
-              },
+              // #4146: the id's characters matched literally, never as `LIKE` wildcards.
+              correlationKey: exactPrefix(`payment:${settlementPayment.id}:refund-credit-note:`),
             },
             data: {
               status: "CANCELLED",
