@@ -3020,6 +3020,18 @@ describe("Stripe webhook Xero alerting", () => {
         expect(refundAuditOf().noRefundSentReason).toEqual(expect.stringContaining("already been refunded"));
       });
 
+      it.each([
+        ["on another payment", { paymentId: "payment-other", status: "SUCCEEDED" }],
+        ["not captured", { paymentId: "payment-7", status: "FAILED" }],
+      ])("a capture row read back %s fails the webhook for Stripe to redeliver, refunding nothing", async (_label, row) => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_row_mismatch"));
+        armCancelledBooking();
+        mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-7", amountCents: 12000, refundedAmountCents: 0, ...row });
+
+        expect((await POST(makeRequest())).status).toBe(500);
+        expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      });
+
       it("a capture row the handler cannot read back fails the webhook for Stripe to redeliver, refunding nothing", async () => {
         mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_row_missing"));
         armCancelledBooking();
