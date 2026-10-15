@@ -1,7 +1,9 @@
+import type { BoundClubFormat } from "@/lib/club-format-bound";
 import { CancelBookingButton } from "@/components/cancel-booking-button";
 import { DeleteBookingButton } from "@/components/delete-booking-button";
 import { RefundAppealButton } from "@/components/refund-appeal-button";
 import { ORGANISER_CARD_APPEAL_PENDING_MEMBER_NOTE } from "@/lib/group-organiser-paid";
+import { appealCardRefundOwedMemberNote } from "@/lib/refund-request-card-refund-copy";
 import type { BookingDetailRecord } from "../_lib/load-booking-detail";
 import type { BookingDetailViewer } from "../_lib/booking-detail-viewer";
 import type { BookingDetailEditAccess } from "../_lib/booking-detail-edit-access";
@@ -24,6 +26,7 @@ export function BookingLifecycleActions({
   canDeleteDraft,
   canSoftDeleteCancelled,
   backHref,
+  money,
   organiserCardAppeal = false,
   organiserCardAppealPending = false,
 }: {
@@ -35,6 +38,7 @@ export function BookingLifecycleActions({
   canDeleteDraft: boolean;
   canSoftDeleteCancelled: boolean;
   backHref: string;
+  money: BoundClubFormat;
   /** #3956: the appeal ceiling is the group organiser's card payment's (`organiserCardAppealCeilingFor`). */
   organiserCardAppeal?: boolean;
   /** #3956: ...and the group cancel's own refund to that card is not made yet, so the appeal waits (`combinedRefundPending`). */
@@ -42,7 +46,7 @@ export function BookingLifecycleActions({
 }) {
   const { viewerAuthorizationRole, actingOnBehalf, canManageBooking } = viewer;
   const { canCancel, isDeleted } = access;
-  const { maxRefundableCents } = payment;
+  const { maxRefundableCents, appealCardRefundOwedCents } = payment;
   const { refundAppealDescription } = messages;
   return (
     <>
@@ -110,7 +114,24 @@ export function BookingLifecycleActions({
             maxRefundableCents={maxRefundableCents}
             description={refundAppealDescription}
             organiserCardRefund={organiserCardAppeal}
+            cardRefundOwedCents={appealCardRefundOwedCents}
           />
+        )}
+      {canManageBooking &&
+        !isDeleted &&
+        booking.status === "CANCELLED" &&
+        booking.payment &&
+        booking.payment.status !== "REFUNDED" &&
+        maxRefundableCents <= 0 &&
+        appealCardRefundOwedCents > 0 &&
+        // Only where the appeal button would otherwise offer an appeal: never
+        // beside one already pending (the button's own `hasPending`).
+        !booking.refundRequests.some((request) => request.status === "PENDING") && (
+          // #4124: the button is hidden because a card refund not yet made is
+          // everything left to refund - say so rather than hide it silently.
+          <p className="text-sm text-muted-foreground">
+            {appealCardRefundOwedMemberNote(money.cents(appealCardRefundOwedCents), true)}
+          </p>
         )}
     </>
   );

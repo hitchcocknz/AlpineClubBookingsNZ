@@ -1,10 +1,8 @@
 import type { ManualRefundTaskKind, ManualRefundTaskStatus } from "@prisma/client";
 
-import {
-  getRemainingRefundableCentsNetOf,
-  type BookingPaymentState,
-} from "@/lib/booking-payment-state";
+import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { sumInternetBankingLateCashCreditCents } from "@/lib/internet-banking-late-cash-credit";
+import { openCardRefundOwedCents, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
 
 /**
  * #3213 (epic #2797): WHICH FINANCE-QUEUE ITEMS CAN BE SETTLED AT ALL, and the
@@ -102,13 +100,21 @@ export function cancelCardShortfallOccurrenceKey(bookingId: string, part: Cancel
 }
 
 /**
+ * #4125: where a cancel's card refund stands, read live from its recovery row
+ * (`cardRefundRowState`): made (`settled`), still being sent (`on-its-way`),
+ * closed as "Paid another way" (`INV-PAY-122`), or `stalled` - the row is dead
+ * (its retries are spent, or it failed with no retry scheduled), so nothing
+ * will send it without the club.
+ */
+export type CardRefundState = "settled" | "on-its-way" | "paid-another-way" | "stalled";
+
+/**
  * #4097: where a card refund shortfall's cancel stands, read by the booking and
  * payment-link pages and handed to the pure narrative: each part's task status,
- * and the card part's own refund - settled, still on its way, or closed as
- * "Paid another way" (`INV-PAY-122`).
+ * and the card part's own refund (#4125: a dead one too, `stalled`).
  */
 export type CardShortfallTaskStatuses = Partial<Record<CancelCardShortfallPart, "OPEN" | "COMPLETED" | "DISMISSED">> & {
-  card?: "settled" | "on-its-way" | "paid-another-way";
+  card?: CardRefundState;
 };
 
 /** Which part of a card refund shortfall this task is, or null for any other task. */
@@ -203,6 +209,15 @@ export function closeKeysOf(paymentRecoveryOperationId: string): string[] {
   return (Object.keys(PAID_ANOTHER_WAY_KEY_SUFFIX) as PaidAnotherWayXeroNote[]).map((xeroRefundNote) =>
     cardRefundPaidAnotherWayOccurrenceKey(paymentRecoveryOperationId, { xeroRefundNote }),
   );
+}
+
+/**
+ * #4120: what a paid-another-way close owed but did not pay back - the amount
+ * still owed when it closed (`raisedAmountCents`) less what was paid back,
+ * never below nothing. A full close leaves nothing; a part close the rest.
+ */
+export function paidAnotherWayUnpaidCents(close: { amountCents: number | null; raisedAmountCents: number | null }): number {
+  return Math.max(0, (close.raisedAmountCents ?? 0) - (close.amountCents ?? 0));
 }
 
 /**
@@ -445,22 +460,27 @@ export const OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT = {
   select: { amountCents: true },
 } as const;
 
-/** A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads. */
-export function refundAppealCeiling(
-  payment:
-    | (BookingPaymentState & { manualRefundTasks?: readonly { amountCents: number | null }[] })
-    | null
-    | undefined,
-  creditsFromCancellation:
-    | readonly { amountCents: number; description: string | null; type?: string | null }[]
-    | null
-    | undefined,
-): number {
-  return getRemainingRefundableCentsNetOf(
-    payment,
+/**
+ * A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads and
+ * (#4124) the payment's open card-refund debts (`netCollectedCardRefundSelect`),
+ * netted as `refundAppealHandedBackParts` nets them on the server, so a screen
+ * offers the ceiling the route enforces. `cardRefundOwedCents` is what that debt
+ * actually took off (never more than the ceiling held without it), for the line
+ * saying why the ceiling is lower.
+ */
+export function refundAppealCeilingParts(
+  payment: (CardRefundOwedPaymentRow & { manualRefundTasks?: readonly { amountCents: number | null }[] }) | null | undefined,
+  creditsFromCancellation: readonly { amountCents: number; description: string | null; type?: string | null }[] | null | undefined,
+): { ceilingCents: number; cardRefundOwedCents: number } {
+  const promisedCents =
     sumOpenNonCancellationHandBackCents(payment?.manualRefundTasks) +
-      sumInternetBankingLateCashCreditCents(creditsFromCancellation),
-  );
+    sumInternetBankingLateCashCreditCents(creditsFromCancellation);
+  const cardDebtCents = payment ? openCardRefundOwedCents(payment) : 0;
+  const withoutCardDebtCents = getRemainingRefundableCentsNetOf(payment, promisedCents);
+  return {
+    ceilingCents: getRemainingRefundableCentsNetOf(payment, promisedCents + cardDebtCents),
+    cardRefundOwedCents: Math.min(cardDebtCents, withoutCardDebtCents),
+  };
 }
 
 /**

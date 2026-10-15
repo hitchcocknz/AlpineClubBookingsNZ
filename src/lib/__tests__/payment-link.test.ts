@@ -40,6 +40,8 @@ vi.mock("@/lib/prisma", () => ({
     },
     paymentRecoveryOperation: {
       findUnique: vi.fn().mockResolvedValue(null),
+      // #4125: a cancelled booking's card refund rows; none here.
+      findMany: vi.fn().mockResolvedValue([]),
     },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
@@ -588,6 +590,30 @@ describe("getPaymentLinkContext", () => {
     const context = await getPaymentLinkContext(RAW_TOKEN, noReview());
 
     expect(context.narrative.message).toContain("$40.00 was refunded to you by bank transfer");
+  });
+
+  // #4125: a card refund no REFUNDED event records says where its recovery row
+  // stands - a dead capacity-race refund is the club's to follow up, never "on its way".
+  it("MUTATION: reads a cancelled booking's card refund row, so a dead refund says the club will be in touch", async () => {
+    mockedFindUnique.mockResolvedValue(baseLink({ booking: baseBooking({ status: BookingStatus.CANCELLED }) }) as never);
+    mockedBookingEventFindMany.mockResolvedValue([
+      { type: BookingEventType.MEMBER_PAID, occurredAt: new Date("2026-05-02T00:00:00.000Z"), amountCents: 12000, reason: null, snapshot: null },
+      {
+        type: BookingEventType.CANCELLED,
+        occurredAt: new Date("2026-05-05T00:00:00.000Z"),
+        amountCents: 12000,
+        reason: null,
+        snapshot: { refundMethod: "card", cancelledBecause: "capacity_race", refundPercentage: 100, paidAmountCents: 12000, settledAmountCents: 12000, retainedAmountCents: 0 },
+      },
+    ] as never);
+    vi.mocked(prisma.paymentRecoveryOperation.findMany).mockResolvedValueOnce([
+      { id: "op-1", idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_1", status: "FAILED", attempts: 5, nextRetryAt: null },
+    ] as never);
+
+    const context = await getPaymentLinkContext(RAW_TOKEN, noReview());
+
+    expect(context.narrative.message).toContain("$120.00 is being refunded to you; the club will be in touch about the card refund.");
+    expect(context.narrative.message).not.toContain("on its way");
   });
 });
 

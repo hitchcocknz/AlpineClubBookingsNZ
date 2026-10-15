@@ -1,5 +1,4 @@
 import {
-  PaymentRecoveryOperationStatus,
   PaymentSource,
   PaymentTransactionKind,
   type Prisma,
@@ -21,8 +20,12 @@ import {
   type RefundAllocationSlice,
 } from "@/lib/payment-transactions";
 import { captureRefundState } from "@/lib/payment-transaction-status";
-import { prisma } from "@/lib/prisma";
-import { keepRefusedPrePersistedRefundOwed, sliceAfterRecordedRefusals } from "@/lib/refused-card-refund-retry";
+import { lateCaptureOwnChargeSlice } from "@/lib/late-capture-own-charge-refund";
+import { closeDoorRow, closePrePersistedRefundRow } from "@/lib/pre-persisted-refund-close";
+import {
+  keepRefusedPrePersistedRefundOwed,
+  sliceAfterRecordedRefusals,
+} from "@/lib/refused-card-refund-retry";
 
 /**
  * #3639 (owner decision 26 Sep 2026, `INV-PAY-106`): what a treasurer's
@@ -46,7 +49,7 @@ export type LateCaptureRefundRoute = {
   captureKind: "primary" | "modification";
   /** Always null: there is no booking edit behind this money. */
   bookingModificationId: null;
-  /** Pinned to the capture's own transaction, as the automatic refund is. */
+  /** Pinned to the capture's own transaction, as the automatic refund is (`lateCaptureOwnChargeSlice`, #4131). */
   allocation: RefundAllocationSlice[];
 };
 
@@ -116,7 +119,8 @@ export async function planLateCaptureApprovalRefund({
     captureKind:
       transaction.kind === PaymentTransactionKind.PRIMARY ? "primary" : "modification",
     bookingModificationId: null,
-    allocation: [sliceAfterRecordedRefusals({ paymentTransactionId: transaction.id, amountCents }, recorded)],
+    // #4131: the capture's own charge, the one slice every late-capture door sends (held >= amount above).
+    allocation: [sliceAfterRecordedRefusals(lateCaptureOwnChargeSlice(transaction, amountCents).slice, recorded)],
   };
 }
 
@@ -190,21 +194,18 @@ export async function persistLateCaptureApprovalRefundDebt({
  * Best-effort happy-path close of the debt above, as the edit-review one is: a
  * lost close leaves a PENDING operation whose replay Stripe answers with the
  * original refund under the same keys.
+ *
+ * #4126: it closes only the row as this approval left it
+ * (`closePrePersistedRefundRow`, `untouchedOnly`) - PENDING, never attempted,
+ * on the plan it just sent. A row the runner has claimed or tried belongs to
+ * the runner: it replays these same keys, Stripe answers with this refund, and
+ * its own close writes the record once. A re-plan of this row moves a slice
+ * only after Stripe refused it (`keepRefusedPrePersistedRefundOwed`), so it
+ * cannot follow an approval whose every slice was made; a close that loses on
+ * a row still untouched is an anomaly (`reportLostPrePersistedClose`).
  */
-async function markLateCaptureApprovalRefundRecoverySucceeded(paymentIntentId: string) {
-  return prisma.paymentRecoveryOperation.updateMany({
-    where: {
-      idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(paymentIntentId),
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      nextRetryAt: null,
-      lastError: null,
-      processingStartedAt: null,
-      succeededAt: new Date(),
-    },
-  });
+async function markLateCaptureApprovalRefundRecoverySucceeded(idempotencyKey: string, sentPlan: ReadonlyArray<RefundAllocationSlice>) {
+  return closePrePersistedRefundRow({ idempotencyKey, sentPlan, untouchedOnly: true });
 }
 
 /**
@@ -273,16 +274,22 @@ export async function executeLateCaptureApprovalRefund({
   // The record is written by whichever of this and the cron replay moves the
   // debt to SUCCEEDED - exactly once (delta D6). A lost close here leaves it
   // PENDING, and the replay, answered by Stripe with this refund, writes it.
-  const closed = await markLateCaptureApprovalRefundRecoverySucceeded(route.paymentIntentId).catch(
-    (err) => {
-      logger.error(
-        { err, bookingId, taskId },
-        "Failed to close the late-capture approval refund recovery operation after an inline refund succeeded",
-      );
-      return { count: 0 };
+  // A close that threw is logged and is no anomaly: the row is left to the
+  // runner's replay. Only a close that ran and matched nothing is read back.
+  const closed = await closeDoorRow(
+    {
+      door: "late-capture-approval",
+      idempotencyKey: buildLateCaptureApprovalRefundRecoveryIdempotencyKey(route.paymentIntentId),
+      bookingId,
+      paymentIntentId: route.paymentIntentId,
+      amountCents,
+      refundId,
+      format,
+      context: { taskId },
     },
+    async (idempotencyKey) => (await markLateCaptureApprovalRefundRecoverySucceeded(idempotencyKey, route.allocation)).count === 1,
   );
-  if (closed.count > 0) {
+  if (closed) {
     await finishApprovedLateCaptureRefund({
       bookingId,
       paymentId: route.paymentId,

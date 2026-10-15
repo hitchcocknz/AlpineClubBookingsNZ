@@ -14,6 +14,10 @@ import { parseDecimalDollarsToCents } from "@/lib/money-input"
 import { formatCents } from "@/lib/utils"
 import { useClubFormat } from "@/components/club-format-provider"
 import { ORGANISER_CARD_APPEAL_CEILING_NOTE } from "@/lib/group-organiser-paid"
+import { appealCardRefundOwedMemberNote } from "@/lib/refund-request-card-refund-copy"
+
+/** The appeal form's card-refund line (one form per page). */
+const CARD_REFUND_NOTE_ID = "refund-appeal-card-refund-note"
 
 interface RefundAppealButtonProps {
   bookingId: string
@@ -21,6 +25,8 @@ interface RefundAppealButtonProps {
   description?: string
   /** #3956: the ceiling is what the group organiser's card payment can still return. */
   organiserCardRefund?: boolean
+  /** #4124: a card refund not yet made that the maximum nets; shown to the owner only (0 hides it). */
+  cardRefundOwedCents?: number
 }
 
 interface RefundRequestData {
@@ -52,6 +58,7 @@ export function RefundAppealButton({
   bookingId,
   maxRefundableCents,
   organiserCardRefund = false,
+  cardRefundOwedCents = 0,
   description = "If you believe you are entitled to a larger refund, you can submit an appeal for review.",
 }: RefundAppealButtonProps) {
   const format = useClubFormat()
@@ -71,7 +78,8 @@ export function RefundAppealButton({
     same thing, and that paragraph is wired to the input with aria-describedby
     so it is announced on focus instead of being invisible to a screen reader.
   */
-  const amountHint = useFieldHint()
+  // #4124: the card refund line, when shown, also describes the amount box.
+  const amountHint = useFieldHint(cardRefundOwedCents > 0 ? CARD_REFUND_NOTE_ID : undefined)
 
   useEffect(() => {
     fetch(`/api/bookings/${bookingId}/refund-request`)
@@ -243,6 +251,11 @@ export function RefundAppealButton({
               </FieldHint>
               {organiserCardRefund && (
                 <p className="text-xs text-muted-foreground">{ORGANISER_CARD_APPEAL_CEILING_NOTE}</p>
+              )}
+              {cardRefundOwedCents > 0 && (
+                <p id={CARD_REFUND_NOTE_ID} className="text-xs text-muted-foreground">
+                  {appealCardRefundOwedMemberNote(formatCents(cardRefundOwedCents, format), false)}
+                </p>
               )}
             </div>
 

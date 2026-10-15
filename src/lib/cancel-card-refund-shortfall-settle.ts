@@ -3,9 +3,9 @@ import "server-only";
 import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
-import { isPaymentRecoveryOperationInFlight, MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { isPaymentRecoveryOperationExhausted, isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
-import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } from "@/lib/payment-recovery-keys";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 
@@ -22,7 +22,8 @@ import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-
  *   takes first), a completion is refused while the cancel's card refund
  *   recovery (`booking_cancel_refund_recovery_<bookingId>`) is not SUCCEEDED:
  *   the card's slices and this hand-back must never be read off one ledger
- *   while one of them is still moving. The refusal names the next step by the
+ *   while one of them is still moving. Nor (#4104) while a card refund on the
+ *   payment that Stripe failed later is owed again by a row of its own. The refusal names the next step by the
  *   row's state - running, failed and waiting to retry, or stopped (close it
  *   as Paid another way) - on the recovery module's own rules.
  * - **A part to check waits for its bank-transfer sibling**, which was sized on
@@ -84,9 +85,7 @@ export function nonCardChargeHeadroom(
 /** Why the card refund recovery is not settled, as the refusal says it - or null when it is (or there is none). */
 function cardRefundRefusal(cardRefund: { status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null; lastError: string | null } | null): string | null {
   if (!cardRefund || cardRefund.status === PaymentRecoveryOperationStatus.SUCCEEDED) return null;
-  if (cardRefund.status !== PaymentRecoveryOperationStatus.PROCESSING && cardRefund.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS) {
-    return CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
-  }
+  if (isPaymentRecoveryOperationExhausted(cardRefund)) return CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
   // A raw-string READ: the enum member stays in the recovery module (INV-PAY-056's census).
   if (cardRefund.status === "FAILED" || (cardRefund.status === PaymentRecoveryOperationStatus.PENDING && cardRefund.lastError)) {
     return isPaymentRecoveryOperationInFlight(cardRefund) ? CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE : CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
@@ -102,11 +101,20 @@ export async function cardShortfallSettlement(
   const part = cancelCardShortfallPart(task);
   if (part === null || task.paymentId === null) return null;
   await lockPaymentForRefundedTotal(store, task.paymentId);
-  const cardRefund = await store.paymentRecoveryOperation.findUnique({
-    where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(task.bookingId) },
+  // #4104 review (MM3): the cancel's own recovery row, and any card refund on
+  // this payment Stripe failed later and that is owed again by a row of its own
+  // (`card_refund_failed_later_<refund>`) - card money still moving either way.
+  const cardRefunds = await store.paymentRecoveryOperation.findMany({
+    where: {
+      OR: [
+        { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(task.bookingId) },
+        { paymentId: task.paymentId, idempotencyKey: { startsWith: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
     select: { status: true, attempts: true, nextRetryAt: true, lastError: true },
   });
-  const refusal = cardRefundRefusal(cardRefund);
+  const refusal = (cardRefunds ?? []).map(cardRefundRefusal).find((message) => message !== null);
   if (refusal) throw new ManualBookingPaymentError(refusal, 409);
   // A part to check settles only on what the bank-transfer part leaves (coordinator, PR #4122).
   if (part === "check") {

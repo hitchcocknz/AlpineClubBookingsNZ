@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  502
+row-producing sites:  503
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 55,
+category values: admin 108, booking 108, xero 39, family 35, payment 56,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -817,6 +817,11 @@ it clears all three off the row, so this entry is the only place they survive.
 `pnpm run audit:census`): `membership-subscription-billing.close-already-paid`,
 an officer closing a subscription charge whose members had already paid, filed
 `payment` beside the other subscription-billing actions the same people read.
+
+#4104 then added one more (`payment` 55 -> 56, 502 -> 503, MEASURED with
+`pnpm run audit:census`): `booking-payment.card-refund.failed-later-not-resent`,
+a card refund Stripe failed later that the app did not make for the booking,
+filed `payment` beside the paid-another-way close the same people read.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

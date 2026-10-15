@@ -38,6 +38,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { EXCLUDED_LEDGER_REFUND_STATUSES, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
+import { READ_BACK_BUDGET_MS, READ_BACK_TIMEOUT_MS } from "@/lib/card-refund-status-sync";
 import { lockPaymentForRefundedTotal, recordStripeRefundLedgerEntry } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import {
@@ -296,11 +297,15 @@ export async function processOrganiserChildRefundOperation(
  * settlement's status - and its debt is reopened, so the money stays owed (and
  * spoken for against the combined capture) and the recovery runner asks again,
  * alerting on exhaustion. One that succeeded just has its row brought up to
- * date. Never inside a transaction with the provider call.
+ * date. Least recently read first, each read stamped, and bounded (#4130).
+ * Never inside a transaction with the provider call.
  */
 export async function reconcilePendingOrganiserChildRefunds(
   stripe: { retrieveRefund: typeof retrieveRefund } = { retrieveRefund },
   limit = 25,
+  // #4130: bounded as the card-refund read-back after it is, so a Stripe
+  // brown-out never stalls the payments cron here.
+  budgetMs = READ_BACK_BUDGET_MS,
 ): Promise<{ checked: number; reversed: number }> {
   const pending = await prisma.paymentRefund.findMany({
     where: {
@@ -309,20 +314,37 @@ export async function reconcilePendingOrganiserChildRefunds(
       payment: { booking: { organiserSettled: true } },
     },
     select: { stripeRefundId: true, paymentId: true, status: true, stripePaymentIntentId: true },
-    orderBy: { createdAt: "asc" },
+    // #4130: least recently read first, each read stamped below, so neither a
+    // refund that keeps timing out nor one Stripe keeps pending hogs a slot.
+    orderBy: { updatedAt: "asc" },
     take: limit,
   });
   let reversed = 0;
+  let checked = 0;
+  const startedAt = performance.now();
+  // Guarded on the status read: a concurrent write to the row is never overwritten.
+  const stamp = (row: (typeof pending)[number]) =>
+    prisma.paymentRefund
+      .updateMany({ where: { stripeRefundId: row.stripeRefundId, status: row.status }, data: { updatedAt: new Date() } })
+      .catch((err) => logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not stamp an organiser child refund's read-back"));
   for (const row of pending) {
+    if (performance.now() - startedAt >= budgetMs) break;
+    checked += 1;
     let refund: Stripe.Refund;
     try {
-      refund = await stripe.retrieveRefund(row.stripeRefundId);
+      refund = await stripe.retrieveRefund(row.stripeRefundId, { timeoutMs: READ_BACK_TIMEOUT_MS });
     } catch (err) {
       logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not read an organiser child refund back from Stripe");
+      await stamp(row);
       continue;
     }
-    if ((refund.status ?? row.status) === row.status) continue;
+    if ((refund.status ?? row.status) === row.status) {
+      await stamp(row);
+      continue;
+    }
     const key = refund.metadata?.organiserChildRefundKey ?? null;
+    // #4130: one row whose record step keeps failing is logged and stamped, so
+    // it neither ends the sweep nor comes first again on every run.
     const reversedCents = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       await lockPaymentForRefundedTotal(tx, row.paymentId);
@@ -395,6 +417,10 @@ export async function reconcilePendingOrganiserChildRefunds(
         });
       }
       return entry.reversedCents;
+    }).catch(async (err: unknown) => {
+      logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not record an organiser child refund's new status; the next run reads it again");
+      await stamp(row);
+      return 0;
     });
     if (reversedCents > 0) {
       reversed += 1;
@@ -404,7 +430,7 @@ export async function reconcilePendingOrganiserChildRefunds(
       );
     }
   }
-  return { checked: pending.length, reversed };
+  return { checked, reversed };
 }
 
 /**

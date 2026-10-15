@@ -50,6 +50,8 @@ export interface DeadCardRefundPanelRow {
    * `after-receipt-held-for-officer`, round 9); or no note (`none`).
    */
   xeroRefundNote: PaidAnotherWayXeroPromise;
+  /** #4104: how much of it a card refund note already in Xero answers; 0 for none. */
+  cardNoteCoversCents: number;
   /** Its last failure looked like a timeout or network error: Stripe may have refunded. */
   stripeMayHaveRefunded: boolean;
 }
@@ -270,10 +272,12 @@ export function DeadCardRefundsPanel({
       <div className="space-y-3">
         <AdminViewOnlySectionBanner canEdit={canEdit} />
         <p className="text-sm text-muted-foreground">
-          Stripe stopped retrying these card refunds. Each still counts in Refunds owed and comes off Net
-          Collected. If the member was paid back another way, for example by bank transfer, close it here. If
-          you refunded it in the Stripe dashboard instead, do not close it here: wait for that refund to show on
-          the payment.
+          The app will not ask Stripe for these card refunds again: Stripe stopped retrying them, or accepted
+          one and later reported it failed - a retry that failed again, or a refund made before the app
+          could notice such failures, which the member may already have been paid back by hand. Each still
+          counts in Refunds owed and comes off Net Collected. If the member was paid back another way, for
+          example by bank transfer, close it here. If you refunded it in the Stripe dashboard instead, do not
+          close it here: wait for that refund to show on the payment.
         </p>
         <p
           ref={listNoticeRef}
@@ -346,7 +350,9 @@ export function DeadCardRefundsPanel({
                 the payment.
               </p>
               <p className="text-muted-foreground">
-                {target ? xeroRefundNotePromise(target.xeroRefundNote, bankNoteWording) : null}
+                {target
+                  ? xeroRefundNotePromise(target.xeroRefundNote, bankNoteWording, formatCents(target.cardNoteCoversCents, format))
+                  : null}
               </p>
               <p className="font-medium text-foreground">
                 {target ? `${formatCents(target.owedCents, format)} is still owed.` : null}

@@ -1540,6 +1540,10 @@ REFUNDED/PARTIALLY_REFUNDED -> (repay, #1765) fresh PRIMARY transaction on the
   same Payment: PENDING/PROCESSING -> SUCCEEDED
 ```
 
+No write of an intent's ledger row moves a captured transaction back
+(`INV-PAY-132`, #4081): a PENDING or PROCESSING write, or a late SUCCEEDED one,
+that lands on a SUCCEEDED or refunded row keeps that row's status.
+
 Booking cancellation honors these transitions (#1473): only a never-captured
 payment flips to FAILED at cancel, decided on transaction-ledger capture
 evidence — the aggregate mirror alone can lie, because inbound reconciliation
@@ -1687,6 +1691,40 @@ unaffected"), while the shared member/guest narrative and every member-facing
 surface show nothing new. The rest of the audit trail (recovery-operation row,
 `PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
 is unchanged.
+
+Capacity race (#740, #4125): a payment that succeeds after the final capacity
+claim failed cancels the booking in the claim, which also writes the
+`capacity_claim_failed_refund_recovery_<bookingId>_<pi>` row with the frozen
+refund plan. The `CANCELLED` event (written before the refund is attempted)
+says the full amount "is being refunded" and carries
+`cancelledBecause: "capacity_race"`, so the member is never told they
+cancelled it. The `REFUNDED` event is written once the refund is made, for the
+plan's total (never the full charge), by whichever close moves the row to
+`SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
+same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+crash cannot leave the row closed without its event, and a failed insert
+leaves the row open for the runner's replay. A close that finds the row
+already closed writes nothing, so the event lands exactly once. The inline
+close takes the row only while it is still on the plan the attempt sent
+(#4144), so a row re-planned after Stripe later failed the refund stays open
+and owed, with no event. Until it lands, the booking
+page and the payment-link page read the row
+(`readCancelledCardRefundState`, which reads a member cancel's
+`booking_cancel_refund_recovery_<bookingId>` row the same way): still being
+sent says "on its way to your original payment method"; a dead row (retries
+spent, or failed with no retry) says the club will be in touch - as does a
+dead card part of a card refund shortfall; a row closed without the event says
+it was refunded, or paid back another way. No cancellation policy decided a
+capacity-race refund, so its narrative names none. That settle records no
+`MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
+snapshot, whose `settledAmountCents` is the plan's total: when the payment
+ledger showed less refundable than the charge (or nothing - an empty plan,
+which never reads "no refund was due"), the rest is neither refunded nor
+retained, and the narrative says the club will be in touch about it. That
+promise is backed by a once-ever officers' alert on the booking naming the
+rest (`alertCapacityRaceRefundShortfall`). The narrative counts every
+settlement event of a capacity race, so a later refund of the rest removes
+the follow-up line.
 
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 
@@ -3435,6 +3473,26 @@ matching answer and resumes with no manual step. A SKIPPED run with reason
 `server-version-mismatch` is therefore the expected state while the two sides
 differ, not a failure to recover from; the setup page shows both numbers.
 
+### A recovery failure no retry fixes (#4081)
+
+A failed attempt normally backs off and retries; a refusal the next attempt
+would meet again does not:
+
+```text
+PROCESSING -> attempt throws
+  ordinary failure            -> FAILED, nextRetryAt set (retry), no alert until attempts run out
+  attempts spent              -> FAILED terminal + one officer alert
+  CREATE_ADDITIONAL_PAYMENT_INTENT whose ask write found its intent recorded
+  for another edit            -> FAILED terminal at once: nextRetryAt null, attempts set
+                                 to the ceiling, the cause on lastError + one officer alert
+```
+
+Every terminal row sits at the attempt ceiling, so the claim, the health check
+and the stuck-state page's "Exhausted recovery operations" read it as dead; the
+debt stays on the row (`INV-PAY-092`, `INV-MOD-060`). To verify:
+`payment-recovery.test.ts` and `additional-ask-reduction.realdb.test.ts`
+("#4081").
+
 ### Edit review-charge recovery row (#3402)
 
 One booking edit's review charge has ONE payment-recovery row. Unlike other
@@ -3474,6 +3532,17 @@ PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
 PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
                        held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
+(none) -> PENDING     (a refund Stripe accepted, then failed: a new row per
+                       Stripe refund, card_refund_failed_later_<refund>, under
+                       the Payment row lock; INV-PAY-128)
+(none) -> DEAD        (that row's own retry failed later too, or Stripe
+                       created the refund before the cutoff migration and no
+                       open row counts it: raised PENDING with its attempts
+                       spent, never claimed, never in flight)
+PENDING|FAILED -> same (an open, claimed row that counted the refund is
+                       re-planned instead: the slice on its next key,
+                       recording the failure in failedRefundIds; compare-and-set
+                       on the plan, status, attempts and nextRetryAt read)
 DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        Payment row, refused (409) unless what is owed is the
                        figure the treasurer saw, then a status-guarded claim on
@@ -3529,6 +3598,39 @@ so it asks afresh. The legacy group settlement refund (plans frozen before
 #3653) and the superseded group intent's webhook refund fail on a refusal as on
 a throw; each retry's key moves past the refusals Stripe holds on the intent
 for that refund, so it asks afresh.
+
+A refund Stripe accepted (`pending`) and failed later is owed again (#4104,
+`INV-PAY-128`), by one row. The one writer of a charge's refund rows
+(`recordStripeRefundsAgainstTransaction`) sees it exactly once: its guarded
+counted -> refused write, or a door or worker told `pending` by a replayed key
+while the row already says refused (the event came first). In the same
+transaction, under the Payment row lock it already holds, it finds who owes it:
+a row of its own, or a slice already recording it (`failedRefundIds`), means
+nothing more; the open row that counted it - the slice marked with it
+(`madeRefundId`), or the unmarked slice "Refunds owed" fills with it as the
+payment stood before the failure when the refund carries exactly the metadata
+that row's runner sends (`cardRefundOperationRefundMetadata`) - has that slice
+moved to its next key; with none, a new row is raised per failed Stripe refund, for exactly its amount on
+its charge, under a key Stripe has never seen. A row someone may be writing (a
+worker's attempt, or a row no worker has claimed yet) is never moved: the
+failure is retried later, or, met by that row's own door or worker replaying
+its key, handed back to it as refused. A closed row is never reopened. A new
+row is raised dead - for "Paid another way", alerted - when the refund was
+itself such a retry, or Stripe created it before the cutoff migration
+(`20261115010000_card_refund_failed_later_cutoff`) finished (every refund, with
+a migration history that lacks it): it may have failed while nothing could
+notice, and may already have been paid by hand. A refund naming no booking of
+the payment (made in the Stripe dashboard, or a legacy group refund) is taken
+out of the refunded total, alerted with its Stripe id and audited, never
+re-sent. Two ways
+in: the `refund.failed` webhook (and `refund.updated` / `charge.refund.updated`
+where subscribed), and the payments cron, which reads each card refund still
+recorded `pending` back from Stripe, least recently read first. The officers
+are alerted once per decision, after commit. Closed as "Paid another way", a
+row owing a failed-later refund - its own, or a re-planned slice - whose card
+refund note is still in Xero (the payment's notes cover more than its card
+cash) notes only what that excess does not cover
+(`failedLaterCardNoteCoverCents`), and the close counts as noted.
 
 The treasurer says "paid back in full" or "paid back part of it"; the route
 refuses an amount that does not match the answer, and any close for $0 - a row

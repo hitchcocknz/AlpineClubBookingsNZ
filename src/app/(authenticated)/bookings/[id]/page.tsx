@@ -250,7 +250,8 @@ export default async function BookingDetailPage({
   const payment =
     organiserCardAppeal === null
       ? resolvedPayment
-      : { ...resolvedPayment, maxRefundableCents: organiserCardAppeal.ceilingCents };
+      : // #4124: its cap nets this child's card refunds in its own headroom, so no "still being refunded" line.
+        { ...resolvedPayment, maxRefundableCents: organiserCardAppeal.ceilingCents, appealCardRefundOwedCents: 0 };
   const { originalPaymentCaptured } = payment;
   const messages = renderBookingDetailMessages({
     booking,
@@ -417,6 +418,7 @@ export default async function BookingDetailPage({
         canDeleteDraft={canDeleteDraft}
         canSoftDeleteCancelled={canSoftDeleteCancelled}
         backHref={backHref}
+        money={money}
         organiserCardAppeal={organiserCardAppeal !== null}
         organiserCardAppealPending={organiserCardAppeal?.combinedRefundPending === true}
       />

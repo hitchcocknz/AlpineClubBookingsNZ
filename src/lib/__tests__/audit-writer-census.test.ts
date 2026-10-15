@@ -1438,7 +1438,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // composed tree.
     // 374 -> 375 (#4098): the close of an already-paid subscription charge,
     // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
-    ).toEqual({ pinned: 127, unpinned: 375 });
+    // 375 -> 376 (#4104 review, CL3): a failed-later card refund not re-sent,
+    // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
+    ).toEqual({ pinned: 127, unpinned: 376 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

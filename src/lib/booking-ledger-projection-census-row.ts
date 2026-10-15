@@ -142,6 +142,13 @@ export type BookingLedgerCensusRow = {
    */
   cancellation: { refundMethod: string | null; settledAmountCents: number | null; keptCents: number | null } | null;
   /**
+   * #4120: the booking's APPROVED refund appeals, each with what it has
+   * refunded so far as the refund-requests screen reads it
+   * (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`) - by card or
+   * by its own completed hand-back. A declined or pending request is not here.
+   */
+  appeals: ReadonlyArray<{ id: string; refundedCents: number }>;
+  /**
    * #3854: for a child its group organiser settled, the group's settlement —
    * what its `GROUP_SETTLEMENT` lines were posted from — and whether the
    * group's one pre-#3653 refund-plan retry is still in flight. Null on any

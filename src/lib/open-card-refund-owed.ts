@@ -7,7 +7,7 @@ import {
   getRemainingRefundableCents,
   type BookingPaymentState,
 } from "@/lib/booking-payment-state";
-import { isGroupSettlementRefundRecoveryKey, isRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
+import { cardRefundFailedLaterRefundId, isGroupSettlementRefundRecoveryKey, isRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import type { RefundAllocationSlice } from "@/lib/payment-transactions";
 
@@ -77,7 +77,7 @@ export function parseRefundAllocationPlan(
   const slices: RefundAllocationSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds } = entry as Record<
       string,
       unknown
     >;
@@ -88,7 +88,9 @@ export function parseRefundAllocationPlan(
       !Number.isInteger(amountCents) ||
       amountCents <= 0 ||
       (stripeKeySuffix !== undefined && !isRefusedRefundKeySuffix(stripeKeySuffix)) ||
-      (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId))
+      (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId)) ||
+      (failedRefundIds !== undefined &&
+        (!Array.isArray(failedRefundIds) || !failedRefundIds.every((id) => typeof id === "string" && id.length > 0)))
     ) {
       return null;
     }
@@ -97,6 +99,7 @@ export function parseRefundAllocationPlan(
       amountCents,
       ...(stripeKeySuffix === undefined ? {} : { stripeKeySuffix }),
       ...(madeRefundId === undefined ? {} : { madeRefundId }),
+      ...(failedRefundIds === undefined ? {} : { failedRefundIds: [...(failedRefundIds as string[])] }),
     });
   }
   return slices;
@@ -339,7 +342,11 @@ export function cardRefundSlicesByOperation(
  * any operation is open, with the cents each closed operation took from refunds
  * the app recorded AFTER its close (`lateCentsByOperation`).
  */
-function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
+function attributeRecordedRefunds(
+  payment: CardRefundOwedPaymentRow,
+  /** #4104: told which slice each recorded refund filled (`cardRefundSliceFilledBy`). */
+  onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number) => void,
+): {
   operations: Array<{ operation: CardRefundOperationRow; slices: CardRefundSlice[] }>;
   lateCentsByOperation: Map<string, number>;
 } {
@@ -352,13 +359,26 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
     (refund) => refund.paymentTransactionId !== null && isRecordedRefundStatus(refund.status),
   );
   const claimed = new Set<RecordedCardRefundRow>();
+  // #4104: a refund Stripe failed later whose debt was handed to a row of its
+  // own (`card_refund_failed_later_<refund>`) is that row's to owe, never this one's.
+  const handedOver = new Set(
+    payment.recoveryOperations.flatMap((operation) => {
+      const refundId = cardRefundFailedLaterRefundId(operation.idempotencyKey);
+      return refundId ? [refundId] : [];
+    }),
+  );
   for (const { operation, slices } of operations) {
-    for (const slice of slices) {
+    for (const [sliceIndex, slice] of slices.entries()) {
+      if (slice.madeRefundId && handedOver.has(slice.madeRefundId)) {
+        slice.filledCents = slice.amountCents;
+        continue;
+      }
       const refund = slice.madeRefundId
         ? recorded.find((each) => each.stripeRefundId === slice.madeRefundId && !claimed.has(each))
         : undefined;
       if (!refund) continue;
       claimed.add(refund);
+      onFill?.(refund, operation, sliceIndex);
       slice.filledCents = Math.min(slice.amountCents, Math.max(0, refund.amountCents));
       if (operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime()) {
         lateCentsByOperation.set(operation.id, (lateCentsByOperation.get(operation.id) ?? 0) + slice.filledCents);
@@ -375,6 +395,7 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
       if (!candidate || !operationWindowTakes(candidate.operation, refund)) continue;
       const slice = candidate.slices.find((each) => sliceTakes(each, refund, leftCents));
       if (!slice) continue;
+      onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice));
       const takenCents = Math.min(leftCents, slice.amountCents - slice.filledCents);
       slice.filledCents += takenCents;
       leftCents -= takenCents;
@@ -385,6 +406,23 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
     }
   }
   return { operations, lateCentsByOperation };
+}
+
+/**
+ * #4104: the slice a recorded refund fills, by the attribution the owed figure
+ * runs (`attributeRecordedRefunds`) - so a refund Stripe failed later is owed
+ * again by the row that counted it as made, not by a second one. The caller
+ * passes the payment as it stood before the failure (the refund still counted).
+ */
+export function cardRefundSliceFilledBy(
+  payment: CardRefundOwedPaymentRow,
+  stripeRefundId: string,
+): { operation: CardRefundOperationRow; sliceIndex: number } | null {
+  let owner: { operation: CardRefundOperationRow; sliceIndex: number } | null = null;
+  attributeRecordedRefunds(payment, (refund, operation, sliceIndex) => {
+    if (refund.stripeRefundId === stripeRefundId && owner === null) owner = { operation, sliceIndex };
+  });
+  return owner;
 }
 
 /**

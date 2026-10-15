@@ -326,6 +326,12 @@ vi.mock("@/lib/webhook-log", () => ({
   recordWebhookLog: (...args: unknown[]) => mockRecordWebhookLog(...args),
 }));
 
+// #4104: a refund Stripe accepted and failed later.
+const mockRecordRefusedCardRefund = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>(async () => "recorded"));
+vi.mock("@/lib/card-refund-status-sync", () => ({
+  recordRefusedCardRefund: (...args: unknown[]) => mockRecordRefusedCardRefund(...args),
+}));
+
 vi.mock("@/lib/xero", () => ({
   isXeroConnected: (...args: unknown[]) => mockIsXeroConnected(...args),
 }));
@@ -463,6 +469,8 @@ describe("Stripe webhook Xero alerting", () => {
     mockMarkBookingSetupIntentSucceeded.mockResolvedValue({ stamped: true });
     mockListRefundsForCharge.mockResolvedValue([]);
     mockListRefundsForPaymentIntent.mockResolvedValue([]);
+    // #4131: the late capture's own row, per test.
+    mockPaymentTransactionFindUnique.mockResolvedValue(null);
     mockProcessRefund.mockResolvedValue({ id: "re_1" });
     mockApplyGroupSettlementSucceeded.mockResolvedValue({
       outcome: "settled",
@@ -2870,6 +2878,7 @@ describe("Stripe webhook Xero alerting", () => {
     function armCancelledBooking(
       xeroInvoiceId: string | null = null,
       deletedAt: Date | null = new Date("2026-06-20"),
+      capturedRefundedCents = 0,
     ) {
       mockFindPaymentTransactionByIntentId.mockResolvedValue({
         id: "txn-7",
@@ -2878,6 +2887,12 @@ describe("Stripe webhook Xero alerting", () => {
         amountCents: 12000,
         status: "PENDING",
       });
+      // #4131: the capture's own row as the handler's write left it, which its refund is pinned to.
+      mockPaymentTransactionFindUnique.mockImplementation(async ({ where }: { where: { stripePaymentIntentId?: string } }) =>
+        where.stripePaymentIntentId === "pi_primary_late"
+          ? { id: "txn-7", paymentId: "payment-7", status: "SUCCEEDED", amountCents: 12000, refundedAmountCents: capturedRefundedCents, createdAt: new Date("2026-05-01") }
+          : null,
+      );
       mockBookingFindUnique.mockResolvedValue({
         id: "booking-7",
         status: "CANCELLED",
@@ -2899,6 +2914,12 @@ describe("Stripe webhook Xero alerting", () => {
       });
     }
 
+    /** #4131: the details of the one `refunded_after_cancellation` audit entry. */
+    const refundAuditOf = () =>
+      JSON.parse(
+        (mockLogAudit.mock.calls.find(([entry]) => (entry as { action: string }).action === "booking.payment.refunded_after_cancellation")?.[0] as { details: string }).details,
+      ) as Record<string, unknown>;
+
     it("records the refund and sends the unmuteable alert instead of 'Payment Failed' (#2773)", async () => {
       mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent());
       armCancelledBooking();
@@ -2906,14 +2927,17 @@ describe("Stripe webhook Xero alerting", () => {
       const response = await POST(makeRequest());
 
       expect(response.status).toBe(200);
-      // The refund is unchanged: same amount, same idempotent per-intent key.
+      // The refund is unchanged: same amount, same idempotent per-intent key -
+      // and (#4131) pinned to the capture's own charge, never a newest-first plan.
       expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
         expect.objectContaining({
           paymentId: "payment-7",
           amountCents: 12000,
+          allocation: [{ paymentTransactionId: "txn-7", amountCents: 12000 }],
           idempotencyKeyPrefix: "late_cancel_refund_booking-7_pi_primary_late",
         }),
       );
+      expect(refundAuditOf()).toMatchObject({ refundId: "re_primary_7", amountCents: 12000, refundedNowCents: 12000 });
       // The record this path never had, with its OWN reason sentence — "primary",
       // not the booking-change one, which would print a false sentence on the card.
       expect(
@@ -2957,8 +2981,74 @@ describe("Stripe webhook Xero alerting", () => {
       );
     });
 
-    // #4103 (`INV-PAY-130`): the booking's own late payment, refunded newest
-    // first, may span slices. A refused slice is held; a made one stays made.
+    // #4131 (`INV-PAY-106`): the booking's own late payment is refunded from
+    // its own charge only - never a fee the cancel kept on another charge, which
+    // no per-capture Xero note answers.
+    describe("refunded from the capture's own charge only (#4131)", () => {
+      const asksFor = (amountCents: number) =>
+        expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
+          expect.objectContaining({
+            amountCents,
+            allocation: [{ paymentTransactionId: "txn-7", amountCents }],
+            idempotencyKeyPrefix: "late_cancel_refund_booking-7_pi_primary_late",
+          }),
+        );
+
+      it("a capture already part refunded (the dashboard) is refunded only for what it holds, and the audit reconciles", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_part_refunded"));
+        armCancelledBooking(null, new Date("2026-06-20"), 2000);
+        mockRefundPaymentTransactions.mockResolvedValue({
+          refunds: [{ paymentIntentId: "pi_primary_late", refundId: "re_part", amountCents: 10000, status: "succeeded" }],
+          totalRefundedAmountCents: 10000,
+        });
+
+        expect((await POST(makeRequest())).status).toBe(200);
+
+        expect(mockRefundPaymentTransactions).toHaveBeenCalledTimes(1);
+        asksFor(10000);
+        expect(refundAuditOf()).toMatchObject({ refundId: "re_part", amountCents: 12000, refundedNowCents: 10000, alreadyRefundedOnCaptureCents: 2000 });
+      });
+
+      it("a capture that holds nothing more sends nothing, and its audit says why", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_holds_nothing"));
+        armCancelledBooking(null, new Date("2026-06-20"), 12000);
+
+        expect((await POST(makeRequest())).status).toBe(200);
+
+        expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+        expect(refundAuditOf()).toMatchObject({ refundId: null, amountCents: 12000, refundedNowCents: 0, alreadyRefundedOnCaptureCents: 12000 });
+        expect(refundAuditOf().noRefundSentReason).toEqual(expect.stringContaining("already been refunded"));
+      });
+
+      it.each([
+        ["on another payment", { paymentId: "payment-other", status: "SUCCEEDED" }],
+        ["not captured", { paymentId: "payment-7", status: "FAILED" }],
+      ])("a capture row read back %s fails the webhook for Stripe to redeliver, refunding nothing", async (_label, row) => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_row_mismatch"));
+        armCancelledBooking();
+        mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-7", amountCents: 12000, refundedAmountCents: 0, ...row });
+
+        expect((await POST(makeRequest())).status).toBe(500);
+        expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      });
+
+      it("a capture row the handler cannot read back fails the webhook for Stripe to redeliver, refunding nothing", async () => {
+        mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_row_missing"));
+        armCancelledBooking();
+        mockPaymentTransactionFindUnique.mockResolvedValue(null);
+
+        const response = await POST(makeRequest());
+
+        expect(response.status).toBe(500);
+        expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+        expect(mockRecordAutomaticCancelledBookingRefundTask).not.toHaveBeenCalled();
+      });
+    });
+
+    // #4103 (`INV-PAY-130`): a refused slice is held; a made one stays made.
+    // Since #4131 the plan is one slice on the capture's own charge, so the
+    // two-answer shape below is the hold's general handling, not a plan the
+    // handler sends.
     describe("a refund Stripe refuses (#4103)", () => {
       const answer = (transactionId: string, amountCents: number, status: string) => ({
         paymentIntentId: "pi_primary_late",
@@ -3963,5 +4053,55 @@ describe("Stripe webhook Xero alerting", () => {
         expect.objectContaining({ data: expect.objectContaining({ status: "COMPLETED" }) }),
       );
     });
+  });
+});
+
+// #4104 (`INV-PAY-128`): Stripe's refund-failed signal reaches the refund's
+// recorder, under the same once-per-event claim as every other event.
+describe("a card refund Stripe accepted and failed later (#4104)", () => {
+  const refund = { id: "re_late", object: "refund", amount: 4000, status: "failed", payment_intent: "pi_late", charge: "ch_late" };
+  const request = () =>
+    new NextRequest("http://localhost/api/webhooks/stripe", {
+      method: "POST",
+      headers: { "stripe-signature": "test-sig" },
+      body: JSON.stringify({}),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProcessedWebhookCreate.mockResolvedValue({});
+    mockProcessedWebhookDeleteMany.mockResolvedValue({ count: 1 });
+    mockProcessedWebhookUpdateMany.mockResolvedValue({ count: 1 });
+    mockProcessedWebhookFindFirst.mockResolvedValue({ status: "COMPLETED", processingStartedAt: new Date("2020-01-01T00:00:00.000Z") });
+    mockRecordRefusedCardRefund.mockResolvedValue("recorded");
+  });
+
+  it.each(["refund.failed", "refund.updated", "charge.refund.updated"])("%s hands the refund to its recorder and is acknowledged", async (type) => {
+    mockConstructWebhookEvent.mockReturnValue({ id: `evt_${type}`, type, data: { object: refund } } as any);
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(mockRecordRefusedCardRefund).toHaveBeenCalledTimes(1);
+    expect(mockRecordRefusedCardRefund).toHaveBeenCalledWith(refund);
+    expect(mockProcessedWebhookUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "COMPLETED" }) }),
+    );
+  });
+
+  it("a repeat delivery of a finished event records nothing again", async () => {
+    mockConstructWebhookEvent.mockReturnValue({ id: "evt_refund_failed", type: "refund.failed", data: { object: refund } } as any);
+    mockProcessedWebhookCreate.mockRejectedValue(Object.assign(new Error("Unique constraint failed"), { code: "P2002" }));
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(mockRecordRefusedCardRefund).not.toHaveBeenCalled();
+  });
+
+  it("a recorder that fails releases the claim and answers 500, so Stripe sends it again", async () => {
+    mockConstructWebhookEvent.mockReturnValue({ id: "evt_refund_failed_retry", type: "refund.failed", data: { object: refund } } as any);
+    mockRecordRefusedCardRefund.mockRejectedValue(new Error("recovery mid-attempt"));
+    const response = await POST(request());
+    expect(response.status).toBe(500);
+    expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ eventId: "evt_refund_failed_retry", status: "PROCESSING" }) }),
+    );
   });
 });

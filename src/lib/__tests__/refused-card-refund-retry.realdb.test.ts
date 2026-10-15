@@ -118,6 +118,9 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
   { timeout: 20_000 },
   () => {
     async function deletePaymentRows() {
+      await prisma.auditLog.deleteMany({ where: { targetId: BOOKING_ID } });
+      await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: "late-capture-approval-close-lost:" } } });
+      await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
       await prisma.paymentRecoveryOperation.deleteMany({ where: { paymentId: PAYMENT_ID } });
       await prisma.paymentRefund.deleteMany({ where: { paymentId: PAYMENT_ID } });
       await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
@@ -432,6 +435,317 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       const replay = await keepRefusedPrePersistedRefundOwed({ bookingId: BOOKING_ID, idempotencyKey: key, attempt: refused(REFUSED_SLICE), format: CLUB_FORMAT_TEST });
       expect(replay?.replanned).toBe(false);
       expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual([QUEUED_SLICE]);
+    });
+
+    // #4126: the late-capture approval's happy-path close claims only the row as
+    // the approval left it - PENDING, never attempted, on the plan it sent
+    // (`untouchedPrePersistedRowWhere`). Each case moves the row on in ONE of
+    // those ways while the refund is in flight, so each clause is load-bearing
+    // on its own; a close it wins writes the record exactly once.
+    describe("the late-capture approval's inline close (#4126)", () => {
+      const ROUTE = {
+        kind: "late-capture-refund" as const,
+        paymentId: PAYMENT_ID,
+        paymentIntentId: "pi_race_4083_primary",
+        captureKind: "modification" as const,
+        bookingModificationId: null,
+        allocation: [REFUSED_SLICE],
+      };
+      const MADE_REFUND = "re_race_4126_made";
+      const RECORD_ACTION = "booking.payment.refunded_after_cancellation";
+      let key: string;
+      let approval: typeof import("@/lib/late-capture-refund-approval");
+
+      const rowNow = () => prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: key } });
+      const lostCloseAlerts = async () =>
+        (await prisma.alertCooldown.findMany({ where: { key: { startsWith: "late-capture-approval-close-lost:" } } })).map((row) => row.key);
+      const records = () => prisma.auditLog.count({ where: { targetId: BOOKING_ID, action: RECORD_ACTION } });
+      const persist = () =>
+        prisma.$transaction((tx) => approval.persistLateCaptureApprovalRefundDebt({ bookingId: BOOKING_ID, route: ROUTE, amountCents: REFUSED_CENTS, store: tx }));
+      const approve = () =>
+        approval.executeLateCaptureApprovalRefund({ bookingId: BOOKING_ID, taskId: "race-4126-task", actingMemberId: MEMBER_ID, route: ROUTE, amountCents: REFUSED_CENTS, format: CLUB_FORMAT_TEST });
+      /** Stripe makes the refund - the same one for every ask under the same keys, as an idempotent replay answers. */
+      const made = (args: { amountCents: number; paymentIntentId: string; metadata?: Record<string, string> }) => ({
+        id: MADE_REFUND,
+        object: "refund",
+        amount: args.amountCents,
+        currency: "nzd",
+        status: "succeeded",
+        reason: "requested_by_customer",
+        created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+        charge: "ch_race_4126",
+        payment_intent: args.paymentIntentId,
+        metadata: args.metadata ?? {},
+      });
+      /** While the refund is in flight, another writer moves the row on. */
+      const movedMidFlight = (data: Parameters<typeof prisma.paymentRecoveryOperation.update>[0]["data"]) => {
+        stripeRaceHooks.refund = async (args) => {
+          await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: key }, data });
+          return made(args);
+        };
+      };
+      /** The record is written fire-and-forget (`logAudit`): wait for it, then for nothing more. */
+      const settledRecords = async (expected: number) => {
+        await vi.waitFor(async () => expect(await records()).toBe(expected), { timeout: 5_000 });
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(await records()).toBe(expected);
+      };
+
+      beforeAll(async () => {
+        approval = await import("@/lib/late-capture-refund-approval");
+        const { buildLateCaptureApprovalRefundRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+        key = buildLateCaptureApprovalRefundRecoveryIdempotencyKey(ROUTE.paymentIntentId);
+      });
+
+      beforeEach(async () => {
+        resetStripeRaceHooks();
+        await prisma.auditLog.deleteMany({ where: { targetId: BOOKING_ID } });
+        await persist();
+      });
+
+      afterAll(async () => {
+        resetStripeRaceHooks();
+      });
+
+      it("closes the row the approval left untouched, and writes the record once", async () => {
+        stripeRaceHooks.refund = async (args) => made(args);
+        expect(await approve()).toBe(MADE_REFUND);
+        expect(await rowNow()).toMatchObject({ status: "SUCCEEDED", attempts: 0 });
+        await settledRecords(1);
+      });
+
+      it("status: a second approval of a row already closed closes nothing and writes no second record", async () => {
+        stripeRaceHooks.refund = async (args) => made(args);
+        await approve();
+        await settledRecords(1);
+        // The row is SUCCEEDED, still attempts 0, on the same plan: only the status clause holds it.
+        await approve();
+        await settledRecords(1);
+      });
+
+      it("attempts: a row tried and handed back PENDING mid-flight is left to the runner", async () => {
+        movedMidFlight({ attempts: 1 });
+        await approve();
+        expect(await rowNow()).toMatchObject({ status: "PENDING", attempts: 1, succeededAt: null });
+        await settledRecords(0);
+        expect(await lostCloseAlerts()).toEqual([]);
+      });
+
+      // A re-plan of this row moves a slice only after Stripe refused it, so it
+      // cannot follow an approval whose every slice was made; one is forced here
+      // to prove the plan clause holds the close off on its own. The row is then
+      // untouched but not closable: the anomaly is alerted, not closed.
+      it("plan: a row whose plan changed mid-flight is not closed", async () => {
+        movedMidFlight({ allocationPlan: [QUEUED_SLICE] });
+        await approve();
+        expect(await rowNow()).toMatchObject({ status: "PENDING", attempts: 0, succeededAt: null });
+        expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual([QUEUED_SLICE]);
+        await settledRecords(0);
+        // Claimed once for the row (held for a day: the fixture has no admin to receive it).
+        expect(await lostCloseAlerts()).toEqual([`late-capture-approval-close-lost:${(await rowNow()).id}`]);
+      });
+
+      it("a row the runner really claimed mid-flight is not closed by the approval; the runner's replay closes it and writes the record once", async () => {
+        // As `claimPaymentRecoveryOperation` writes it - an attempt since abandoned, so the runner's stale sweep hands it back.
+        movedMidFlight({ status: "PROCESSING", attempts: { increment: 1 }, processingStartedAt: new Date("2026-06-01T00:00:00.000Z") });
+        await approve();
+        expect(await rowNow()).toMatchObject({ status: "PROCESSING", attempts: 1, succeededAt: null });
+        await settledRecords(0);
+        expect(await lostCloseAlerts()).toEqual([]);
+
+        // The runner replays the same keys; Stripe answers with the same refund.
+        const asked: Array<string | undefined> = [];
+        stripeRaceHooks.refund = async (args) => {
+          asked.push(args.idempotencyKey);
+          return made(args);
+        };
+        const { processPaymentRecoveryOperations } = await import("@/lib/payment-recovery");
+        await processPaymentRecoveryOperations({ limit: 50 });
+        expect(asked).toHaveLength(1);
+        expect(await rowNow()).toMatchObject({ status: "SUCCEEDED" });
+        await settledRecords(1);
+        const [record] = await prisma.auditLog.findMany({ where: { targetId: BOOKING_ID, action: RECORD_ACTION } });
+        expect(JSON.parse(record!.details ?? "{}")).toMatchObject({ refundId: MADE_REFUND, amountCents: REFUSED_CENTS });
+      });
+    });
+
+    // #4144: the other four pre-persisted doors close their row while it is open
+    // and still on the plan the door sent (`sentPlanRowWhere`). The window: the
+    // door's refund is made, the runner claims the row and its attempt fails, a
+    // refund Stripe failed later re-plans the row (`card-refund-failed-later.ts`
+    // moves the slice to its next key and names the failure), and only then does
+    // the door's close run. Each door's own close, on its own row: a re-planned
+    // row is left open and owed, an untouched or runner-held one on the same plan
+    // is closed, and a closed one is not closed twice.
+    describe("the pre-persisted doors' inline close (#4144)", () => {
+      const TASK_ID = "race-4144-task";
+      const INTENT = "pi_race_4083_primary";
+      const PLAN = [
+        { paymentTransactionId: PRIMARY_TXN, amountCents: REFUSED_CENTS },
+        { paymentTransactionId: ADDITIONAL_TXN, amountCents: MADE_CENTS },
+      ];
+      const PLAN_CENTS = REFUSED_CENTS + MADE_CENTS;
+      let recovery: typeof import("@/lib/payment-recovery");
+      let keys: typeof import("@/lib/payment-recovery-keys");
+      let events: typeof import("@/lib/booking-events");
+
+      const refundedEvents = () => prisma.bookingEvent.count({ where: { bookingId: BOOKING_ID, type: "REFUNDED" } });
+      /** As the failed-later writer leaves it: tried, a retry due, the failed slice on its next key naming the failure. */
+      const failedLaterReplan = () => ({
+        status: "FAILED" as const,
+        attempts: 1,
+        nextRetryAt: new Date("2026-07-01T01:00:00.000Z"),
+        allocationPlan: [{ ...PLAN[0]!, stripeKeySuffix: "refused1", failedRefundIds: ["re_race_4144_failed_later"] }, PLAN[1]!],
+      });
+      /** As `claimPaymentRecoveryOperation` leaves it, on the same plan. */
+      const runnerClaim = () => ({ status: "PROCESSING" as const, attempts: 1, processingStartedAt: new Date("2026-07-01T00:00:00.000Z") });
+
+      type Door = { name: string; key: () => string; enqueue: () => Promise<unknown>; close: () => Promise<number> };
+      const doors: Door[] = [
+        {
+          name: "the cancellation",
+          key: () => keys.buildBookingCancellationRefundIdempotencyKey(BOOKING_ID),
+          enqueue: () => recovery.enqueueBookingCancellationRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
+          close: async () => (await recovery.markBookingCancellationRefundRecoverySucceeded({ idempotencyKey: keys.buildBookingCancellationRefundIdempotencyKey(BOOKING_ID), sentPlan: PLAN })).count,
+        },
+        {
+          name: "the edit financial review",
+          key: () => keys.buildEditFinancialReviewRefundRecoveryIdempotencyKey(TASK_ID),
+          enqueue: () => recovery.enqueueEditFinancialReviewRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, taskId: TASK_ID, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
+          close: async () => (await recovery.markEditFinancialReviewRefundRecoverySucceeded({ idempotencyKey: keys.buildEditFinancialReviewRefundRecoveryIdempotencyKey(TASK_ID), sentPlan: PLAN })).count,
+        },
+        {
+          name: "the duplicate capture",
+          key: () => keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT),
+          enqueue: () => recovery.enqueueDuplicateCaptureRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: INTENT, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
+          close: async () => (await recovery.markDuplicateCaptureRefundRecoverySucceeded({ idempotencyKey: keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT), sentPlan: PLAN })).count,
+        },
+        {
+          // #4125: the close and its REFUNDED event commit together, the event only when this close moved the row.
+          name: "the capacity race",
+          key: () => keys.buildCapacityClaimFailedRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT),
+          enqueue: () => recovery.enqueueCapacityClaimFailedRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: INTENT, amountCents: PLAN_CENTS, allocationPlan: PLAN }),
+          close: async () =>
+            (await events.closeCapacityRaceRefundRecordingEvent({ bookingId: BOOKING_ID, amountCents: PLAN_CENTS, actorMemberId: MEMBER_ID }, async (tx) =>
+              (await recovery.markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey: keys.buildCapacityClaimFailedRefundRecoveryIdempotencyKey(BOOKING_ID, INTENT), sentPlan: PLAN, store: tx })).count === 1))
+              ? 1
+              : 0,
+        },
+      ];
+
+      beforeAll(async () => {
+        recovery = await import("@/lib/payment-recovery");
+        keys = await import("@/lib/payment-recovery-keys");
+        events = await import("@/lib/booking-events");
+      });
+
+      beforeEach(async () => {
+        await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
+      });
+
+      afterAll(async () => {
+        await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
+      });
+
+      describe.each(doors)("$name", (door) => {
+        const rowNow = () => prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: door.key() } });
+        const isCapacityRace = door.name === "the capacity race";
+
+        beforeEach(async () => {
+          await door.enqueue();
+          expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual(PLAN);
+        });
+
+        it("closes the row it left untouched, once", async () => {
+          expect(await door.close()).toBe(1);
+          expect(await rowNow()).toMatchObject({ status: "SUCCEEDED", attempts: 0 });
+          // status: a second close of a row already closed closes nothing, so writes no second record.
+          expect(await door.close()).toBe(0);
+          expect(await refundedEvents()).toBe(isCapacityRace ? 1 : 0);
+        });
+
+        it("closes a row the runner holds on the same plan - its replay is answered with this refund, and its own close then records nothing", async () => {
+          await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: door.key() }, data: runnerClaim() });
+          expect(await door.close()).toBe(1);
+          expect(await rowNow()).toMatchObject({ status: "SUCCEEDED", attempts: 1 });
+          expect(await refundedEvents()).toBe(isCapacityRace ? 1 : 0);
+        });
+
+        it("plan: leaves open a row the runner tried and a failed-later refund re-planned - still owed, and recorded by nobody", async () => {
+          const replanned = failedLaterReplan();
+          await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: door.key() }, data: replanned });
+          expect(await door.close()).toBe(0);
+          expect(await rowNow()).toMatchObject({ status: "FAILED", attempts: 1, succeededAt: null, nextRetryAt: replanned.nextRetryAt });
+          expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual(replanned.allocationPlan);
+          expect(await refundedEvents()).toBe(0);
+        });
+      });
+
+      // One door end to end, through its real close and lost-close read-back: the
+      // re-plan lands while Stripe makes the refund, as in the window above.
+      describe("the edit financial review's door, the row moved while its refund is in flight", () => {
+        const ROUTE = { paymentId: PAYMENT_ID, allocation: [REFUSED_SLICE], refundCents: REFUSED_CENTS };
+        const ALERT_KEY = "edit-review-close-lost:";
+        const rowNow = () => prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: keys.buildEditFinancialReviewRefundRecoveryIdempotencyKey(TASK_ID) } });
+        const lostCloseAlerts = async () => (await prisma.alertCooldown.findMany({ where: { key: { startsWith: ALERT_KEY } } })).map((row) => row.key);
+        const refund = async () => {
+          const { executeEditReviewCardRefund } = await import("@/lib/edit-financial-review-card-refund");
+          return executeEditReviewCardRefund({ bookingId: BOOKING_ID, taskId: TASK_ID, actingMemberId: MEMBER_ID, route: ROUTE, format: CLUB_FORMAT_TEST });
+        };
+        const movedMidFlight = (data: Parameters<typeof prisma.paymentRecoveryOperation.update>[0]["data"]) => {
+          stripeRaceHooks.refund = async (args) => {
+            await prisma.paymentRecoveryOperation.update({ where: { idempotencyKey: keys.buildEditFinancialReviewRefundRecoveryIdempotencyKey(TASK_ID) }, data });
+            return {
+              id: "re_race_4144_made",
+              object: "refund",
+              amount: args.amountCents,
+              currency: "nzd",
+              status: "succeeded",
+              reason: "requested_by_customer",
+              created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+              charge: "ch_race_4144",
+              payment_intent: args.paymentIntentId,
+              metadata: args.metadata ?? {},
+            };
+          };
+        };
+
+        beforeEach(async () => {
+          resetStripeRaceHooks();
+          await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: ALERT_KEY } } });
+          await recovery.enqueueEditFinancialReviewRefundRecovery({ bookingId: BOOKING_ID, paymentId: PAYMENT_ID, taskId: TASK_ID, amountCents: REFUSED_CENTS, allocationPlan: ROUTE.allocation });
+        });
+
+        afterAll(async () => {
+          resetStripeRaceHooks();
+          await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: ALERT_KEY } } });
+        });
+
+        it("a failed-later re-plan after the runner tried it: the row stays open and owed, logged, not alerted", async () => {
+          const replanned = { ...failedLaterReplan(), allocationPlan: [{ ...REFUSED_SLICE, stripeKeySuffix: "refused1", failedRefundIds: ["re_race_4144_failed_later"] }] };
+          movedMidFlight(replanned);
+          expect(await refund()).toBe("re_race_4144_made");
+          expect(await rowNow()).toMatchObject({ status: "FAILED", attempts: 1, succeededAt: null });
+          expect(parseRefundAllocationPlan((await rowNow()).allocationPlan)).toEqual(replanned.allocationPlan);
+          expect(await lostCloseAlerts()).toEqual([]);
+        });
+
+        it("a runner claim on the same plan: the door closes it", async () => {
+          movedMidFlight(runnerClaim());
+          expect(await refund()).toBe("re_race_4144_made");
+          expect(await rowNow()).toMatchObject({ status: "SUCCEEDED", attempts: 1 });
+          expect(await lostCloseAlerts()).toEqual([]);
+        });
+
+        // Nothing should move an untouched row's plan while its refund is made;
+        // one is forced here: the close holds off, and the anomaly is alerted once for the row.
+        it("a plan moved on a row still untouched: not closed, and alerted once for the row", async () => {
+          movedMidFlight({ allocationPlan: [QUEUED_SLICE] });
+          expect(await refund()).toBe("re_race_4144_made");
+          expect(await rowNow()).toMatchObject({ status: "PENDING", attempts: 0, succeededAt: null });
+          expect(await lostCloseAlerts()).toEqual([`${ALERT_KEY}${(await rowNow()).id}`]);
+        });
+      });
     });
 
     // #4103 (`INV-PAY-130`): the superseded-payment runner's row carries no plan

@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("@/lib/edit-refund-hand-back", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/edit-refund-hand-back")),
-  refundAppealHandedBackCents: vi.fn().mockResolvedValue(0),
+  refundAppealHandedBackParts: vi.fn().mockResolvedValue({ handBackCents: 0, lateCashCreditCents: 0, cardRefundOwedCents: 0 }),
 }));
 
 import { organiserCardAppealCeilingFor } from "@/lib/organiser-child-refund";

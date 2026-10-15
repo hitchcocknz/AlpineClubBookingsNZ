@@ -89,6 +89,41 @@ afresh. An old group organiser's refund, or the refund of a stale group
 payment, fails and is retried automatically as a fresh request; if the
 officers' alert says it failed for good, refund it in the Stripe dashboard.
 
+**A refund Stripe accepted and failed later** (#4104). Stripe can accept a card
+refund as pending and report it failed days later, for example when the card
+has been closed. The app then takes it back out of the refunded total and owes
+it again: it shows under **Refunds owed**, the officers are emailed once, and it
+is asked for again as a new request. Two kinds are not asked for again, and are
+listed here under **Card refunds Stripe gave up on** straight away, for you to
+pay the member another way and close:
+
+- a retry that Stripe also accepted and then failed;
+- a refund Stripe **created** before the release that added this, unless a
+  refund the app is still working on counts it - the member may already have
+  been paid back by hand, so check Stripe and your bank first.
+
+A refund whose retries had already run out when it failed stays here too, with
+the failure noted on it.
+
+When you close one of these, Xero may already hold the card refund credit note
+raised while the refund still counted. The dialog says how much of the refund
+that note covers: you pay back that much with no new note, and a note worded as
+a bank transfer is queued only for anything beyond it. If you pay back less than
+the card note covers, Xero credits more than went back; the Xero reconciliation
+report lists it as refund coverage above the refunded total, for you to correct
+in Xero.
+
+A refund the app did not make for the booking - one made by hand in the Stripe
+dashboard, or an older group refund - that fails is not asked for again and is
+not counted under Refunds owed. The officers are emailed with its Stripe refund
+id, and the [audit log](audit-log.md) records it under **Payment**. Find it in
+the Stripe dashboard: if the member is still owed, refund them again there, or
+pay them another way. Raise no refund note for it in Xero: the card refund
+credit note raised while Stripe counted it, if there is one, already records
+it, and a second note would credit them twice. If they are no longer owed, the Xero
+reconciliation report lists that note as refund coverage above the refunded
+total, for you to correct in Xero.
+
 If you pay the member back another way, for example by bank transfer, close the
 refund here:
 
@@ -243,6 +278,30 @@ This action does not cover two kinds of refund:
 Those two still show in the **Exhausted recovery operations** count. Ask a
 developer to reconcile them.
 
+### A booking change's card request that stopped on its first refusal
+
+When a booking change raises the price, the app asks the member's card for the
+extra. If that request could not be set up at the time, the app retries it in
+the background. In one rare order, two changes to the same booking end up with
+the same card request, already recorded for the first change. The retry for the
+second change would then be refused every time, so it stops on the first
+refusal instead of running out its retries (#4081). It shows in the **Exhausted
+recovery operations** count at once, at the full attempt count however few times
+it ran, and the officers get one "Payment Failed" email. The email names the
+change as the booking's history shows it (for example "Guests Added") and says
+its card request is "already recorded for another change to the same booking".
+
+Nothing has been written off: the money for the second change is still owed.
+To collect it by hand:
+
+1. Open the booking and compare its changes with its additional card requests.
+   Check the request named in the email in the Stripe dashboard.
+2. If that one request already asks for both changes' money, nothing more is
+   needed once the member pays it.
+3. Otherwise ask the member for the second change's amount another way, such as
+   the supplementary invoice the Xero repair tool raises for a change whose
+   card request stopped, and record it as paid the usual way.
+
 ## Settings reference
 
 The page has no settings. What it shows:
@@ -285,6 +344,7 @@ without widening who can read the membership roll.
 | **Paid another way** says paid back in full "must be exactly what is still owed" | What is owed changed since the page loaded | Reload the page, check the amount, and choose again |
 | The dialog says what is still owed changed, or closes and says the refund is no longer waiting | A refund was recorded, or someone else closed it, while the dialog was open | Check the new amount, or the payment, before doing anything more |
 | **Paid another way** says the late card charge's Xero record "changed while you were closing it" | An officer resolved or withdrew the charge's record in Xero while you were closing the refund | Reload the page. The dialog then says what will be recorded in Xero now |
+| **Exhausted recovery operations** counts a booking change's card request that stopped on its first refusal, and the email says its card request is "already recorded for another change to the same booking" | Two changes to one booking ended up with one card request, recorded for the other change; a retry would be refused the same way, so the app stopped at once | The money is still owed. See [A booking change's card request that stopped on its first refusal](#a-booking-changes-card-request-that-stopped-on-its-first-refusal) |
 | **Mark resolved** says Stripe's refund to the card changed | Stripe refunded the card again since you opened the dialog | Check the new amount with the member before marking it resolved |
 
 ## Related links
