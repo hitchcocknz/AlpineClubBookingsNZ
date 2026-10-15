@@ -1392,26 +1392,28 @@ short).
 
 - **A cancel's card refund is recorded by the close that made it, once**
   (#4125, #4145). The member's cancel and the capacity race write their
-  REFUNDED booking event only with the close that moves their pre-persisted
-  recovery row to `SUCCEEDED` - the door's after its inline refund, or the
-  recovery runner's after a replay - in that close's own transaction
-  (`closeRefundRowRecordingEvent`). A close that moves nothing writes nothing,
-  so the door and the runner never both record it.
+  REFUNDED event only with the close moving their pre-persisted recovery row
+  to `SUCCEEDED` - the door's, or the runner's after a replay - in that
+  close's transaction (`closeRefundRowRecordingEvent`). A close that moves
+  nothing writes nothing.
   - **Never on a failure.** An inline refund that threw, was refused or made
-    only some slices writes no event; the booking page reads the row instead
-    (`readCancelledCardRefundState`): on its way, or stalled.
-  - **Dated by that close, for the frozen plan's total**, slices made earlier
-    included. The runner rebuilds the cancel's wording from its CANCELLED
-    snapshot (`cancelCardRefundEventReason`), with no member as actor; a
-    cancel with none (before #3639) is named by its amount.
-  - **A failed insert rolls the close back**: the row stays open and the
-    runner's replay, answered by Stripe with the original refunds, records it.
-  - **Paid another way records only what reached the card**: the slices
-    Stripe made, as the cancel's event dated by Stripe's refund, in that
-    close's transaction; nothing made, no event. The page says the parts apart.
-  - **One per cancel**: a cancel made before #4145 wrote its event up front, so
-    a later close records none. The page prefers an open or paid-another-way
-    row to that event.
+    only some slices writes none; the booking page reads the row instead
+    (`readCancelledCardRefund`).
+  - **Dated by that close, for the frozen plan's total.** The runner rebuilds
+    the cancel's wording from its CANCELLED snapshot, with no actor.
+  - **A failed insert rolls the close back**, leaving the row for the runner.
+  - **Paid another way records only what reached the card**: what the row's
+    slices took from recorded refunds, dated by Stripe's latest, marked as that
+    close's (`isMadeBeforePaidAnotherWayEvent`). Only a marked event splits the
+    page's sentence; the rest is the close's own paid-back amount, and any
+    remainder is said as closed.
+  - **One per cancel**: a cancel made before #4145 wrote its event up front,
+    so a later close records none; the page prefers an open or
+    paid-another-way row to it.
+  - **Stated limit, the deploy boundary**: while both colours serve, an old
+    cancel can write its up-front event after a new close recorded one (two
+    events), and an old runner can close a new cancel's row with none. History
+    only; no money moves.
   - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
     never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,

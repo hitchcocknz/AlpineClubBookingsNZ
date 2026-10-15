@@ -12,6 +12,9 @@
   touch if the retries have run out. A refund an officer closes as "Paid
   another way" is shown as paid back another way, not as refunded to the card;
   if part of it had already gone back to the card, the history records that
-  part and the page names both. A later change to the booking's money (an
+  part, dated when the card refund was made, and the page names both - for a
+  member's cancel and for a booking cancelled because its dates filled up. If
+  the club paid back only some of the rest, the page says how much, and that
+  the club closed the remainder. A later change to the booking's money (an
   edit review's credit or refund) is no longer shown as the cancellation's
   refund.

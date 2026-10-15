@@ -542,12 +542,19 @@ the inline call) is replayed by Stripe, never repeated and never rejected as an
 was refused or made only some slices - in the close's own transaction, dated by
 it and for the frozen plan's total, so it is written once and never for a
 refund still owed (#4145, `INV-PAY-133`). A "Paid another way" close records
-only the slices Stripe had already made, as that event dated by Stripe's
-refund (none made, none written). A cancel made before #4145 wrote its event up
-front, whatever became of the refund, so a later close writes no second one;
-the booking page reads an open or paid-another-way row ahead of that event.
-An edit financial review's credit or refund landing after the cancel is never
-read as the cancellation's settlement. An outstanding additional
+only what the row's slices took from the refunds recorded on the payment, as
+that event dated by the latest of them as Stripe made it and marked as that
+close's (none made, none written); the page splits its sentence only by that
+marked event, says what the close's own record paid back, and any remainder as
+closed by the club. A cancel made before #4145 wrote its event up front,
+whatever became of the refund, so a later close writes no second one; the
+booking page reads an open or paid-another-way row ahead of that event.
+Stated limit, the deploy boundary, both ways and history only while both
+colours serve: an old image's cancel writes its up-front event even after a
+new runner closed the row and recorded one (two events), and an old image's
+runner closes a new cancel's row with no event (none). An edit financial
+review's credit or refund landing after the cancel is never read as the
+cancellation's settlement. An outstanding additional
 PaymentIntent is retired durably (#1350): the claim transaction persists a
 `CANCEL_PAYMENT_INTENT` recovery operation alongside the FAILED flip, the
 Phase-2 inline Stripe cancel stays best-effort (logged, never allowed to
@@ -1721,13 +1728,14 @@ close takes the row only while it is still on the plan the attempt sent
 (#4144), so a row re-planned after Stripe later failed the refund stays open
 and owed, with no event. Until it lands, the booking
 page and the payment-link page read the row
-(`readCancelledCardRefundState`, which reads a member cancel's
+(`readCancelledCardRefund`, which reads a member cancel's
 `booking_cancel_refund_recovery_<bookingId>` row the same way): still being
 sent says "on its way to your original payment method"; a dead row (retries
 spent, or failed with no retry) says the club will be in touch - as does a
 dead card part of a card refund shortfall; a row closed "Paid another way"
-says so (a member cancel's slices Stripe had made first are recorded by that
-close and said apart); a capacity race's row the runner closed before #4125,
+says so, with what its record paid back (the slices Stripe had made first, a
+member cancel's or a capacity race's, are recorded by that close and said
+apart, and only the rest past the plan is followed up); a capacity race's row the runner closed before #4125,
 which wrote no event, says it was refunded. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
