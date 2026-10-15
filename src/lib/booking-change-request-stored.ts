@@ -2,11 +2,10 @@ import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
-import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
+import { addCalendarDays, calendarDateOfDateOnlyInstant, parseCalendarDate } from "@/lib/club-time";
 import type { BatchModifyInput } from "@/lib/booking-modify";
 import { isEffectiveStayRangeChange } from "@/lib/booking-change-request-guests";
 import { collapseNightRuns } from "@/lib/bed-allocation-board-window";
-import { addDaysDateOnly, formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 
 /**
@@ -219,9 +218,10 @@ function requestedRuns(entry: StoredNights): RequestedGuestNights["runs"] | null
   if (entry.nights?.length) {
     return collapseNightRuns(entry.nights).map(({ firstNight, lastNight }) => ({ firstNight, lastNight }));
   }
-  if (!entry.stayStart || !entry.stayEnd) return null;
-  if (!isDateOnlyString(entry.stayStart) || !isDateOnlyString(entry.stayEnd)) return null;
-  return [{ firstNight: entry.stayStart, lastNight: formatDateOnly(addDaysDateOnly(parseDateOnly(entry.stayEnd), -1)) }];
+  const stayStart = entry.stayStart ? parseCalendarDate(entry.stayStart) : null;
+  const stayEnd = entry.stayEnd ? parseCalendarDate(entry.stayEnd) : null;
+  if (!stayStart || !stayEnd) return null;
+  return [{ firstNight: stayStart, lastNight: addCalendarDays(stayEnd, -1) }];
 }
 
 /**
