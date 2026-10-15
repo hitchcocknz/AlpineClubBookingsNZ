@@ -20,6 +20,7 @@ import {
   type RefundAllocationSlice,
 } from "@/lib/payment-transactions";
 import { captureRefundState } from "@/lib/payment-transaction-status";
+import { lateCaptureOwnChargeSlice } from "@/lib/late-capture-own-charge-refund";
 import { closeDoorRow, closePrePersistedRefundRow } from "@/lib/pre-persisted-refund-close";
 import {
   keepRefusedPrePersistedRefundOwed,
@@ -48,7 +49,7 @@ export type LateCaptureRefundRoute = {
   captureKind: "primary" | "modification";
   /** Always null: there is no booking edit behind this money. */
   bookingModificationId: null;
-  /** Pinned to the capture's own transaction, as the automatic refund is. */
+  /** Pinned to the capture's own transaction, as the automatic refund is (`lateCaptureOwnChargeSlice`, #4131). */
   allocation: RefundAllocationSlice[];
 };
 
@@ -118,7 +119,8 @@ export async function planLateCaptureApprovalRefund({
     captureKind:
       transaction.kind === PaymentTransactionKind.PRIMARY ? "primary" : "modification",
     bookingModificationId: null,
-    allocation: [sliceAfterRecordedRefusals({ paymentTransactionId: transaction.id, amountCents }, recorded)],
+    // #4131: the capture's own charge, the one slice every late-capture door sends (held >= amount above).
+    allocation: [sliceAfterRecordedRefusals(lateCaptureOwnChargeSlice(transaction, amountCents).slice, recorded)],
   };
 }
 

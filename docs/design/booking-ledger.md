@@ -614,6 +614,21 @@ unplanned part — the drift `INV-PAY-118` logs at approval. A refund is in flig
 processing, or failed with a retry scheduled and attempts left
 (`isPaymentRecoveryOperationInFlight`, #3854 K1); an exhausted one is not, and
 the money it owes back is a disagreement.
+`V5_PLANNED_REFUND_SHORT` is a card cancel's refund plan short of the refund
+due. The plan is the cancel's own card refund rows: a member's cancel's one
+row, or a capacity race's, one per intent (`isBookingCancelCardRefundRecoveryKey`,
+the rule the booking page reads them by, #4147). The refund due is the
+CANCELLED snapshot's settled figure, except on a capacity race: since #4125
+that figure is the plan's total, so what it owes back is all it did not
+retain (`paidAmountCents` less `retainedAmountCents`), but never more than the
+ledger captured. A charge the payment's records never captured never reaches
+`owed(b)`, so V5 does not name it; `CAPTURED` reports that gap. A capacity
+race whose plan fell short of what was captured, or was empty, is named for
+the rest with the detail `capacity race`, since no member's cancel or task
+stands behind it: the rest is the officers' to follow up, and one whose refund
+is dead disagrees, like any other. Where the officers repay that rest by hand,
+off the card, nothing yet records it on the ledger, so the booking stays short
+by it until it is recorded.
 `AMBIGUOUS_REVIEW_GIVE_BACK` is a booking whose review give-back rows
 the census cannot attribute to their tasks (below the review-line paragraph).
 `KNOWN_DEFECT_HISTORY` finds bookings #3791, #3792 or #1641's shape damaged,

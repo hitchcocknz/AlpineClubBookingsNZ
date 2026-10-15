@@ -210,9 +210,11 @@ export async function holdLateCaptureForTreasurerIfRequired(
  * so the record, audit row, alert and Xero note that say "refunded" would each
  * be false: the refused amount is held for a treasurer instead
  * (`afterStripeRefused`), whose task and once-ever alert are the record, and the
- * handler stops. Returns false when Stripe refused nothing. A slice made beside
- * the refusal (the primary handler's plan can span charges) is named in the
- * audit; its Xero note is the handler's.
+ * handler stops. Returns false when Stripe refused nothing. Each handler sends
+ * one slice on the capture's own charge (#4131, `lateCaptureOwnChargeSlice`),
+ * so nothing is made beside a refusal today; `madeCents` stays in the audit for
+ * any answer that carries more than one refund, and the Xero note of whatever
+ * was made on the capture is the handler's (`noteLateCaptureRefunds`).
  */
 export async function holdLateCaptureRefusedByStripe(
   capture: HeldLateCapture,
