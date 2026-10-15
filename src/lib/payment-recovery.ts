@@ -56,7 +56,7 @@ import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordina
 import { unretryableRecoveryCause } from "@/lib/recovery-unretryable-cause";
 import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
-import { closeCapacityRaceRefundRecordingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { closeCancellationRefundAfterReplay, closeCapacityRaceRefundRecordingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
@@ -2118,17 +2118,11 @@ async function processBookingModificationRefundOperation(
     // pre-deploy sliver).
     idempotencyKeyPrefix = `refund_request_${refundRequestId}`;
   } else if (isBookingCancellationRecovery) {
-    // #1494: replay the inline cancel body VERBATIM. Both callers build the
-    // metadata from the same buildBookingCancellationRefundMetadata helper, so
-    // this replay's request body is byte-identical to the one the inline path
-    // sent when it created the Stripe refund. Under the shared
-    // `booking_cancel_refund_<bookingId>` idempotency key that makes Stripe
-    // replay the original refund rather than reject the key with
-    // idempotency_error (which previously sent this exact scenario — inline
-    // refund succeeded, recording lost — to retry-exhaustion + a manual
-    // reconcile). The metadata reconstructs purely from the persisted
-    // bookingId, so an operation enqueued BEFORE this fix replays through the
-    // same code path (there is no separate persisted-metadata to miss).
+    // #1494: replay the inline cancel body VERBATIM - the same
+    // buildBookingCancellationRefundMetadata helper builds both, from the
+    // persisted bookingId alone - so under the shared
+    // `booking_cancel_refund_<bookingId>` key Stripe replays the original
+    // refund rather than reject the key with idempotency_error.
     idempotencyKeyPrefix = `booking_cancel_refund_${operation.bookingId}`;
   } else {
     // #1507: replay the inline modification-refund body VERBATIM. The inline
@@ -2163,12 +2157,15 @@ async function processBookingModificationRefundOperation(
   // history event, gated on the terminal SUCCEEDED transition actually flipping
   // the operation (`completePaymentRecoveryOperation` true) so it lands EXACTLY
   // ONCE across the inline and cron paths: if the inline refund already closed
-  // the operation and recorded the event, this replay records nothing. #4125:
-  // the capacity race's REFUNDED event, the same way, for what the plan refunded.
-  if (operation.idempotencyKey.startsWith(CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX)) {
-    const refundedCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
-    await closeCapacityRaceRefundRecordingEvent({ bookingId: operation.bookingId, amountCents: refundedCents, actorMemberId: null }, (tx) =>
-      completePaymentRecoveryOperation(operation.id, { store: tx, lossExpected: true }));
+  // the operation and recorded the event, this replay records nothing. #4125,
+  // #4145: the capacity race's and a member cancel's REFUNDED event, the same
+  // way, for what the plan refunded, in the close's own transaction.
+  if (isBookingCancellationRecovery || operation.idempotencyKey.startsWith(CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX)) {
+    const refunded = { bookingId: operation.bookingId, amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0) };
+    const close = (tx: Prisma.TransactionClient) => completePaymentRecoveryOperation(operation.id, { store: tx, lossExpected: true });
+    await (isBookingCancellationRecovery
+      ? closeCancellationRefundAfterReplay({ ...refunded, format }, close)
+      : closeCapacityRaceRefundRecordingEvent({ ...refunded, actorMemberId: null }, close));
     return;
   }
   const duplicateCapturePrefix =

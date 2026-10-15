@@ -19,6 +19,8 @@
  * transition is never rolled back purely because its narrative event failed.
  */
 import { BookingEventType, Prisma } from "@prisma/client";
+import { cancelCardRefundEventReason } from "@/lib/cancel-card-refund-event-reason";
+import type { ClubFormat } from "@/lib/club-format";
 import type { CancellationLedgerSnapshot } from "@/lib/paid-cancellation-event";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
@@ -108,9 +110,10 @@ type BookingEventClient = Pick<typeof prisma, "bookingEvent">;
  * paid-path CANCELLED snapshot (`writePaidCancellationEvent`, #3639,
  * `INV-PAY-106`), so the cancel cannot commit without its decision, and
  * #3672's group payer-switch marker (`releaseUnpaidJoinersToMemberPaysInTx`,
- * `INV-PAY-109`), which must commit or roll back with the switch, and #4125's
- * capacity-race REFUNDED event (`closeCapacityRaceRefundRecordingEvent`), which
- * commits with the recovery row's close that records the refund made.
+ * `INV-PAY-109`), which must commit or roll back with the switch, and the
+ * REFUNDED event of a capacity race's or a member cancel's card refund
+ * (`closeRefundRowRecordingEvent`, #4125, #4145), which commits with the
+ * recovery row's close that records the refund made.
  */
 export async function recordBookingEvent(
   input: RecordBookingEventInput,
@@ -140,21 +143,24 @@ export async function recordBookingEvent(
 export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge capacity was no longer available.";
 
 /**
- * #4125: the capacity race's card refund, made - its recovery row's close and
- * the REFUNDED event the member's narrative reads as the cancellation's
+ * #4125, #4145: a pre-persisted card refund, made - its recovery row's close
+ * and the REFUNDED event the member's narrative reads as the cancellation's
  * settlement, in ONE transaction, so a crash between them cannot lose the
  * event. `close` is the status-guarded move to `SUCCEEDED` (true when THIS
- * close moved the row) - the inline attempt's (`payment-reconciliation.ts`) or
- * the recovery runner's (`payment-recovery.ts`). The event is written only
- * when it did, for the amount actually refunded (the frozen plan's total), so
- * it lands EXACTLY ONCE across the two; a closed row is never reopened
- * (`card-refund-failed-later.ts`). A decision record, not narrative: the
- * insert is NOT swallowed, so a failed one rolls the close back, the row stays
- * open, and the runner's replay - answered by Stripe with the original
- * refunds - closes it and records it.
+ * close moved the row) - the door's own after its inline attempt, or the
+ * recovery runner's (`payment-recovery.ts`). The event is written only when it
+ * did, dated by that close and for the amount actually refunded (the frozen
+ * plan's total), so it lands EXACTLY ONCE across the two; a closed row is
+ * never reopened (`card-refund-failed-later.ts`). A decision record, not
+ * narrative: the insert is NOT swallowed, so a failed one rolls the close
+ * back, the row stays open, and the runner's replay - answered by Stripe with
+ * the original refunds - closes it and records it. Two doors use it: the
+ * capacity race (`closeCapacityRaceRefundRecordingEvent`) and the member's
+ * cancel (`booking_cancel_refund_recovery_<booking>`), whose runner close
+ * rebuilds the cancel's reason (`closeCancellationRefundAfterReplay`).
  */
-export async function closeCapacityRaceRefundRecordingEvent(
-  input: { bookingId: string; amountCents: number; actorMemberId: string | null },
+export async function closeRefundRowRecordingEvent(
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null; reason: string },
   close: (tx: Prisma.TransactionClient) => Promise<boolean>
 ): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
@@ -165,12 +171,48 @@ export async function closeCapacityRaceRefundRecordingEvent(
         type: BookingEventType.REFUNDED,
         actorMemberId: input.actorMemberId,
         amountCents: input.amountCents,
-        reason: CAPACITY_RACE_REFUND_EVENT_REASON,
+        reason: input.reason,
         snapshot: Prisma.JsonNull,
       },
     });
     return true;
   });
+}
+
+/** #4125: the capacity race's close, recording its REFUNDED event as above. */
+export function closeCapacityRaceRefundRecordingEvent(
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null },
+  close: (tx: Prisma.TransactionClient) => Promise<boolean>
+): Promise<boolean> {
+  return closeRefundRowRecordingEvent({ ...input, reason: CAPACITY_RACE_REFUND_EVENT_REASON }, close);
+}
+
+/**
+ * #4145: the recovery runner's close of a member cancel's card refund row,
+ * recording its REFUNDED event as above: no member drove it, and its reason is
+ * the cancel's own (`cancelCardRefundEventReason`), from the figures the
+ * cancel's CANCELLED snapshot froze (`writePaidCancellationEvent`). A cancel
+ * with no such snapshot is named by its amount.
+ */
+export async function closeCancellationRefundAfterReplay(
+  { bookingId, amountCents, format }: { bookingId: string; amountCents: number; format: ClubFormat },
+  close: (tx: Prisma.TransactionClient) => Promise<boolean>
+): Promise<boolean> {
+  const cancelled = await prisma.bookingEvent.findMany({
+    where: { bookingId, type: BookingEventType.CANCELLED },
+    orderBy: { occurredAt: "desc" },
+    select: { snapshot: true },
+  });
+  const snapshot = cancelled
+    .map((event) => event.snapshot as Partial<CancellationEventSnapshot> | null)
+    .find((each) => each?.refundMethod === "card" && typeof each.refundPercentage === "number" && typeof each.settledAmountCents === "number");
+  const reason = cancelCardRefundEventReason({
+    cardRefundCents: amountCents,
+    policy: snapshot ? { refundPercentage: snapshot.refundPercentage as number, refundAmountCents: snapshot.settledAmountCents as number } : null,
+    shortfall: Boolean(snapshot?.cardShortfall),
+    format,
+  });
+  return closeRefundRowRecordingEvent({ bookingId, amountCents, actorMemberId: null, reason }, close);
 }
 
 /**

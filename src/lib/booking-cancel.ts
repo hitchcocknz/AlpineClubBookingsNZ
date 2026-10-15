@@ -5,7 +5,8 @@ import { isXeroConnected } from "./xero";
 import { daysUntilDate, loadCancellationPolicy } from "./cancellation";
 import { sendAdminManualRefundTaskAlert, sendBookingCancelledEmail } from "./email";
 import { logAudit } from "./audit";
-import { recordBookingEvent } from "./booking-events";
+import { closeRefundRowRecordingEvent, recordBookingEvent } from "./booking-events";
+import { cancelCardRefundEventReason } from "@/lib/cancel-card-refund-event-reason";
 import {
   paidCancellationBranch,
   writePaidCancellationEvent,
@@ -2361,10 +2362,14 @@ async function performBookingCancellation(
         // this write is lost the cron replays the frozen plan, Stripe answers
         // the repeated keys with the original refunds, and the operation
         // completes with no second money movement. #4144: only on the plan sent.
+        // #4145: its REFUNDED event commits with the close that moved the row - this one or the runner's.
         await closeDoorRow({
           door: "cancellation", idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId), bookingId,
           paymentIntentId: refundResult.refunds[0]?.paymentIntentId ?? "", amountCents: plannedCardRefundCents, refundId: stripeRefundId ?? null, format, context: { paymentId },
-        }, async (idempotencyKey) => (await markBookingCancellationRefundRecoverySucceeded({ idempotencyKey, sentPlan: cardRefundPlan })).count === 1);
+        }, (idempotencyKey) => closeRefundRowRecordingEvent({
+          bookingId, amountCents: plannedCardRefundCents, actorMemberId: sessionUserId,
+          reason: cancelCardRefundEventReason({ cardRefundCents: plannedCardRefundCents, policy: { refundPercentage, refundAmountCents }, shortfall: Boolean(cardShortfall), format }),
+        }, async (tx) => (await markBookingCancellationRefundRecoverySucceeded({ idempotencyKey, sentPlan: cardRefundPlan, store: tx })).count === 1));
       } catch (err) {
         // The claim already committed and the recovery operation already
         // exists with the frozen plan, so there is nothing to enqueue here
@@ -2448,20 +2453,6 @@ async function performBookingCancellation(
         ...notifyAuditFields,
       },
     });
-
-    // #4097: the card's part only; the hand-back's completion records its own.
-    if (plannedCardRefundCents > 0) {
-      await recordBookingEvent({
-        bookingId,
-        type: BookingEventType.REFUNDED,
-        actorMemberId: sessionUserId,
-        amountCents: plannedCardRefundCents,
-        // #4097: the card's part, said as a part when the plan carried less than the refund due.
-        reason: cardShortfall
-          ? `${formatCents(plannedCardRefundCents, format)} of the ${refundPercentage}% refund (${formatCents(refundAmountCents, format)}) refunded to the original payment method.`
-          : `${refundPercentage}% refunded to the original payment method.`,
-      });
-    }
 
     if (notifyMember) {
       sendBookingCancelledEmail(

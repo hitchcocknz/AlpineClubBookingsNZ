@@ -24,6 +24,7 @@ import type { BookingNarrative, NarrativeEvent } from "@/lib/booking-narrative";
 import { formatCents } from "@/lib/utils";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
+import { isCancelCardRefundEvent } from "@/lib/cancel-card-refund-event-reason";
 
 /**
  * #4125: what the club follows up - a dead card refund, a part no refund
@@ -156,8 +157,10 @@ export function buildCancelledPostPaymentNarrative(
   let settlementClause: string;
   const followUps: string[] = [];
   if (snapshot?.cardShortfall) {
+    // #4145: the card part's own event - a hand-back completion can land before the runner's refund.
+    const cardEvent = settlementEvents.find(isCancelCardRefundEvent);
     settlementClause = cardShortfallClause(snapshot.cardShortfall, cardShortfallStatuses, {
-      cardRefundedOn: settlementEvent ? club.instantDate(settlementEvent.occurredAt) : null,
+      cardRefundedOn: cardEvent ? club.instantDate(cardEvent.occurredAt) : null,
       retainedAmountCents,
       format,
     });
@@ -191,11 +194,10 @@ export function buildCancelledPostPaymentNarrative(
         ? `${formatCents(settledAmountCents, format)} is being refunded to you by the club directly (you paid in cash or by bank transfer, so there is no card payment to reverse) and ${formatCents(retainedAmountCents, format)} was retained`
         : `${formatCents(settledAmountCents, format)} is being refunded to you by the club directly — you paid in cash or by bank transfer, so there is no card payment to reverse`;
   } else if (snapshot?.refundMethod === "card" && settledAmountCents > 0) {
-    // #4125: a card refund with no REFUNDED event was not made inline - it
-    // threw, or Stripe refused it - so it says where its recovery row stands:
-    // still being sent (the default when the caller read none), dead, made by
-    // the runner on a row closed before it recorded REFUNDED, or paid another
-    // way. Never "no refund was due", and never "refunded" before it is.
+    // #4125, #4145: a card refund with no REFUNDED event has not been made -
+    // the close that makes one writes it - so it says where its recovery row
+    // stands: still being sent (the default when the caller read none), dead,
+    // paid another way, or made on a row closed before #4145 with no event. Never "no refund was due", and never "refunded" before it is.
     //
     // Only the member's own card: a joiner's booking the organiser paid for
     // by card (`paidByOrganiserCard`) is refunded to the ORGANISER's card, and
