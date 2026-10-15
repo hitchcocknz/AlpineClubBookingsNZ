@@ -276,6 +276,112 @@ async function seed(
   });
 }
 
+const GAP_CHECK_OUT = new Date("2026-06-13T00:00:00.000Z");
+const GAP_LAST_NIGHT = new Date("2026-06-12T00:00:00.000Z");
+
+/**
+ * #4157: a COMPLETED 10-13 June stay, paid in full, whose two guests each hold
+ * 10 and 12 June only (a gap on the 11th, #713), and one LOCKED_PERIOD request
+ * sent in date-range mode with the snapshot the route writes.
+ */
+async function seedGapped(requested: Record<string, unknown>): Promise<void> {
+  const guestIds = [GUEST_ID, GUEST_2_ID];
+  const totalCents = guestIds.length * 2 * STORED_NIGHT_CENTS;
+  await prisma.booking.create({
+    data: {
+      id: BOOKING_ID,
+      memberId: OWNER_ID,
+      lodgeId: LODGE_ID,
+      checkIn: CHECK_IN,
+      checkOut: GAP_CHECK_OUT,
+      status: "COMPLETED",
+      totalPriceCents: totalCents,
+      finalPriceCents: totalCents,
+    },
+  });
+  for (const [id, firstName] of [
+    [GUEST_ID, "Original"],
+    [GUEST_2_ID, "Second"],
+  ] as const) {
+    await prisma.bookingGuest.create({
+      data: {
+        id,
+        bookingId: BOOKING_ID,
+        firstName,
+        lastName: "Guest",
+        ageTier: "ADULT",
+        isMember: false,
+        stayStart: CHECK_IN,
+        stayEnd: GAP_CHECK_OUT,
+        priceCents: 2 * STORED_NIGHT_CENTS,
+        nights: {
+          create: [
+            { stayDate: CHECK_IN, priceCents: STORED_NIGHT_CENTS, priceSource: "SOLD" },
+            { stayDate: GAP_LAST_NIGHT, priceCents: STORED_NIGHT_CENTS, priceSource: "SOLD" },
+          ],
+        },
+      },
+    });
+  }
+  await prisma.payment.create({
+    data: {
+      id: PAYMENT_ID,
+      bookingId: BOOKING_ID,
+      amountCents: totalCents,
+      source: "INTERNET_BANKING",
+      reference: "RACE3750",
+      status: "SUCCEEDED",
+      xeroInvoiceId: "race-3750-xero-invoice",
+      xeroInvoiceNumber: "INV-3750",
+    },
+  });
+  await prisma.bookingChangeRequest.create({
+    data: {
+      id: REQUEST_ID,
+      bookingId: BOOKING_ID,
+      requestedByMemberId: OWNER_ID,
+      kind: "LOCKED_PERIOD",
+      status: "REQUESTED",
+      reason: "Range-mode request about a stay with gaps.",
+      requestedChanges: {
+        original: {
+          checkIn: "2026-06-10",
+          checkOut: "2026-06-13",
+          guests: guestIds.map((id) => ({
+            id,
+            firstName: id === GUEST_ID ? "Original" : "Second",
+            lastName: "Guest",
+            stayStart: "2026-06-10",
+            stayEnd: "2026-06-13",
+            nights: ["2026-06-10", "2026-06-12"],
+          })),
+        },
+        requested: {
+          ...ADD_LATE_FRIEND,
+          addGuests: [],
+          summary: "update guest stay ranges",
+          ...requested,
+        },
+      },
+    },
+  });
+}
+
+/** Each guest's night rows, as `[stayDate, priceCents, priceSource]`. */
+async function guestNightRows() {
+  const booking = await prisma.booking.findUniqueOrThrow({
+    where: { id: BOOKING_ID },
+    include: { guests: { include: { nights: { orderBy: { stayDate: "asc" } } } } },
+  });
+  return {
+    booking,
+    nightsOf: (id: string) =>
+      booking.guests
+        .find((guest) => guest.id === id)!
+        .nights.map((night) => [night.stayDate.toISOString().slice(0, 10), night.priceCents, night.priceSource]),
+  };
+}
+
 type ExecutorParams = Parameters<typeof executor.approveAndExecuteLockedPeriodChangeRequest>[0];
 type ExpectedFigures = NonNullable<ExecutorParams["expectedFigures"]>;
 type ApproveOptions = {
@@ -1382,6 +1488,64 @@ function deferred() {
     expect(await prisma.bookingModification.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
     const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
     expect(request).toMatchObject({ status: "REQUESTED", version: 1 });
+  }, 60_000);
+
+  it("#4157: a gapped guest whose range is repeated keeps their gap and is not charged for it", async () => {
+    // Date-range mode: the member adds a friend for the whole stay and sends
+    // the gapped guest's own Date In and Date Out back unchanged.
+    await seedGapped({
+      addGuests: ADD_LATE_FRIEND.addGuests,
+      guestStayRanges: [{ guestId: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-13" }],
+      summary: "add Late Friend; update 1 guest stay range",
+    });
+    const result = await approve(OFFICER_ID);
+    // Only the friend's three nights are charged: the 11th is not put on the
+    // gapped guest (before #4157 it was, at the season rate).
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      addedGuestCount: 1,
+      priceDiffCents: 3 * NIGHT_CENTS,
+      changeFeeCents: 0,
+    });
+    const { booking, nightsOf } = await guestNightRows();
+    expect(booking.checkOut.toISOString()).toBe(GAP_CHECK_OUT.toISOString());
+    // Byte for byte, both gapped guests: the one the request named, and the
+    // one it did not.
+    for (const id of [GUEST_ID, GUEST_2_ID]) {
+      expect(nightsOf(id)).toEqual([
+        ["2026-06-10", STORED_NIGHT_CENTS, "SOLD"],
+        ["2026-06-12", STORED_NIGHT_CENTS, "SOLD"],
+      ]);
+    }
+    const added = booking.guests.find((guest) => ![GUEST_ID, GUEST_2_ID].includes(guest.id))!;
+    expect(added.nights).toHaveLength(3);
+  }, 60_000);
+
+  it("#4157: in a mixed party the repeated guest keeps their nights and the moved guest gets the new continuous stay", async () => {
+    await seedGapped({
+      guestStayRanges: [
+        // Repeated: the guest's own dates, gap and all.
+        { guestId: GUEST_ID, stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+        // Really moved: from the 11th, so 10 June comes off and 11 June goes on.
+        { guestId: GUEST_2_ID, stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+      ],
+      summary: "update 2 guest stay ranges",
+    });
+    const result = await approve(OFFICER_ID);
+    // One night added at the season rate (the moved guest's 11th) and one
+    // removed (their 10th, sold at 4,321), charged the same-day tier's
+    // retention as the change fee. Nothing for the repeated guest.
+    expect(result, JSON.stringify(result)).toMatchObject({
+      outcome: "executed",
+      priceDiffCents: NIGHT_CENTS - STORED_NIGHT_CENTS,
+      changeFeeCents: STORED_NIGHT_CENTS - Math.round(STORED_NIGHT_CENTS / 2),
+    });
+    const { nightsOf } = await guestNightRows();
+    expect(nightsOf(GUEST_ID)).toEqual([
+      ["2026-06-10", STORED_NIGHT_CENTS, "SOLD"],
+      ["2026-06-12", STORED_NIGHT_CENTS, "SOLD"],
+    ]);
+    expect(nightsOf(GUEST_2_ID).map(([night]) => night)).toEqual(["2026-06-11", "2026-06-12"]);
   }, 60_000);
 
   it("trimming a kept guest while adding another is charged on the trimmed night (F3/F4)", async () => {
