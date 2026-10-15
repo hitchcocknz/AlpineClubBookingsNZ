@@ -313,12 +313,19 @@ export async function reconcilePendingOrganiserChildRefunds(
       payment: { booking: { organiserSettled: true } },
     },
     select: { stripeRefundId: true, paymentId: true, status: true, stripePaymentIntentId: true },
-    orderBy: { createdAt: "asc" },
+    // #4130: least recently read first, each read stamped below, so neither a
+    // refund that keeps timing out nor one Stripe keeps pending hogs a slot.
+    orderBy: { updatedAt: "asc" },
     take: limit,
   });
   let reversed = 0;
   let checked = 0;
   const startedAt = performance.now();
+  // Guarded on the status read: a concurrent write to the row is never overwritten.
+  const stamp = (row: (typeof pending)[number]) =>
+    prisma.paymentRefund
+      .updateMany({ where: { stripeRefundId: row.stripeRefundId, status: row.status }, data: { updatedAt: new Date() } })
+      .catch((err) => logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not stamp an organiser child refund's read-back"));
   for (const row of pending) {
     if (performance.now() - startedAt >= budgetMs) break;
     checked += 1;
@@ -327,9 +334,13 @@ export async function reconcilePendingOrganiserChildRefunds(
       refund = await stripe.retrieveRefund(row.stripeRefundId, { timeoutMs: READ_BACK_TIMEOUT_MS });
     } catch (err) {
       logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not read an organiser child refund back from Stripe");
+      await stamp(row);
       continue;
     }
-    if ((refund.status ?? row.status) === row.status) continue;
+    if ((refund.status ?? row.status) === row.status) {
+      await stamp(row);
+      continue;
+    }
     const key = refund.metadata?.organiserChildRefundKey ?? null;
     const reversedCents = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;

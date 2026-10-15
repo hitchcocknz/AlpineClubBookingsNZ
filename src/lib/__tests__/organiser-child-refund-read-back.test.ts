@@ -3,8 +3,8 @@
 // and the sweep stops when its time budget is spent.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ refundFindMany: vi.fn() }));
-vi.mock("@/lib/prisma", () => ({ prisma: { paymentRefund: { findMany: mocks.refundFindMany } } }));
+const mocks = vi.hoisted(() => ({ refundFindMany: vi.fn(), refundUpdateMany: vi.fn(async () => ({ count: 1 })) }));
+vi.mock("@/lib/prisma", () => ({ prisma: { paymentRefund: { findMany: mocks.refundFindMany, updateMany: mocks.refundUpdateMany } } }));
 
 import type Stripe from "stripe";
 
@@ -25,6 +25,18 @@ describe("reconcilePendingOrganiserChildRefunds (#4130)", () => {
     expect(await reconcilePendingOrganiserChildRefunds({ retrieveRefund: retrieveRefund as never })).toEqual({ checked: 2, reversed: 0 });
     expect(retrieveRefund).toHaveBeenNthCalledWith(1, "re_a", { timeoutMs: READ_BACK_TIMEOUT_MS });
     expect(retrieveRefund).toHaveBeenNthCalledWith(2, "re_b", { timeoutMs: READ_BACK_TIMEOUT_MS });
+  });
+
+  it("reads the least recently read first, and stamps each one it read unchanged or could not read", async () => {
+    const retrieveRefund = vi.fn(async (id: string) => {
+      if (id === "re_b") throw new Error("timeout");
+      return unchanged(id);
+    });
+    await reconcilePendingOrganiserChildRefunds({ retrieveRefund: retrieveRefund as never });
+    expect(mocks.refundFindMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { updatedAt: "asc" } }));
+    for (const id of ["re_a", "re_b"]) {
+      expect(mocks.refundUpdateMany).toHaveBeenCalledWith({ where: { stripeRefundId: id, status: "pending" }, data: { updatedAt: expect.any(Date) } });
+    }
   });
 
   it("reads nothing once its time budget is spent", async () => {
