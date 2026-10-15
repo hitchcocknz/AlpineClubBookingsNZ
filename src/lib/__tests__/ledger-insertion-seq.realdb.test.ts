@@ -7,7 +7,7 @@
  *
  * - Three rows A, B, C written in ONE transaction share a `createdAt`. An UPDATE
  *   of A's `status` (an indexed column, so not a HOT update) writes A's new
- *   tuple at the end of the heap: PostgreSQL's own physical order becomes
+ *   tuple at the later in the heap: PostgreSQL's own physical order becomes
  *   B, C, A - which is the order a `createdAt`-only read used to meet the tie
  *   in. Every reader still returns A, B, C:
  *   - the capture ledger's loader (`loadPaymentWithTransactions`), which the
@@ -18,6 +18,9 @@
  *     same C, with A, B, C as its chain - the two used to disagree on a tie;
  *   - the card refund plan (`planStripeRefundAllocation`) slices newest first:
  *     C, then B, never the order the rows happened to come back in.
+ *   - the local refund allocation (`applyLocalRefundAllocation`) and a
+ *     modification refund recovery with no frozen plan, derived at replay,
+ *     take the card plan's own slices: C, then B (#4132 money review F5).
  * - A raw INSERT that omits `insertionSeq` (a draining old colour's client
  *   does) receives a value above every stored row from the owned sequence.
  *
@@ -27,7 +30,9 @@
  * (`ledger-insertion-seq-realdb-wiring.test.ts` pins the edge); it owns and
  * cleans its own `race-4132-` fixtures. No Stripe call is made.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
 
 /** The one shared double: the LAST file to register a factory wins, so every realdb file registers this same one. */
 vi.mock("@/lib/stripe", async (importOriginal) =>
@@ -48,6 +53,7 @@ const A = "race-4132-txn-z";
 const B = "race-4132-txn-x";
 const C = "race-4132-txn-y";
 const RAW = "race-4132-txn-raw";
+const OPERATION_ID = "race-4132-operation";
 const NIGHT = new Date("2026-08-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
 /** The one instant all three rows carry: the tie under test, independent of the frozen clock. */
@@ -156,6 +162,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     });
 
     beforeEach(async () => {
+      resetStripeRaceHooks();
       await deleteBookingRows();
       await prisma.booking.create({
         data: {
@@ -181,7 +188,12 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       });
     });
 
+    afterEach(() => {
+      resetStripeRaceHooks();
+    });
+
     afterAll(async () => {
+      resetStripeRaceHooks();
       if (!prisma) return;
       await deleteFixtures();
     });
@@ -195,7 +207,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         ],
         "FAILED",
       );
-      expect(await heapOrder(), "premise: the UPDATE moved A to the end of the heap").toEqual([B, C, A]);
+      expect(await heapOrder(), "premise: the UPDATE moved A to the later in the heap").toEqual([B, C, A]);
 
       const stored = await prisma.paymentTransaction.findMany({
         where: { paymentId: PAYMENT_ID },
@@ -244,7 +256,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         ],
         "SUCCEEDED",
       );
-      expect(await heapOrder(), "premise: the capture moved A to the end of the heap").toEqual([B, C, A]);
+      expect(await heapOrder(), "premise: the capture moved A to the later in the heap").toEqual([B, C, A]);
       expect(await loadedOrder()).toEqual([A, B, C]);
 
       const { planStripeRefundAllocation } = await import("@/lib/payment-transactions");
@@ -252,6 +264,79 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(plan.slices).toEqual([
         { paymentTransactionId: C, amountCents: 5_000 },
         { paymentTransactionId: B, amountCents: 1_000 },
+      ]);
+    });
+
+    /** A, B, C captured in one transaction ($30, $40, $50), A's capture landing after B and C were written. */
+    async function writeTiedCaptures() {
+      await writeTiedRowsThenUpdateA(
+        [
+          { id: A, kind: "PRIMARY", amountCents: 3_000, status: "PROCESSING" },
+          { id: B, kind: "ADDITIONAL", amountCents: 4_000, status: "SUCCEEDED" },
+          { id: C, kind: "ADDITIONAL", amountCents: 5_000, status: "SUCCEEDED" },
+        ],
+        "SUCCEEDED",
+      );
+      expect(await heapOrder(), "premise: the capture moved A later in the heap").toEqual([B, C, A]);
+      const { planStripeRefundAllocation } = await import("@/lib/payment-transactions");
+      return (await planStripeRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 6_000, store: prisma })).slices;
+    }
+
+    it("three captures written together: the local refund allocation takes the same rows, in the same order, as the card plan", async () => {
+      const plan = await writeTiedCaptures();
+      expect(plan).toEqual([
+        { paymentTransactionId: C, amountCents: 5_000 },
+        { paymentTransactionId: B, amountCents: 1_000 },
+      ]);
+      const { applyLocalRefundAllocation } = await import("@/lib/payment-transactions");
+      await applyLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 6_000, store: prisma });
+      const rows = await prisma.paymentTransaction.findMany({
+        where: { paymentId: PAYMENT_ID },
+        select: { id: true, refundedAmountCents: true },
+      });
+      const refunded = Object.fromEntries(rows.map((row) => [row.id, row.refundedAmountCents]));
+      expect(refunded).toEqual(Object.fromEntries([[A, 0], ...plan.map((slice) => [slice.paymentTransactionId, slice.amountCents])]));
+    });
+
+    it("three captures written together: a modification refund with no frozen plan derives the card plan's slices at replay", async () => {
+      const plan = await writeTiedCaptures();
+      const asked: Array<{ paymentIntentId: string; amountCents: number }> = [];
+      stripeRaceHooks.refund = async (args) => {
+        asked.push({ paymentIntentId: args.paymentIntentId, amountCents: args.amountCents });
+        return {
+          id: `re_race_4132_${asked.length}`,
+          object: "refund",
+          amount: args.amountCents,
+          currency: "nzd",
+          status: "succeeded",
+          reason: "requested_by_customer",
+          created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+          charge: `ch_race_4132_${asked.length}`,
+          payment_intent: args.paymentIntentId,
+          metadata: args.metadata ?? {},
+        };
+      };
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          id: OPERATION_ID,
+          type: "REFUND_BOOKING_MODIFICATION",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentIntentId: `pi_${A}`,
+          amountCents: 6_000,
+          idempotencyKey: "race-4132-modification-refund",
+          nextRetryAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+      });
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
+      await runPaymentRecoveryOperationNow(OPERATION_ID, CLUB_FORMAT_TEST);
+
+      const operation = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: OPERATION_ID } });
+      expect(operation.allocationPlan, "the plan the replay froze is the card plan's").toEqual(plan);
+      expect(asked).toEqual([
+        { paymentIntentId: `pi_${C}`, amountCents: 5_000 },
+        { paymentIntentId: `pi_${B}`, amountCents: 1_000 },
       ]);
     });
 
