@@ -119,7 +119,6 @@ export async function cardShortfallSettlement(
   // this payment Stripe failed later and that is owed again by a row of its own
   // (`card_refund_failed_later_<refund>`) - card money still moving either way.
   // #4154: the cancel's own rows are #4147's one rule - a member cancel's row, or a capacity race's per intent.
-  // TODO(#4158): its prefix arm through `exactPrefix` once that lands; the exact key test below decides meanwhile.
   const cardRefunds = await store.paymentRecoveryOperation.findMany({
     where: {
       OR: [
