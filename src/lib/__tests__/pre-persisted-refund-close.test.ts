@@ -82,7 +82,7 @@ describe("closePrePersistedRefundRow (#4144)", () => {
 
 describe("closeDoorRow (#4144)", () => {
   it("hands the close its row's key - built once, so the close and the read-back name one row", async () => {
-    const close = vi.fn(async (_key: string) => false);
+    const close = vi.fn<(key: string) => Promise<boolean>>(async () => false);
     findUnique.mockResolvedValue({ id: "op_row", status: "FAILED", attempts: 1 });
     await closeDoorRow(lost, close);
     expect(close).toHaveBeenCalledWith("op_key");
