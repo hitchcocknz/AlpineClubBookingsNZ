@@ -20,13 +20,18 @@ import { BookingEventType } from "@prisma/client";
 const mocks = vi.hoisted(() => ({
   memberCreditAggregate: vi.fn(),
   openFinancialReview: vi.fn(),
+  bookingEvents: vi.fn(),
+  recoveryRows: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     auditLog: { findMany: vi.fn().mockResolvedValue([]) },
-    bookingEvent: { findMany: vi.fn().mockResolvedValue([]) },
+    bookingEvent: { findMany: mocks.bookingEvents },
     memberCredit: { aggregate: mocks.memberCreditAggregate },
+    // #4097, #4125: a cancelled booking's shortfall tasks and card refund rows.
+    manualRefundTask: { findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
+    paymentRecoveryOperation: { findUnique: vi.fn().mockResolvedValue(null), findMany: mocks.recoveryRows },
   },
 }));
 vi.mock("@/lib/booking-history", () => ({
@@ -120,6 +125,34 @@ beforeEach(() => {
   vi.clearAllMocks();
   ledgerCredit(0);
   mocks.openFinancialReview.mockResolvedValue(false);
+  mocks.bookingEvents.mockResolvedValue([]);
+  mocks.recoveryRows.mockResolvedValue([]);
+});
+
+// #4125: the booking page reads a cancelled booking's card refund row, so a
+// refund the retries gave up on says the club will be in touch, never "on its way".
+describe("booking page history narrative reads a cancelled card refund's row (#4125)", () => {
+  it("a dead capacity-race refund says the club will be in touch", async () => {
+    mocks.bookingEvents.mockResolvedValue([
+      { type: BookingEventType.MEMBER_PAID, occurredAt: new Date("2026-05-02T00:00:00.000Z"), actorMemberId: null, amountCents: 20000, reason: null, snapshot: null },
+      {
+        type: BookingEventType.CANCELLED,
+        occurredAt: new Date("2026-05-05T00:00:00.000Z"),
+        actorMemberId: null,
+        amountCents: 20000,
+        reason: null,
+        snapshot: { refundMethod: "card", cancelledBecause: "capacity_race", refundPercentage: 100, paidAmountCents: 20000, settledAmountCents: 20000, retainedAmountCents: 0 },
+      },
+    ]);
+    mocks.recoveryRows.mockResolvedValue([
+      { id: "op-1", idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_1", status: "FAILED", attempts: 5, nextRetryAt: null },
+    ]);
+
+    const narrative = await narrativeFor({ ...(bookingWith(null) as object), status: "CANCELLED" } as never);
+
+    expect(narrative.message).toContain("$200.00 is being refunded to you; the club will be in touch about the refund.");
+    expect(narrative.message).not.toContain("on its way");
+  });
 });
 
 describe("booking page history narrative quotes the amount owed (#3991, INV-PAY-119)", () => {
