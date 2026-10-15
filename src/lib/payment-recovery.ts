@@ -2296,11 +2296,8 @@ async function processBookingModificationRefundOperation(
       },
     });
     if (transition.count > 0) {
-      await finishApprovedLateCaptureRefundAfterReplay({
-        ...operation,
-        amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
-        refundId,
-      });
+      const amountCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
+      await finishApprovedLateCaptureRefundAfterReplay({ ...operation, amountCents, refundId });
     }
     return;
   }
