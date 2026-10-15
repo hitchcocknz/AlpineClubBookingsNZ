@@ -69,7 +69,11 @@ import {
   cardRefundSliceFilledBy,
   parseRefundAllocationPlan,
 } from "@/lib/open-card-refund-owed";
-import { isPaymentRecoveryOperationExhausted, MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import {
+  isPaymentRecoveryOperationExhausted,
+  isUntouchedPrePersistedRow,
+  MAX_PAYMENT_RECOVERY_ATTEMPTS,
+} from "@/lib/payment-recovery-constants";
 import {
   buildCardRefundFailedLaterRecoveryKey,
   CARD_REFUND_FAILED_LATER_REASON,
@@ -257,9 +261,7 @@ export async function keepFailedLaterCardRefundOwed(
       // so the row moves its key and asks again rather than closing on it.
       return kind === "replayed" ? { readAsRefused: true } : {};
     }
-    const held =
-      row.status === PaymentRecoveryOperationStatus.PROCESSING ||
-      (row.status === PaymentRecoveryOperationStatus.PENDING && row.attempts === 0);
+    const held = row.status === PaymentRecoveryOperationStatus.PROCESSING || isUntouchedPrePersistedRow(row);
     if (held) {
       if (kind === "replayed") return { readAsRefused: true };
       throw new FailedLaterRefundHeldError(refund.id, row.id);

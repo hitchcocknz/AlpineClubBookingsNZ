@@ -238,6 +238,36 @@ describe("the attempt's failure", () => {
   });
 });
 
+// #4126: a record the runner writes names the refund of the plan's first slice.
+describe("the runner's made refund", () => {
+  const held = { id: "op_1", bookingId: "b1", paymentIntentId: "pi_row", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") };
+  const first = { paymentTransactionId: "txn_a", amountCents: 1000 };
+  const second = { paymentTransactionId: "txn_b", amountCents: 500 };
+  const made = (slice: typeof first, refundId: string) => ({ status: "succeeded", slice, refundId, paymentIntentId: "pi_a" });
+
+  it("is the first slice's answer when every slice was sent", async () => {
+    await expect(
+      refundPlanOrRetryRefusals({
+        operation: held,
+        plan: [first, second],
+        format: CLUB_FORMAT_TEST,
+        refund: async () => ({ refunds: [made(first, "re_first"), made(second, "re_second")] }),
+      }),
+    ).resolves.toBe("re_first");
+  });
+
+  it("is the refund already made for the first slice, which is not sent again", async () => {
+    await expect(
+      refundPlanOrRetryRefusals({
+        operation: held,
+        plan: [{ ...first, madeRefundId: "re_earlier" }, second],
+        format: CLUB_FORMAT_TEST,
+        refund: async () => ({ refunds: [made(second, "re_second")] }),
+      }),
+    ).resolves.toBe("re_earlier");
+  });
+});
+
 // #4117: the runner alerts once per refused slice - when a slice is first moved
 // off the key it was planned under - not once per row.
 describe("the runner's refusal alert", () => {

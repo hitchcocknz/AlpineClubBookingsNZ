@@ -34,7 +34,10 @@ const finishApprovedLateCaptureRefund = vi.hoisted(() => vi.fn<(args: unknown) =
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({ finishApprovedLateCaptureRefund }));
 
 const alertPaymentRecoveryOfficers = vi.hoisted(() => vi.fn<(args: unknown, format: unknown) => Promise<void>>(async () => undefined));
-vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers }));
+vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers, NOBODY_ALERTED: { deliveryAllowed: true, recipients: 0, sent: 0, queuedForRetry: 0, notDelivered: 0 } }));
+
+const sendAdminAlertOnceEver = vi.hoisted(() => vi.fn<(args: { key: string; send: () => Promise<unknown> }) => Promise<boolean>>(async () => true));
+vi.mock("@/lib/admin-alert-once", () => ({ sendAdminAlertOnceEver }));
 
 import { executeEditReviewSettlement } from "@/lib/edit-financial-review-settlement";
 import { executeLateCaptureApprovalRefund, type LateCaptureRefundRoute } from "@/lib/late-capture-refund-approval";
@@ -75,6 +78,7 @@ function replanOn(idempotencyKey: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   updateMany.mockResolvedValue({ count: 1 });
+  findUnique.mockResolvedValue({ id: "op_row", paymentIntentId: "pi_row" });
 });
 
 describe("the edit financial review's card refund (#4103)", () => {
@@ -231,5 +235,33 @@ describe("the treasurer-approved late-capture refund (#4103)", () => {
 
     expect(await approve()).toBe("re_txn_a");
     expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+    // The row read back (the default double) is not untouched: no anomaly alert.
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
+  });
+
+  it("#4126: a close that loses on a row still PENDING and never attempted is an anomaly - logged and alerted once for the row, naming the refund", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "op_row", status: "PENDING", attempts: 0 } as never);
+
+    expect(await approve()).toBe("re_txn_a");
+    expect(finishApprovedLateCaptureRefund).not.toHaveBeenCalled();
+    expect(sendAdminAlertOnceEver).toHaveBeenCalledTimes(1);
+    const [{ key: alertKey, send }] = sendAdminAlertOnceEver.mock.calls[0]!;
+    expect(alertKey).toBe("late-capture-approval-close-lost:op_row");
+    await send();
+    expect(alertPaymentRecoveryOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ operationId: "op_row", errorMessage: expect.stringContaining("re_txn_a") }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("#4126: a lost close on a row the runner claimed raises no anomaly alert", async () => {
+    refundPaymentTransactions.mockResolvedValue({ refunds: [answer(a, "succeeded"), answer(b, "succeeded")] });
+    updateMany.mockResolvedValue({ count: 0 });
+    findUnique.mockResolvedValue({ id: "op_row", status: "PROCESSING", attempts: 1 } as never);
+
+    await approve();
+    expect(sendAdminAlertOnceEver).not.toHaveBeenCalled();
   });
 });

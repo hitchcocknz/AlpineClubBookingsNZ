@@ -4917,9 +4917,13 @@ Stripe call:
 - **The late-capture approval's happy-path close**
   (`markLateCaptureApprovalRefundRecoverySucceeded`) claims its row only while
   it is `PENDING`, with `attempts` 0, on the plan the approval just sent
-  (#4126). A row a worker has claimed or tried, or another writer re-planned, is
-  left to that writer, whose replay of the same keys reads the refund back and
-  closes it, writing the record once.
+  (#4126), through the one compare-and-set the doors share
+  (`untouchedPrePersistedRowWhere`). A row the runner has claimed or tried is
+  left to it: its replay of the same keys reads the refund back and closes it,
+  writing the record once. A re-plan of this row moves a slice only after
+  Stripe refused it, so it cannot follow an approval that made every slice; a
+  close that loses on a row still `PENDING` with `attempts` 0 is an anomaly,
+  logged and alerted to officers once for the row, naming the refund.
 - **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
   the attempt's `attempts` and a live claim, so an attempt the reaper gave up
   on cannot write `FAILED` over a reclaimed one. Not on the claim time: an

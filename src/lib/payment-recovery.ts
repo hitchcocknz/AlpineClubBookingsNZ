@@ -2228,7 +2228,7 @@ async function processBookingModificationRefundOperation(
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
+  const refundId = await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
     format,
     paymentId: operation.paymentId,
     amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
@@ -2299,6 +2299,7 @@ async function processBookingModificationRefundOperation(
       await finishApprovedLateCaptureRefundAfterReplay({
         ...operation,
         amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
+        refundId,
       });
     }
     return;
