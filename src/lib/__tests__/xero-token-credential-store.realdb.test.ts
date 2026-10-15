@@ -25,7 +25,7 @@
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
  *   pnpm exec vitest run src/lib/__tests__/xero-token-credential-store.realdb.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -69,6 +69,69 @@ describe("Xero token race DB safety guard (#3454)", () => {
     "not-a-url",
   ])("rejects unsafe target %s", (url) => {
     expect(() => assertSafeXeroTokenRaceDbUrl(url)).toThrow();
+  });
+});
+
+/** Also exercised without PostgreSQL, so cleanup failures cannot hide a secret leak. */
+async function tearDownXeroTokenRaceSuite(
+  savedAuthSecret: string | undefined,
+  cleanup: { tokens: () => Promise<unknown>; audit: () => Promise<unknown> } | undefined,
+): Promise<void> {
+  try {
+    if (cleanup) {
+      await cleanup.tokens();
+      await cleanup.audit();
+    }
+  } finally {
+    if (savedAuthSecret === undefined) delete process.env.AUTH_SECRET;
+    else process.env.AUTH_SECRET = savedAuthSecret;
+  }
+}
+
+describe("Xero token race teardown restores AUTH_SECRET (#4164)", () => {
+  let originalAuthSecret: string | undefined;
+
+  beforeEach(() => {
+    originalAuthSecret = process.env.AUTH_SECRET;
+  });
+
+  afterEach(() => {
+    if (originalAuthSecret === undefined) delete process.env.AUTH_SECRET;
+    else process.env.AUTH_SECRET = originalAuthSecret;
+  });
+
+  describe.each([undefined, "race-4164-previous-secret", ""])("previous secret %j", (savedAuthSecret) => {
+    it.each(["tokens", "audit"] as const)("restores after %s cleanup rejects and preserves its error", async (failingStep) => {
+      process.env.AUTH_SECRET = "race-4164-temporary-secret";
+      const error = new Error(`${failingStep} cleanup failed`);
+      const cleanup = {
+        tokens: vi.fn(async () => {}),
+        audit: vi.fn(async () => {}),
+      };
+      cleanup[failingStep].mockRejectedValueOnce(error);
+
+      await expect(tearDownXeroTokenRaceSuite(savedAuthSecret, cleanup)).rejects.toBe(error);
+
+      expect(process.env.AUTH_SECRET).toBe(savedAuthSecret);
+      expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(savedAuthSecret !== undefined);
+      expect(cleanup.tokens).toHaveBeenCalledOnce();
+      expect(cleanup.audit).toHaveBeenCalledTimes(failingStep === "tokens" ? 0 : 1);
+    });
+
+    it("restores after successful cleanup", async () => {
+      process.env.AUTH_SECRET = "race-4164-temporary-secret";
+      const cleanup = {
+        tokens: vi.fn(async () => {}),
+        audit: vi.fn(async () => {}),
+      };
+
+      await tearDownXeroTokenRaceSuite(savedAuthSecret, cleanup);
+
+      expect(process.env.AUTH_SECRET).toBe(savedAuthSecret);
+      expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(savedAuthSecret !== undefined);
+      expect(cleanup.tokens).toHaveBeenCalledOnce();
+      expect(cleanup.audit).toHaveBeenCalledOnce();
+    });
   });
 });
 
@@ -124,14 +187,17 @@ const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
     });
 
     afterAll(async () => {
-      if (prisma) {
-        await clearTokens();
-        await prisma.auditLog.deleteMany({
-          where: { entityId: `${store.XERO_OAUTH_TOKEN_PROVIDER}:${store.XERO_OAUTH_TOKEN_KEY}` },
-        });
-      }
-      if (previousAuthSecret === undefined) delete process.env.AUTH_SECRET;
-      else process.env.AUTH_SECRET = previousAuthSecret;
+      await tearDownXeroTokenRaceSuite(
+        previousAuthSecret,
+        prisma
+          ? {
+              tokens: clearTokens,
+              audit: () => prisma.auditLog.deleteMany({
+                where: { entityId: `${store.XERO_OAUTH_TOKEN_PROVIDER}:${store.XERO_OAUTH_TOKEN_KEY}` },
+              }),
+            }
+          : undefined,
+      );
     });
 
     it("lets exactly one of several simultaneous claims take the lease", async () => {
