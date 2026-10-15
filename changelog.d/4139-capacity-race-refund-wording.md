@@ -2,8 +2,18 @@
   paying no longer says "refunded" before the refund is made (#4125).** The
   cancellation is recorded before the card refund is attempted, and it used
   to say the booking was "cancelled and refunded". Now it says the full amount
-  "is being refunded", and the refund is recorded once it is actually made.
-  If the card refund fails or the card provider refuses it, the app keeps
-  retrying it, and the booking page now says the amount "is on its way back
-  to your original payment method" rather than "no refund was due".
-  The booking page also no longer says the member cancelled it themselves.
+  "is being refunded", and the booking page says the booking was cancelled
+  because the dates filled up while the payment was going through, rather
+  than that the member cancelled it.
+- **The refund is recorded once it is made, by whichever attempt makes it.**
+  If the immediate card refund fails or the card provider refuses it, the
+  app's payment retries make it later, and the retry that makes it now
+  records it on the booking's history, so the booking page says it was
+  refunded instead of "on its way" forever. The record is written once, for
+  the amount actually refunded rather than the full charge.
+- **A card refund the retries could not make no longer reads as "on its way".**
+  On the booking page and the payment link page, a cancelled booking's card
+  refund that has not been made yet says where it stands: on its way to the
+  member's original payment method while it is being retried, and "the club
+  will be in touch" once the retries have stopped. One wording, "is on its way
+  to your original payment method", is used for a card refund not yet made.

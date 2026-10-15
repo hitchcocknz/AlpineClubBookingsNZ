@@ -1688,6 +1688,24 @@ surface show nothing new. The rest of the audit trail (recovery-operation row,
 `PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
 is unchanged.
 
+Capacity race (#740, #4125): a payment that succeeds after the final capacity
+claim failed cancels the booking in the claim, which also writes the
+`capacity_claim_failed_refund_recovery_<bookingId>_<pi>` row with the frozen
+refund plan. The `CANCELLED` event (written before the refund is attempted)
+says the full amount "is being refunded" and carries
+`cancelledBecause: "capacity_race"`, so the member is never told they
+cancelled it. The `REFUNDED` event is written once the refund is made, for the
+plan's total (never the full charge), by whichever close moves the row to
+`SUCCEEDED`: the inline attempt's close or the recovery runner's
+(`recordCapacityRaceRefundEvent`). A close that finds the row already closed
+writes nothing, so the event lands exactly once. Until it lands, the booking
+page and the payment-link page read the row
+(`readCancelledCardRefundState`, which reads a member cancel's
+`booking_cancel_refund_recovery_<bookingId>` row the same way): still being
+sent says "on its way to your original payment method"; a dead row (retries
+spent, or failed with no retry) says the club will be in touch; a row closed
+without the event says it was refunded, or paid back another way.
+
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 
 A PENDING booking with non-member guests is not charged at booking time; the
