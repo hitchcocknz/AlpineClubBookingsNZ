@@ -10,9 +10,20 @@ BEGIN;
 --   1. ADD COLUMN, nullable, no default: catalog-only, but it takes ACCESS
 --      EXCLUSIVE on "PaymentTransaction" and holds it to COMMIT, so no row
 --      can be inserted, updated or moved while the rows are numbered below.
---   2. Number every existing row 1..n by `("createdAt", ctid)`. Under that
---      lock `ctid` is the heap order every reader meets a tie in today, so
---      each stored tie keeps the order it is read in now.
+--   2. Number every existing row 1..n by `createdAt`, and within a tie
+--      (owner decision, 15 Oct 2026, #4132 comment 6189834084) RETIRED rows
+--      first, then LIVE rows, then `ctid`. Stored rows carry no record of the
+--      order they were inserted in, so this is a rule, not the history: it puts
+--      "the latest" (the highest number) of a tie on the live charge or ask,
+--      which is safe for money. Retired means: FAILED (there is no CANCELED
+--      ledger status - a cancelled intent's row is FAILED), withdrawn by an
+--      officer (`withdrawnAt`), or a still-PENDING/PROCESSING row whose intent
+--      is queued for cancellation (a CANCEL_PAYMENT_INTENT recovery names the
+--      row or its intent) - an ask superseded by a later one. `ctid` alone
+--      would make the most recently UPDATED row "latest", which for an unpaid
+--      ask is usually the superseded one its cancel just wrote. The order of a
+--      stored tie can therefore change at this release; the owner counts the
+--      stored ties before deploying (docs/BLUE_GREEN_MIGRATION_SAFETY.tsv).
 --   3. An owned INTEGER sequence, set so its next value is above every
 --      numbered row (1 on an empty table).
 --   4. SET DEFAULT nextval(...): a draining old colour's INSERT omits the
@@ -30,8 +41,20 @@ ALTER TABLE "PaymentTransaction" ADD COLUMN "insertionSeq" INTEGER;
 UPDATE "PaymentTransaction" AS "row"
 SET "insertionSeq" = "ranked"."seq"
 FROM (
-  SELECT "id", row_number() OVER (ORDER BY "createdAt", ctid) AS "seq"
-  FROM "PaymentTransaction"
+  SELECT t."id", row_number() OVER (
+    ORDER BY t."createdAt",
+      CASE
+        WHEN t."status" = 'FAILED' OR t."withdrawnAt" IS NOT NULL THEN 0
+        WHEN t."status" IN ('PENDING', 'PROCESSING') AND EXISTS (
+          SELECT 1 FROM "PaymentRecoveryOperation" AS "cancel"
+          WHERE "cancel"."type" = 'CANCEL_PAYMENT_INTENT'
+            AND ("cancel"."paymentTransactionId" = t."id" OR "cancel"."paymentIntentId" = t."stripePaymentIntentId")
+        ) THEN 0
+        ELSE 1
+      END,
+      t.ctid
+  ) AS "seq"
+  FROM "PaymentTransaction" AS t
 ) AS "ranked"
 WHERE "row"."id" = "ranked"."id";
 
