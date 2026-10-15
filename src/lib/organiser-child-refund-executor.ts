@@ -38,6 +38,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { EXCLUDED_LEDGER_REFUND_STATUSES, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
+import { READ_BACK_BUDGET_MS, READ_BACK_TIMEOUT_MS } from "@/lib/card-refund-status-sync";
 import { lockPaymentForRefundedTotal, recordStripeRefundLedgerEntry } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import {
@@ -301,6 +302,9 @@ export async function processOrganiserChildRefundOperation(
 export async function reconcilePendingOrganiserChildRefunds(
   stripe: { retrieveRefund: typeof retrieveRefund } = { retrieveRefund },
   limit = 25,
+  // #4130: bounded as the card-refund read-back after it is, so a Stripe
+  // brown-out never stalls the payments cron here.
+  budgetMs = READ_BACK_BUDGET_MS,
 ): Promise<{ checked: number; reversed: number }> {
   const pending = await prisma.paymentRefund.findMany({
     where: {
@@ -313,10 +317,14 @@ export async function reconcilePendingOrganiserChildRefunds(
     take: limit,
   });
   let reversed = 0;
+  let checked = 0;
+  const startedAt = performance.now();
   for (const row of pending) {
+    if (performance.now() - startedAt >= budgetMs) break;
+    checked += 1;
     let refund: Stripe.Refund;
     try {
-      refund = await stripe.retrieveRefund(row.stripeRefundId);
+      refund = await stripe.retrieveRefund(row.stripeRefundId, { timeoutMs: READ_BACK_TIMEOUT_MS });
     } catch (err) {
       logger.error({ err, stripeRefundId: row.stripeRefundId }, "Could not read an organiser child refund back from Stripe");
       continue;
@@ -404,7 +412,7 @@ export async function reconcilePendingOrganiserChildRefunds(
       );
     }
   }
-  return { checked: pending.length, reversed };
+  return { checked, reversed };
 }
 
 /**
