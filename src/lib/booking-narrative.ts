@@ -58,7 +58,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { nothingToPayNarrative, nothingToPayWithFinancialReviewNarrative } from "@/lib/booking-narrative-nothing-to-pay";
 import type { BookingAmountOwed } from "@/lib/booking-payment-state";
-import { buildCancelledPostPaymentNarrative } from "@/lib/booking-narrative-cancelled-post-payment";
+import { buildCancelledPostPaymentNarrative, capacityRacePaidEvent } from "@/lib/booking-narrative-cancelled-post-payment";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 
 export type BookingNarrativeState =
@@ -303,7 +303,7 @@ function buildCancelledNarrative(
 
   const paidEvent = events.find(
     (e) => PAID_EVENT_TYPES.includes(e.type) && (e.amountCents ?? 0) > 0
-  );
+  ) ?? capacityRacePaidEvent(cancelEvent); // #4125: that settle records no MEMBER_PAID.
 
   if (paidEvent) {
     // #2008 / #3340 / #3827: a refund that settles something OTHER than the

@@ -25,8 +25,11 @@ import { formatCents } from "@/lib/utils";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
 
-/** #4125: a dead card refund's ending - the club follows it up, never "on its way" (`INV-SSOT`). */
-const STALLED_CARD_REFUND_ENDING = "; the club will be in touch about the card refund";
+/** #4125: what the club follows up - a dead card refund, a part no refund covers - as the clause's ending (`INV-SSOT`). */
+function clubWillBeInTouch(subjects: string[]): string {
+  return subjects.length > 0 ? `; the club will be in touch about ${subjects.join(" and ")}` : "";
+}
+const STALLED_CARD_REFUND = "the card refund";
 
 /** #4097, #4125: one card refund, by where it stands - the shortfall's card part and a whole card refund alike (`INV-SSOT`). */
 function cardRefundClause(amount: string, state: CardRefundState, refundedOn: string | null): string {
@@ -85,7 +88,19 @@ function cardShortfallClause(
   if (retainedAmountCents > 0) clauses.push(`${money(retainedAmountCents)} was retained`);
   const joined = clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? "no refund was due");
   // #4125: a dead card part is the club's to follow up.
-  return parts.cardCents > 0 && statuses.card === "stalled" ? `${joined}${STALLED_CARD_REFUND_ENDING}` : joined;
+  return `${joined}${clubWillBeInTouch(parts.cardCents > 0 && statuses.card === "stalled" ? [STALLED_CARD_REFUND] : [])}`;
+}
+
+/**
+ * #4125: the capacity race's payment, as the paid fact the narrative opens
+ * with. That settle cancels instead of recording MEMBER_PAID, so without this
+ * the page would say no payment had been taken. The CANCELLED snapshot froze
+ * what was paid, and the payment completed as the booking was cancelled.
+ */
+export function capacityRacePaidEvent(cancelEvent: NarrativeEvent | undefined): NarrativeEvent | undefined {
+  const snapshot = asCancellationSnapshot(cancelEvent?.snapshot);
+  if (!cancelEvent || snapshot?.cancelledBecause !== "capacity_race" || !(snapshot.paidAmountCents > 0)) return undefined;
+  return { type: BookingEventType.MEMBER_PAID, occurredAt: cancelEvent.occurredAt, amountCents: snapshot.paidAmountCents, reason: null, snapshot: null };
 }
 
 function asCancellationSnapshot(
@@ -126,6 +141,7 @@ export function buildCancelledPostPaymentNarrative(
       : `You cancelled this booking on ${cancelOn} after paying ${formatCents(paidAmountCents, format)} on ${paidOn}.`;
 
   let settlementClause: string;
+  const followUps: string[] = [];
   if (snapshot?.cardShortfall) {
     settlementClause = cardShortfallClause(snapshot.cardShortfall, cardShortfallStatuses, {
       cardRefundedOn: settlementEvent ? club.instantDate(settlementEvent.occurredAt) : null,
@@ -177,10 +193,17 @@ export function buildCancelledPostPaymentNarrative(
     const state = cardRefundState ?? "on-its-way";
     const refund = cardRefundClause(formatCents(settledAmountCents, format), state, null);
     const retained = retainedAmountCents > 0 ? ` and ${formatCents(retainedAmountCents, format)} was retained` : "";
-    settlementClause = `${refund}${retained}${state === "stalled" ? STALLED_CARD_REFUND_ENDING : ""}`;
+    settlementClause = `${refund}${retained}`;
+    if (state === "stalled") followUps.push(STALLED_CARD_REFUND);
   } else {
     settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents, format)} was retained`;
   }
+  // #4125: a capacity race refunds what the payment ledger showed refundable,
+  // which can be less than the charge; the snapshot keeps nothing back, so the
+  // rest is neither refunded nor retained - say so, never "no further payment".
+  const unaccountedCents = capacityRace ? paidAmountCents - settledAmountCents - retainedAmountCents : 0;
+  if (unaccountedCents > 0) followUps.push(`the remaining ${formatCents(unaccountedCents, format)}`);
+  settlementClause += clubWillBeInTouch(followUps);
 
   return {
     state: "cancelled_post_payment",

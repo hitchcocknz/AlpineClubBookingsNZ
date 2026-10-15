@@ -1419,6 +1419,10 @@ describe("payment recovery worker", () => {
     await processPaymentRecoveryOperations({ limit: 1 });
 
     expect(mockQueueLateCaptureRefundCreditNote).not.toHaveBeenCalled();
+    // #4125: the inline door can close it first, so losing that race is expected - debug, not a warning.
+    const lostClose = ([, message]: unknown[]) => typeof message === "string" && message.includes("completion matched no live operation");
+    expect(vi.mocked(logger.warn).mock.calls.filter(lostClose)).toHaveLength(0);
+    expect(vi.mocked(logger.debug).mock.calls.filter(lostClose)).toHaveLength(1);
   });
 
   it("replays a byte-identical refund-request Stripe body after a lost inline recording, so it converges instead of hitting idempotency_error (#1507)", async () => {

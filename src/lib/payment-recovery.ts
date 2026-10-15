@@ -1203,7 +1203,9 @@ async function enqueueSupersededPaymentRefundRecovery({
  * verdict is a claim a caller can hang a once-only epilogue off - rather than
  * off a re-derived condition that a partially-applied replay can make true
  * twice. #4125: `store` closes it inside a caller's transaction; `lossExpected`
- * (a replay the inline door may already have closed) logs a lost close at debug.
+ * logs a lost close at debug, for a replay whose inline door can close the same
+ * row first - the duplicate capture, the treasurer-approved late capture and
+ * the capacity race - where losing is an expected outcome, not an anomaly.
  */
 async function completePaymentRecoveryOperation(
   operationId: string,

@@ -407,6 +407,34 @@ describe("resolveBookingNarrative", () => {
     expect(made.message).not.toContain("cancellation policy");
   });
 
+  // #4125: the capacity race's settle cancels instead of recording MEMBER_PAID,
+  // and its plan refunds what the payment ledger shows refundable - which can
+  // be less than the charge. The paid fact comes from the CANCELLED snapshot,
+  // and the part no refund covers is the club's to follow up.
+  describe("a capacity-race cancel, as its settle writes it (#4125)", () => {
+    function raceCancel(settledAmountCents: number) {
+      return event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
+        amountCents: 10000,
+        snapshot: { policySummary: "x", refundMethod: "card", cancelledBecause: "capacity_race", refundPercentage: 100, paidAmountCents: 10000, settledAmountCents, retainedAmountCents: 0 },
+      });
+    }
+    const narrate = (events: NarrativeEvent[], cardRefundState?: "on-its-way" | "stalled") =>
+      resolveBookingNarrative({ club: CLUB, booking: booking({ status: "CANCELLED" }), events, cardRefundState }, CLUB_FORMAT_TEST).message;
+    const OPENING = "This booking was cancelled on 5 May 2026, after you paid $100.00 on 5 May 2026, because the dates filled up while your payment was going through.";
+
+    it("with no MEMBER_PAID event, opens with the payment the snapshot froze - never 'no payment had been taken'", () => {
+      expect(narrate([raceCancel(10000)])).toBe(`${OPENING} $100.00 is on its way to your original payment method. No further payment is required.`);
+    });
+
+    it.each([
+      ["refunded", [raceCancel(8000), event(BookingEventType.REFUNDED, "2026-05-05T00:00:00.000Z", { amountCents: 8000 })], undefined, "$80.00 was refunded on 5 May 2026; the club will be in touch about the remaining $20.00."],
+      ["on its way", [raceCancel(8000)], "on-its-way", "$80.00 is on its way to your original payment method; the club will be in touch about the remaining $20.00."],
+      ["stalled", [raceCancel(8000)], "stalled", "$80.00 is being refunded to you; the club will be in touch about the card refund and the remaining $20.00."],
+    ] as const)("MUTATION: a refund short of the charge, %s, names the rest", (_label, events, state, clause) => {
+      expect(narrate([...events], state)).toBe(`${OPENING} ${clause} No further payment is required.`);
+    });
+  });
+
   // #4125: a card cancel's refund with no REFUNDED event says where its
   // recovery row stands (`readCancelledCardRefundState`), with what was kept.
   describe("a card refund with no REFUNDED event, by its recovery row (#4125)", () => {

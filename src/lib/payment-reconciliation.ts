@@ -2215,7 +2215,7 @@ export async function markBookingPaymentSucceeded({
         refundMethod: "card", cancelledBecause: "capacity_race",
         refundPercentage: 100,
         paidAmountCents: amountCents,
-        settledAmountCents: amountCents,
+        settledAmountCents: reconciliation.plannedRefundCents, // #4125: what the plan refunds; any rest is the club's to follow up.
         retainedAmountCents: 0,
       },
     });

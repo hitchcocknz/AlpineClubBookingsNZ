@@ -190,6 +190,8 @@ import {
   markBookingSetupIntentSucceeded,
 } from "@/lib/payment-reconciliation";
 import logger from "@/lib/logger";
+import { resolveBookingNarrative, type NarrativeEvent } from "@/lib/booking-narrative";
+import { bindClubTime, requireClubTimeZone } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { buildCapacityClaimFailedRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 
@@ -1161,6 +1163,18 @@ describe("markBookingPaymentSucceeded", () => {
       expect(refunded).toEqual([
         expect.objectContaining({ amountCents: 9000, reason: "Automatic refund after lodge capacity was no longer available." }),
       ]);
+
+      // The member's page, from exactly what this settle wrote: paid, refunded, and the rest followed up.
+      const written = bookingEvents.create.mock.calls.map(([args]) => (args as { data: Omit<NarrativeEvent, "occurredAt"> }).data);
+      expect(written.find((event) => event.type === "CANCELLED")?.snapshot).toMatchObject({ paidAmountCents: 10000, settledAmountCents: 9000, retainedAmountCents: 0 });
+      const narrative = resolveBookingNarrative({
+        club: bindClubTime(requireClubTimeZone("Pacific/Auckland"), CLUB_FORMAT_TEST),
+        booking: { status: "CANCELLED", finalPriceCents: 10000, amountOwed: { owedCents: 0, dueCents: 0, appliedCreditCents: 0 }, checkIn: new Date("2026-04-10T00:00:00.000Z"), checkOut: new Date("2026-04-12T00:00:00.000Z"), firstName: "Alice", adminReviewStatus: null, adminReviewNotes: null, adminReviewReason: null },
+        events: written.map((event) => ({ ...event, occurredAt: new Date("2026-05-05T00:00:00.000Z") })),
+      }, CLUB_FORMAT_TEST);
+      expect(narrative.message).toBe(
+        "This booking was cancelled on 5 May 2026, after you paid $100.00 on 5 May 2026, because the dates filled up while your payment was going through. $90.00 was refunded on 5 May 2026; the club will be in touch about the remaining $10.00. No further payment is required.",
+      );
     });
 
     // #4125: the event is the close's - written only by the close that moved
@@ -1179,6 +1193,27 @@ describe("markBookingPaymentSucceeded", () => {
 
       expect(result.outcome).toBe("cancelled_refunded");
       expect(bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string } }).data.type)).toEqual(["CANCELLED"]);
+    });
+
+    // #4125: the close and its REFUNDED insert are one transaction. An insert
+    // the database refuses rolls the close back (the row stays open for the
+    // runner's replay); the door logs it and still reports the refund made -
+    // nothing throws out of the settle.
+    it("a refused REFUNDED insert is logged and the refund still reads made (#4125)", async () => {
+      primeCapacityRaceLoss();
+      // The CANCELLED event first, then the REFUNDED insert, refused once.
+      bookingEvents.create.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("insert refused"));
+
+      const result = await markBookingPaymentSucceeded({
+        format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId: "pi_race", amountCents: 10000, paymentMethodId: "pm_123",
+      });
+
+      expect(result.outcome).toBe("cancelled_refunded");
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingId: "booking-1", paymentIntentId: "pi_race", err: expect.objectContaining({ message: "insert refused" }) }),
+        "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently",
+      );
+      expect(bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string } }).data.type)).toEqual(["CANCELLED", "REFUNDED"]);
     });
 
     // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
