@@ -1,10 +1,8 @@
 import type { ManualRefundTaskKind, ManualRefundTaskStatus } from "@prisma/client";
 
-import {
-  getRemainingRefundableCentsNetOf,
-  type BookingPaymentState,
-} from "@/lib/booking-payment-state";
+import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { sumInternetBankingLateCashCreditCents } from "@/lib/internet-banking-late-cash-credit";
+import { openCardRefundOwedCents, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
 
 /**
  * #3213 (epic #2797): WHICH FINANCE-QUEUE ITEMS CAN BE SETTLED AT ALL, and the
@@ -445,22 +443,27 @@ export const OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT = {
   select: { amountCents: true },
 } as const;
 
-/** A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads. */
-export function refundAppealCeiling(
-  payment:
-    | (BookingPaymentState & { manualRefundTasks?: readonly { amountCents: number | null }[] })
-    | null
-    | undefined,
-  creditsFromCancellation:
-    | readonly { amountCents: number; description: string | null; type?: string | null }[]
-    | null
-    | undefined,
-): number {
-  return getRemainingRefundableCentsNetOf(
-    payment,
+/**
+ * A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads and
+ * (#4124) the payment's open card-refund debts (`netCollectedCardRefundSelect`),
+ * netted as `refundAppealHandedBackParts` nets them on the server, so a screen
+ * offers the ceiling the route enforces. `cardRefundOwedCents` is what that debt
+ * actually took off (never more than the ceiling held without it), for the line
+ * saying why the ceiling is lower.
+ */
+export function refundAppealCeilingParts(
+  payment: (CardRefundOwedPaymentRow & { manualRefundTasks?: readonly { amountCents: number | null }[] }) | null | undefined,
+  creditsFromCancellation: readonly { amountCents: number; description: string | null; type?: string | null }[] | null | undefined,
+): { ceilingCents: number; cardRefundOwedCents: number } {
+  const promisedCents =
     sumOpenNonCancellationHandBackCents(payment?.manualRefundTasks) +
-      sumInternetBankingLateCashCreditCents(creditsFromCancellation),
-  );
+    sumInternetBankingLateCashCreditCents(creditsFromCancellation);
+  const cardDebtCents = payment ? openCardRefundOwedCents(payment) : 0;
+  const withoutCardDebtCents = getRemainingRefundableCentsNetOf(payment, promisedCents);
+  return {
+    ceilingCents: getRemainingRefundableCentsNetOf(payment, promisedCents + cardDebtCents),
+    cardRefundOwedCents: Math.min(cardDebtCents, withoutCardDebtCents),
+  };
 }
 
 /**

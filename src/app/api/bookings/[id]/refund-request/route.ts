@@ -152,11 +152,11 @@ export async function POST(
   }
 
   // #3827 (`INV-PAY-118`): what the member may ask for is the refundable cash
-  // NET of every refund the club has already promised back by bank transfer
-  // and not yet sent, and of the account credit already minted from a late
-  // bank transfer - the same figure the approval caps at. Advisory here and
-  // read without a lock: an appeal moves no money, and the approval re-reads
-  // it under `lock(1)` before anything is approved.
+  // NET of every refund promised back by bank transfer and not yet sent, of
+  // the account credit minted from a late bank transfer, and (#4124) of card
+  // refunds not yet made - the figure the approval caps at. Advisory, read
+  // without a lock: an appeal moves no money, and the approval re-reads it
+  // under `lock(1)` and the Payment row before anything is approved.
   // #3956 (`INV-PAY-123`): a booking the group organiser paid for by card is
   // refunded out of the organiser's combined payment, so what it can return is
   // the room that payment and this booking still have - the figure the
@@ -184,7 +184,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "Everything still refundable on this booking is already being returned to you, by bank transfer or as account credit, so there is nothing further to appeal for.",
+          "Everything still refundable on this booking is already being returned to you, to your card, by bank transfer or as account credit, so there is nothing further to appeal for.",
       },
       { status: 400 }
     );

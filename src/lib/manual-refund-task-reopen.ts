@@ -15,6 +15,7 @@ import {
 } from "@/lib/manual-refund-task-settlement-rules";
 import { recordManualRefundTaskReopenAudit } from "@/lib/manual-refund-task-reopen-audit";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
+import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import {
   MANUAL_PAYMENT_NOTE_MAX,
   normaliseManualPaymentNote,
@@ -232,8 +233,15 @@ export async function reopenManualRefundTask({
     // #3827 (`INV-PAY-117`): never promise back more cash than was taken - for
     // an edit's refund and (D-3813-7) an approved appeal's alike, an appeal's
     // measured by the appeal's own ceiling (`INV-PAY-118`: every open
-    // hand-back and the late-cash credit too). Read under lock(1), which every
-    // edit, acceptance, paid cancel and approval holds.
+    // hand-back, the late-cash credit and, #4124, the card refunds still owed).
+    // Read under lock(1), which every edit, acceptance, paid cancel and
+    // approval holds - and, for an appeal's task, the Payment row too (#4124
+    // review F2; `lock(1)` then the Payment row, `INV-LOCK-002`), which the
+    // refunded-total writers, a cancellation hand-back's completion and the
+    // failed-later card refund debt hold without `lock(1)`.
+    if (isNonCancellationHandBackTask(task) && isRefundRequestHandBackTask(task) && task.payment) {
+      await lockPaymentForRefundedTotal(tx, task.payment.id);
+    }
     if (
       isNonCancellationHandBackTask(task) &&
       (task.amountCents ?? 0) >

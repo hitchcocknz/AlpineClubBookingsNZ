@@ -98,3 +98,23 @@ export function refundAppealOutstandingLines(
   }
   return lines
 }
+
+/**
+ * #4124 (`INV-PAY-118`): why an appeal's ceiling is lower than the payment's
+ * refundable cash - a card refund on the payment not yet made (being retried
+ * after a refusal or a later failure, or stopped and listed on Stuck states for
+ * "Paid another way"), which the ceiling nets so the money is not promised
+ * twice (`refundAppealCeilingParts`). To the officer under "Max refundable",
+ * and to the booking's owner in the appeal form. The owner is not told "to your
+ * card": a stopped one may be paid back another way.
+ */
+export function appealCardRefundOwedOfficerNote(amount: string): string {
+  return `Less ${amount} of card refund not yet made for this payment (retrying, or stopped and listed on Stuck states).`
+}
+
+/** The owner's line, beside the form's maximum; `ceilingIsZero` when that refund is everything still refundable. */
+export function appealCardRefundOwedMemberNote(amount: string, ceilingIsZero: boolean): string {
+  return ceilingIsZero
+    ? `${amount} is still owed back to you, so there is nothing more to appeal for while that refund is outstanding.`
+    : `${amount} is still owed back to you, so it is not part of this maximum.`
+}

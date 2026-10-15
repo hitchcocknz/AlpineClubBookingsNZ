@@ -9,7 +9,7 @@ import {
   hasCapturedPayment,
   recordedChangeFeeCents,
 } from "@/lib/booking-payment-state";
-import { refundAppealCeiling } from "@/lib/manual-refund-task-settlement-rules";
+import { refundAppealCeilingParts } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
 import {
   getNetCollectedCashParts,
@@ -108,9 +108,14 @@ export function resolveBookingDetailPayment({
   const showCancellationCreditLines = canSeeOwnerCredit;
   const latestRefundAppeal = booking.refundRequests[0] ?? null;
   // #3827 (`INV-PAY-118`): net of every hand-back still promised back by bank
-  // transfer and of the credit minted from late cash - the figure the appeal
-  // route caps at.
-  const maxRefundableCents = refundAppealCeiling(booking.payment, booking.creditsFromCancellation);
+  // transfer, of the credit minted from late cash and (#4124) of the card
+  // refunds still owed - the figure the appeal route caps at.
+  const appealCeiling = refundAppealCeilingParts(booking.payment, booking.creditsFromCancellation);
+  const maxRefundableCents = appealCeiling.ceilingCents;
+  // #4124: the card refund still owed that lowered it, for the appeal form's
+  // "still being refunded to your card" line. Owner-only: the line is
+  // second-person, about the owner's card.
+  const appealCardRefundOwedCents = isBookingOwner ? appealCeiling.cardRefundOwedCents : 0;
   // #1967: once the member's own place is settled by Internet Banking there is
   // no card on file for the later guest charge, so keep the guest-payment-link
   // affordance visible AFTER the switch too (the pre-switch warning below only
@@ -220,6 +225,7 @@ export function resolveBookingDetailPayment({
     showCancellationCreditLines,
     latestRefundAppeal,
     maxRefundableCents,
+    appealCardRefundOwedCents,
     showGuestPaymentLinkStandalone,
     savedCard,
     showSavePaymentMethodCard,
