@@ -71,9 +71,13 @@ export async function recordRefusedCardRefund(refund: Stripe.Refund): Promise<Re
   return "recorded";
 }
 
-/** One read's bound, with no retries, and the whole sweep's: a Stripe brown-out never stalls the cron behind it. */
-const READ_BACK_TIMEOUT_MS = 10_000;
-const READ_BACK_BUDGET_MS = 60_000;
+/**
+ * One read's bound, with no retries, and the whole sweep's: a Stripe brown-out
+ * never stalls the cron behind it. Shared by every refund read-back the
+ * payments cron runs (#4130: the organiser-child one too).
+ */
+export const READ_BACK_TIMEOUT_MS = 10_000;
+export const READ_BACK_BUDGET_MS = 60_000;
 
 /**
  * The payments cron's read-back: each card refund still recorded as neither

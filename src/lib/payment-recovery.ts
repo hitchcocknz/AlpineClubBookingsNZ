@@ -2233,7 +2233,7 @@ async function processBookingModificationRefundOperation(
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
+  const refundId = await refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) => refundPaymentTransactions({
     format,
     paymentId: operation.paymentId,
     amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
@@ -2283,10 +2283,8 @@ async function processBookingModificationRefundOperation(
   // inline success whose close was lost is not recorded twice.
   if (isLateCaptureRefundStripeKeyPrefix(operation.stripeKeyPrefix)) {
     if (await completePaymentRecoveryOperation(operation.id, { lossExpected: true })) {
-      await finishApprovedLateCaptureRefundAfterReplay({
-        ...operation,
-        amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),
-      });
+      const amountCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
+      await finishApprovedLateCaptureRefundAfterReplay({ ...operation, amountCents, refundId });
     }
     return;
   }

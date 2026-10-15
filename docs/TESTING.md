@@ -1456,6 +1456,15 @@ too. The helper accepts only `non-production`: a shared harness never
 declares itself the live site, and never weakens the production containment
 gate to make a suite pass.
 
+The harness checks this for every suite at once (#4107). It imports
+`src/lib/__tests__/support/race-harness-env-guard.ts` first, which snapshots
+`process.env` before any suite's hooks run, and its `afterAll` runs last. A
+variable left changed, added or removed by any suite fails the run, naming the
+variable. The one exemption is `DATABASE_URL` pointed at the race database,
+which every suite sets on purpose. It checks the end state, so a later
+suite's blanket restore could hide an earlier leak: put back only the variable
+your suite changed.
+
 A declared role is not a fix for a path a suite should never reach. #4013's H1
 case reached the remainder-note mint because its credit lots tied on the
 frozen clock; the cure was an explicit fixture chronology and a regression that
