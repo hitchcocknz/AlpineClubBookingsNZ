@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { bookingOwner } from "@/lib/booking-owner";
 import { auth } from "@/lib/auth";
 import { notFound, redirect } from "next/navigation";
@@ -15,7 +16,7 @@ import { BookingStayPreferences } from "./_components/booking-stay-preferences";
 import { BookingReviewNotices } from "./_components/booking-review-notices";
 import { BookingLinkedPartySections } from "./_components/booking-linked-party-sections";
 import { BookingConsentCards } from "./_components/booking-consent-cards";
-import { BookingStatusBanners } from "./_components/booking-status-banners";
+import { BookingStatusSection } from "./_components/booking-status-section";
 import { BookingAdminToolsSection } from "./_components/booking-admin-tools-section";
 import { BookingGuestDietaryCard } from "./_components/booking-guest-dietary-card";
 import { loadBookingDetail } from "./_lib/load-booking-detail";
@@ -335,17 +336,23 @@ export default async function BookingDetailPage({
         payment={payment}
       />
 
-      <BookingStatusBanners
-        booking={booking}
-        club={club}
-        money={money}
-        viewer={viewer}
-        access={access}
-        party={party}
-        payment={payment}
-        history={history}
-        messages={messages}
-      />
+      <Suspense fallback={<p className="text-sm text-muted-foreground" role="status">Checking additional-payment information…</p>}>
+        <BookingStatusSection
+          actorId={session.user.id}
+          modules={modules}
+          bookingMessages={bookingMessages}
+          bookingLodgeEmailSettings={bookingLodgeEmailSettings}
+          booking={booking}
+          club={club}
+          money={money}
+          viewer={viewer}
+          access={access}
+          party={party}
+          payment={payment}
+          history={history}
+          messages={messages}
+        />
+      </Suspense>
 
       <section id="details" className="scroll-mt-20">
         <BookingEditor
