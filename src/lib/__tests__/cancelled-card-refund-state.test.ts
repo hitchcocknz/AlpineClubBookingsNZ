@@ -77,21 +77,30 @@ describe("readCancelledCardRefund (#4125)", () => {
 
   it("a closed row with a 'Paid another way' record reads as paid another way, with what that record paid back (#4145)", async () => {
     db.findMany.mockResolvedValue([row({ status: PaymentRecoveryOperationStatus.SUCCEEDED, nextRetryAt: null })]);
-    // Paid back in part: $50.00 of the $70.00 still owed.
-    db.findClose.mockResolvedValue({ amountCents: 5_000 });
+    // Paid back in part: $50.00 of the $70.00 still owed, so $20.00 left unpaid.
+    db.findClose.mockResolvedValue({ amountCents: 5_000, raisedAmountCents: 7_000 });
 
-    expect(await readCancelledCardRefund("booking-1")).toEqual({ cardRefundState: "paid-another-way", cardRefundPaidBackCents: 5_000 });
+    expect(await readCancelledCardRefund("booking-1")).toEqual({
+      cardRefundState: "paid-another-way",
+      cardRefundClose: { paidBackCents: 5_000, unpaidCents: 2_000, raisedCents: 7_000 },
+    });
     expect(db.findClose).toHaveBeenCalledWith({
       where: { occurrenceKey: { in: expect.arrayContaining([expect.stringContaining("op-1")]) } },
-      select: { amountCents: true },
+      select: { amountCents: true, raisedAmountCents: true },
     });
   });
 
   it("#4145: a capacity race's rows paid another way read as what they paid back together; a row not paid another way carries no figure", async () => {
     const closed = (id: string) => row({ id, idempotencyKey: `capacity_claim_failed_refund_recovery_booking-1_pi_${id}`, status: PaymentRecoveryOperationStatus.SUCCEEDED, nextRetryAt: null });
     db.findMany.mockResolvedValue([closed("a"), closed("b")]);
-    db.findClose.mockResolvedValueOnce({ amountCents: 2_000 }).mockResolvedValueOnce({ amountCents: 3_000 });
-    expect(await readCancelledCardRefund("booking-1")).toEqual({ cardRefundState: "paid-another-way", cardRefundPaidBackCents: 5_000 });
+    db.findClose.mockResolvedValueOnce({ amountCents: 2_000, raisedAmountCents: 2_000 }).mockResolvedValueOnce({ amountCents: 3_000, raisedAmountCents: 4_000 });
+    expect(await readCancelledCardRefund("booking-1")).toEqual({
+      cardRefundState: "paid-another-way",
+      cardRefundClose: { paidBackCents: 5_000, unpaidCents: 1_000, raisedCents: 6_000 },
+    });
+    // A record that did not keep what was owed reads none.
+    db.findClose.mockResolvedValueOnce({ amountCents: 2_000, raisedAmountCents: null }).mockResolvedValueOnce({ amountCents: 3_000, raisedAmountCents: 3_000 });
+    expect((await readCancelledCardRefund("booking-1")).cardRefundClose?.raisedCents).toBeNull();
 
     db.findMany.mockResolvedValue([closed("a")]);
     db.findClose.mockResolvedValue(null);

@@ -338,7 +338,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           snapshot: { kind: "card_refund_made_before_paid_another_way" },
         },
       ]);
-      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundPaidBackCents: 3_000 });
+      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundClose: { paidBackCents: 3_000, unpaidCents: 0, raisedCents: 3_000 } });
     });
 
     it("a dead row reads as stalled - never on its way - and a row of another booking is not read", async () => {

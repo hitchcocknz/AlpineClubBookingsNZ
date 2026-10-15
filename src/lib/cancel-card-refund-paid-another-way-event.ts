@@ -13,10 +13,11 @@
  * close's status-guarded claim makes it once per row. Nothing made, nothing
  * written: the whole refund was paid another way.
  */
-import type { Prisma } from "@prisma/client";
+import { BookingEventType, type Prisma } from "@prisma/client";
 
 import { CAPACITY_RACE_REFUND_EVENT_REASON, recordCancelCardRefundEvent, recordRefundRowEvent } from "@/lib/booking-events";
 import type { ClubFormat } from "@/lib/club-format";
+import { isManualSettlementMarkerEvent } from "@/lib/manual-settlement-reversal-event";
 import { cardRefundMadeForOperation, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
 import {
   buildBookingCancellationRefundIdempotencyKey,
@@ -26,7 +27,10 @@ import {
 /**
  * What the row's own slices took from the refunds recorded on its payment, read
  * under the close's lock (`cardRefundMadeForOperation`) - never the payment's
- * cap on what is still owed - dated by the latest of them as Stripe made it.
+ * cap on what is still owed - dated by the latest of them as Stripe made it,
+ * never before the cancel itself: Stripe dates a refund in whole seconds, so
+ * one made in the cancel's own second can read as just before it, and the
+ * history would then tell the refund before the cancel.
  */
 export async function recordCardRefundMadeBeforePaidAnotherWay(
   tx: Prisma.TransactionClient,
@@ -38,9 +42,26 @@ export async function recordCardRefundMadeBeforePaidAnotherWay(
   if (!memberCancel && !capacityRace) return false;
   const { madeCents, lastMadeAt } = cardRefundMadeForOperation(payment, operation.id);
   if (madeCents <= 0) return false;
-  const made = { bookingId: operation.bookingId, amountCents: madeCents, actorMemberId: null, occurredAt: lastMadeAt ?? undefined, madeBeforePaidAnotherWay: true };
+  const made = {
+    bookingId: operation.bookingId,
+    amountCents: madeCents,
+    actorMemberId: null,
+    occurredAt: lastMadeAt ? await noEarlierThanTheCancel(tx, operation.bookingId, lastMadeAt) : undefined,
+    madeBeforePaidAnotherWay: true,
+  };
   if (memberCancel) return recordCancelCardRefundEvent(tx, { ...made, format });
   // A capacity race has a row per intent, each its own refund: no booking-wide once-check.
   await recordRefundRowEvent(tx, { ...made, reason: CAPACITY_RACE_REFUND_EVENT_REASON });
   return true;
+}
+
+/** `at`, or the booking's cancel if that came later (its settlement markers are not its cancel). */
+async function noEarlierThanTheCancel(tx: Prisma.TransactionClient, bookingId: string, at: Date): Promise<Date> {
+  const cancels = await tx.bookingEvent.findMany({
+    where: { bookingId, type: BookingEventType.CANCELLED },
+    orderBy: { occurredAt: "asc" },
+    select: { type: true, occurredAt: true, snapshot: true },
+  });
+  const cancel = cancels.find((event) => !isManualSettlementMarkerEvent(event));
+  return cancel && cancel.occurredAt.getTime() > at.getTime() ? cancel.occurredAt : at;
 }

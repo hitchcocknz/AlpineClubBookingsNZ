@@ -30,7 +30,8 @@ const mocks = vi.hoisted(() => ({
   noteCoverageCents: vi.fn(async () => 0),
   noteEligibleCashCents: vi.fn(async () => 0),
   // #4145: a cancel's made part, recorded as its card refund event inside the close.
-  findBookingEvents: vi.fn<(args: unknown) => Promise<Array<{ type: string; reason: string | null; snapshot: unknown }>>>(async () => []),
+  // #4145: the booking's events, by query - the cancel the made part is dated after, and the once-check's.
+  findBookingEvents: vi.fn<(args: unknown) => Promise<Array<{ type: string; reason?: string | null; snapshot: unknown; occurredAt?: Date }>>>(async () => []),
   createBookingEvent: vi.fn<(args: unknown) => Promise<unknown>>(async () => ({})),
 }));
 
@@ -242,6 +243,7 @@ const close = (
 beforeEach(() => {
   vi.clearAllMocks();
   calls.length = 0;
+  mocks.findBookingEvents.mockImplementation(async () => []);
   mocks.findOperation.mockResolvedValue(deadOperation());
   mocks.findPayment.mockResolvedValue(payment());
   mocks.findBooking.mockResolvedValue({ id: "b-1", lodgeId: "lodge-1", memberId: "member-1" });
@@ -392,7 +394,9 @@ describe("closing a dead card refund as paid another way", () => {
 
     await close(10_000, "Bank transfer", "full", 10_000);
 
-    expect(mocks.findBookingEvents).not.toHaveBeenCalled();
+    // Only the cancel the event is dated after is read: no booking-wide once-check.
+    expect(mocks.findBookingEvents).toHaveBeenCalled();
+    for (const [args] of mocks.findBookingEvents.mock.calls) expect(args).toMatchObject({ where: { type: "CANCELLED" } });
     expect(mocks.createBookingEvent).toHaveBeenCalledWith({
       data: {
         bookingId: "b-1",
@@ -404,6 +408,24 @@ describe("closing a dead card refund as paid another way", () => {
         snapshot: { kind: "card_refund_made_before_paid_another_way" },
       },
     });
+  });
+
+  it("#4145 MUTATION: a made part Stripe dated in the cancel's own second, just before it, is dated at the cancel - never before it in the history", async () => {
+    mixedSlices();
+    // The cancel at 00:00:00.400 on 25 June; Stripe's whole-second time for the latest refund reads 00:00:00.000.
+    const cancelledAt = new Date("2026-06-25T00:00:00.400Z");
+    mocks.findBookingEvents.mockImplementation(async (args) =>
+      (args as { where: { type: unknown } }).where.type === "CANCELLED" ? [{ type: "CANCELLED", occurredAt: cancelledAt, snapshot: { refundMethod: "card" } }] : [],
+    );
+
+    await close(10_000, "Bank transfer", "full", 10_000);
+
+    expect(mocks.findBookingEvents).toHaveBeenCalledWith({
+      where: { bookingId: "b-1", type: "CANCELLED" },
+      orderBy: { occurredAt: "asc" },
+      select: { type: true, occurredAt: true, snapshot: true },
+    });
+    expect(mocks.createBookingEvent).toHaveBeenCalledWith({ data: expect.objectContaining({ amountCents: 5_000, occurredAt: cancelledAt }) });
   });
 
   it.each([
@@ -468,7 +490,9 @@ describe("closing a dead card refund as paid another way", () => {
         refunds: [{ paymentTransactionId: "txn-1", amountCents: 5_000, status: "succeeded", createdAt: new Date("2026-06-20T01:00:00.000Z") }],
       }),
     );
-    mocks.findBookingEvents.mockResolvedValueOnce([{ type: "REFUNDED", reason: "50% refunded to the original payment method.", snapshot: null }]);
+    mocks.findBookingEvents.mockImplementation(async (args) =>
+      (args as { where: { type: unknown } }).where.type === "CANCELLED" ? [] : [{ type: "REFUNDED", reason: "50% refunded to the original payment method.", snapshot: null }],
+    );
 
     await close(10_000, "Bank transfer", "full", 10_000);
 
