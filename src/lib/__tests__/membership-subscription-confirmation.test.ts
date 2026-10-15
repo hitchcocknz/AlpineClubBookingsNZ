@@ -172,6 +172,40 @@ describe("membership subscription confirmation", () => {
     expect(keyV1).not.toBe(keyV0);
   });
 
+  it("confirming through a partly-reversed closed family invoices the family fee and leaves no OPEN warning behind (#4110 owner decision)", async () => {
+    mocks.fee.mockResolvedValue({ id: "fee-family", amountCents: 30_000, billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    mocks.memberFindMany.mockResolvedValue([{
+      id: "member-1", firstName: "Kid", lastName: "Member", email: "kid@example.test",
+      role: "USER", seasonalMembershipAssignments: [{ membershipType: {
+        id: "type-1", key: "FAMILY", name: "Family", subscriptionBehavior: "REQUIRED",
+      } }],
+      familyGroupMemberships: [{ familyGroupId: "family-1", familyGroup: { billingMembership: {
+        familyGroupId: "family-1",
+        member: { id: "parent-1", firstName: "Parent", lastName: "Member", email: "parent@example.test", active: true, archivedAt: null },
+      } } }],
+    }]);
+    mocks.chargeFindMany.mockResolvedValue([{
+      id: "charge-closed", familyGroupId: "family-1", membershipTypeId: "type-1", billingBasis: "PER_FAMILY", status: "NOT_REQUIRED",
+      coverage: [
+        { memberName: "Parent Member", subscription: { status: "PAID" } },
+        { memberName: "Kid Member", subscription: { status: "NOT_INVOICED" } },
+      ],
+    }]);
+    mocks.chargeUpsert.mockResolvedValue({ id: "charge-rebill" });
+    const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+    expect(preview.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
+
+    const result = await confirmSubscriptionBillingPreview({
+      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH",
+    });
+
+    expect(mocks.chargeUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ familyGroupId: "family-1", chargedAmountCents: 30_000, recipientMemberId: "parent-1" }),
+    }));
+    expect(mocks.exceptionUpsert).not.toHaveBeenCalled();
+    expect(result).toEqual({ chargeIds: ["charge-rebill"], exceptionCount: 0 });
+  });
+
   it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {
     mocks.fee.mockResolvedValue({
       id: "fee-1", amountCents: 12_000, billingBasis: "PER_MEMBER", prorationRule: "NONE",

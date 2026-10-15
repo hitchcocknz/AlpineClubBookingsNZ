@@ -670,51 +670,101 @@ describe("membership subscription billing", () => {
     ]);
   });
 
-  // Filter-aware mock: applies the query's where.status.notIn to a fixture, as
-  // the real database would, so a test sees exactly the rows the filter keeps.
+  // Filter-aware mock: applies the query's where.status (`not` or `notIn`) to
+  // a fixture, as the real database would, so a test sees exactly the rows the
+  // filter keeps.
   function chargesMatchingStatusFilter<T extends { status: string }>(fixture: T[]) {
-    return (args?: { where?: { status?: { notIn?: string[] } } }) => {
-      const excluded = args?.where?.status?.notIn ?? [];
+    return (args?: { where?: { status?: { not?: string; notIn?: string[] } } }) => {
+      const excluded = [
+        ...(args?.where?.status?.notIn ?? []),
+        ...(args?.where?.status?.not ? [args.where.status.not] : []),
+      ];
       return Promise.resolve(fixture.filter((charge) => !excluded.includes(charge.status)));
     };
   }
 
-  it.each([
-    ["VOIDED (its Xero invoice was voided, #2147)", "VOIDED"],
-    ["NOT_REQUIRED (an officer closed it as already paid, #4098/#4110)", "NOT_REQUIRED"],
-  ])("re-bills a new-system PER_FAMILY family once its charge is %s", async (_label, status) => {
-    // Both paths keep the charge row with familyGroupId intact for audit and
-    // release coverage (releasedAt set). The existingFamilyCharges query must
-    // exclude every no-invoice status so the retained row no longer populates
-    // billedFamilyTypes — otherwise it fires FAMILY_ALREADY_BILLED and blocks
-    // the family's re-bill forever (owner decision on #4098, 15 Oct 2026).
+  /** A family charge as the preview's query selects it, with its covered subscriptions. */
+  function familyCharge(status: string, coveredStatuses: Array<[string, string]> = [], overrides: Record<string, unknown> = {}) {
+    return {
+      id: `charge-${status.toLowerCase()}`,
+      familyGroupId: "family-1",
+      membershipTypeId: "type-1",
+      billingBasis: "PER_FAMILY",
+      status,
+      coverage: coveredStatuses.map(([memberName, subscriptionStatus]) => ({ memberName, subscription: { status: subscriptionStatus } })),
+      ...overrides,
+    };
+  }
+
+  async function previewFamily(charges: Array<ReturnType<typeof familyCharge>>, memberIds?: string[]) {
     const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
     mocks.effectiveFee.mockResolvedValue(annual);
-    mocks.charges.findMany.mockImplementation(chargesMatchingStatusFilter([
-      { id: "charge-retained", familyGroupId: "family-1", membershipTypeId: "type-1", status },
-    ]));
+    mocks.charges.findMany.mockImplementation(chargesMatchingStatusFilter(charges));
     mocks.coverage.findMany.mockResolvedValue([]); // released by the void or the close
-    mocks.subscriptions.findMany.mockResolvedValue([]); // not paid: the payment was reversed
+    mocks.subscriptions.findMany.mockResolvedValue([]); // the member being billed is not settled
     mocks.members.findMany.mockResolvedValue([
       member("re-billable", { familyGroupMemberships: [familyMembership()] }),
     ]);
-    const preview = await buildSubscriptionBillingPreview({
+    return buildSubscriptionBillingPreview({
       seasonYear: 2026,
       decisionDate: new Date("2026-08-01T00:00:00.000Z"),
+      ...(memberIds ? { memberIds } : {}),
     });
-    // The retained charge is excluded, so the family re-bills as one entry.
+  }
+
+  it("re-bills a new-system PER_FAMILY family once its charge is VOIDED (#2147): nobody paid it", async () => {
+    const preview = await previewFamily([familyCharge("VOIDED", [["Bill Member", "NOT_INVOICED"]])]);
     expect(preview.entries).toHaveLength(1);
-    expect(preview.entries[0]).toMatchObject({
-      billingBasis: "PER_FAMILY",
-      familyGroupId: "family-1",
-      recipient: { id: "billing-1" },
-    });
-    expect(preview.exceptions.some((row) => row.code === "FAMILY_ALREADY_BILLED")).toBe(false);
-    // The query carries the SHARED no-invoice set, the same one the unique
-    // index's predicate excludes (#4110).
+    expect(preview.entries[0]).toMatchObject({ billingBasis: "PER_FAMILY", familyGroupId: "family-1", recipient: { id: "billing-1" } });
+    expect(preview.exceptions).toEqual([]);
+    // The query leaves only VOIDED out; a closed charge is read and judged.
     expect(mocks.charges.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ status: { notIn: ["NOT_REQUIRED", "VOIDED"] } }),
+      where: expect.objectContaining({ status: { not: "VOIDED" } }),
     }));
+  });
+
+  it("a closed family whose covered members are all still settled stays billed: a NEW joiner raises FAMILY_ALREADY_BILLED (#4110 regression)", async () => {
+    const preview = await previewFamily(
+      [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID"], ["Cub Member", "NOT_REQUIRED"]])],
+      ["re-billable"],
+    );
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required" }) }),
+    ]);
+  });
+
+  it("a closed family every one of whose payments was reversed is billed again, with no warning (#4110)", async () => {
+    const preview = await previewFamily([familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED"], ["Kid Member", "NOT_INVOICED"]])]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.exceptions).toEqual([]);
+  });
+
+  it("a closed family with only SOME payments reversed is billed again, and the officer is warned that confirming invoices the family fee (#4110 owner decision)", async () => {
+    const preview = await previewFamily([familyCharge("NOT_REQUIRED", [["Bill Member", "PAID"], ["Kid Member", "NOT_INVOICED"]])]);
+    // The entry stays: confirming invoices it.
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0]).toMatchObject({ familyGroupId: "family-1" });
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({
+        code: "CLOSED_FAMILY_PARTLY_REVERSED",
+        familyGroupId: "family-1",
+        memberId: null,
+        message: expect.stringMatching(/only some members' payments have since been reversed \(Kid Member\)\. Confirming invoices the full family fee to Bill Member\./),
+        context: { closedChargeId: "charge-not_required", reversedMemberNames: ["Kid Member"] },
+      }),
+    ]);
+  });
+
+  it("a live family charge still bills its family beside a closed one", async () => {
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED"]]),
+      familyCharge("QUEUED", [], { id: "charge-live" }),
+    ], ["re-billable"]);
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-live" }) }),
+    ]);
   });
 
   it.each(["QUEUED", "CONFLICT", "EMAILED"])("control: a live (%s) PER_FAMILY charge still blocks with FAMILY_ALREADY_BILLED (#2147)", async (status) => {
@@ -724,7 +774,7 @@ describe("membership subscription billing", () => {
     const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
     mocks.effectiveFee.mockResolvedValue(annual);
     mocks.charges.findMany.mockImplementation(chargesMatchingStatusFilter([
-      { id: "charge-live", familyGroupId: "family-1", membershipTypeId: "type-1", status },
+      { id: "charge-live", familyGroupId: "family-1", membershipTypeId: "type-1", billingBasis: "PER_FAMILY", status, coverage: [] },
     ]));
     mocks.members.findMany.mockResolvedValue([
       member("late", { familyGroupMemberships: [familyMembership()] }),

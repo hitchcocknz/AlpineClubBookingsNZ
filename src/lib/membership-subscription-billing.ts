@@ -34,7 +34,12 @@ import { defaultMembershipTypeKeyForRole, storedRoleDefaultMembershipTypeWhere }
 import { getResolvedAccountMapping } from "@/lib/xero-mappings";
 import { subscriptionInvoiceOutboxRow } from "@/lib/xero-operation-outbox-payload";
 import { buildXeroIdempotencyKey, startXeroSyncOperation } from "@/lib/xero-sync";
-import { MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES } from "@/lib/subscription-charge-already-paid";
+import {
+  CLOSED_FAMILY_PARTLY_REVERSED_CODE,
+  isChargeClosedAsAlreadyPaid,
+  isInvoicingPreviewWarning,
+  isSubscriptionSettled,
+} from "@/lib/subscription-charge-already-paid";
 
 export class SubscriptionBillingError extends Error {
   constructor(message: string) {
@@ -53,7 +58,10 @@ export type SubscriptionBillingExceptionCode =
   | "INVALID_FAMILY_RECIPIENT"
   | "PER_FAMILY_FEE_IN_INDIVIDUAL_MODE"
   | "MISSING_XERO_ACCOUNT_MAPPING"
-  | "FAMILY_ALREADY_BILLED";
+  | "FAMILY_ALREADY_BILLED"
+  // #4110: a WARNING, not a block — the family entry it names is still
+  // confirmed and invoiced. Never persisted (see persistOpenExceptions).
+  | typeof CLOSED_FAMILY_PARTLY_REVERSED_CODE;
 
 // One resolved invoice line of an annual fee (#1932, E6). `xeroAccountCode` /
 // `xeroItemCode` carry the per-component override if set, otherwise null until the
@@ -434,20 +442,25 @@ export async function buildSubscriptionBillingPreview(input: {
         seasonYear: input.seasonYear,
         billingBasis: "PER_FAMILY",
         familyGroupId: { not: null },
-        // #2147 / #4110: a family charge that will never be invoiced — VOIDED
-        // (its Xero invoice was voided/deleted) or NOT_REQUIRED (an officer
-        // closed it as already paid, #4098) — has released its coverage and
-        // must NOT keep the family un-billable forever. Both keep the charge row
-        // with familyGroupId intact for audit; without this filter it would
-        // still populate billedFamilyTypes and fire FAMILY_ALREADY_BILLED. The
-        // family/type/season unique index excludes the same statuses (#4110),
-        // so the re-bill's new charge can be created beside the old row.
-        status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] },
+        // #2147: a VOIDED family charge (its Xero invoice was voided/deleted —
+        // nobody paid it) has released its coverage and must NOT keep the
+        // family un-billable forever, so it is left out here. A NOT_REQUIRED
+        // one (an officer closed it as already paid, #4098) IS read: it keeps
+        // the family billed — a new joiner still raises FAMILY_ALREADY_BILLED —
+        // until a covered member's payment is reversed (owner, #4110). The
+        // decision is `closedFamilyChargeStillBills` below, from the
+        // subscriptions on its (released) coverage.
+        status: { not: "VOIDED" },
       },
       select: {
         id: true,
         familyGroupId: true,
         membershipTypeId: true,
+        status: true,
+        billingBasis: true,
+        coverage: {
+          select: { memberName: true, subscription: { select: { status: true } } },
+        },
       },
     }),
     // #2147 FINDING 1 (family-level dedup): every family-group membership whose
@@ -692,10 +705,33 @@ export async function buildSubscriptionBillingPreview(input: {
     }
     return feeByTypeAndTier.get(memoKey) ?? null;
   };
-  const billedFamilyTypes = new Map(existingFamilyCharges.map((charge) => [
-    `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`,
-    charge.id,
-  ]));
+  // #4110 (owner, 15 Oct 2026): which family charges still bill their family.
+  // A live charge always does. A charge closed as already paid does while
+  // every subscription it covered is still settled; once a covered member's
+  // payment is reversed it stops, so the family is billed again — and when
+  // only SOME were reversed the preview warns the officer that confirming
+  // invoices the whole family fee (CLOSED_FAMILY_PARTLY_REVERSED). A live
+  // charge for the same key wins over a closed one.
+  const billedFamilyTypes = new Map<string, string>();
+  const partlyReversedClosedFamilies = new Map<string, { chargeId: string; reversedMemberNames: string[] }>();
+  for (const charge of existingFamilyCharges) {
+    const key = `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`;
+    if (!isChargeClosedAsAlreadyPaid(charge)) {
+      billedFamilyTypes.set(key, charge.id);
+      continue;
+    }
+    const reversed = charge.coverage.filter((row) => !isSubscriptionSettled(row.subscription.status));
+    if (reversed.length === 0) {
+      if (!billedFamilyTypes.has(key)) billedFamilyTypes.set(key, charge.id);
+      continue;
+    }
+    if (reversed.length < charge.coverage.length) {
+      partlyReversedClosedFamilies.set(key, {
+        chargeId: charge.id,
+        reversedMemberNames: reversed.map((row) => row.memberName).sort(compareOrdinal),
+      });
+    }
+  }
   const entries: SubscriptionBillingPlanEntry[] = [];
   const exceptions: SubscriptionBillingPlanException[] = [];
   const familyGroups = new Map<string, SubscriptionBillingPlanEntry>();
@@ -1115,6 +1151,23 @@ export async function buildSubscriptionBillingPreview(input: {
     entries.push(entry);
   }
 
+  // #4110 (owner, 15 Oct 2026): a closed family whose payments were only
+  // PARTLY reversed is billed again for the whole family fee. The officer is
+  // told before confirming; the entry stays, so confirming invoices it.
+  for (const entry of entries) {
+    const partly = partlyReversedClosedFamilies.get(entry.key);
+    if (!partly) continue;
+    exceptions.push(exception({
+      code: CLOSED_FAMILY_PARTLY_REVERSED_CODE,
+      message: `This family's ${entry.membershipTypeName} charge was closed as already paid, and only some members' payments have since been reversed (${partly.reversedMemberNames.join(", ")}). Confirming invoices the full family fee to ${entry.recipient.name}.`,
+      seasonYear: input.seasonYear,
+      memberId: null,
+      familyGroupId: entry.familyGroupId,
+      membershipTypeId: entry.membershipTypeId,
+      context: { closedChargeId: partly.chargeId, reversedMemberNames: partly.reversedMemberNames },
+    }));
+  }
+
   // ORDINAL from here down, never `localeCompare` (#3252). `entries` and
   // `exceptions` are serialised into `tokenPayload` below and hashed into
   // `confirmationToken`, which the preview hands to the browser and
@@ -1204,6 +1257,9 @@ async function persistOpenExceptions(
   exceptions: SubscriptionBillingPlanException[],
 ) {
   for (const item of exceptions) {
+    // #4110: an invoicing warning is acknowledged by the confirm itself, and
+    // the family it names is billed by it, so it is never left OPEN.
+    if (isInvoicingPreviewWarning(item.code)) continue;
     await tx.membershipBillingException.upsert({
       where: { fingerprint: item.fingerprint },
       update: {
@@ -1513,7 +1569,12 @@ export async function confirmSubscriptionBillingPreview(input: {
           source: input.source,
           confirmationToken: input.expectedConfirmationToken,
           chargeCount: chargeIds.length,
-          exceptionCount: preview.exceptions.length,
+          exceptionCount: countWithheldExceptions(preview.exceptions),
+          // #4110: warnings the officer confirmed through, so the audit row
+          // records that a partly reversed family was knowingly re-billed.
+          acknowledgedWarnings: preview.exceptions
+            .filter((item) => isInvoicingPreviewWarning(item.code))
+            .map((item) => ({ code: item.code, familyGroupId: item.familyGroupId, context: item.context })),
           totalCents: preview.totalCents,
         }),
       }, tx);
@@ -1525,7 +1586,12 @@ export async function confirmSubscriptionBillingPreview(input: {
     // precedent in config-transfer/apply (#1886, F12).
     timeout: 60_000,
   });
-  return { chargeIds: [...new Set(chargeIds)], exceptionCount: input.preview.exceptions.length };
+  return { chargeIds: [...new Set(chargeIds)], exceptionCount: countWithheldExceptions(input.preview.exceptions) };
+}
+
+/** Exceptions that withheld an invoice; an invoicing warning (#4110) is not one. */
+function countWithheldExceptions(exceptions: readonly SubscriptionBillingPlanException[]): number {
+  return exceptions.filter((item) => !isInvoicingPreviewWarning(item.code)).length;
 }
 
 export async function queueApprovedMembershipSubscriptionCharges(input: {

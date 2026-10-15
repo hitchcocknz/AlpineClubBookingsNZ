@@ -22,6 +22,7 @@ import {
   everyActiveCoveredSubscriptionSettled,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
+  isInvoicingPreviewWarning,
 } from "@/lib/subscription-charge-already-paid";
 
 type BillingData = {
@@ -46,7 +47,9 @@ type BillingData = {
       recipient: { name: string };
       coveredMembers: Array<{ id: string; name: string }>;
     }>;
-    exceptions: Array<{ fingerprint: string; message: string }>;
+    // `code` lets an invoicing warning (#4110) render apart from the exceptions
+    // that withhold an invoice; optional for an older cached payload.
+    exceptions: Array<{ fingerprint: string; message: string; code?: string }>;
     // #2148 (D1): members exempt from a subscription by their age tier (no fee
     // required by design). Shown in a collapsed informational "Exempt" section,
     // never raised as MISSING_FEE_SCHEDULE. Optional so an older cached response
@@ -102,7 +105,7 @@ type BillingData = {
     // close is then not offered, and the server would refuse it anyway.
     coverage: Array<{ memberName: string; releasedAt?: string | null; subscription?: { status: string } }>;
   }>;
-  exceptions: Array<{ id: string; fingerprint: string; message: string }>;
+  exceptions: Array<{ id: string; fingerprint: string; message: string; code?: string }>;
   settings: { invoiceDueDays: number; familyBillingMode: FamilyBillingMode };
 };
 
@@ -136,9 +139,13 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
   const [mutationFeedback, setMutationFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const loadGeneration = useRef(0);
   const selectionRef = useRef({ seasonYear, decisionDate });
-  const visibleExceptions = data
+  const visibleItems = data
     ? [...new Map([...data.preview.exceptions, ...data.exceptions].map((item) => [item.fingerprint, item])).values()]
     : [];
+  // #4110: a warning about a charge confirming still invoices is shown apart
+  // from the exceptions that withhold an invoice, and is not counted with them.
+  const visibleExceptions = visibleItems.filter((item) => !isInvoicingPreviewWarning(item.code ?? ""));
+  const previewWarnings = visibleItems.filter((item) => isInvoicingPreviewWarning(item.code ?? ""));
 
   const load = useCallback(async () => {
     const selection = selectionRef.current;
@@ -252,9 +259,11 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
 
   async function confirmBatch() {
     if (!data || data.preview.seasonYear !== seasonYear || data.preview.decisionDate !== decisionDate) return;
+    const warningCount = data.preview.exceptions.filter((item) => isInvoicingPreviewWarning(item.code ?? "")).length;
+    const withheldCount = data.preview.exceptions.length - warningCount;
     const accepted = await confirm({
       title: `Create ${data.preview.entries.length} annual membership charge${data.preview.entries.length === 1 ? "" : "s"}?`,
-      description: `${formatCents(data.preview.totalCents, format)} will be snapshotted. This creates durable Xero invoice work and cannot be undone by later fee or family changes. ${data.preview.exceptions.length} exception${data.preview.exceptions.length === 1 ? "" : "s"} will be recorded without invoicing.`,
+      description: `${formatCents(data.preview.totalCents, format)} will be snapshotted. This creates durable Xero invoice work and cannot be undone by later fee or family changes. ${withheldCount} exception${withheldCount === 1 ? "" : "s"} will be recorded without invoicing.${warningCount > 0 ? ` ${warningCount} warning${warningCount === 1 ? "" : "s"} below: confirming invoices ${warningCount === 1 ? "that charge" : "those charges"}.` : ""}`,
       confirmLabel: "Confirm annual batch",
     });
     if (!accepted) return;
@@ -444,6 +453,9 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
             ) : null}
             {visibleExceptions.length > 0 ? (
               <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Billing exceptions — no invoice created</p>{visibleExceptions.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
+            ) : null}
+            {previewWarnings.length > 0 ? (
+              <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Check before confirming — these charges will be invoiced</p>{previewWarnings.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
             ) : null}
             {data.charges.length > 0 ? (
               <div className="space-y-2">

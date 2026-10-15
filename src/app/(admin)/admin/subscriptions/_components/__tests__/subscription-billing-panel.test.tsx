@@ -536,6 +536,29 @@ describe("subscription billing panel", () => {
     expect(await screen.findByRole("button", { name: "Close: already paid" })).toBeTruthy();
   });
 
+  it("shows a partly-reversed closed family as a warning to check, apart from the exceptions that withhold an invoice (#4110)", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    mocks.confirm.mockResolvedValue(false);
+    const base = payload({ decisionDate: CLUB_TODAY });
+    servePayload({
+      ...base,
+      preview: {
+        ...base.preview,
+        exceptions: [
+          { fingerprint: "same", message: "Configure billing", code: "MISSING_FEE_SCHEDULE" },
+          { fingerprint: "warn", message: "Confirming invoices the full family fee to Bill Member.", code: "CLOSED_FAMILY_PARTLY_REVERSED" },
+        ],
+      },
+    });
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText("Check before confirming — these charges will be invoiced")).toBeTruthy();
+    expect(screen.getByText("Confirming invoices the full family fee to Bill Member.")).toBeTruthy();
+    expect(screen.getByText("Open exceptions").nextSibling?.textContent).toBe("1");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and queue annual batch" }));
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+    expect(mocks.confirm.mock.calls[0]![0].description).toMatch(/1 exception will be recorded without invoicing\. 1 warning below: confirming invoices that charge\./);
+  });
+
   it("keeps the close disabled for a view-only admin (#4098)", async () => {
     mocks.canEdit.mockReturnValue(false);
     servePayload(chargePayload({}));

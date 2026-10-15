@@ -147,3 +147,17 @@ export function isChargeClosedAsAlreadyPaid(charge: {
 }): boolean {
   return charge.status === "NOT_REQUIRED" && charge.billingBasis !== "NO_INVOICE";
 }
+
+/**
+ * #4110 (owner, 15 Oct 2026): the preview's warning that a family whose charge
+ * was closed as already paid had only SOME members' payments reversed, so
+ * confirming invoices the whole family fee. It rides the preview's exception
+ * list so it is in the confirmation token, but unlike every other code it does
+ * not withhold the entry: the officer is warned, and confirming invoices it.
+ */
+export const CLOSED_FAMILY_PARTLY_REVERSED_CODE = "CLOSED_FAMILY_PARTLY_REVERSED";
+
+/** True for a preview exception that warns about a charge confirming still invoices. */
+export function isInvoicingPreviewWarning(code: string): boolean {
+  return code === CLOSED_FAMILY_PARTLY_REVERSED_CODE;
+}
