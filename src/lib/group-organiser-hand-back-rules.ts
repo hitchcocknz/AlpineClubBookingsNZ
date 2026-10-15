@@ -2,6 +2,7 @@ import type { ManualRefundTaskKind } from "@prisma/client";
 
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 
 /**
  * #4042 (`INV-PAY-124`): what marks, keys, reads and refuses a group
@@ -35,7 +36,7 @@ export function groupOrganiserHandBackOccurrenceKey(settlementId: string, childB
 /** Every organiser hand-back of one settlement, its supplementary tasks included, as a where fragment. */
 export function groupOrganiserHandBackTasksWhere(settlementId: string) {
   const key = groupOrganiserHandBackOccurrenceKey(settlementId);
-  return { OR: [{ occurrenceKey: key }, { occurrenceKey: { startsWith: `${key}:` } }] };
+  return { OR: [{ occurrenceKey: key }, { occurrenceKey: exactPrefix(`${key}:`) }] };
 }
 
 /**
