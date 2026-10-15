@@ -584,6 +584,7 @@ import {
   groupSettlementIdForRefundRecoveryKey,
   isGroupSettlementRefundRecoveryKey,
   isOrganiserChildRefundKey,
+  isRefundRequestRefundRecoveryKey,
 } from "./payment-recovery-keys";
 export {
   buildBookingCancellationRefundMetadata,
@@ -2173,9 +2174,8 @@ async function processBookingModificationRefundOperation(
   // (booking_cancel_refund_<bookingId>, #1160), and modification recoveries
   // read the prefix stored at enqueue time (#1152). Legacy modification rows
   // without a stored prefix keep their operation-scoped prefix.
-  const refundRequestId = operation.idempotencyKey.startsWith(
-    REFUND_REQUEST_REFUND_RECOVERY_PREFIX,
-  )
+  // A refund request's own key only: an appeal's organiser-card debt is not this route's.
+  const refundRequestId = isRefundRequestRefundRecoveryKey(operation.idempotencyKey)
     ? operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length)
     : null;
   const isBookingCancellationRecovery = operation.idempotencyKey.startsWith(

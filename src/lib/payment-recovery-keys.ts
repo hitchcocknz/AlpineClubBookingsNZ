@@ -75,6 +75,11 @@ export function buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId: 
   return `${REFUND_REQUEST_REFUND_RECOVERY_PREFIX}${refundRequestId}`;
 }
 
+/** #4120: is this an approved refund appeal's card refund (`buildRefundRequestRefundRecoveryIdempotencyKey`)? */
+export function isRefundRequestRefundRecoveryKey(key: string) {
+  return key.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX);
+}
+
 // Capacity-race auto-refund durability: the recovery-operation dedup key for a
 // payment that succeeded AFTER the final capacity claim failed (the booking was
 // cancelled inside the reconciliation transaction and the full charge must be
@@ -641,6 +646,10 @@ export function isOrganiserChildRefundKey(key: string) {
 /** #3956: an approved refund appeal's refund out of the combined payment - not the cancellation's money. */
 export function isOrganiserChildAppealRefundKey(key: string) {
   return key.startsWith(ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX);
+}
+/** #4120 (`INV-SSOT`): an appeal's card refund - the request's own row, or its debt to the organiser's card (#3956). */
+export function isAppealRefundRecoveryKey(key: string) {
+  return isRefundRequestRefundRecoveryKey(key) || isOrganiserChildAppealRefundKey(key);
 }
 /**
  * `isOrganiserChildRefundKey` as a `PaymentRecoveryOperation` where fragment -

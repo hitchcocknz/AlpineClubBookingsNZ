@@ -204,6 +204,15 @@ export function closeKeysOf(paymentRecoveryOperationId: string): string[] {
 }
 
 /**
+ * #4120: what a paid-another-way close owed but did not pay back - the amount
+ * still owed when it closed (`raisedAmountCents`) less what was paid back,
+ * never below nothing. A full close leaves nothing; a part close the rest.
+ */
+export function paidAnotherWayUnpaidCents(close: { amountCents: number | null; raisedAmountCents: number | null }): number {
+  return Math.max(0, (close.raisedAmountCents ?? 0) - (close.amountCents ?? 0));
+}
+
+/**
  * #3827 (`INV-PAY-117`): the key prefixes of every hand-back that is NOT a
  * cancellation's - money promised back by bank transfer on a decision other
  * than a cancel (an edit's reduction, an approved refund request). The one
