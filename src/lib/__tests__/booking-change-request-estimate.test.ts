@@ -119,6 +119,18 @@ describe("estimateChangeRequestAddedGuests (#4030)", () => {
     });
   });
 
+  it("prices a grid night set on exactly its nights, gap and all (#4088)", async () => {
+    const estimate = await estimateChangeRequestAddedGuests(booking(), [
+      child("Ari", { nights: ["2026-06-30", "2026-07-02"] }),
+      { ...child("Cam"), isMember: true, memberId: "member-9", nights: ["2026-07-01"] },
+    ]);
+    expect(estimate).toMatchObject({
+      outcome: "priced",
+      guests: [{ priceCents: 4000, nights: 2 }, { priceCents: null, nights: 1 }],
+      totalCents: 4000,
+    });
+  });
+
   it("never resolves a member guest's rate, and leaves them out of the total", async () => {
     const estimate = await estimateChangeRequestAddedGuests(booking(), [
       child("Ari"),
@@ -211,6 +223,14 @@ describe("POST /api/bookings/[id]/change-requests/quote (#4030)", () => {
     const response = await post({ addGuests: [child("Ari", { stayStart: "2026-07-01", stayEnd: "2026-07-03" })] });
     expect(response.status).toBe(200);
     expect((await response.json()).estimate).toMatchObject({ outcome: "priced", totalCents: 4000 });
+  });
+
+  it("keeps an added guest's night set, and refuses one reaching outside the stay (#4088)", async () => {
+    const response = await post({ addGuests: [child("Ari", { nights: ["2026-06-30", "2026-07-02"] })] });
+    expect(response.status).toBe(200);
+    expect((await response.json()).estimate).toMatchObject({ outcome: "priced", totalCents: 4000 });
+    const outside = await post({ addGuests: [child("Ari", { nights: ["2026-07-03"] })] });
+    expect(outside.status).toBe(400);
   });
 
   it("throttles the estimate per member with the booking-query limiter (review S1)", async () => {
