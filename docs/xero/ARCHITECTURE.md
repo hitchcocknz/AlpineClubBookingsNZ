@@ -1757,6 +1757,39 @@ idempotency key, which returns the original invoice
   outside the create) is not checked; the retry warns when its payment records
   a fee.
 
+## Booking-page supplementary invoice observations (#4047)
+
+The booking page observes issued supplementary invoices through
+`booking-supplementary-invoice-identities.ts` and
+`xero-invoice-observation-read.ts`. Discovery covers Booking, BookingModification
+and eligible financial-review second asks on ManualRefundTask, using canonical
+payload and repair recovery rules. Replayed links are deduplicated. Card receipts
+and the organiser's combined invoice never become another member bank demand.
+The clearing selector remains narrower because its note does not cover second asks.
+
+Each action authenticates through the existing Xero client, then makes at most
+one native JSON GET for 20 scoped invoice IDs. The accounting deadline is five
+seconds, active through body consumption via AbortController, with no automatic
+retry. Authentication can refresh tokens or wait on its existing lease outside
+that deadline; this section streams separately from the ordinary booking content.
+`callXeroApi` retains metering and daily/outage gates, and the per-actor
+`booking-supplementary-observation` key uses the booking-query limiter.
+
+Amounts use `exactProviderAmountToCents` (`INV-MONEY-001`, `INV-MONEY-003`),
+finite non-negative raw input and safe integer cents. Settlement requires raw
+AmountDue exactly zero. Missing identities, malformed/contradictory status,
+unissued instruments or positive amounts that normalise to zero remain unknown.
+Void/deletion retires an instrument, not the debt. All observations are request-local,
+dated and shown individually; no cross-batch current total or durable balance is written.
+
+User continuations use an authenticated actor/booking/tenant/revision-bound signed
+cursor and reauthorize every action. Current audience, ownership, lifecycle,
+card ask, invoice population, module and tenant are re-read around provider waits.
+Cancelled/bumped/deleted bookings and unauthorised audiences make no provider read.
+Payment routes retain their final guards. No settlement, reconciliation, new lock
+key, schema change, historical operation or ledger reader cutover is introduced
+(`INV-INT-003`, `INV-LOCK-001`, `INV-LOCK-002`, `INV-LOCK-003`).
+
 ## OAuth and token lifecycle (supporting flow)
 
 1. Admin hits `/api/admin/xero/connect` → consent URL with a signed state

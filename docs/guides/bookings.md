@@ -271,6 +271,17 @@ Things worth knowing:
 
 ### Chase money still owed after a booking change
 
+The booking's confirmation now also shows its additional-payment information
+(#4047). Card asks point the member to their own pay card; officers see a
+read-only explanation. Issued supplementary bank invoices show each remaining
+amount, invoice number and when it was checked, including on a finished stay.
+**Check more invoices** reads the next group when there are many. These are
+individual dated observations, never a current combined balance. An unavailable
+or unissued amount says it cannot yet be confirmed. Check the invoice in Xero
+or contact the member before chasing it. The admin panel and automatic card
+reminders below keep their existing scope; bank supplements do not join those
+reminders. Linked guests see a neutral stay confirmation.
+
 When a change increases a booking's price after the booking has been confirmed —
 adding a non-member guest to a paid booking, say — the difference becomes an
 **additional payment** the member has to make from their own booking page. That

@@ -3104,7 +3104,8 @@ describe("processStoredXeroInboundEvents", () => {
         localId: "pay_ib_cancelled",
         status: "PENDING",
         correlationKey: {
-          startsWith: "payment:pay_ib_cancelled:refund-credit-note:",
+          // #4146: the id's `_` escaped, so `LIKE` matches it literally.
+          startsWith: "payment:pay\\_ib\\_cancelled:refund-credit-note:",
         },
       }),
       data: { status: "CANCELLED" },
@@ -3360,7 +3361,8 @@ describe("processStoredXeroInboundEvents", () => {
         localId: "pay_ib_cancelled",
         status: "PENDING",
         correlationKey: {
-          startsWith: "payment:pay_ib_cancelled:refund-credit-note:",
+          // #4146: the id's `_` escaped, so `LIKE` matches it literally.
+          startsWith: "payment:pay\\_ib\\_cancelled:refund-credit-note:",
         },
       }),
       data: { status: "CANCELLED" },
