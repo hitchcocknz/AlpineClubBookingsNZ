@@ -2,9 +2,14 @@ import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
-import { addCalendarDays, calendarDateOfDateOnlyInstant, parseCalendarDate } from "@/lib/club-time";
+import { addCalendarDays, calendarDateOfDateOnlyInstant, countClubNights, parseCalendarDate } from "@/lib/club-time";
 import type { BatchModifyInput } from "@/lib/booking-modify";
-import { isEffectiveStayRangeChange } from "@/lib/booking-change-request-guests";
+import {
+  guestNightKeys,
+  isEffectiveStayRangeChange,
+  type GuestNightsAsDays,
+} from "@/lib/booking-change-request-guests";
+import { guestName } from "@/lib/bed-allocation-display-names";
 import { collapseNightRuns } from "@/lib/bed-allocation-board-window";
 import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 
@@ -205,23 +210,53 @@ export interface RequestedGuestNights {
   name: string;
   /** Runs of consecutive nights, first and last night inclusive; empty for the whole stay. */
   runs: Array<{ firstNight: string; lastNight: string }>;
+  /** How many nights the runs hold; `null` for the whole stay. */
+  nightCount: number | null;
   /** The guest is one the request adds, not one already on the booking. */
   added: boolean;
   /** An existing guest whose requested nights are the ones they already hold. */
   unchanged: boolean;
+  /**
+   * An existing guest with gaps in their stay whose request is a Date In and
+   * Date Out rather than a night set: approving writes every night of that
+   * range, so the gaps inside it are filled (and charged).
+   */
+  fillsGaps: boolean;
 }
 
 type StoredNights = { stayStart?: string | null; stayEnd?: string | null; nights?: string[] | null };
 
 /** A grid night set as runs; else the two bounds as one run, never expanded. */
-function requestedRuns(entry: StoredNights): RequestedGuestNights["runs"] | null {
+function requestedRuns(
+  entry: StoredNights,
+): Pick<RequestedGuestNights, "runs" | "nightCount"> | null {
   if (entry.nights?.length) {
-    return collapseNightRuns(entry.nights).map(({ firstNight, lastNight }) => ({ firstNight, lastNight }));
+    const runs = collapseNightRuns(entry.nights);
+    return {
+      runs: runs.map(({ firstNight, lastNight }) => ({ firstNight, lastNight })),
+      nightCount: runs.reduce((sum, run) => sum + run.nights.length, 0),
+    };
   }
   const stayStart = entry.stayStart ? parseCalendarDate(entry.stayStart) : null;
   const stayEnd = entry.stayEnd ? parseCalendarDate(entry.stayEnd) : null;
   if (!stayStart || !stayEnd) return null;
-  return [{ firstNight: stayStart, lastNight: addCalendarDays(stayEnd, -1) }];
+  return {
+    runs: [{ firstNight: stayStart, lastNight: addCalendarDays(stayEnd, -1) }],
+    nightCount: countClubNights(stayStart, stayEnd),
+  };
+}
+
+/**
+ * Whether a two-bound range covers a night inside the guest's stored stay that
+ * the guest does not hold. Walks only the STORED envelope, never the member's.
+ */
+function rangeFillsGaps(range: StoredNights, current: GuestNightsAsDays | undefined): boolean {
+  if (range.nights?.length || !range.stayStart || !range.stayEnd || !current?.nights?.length) return false;
+  const held = new Set(guestNightKeys(current));
+  const { stayStart, stayEnd } = range;
+  return guestNightKeys({ stayStart: current.stayStart, stayEnd: current.stayEnd }).some(
+    (night) => !held.has(night) && night >= stayStart && night < stayEnd,
+  );
 }
 
 /**
@@ -237,21 +272,24 @@ export function describeRequestedGuestNights(requestedChanges: unknown): Request
   const { original, requested } = parsed.data;
   const removed = new Set(requested.removeGuests.map((guest) => guest.id));
   const existing = requested.guestStayRanges.flatMap((range) => {
-    const runs = removed.has(range.guestId) ? null : requestedRuns(range);
-    if (!runs) return [];
+    const nights = removed.has(range.guestId) ? null : requestedRuns(range);
+    if (!nights) return [];
     const guest = original.guests.find((candidate) => candidate.id === range.guestId);
     const current =
       guest?.stayStart && guest.stayEnd
         ? { stayStart: guest.stayStart, stayEnd: guest.stayEnd, nights: guest.nights }
         : undefined;
-    const name = `${guest?.firstName ?? ""} ${guest?.lastName ?? ""}`.trim() || "A guest on the booking";
-    return [{ name, runs, added: false, unchanged: Boolean(current) && !isEffectiveStayRangeChange(range, current) }];
+    const fillsGaps = rangeFillsGaps(range, current);
+    const unchanged = Boolean(current) && !fillsGaps && !isEffectiveStayRangeChange(range, current);
+    const name = (guest && guestName(guest)) || "A guest on the booking";
+    return [{ name, ...nights, added: false, unchanged, fillsGaps }];
   });
   const added = requested.addGuests.map((guest) => ({
-    name: `${guest.firstName} ${guest.lastName}`.trim(),
-    runs: requestedRuns(guest) ?? [],
+    name: guestName(guest),
+    ...(requestedRuns(guest) ?? { runs: [], nightCount: null }),
     added: true,
     unchanged: false,
+    fillsGaps: false,
   }));
   return [...existing, ...added];
 }

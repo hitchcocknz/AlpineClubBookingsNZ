@@ -26,24 +26,37 @@ describe("RequestedGuestNights", () => {
               { firstNight: "2026-07-03", lastNight: "2026-07-04" },
               { firstNight: "2026-07-06", lastNight: "2026-07-06" },
             ],
+            nightCount: 3,
             added: false,
             unchanged: false,
+            fillsGaps: false,
           },
-          { name: "Ari Example", runs: [], added: true, unchanged: false },
+          { name: "Ari Example", runs: [], nightCount: null, added: true, unchanged: false, fillsGaps: false },
           {
             name: "Sam Example",
             runs: [{ firstNight: "2026-07-03", lastNight: "2026-07-06" }],
+            nightCount: 4,
             added: false,
             unchanged: true,
+            fillsGaps: false,
+          },
+          {
+            name: "Lee Example",
+            runs: [{ firstNight: "2026-07-03", lastNight: "2026-07-03" }],
+            nightCount: 1,
+            added: false,
+            unchanged: false,
+            fillsGaps: true,
           },
         ]}
       />,
     );
     const items = screen.getAllByRole("listitem").map((item) => item.textContent);
     expect(items).toEqual([
-      `Jo Bloggs: ${day("2026-07-03")} – ${day("2026-07-04")}, ${day("2026-07-06")}`,
+      `Jo Bloggs: 3 nights: ${day("2026-07-03")} – ${day("2026-07-04")}, ${day("2026-07-06")}`,
       "Ari Example (added): the whole stay",
-      `Sam Example: ${day("2026-07-03")} – ${day("2026-07-06")} (no change)`,
+      `Sam Example: 4 nights: ${day("2026-07-03")} – ${day("2026-07-06")} (no change)`,
+      `Lee Example: 1 night: ${day("2026-07-03")} (fills the gaps in their stay)`,
     ]);
   });
 

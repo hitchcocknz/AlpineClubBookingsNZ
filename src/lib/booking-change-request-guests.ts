@@ -27,6 +27,7 @@ import {
   type StayRangeDeltaInput,
 } from "@/lib/booking-modification-stay-ranges";
 import { nameField } from "@/lib/zod-helpers";
+import { guestName } from "@/lib/bed-allocation-display-names";
 
 /**
  * The guests a LOCKED_PERIOD change request adds (#4030), in the one shape every
@@ -98,7 +99,11 @@ export type OfficerEnteredGuest = z.infer<typeof officerEnteredGuestsSchema>[num
  * with the details beside it.
  */
 export function changeRequestValidationMessage(error: z.ZodError): string {
-  return error.issues.some((issue) => issue.path.includes("nights"))
+  // Only the night refine's own failure: a list too long, or `nights` that is
+  // not a list at all, is not a bad date and stays "Validation failed".
+  return error.issues.some(
+    (issue) => issue.code === "custom" && issue.message === GUEST_NIGHT_INVALID_MESSAGE,
+  )
     ? GUEST_NIGHT_INVALID_MESSAGE
     : "Validation failed";
 }
@@ -138,12 +143,6 @@ export const OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE =
 export interface ChangeRequestStay {
   checkIn: string;
   checkOut: string;
-}
-
-/** A guest's name as a refusal says it (#4088), or `null` when it is not known. */
-function guestName(guest: { firstName?: string | null; lastName?: string | null } | undefined) {
-  const name = `${guest?.firstName ?? ""} ${guest?.lastName ?? ""}`.trim();
-  return name || null;
 }
 
 /**
@@ -190,7 +189,7 @@ export function addedGuestNightsRefusal(
     checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
   };
   for (const [index, guest] of guests.entries()) {
-    const name = guestName(guest);
+    const name = guestName(guest) || null;
     const range = readNamedStayRange(guest, bounds, index, name);
     if ("refusal" in range) return range.refusal;
     if (range.stayStart < bounds.checkIn || range.stayEnd > bounds.checkOut) {
@@ -240,7 +239,8 @@ export function guestStayRangesRefusal(
     checkOut: dateOnlyInstantOf(requireCalendarDate(stay.checkOut)),
   };
   for (const [index, range] of ranges.entries()) {
-    const name = guestName(guests.find((guest) => guest.id === range.guestId));
+    const named = guests.find((guest) => guest.id === range.guestId);
+    const name = named ? guestName(named) || null : null;
     const read = readNamedStayRange(range, bounds, index, name);
     if ("refusal" in read) return read.refusal;
   }
