@@ -50,11 +50,7 @@ import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
-import {
-  openNonCancellationHandBackCents,
-  refundAppealHandedBackParts,
-  type RefundAppealHandedBack,
-} from "@/lib/edit-refund-hand-back";
+import { openNonCancellationHandBackCents, refundAppealHandedBackParts, type RefundAppealHandedBack } from "@/lib/edit-refund-hand-back";
 import { organiserHasPaidSettlement, paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import { calculateRefundAmount, type CancellationRule } from "@/lib/cancellation";
 import logger from "@/lib/logger";
@@ -581,12 +577,9 @@ export type OrganiserCardAppealCap = {
  * organiser's combined payment, so it is the room a child refund debt may take
  * (`organiserChildRefundHeadroomCents`: the combined payment's and this child's
  * refunds made and owed both count; the stored mirror alone is not safe to size
- * from), less what the caller's `refundAppealHandedBackParts` read says is
- * already promised back another way: its open hand-backs and late-cash credit,
- * but NOT its owed card refunds (#4124 review F1) - the headroom already takes
- * this child's open organiser-child refund debts off (`childOwedCents`), the
- * card refunds such a child owes, so netting them again would count them
- * twice. Zero, with no settlement, once
+ * from), less the open hand-backs and late-cash credit the caller's
+ * `refundAppealHandedBackParts` read - never its owed card refunds (#4124 F1):
+ * the headroom already nets the child's organiser-child debts. Zero, with no settlement, once
  * that payment no longer holds the money, or while the group cancel's own
  * combined refund is not done (`combinedRefundPending`). The approval reads it
  * under `lock(1)` and refuses past it; the member's form, the review screen and
@@ -608,8 +601,8 @@ export async function organiserCardAppealCap(
   }
   const settlement = { id: found.id, stripePaymentIntentId: found.stripePaymentIntentId, amountCents: found.amountCents };
   const roomCents = await organiserChildRefundHeadroomCents(db, settlement, childPayment);
-  const handedBackCents = handedBack.handBackCents + handedBack.lateCashCreditCents;
-  return { settlement, maxRefundableCents: Math.max(0, roomCents - handedBackCents), combinedRefundPending: false };
+  const maxRefundableCents = Math.max(0, roomCents - handedBack.handBackCents - handedBack.lateCashCreditCents);
+  return { settlement, maxRefundableCents, combinedRefundPending: false };
 }
 
 /** The group cancel's own combined refund still to make: a pre-#3653 plan's (`mirrorPlanRefundUnmade`), or its retry owed. */

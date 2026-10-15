@@ -250,7 +250,7 @@ export async function openHandBackCentsForRefundAppeal(
  * #3827 (`INV-PAY-118`): what a refund appeal must treat as ALREADY handed
  * back, beyond `refundedAmountCents`, in its three parts: every hand-back
  * still open on the payment, the member credit already minted from its late
- * cash (`refundAppealCeiling` says why each is missing from the mirror), and
+ * cash (`OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT` says why each is missing from the mirror), and
  * (#4124) the card refunds the payment still owes.
  *
  * The parts are kept apart because the organiser-card cap (`INV-PAY-123`)

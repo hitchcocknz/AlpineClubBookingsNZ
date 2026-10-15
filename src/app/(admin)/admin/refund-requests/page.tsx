@@ -111,7 +111,7 @@ interface RefundRequestData {
 /**
  * The figure the approve route caps an appeal at: the organiser-card cap the
  * server read for a booking the group organiser paid for by card (#3956), and
- * otherwise `refundAppealCeiling` (#3827).
+ * otherwise `refundAppealCeilingParts` (#3827).
  */
 function appealCeiling(req: RefundRequestData): number {
   return req.booking.organiserCardMaxRefundableCents ?? req.booking.appealCeilingCents
@@ -535,7 +535,7 @@ export default function RefundRequestsPage() {
                             <>
                               {/* #3372: GROSS - captured before any refund - so
                                   the label says so. "Remaining refundable" is
-                                  `refundAppealCeiling` (#3827). */}
+                                  `refundAppealCeilingParts` (#3827). */}
                               <div>
                                 <span className="text-muted-foreground">Gross paid:</span>{" "}
                                 {formatCents(payment.amountCents, format)}

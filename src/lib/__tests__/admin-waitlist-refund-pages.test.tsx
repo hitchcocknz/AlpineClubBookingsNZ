@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminWaitlistPage from "@/app/(admin)/admin/waitlist/page";
 import RefundRequestsPage from "@/app/(admin)/admin/refund-requests/page";
 import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
-import { refundAppealCeiling } from "@/lib/manual-refund-task-settlement-rules";
+import { refundAppealCeilingParts } from "@/lib/manual-refund-task-settlement-rules";
 
 const mocks = vi.hoisted(() => ({
   currentSearch: "",
@@ -601,7 +601,7 @@ describe("Admin refund and credit review page", () => {
                   finalPriceCents: 10000,
                   status: "CANCELLED",
                   creditsFromCancellation: [],
-                  appealCeilingCents: 10000, // #4124: the list route's `refundAppealCeiling`
+                  appealCeilingCents: 10000, // #4124: the list route's `refundAppealCeilingParts`
                   payment: {
                     status: "SUCCEEDED",
                     amountCents: 10000,
@@ -713,7 +713,7 @@ describe("Admin refund and credit review page", () => {
                   finalPriceCents: 13000,
                   status: "CANCELLED",
                   creditsFromCancellation: [],
-                  appealCeilingCents: 6500, // #4124: the list route's `refundAppealCeiling`
+                  appealCeilingCents: 6500, // #4124: the list route's `refundAppealCeilingParts`
                   // The #3340 booking: $130.00 captured, $65.00 refunded.
                   payment: {
                     status: "PARTIALLY_REFUNDED",
@@ -804,8 +804,8 @@ describe("Admin refund and credit review page", () => {
         status: "CANCELLED",
         noEmails: false,
         creditsFromCancellation: [],
-        // #4124: the list route's `refundAppealCeiling` of this payment.
-        appealCeilingCents: refundAppealCeiling(payment && ({ ...payment, recoveryOperations: [], refunds: [] } as never), []),
+        // #4124: the list route's `refundAppealCeilingParts` of this payment.
+        appealCeilingCents: refundAppealCeilingParts(payment && ({ ...payment, recoveryOperations: [], refunds: [] } as never), []).ceilingCents,
         payment,
       },
       member: {
@@ -923,7 +923,7 @@ describe("Admin refund and credit review page", () => {
                   status: "CANCELLED",
                   noEmails: false,
                   creditsFromCancellation: [],
-                  appealCeilingCents: 7500, // #4124: the list route's `refundAppealCeiling`
+                  appealCeilingCents: 7500, // #4124: the list route's `refundAppealCeilingParts`
                   appealCardRefundOwedCents,
                   payment: {
                     status: "PARTIALLY_REFUNDED",
@@ -1021,7 +1021,7 @@ describe("Admin refund and credit review page", () => {
         status: "CANCELLED",
         noEmails: false,
         creditsFromCancellation: [],
-        appealCeilingCents: 15000, // #4124: the list route's `refundAppealCeiling`
+        appealCeilingCents: 15000, // #4124: the list route's `refundAppealCeilingParts`
         payment: { status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, stripePaymentIntentId: null },
         organiserCardMaxRefundableCents: pending ? 0 : 4_000,
         organiserCardCombinedRefundPending: pending,
@@ -1098,7 +1098,7 @@ describe("an approved appeal whose card refund is still partly owed (#4117)", ()
         status: "CANCELLED",
         noEmails: false,
         creditsFromCancellation: [],
-        appealCeilingCents: 10000, // #4124: the list route's `refundAppealCeiling`
+        appealCeilingCents: 10000, // #4124: the list route's `refundAppealCeilingParts`
         payment: { status: "SUCCEEDED", amountCents: 10000, refundedAmountCents: 0, stripePaymentIntentId: "pi_1" },
       },
       member: { id: "member-1", firstName: "Jane", lastName: "Doe", email: "jane@example.com" },

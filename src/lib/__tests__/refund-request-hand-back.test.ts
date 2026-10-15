@@ -25,7 +25,7 @@ import {
   isRefundRequestHandBackTask,
   NON_CANCELLATION_HAND_BACK_WHERE,
   nonCancellationHandBackCompletedSnapshot,
-  refundAppealCeiling,
+  refundAppealCeilingParts,
   refundRequestHandBackOccurrenceKey,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { isRefundOutsideBookingSettlement } from "@/lib/refund-event-outside-settlement";
@@ -265,6 +265,9 @@ describe("the refund appeal ceiling (INV-PAY-118)", () => {
     expect(store.manualRefundTask.aggregate).not.toHaveBeenCalled();
   });
 
+  /** The screen's ceiling alone (`refundAppealCeilingParts`). */
+  const refundAppealCeiling = (...args: Parameters<typeof refundAppealCeilingParts>) => refundAppealCeilingParts(...args).ceilingCents;
+
   it("screen: the same figure from the loaded rows, counting only the late-cash credit", () => {
     expect(
       refundAppealCeiling(
@@ -322,7 +325,10 @@ describe("the refund appeal ceiling (INV-PAY-118)", () => {
   });
 
   it("#4124 screen: the same figure from the loaded rows", () => {
-    expect(refundAppealCeiling({ ...payment, recoveryOperations: [owingOperation], refunds: [], manualRefundTasks: [] }, null)).toBe(7500);
+    expect(refundAppealCeilingParts({ ...payment, recoveryOperations: [owingOperation], refunds: [], manualRefundTasks: [] }, null)).toEqual({
+      ceilingCents: 7500,
+      cardRefundOwedCents: 2500,
+    });
     // Made since: the debt is gone and the cap is whole again.
     expect(
       refundAppealCeiling({ ...payment, recoveryOperations: [{ ...owingOperation, status: "SUCCEEDED" as const }], refunds: [], manualRefundTasks: [] }, null),

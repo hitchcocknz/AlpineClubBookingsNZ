@@ -443,48 +443,25 @@ export const OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT = {
   select: { amountCents: true },
 } as const;
 
-/** What a screen's refund-appeal ceiling reads off the payment and the booking's credits. */
-type RefundAppealCeilingPayment =
-  | (CardRefundOwedPaymentRow & { manualRefundTasks?: readonly { amountCents: number | null }[] })
-  | null
-  | undefined;
-type RefundAppealCeilingCredits =
-  | readonly { amountCents: number; description: string | null; type?: string | null }[]
-  | null
-  | undefined;
-
 /**
  * A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads and
- * (#4124) the payment's open card-refund debts, loaded with
- * `netCollectedCardRefundSelect` - as `refundAppealHandedBackCents` nets them on
- * the server, so the ceiling a screen offers is the one the route enforces.
- *
- * `cardRefundOwedCents` is the card debt the ceiling netted, for the line that
- * says why it is lower ("still being refunded to your card"): the payment's
- * whole open card refund debt, or zero when the ceiling was already zero
- * without it - only then is the debt not why nothing more can be appealed.
+ * (#4124) the payment's open card-refund debts (`netCollectedCardRefundSelect`),
+ * netted as `refundAppealHandedBackParts` nets them on the server, so a screen
+ * offers the ceiling the route enforces. `cardRefundOwedCents` is that debt, for
+ * the line saying why the ceiling is lower - zero when it was zero without it.
  */
 export function refundAppealCeilingParts(
-  payment: RefundAppealCeilingPayment,
-  creditsFromCancellation: RefundAppealCeilingCredits,
+  payment: (CardRefundOwedPaymentRow & { manualRefundTasks?: readonly { amountCents: number | null }[] }) | null | undefined,
+  creditsFromCancellation: readonly { amountCents: number; description: string | null; type?: string | null }[] | null | undefined,
 ): { ceilingCents: number; cardRefundOwedCents: number } {
   const promisedCents =
     sumOpenNonCancellationHandBackCents(payment?.manualRefundTasks) +
     sumInternetBankingLateCashCreditCents(creditsFromCancellation);
   const cardDebtCents = payment ? openCardRefundOwedCents(payment) : 0;
-  const beforeCardDebtCents = getRemainingRefundableCentsNetOf(payment, promisedCents);
   return {
     ceilingCents: getRemainingRefundableCentsNetOf(payment, promisedCents + cardDebtCents),
-    cardRefundOwedCents: beforeCardDebtCents > 0 ? cardDebtCents : 0,
+    cardRefundOwedCents: getRemainingRefundableCentsNetOf(payment, promisedCents) > 0 ? cardDebtCents : 0,
   };
-}
-
-/** `refundAppealCeilingParts`' ceiling alone. */
-export function refundAppealCeiling(
-  payment: RefundAppealCeilingPayment,
-  creditsFromCancellation: RefundAppealCeilingCredits,
-): number {
-  return refundAppealCeilingParts(payment, creditsFromCancellation).ceilingCents;
 }
 
 /**
