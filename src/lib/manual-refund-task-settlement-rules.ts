@@ -618,17 +618,14 @@ const LATE_CAPTURE_KIND = "DELETED_BOOKING_LATE_CAPTURE" satisfies ManualRefundT
  * (off a payment's Net Collected straight away) and by the "Refunds owed"
  * figure (`readRefundsAndCreditsOwed`, club-wide until each task is paid).
  *
- * Every task that promises money back by hand is a `CANCELLED_BOOKING_HAND_BACK`:
- * a cancellation's (`booking-cancel.ts`), an edit's refund (`INV-PAY-117`)
- * and an approved refund request's (`INV-PAY-118`), which reuse the kind and
- * are told apart only by their occurrence key
- * (`isNonCancellationHandBackTask`). All of them count, on any booking, so
- * this reads kind and status only, never a key prefix. Only COMPLETING a task
- * writes `refundedAmountCents` (`manual-refund-task-resolution.ts`), so an
- * open one is not yet off the payment and nothing is taken off twice.
+ * Every task promising money back by hand is a `CANCELLED_BOOKING_HAND_BACK`:
+ * a cancellation's (`booking-cancel.ts`), an edit's refund (`INV-PAY-117`) and
+ * an approved refund request's (`INV-PAY-118`), told apart only by occurrence
+ * key (`isNonCancellationHandBackTask`). All count, on any booking, so this
+ * reads kind and status only. Only COMPLETING a task writes
+ * `refundedAmountCents` (`manual-refund-task-resolution.ts`): nothing twice.
  *
- * - OPEN tasks only: a COMPLETED one is already on `refundedAmountCents`, and a
- *   DISMISSED one moved nothing.
+ * - OPEN tasks only: a COMPLETED one is on `refundedAmountCents`; DISMISSED moved nothing.
  * - A part-payment review shares the kind but carries no amount and records
  *   money settled in Xero (`isPartPaymentReviewTask`), so it owes nothing here.
  * - A task with no kind (`kind` null) counts too. The column was added on
@@ -636,9 +633,8 @@ const LATE_CAPTURE_KIND = "DELETED_BOOKING_LATE_CAPTURE" satisfies ManualRefundT
  *   is a cancellation's hand-back; on a DELETED booking it is a #2700 late
  *   capture (`isLateCaptureAwaitingDecisionTask`), which `openTaskOwedCents`
  *   takes out before asking this, so no row counts twice.
- * - Not an `EDIT_FINANCIAL_REVIEW`: its amount is a figure an officer has still
- *   to price and confirm, and "nothing is due" is a legitimate close
- *   (DISMISSED), so it is not yet money promised back.
+ * - Not an `EDIT_FINANCIAL_REVIEW`: an officer has still to price it, and
+ *   "nothing is due" (DISMISSED) is a legitimate close, so it is not yet owed.
  */
 export function openHandBackOwedCents(
   tasks: ReadonlyArray<HandBackTaskRow>,
