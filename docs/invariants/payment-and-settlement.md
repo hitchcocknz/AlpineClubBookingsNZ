@@ -1401,17 +1401,22 @@ short).
     only some slices writes no event; the booking page reads the row instead
     (`readCancelledCardRefundState`): on its way, or stalled.
   - **Dated by that close, for the frozen plan's total**, slices made earlier
-    included. The member's cancel says it as the cancel did: the runner
-    rebuilds the reason from the CANCELLED snapshot
-    (`cancelCardRefundEventReason`), with no member as actor.
+    included. The runner rebuilds the cancel's wording from its CANCELLED
+    snapshot (`cancelCardRefundEventReason`), with no member as actor; a
+    cancel with none (before #3639) is named by its amount.
   - **A failed insert rolls the close back**: the row stays open and the
     runner's replay, answered by Stripe with the original refunds, records it.
-  - **Paid another way writes none**: nothing went back to the card, and the
-    page says it was paid back another way.
-  - **A shortfall's card part is dated by its own event**
-    (`isCancelCardRefundEvent`), never by a hand-back completion that landed
-    first.
+  - **Paid another way records only what reached the card**: the slices
+    Stripe made, as the cancel's event dated by Stripe's refund, in that
+    close's transaction; nothing made, no event. The page says the parts apart.
+  - **One per cancel**: a cancel made before #4145 wrote its event up front, so
+    a later close records none. The page prefers an open or paid-another-way
+    row to that event.
+  - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
+    never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,
+    `card-refund-paid-another-way.test.ts`,
+    `booking-narrative-own-card-refund.test.ts`,
     `booking-narrative-card-shortfall.test.ts`,
     `capacity-race-refund-event.realdb.test.ts` and
     `cancel-card-refund-event.realdb.test.ts`.

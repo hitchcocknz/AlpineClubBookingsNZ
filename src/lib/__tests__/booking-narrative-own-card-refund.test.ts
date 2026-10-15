@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+import { BookingEventType } from "@prisma/client";
+
+import { resolveBookingNarrative, type NarrativeBooking, type NarrativeEvent } from "@/lib/booking-narrative";
+import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
+import { cancelCardRefundEventReason } from "@/lib/cancel-card-refund-event-reason";
+import { bindClubTime, requireClubTimeZone } from "@/lib/club-time";
+import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+
+/**
+ * #4145 (`INV-PAY-133`): the booking page's narrative for a member's card
+ * cancel, whose REFUNDED event is written only by the close that made the
+ * refund. The cancel's settlement is its OWN card refund event
+ * (`isCancelCardRefundEvent`) - never another event that landed after the
+ * cancel - and where none exists yet, or the row is still open or was paid
+ * another way, the row says where the refund stands.
+ *
+ * MUTATION PROOF. Take the first settlement event again for a member's card
+ * cancel and the edit-review cases read the review's credit or refund as the
+ * cancellation's; drop the split and the paid-another-way part case says the
+ * card took none of it.
+ */
+const CLUB = bindClubTime(requireClubTimeZone("Pacific/Auckland"), CLUB_FORMAT_TEST);
+
+const BOOKING: NarrativeBooking = {
+  status: "CANCELLED",
+  finalPriceCents: 12000,
+  amountOwed: { owedCents: 0, dueCents: 0, appliedCreditCents: 0 },
+  checkIn: new Date("2026-08-01T00:00:00.000Z"),
+  checkOut: new Date("2026-08-03T00:00:00.000Z"),
+  firstName: "Sam",
+  adminReviewStatus: null,
+  adminReviewNotes: null,
+  adminReviewReason: null,
+};
+
+function event(type: BookingEventType, occurredAt: string, extra: Partial<NarrativeEvent> = {}): NarrativeEvent {
+  return { type, occurredAt: new Date(occurredAt), amountCents: null, reason: null, snapshot: null, ...extra };
+}
+
+const PAID = event(BookingEventType.MEMBER_PAID, "2026-05-02T00:00:00.000Z", { amountCents: 12000 });
+
+function cancelled(extra: Record<string, unknown> = {}): NarrativeEvent {
+  return event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
+    amountCents: 12000,
+    snapshot: {
+      policySummary: "Cancelled 30 day(s) before check-in: 75% card refund under the policy in effect at the time.",
+      refundMethod: "card",
+      refundPercentage: 75,
+      paidAmountCents: 12000,
+      settledAmountCents: 9000,
+      retainedAmountCents: 3000,
+      changeFeeCents: 0,
+      ...extra,
+    },
+  });
+}
+
+/** The cancel's card refund event, as the close that made it writes it. */
+function cardRefunded(occurredAt: string, cents: number, part = false): NarrativeEvent {
+  return event(BookingEventType.REFUNDED, occurredAt, {
+    amountCents: cents,
+    reason: cancelCardRefundEventReason({ cardRefundCents: cents, policy: { refundPercentage: 75, refundAmountCents: 9000 }, shortfall: part, format: CLUB_FORMAT_TEST }),
+  });
+}
+
+/** An edit financial review completed after the cancel, settling the edit's own money. */
+const REVIEW_CREDITED = event(BookingEventType.CREDITED, "2026-05-07T00:00:00.000Z", { amountCents: 2500, reason: "edit_financial_review_credited" });
+const REVIEW_REFUNDED = event(BookingEventType.REFUNDED, "2026-05-07T00:00:00.000Z", { amountCents: 2500, reason: "edit_financial_review_completed" });
+
+function narrate(events: NarrativeEvent[], cardRefundState?: CardRefundState, cardShortfallStatuses: CardShortfallTaskStatuses = {}): string {
+  return resolveBookingNarrative({ club: CLUB, booking: BOOKING, events: [PAID, ...events], cardRefundState, cardShortfallStatuses }, CLUB_FORMAT_TEST).message;
+}
+
+const LEAD = "You cancelled this booking on 5 May 2026 after paying $120.00 on 2 May 2026. Under the cancellation policy in effect at the time, ";
+const END = ". No further payment is required.";
+
+describe("#4145: a member's card cancel is settled by its own card refund event", () => {
+  it.each([
+    ["credited", REVIEW_CREDITED],
+    ["refunded", REVIEW_REFUNDED],
+  ] as const)("MUTATION: an edit review %s after the cancel is never the cancellation's settlement - on its way until the runner's refund", (_label, review) => {
+    expect(narrate([cancelled(), review], "on-its-way")).toBe(
+      `${LEAD}$90.00 is on its way to your original payment method and $30.00 was retained${END}`,
+    );
+    // The runner's refund lands after the review: the cancellation's date is its own.
+    expect(narrate([cancelled(), review, cardRefunded("2026-05-09T00:00:00.000Z", 9000)], "settled")).toBe(
+      `${LEAD}$90.00 was refunded on 9 May 2026 and $30.00 was retained${END}`,
+    );
+  });
+
+  it("MUTATION: a row paid another way after part went to the card says the two parts apart", () => {
+    expect(narrate([cancelled(), cardRefunded("2026-05-05T01:00:00.000Z", 6000, true)], "paid-another-way")).toBe(
+      `${LEAD}$60.00 was refunded to your card on 5 May 2026 and $30.00 could not go back to your card and was paid back to you another way and $30.00 was retained${END}`,
+    );
+    // Nothing made: the whole refund was paid another way.
+    expect(narrate([cancelled()], "paid-another-way")).toBe(
+      `${LEAD}$90.00 could not go back to your card and was paid back to you another way and $30.00 was retained${END}`,
+    );
+  });
+
+  it("a shortfall's card part paid another way after part went to the card says the two parts apart too", () => {
+    const shortfall = cancelled({ settledAmountCents: 10000, retainedAmountCents: 2000, cardShortfall: { cardCents: 6000, bankCents: 4000, checkCents: 0 } });
+    expect(narrate([shortfall, cardRefunded("2026-05-05T01:00:00.000Z", 2500, true)], undefined, { bank: "OPEN", card: "paid-another-way" })).toContain(
+      "$25.00 was refunded to your card on 5 May 2026 and $35.00 could not go back to your card and was paid back to you another way, $40.00 is being refunded to you by bank transfer",
+    );
+  });
+
+  it("an up-front event a cancel wrote before #4145 does not say refunded while the row is still open or dead", () => {
+    const upFront = cardRefunded("2026-05-05T00:00:00.000Z", 9000);
+    expect(narrate([cancelled(), upFront], "on-its-way")).toBe(`${LEAD}$90.00 is on its way to your original payment method and $30.00 was retained${END}`);
+    expect(narrate([cancelled(), upFront], "stalled")).toContain("$90.00 is being refunded to you and $30.00 was retained; the club will be in touch about the card refund");
+    // Made, or no row read at all (a cancel before #1349): the event says it.
+    expect(narrate([cancelled(), upFront], "settled")).toBe(`${LEAD}$90.00 was refunded on 5 May 2026 and $30.00 was retained${END}`);
+    expect(narrate([cancelled(), upFront])).toBe(`${LEAD}$90.00 was refunded on 5 May 2026 and $30.00 was retained${END}`);
+  });
+
+  it("a credit cancel still takes its CREDITED event, and a cancel with no snapshot its first settlement event", () => {
+    const credit = cancelled({ refundMethod: "credit", policySummary: "credit" });
+    const credited = event(BookingEventType.CREDITED, "2026-05-05T00:00:00.000Z", { amountCents: 9000 });
+    expect(narrate([credit, credited])).toBe(`${LEAD}$90.00 was added to your account credit on 5 May 2026 and $30.00 was retained${END}`);
+    const legacy = event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", { amountCents: 12000 });
+    expect(narrate([legacy, event(BookingEventType.REFUNDED, "2026-05-06T00:00:00.000Z", { amountCents: 9000 })])).toContain("$90.00 was refunded on 6 May 2026");
+  });
+});

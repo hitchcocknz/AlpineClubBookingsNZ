@@ -20,7 +20,10 @@
  *   the slice made inline included.
  * - Paid another way: the dead row is closed by an officer and no REFUNDED
  *   event is written - nothing went back to the card - and the narrative says
- *   it was paid back another way.
+ *   it was paid back another way. Where part did go back first, that close
+ *   records the part, dated by Stripe's refund, and the page says both.
+ * - The deploy boundary: a cancel made before #4145 wrote its event up front;
+ *   the runner then closes the row and writes no second one.
  * - The cancel's close landing while the runner holds the row: only the close
  *   that moved it records, so one event.
  * - The cancel's event insert refused: its close rolls back with it, the row
@@ -401,6 +404,54 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const message = await narrative();
       expect(message).toContain("$100.00 could not go back to your card and was paid back to you another way and $100.00 was retained");
       expect(message).not.toContain("was refunded");
+    });
+
+    it("paid another way after part went to the card: the close records the made part as the cancel's card refund event, once, and the page says the two parts apart", async () => {
+      await paidBooking({ topUpCents: 6_000 });
+      stripeAnswers((intent) => (intent === PRIMARY_INTENT ? "throws" : "succeeded"));
+
+      await cancel();
+
+      const row = await rowNow();
+      await prisma.paymentRecoveryOperation.update({ where: { id: row.id }, data: { status: "FAILED", attempts: 5, nextRetryAt: null } });
+      expect(await refundedEvents()).toEqual([]);
+      // Closed two days later, for the $40.00 the card never took.
+      vi.setSystemTime(RUNNER_AT);
+      await closeCardRefundPaidAnotherWay({
+        operationId: row.id,
+        amountCents: 4_000,
+        paidBack: "full",
+        expectedOwedCents: 4_000,
+        note: "Bank transfer, ref RACE 4145 part",
+        actingMemberId: OFFICER_ID,
+      });
+
+      // Dated by the refund Stripe made at the cancel, not by the officer's close.
+      expect(await refundedEvents()).toEqual([
+        { amountCents: 6_000, reason: "$60.00 of the 50% refund ($100.00) refunded to the original payment method.", actorMemberId: null, occurredAt: FROZEN_AT },
+      ]);
+      expect(await narrative()).toContain(
+        `$60.00 was refunded to your card on ${club.instantDate(FROZEN_AT)} and $40.00 could not go back to your card and was paid back to you another way and $100.00 was retained`,
+      );
+    });
+
+    it("the deploy boundary: a cancel made before #4145 wrote its event up front - the page says on its way while the row is open, and the runner closes the row with no second event", async () => {
+      await paidBooking();
+      let stripeDown = true;
+      stripeAnswers(() => (stripeDown ? "throws" : "succeeded"));
+      await cancel();
+      // What the old cancel wrote after its failed refund.
+      await prisma.bookingEvent.create({ data: { bookingId: BOOKING_ID, type: "REFUNDED", occurredAt: FROZEN_AT, actorMemberId: MEMBER_ID, amountCents: REFUND_CENTS, reason: REASON } });
+      expect(await narrative()).toContain(ON_ITS_WAY);
+
+      const row = await rowNow();
+      stripeDown = false;
+      await retryComesDue(row.id);
+      expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+
+      expect(await rowNow()).toMatchObject({ status: "SUCCEEDED" });
+      expect(await refundedEvents()).toEqual([{ amountCents: REFUND_CENTS, reason: REASON, actorMemberId: MEMBER_ID, occurredAt: FROZEN_AT }]);
+      expect(await narrative()).toContain(refundedOn(FROZEN_AT));
     });
 
     it("the cancel's close landing while the runner holds the row: only the close that moved it records - ONE event, the cancel's", async () => {

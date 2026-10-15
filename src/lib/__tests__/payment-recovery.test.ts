@@ -4030,6 +4030,8 @@ describe("payment recovery worker", () => {
       mockPaymentRecoveryFindUnique.mockResolvedValue(op);
     }
     const cancelledSnapshot = (extra: Record<string, unknown> = {}) => ({
+      type: "CANCELLED",
+      reason: null,
       snapshot: { refundMethod: "card", refundPercentage: 50, paidAmountCents: 6000, settledAmountCents: 3000, retainedAmountCents: 3000, ...extra },
     });
 
@@ -4040,7 +4042,7 @@ describe("payment recovery worker", () => {
       const result = await processPaymentRecoveryOperations({ limit: 1 });
 
       expect(result.succeeded).toBe(1);
-      expect(mockBookingEventFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { bookingId: "booking-1", type: "CANCELLED" } }));
+      expect(mockBookingEventFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { bookingId: "booking-1", type: { in: ["CANCELLED", "REFUNDED"] } } }));
       expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
       expect(mockBookingEventCreate).toHaveBeenCalledWith({
         data: { bookingId: "booking-1", type: "REFUNDED", amountCents: 3000, actorMemberId: null, reason: "50% refunded to the original payment method.", snapshot: Prisma.JsonNull },
@@ -4060,7 +4062,10 @@ describe("payment recovery worker", () => {
 
     it("names the amount when the cancel left no card snapshot, skipping a marker CANCELLED event", async () => {
       queue(makeCancelOp());
-      mockBookingEventFindMany.mockResolvedValueOnce([{ snapshot: { kind: "manual_settlement_reversal" } }, { snapshot: null }]);
+      mockBookingEventFindMany.mockResolvedValueOnce([
+        { type: "CANCELLED", reason: null, snapshot: { kind: "manual_settlement_reversal" } },
+        { type: "CANCELLED", reason: null, snapshot: null },
+      ]);
 
       await processPaymentRecoveryOperations({ limit: 1 });
 
@@ -4098,6 +4103,22 @@ describe("payment recovery worker", () => {
       expect(mockBookingEventCreate).not.toHaveBeenCalled();
       const lostClose = ([, message]: unknown[]) => typeof message === "string" && message.includes("completion matched no live operation");
       expect(vi.mocked(logger.warn).mock.calls.filter(lostClose)).toHaveLength(0);
+    });
+
+    // #4145 review: a cancel made before #4145 wrote its event up front; the
+    // runner closes its row after the deploy and records no second one.
+    it("closes the row but records nothing when the cancel already has its card refund event (the deploy boundary)", async () => {
+      queue(makeCancelOp());
+      mockBookingEventFindMany.mockResolvedValueOnce([
+        { type: "REFUNDED", reason: "50% refunded to the original payment method.", snapshot: null },
+        cancelledSnapshot(),
+      ]);
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCEEDED" }) }));
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
     });
 
     it("an event insert that fails fails the attempt, so the row is retried rather than closed unrecorded", async () => {

@@ -19,7 +19,7 @@
  * transition is never rolled back purely because its narrative event failed.
  */
 import { BookingEventType, Prisma } from "@prisma/client";
-import { cancelCardRefundEventReason } from "@/lib/cancel-card-refund-event-reason";
+import { cancelCardRefundEventReason, isCancelCardRefundEvent } from "@/lib/cancel-card-refund-event-reason";
 import type { ClubFormat } from "@/lib/club-format";
 import type { CancellationLedgerSnapshot } from "@/lib/paid-cancellation-event";
 import { prisma } from "@/lib/prisma";
@@ -156,8 +156,9 @@ export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge c
  * back, the row stays open, and the runner's replay - answered by Stripe with
  * the original refunds - closes it and records it. Two doors use it: the
  * capacity race (`closeCapacityRaceRefundRecordingEvent`) and the member's
- * cancel (`booking_cancel_refund_recovery_<booking>`), whose runner close
- * rebuilds the cancel's reason (`closeCancellationRefundAfterReplay`).
+ * cancel's own close (`booking_cancel_refund_recovery_<booking>`); the
+ * runner's close of that row records it the same way
+ * (`closeCancellationRefundAfterReplay`).
  */
 export async function closeRefundRowRecordingEvent(
   input: { bookingId: string; amountCents: number; actorMemberId: string | null; reason: string },
@@ -187,32 +188,67 @@ export function closeCapacityRaceRefundRecordingEvent(
   return closeRefundRowRecordingEvent({ ...input, reason: CAPACITY_RACE_REFUND_EVENT_REASON }, close);
 }
 
+/** Where a member cancel's card refund event is read and written: the base client or a transaction. */
+type CancelEventStore = Pick<Prisma.TransactionClient, "bookingEvent">;
+
+/**
+ * #4145: the REFUNDED event of a member cancel's card refund, for `amountCents`
+ * of it - its reason the cancel's own (`cancelCardRefundEventReason`), from
+ * the figures the cancel's CANCELLED snapshot froze (`writePaidCancellationEvent`),
+ * said as a part when `part` (a card refund shortfall's card part, or the slices
+ * made before the rest was paid another way). A cancel with no such snapshot
+ * (one made before #3639) is named by its amount. Writes nothing - and says so -
+ * when the booking already has one: a cancel made before #4145 wrote its event
+ * up front, whatever became of the refund (the deploy boundary).
+ */
+export async function recordCancelCardRefundEvent(
+  store: CancelEventStore,
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null; part: boolean; format: ClubFormat; occurredAt?: Date },
+): Promise<boolean> {
+  const events = await store.bookingEvent.findMany({
+    where: { bookingId: input.bookingId, type: { in: [BookingEventType.CANCELLED, BookingEventType.REFUNDED] } },
+    orderBy: { occurredAt: "desc" },
+    select: { type: true, reason: true, snapshot: true },
+  });
+  if (events.some(isCancelCardRefundEvent)) return false;
+  const snapshot = events
+    .map((event) => (event.type === BookingEventType.CANCELLED ? (event.snapshot as Partial<CancellationEventSnapshot> | null) : null))
+    .find((each) => each?.refundMethod === "card" && typeof each.refundPercentage === "number" && typeof each.settledAmountCents === "number");
+  const reason = cancelCardRefundEventReason({
+    cardRefundCents: input.amountCents,
+    policy: snapshot ? { refundPercentage: snapshot.refundPercentage as number, refundAmountCents: snapshot.settledAmountCents as number } : null,
+    shortfall: input.part || Boolean(snapshot?.cardShortfall),
+    format: input.format,
+  });
+  await store.bookingEvent.create({
+    data: {
+      bookingId: input.bookingId,
+      type: BookingEventType.REFUNDED,
+      occurredAt: input.occurredAt,
+      actorMemberId: input.actorMemberId,
+      amountCents: input.amountCents,
+      reason,
+      snapshot: Prisma.JsonNull,
+    },
+  });
+  return true;
+}
+
 /**
  * #4145: the recovery runner's close of a member cancel's card refund row,
- * recording its REFUNDED event as above: no member drove it, and its reason is
- * the cancel's own (`cancelCardRefundEventReason`), from the figures the
- * cancel's CANCELLED snapshot froze (`writePaidCancellationEvent`). A cancel
- * with no such snapshot is named by its amount.
+ * recording its REFUNDED event (`recordCancelCardRefundEvent`) in the close's
+ * own transaction, as `closeRefundRowRecordingEvent` does: no member drove it.
+ * The row closes whether or not the event is written.
  */
 export async function closeCancellationRefundAfterReplay(
   { bookingId, amountCents, format }: { bookingId: string; amountCents: number; format: ClubFormat },
   close: (tx: Prisma.TransactionClient) => Promise<boolean>
 ): Promise<boolean> {
-  const cancelled = await prisma.bookingEvent.findMany({
-    where: { bookingId, type: BookingEventType.CANCELLED },
-    orderBy: { occurredAt: "desc" },
-    select: { snapshot: true },
+  return prisma.$transaction(async (tx) => {
+    if (!(await close(tx))) return false;
+    await recordCancelCardRefundEvent(tx, { bookingId, amountCents, actorMemberId: null, part: false, format });
+    return true;
   });
-  const snapshot = cancelled
-    .map((event) => event.snapshot as Partial<CancellationEventSnapshot> | null)
-    .find((each) => each?.refundMethod === "card" && typeof each.refundPercentage === "number" && typeof each.settledAmountCents === "number");
-  const reason = cancelCardRefundEventReason({
-    cardRefundCents: amountCents,
-    policy: snapshot ? { refundPercentage: snapshot.refundPercentage as number, refundAmountCents: snapshot.settledAmountCents as number } : null,
-    shortfall: Boolean(snapshot?.cardShortfall),
-    format,
-  });
-  return closeRefundRowRecordingEvent({ bookingId, amountCents, actorMemberId: null, reason }, close);
 }
 
 /**

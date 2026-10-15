@@ -10,4 +10,8 @@
   makes it later, with the date and amount of that refund. Until then the
   booking page says the refund is on its way, or that the club will be in
   touch if the retries have run out. A refund an officer closes as "Paid
-  another way" is shown as paid back another way, not as refunded to the card.
+  another way" is shown as paid back another way, not as refunded to the card;
+  if part of it had already gone back to the card, the history records that
+  part and the page names both. A later change to the booking's money (an
+  edit review's credit or refund) is no longer shown as the cancellation's
+  refund.

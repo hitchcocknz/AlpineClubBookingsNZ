@@ -29,6 +29,10 @@ const mocks = vi.hoisted(() => ({
   // #4104: the payment's refund-note coverage and the cash behind it.
   noteCoverageCents: vi.fn(async () => 0),
   noteEligibleCashCents: vi.fn(async () => 0),
+  // #4145: a cancel's made part, recorded as its card refund event inside the close.
+  findMadeRefunds: vi.fn<(args: unknown) => Promise<Array<{ createdAt: Date }>>>(async () => []),
+  findBookingEvents: vi.fn<(args: unknown) => Promise<Array<{ type: string; reason: string | null; snapshot: unknown }>>>(async () => []),
+  createBookingEvent: vi.fn<(args: unknown) => Promise<unknown>>(async () => ({})),
 }));
 
 vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
@@ -124,6 +128,14 @@ vi.mock("@/lib/prisma", () => {
       },
     },
     booking: { findUnique: (...args: unknown[]) => mocks.findBooking(...args) },
+    paymentRefund: { findMany: (args: unknown) => mocks.findMadeRefunds(args) },
+    bookingEvent: {
+      findMany: (args: unknown) => mocks.findBookingEvents(args),
+      create: (args: unknown) => {
+        calls.push("booking-event");
+        return mocks.createBookingEvent(args);
+      },
+    },
     paymentTransaction: {
       findUnique: (...args: unknown[]) => mocks.findTransaction(...args),
       findFirst: (...args: unknown[]) => mocks.findCapture(...args),
@@ -321,6 +333,43 @@ describe("closing a dead card refund as paid another way", () => {
     expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 10_000, preferTransactionIds: ["txn-2"] }),
     );
+    // #4145 (`INV-PAY-133`): the $50.00 Stripe made went back to the card - the
+    // cancel's card refund event records that part, inside the close.
+    expect(mocks.createBookingEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.createBookingEvent).toHaveBeenCalledWith({
+      data: expect.objectContaining({ bookingId: "b-1", type: "REFUNDED", amountCents: 5_000, actorMemberId: null, reason: "$50.00 refunded to the original payment method." }),
+    });
+    expect(calls.indexOf("booking-event")).toBeGreaterThan(calls.indexOf("claim"));
+  });
+
+  it("#4145: a cancel's row with nothing made writes no card refund event - all of it was paid another way", async () => {
+    await close(15_000, "Bank transfer", "full", 15_000);
+
+    expect(mocks.createRecord).toHaveBeenCalledTimes(1);
+    expect(mocks.createBookingEvent).not.toHaveBeenCalled();
+  });
+
+  it("#4145: a made part already recorded by a cancel made before #4145 is not recorded twice", async () => {
+    const twoSlices = deadOperation({
+      amountCents: 15_000,
+      allocationPlan: [
+        { paymentTransactionId: "txn-1", amountCents: 5_000 },
+        { paymentTransactionId: "txn-2", amountCents: 10_000 },
+      ],
+    });
+    mocks.findOperation.mockResolvedValue(twoSlices);
+    mocks.findPayment.mockResolvedValue(
+      payment(twoSlices, {
+        refundedAmountCents: 5_000,
+        status: "PARTIALLY_REFUNDED",
+        refunds: [{ paymentTransactionId: "txn-1", amountCents: 5_000, status: "succeeded", createdAt: new Date("2026-06-20T01:00:00.000Z") }],
+      }),
+    );
+    mocks.findBookingEvents.mockResolvedValueOnce([{ type: "REFUNDED", reason: "50% refunded to the original payment method.", snapshot: null }]);
+
+    await close(10_000, "Bank transfer", "full", 10_000);
+
+    expect(mocks.createBookingEvent).not.toHaveBeenCalled();
   });
 
   it("M2: writes the persisted record, born COMPLETED under its own key, for the amount paid back - and says it was part", async () => {
