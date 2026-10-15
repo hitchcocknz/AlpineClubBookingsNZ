@@ -6,5 +6,6 @@
   The record now goes inactive when the void arrives, as it already did for
   card refunds, and the payment stops pointing at it. A voided note is never
   taken up again: if the refund's credit note is requested later, a fresh note
-  is raised in Xero, and the booking repair tool no longer offers to point the
-  payment back at the voided note.
+  is raised in Xero (Xero is never asked in a way that could hand the voided one
+  back), and the booking repair tool no longer offers to point the payment back
+  at the voided note.

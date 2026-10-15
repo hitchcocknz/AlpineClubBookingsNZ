@@ -17,7 +17,7 @@
 
 import { reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import { assertNoRefundCreditNoteInFlight } from "@/lib/xero-refund-note-in-flight";
-import { mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField } from "@/lib/xero-refund-note-status";
+import { mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField, refundNoteIdSets } from "@/lib/xero-refund-note-status";
 import {
   XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
@@ -498,6 +498,11 @@ export async function createXeroCreditNote(
   }
   const noteLinkRole = refundRequestId !== null ? REFUND_REQUEST_CREDIT_NOTE_ROLE : "REFUND_CREDIT_NOTE";
 
+  // #4091 (owner decision: never re-adopt a voided note): once a refund note on
+  // this payment is voided, a reissue's Xero key names the voided notes, so Xero
+  // cannot replay the voided note's create. Byte-identical while none is voided.
+  const voidedNoteIds = refundRequestId !== null ? [] : [...(await refundNoteIdSets(paymentId, prisma)).cancelled].sort();
+  const afterVoid = voidedNoteIds.length > 0 ? ["after-void", ...voidedNoteIds] : [];
   const creditNoteIdempotencyKey = refundRequestId !== null
     ? refundRequestCreditNoteKey(paymentId, refundRequestId)
     : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null
@@ -513,23 +518,12 @@ export async function createXeroCreditNote(
         "paid-another-way",
         options.paidAnotherWayTaskId,
         closeCoveredCents,
-        "v3"
+        "v3",
+        ...afterVoid
       )
     : isDeltaMode
-    ? buildXeroIdempotencyKey(
-        "payment",
-        paymentId,
-        "refund-credit-note",
-        effectiveWatermarkCents ?? watermarkCents,
-        "v2"
-      )
-    : buildXeroIdempotencyKey(
-        "payment",
-        paymentId,
-        "refund-credit-note",
-        refundAmountCents,
-        "v1"
-      );
+    ? buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", effectiveWatermarkCents ?? watermarkCents, "v2", ...afterVoid)
+    : buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", refundAmountCents, "v1", ...afterVoid);
   // #3635 round-3 R4/R3: which capture this note answers, and its date, ride
   // in the recorded payload and the link so a retry keeps both and the
   // capture's notes can be counted.

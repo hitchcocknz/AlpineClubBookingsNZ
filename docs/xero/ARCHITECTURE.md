@@ -1041,8 +1041,14 @@ re-adopted (#4091, owner decision): `findCanonicalPaymentRefundCreditNote` skips
 any note a link records VOIDED or DELETED, as the field, a refund payment's note,
 a succeeded create or an active link, so a later request for a bank-transfer
 refund queues a fresh note instead of writing the voided one back into the
-pointer and reactivating its mirror. The booking repair tool never offers a
-voided note back into the field either. A refund left with no live note shows
+pointer and reactivating its mirror. Its Xero idempotency key ends
+`:after-void:<voided note ids, sorted>` whenever a refund note on the payment is
+recorded VOIDED or DELETED (unchanged while none is), so Xero cannot replay the
+voided note's own create; a card payment's #2901 self-heal reissue gets the same
+suffix. On a bank transfer the void also lowers the refunded amount (Xero is its
+payment rail, `INV-ADDPAY-021`), so the fresh note raises only once the refund is
+recorded again. The booking repair tool never offers a voided note back into the
+field either. A refund left with no live note shows
 no drift in the report, by design; making it visible is #4162. Reconciliation happens in a bounded
 worker kicked after the response and swept by cron. Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual

@@ -1380,3 +1380,55 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     expect(state.xero.createPaymentsCalls).toEqual([]);
   });
 });
+
+describe("#4091 (owner decision: never re-adopt a voided note) - the reissue's Xero key", () => {
+  /** Raise the refund's note, then let Xero void it as the inbound sync records it: mirror off, pointer released. */
+  async function raiseThenVoid() {
+    queueRefundNote("op_first", 5000, 5000);
+    await dispatch("op_first");
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000]);
+    const link = state.links.find((candidate) => candidate.role === "REFUND_CREDIT_NOTE" && candidate.xeroObjectId === "cn_1")!;
+    link.active = false;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+    state.xero.notes.get("cn_1")!.status = "VOIDED";
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: null };
+  }
+
+  it("MUTATION: a reissue after the void names the voided note in its key, so Xero raises a fresh note rather than replaying the voided one (card payment, the #2901 self-heal path)", async () => {
+    await raiseThenVoid();
+
+    queueRefundNote("op_reissue", 5000, 5000);
+    await dispatch("op_reissue");
+
+    // Same watermark as the voided note's create: before #4091 Xero replayed cn_1.
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
+    expect(row("op_reissue")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_2" });
+  });
+
+  it("MUTATION: the same on a bank-transfer payment's one note", async () => {
+    seedPayment(PaymentSource.INTERNET_BANKING);
+    state.xero.notes = new Map();
+    queueRefundNote("op_first", 5000, 5000, "internet-banking");
+    await dispatch("op_first");
+    const link = state.links.find((candidate) => candidate.role === "REFUND_CREDIT_NOTE" && candidate.xeroObjectId === "cn_1")!;
+    link.active = false;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: null };
+
+    queueRefundNote("op_reissue", 5000, 5000, "internet-banking");
+    await dispatch("op_reissue");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
+    expect(row("op_reissue")).toMatchObject({ xeroObjectId: "cn_2" });
+  });
+
+  it("with no note voided the key is byte-identical to before", async () => {
+    queueRefundNote("op_first", 5000, 5000);
+    await dispatch("op_first");
+    state.eligibleCents = 8000;
+    queueRefundNote("op_second", 3000, 8000);
+    await dispatch("op_second");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, "payment:cmpayment0001xyz:refund-credit-note:8000:v2"]);
+  });
+});
