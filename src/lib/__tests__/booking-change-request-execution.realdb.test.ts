@@ -1306,26 +1306,28 @@ function deferred() {
 
   it("#4088: a grid request's night sets are applied and charged exactly, gap and all", async () => {
     // From the editor's per-night grid: the stay runs a night longer, the
-    // existing guest keeps their two nights, and the added friend stays the
-    // first and third nights only — a gap no two-bound range can express.
+    // existing guest swaps their second night for the new third one, and the
+    // added friend stays the first and third nights only — gaps no two-bound
+    // range can express.
     await seed({
       requested: {
         checkOut: "2026-06-13",
         addGuests: [
           { ...ADD_LATE_FRIEND.addGuests[0], nights: ["2026-06-10", "2026-06-12"] },
         ],
-        guestStayRanges: [{ guestId: GUEST_ID, nights: ["2026-06-10", "2026-06-11"] }],
+        guestStayRanges: [{ guestId: GUEST_ID, nights: ["2026-06-10", "2026-06-12"] }],
         summary: "check-out to 2026-06-13; add Late Friend; update 1 guest stay range",
       },
     });
     const result = await approve(OFFICER_ID);
-    // Two added nights at the season rate, nothing removed, so no fee.
+    // Three nights added at the season rate (the friend's two, the guest's
+    // 12 June) and one removed (the guest's 11 June, sold at 4,321), which is
+    // charged the same-day tier's retention as the change fee.
     expect(result, JSON.stringify(result)).toMatchObject({
       outcome: "executed",
       addedGuestCount: 1,
-      priceDiffCents: 2 * NIGHT_CENTS,
-      changeFeeCents: 0,
-      additionalAmountCents: 2 * NIGHT_CENTS,
+      priceDiffCents: 3 * NIGHT_CENTS - STORED_NIGHT_CENTS,
+      changeFeeCents: STORED_NIGHT_CENTS - Math.round(STORED_NIGHT_CENTS / 2),
     });
     const booking = await prisma.booking.findUniqueOrThrow({
       where: { id: BOOKING_ID },
@@ -1335,7 +1337,7 @@ function deferred() {
     const original = booking.guests.find((guest) => guest.id === GUEST_ID)!;
     expect(original.nights.map((night) => [night.stayDate.toISOString(), night.priceCents])).toEqual([
       [CHECK_IN.toISOString(), STORED_NIGHT_CENTS],
-      [NIGHT_2.toISOString(), STORED_NIGHT_CENTS],
+      ["2026-06-12T00:00:00.000Z", NIGHT_CENTS],
     ]);
     const added = booking.guests.find((guest) => guest.id !== GUEST_ID)!;
     expect(added.nights.map((night) => [night.stayDate.toISOString(), night.priceCents])).toEqual([
