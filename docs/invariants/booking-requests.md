@@ -277,7 +277,7 @@ A `LOCKED_PERIOD` change request names the change it asks for. `POST
 guest added or removed and no guest's nights (400, `STRUCTURED_CHANGE_REQUIRED`);
 the note and `requestedEffectiveDate` are context, never a change, and a guest's
 two-bound range or grid night set counts only when it changes their nights;
-approval applies every one. All
+approval applies each (`INV-REQ-012`). All
 guest nights are read by `normalizeGuestStayRange`, a moved date the named
 nights do not reach is refused, and a typed guest named like
 one of the owner's dependants is refused at submit and in the officer's entry by
@@ -300,4 +300,23 @@ approval's audit row lists the guests entered. Guarded by
 `booking-change-request-structured.test.ts`,
 `booking-change-request-grid-nights.test.ts`,
 `booking-change-request-officer-entry.test.ts` and the realdb cases in
+`booking-change-request-execution.realdb.test.ts`.
+
+### INV-REQ-012
+
+A two-bound guest range in a `LOCKED_PERIOD` change request that only repeats
+the guest's own Date In and Date Out keeps the nights the guest holds (#4157,
+owner decision "Keep their nights"). Range mode cannot express gaps (#713), so
+the member's form sends a gapped guest's own dates back unchanged; applied as
+written, that range put the guest on every night inside it and charged for the
+gaps. `lockedPeriodRequestToBatchInput` passes such a guest to the planner as
+their night set, read from the live rows under the executor's locks (else the
+request's snapshot), so range mode stays on. Only a moved bound re-spreads the
+guest over every night of the new range. A guest who already holds every night
+is passed by the two bounds, as before. One rule, `nightsKeptByRepeatedRange`,
+decides this for the executor and for the officer's card, which lists the kept
+nights and marks the guest unchanged; only a moved range is flagged as filling
+gaps. Whether a request names any change is still judged on the ranges as sent.
+Guarded by `booking-change-request-repeated-range.test.ts`,
+`booking-change-request-grid-nights.test.ts` and the realdb cases in
 `booking-change-request-execution.realdb.test.ts`.
