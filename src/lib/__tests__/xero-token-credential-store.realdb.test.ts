@@ -31,6 +31,7 @@ import * as raceDbUrl from "./support/race-db-url";
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 const RACE_TEST_TIMEOUT_MS = 20_000;
+const TEMP_AUTH_SECRET = "race-3454-auth-secret-0123456789abcdefghijklmnop";
 
 /** Keep the existing entry point; INV-SSOT-004 gives the safety policy one home. */
 export function assertSafeXeroTokenRaceDbUrl(url: string): void {
@@ -68,9 +69,22 @@ describe("Xero token race DB safety guard (#3454)", () => {
   });
 });
 
+type CapturedAuthSecret = { value: string | undefined };
+
+/** The actual setup boundary, exercised without importing or connecting to Prisma. */
+function setUpXeroTokenRaceEnvironment(url: string): CapturedAuthSecret {
+  assertSafeXeroTokenRaceDbUrl(url);
+  process.env.DATABASE_URL = url;
+  const savedAuthSecret = { value: process.env.AUTH_SECRET };
+  // The token store refuses to encrypt under a weak secret; this one is a
+  // throwaway for a throwaway database.
+  process.env.AUTH_SECRET = TEMP_AUTH_SECRET;
+  return savedAuthSecret;
+}
+
 /** Also exercised without PostgreSQL, so cleanup failures cannot hide a secret leak. */
 async function tearDownXeroTokenRaceSuite(
-  savedAuthSecret: string | undefined,
+  savedAuthSecret: CapturedAuthSecret | undefined,
   cleanup: { tokens: () => Promise<unknown>; audit: () => Promise<unknown> } | undefined,
 ): Promise<void> {
   try {
@@ -79,26 +93,56 @@ async function tearDownXeroTokenRaceSuite(
       await cleanup.audit();
     }
   } finally {
-    if (savedAuthSecret === undefined) delete process.env.AUTH_SECRET;
-    else process.env.AUTH_SECRET = savedAuthSecret;
+    // Undefined means setup never captured the secret (for example, URL refusal).
+    if (savedAuthSecret) {
+      if (savedAuthSecret.value === undefined) delete process.env.AUTH_SECRET;
+      else process.env.AUTH_SECRET = savedAuthSecret.value;
+    }
   }
 }
 
-describe("Xero token race teardown restores AUTH_SECRET (#4164)", () => {
+describe("Xero token race setup and teardown restore AUTH_SECRET (#4164, #4174)", () => {
   let originalAuthSecret: string | undefined;
+  let originalDatabaseUrl: string | undefined;
 
   beforeEach(() => {
     originalAuthSecret = process.env.AUTH_SECRET;
+    originalDatabaseUrl = process.env.DATABASE_URL;
   });
 
   afterEach(() => {
     if (originalAuthSecret === undefined) delete process.env.AUTH_SECRET;
     else process.env.AUTH_SECRET = originalAuthSecret;
+    if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = originalDatabaseUrl;
   });
 
-  describe.each([undefined, "race-4164-previous-secret", ""])("previous secret %j", (savedAuthSecret) => {
+  describe.each([undefined, "previous", ""])("previous secret %j", (previousSecret) => {
+    beforeEach(() => {
+      if (previousSecret === undefined) delete process.env.AUTH_SECRET;
+      else process.env.AUTH_SECRET = previousSecret;
+    });
+
+    it.each(["", "postgresql://u:p@db.example.org:55442/concurrency_race_1881"])(
+      "preserves the secret when setup rejects URL %j (#4174)",
+      async (url) => {
+        let savedAuthSecret: CapturedAuthSecret | undefined;
+        expect(() => {
+          savedAuthSecret = setUpXeroTokenRaceEnvironment(url);
+        }).toThrow();
+        expect(process.env.DATABASE_URL).toBe(originalDatabaseUrl);
+
+        await tearDownXeroTokenRaceSuite(savedAuthSecret, undefined);
+
+        expect(process.env.AUTH_SECRET).toBe(previousSecret);
+        expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(previousSecret !== undefined);
+      },
+    );
     it.each(["tokens", "audit"] as const)("restores after %s cleanup rejects and preserves its error", async (failingStep) => {
-      process.env.AUTH_SECRET = "race-4164-temporary-secret";
+      const savedAuthSecret = setUpXeroTokenRaceEnvironment(
+        "postgresql://u:p@127.0.0.1:55442/concurrency_race_1881",
+      );
+      expect(process.env.AUTH_SECRET).toBe(TEMP_AUTH_SECRET);
       const error = new Error(`${failingStep} cleanup failed`);
       const cleanup = {
         tokens: vi.fn(async () => {}),
@@ -108,14 +152,17 @@ describe("Xero token race teardown restores AUTH_SECRET (#4164)", () => {
 
       await expect(tearDownXeroTokenRaceSuite(savedAuthSecret, cleanup)).rejects.toBe(error);
 
-      expect(process.env.AUTH_SECRET).toBe(savedAuthSecret);
-      expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(savedAuthSecret !== undefined);
+      expect(process.env.AUTH_SECRET).toBe(previousSecret);
+      expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(previousSecret !== undefined);
       expect(cleanup.tokens).toHaveBeenCalledOnce();
       expect(cleanup.audit).toHaveBeenCalledTimes(failingStep === "tokens" ? 0 : 1);
     });
 
     it("restores after successful cleanup", async () => {
-      process.env.AUTH_SECRET = "race-4164-temporary-secret";
+      const savedAuthSecret = setUpXeroTokenRaceEnvironment(
+        "postgresql://u:p@127.0.0.1:55442/concurrency_race_1881",
+      );
+      expect(process.env.AUTH_SECRET).toBe(TEMP_AUTH_SECRET);
       const cleanup = {
         tokens: vi.fn(async () => {}),
         audit: vi.fn(async () => {}),
@@ -123,8 +170,8 @@ describe("Xero token race teardown restores AUTH_SECRET (#4164)", () => {
 
       await tearDownXeroTokenRaceSuite(savedAuthSecret, cleanup);
 
-      expect(process.env.AUTH_SECRET).toBe(savedAuthSecret);
-      expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(savedAuthSecret !== undefined);
+      expect(process.env.AUTH_SECRET).toBe(previousSecret);
+      expect(Object.hasOwn(process.env, "AUTH_SECRET")).toBe(previousSecret !== undefined);
       expect(cleanup.tokens).toHaveBeenCalledOnce();
       expect(cleanup.audit).toHaveBeenCalledOnce();
     });
@@ -135,7 +182,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let store: typeof import("@/lib/xero-token-store");
 let credentials: typeof import("@/lib/integration-credentials");
 let StaleCredentialWriteError: (typeof import("@/lib/integration-credential-actor"))["StaleCredentialWriteError"];
-let previousAuthSecret: string | undefined;
+let previousAuthSecret: CapturedAuthSecret | undefined;
 
 const ADMIN = { kind: "admin", memberId: "race-3454-admin" } as const;
 const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
@@ -165,12 +212,7 @@ const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
     }
 
     beforeAll(async () => {
-      assertSafeXeroTokenRaceDbUrl(RACE_DB_URL);
-      process.env.DATABASE_URL = RACE_DB_URL;
-      previousAuthSecret = process.env.AUTH_SECRET;
-      // The token store refuses to encrypt under a weak secret; this one is a
-      // throwaway for a throwaway database.
-      process.env.AUTH_SECRET = "race-3454-auth-secret-0123456789abcdefghijklmnop";
+      previousAuthSecret = setUpXeroTokenRaceEnvironment(RACE_DB_URL);
       ({ prisma } = await import("@/lib/prisma"));
       store = await import("@/lib/xero-token-store");
       credentials = await import("@/lib/integration-credentials");
