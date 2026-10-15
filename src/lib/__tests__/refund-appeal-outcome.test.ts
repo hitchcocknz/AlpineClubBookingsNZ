@@ -114,6 +114,33 @@ describe("#4120: an appeal's card refund closed as paid another way (card-refund
     );
   });
 
+  it("paid twice: a card refund Stripe made before the part close and recorded after it went back too, so it is not unpaid", async () => {
+    // Two refused slices, $6 and $4, dead and closed with $2 paid back: $8 unpaid. Stripe's lost
+    // refund of the $4 slice - made before the close, recorded after it - then arrives.
+    const twoSlices = operation({
+      status: "SUCCEEDED",
+      succeededAt: new Date("2026-06-21T00:00:00.000Z"),
+      amountCents: 1_000,
+      allocationPlan: [
+        { paymentTransactionId: "txn-a", amountCents: 600, stripeKeySuffix: "refused1" },
+        { paymentTransactionId: "txn-b", amountCents: 400, stripeKeySuffix: "refused1" },
+      ],
+    });
+    const late = (paymentTransactionId: string, amountCents: number) => ({
+      stripeRefundId: `re_late_${paymentTransactionId}`,
+      paymentTransactionId,
+      amountCents,
+      status: "succeeded",
+      createdAt: new Date("2026-06-22T00:00:00.000Z"),
+      stripeCreatedAt: new Date("2026-06-20T00:00:06.000Z"),
+    });
+    const read = (refunds: Array<Record<string, unknown>>) => outcomeOf(db({ operations: [twoSlices], tasks: [close("op-1", 200, 1_000)], refunds }));
+    expect(await read([])).toMatchObject({ cardRefundClosedUnpaidCents: 800 });
+    expect(await read([late("txn-b", 400)])).toMatchObject({ cardRefundClosedUnpaidCents: 400 });
+    // Never below nothing: Stripe sent both slices, more than the close left unpaid.
+    expect(await read([late("txn-a", 600), late("txn-b", 400)])).toMatchObject({ cardRefundClosedUnpaidCents: 0 });
+  });
+
   it("a row still owed is never read as closed", async () => {
     const outcome = await outcomeOf(db({ tasks: [close("op-1", 600, 1_000)] }));
     expect(outcome).toMatchObject({ cardRefundState: "retrying", cardRefundClosedUnpaidCents: 0 });

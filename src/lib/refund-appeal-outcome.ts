@@ -26,10 +26,12 @@
  *   DISMISSED - the club kept that money, so it never went back.
  * - Closed as paid another way (`card-refund-paid-another-way.ts`): the row is
  *   SUCCEEDED, so it owes nothing, but a part close's unpaid rest never went
- *   back - read from the close's task, as a dismissed hand-back is (#4120).
+ *   back - read from the close's task, as a dismissed hand-back is (#4120),
+ *   less any card refund Stripe made for it that was recorded after the close
+ *   (`cardRefundSentAfterPaidAnotherWay`, the paid-twice reading).
  *
- * Read-only, three queries for a page of requests, and a fourth when one of
- * their card refunds was closed.
+ * Read-only, three queries for a page of requests, and a fourth, for any
+ * paid-another-way close, when one of the appeals' card refunds has SUCCEEDED.
  */
 import { PaymentRecoveryOperationStatus, type PrismaClient } from "@prisma/client";
 
@@ -37,9 +39,11 @@ import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
 import {
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
   closeKeysOf,
+  paidAnotherWayUnpaidCents,
   refundRequestHandBackOccurrenceKey,
 } from "@/lib/manual-refund-task-settlement-rules";
 import {
+  cardRefundSentAfterPaidAnotherWay,
   cardRefundSlicesByOperation,
   openCardRefundOwedCents,
   parseRefundAllocationPlan,
@@ -132,7 +136,7 @@ export async function readApprovedAppealOutcomes(
   ]);
 
   // #4120: an appeal's card refund closed as paid another way is SUCCEEDED; its close's task says how much.
-  const closedRows = new Map<string, string>();
+  const closedRows = new Map<string, { requestId: string; cardAfterCloseCents: number }>();
   for (const payment of payments) {
     const appeals = approved.filter((request) => request.booking.payment?.id === payment.id);
     // Each appeal's card refund: its recovery row, or the operation its audit records.
@@ -144,10 +148,14 @@ export async function readApprovedAppealOutcomes(
     }
     const owing = { ...payment, recoveryOperations: [...payment.recoveryOperations, ...unqueued.values()] };
     const slicesById = new Map(cardRefundSlicesByOperation(owing).map(({ operation, slices }) => [operation.id, slices]));
+    const succeeded = new Map<string, string>();
     for (const request of appeals) {
       const row = payment.recoveryOperations.find((each) => isAppealRefundRow(each, request.id));
-      if (row?.status === PaymentRecoveryOperationStatus.SUCCEEDED) closedRows.set(row.id, request.id);
+      if (row?.status === PaymentRecoveryOperationStatus.SUCCEEDED) succeeded.set(row.id, request.id);
     }
+    // A refund Stripe made before a close and recorded after it went back by card too (paid twice).
+    const cardAfterClose = succeeded.size ? cardRefundSentAfterPaidAnotherWay(owing, new Set(succeeded.keys())) : new Map<string, number>();
+    for (const [rowId, requestId] of succeeded) closedRows.set(rowId, { requestId, cardAfterCloseCents: cardAfterClose.get(rowId) ?? 0 });
     // The per-payment cap, shared by the payment's appeals in list order.
     let capLeftCents = openCardRefundOwedCents(owing);
     for (const request of appeals) {
@@ -178,11 +186,12 @@ export async function readApprovedAppealOutcomes(
         select: { occurrenceKey: true, amountCents: true, raisedAmountCents: true },
       })
     : [];
-  for (const [rowId, requestId] of closedRows) {
+  for (const [rowId, { requestId, cardAfterCloseCents }] of closedRows) {
     const keys = closeKeysOf(rowId);
-    const unpaidCents = closes
+    const closedUnpaidCents = closes
       .filter((close) => close.occurrenceKey !== null && keys.includes(close.occurrenceKey))
-      .reduce((sum, close) => sum + Math.max(0, (close.raisedAmountCents ?? 0) - (close.amountCents ?? 0)), 0);
+      .reduce((sum, close) => sum + paidAnotherWayUnpaidCents(close), 0);
+    const unpaidCents = Math.max(0, closedUnpaidCents - cardAfterCloseCents);
     if (unpaidCents > 0) outcomes.set(requestId, { ...(outcomes.get(requestId) ?? NOTHING_OWED), cardRefundClosedUnpaidCents: unpaidCents });
   }
 
