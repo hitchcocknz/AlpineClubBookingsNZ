@@ -1,4 +1,4 @@
-- **A booking's confirmation shows additional money and how to pay** (#4047),
+- **A booking's confirmation shows additional money and how to pay (#4047).**
   including an Internet Banking correction on a finished stay. Additional card
   asks point the member to their pay card. Supplementary bank invoices show
   their remaining amounts, invoice references and when they were checked, with
