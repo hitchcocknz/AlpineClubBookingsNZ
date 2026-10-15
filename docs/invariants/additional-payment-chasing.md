@@ -643,7 +643,7 @@ cleanup deactivates, and active non-cancelled coverage above the cash
 refund-note target is reported as its own drift class
 (`overCoveredStripeRefundPayments`) because it silently suppresses every
 later refund note. A non-Stripe payment keeps ONE refund note, whose mirror
-a void deactivates too (#4091); a refund request's own note
+a void deactivates too (`INV-ADDPAY-041`); a refund request's own note
 (`INV-PAY-118`, role `REFUND_REQUEST_CREDIT_NOTE`) is outside it.
 Operator repair: `scripts/xero-refund-note-link-repair.ts`
 ([runbook](../xero/ARCHITECTURE.md)).
@@ -1565,3 +1565,31 @@ decision and would need its own owner decision.
   price is editing the booking. A paid request is a refund, refused. Pinned by
   `additional-payment-withdraw.test.ts`, `payment-transactions-refunds.test.ts`,
   `xero-booking-repair.test.ts`.
+
+### INV-ADDPAY-041
+
+- **A refund credit note Xero voided is never re-adopted as a payment's
+  refund note; a reissue's key carries the voided note ids it could replay;
+  and on a bank transfer a void undoes the refund** (#4091, owner decisions).
+  Its mirror is written inactive on any payment (`INV-ADDPAY-020`), and
+  `findCanonicalPaymentRefundCreditNote`, the pointer gate
+  `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill and
+  conflict check all leave out a note a link records VOIDED or DELETED
+  (`refundNoteIdSets`, `xero-refund-note-status.ts`), so no request, retry or
+  repair writes one back into `Payment.xeroRefundCreditNoteId`.
+- **The reissue's key.** `refundNoteKeyAfterVoidParts` is the one home for the
+  outbox row's correlation key and the Xero idempotency key. It appends
+  `after-void:<sorted ids>` for the voided notes that key could replay: recorded
+  at its watermark (v2), at its amount (v1), or raised by the "Paid another
+  way" close's own rows (v3). Nothing else moves the key, so a void of another
+  note never turns a live retry into a duplicate, and with no match the key is
+  byte-identical. A card payment's #2901 self-heal follows the same rule.
+- **Bank transfers.** Xero is the payment rail (`INV-ADDPAY-021`), so the
+  inbound sync returns the refunded amount to what the live notes say and
+  nothing is re-raised automatically. A fresh note is raised only once the
+  treasurer records the refund again. A refund with no live note shows no
+  drift in the reconciliation report, by design (#4046); visibility is #4162.
+  Pinned by `xero-refund-note-void-pointer.realdb.test.ts`,
+  `xero-refund-note-crash-window.test.ts`, `xero-sync.test.ts`,
+  `xero-booking-repair.test.ts`, `xero-operation-retry.test.ts` and
+  `xero-operation-outbox.test.ts`.

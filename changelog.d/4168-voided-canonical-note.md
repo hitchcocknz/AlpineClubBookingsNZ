@@ -1,11 +1,18 @@
-- **A bank-transfer refund note voided in Xero no longer still counts as the
-  payment's live refund note (#4091).** When Xero voided the one refund credit
-  note on a bank-transfer payment, the booking system kept that note's record
-  active and the payment kept pointing at it, though Xero had cancelled it.
+- **A refund credit note voided in Xero is no longer treated as the payment's
+  refund note (#4091).** Before, when Xero voided the one refund credit note on
+  a bank-transfer payment, the booking system kept that note's record active and
+  the payment kept pointing at it.
 
-  The record now goes inactive when the void arrives, as it already did for
-  card refunds, and the payment stops pointing at it. A voided note is never
-  taken up again: if the refund's credit note is requested later, a fresh note
-  is raised in Xero (Xero is never asked in a way that could hand the voided one
-  back), and the booking repair tool no longer offers to point the payment back
-  at the voided note.
+  What you will see now:
+
+  - Once a void reaches the app, the payment no longer points at the voided
+    note, and the Xero repair tool no longer offers to point it back or flags it
+    as a conflicting reference.
+  - On a bank-transfer payment the void undoes the refund, as Xero is the
+    payment rail: the refunded amount goes back down and nothing is raised again
+    by itself. If the refund really happened, record it again; a fresh credit
+    note is then raised.
+  - On a card payment a fresh credit note is raised for the refund, as before.
+    It is always a new note in Xero, never the voided one handed back.
+  - A failed attempt at that fresh note stays in the failed Xero operations list
+    with its Retry, instead of being shown as already repaired.

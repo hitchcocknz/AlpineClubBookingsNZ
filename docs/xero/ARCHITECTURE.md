@@ -1029,28 +1029,58 @@ note.
 Xero pushes CONTACT, INVOICE, and CREDITNOTE events (the credit-note
 category has no underscore); the webhook stores each signed event as sent and
 returns fast. A category this app does not reconcile is logged and left
-processed, so it is visible without being retried forever. A credit-note void
+processed, so it is visible without being retried forever. Reconciliation
+happens in a bounded worker kicked after the response and swept by cron.
+
+**A voided refund note (#4091, `INV-ADDPAY-041`).** A credit-note void
 deactivates a payment's refund-note mirror whatever the payment: a card
 payment's per-delta note, a per-refund note, or a bank-transfer payment's one
-canonical note, whose mirror used to stay active (#4091). The void retires no
-sibling, and the same link write moves `Payment.xeroRefundCreditNoteId` to the
-newest other live note that may be canonical (never a per-refund note, #3880)
-or clears it, as the #2901 repair apply does, so the nightly missing-link report
-never sees a pointer to an inactive mirror (#4046). A voided note is never
-re-adopted (#4091, owner decision): `findCanonicalPaymentRefundCreditNote` skips
-any note a link records VOIDED or DELETED, as the field, a refund payment's note,
-a succeeded create or an active link, so a later request for a bank-transfer
-refund queues a fresh note instead of writing the voided one back into the
-pointer and reactivating its mirror. Its Xero idempotency key ends
-`:after-void:<voided note ids, sorted>` whenever a refund note on the payment is
-recorded VOIDED or DELETED (unchanged while none is), so Xero cannot replay the
-voided note's own create; a card payment's #2901 self-heal reissue gets the same
-suffix. On a bank transfer the void also lowers the refunded amount (Xero is its
-payment rail, `INV-ADDPAY-021`), so the fresh note raises only once the refund is
-recorded again. The booking repair tool never offers a voided note back into the
-field either. A refund left with no live note shows
-no drift in the report, by design; making it visible is #4162. Reconciliation happens in a bounded
-worker kicked after the response and swept by cron. Internet-banking settlement rides this flow: when an invoice is
+canonical note, whose mirror used to stay active. The void retires no sibling.
+The same link write moves `Payment.xeroRefundCreditNoteId` to the newest other
+live note that may be canonical (never a per-refund note, #3880), or clears it,
+as the #2901 repair apply does, so the nightly missing-link report never sees a
+pointer to an inactive mirror (#4046). A refund left with no live note shows no
+drift in that report, by design; making it visible is #4162. Rows that went
+wrong before #4091 (a voided canonical mirror still active) are #4161.
+
+A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
+skips any note a link records VOIDED or DELETED, whether it arrives as the field,
+a refund payment's note, a succeeded create or an active link. The pointer gate
+`mayRecordAsCanonicalRefundNote` refuses one, so no retry or repair writes it
+back, and the booking repair tool neither offers it as a field backfill nor
+counts it as a conflicting reference.
+
+A reissue never gets the voided note back from Xero. The refund-note key, built
+the same way for the outbox row's correlation key and the Xero idempotency key
+(`refundNoteKeyAfterVoidParts`), carries the voided note ids it could replay,
+sorted and hashed when long: `:after-void:<ids>`. "Could replay" means a voided
+note recorded at the key's own watermark (card and per-refund notes) or amount
+(a single note), or raised by a "Paid another way" close's own rows. A void of
+any other note leaves the key byte-identical, so a live retry never mints a
+duplicate. A card payment's #2901 self-heal reissue follows the same rule.
+
+On a bank transfer a void undoes the refund (owner decision; Xero is its payment
+rail, `INV-ADDPAY-021`). The inbound sync returns the refunded amount to what the
+live notes say, and nothing is re-raised automatically. If the refund was real,
+the treasurer records it again, and only then does a request raise the fresh
+note, under its own key.
+
+**Deploy and rollback note (#4091).** The previous release writes a voided
+canonical bank-transfer mirror active, re-adopts a voided note through its
+succeeded create, and sends the plain key, so a reissue there can get the voided
+note back from Xero. Stop the old colour's outbox and inbound workers before the
+new release queues refund notes. A retry of a row the old code first attempted,
+on a payment that already has a matching void, gets the new key and so may mint
+a fresh note beside one the lost attempt raised; the scoping above makes that
+rare. Before rolling back, and after rolling forward, list the rows at risk
+(read-only):
+`SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`
+(voided mirrors still active), and
+`SELECT o.id, o."localId", o.status, o."correlationKey" FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND o.status IN ('PENDING', 'RUNNING', 'WAITING_PAYMENT', 'FAILED', 'PARTIAL') AND EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = o."localId" AND l.role = 'REFUND_CREDIT_NOTE' AND upper(trim(l.metadata->>'status')) IN ('VOIDED', 'DELETED'))`
+(unfinished refund-note creates on a payment with a void). Let each listed create
+finish on one colour; a listed mirror is #4161's to heal.
+
+Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
 payment records; operator-applied overpayments/prepayments count), the
 matching local payments/bookings are flipped here, and the receipt is recorded
