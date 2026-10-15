@@ -99,4 +99,22 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("is not refunded again at the tier");
     expect(suite).toContain("lockPaymentForRefundedTotal(tx, PAYMENT_ID)");
   });
+
+  // #4125: the capacity race's runner-recorded refund rides the same harness.
+  it("wires the capacity race's runner-recorded refund proof the same way (#4125)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./capacity-race-refund-event.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/capacity-race-refund-event.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("the runner's replay records ONE REFUNDED event for the plan's total");
+    expect(suite).toContain("the worker's close finds it closed and writes no event");
+    expect(suite).toContain("an event insert the database refuses rolls the close back");
+    expect(suite).toContain("a dead row reads as stalled");
+  });
 });

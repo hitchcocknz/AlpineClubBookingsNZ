@@ -37,6 +37,7 @@ const {
   mockFindWaitingSupplementaryOpForIntent,
   mockExecuteGroupSettlementRefundPlan,
   mockRecordDuplicateCaptureRefundEvent,
+  mockBookingEventCreate,
   mockReportSupersededPaymentRefund,
   mockSyncEditFinancialReviewChargeRequest,
   mockBookingModificationFindUnique,
@@ -96,6 +97,7 @@ const {
     .fn()
     .mockResolvedValue({ outcome: "refunded", mirroredChildren: 1 }),
   mockRecordDuplicateCaptureRefundEvent: vi.fn().mockResolvedValue(undefined),
+  mockBookingEventCreate: vi.fn().mockResolvedValue({}),
   // #3340: the supersede-refund epilogue - one audit row, one booking event, one
   // member email, one admin alert. Mocked so a REPLAY can be asked whether it
   // spoke a second time.
@@ -162,6 +164,7 @@ vi.mock("@/lib/prisma", () => {
       findUnique: (...args: unknown[]) =>
         mockBookingModificationFindUnique(...args),
     },
+    bookingEvent: { create: (...args: unknown[]) => mockBookingEventCreate(...args) },
   };
   // #3954 review round 4: the additional-intent replay writes its row under a
   // claim hold, in one transaction, on these same mocks.
@@ -320,7 +323,9 @@ vi.mock("@/lib/email", () => ({
     mockSendAdminXeroSyncErrorAlert(...args),
 }));
 
-vi.mock("@/lib/booking-events", () => ({
+// #4125: the capacity race's close-and-record runs for real, on the prisma double below.
+vi.mock("@/lib/booking-events", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/booking-events")),
   recordDuplicateCaptureRefundEvent: (...args: unknown[]) =>
     mockRecordDuplicateCaptureRefundEvent(...args),
 }));
@@ -1414,6 +1419,10 @@ describe("payment recovery worker", () => {
     await processPaymentRecoveryOperations({ limit: 1 });
 
     expect(mockQueueLateCaptureRefundCreditNote).not.toHaveBeenCalled();
+    // #4125: the inline door can close it first, so losing that race is expected - debug, not a warning.
+    const lostClose = ([, message]: unknown[]) => typeof message === "string" && message.includes("completion matched no live operation");
+    expect(vi.mocked(logger.warn).mock.calls.filter(lostClose)).toHaveLength(0);
+    expect(vi.mocked(logger.debug).mock.calls.filter(lostClose)).toHaveLength(1);
   });
 
   it("replays a byte-identical refund-request Stripe body after a lost inline recording, so it converges instead of hitting idempotency_error (#1507)", async () => {
@@ -3903,6 +3912,88 @@ describe("payment recovery worker", () => {
 
       expect(result.succeeded).toBe(1);
       expect(mockRecordDuplicateCaptureRefundEvent).not.toHaveBeenCalled();
+      // #4125: losing to the inline close is expected here, so it is no warning.
+      const lostClose = ([, message]: unknown[]) => typeof message === "string" && message.includes("completion matched no live operation");
+      expect(vi.mocked(logger.warn).mock.calls.filter(lostClose)).toHaveLength(0);
+      expect(vi.mocked(logger.debug).mock.calls.filter(lostClose)).toHaveLength(1);
+    });
+  });
+
+  // #4125: the capacity race's refund made by the runner is recorded - a
+  // REFUNDED event, so the member's history stops reading "on its way" -
+  // exactly once, by the close that moved the row to SUCCEEDED, for what the
+  // frozen plan refunded.
+  describe("capacity-race refund recovery replay records the refund (#4125)", () => {
+    function makeCapacityOp() {
+      return makeOperation({
+        id: "recovery-capacity",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        amountCents: 10000,
+        idempotencyKey: "capacity_claim_failed_refund_recovery_booking-1_pi_original",
+        stripeKeyPrefix: "capacity_claim_failed_booking-1_pi_original",
+        // The ledger showed 9,000 refundable at the claim, so that is what was refunded.
+        allocationPlan: [
+          { paymentTransactionId: "txn-1", amountCents: 6000 },
+          { paymentTransactionId: "txn-2", amountCents: 3000 },
+        ],
+        paymentTransactionId: null,
+        paymentIntentId: "pi_original",
+      });
+    }
+    function queue(op: ReturnType<typeof makeCapacityOp>) {
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [op]),
+      );
+      mockPaymentRecoveryFindUnique.mockResolvedValue(op);
+    }
+
+    it("records REFUNDED once, for the plan's total, on the close that succeeds the row", async () => {
+      queue(makeCapacityOp());
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
+      expect(mockBookingEventCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({ bookingId: "booking-1", type: "REFUNDED", amountCents: 9000, actorMemberId: null, reason: "Automatic refund after lodge capacity was no longer available." }),
+      });
+      expect(mockRecordDuplicateCaptureRefundEvent).not.toHaveBeenCalled();
+    });
+
+    it("records nothing when the row was already closed - the inline close recorded it (count 0)", async () => {
+      queue(makeCapacityOp());
+      mockPaymentRecoveryUpdateMany.mockImplementation((args: { where?: { status?: unknown; id?: string } }) => {
+        const status = args.where?.status;
+        if (status && typeof status === "object" && "not" in status) return Promise.resolve({ count: 0 });
+        return Promise.resolve({ count: args.where?.id ? 1 : 0 });
+      });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
+    });
+
+    // #4125: the close and the event commit together - an event that cannot be
+    // written fails the attempt, so the row is not left closed without it.
+    it("an event insert that fails fails the attempt, so the row is retried rather than closed unrecorded", async () => {
+      queue(makeCapacityOp());
+      mockBookingEventCreate.mockRejectedValueOnce(new Error("insert failed"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(0);
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("records nothing when the replay's refund throws - the row is not closed", async () => {
+      queue(makeCapacityOp());
+      mockRefundPaymentTransactions.mockRejectedValueOnce(new Error("Stripe is unavailable (503)"));
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
     });
   });
 });

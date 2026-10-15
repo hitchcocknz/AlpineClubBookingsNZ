@@ -55,7 +55,7 @@ import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordina
 import { unretryableRecoveryCause } from "@/lib/recovery-unretryable-cause";
 import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
-import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { closeCapacityRaceRefundRecordingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
@@ -555,6 +555,7 @@ export async function enqueueRefundRequestRefundRecovery({
 
 import {
   BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
+  CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
   buildBookingCancellationRefundIdempotencyKey,
   buildBookingCancellationRefundMetadata,
   buildBookingModificationRefundMetadata,
@@ -1203,12 +1204,16 @@ async function enqueueSupersededPaymentRefundRecovery({
  * Because the fence lets exactly one concurrent or repeated attempt match, that
  * verdict is a claim a caller can hang a once-only epilogue off - rather than
  * off a re-derived condition that a partially-applied replay can make true
- * twice.
+ * twice. #4125: `store` closes it inside a caller's transaction; `lossExpected`
+ * logs a lost close at debug, for a replay whose inline door can close the same
+ * row first - the duplicate capture, the treasurer-approved late capture and
+ * the capacity race - where losing is an expected outcome, not an anomaly.
  */
 async function completePaymentRecoveryOperation(
   operationId: string,
+  { store = prisma, lossExpected = false }: { store?: PaymentRecoveryStore; lossExpected?: boolean } = {},
 ): Promise<boolean> {
-  const closed = await prisma.paymentRecoveryOperation.updateMany({
+  const closed = await store.paymentRecoveryOperation.updateMany({
     where: {
       id: operationId,
       status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
@@ -1222,7 +1227,7 @@ async function completePaymentRecoveryOperation(
     },
   });
   if (closed.count === 0) {
-    logger.warn(
+    logger[lossExpected ? "debug" : "warn"](
       { operationId },
       "Payment recovery completion matched no live operation (already succeeded, or deleted by a manual mark-paid reversal); nothing was resurrected"
     );
@@ -2242,28 +2247,20 @@ async function processBookingModificationRefundOperation(
   // REFUND_BOOKING_MODIFICATION carrying a `duplicate_capture_<bookingId>_<pi>`
   // idempotency key). On this recovery-replay path record the admin-only
   // history event, gated on the terminal SUCCEEDED transition actually flipping
-  // the operation (count > 0) so it lands EXACTLY ONCE across the inline and
-  // cron paths: if the inline refund already closed the operation and recorded
-  // the event, this replay sees count 0 and records nothing. The guarded
-  // updateMany sets the identical terminal fields completePaymentRecoveryOperation
-  // would.
+  // the operation (`completePaymentRecoveryOperation` true) so it lands EXACTLY
+  // ONCE across the inline and cron paths: if the inline refund already closed
+  // the operation and recorded the event, this replay records nothing. #4125:
+  // the capacity race's REFUNDED event, the same way, for what the plan refunded.
+  if (operation.idempotencyKey.startsWith(CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX)) {
+    const refundedCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
+    await closeCapacityRaceRefundRecordingEvent({ bookingId: operation.bookingId, amountCents: refundedCents, actorMemberId: null }, (tx) =>
+      completePaymentRecoveryOperation(operation.id, { store: tx, lossExpected: true }));
+    return;
+  }
   const duplicateCapturePrefix =
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(operation.bookingId);
   if (operation.idempotencyKey.startsWith(duplicateCapturePrefix)) {
-    const transition = await prisma.paymentRecoveryOperation.updateMany({
-      where: {
-        id: operation.id,
-        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-      },
-      data: {
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-        nextRetryAt: null,
-        lastError: null,
-        processingStartedAt: null,
-        succeededAt: new Date(),
-      },
-    });
-    if (transition.count > 0) {
+    if (await completePaymentRecoveryOperation(operation.id, { lossExpected: true })) {
       await recordDuplicateCaptureRefundEvent({
         bookingId: operation.bookingId,
         amountCents: operation.amountCents,
@@ -2285,17 +2282,7 @@ async function processBookingModificationRefundOperation(
   // replay that actually moves the operation to SUCCEEDED (delta D6), so an
   // inline success whose close was lost is not recorded twice.
   if (isLateCaptureRefundStripeKeyPrefix(operation.stripeKeyPrefix)) {
-    const transition = await prisma.paymentRecoveryOperation.updateMany({
-      where: { id: operation.id, status: { not: PaymentRecoveryOperationStatus.SUCCEEDED } },
-      data: {
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-        nextRetryAt: null,
-        lastError: null,
-        processingStartedAt: null,
-        succeededAt: new Date(),
-      },
-    });
-    if (transition.count > 0) {
+    if (await completePaymentRecoveryOperation(operation.id, { lossExpected: true })) {
       const amountCents = plan.reduce((sum, slice) => sum + slice.amountCents, 0);
       await finishApprovedLateCaptureRefundAfterReplay({ ...operation, amountCents, refundId });
     }
