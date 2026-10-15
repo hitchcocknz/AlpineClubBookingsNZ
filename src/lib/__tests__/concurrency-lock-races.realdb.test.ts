@@ -295,6 +295,12 @@ import "./cancel-card-refund-shortfall.realdb.test";
 // page's read of the row says still being sent, dead or made. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4125-` fixtures.
 import "./capacity-race-refund-event.realdb.test";
+// #4147 reuses it to prove the booking-ledger census reads a capacity race's
+// cancel by its own refund rows: through the REAL capacity race, back-post and
+// recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post
+// posts it), a made one agrees and a dead one disagrees. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4147-` fixtures.
+import "./booking-ledger-census-capacity-race.realdb.test";
 // #3750 reuses it to prove approving a locked-period change request on a
 // finished stay: the real executor and batch service add, remove, swap and
 // re-date the stay at the same-day tier, two racing approvals make one
