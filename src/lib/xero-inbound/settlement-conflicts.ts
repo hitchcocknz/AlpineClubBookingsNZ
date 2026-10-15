@@ -48,6 +48,7 @@ import {
 import { recordBookingEvent } from "@/lib/booking-events";
 import { buildDuplicateCaptureRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import type { ClubFormat } from "@/lib/club-format";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 /*
  * B5 (#2262): the reciprocal fence's repeat-alert window is
@@ -403,7 +404,7 @@ async function refundHistoryIds(
       kind: PaymentTransactionKind.PRIMARY,
       source: PaymentSource.INTERNET_BANKING,
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: { createdAt: true },
   });
   if (!movedToBank) return new Set();

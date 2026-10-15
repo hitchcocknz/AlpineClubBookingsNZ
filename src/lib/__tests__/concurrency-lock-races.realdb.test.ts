@@ -341,6 +341,12 @@ import "./membership-subscription-charge-close.realdb.test";
 // refunded capture still holds. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it
 // owns and cleans its own `race-4131-` fixtures.
 import "./late-capture-own-charge-refund.realdb.test";
+// #4132 reuses it to prove a payment's ledger rows written in one transaction
+// keep insertion order (`createdAt`, then `insertionSeq`) after an UPDATE moves
+// one in the heap, through the loader, the mirror, the reduction's ask and the
+// card refund plan. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
+// cleans its own `race-4132-` fixtures.
+import "./ledger-insertion-seq.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
