@@ -889,7 +889,8 @@ describe("the opposite order belongs to #1992 (#3638)", () => {
 /**
  * #4163 (`INV-PAY-133`): two card captures both qualify, and the one the
  * conflict names is the settling capture - the OLDEST-INSERTED one no
- * duplicate-capture refund owns. The mock answers like the database: it
+ * duplicate-capture refund owns (#1765 refund history aside: skipped on a
+ * paid booking, ranked last on a cancelled one). The mock answers like the database: it
  * honours the read's `orderBy`, so a read without the shared ledger order
  * hands back the rows as seeded (newest first) and names the later capture.
  */
