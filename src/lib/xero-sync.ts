@@ -601,6 +601,24 @@ async function normalizePaymentRefundLinkWithClient(
   }
 
   if (link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectType === "CREDIT_NOTE") {
+    // A note the incoming write says Xero VOIDED/DELETED (inbound
+    // reconciliation and the operator status recorder carry the live provider
+    // status) credits nothing, so its mirror is written inactive on every
+    // payment: a Stripe or per-refund note (#2901), and the one canonical note
+    // of a bank-transfer payment (#4091), which used to stay active. Without
+    // this, an inbound re-reconcile re-armed the phantom coverage the #2901
+    // repair had removed (upsert's update clause forces `active` from this
+    // return value). A cancelled note claims nothing, so it retires no sibling.
+    if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
+      // The pointer move happens after this link row is written. Doing it
+      // here would lock the payment before the link, opposite the repair
+      // apply, which locks the link and then the payment.
+      return {
+        ...link,
+        active: false,
+      };
+    }
+
     const payment = await client.payment.findUnique({
       where: { id: link.localId },
       select: {
@@ -618,22 +636,6 @@ async function normalizePaymentRefundLinkWithClient(
     // the single-refund rule below never retires one.
     const perDeltaNoteIds = payment?.source === PaymentSource.STRIPE ? new Set<string>() : await perDeltaRefundNoteIds(link.localId, client);
     if (payment?.source === PaymentSource.STRIPE || isPerDeltaRefundNoteLink(link.metadata) || perDeltaNoteIds.has(link.xeroObjectId)) {
-      // ... unless the incoming write itself says the note was VOIDED/DELETED
-      // in Xero (inbound reconciliation and the operator status recorder carry
-      // the live provider status). A cancelled note credits nothing, so its
-      // local mirror is deactivated on write — without this, an inbound
-      // re-reconcile of a voided note re-armed the phantom coverage the #2901
-      // repair had just removed (upsert's update clause forces `active` from
-      // this return value).
-      if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
-        // The pointer move happens after this link row is written. Doing it
-        // here would lock the payment before the link, opposite the repair
-        // apply, which locks the link and then the payment.
-        return {
-          ...link,
-          active: false,
-        };
-      }
       return {
         ...link,
         active: link.active ?? true,

@@ -440,6 +440,57 @@ describe("upsertXeroObjectLink", () => {
     });
   });
 
+  describe("#4091: a bank-transfer payment's one canonical note, voided in Xero", () => {
+    const voidCanonical = () =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE",
+        metadata: { status: "VOIDED", total: 200 }, mergeMetadata: true,
+      });
+
+    it("MUTATION: the mirror is written inactive and the pointer is released", async () => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await voidCanonical();
+
+      // Before the fix the canonical branch wrote it active: the field named it.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ active: false }), update: expect.objectContaining({ active: false }) }),
+      );
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: null },
+      });
+    });
+
+    it("MUTATION: a voided note retires no sibling, so the pointer can move to another live note", async () => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+      mocks.txLinkFindMany.mockResolvedValue([
+        { id: "link_review", xeroObjectId: "cn_review", metadata: { amountCents: 3000, perDelta: true }, createdAt: new Date("2026-06-03T00:00:00.000Z") },
+        { id: "link_other", xeroObjectId: "cn_other", metadata: { amountCents: 5000 }, createdAt: new Date("2026-06-02T00:00:00.000Z") },
+      ]);
+
+      await voidCanonical();
+
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: "cn_other" },
+      });
+    });
+
+    it("MUTATION: a redelivered void, after the pointer was released, stays inactive and retires nothing", async () => {
+      // With the field empty the canonical branch fell back to the incoming
+      // note itself, so a redelivery re-armed the mirror and retired siblings.
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await voidCanonical();
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false }) }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
   it("merges inbound metadata over the outbound per-delta keys when mergeMetadata is set (#1354)", async () => {
     const txLinkFindUnique = vi.fn().mockResolvedValue({
       metadata: { amountCents: 3000, watermarkCents: 8000 },
