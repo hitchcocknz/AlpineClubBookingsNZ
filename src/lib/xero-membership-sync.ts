@@ -987,8 +987,12 @@ export async function checkMembershipStatus(
  * invoice now reads as NOT_INVOICED (not locked out) rather than the pre-#2147
  * UNPAID (locked out) — see docs/guides/subscriptions.md and
  * docs/guides/subscription-lockout.md.
+ *
+ * Exported for the real-PostgreSQL proof that an invoice attempt losing to a
+ * void finishes as skipped (#4110 review F8); `checkMembershipStatus` is its
+ * only production caller.
  */
-async function releaseVoidedSubscriptionInvoice(input: {
+export async function releaseVoidedSubscriptionInvoice(input: {
   subscriptionId: string | null;
   memberId: string;
   seasonYear: number;

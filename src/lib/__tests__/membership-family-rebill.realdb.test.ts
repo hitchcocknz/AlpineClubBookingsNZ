@@ -451,15 +451,44 @@ let createdMapping = false;
       // no re-bill, and no false "reversed (child)" warning.
       expect(preview.entries).toEqual([]);
       // The child now needs a subscription and is never silently unbilled: the
-      // officer sees an exception naming why (exempt at the close) and what to do.
+      // officer is asked to decide (#4110 decision 4).
       expect(preview.exceptions).toEqual([
         expect.objectContaining({
-          code: "FAMILY_ALREADY_BILLED",
+          code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
           memberId: CHILD_ID,
-          message: expect.stringContaining("was not required to pay when family"),
-          context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID, exemptAtClose: true }),
+          message: expect.stringContaining("if the family fee already covers everyone in the family, mark them Paid; otherwise invoice just the difference in Xero by hand."),
+          context: expect.objectContaining({ existingFamilyChargeId: OLD_CHARGE_ID, reason: "EXEMPT_AT_CLOSE" }),
         }),
       ]);
+
+      // Finance's billing runs record it OPEN and keep it OPEN — run after run,
+      // and through a preview refresh — and never re-bill the family.
+      const decisionRow = () => prisma.membershipBillingException.findFirstOrThrow({
+        where: { memberId: CHILD_ID, code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION" },
+      });
+      const first = await previewAndConfirm();
+      expect(first.confirmed).toEqual({ chargeIds: [], exceptionCount: 1 });
+      const opened = await decisionRow();
+      expect(opened.status).toBe("OPEN");
+      await previewAndConfirm();
+      await billing.reconcileSubscriptionBillingExceptions({ seasonYear: SEASON_YEAR, decisionDate: DECISION_DATE, yearEndMonth: YEAR_END_MONTH });
+      expect(await decisionRow()).toMatchObject({ id: opened.id, status: "OPEN", resolvedAt: null });
+      expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
+
+      // The officer decides the family fee covers the child and marks them Paid
+      // (the existing manual mark-paid); the next refresh resolves it.
+      const { applyManualSubscriptionPayment } = await import("@/lib/manual-subscription-payment");
+      const childSubscription = await prisma.memberSubscription.findUniqueOrThrow({
+        where: { memberId_seasonYear: { memberId: CHILD_ID, seasonYear: SEASON_YEAR } },
+        select: { id: true },
+      });
+      await applyManualSubscriptionPayment({
+        subscriptionId: childSubscription.id, direction: "paid", actingMemberId: OFFICER_ID, notifyMember: false,
+        note: "Covered by the family fee",
+      });
+      await billing.reconcileSubscriptionBillingExceptions({ seasonYear: SEASON_YEAR, decisionDate: DECISION_DATE, yearEndMonth: YEAR_END_MONTH });
+      expect(await decisionRow()).toMatchObject({ id: opened.id, status: "RESOLVED", resolvedVia: "PREVIEW_RECONCILE" });
+      expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
     });
 
     it("still refuses a second LIVE charge for one family, type and season", async () => {

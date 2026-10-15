@@ -503,20 +503,18 @@ let observerClient: import("@prisma/client").PrismaClient;
       await invoiceAttempt(RETRY_ATTEMPT_ID, "RUNNING", new Date("2026-07-01T00:00:00.000Z"));
 
       // While the resume is at Xero, the membership sync sees the invoice
-      // VOIDED and releases it: what releaseVoidedSubscriptionInvoice writes.
+      // VOIDED and releases it, once per covered member, through its own
+      // release (#4110 review F8: the real writer, not a copy of its writes).
+      const { releaseVoidedSubscriptionInvoice } = await import("@/lib/xero-membership-sync");
       const onContact = async () => {
-        await prisma.membershipSubscriptionCharge.updateMany({
-          where: { id: CHARGE_ID, status: { not: "VOIDED" } },
-          data: { status: "VOIDED", lastErrorCode: null, lastErrorMessage: null },
-        });
-        await prisma.membershipSubscriptionChargeCoverage.updateMany({
-          where: { chargeId: CHARGE_ID, releasedAt: null },
-          data: { releasedAt: new Date("2026-07-01T00:00:00.000Z") },
-        });
-        await prisma.memberSubscription.updateMany({
-          where: { id: { in: [...SUBSCRIPTION_IDS] }, xeroInvoiceId: HELD_INVOICE_ID },
-          data: { status: "NOT_INVOICED", xeroInvoiceId: null, voidGeneration: { increment: 1 } },
-        });
+        for (const [index, subscriptionId] of SUBSCRIPTION_IDS.entries()) {
+          await releaseVoidedSubscriptionInvoice({
+            subscriptionId,
+            memberId: MEMBER_IDS[index]!,
+            seasonYear: SEASON_YEAR,
+            voidedInvoiceId: HELD_INVOICE_ID,
+          });
+        }
       };
 
       let xeroCalls!: { accountingApi: Record<string, ReturnType<typeof vi.fn>> };
