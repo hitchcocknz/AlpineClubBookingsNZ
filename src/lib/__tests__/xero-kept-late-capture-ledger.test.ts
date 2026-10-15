@@ -336,6 +336,7 @@ import { getRefundsMissingXeroCreditNotes } from "@/lib/xero-admin-health";
 import { cancelledBookingPrimaryPaymentRefundReason } from "@/lib/deleted-booking-modification-payment";
 import { applyActionsForPass } from "@/lib/xero-booking-repair-passes";
 import { planCardRefundFromLedger } from "@/lib/payment-transactions";
+import { lateCaptureOwnChargeSlice } from "@/lib/late-capture-own-charge-refund";
 import { recordAndNoteRepairedLateCaptureRefunds } from "@/lib/late-capture-repair-refund-record";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import type { ClubTimeZone } from "@/lib/club-time";
@@ -1141,12 +1142,12 @@ describe("round 6: a late charge's refund paid another way - record the receipt,
 });
 
 
-describe("#4131: a late capture's automatic refund that the plan takes partly from an older charge", () => {
+describe("#4131: a late capture is refunded from its own charge, never the fee the cancel kept on another", () => {
   // The booking was paid by a SECOND card charge after the first intent
   // stalled; the cancel kept a fee on it. The first intent then captures late.
   // Its row was attached at checkout, so it is OLDER than the charge that paid,
-  // and the primary handler's unpinned newest-first plan
-  // (`refundPaymentTransactions` with no allocation) takes the fee first.
+  // and a newest-first plan would take the fee first; the handler pins its own
+  // charge instead (`lateCaptureOwnChargeSlice`).
   const OLDER = "pi_older";
   const CHARGED = 30000;
   const RETAINED = 5000;
@@ -1213,9 +1214,9 @@ describe("#4131: a late capture's automatic refund that the plan takes partly fr
     });
   }
 
-  /** The primary handler's plan for the capture's amount, from the REAL planner. */
+  /** The primary handler's slice for the capture's amount, from the REAL rule (`lateCaptureOwnChargeSlice`). */
   function automaticPlan() {
-    return planCardRefundFromLedger(h.table("paymentTransaction") as never, capture().amountCents as number).slices;
+    return [lateCaptureOwnChargeSlice(capture() as never, capture().amountCents as number).slice];
   }
 
   /** What the Stripe account really holds from this booking, net of every refund. */
@@ -1225,55 +1226,60 @@ describe("#4131: a late capture's automatic refund that the plan takes partly fr
       .reduce((sum, row) => sum + (row.amountCents as number) - (row.refundedAmountCents as number), 0);
   }
 
-  it("the plan really does take the kept fee from the older charge first", () => {
-    seedFeeKeptOnAnotherCharge();
-    expect(automaticPlan()).toEqual([
-      { paymentTransactionId: "txn_older", amountCents: RETAINED },
-      { paymentTransactionId: "txn_late", amountCents: 24000 - RETAINED },
-    ]);
-  });
-
-  it("refused beside a made slice, then kept: the older slice IS noted - by the nightly self-heal, against the kept receipt", async () => {
-    seedFeeKeptOnAnotherCharge();
-    const [older, late] = automaticPlan();
-    refundSlice(older.paymentTransactionId, older.amountCents);
-    refundSlice(late.paymentTransactionId, late.amountCents, "failed");
-    // The hold raised the task (`holdLateCaptureRefusedByStripe`), then the
-    // handler's own note call: no receipt yet, so nothing to note.
-    await expect(noteLateCaptureRefunds({ paymentId: PAYMENT, paymentIntentId: INTENT })).resolves.toBe("nothing-owed");
-    await keep();
-    await runOutbox(); // the receipt, and its worker's credit-back of the capture's OWN refunds (none)
-    expect(refundNotes().filter((d) => d.paymentIntentId === INTENT)).toEqual([]);
-    // Until the self-heal, Xero holds the fee AND the gross capture.
-    expect(books().stripe).toBe(RETAINED + 24000);
-    expect(realStripeAllCharges()).toBe(24000);
-    expect(await selfHealAfterGrace()).toBe(1);
-    expect(refundNotes().at(-1)).toEqual(expect.objectContaining({ cents: RETAINED, paymentIntentId: undefined }));
-    const kept = h.table("xeroObjectLink").find((l) => l.role === "KEPT_LATE_CAPTURE_INVOICE")!.xeroObjectId;
-    const healed = h.table("xeroObjectLink").filter((l) => l.role === "REFUND_CREDIT_NOTE").at(-1)!;
-    expect((healed.metadata as { invoiceId: string }).invoiceId).toBe(kept);
-    expect(books().stripe).toBe(realStripeAllCharges());
-    expect(await selfHealAfterGrace()).toBe(0);
-  });
-
-  it("refunded automatically, no receipt: the older slice is ALSO noted by the self-heal - against the booking's own invoice", async () => {
-    seedFeeKeptOnAnotherCharge();
+  function refundedAutomatically() {
     const row = task();
     row.lateCaptureApprovalIntentId = null;
     row.status = "DISMISSED";
     row.reason = cancelledBookingPrimaryPaymentRefundReason(INTENT);
+  }
+
+  it("the refund is one slice on the capture's own charge, where the old newest-first plan took the kept fee first", () => {
+    seedFeeKeptOnAnotherCharge();
+    // The hazard: the payment-wide planner the handler used before #4131.
+    expect(planCardRefundFromLedger(h.table("paymentTransaction") as never, 24000).slices).toEqual([
+      { paymentTransactionId: "txn_older", amountCents: RETAINED },
+      { paymentTransactionId: "txn_late", amountCents: 24000 - RETAINED },
+    ]);
+    expect(automaticPlan()).toEqual([{ paymentTransactionId: "txn_late", amountCents: 24000 }]);
+  });
+
+  it("refunded automatically, no receipt: Xero still matches the Stripe account, and the self-heal raises nothing", async () => {
+    seedFeeKeptOnAnotherCharge();
+    refundedAutomatically();
     for (const slice of automaticPlan()) refundSlice(slice.paymentTransactionId, slice.amountCents);
     await expect(noteLateCaptureRefunds({ paymentId: PAYMENT, paymentIntentId: INTENT })).resolves.toBe("nothing-owed");
     await runOutbox();
-    // Before the self-heal Xero agrees with the Stripe account: the capture
-    // never entered Xero, and the fee and the capture's kept part offset.
+    expect(realStripeAllCharges()).toBe(RETAINED);
     expect(books().stripe).toBe(realStripeAllCharges());
-    expect(await selfHealAfterGrace()).toBe(1);
-    const healed = h.table("xeroObjectLink").filter((l) => l.role === "REFUND_CREDIT_NOTE").at(-1)!;
-    expect(healed.metadata).toEqual(expect.objectContaining({ amountCents: RETAINED, invoiceId: "inv_primary" }));
-    // #4131 FINDING, not yet decided: that note takes out money Xero still
-    // needs - the Stripe account holds the fee, now from the late capture.
-    expect(books().stripe).toBe(realStripeAllCharges() - RETAINED);
+    expect(await selfHealAfterGrace()).toBe(0);
+    expect(books()).toEqual({ income: RETAINED, stripe: RETAINED, receivable: 0 });
+  });
+
+  it("refused, then kept: nothing was made beside the refusal, and the receipt matches the Stripe account at once", async () => {
+    seedFeeKeptOnAnotherCharge();
+    const [late] = automaticPlan();
+    refundSlice(late.paymentTransactionId, late.amountCents, "failed");
+    await expect(noteLateCaptureRefunds({ paymentId: PAYMENT, paymentIntentId: INTENT })).resolves.toBe("nothing-owed");
+    await keep();
+    await runOutbox();
+    expect(realStripeAllCharges()).toBe(RETAINED + 24000);
+    expect(books().stripe).toBe(realStripeAllCharges());
+    expect(await selfHealAfterGrace()).toBe(0);
+  });
+
+  it("a capture already part refunded in the dashboard: only what it holds is refunded, the fee is untouched, and the books agree", async () => {
+    seedFeeKeptOnAnotherCharge();
+    refundedAutomatically();
+    takeStripeRefund(4000); // the dashboard, synced onto the capture's own row
+    const { slice, shortCents } = lateCaptureOwnChargeSlice(capture() as never, 24000);
+    expect(slice).toEqual({ paymentTransactionId: "txn_late", amountCents: 20000 });
+    expect(shortCents).toBe(4000);
+    refundSlice(slice.paymentTransactionId, slice.amountCents);
+    await runOutbox();
+    expect(h.table("paymentTransaction").find((r) => r.id === "txn_older")!.refundedAmountCents).toBe(CHARGED - RETAINED);
+    expect(realStripeAllCharges()).toBe(RETAINED);
+    expect(books().stripe).toBe(realStripeAllCharges());
+    expect(await selfHealAfterGrace()).toBe(0);
   });
 });
 
