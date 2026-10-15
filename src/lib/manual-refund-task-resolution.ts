@@ -331,7 +331,7 @@ export async function resolveManualRefundTask(
           handedBackInCash:
             input.resolution === "completed" && input.handedBackInCash === true,
           club: { zone: clubZone, format },
-          store: tx,
+          store: tx, actingMemberId,
         })
       : null;
     // #3835: what actually goes back - by card or by hand, netted against a cancellation.

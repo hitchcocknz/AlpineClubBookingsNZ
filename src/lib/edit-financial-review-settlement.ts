@@ -257,6 +257,7 @@ export async function chooseEditReviewSettlementRoute({
   handedBackInCash = false,
   club,
   store,
+  actingMemberId,
 }: {
   task: EditReviewSettlementTask;
   /**
@@ -293,6 +294,8 @@ export async function chooseEditReviewSettlementRoute({
   /** #3835: the club's zone (`INV-LOCK-004`) and format, resolved before the transaction. */
   club: { zone: ClubTimeZone; format: ClubFormat };
   store: Prisma.TransactionClient;
+  /** #4154: the officer completing it, for a capacity race's audited correction; absent on a read-only preview. */
+  actingMemberId?: string;
 }): Promise<EditReviewSettlementRoute | null> {
   if (task.kind !== ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW) {
     if (direction === ManualRefundTaskDirection.CHARGE_TO_MEMBER) {
@@ -307,7 +310,7 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
-    const cardShortfall = await cardShortfallSettlement(task, store); // #4097: null unless a card refund shortfall
+    const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null }); // #4097: null unless a card refund shortfall
     return handsBackByHand(task) && task.paymentId !== null
       ? {
           kind: "local-allocation",

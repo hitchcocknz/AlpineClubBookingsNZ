@@ -2,6 +2,7 @@ import "server-only";
 
 import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 
+import { capacityRaceChargeForHandBack } from "@/lib/capacity-race-refunded-total-correction";
 import { capacityRaceShortfallIntentId } from "@/lib/capacity-race-shortfall-task-key";
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
 import { isPaymentRecoveryOperationExhausted, isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
@@ -105,8 +106,10 @@ function cardRefundRefusal(cardRefund: { status: PaymentRecoveryOperationStatus;
 
 /** Null for any other task; for a shortfall, its settlement's preferred charges, or the refusal. */
 export async function cardShortfallSettlement(
-  task: { kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null },
+  task: { id: string; kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null },
   store: Prisma.TransactionClient,
+  /** What this completion settles, and who: a capacity race's correction (#4154) needs both. */
+  completion: { amountCents: number; actingMemberId: string | null },
 ): Promise<{ preferTransactionIds: string[]; onlyTransactionIds?: string[]; nothingToAllocateMessage?: string } | null> {
   const part = cancelCardShortfallPart(task);
   if (part === null || task.paymentId === null) return null;
@@ -135,14 +138,17 @@ export async function cardShortfallSettlement(
   // the race's own card charge and nowhere else - never a non-card charge, nor
   // a charge captured later on the same payment. Short there, the allocation
   // refuses (`onlyTransactionIds`) with the race's own way out.
+  // Where that charge holds too little, the owner's guarded recalculation (#4154) corrects it first, or names what blocked it.
   const raceIntentId = capacityRaceShortfallIntentId(task);
   if (raceIntentId !== null) {
-    const own = await store.paymentTransaction.findMany({
-      where: { paymentId: task.paymentId, stripePaymentIntentId: raceIntentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
-      select: { id: true },
+    const { chargeId } = await capacityRaceChargeForHandBack(store, {
+      task: { id: task.id, bookingId: task.bookingId, paymentId: task.paymentId },
+      raceIntentId,
+      amountCents: completion.amountCents,
+      actingMemberId: completion.actingMemberId,
+      nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE,
     });
-    const ids = (own ?? []).map((row) => row.id);
-    return { preferTransactionIds: ids, onlyTransactionIds: ids, nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE };
+    return { preferTransactionIds: [chargeId], onlyTransactionIds: [chargeId], nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE };
   }
   // A part to check settles only on what the bank-transfer part leaves (coordinator, PR #4122).
   if (part === "check") {

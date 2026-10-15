@@ -657,7 +657,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // a card refund Stripe failed later that the app did not make for the
   // booking, awaited on the ledger writer's transaction under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 503,
+  // 503 -> 504 (#4154, owner decision on #4154): `booking-payment.capacity-race.refunded-total-corrected`,
+  // the guarded recalculation of a capacity race's card charge before its hand-back, awaited on the
+  // completion's own transaction under `payment`. RE-MEASURED with `pnpm run audit:census`.
+  writeSites: 504,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -857,7 +860,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the close's transaction so the row commits with the status.
     // 143 -> 144 (#4104 review, CL3): a failed-later card refund not re-sent,
     // awaited on the ledger writer's transaction so the row commits with it.
-    createAuditLog: { total: 144, uncategorised: 0 },
+    // 144 -> 145 (#4154): a capacity race's charge corrected before its hand-back,
+    // awaited on the completion's transaction so the row commits with the correction.
+    createAuditLog: { total: 145, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1054,7 +1059,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // officer and reason beside the billing actions the same people read.
     // 55 -> 56 (#4104 review, CL3): a card refund Stripe failed later that the
     // app did not make for the booking - read by the people who reconcile it.
-    payment: 56,
+    // 56 -> 57 (#4154): a capacity race's card charge corrected to its refund
+    // rows before its hand-back - the payment's figures, read by the same people.
+    payment: 57,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

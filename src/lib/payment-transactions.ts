@@ -534,7 +534,7 @@ const REFUND_MIRROR_CAS_ATTEMPTS = 5;
  * #1491 fold leaves status alone, as it always has. Exhausting the attempts
  * throws: loud, and inside a transaction, so nothing half-written commits.
  */
-async function compareAndSetRefundedAmount(
+export async function compareAndSetRefundedAmount(
   db: PaymentStore,
   paymentTransactionId: string,
   nextFrom: (row: { amountCents: number; refundedAmountCents: number }) => number,
@@ -693,7 +693,7 @@ async function reversalFloorForTransaction(
  *
  * Read through the one reader of migration history (`readMigrationFinishedAt`).
  */
-async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null> {
+export async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null> {
   // A database built with `prisma db push` (a dev convenience) has no
   // migration history; it never ran pre-ledger code either, so it reads like
   // a missing row (#3640 delta review, D4). Production, CI and e2e all `migrate deploy`.

@@ -408,8 +408,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   its card refunds still counted (a refund the old formula never added, failing
   later, takes nothing). Rows, mirror and aggregate commit in one transaction.
 - **Every later write of that column is one compare-and-set**, re-read and
-  retried: the writer above, #1491's fold and `applyLocalRefundAllocation`, which
-  refuses only when headroom is gone. All take the `Payment` row first
+  retried: the writer above, #1491's fold, `applyLocalRefundAllocation`, which
+  refuses only when headroom is gone, and a capacity race's guarded correction,
+  which only lowers a total to its refund rows (`INV-PAY-133`). All take the `Payment` row first
   (`lockPaymentForRefundedTotal`), then refund rows, then transaction rows.
 - Two writers set an organiser-settled child's mirror directly, because the
   child has no transaction rows: the pre-#3653 group-settlement path
@@ -1388,36 +1389,36 @@ short).
 
 ## INV-PAY-133
 
-**Related: `INV-PAY-129`** (the task it reuses) and **`INV-PAY-130`** (the
-capacity race's card refund door).
+**Related: `INV-PAY-129`** (the task it reuses) and **`INV-PAY-103`** (the
+refunded total it corrects).
 
 - **What a capacity race's card refund plan does not carry is a task to
-  check** (#4154). The plan refunds what the charge's ledger rows show
-  refundable; drift can leave it short of the charge, or empty.
-  - **The capacity void's claim raises ONE `CANCELLED_BOOKING_HAND_BACK`**
-    for the rest, as `INV-PAY-129`'s `check` part, keyed on the booking and
-    the race's intent (`capacityRaceShortfallOccurrenceKey`), inserted on no
-    conflict. A key the booking already holds is logged and
-    left, never thrown: the webhook must not wedge with the charge taken. A
-    redelivered webhook finds the booking cancelled and raises nothing.
-  - **Only a part to check, never a bank-transfer part**: the gap is the card
-    charge's own records, which may already have gone back another way, and
-    other charges are not what this refund was for. The task's reason and the
-    once-ever officers' alert say to check Stripe and the bank first.
-  - **Marked paid back**, it lands only on the race intent's own captured
-    charge (`onlyTransactionIds`), never a non-card or later charge, then
-    completes as `INV-PAY-129`'s part does: its `BANK_REFUND` line and one
-    Xero note keyed on the task. It is refused while any of the race's card
-    refund rows is unsettled; where that charge holds nothing for it, the
-    refusal says to dismiss it and raise the Xero note by hand.
-  - **The member's page follows it**: OPEN, the club will be in touch about
-    the rest; paid back, its REFUNDED event counts as refunded; dismissed,
-    the club checked it and closed it.
+  check** (#4154): ONE `CANCELLED_BOOKING_HAND_BACK`, `INV-PAY-129`'s `check`
+  part, raised in the void's claim, keyed on the booking and race intent,
+  inserted on no conflict; a held key is logged, never thrown. The reason and
+  the officers' alert say to check Stripe and the bank first.
+  - **Marked paid back**, it lands only on the race intent's captured charge
+    (`onlyTransactionIds`), refused while any of the race's card refunds is
+    unsettled, then completes as `INV-PAY-129`'s part does.
+  - **Where that charge holds too little, it is first corrected** (owner,
+    15 Oct 2026, "Guarded recalculation"): under the completion's `Payment`
+    row lock, its refunded total is LOWERED to its recorded, non-refused
+    refund rows - never raised (`compareAndSetRefundedAmount`, taking the
+    smaller) - the payment's figures re-derived and the correction audited
+    before and after. Only when the charge was made after the refund ledger
+    started (`refundLedgerStartSeconds`), every refund row on it is dated
+    after that, the booking gave back no account credit, the booking and
+    payment have no other refund task, and the corrected charge then holds
+    the task. `INV-PAY-103`'s floor is the refund rows; where nothing else
+    can be in the total, the floor is the total. Otherwise it is refused,
+    naming the blocker: dismiss it and raise the Xero note by hand.
+  - **The member's page follows it**: OPEN, the club will be in touch; paid
+    back, refunded; dismissed, checked and closed.
   - Proven by `capacity-race-refund-shortfall.test.ts`,
-    `payment-reconciliation.test.ts`, `manual-refund-task.test.ts`,
-    `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts`,
-    `booking-ledger-projection-census.test.ts` and
-    `capacity-race-refund-shortfall-task.realdb.test.ts`.
+    `capacity-race-refunded-total-correction.test.ts`,
+    `manual-refund-task.test.ts`, `payment-transactions-refunds.test.ts`,
+    `booking-narrative.test.ts`, `booking-ledger-projection-census.test.ts`
+    and `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
 ## INV-PAY-031
 

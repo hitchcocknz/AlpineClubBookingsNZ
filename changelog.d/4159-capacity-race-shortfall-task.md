@@ -9,10 +9,15 @@
   be wrong and the money may already have gone back: dismiss it with a note if
   it has, and the member's page says the club checked it and closed it. If it
   really is owed, try **Mark paid back** before you pay, once the card refund
-  has gone through. The app can record it only on that card charge, and only
-  while its records still hold that much: if it accepts, pay it by bank
-  transfer straight away, and the app records the refund on the booking's
-  ledger, queues its Xero refund credit note, and the member's page says the
-  whole payment was refunded. If it refuses, pay the member anyway if they are
-  owed, dismiss the task with a note saying when and how much, and raise the
-  Xero refund credit note by hand. The officers' email now points at the task.
+  has gone through. The app records it only on that card charge. Where the
+  charge's records read more refunded than the card refunds on record, it
+  corrects them itself first and logs that in the audit log (under Payment,
+  which finance officers read), but only for a
+  charge made since the app kept a record of each card refund, on a booking
+  with no account credit given back and no other refund task. If it accepts,
+  pay it by bank transfer straight away: the app records the refund on the
+  booking's ledger, queues its Xero refund credit note, and the member's page
+  says the whole payment was refunded. If it refuses, it says why: pay the
+  member anyway if they are owed, dismiss the task with a note saying when and
+  how much, and raise the Xero refund credit note by hand. The officers' email
+  now points at the task.

@@ -2686,22 +2686,26 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith({ paymentId: "payment-1", amountCents: 2000, store: tx, preferTransactionIds: ["txn-race"], onlyTransactionIds: ["txn-race"] });
     });
 
-    it.each([
-      ["an empty plan (no captured row for the race's intent)", false],
-      ["a short charge row (the race's charge holds less than the task)", true],
-    ] as const)("MUTATION: %s - refused, still OPEN, naming the dismissal and the Xero note by hand", async (_label, hasRow) => {
+    it("MUTATION: an empty plan with no captured row for the race's intent - refused before any write, still OPEN, naming the blocker, the dismissal and the Xero note by hand", async () => {
       shortfallTask("race");
-      if (hasRow) raceChargeRows();
-      else mocks.paymentTransactionFindMany.mockResolvedValue([]);
-      // The allocator refuses a shortfall on the charges it may use, as it does any.
-      mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
+      mocks.paymentTransactionFindMany.mockResolvedValue([]);
 
       await expect(complete()).rejects.toMatchObject({
         status: 400,
-        message: expect.stringMatching(/^The payment's records show none of this card charge left to refund.*dismiss this task with a note saying when and how much, and raise its refund credit note in Xero by hand/),
+        message: expect.stringMatching(/^The payment's records show none of this card charge left to refund.*raise its refund credit note in Xero by hand.*\(The app could not correct the charge's records itself: the payment's records hold no captured charge/),
       });
-      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ onlyTransactionIds: hasRow ? ["txn-race"] : [] }));
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
       expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
+
+    it("the allocator's own refusal on the race's charge (the backstop) names the race's way out", async () => {
+      shortfallTask("race");
+      raceChargeRows();
+      mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
+
+      await expect(complete()).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/^The payment's records show none of this card charge left to refund/) });
+      expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ onlyTransactionIds: ["txn-race"] }));
     });
 
     it("a member cancel's part to check keeps #4097's settlement: non-card charges first, any charge after", async () => {

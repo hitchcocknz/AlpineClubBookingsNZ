@@ -13,18 +13,21 @@
  *   refunds $140.00 and the void's own transaction writes ONE
  *   `CANCELLED_BOOKING_HAND_BACK` to CHECK for $60.00, passing every
  *   `ManualRefundTask` CHECK. The capture's success delivered again through
- *   the webhook door settles nothing more and writes no second. The card refund ADDS to the drifted
- *   total, so the charge's records hold nothing more: marked paid back, it is
- *   refused, still OPEN, naming the dismissal and the Xero note by hand. Once
- *   the records are corrected, it lands on the race's own charge alone - never
- *   on a charge captured later on the payment - posts its `BANK_REFUND` line,
- *   queues ONE Xero refund note keyed on the task, and the member's page reads
- *   the whole charge refunded.
- * - The card refund still being sent (Stripe unreachable): the task's
- *   completion is refused (409) until the runner makes the race's refund.
- * - An empty plan (the ledger reads the whole charge refunded): nothing by card,
- *   the whole charge to check; it cannot be marked paid back, so it is dismissed
- *   with a note, and the member's page says the club checked it and closed it.
+ *   the webhook door settles nothing more and writes no second. The card refund
+ *   ADDS to the drifted total, so the charge reads all of it refunded and the
+ *   census reports the drift. Marked paid back, the owner's guarded
+ *   recalculation (`INV-PAY-133`) lowers the charge to its refund rows, audited
+ *   before and after, and the task lands on that charge alone (never on a
+ *   charge captured later on the payment, its own case) - posting its `BANK_REFUND` line and ONE Xero refund
+ *   note keyed on the task; the member's page reads the whole charge refunded
+ *   and the census agrees.
+ * - An empty plan whose records drifted (the row reads the whole charge
+ *   refunded): nothing by card; marked paid back, corrected to nothing, and the
+ *   whole $200.00 is recorded the same way, the census agreeing.
+ * - The card refund still being sent (Stripe unreachable): refused (409),
+ *   nothing corrected, until the runner makes the race's refund.
+ * - A charge made before the refund ledger started: never corrected - refused
+ *   naming why, nothing written - and dismissed, the page says the club closed it.
  *
  * "Refunds owed" is not read: it is club-wide, and capped at what a payment's
  * records still hold, which here read the whole charge refunded.
@@ -63,6 +66,11 @@ const DRIFT_CENTS = 6_000;
 const CHECK_KEY = `cancel-card-shortfall:${BOOKING_ID}:capacity-race:${INTENT}:check`;
 const LATE_TXN = "race-4154-txn-late";
 const LATE_INTENT = "pi_race_4154_late";
+// After this database's refund ledger started (its migration runs at real time), as a live charge's is; the
+// double's refunds are later still. A charge from before it is one the correction must refuse (`INV-PAY-133`).
+const CHARGE_MADE_AT = new Date("2098-06-01T00:00:00.000Z");
+const LATE_CHARGE_MADE_AT = new Date("2098-07-01T00:00:00.000Z");
+const CORRECTION_ACTION = "booking-payment.capacity-race.refunded-total-corrected";
 const RACE_ROW_KEY = `capacity_claim_failed_refund_recovery_${BOOKING_ID}_${INTENT}`;
 const XERO_INVOICE_ID = "race-4154-invoice";
 // A stay well after today.
@@ -121,7 +129,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
      * payment's ledger already holds the card charge, reading `refundedCents`
      * of it refunded with no refund row (the drift).
      */
-    async function seed({ refundedCents }: { refundedCents: number }): Promise<void> {
+    async function seed({ refundedCents, chargeMadeAt = CHARGE_MADE_AT }: { refundedCents: number; chargeMadeAt?: Date }): Promise<void> {
       await prisma.booking.create({
         data: { id: BOOKING_ID, memberId: MEMBER_ID, lodgeId: LODGE_ID, checkIn: D1, checkOut: CHECK_OUT, status: "PAYMENT_PENDING", totalPriceCents: CHARGE_CENTS, finalPriceCents: CHARGE_CENTS },
       });
@@ -145,7 +153,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         data: { id: PAYMENT_ID, bookingId: BOOKING_ID, amountCents: CHARGE_CENTS, source: "STRIPE", status: "PENDING", stripePaymentIntentId: INTENT, xeroInvoiceId: XERO_INVOICE_ID },
       });
       await prisma.paymentTransaction.create({
-        data: { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CHARGE_CENTS, refundedAmountCents: refundedCents, status: "SUCCEEDED", createdAt: new Date("2026-05-01T00:00:00.000Z") },
+        data: { id: CARD_TXN, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: INTENT, amountCents: CHARGE_CENTS, refundedAmountCents: refundedCents, status: "SUCCEEDED", createdAt: chargeMadeAt },
       });
     }
 
@@ -221,6 +229,11 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     }
 
     const checkTask = () => prisma.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey: CHECK_KEY } });
+    const corrections = () => prisma.auditLog.findMany({ where: { targetId: BOOKING_ID, action: CORRECTION_ACTION }, select: { category: true, entityId: true, metadata: true } });
+    const lateCharge = (amountCents: number) =>
+      prisma.paymentTransaction.create({
+        data: { id: LATE_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: LATE_INTENT, amountCents, status: "SUCCEEDED", createdAt: LATE_CHARGE_MADE_AT },
+      });
 
     /** #4147's census of the booking, after the back-post confirms it on the ledger (`apply`). */
     async function census(backPost?: "apply") {
@@ -235,17 +248,6 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         disagreements: evaluation.identities.filter((each) => each.status === "DISAGREE").map((each) => each.identity),
         integrity: evaluation.integrity,
       };
-    }
-
-    /**
-     * The owner's repair of the drift (`payments:audit-refunded-total` reports it;
-     * the app never lowers a refunded total itself): the charge's refunded total
-     * back to its refund rows, and the payment's figures re-derived from its charges.
-     */
-    async function correctTheRecords(): Promise<void> {
-      await prisma.paymentTransaction.update({ where: { id: CARD_TXN }, data: { refundedAmountCents: CHARGE_CENTS - DRIFT_CENTS } });
-      const { reconcilePaymentAggregates } = await import("@/lib/payment-transactions");
-      await reconcilePaymentAggregates({ paymentId: PAYMENT_ID, store: prisma });
     }
 
     beforeAll(async () => {
@@ -276,10 +278,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await prisma.member.deleteMany({ where: { id: MEMBER_ID } });
     });
 
-    /** The officers' refusal for a charge whose records hold nothing for the task (`INV-PAY-133`). */
-    const NOTHING_TO_ALLOCATE = /^The payment's records show none of this card charge left to refund.*raise its refund credit note in Xero by hand/;
-
-    it("a partial plan: the card refunds what it carries, the rest is ONE task to check; marked paid back it lands on the race's own charge alone, posting its line and its Xero note", async () => {
+    it("a partial plan: the card refunds what it carries, the rest is ONE task to check; marked paid back, the drifted charge is corrected and takes it - line, Xero note, audit, and the census agrees", async () => {
       await seed({ refundedCents: DRIFT_CENTS });
       const asked = stripeRefunds("make");
 
@@ -316,23 +315,18 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await prisma.bookingEvent.count({ where: { bookingId: BOOKING_ID, type: "REFUNDED" } })).toBe(1);
       expect(await prisma.manualRefundTask.count({ where: { bookingId: BOOKING_ID } })).toBe(1);
 
-      // The card refund was added to the drifted total, so the charge's records hold nothing more: refused, still OPEN.
+      // The card refund was ADDED to the drifted total (a live refund, after the ledger started): the charge reads all of it refunded,
+      // and the census reports the drift - the back-post will not confirm over a refunded total its refund rows do not make.
       expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
-      await expect(resolve("completed", tasks[0]!.id)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(NOTHING_TO_ALLOCATE) });
-      expect(await checkTask()).toMatchObject({ status: "OPEN" });
+      expect((await census("apply")).posted).toMatchObject({ kind: "CANNOT_POST", disagreements: [{ identity: "REFUNDED", deltaCents: DRIFT_CENTS }] });
 
-      // The records corrected (the owner's repair of the drift), and a later intent's charge captured on the same payment.
-      await correctTheRecords();
-      await prisma.paymentTransaction.create({
-        data: { id: LATE_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: LATE_INTENT, amountCents: 5_000, status: "SUCCEEDED", createdAt: new Date("2026-06-30T00:00:00.000Z") },
-      });
-
-      // Paid back by bank transfer: on the race's charge, on the booking ledger, in Xero, and owed nowhere.
+      // Paid back by bank transfer: the charge corrected to its refund rows, then the task on it alone.
       await resolve("completed", tasks[0]!.id);
       expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: DRIFT_CENTS });
-      expect(await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } })).toEqual([
-        { id: CARD_TXN, refundedAmountCents: CHARGE_CENTS },
-        { id: LATE_TXN, refundedAmountCents: 0 },
+      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
+      expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
+      expect(await corrections()).toEqual([
+        { category: "payment", entityId: CARD_TXN, metadata: expect.objectContaining({ refundedBeforeCents: CHARGE_CENTS, refundedAfterCents: CHARGE_CENTS - DRIFT_CENTS, manualRefundTaskId: tasks[0]!.id }) },
       ]);
       const handBackLines = await prisma.bookingLedgerLine.findMany({
         where: { bookingId: BOOKING_ID, postingKey: `handback:${tasks[0]!.id}` },
@@ -344,45 +338,58 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const page = await memberPage();
       expect(page).toContain("$200.00 was refunded on 1 Jul 2026.");
       expect(page).not.toContain("in touch");
+
+      // #4147's census: confirmed now, and the completed task explains the rest.
+      const after = await census("apply");
+      expect(after.posted).toMatchObject({ kind: "POSTED" });
+      expect(after.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(after.disagreements).toEqual([]);
+      expect(after.integrity).toEqual([]);
     });
 
-    it("on the ledger census (#4147): the drift itself disagrees until corrected; then OPEN is V5 with the capacity-race detail, and paid back nothing is short", async () => {
+    it("an empty plan whose records drifted: nothing by card, the whole charge to check; marked paid back, the charge is corrected and the whole $200.00 posts its line and its Xero note, and the census agrees", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      const asked = stripeRefunds("make");
+
+      await capacityRace();
+      expect(asked).toEqual([]);
+      const task = await checkTask();
+      expect(task).toMatchObject({ status: "OPEN", amountCents: CHARGE_CENTS });
+      expect(await memberPage()).toContain("The club will be in touch about the $200.00.");
+
+      await resolve("completed", task.id);
+      expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: CHARGE_CENTS });
+      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: CARD_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: CHARGE_CENTS });
+      expect(await corrections()).toEqual([
+        { category: "payment", entityId: CARD_TXN, metadata: expect.objectContaining({ refundedBeforeCents: CHARGE_CENTS, refundedAfterCents: 0, recordedCardRefundCents: 0 }) },
+      ]);
+      expect(await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" }, select: { amountCents: true } })).toEqual([{ amountCents: -CHARGE_CENTS }]);
+      expect(await taskRefundNotes()).toEqual([{ cents: CHARGE_CENTS, taskId: task.id }]);
+      const page = await memberPage();
+      expect(page).toContain("$200.00 was refunded on 1 Jul 2026.");
+      expect(page).not.toContain("in touch");
+
+      const after = await census("apply");
+      expect(after.posted).toMatchObject({ kind: "POSTED" });
+      expect(after.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(after.disagreements).toEqual([]);
+      expect(after.integrity).toEqual([]);
+    });
+
+    it("MUTATION (PR #4159 F2/F4): a later intent's charge captured on the payment, holding plenty, is never the task's: the corrected race charge takes it", async () => {
       await seed({ refundedCents: DRIFT_CENTS });
       stripeRefunds("make");
       await capacityRace();
-
-      // The phantom $60.00 on the charge's records is REFUNDED's to report: the back-post will not confirm over it.
-      expect((await census("apply")).posted).toMatchObject({ kind: "CANNOT_POST", disagreements: [{ identity: "REFUNDED", deltaCents: DRIFT_CENTS }] });
-
-      // The records corrected: confirmed, the rest the plan never carried is V5, named a capacity race's.
-      await correctTheRecords();
-      const open = await census("apply");
-      expect(open.posted).toMatchObject({ kind: "POSTED", classes: ["V5_PLANNED_REFUND_SHORT"] });
-      expect(open.price).toMatchObject({ status: "CLASSIFIED", deltaCents: DRIFT_CENTS, explainedBy: [{ name: "V5_PLANNED_REFUND_SHORT", cents: DRIFT_CENTS, detail: "capacity race" }] });
-      expect(open.disagreements).toEqual([]);
+      await lateCharge(50_000);
 
       await resolve("completed", (await checkTask()).id);
-      const paid = await census();
-      expect(paid.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
-      expect(paid.disagreements).toEqual([]);
-      expect(paid.integrity).toEqual([]);
+      expect(await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } })).toEqual([
+        { id: CARD_TXN, refundedAmountCents: CHARGE_CENTS },
+        { id: LATE_TXN, refundedAmountCents: 0 },
+      ]);
     });
 
-    it("MUTATION (PR #4159 F4): the race's own charge short, a later-captured charge holding plenty: refused, and nothing lands on the later one", async () => {
-      await seed({ refundedCents: DRIFT_CENTS });
-      stripeRefunds("make");
-      await capacityRace();
-      await prisma.paymentTransaction.create({
-        data: { id: LATE_TXN, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: LATE_INTENT, amountCents: 50_000, status: "SUCCEEDED", createdAt: new Date("2026-06-30T00:00:00.000Z") },
-      });
-
-      await expect(resolve("completed", (await checkTask()).id)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(NOTHING_TO_ALLOCATE) });
-      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: LATE_TXN }, select: { refundedAmountCents: true } })).toEqual({ refundedAmountCents: 0 });
-      expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(0);
-      expect(await checkTask()).toMatchObject({ status: "OPEN" });
-    });
-
-    it("the card refund still being sent: completion is refused until the runner makes the race's refund", async () => {
+    it("the card refund still being sent: completion is refused, and nothing corrected, until the runner makes the race's refund", async () => {
       await seed({ refundedCents: DRIFT_CENTS });
       stripeRefunds("unreachable");
 
@@ -392,6 +399,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
 
       await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/still being refunded|waiting to retry/) });
       expect(await checkTask()).toMatchObject({ status: "OPEN" });
+      expect(await corrections()).toEqual([]);
       expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(0);
 
       // Its retry comes due and Stripe makes it; then the task can be marked.
@@ -401,30 +409,33 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
       expect(await runPaymentRecoveryOperationNow(raceRow.id, CLUB_FORMAT_TEST)).toBe("succeeded");
 
-      // The gate opens; the charge's records then hold nothing more (the refund added to the drift), so it is the allocation's refusal.
-      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(NOTHING_TO_ALLOCATE) });
-      expect(await checkTask()).toMatchObject({ status: "OPEN" });
+      await resolve("completed", task.id);
+      expect(await checkTask()).toMatchObject({ status: "COMPLETED" });
+      expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(1);
+      expect(await corrections()).toHaveLength(1);
     });
 
-    it("an empty plan: nothing by card, the whole charge to check; with nothing on the ledger it is dismissed, and the page says the club closed it", async () => {
-      await seed({ refundedCents: CHARGE_CENTS });
-      const asked = stripeRefunds("make");
-
+    it("MUTATION: a charge made before the refund ledger started is never corrected - refused naming why, nothing written, the later charge untouched; dismissed, the page says the club closed it", async () => {
+      await seed({ refundedCents: CHARGE_CENTS, chargeMadeAt: new Date("2026-05-01T00:00:00.000Z") });
+      stripeRefunds("make");
       await capacityRace();
-      expect(asked).toEqual([]);
+      await lateCharge(50_000);
       const task = await checkTask();
-      expect(task).toMatchObject({ status: "OPEN", amountCents: CHARGE_CENTS });
-      // Not in "Refunds owed": that figure is capped at what the payment's records
-      // say it still holds (`refundsOwedOfCashParts`), and they read it all refunded.
-      expect(await memberPage()).toContain("The club will be in touch about the $200.00.");
 
-      // Nothing on the ledger to record it against: refused, still OPEN, and told to dismiss it.
-      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 400, message: expect.stringMatching(NOTHING_TO_ALLOCATE) });
+      await expect(resolve("completed", task.id)).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/^The payment's records show none of this card charge left to refund.*raise its refund credit note in Xero by hand.*the charge was made before the app kept a record of each card refund/),
+      });
       expect(await checkTask()).toMatchObject({ status: "OPEN" });
+      expect(await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, orderBy: { id: "asc" }, select: { id: true, refundedAmountCents: true } })).toEqual([
+        { id: CARD_TXN, refundedAmountCents: CHARGE_CENTS },
+        { id: LATE_TXN, refundedAmountCents: 0 },
+      ]);
+      expect(await corrections()).toEqual([]);
+      expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(0);
 
       await resolve("dismissed", task.id, "Refunded in the Stripe dashboard on 2 July.");
       expect(await checkTask()).toMatchObject({ status: "DISMISSED" });
-      expect(await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } })).toBe(0);
       expect(await taskRefundNotes()).toEqual([]);
       const page = await memberPage();
       expect(page).toContain("The club checked the $200.00 and closed it.");

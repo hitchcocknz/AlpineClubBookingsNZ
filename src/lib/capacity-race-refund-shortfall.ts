@@ -26,8 +26,10 @@
  * for. Marked paid back, it records the hand refund only on the race's own
  * charge (`cardShortfallSettlement`), as #4097's does otherwise (its
  * `BANK_REFUND` line and Xero note, and a REFUNDED event the member's page
- * counts); where that charge's records hold nothing for it, the app refuses
- * and says to dismiss it and raise the Xero note by hand. Dismissed, the page
+ * counts). Where that charge holds too little, the owner's guarded
+ * recalculation corrects it first (`capacity-race-refunded-total-correction.ts`),
+ * or the app refuses, naming why, and says to dismiss it and raise the Xero
+ * note by hand. Dismissed, the page
  * says the club checked it and closed it. One per booking in practice, as the
  * alert is: a booking is cancelled once.
  */
@@ -66,7 +68,7 @@ export function capacityRaceRefundShortfallMessage(figures: ShortfallFigures, fo
   const remainder = formatCents(figures.chargedCents - figures.plannedRefundCents, format);
   const lead = "The dates filled up while this card payment was going through, so the booking was cancelled.";
   const todo = taskRaised
-    ? `It is under Money to settle on the payments board, as a task to check: the records may be wrong, and it may already have gone back. Check Stripe and the bank first. If the member has had it, dismiss the task with a note saying how. If it really is owed, try marking the task paid back before you pay, once the card refund has gone through - the app can record it only while the payment's records still hold that much. If it accepts, refund the ${remainder} by bank transfer straight away; if it refuses, refund it anyway, dismiss the task with a note saying how, and raise its refund credit note in Xero by hand.`
+    ? `It is under Money to settle on the payments board, as a task to check: the records may be wrong, and it may already have gone back. Check Stripe and the bank first. If the member has had it, dismiss the task with a note saying how. If it really is owed, try marking the task paid back before you pay, once the card refund has gone through - the app records it only on that card charge, correcting the charge's records first where it safely can. If it accepts, refund the ${remainder} by bank transfer straight away; if it refuses, refund it anyway, dismiss the task with a note saying how, and raise its refund credit note in Xero by hand.`
     : `Check the payment and refund the member the ${remainder} by hand if it has not already gone back.`;
   return `${lead} ${refundedSentence(figures, format)} ${todo} The member's booking page says the club will be in touch about it.`;
 }

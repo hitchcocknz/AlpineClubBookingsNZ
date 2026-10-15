@@ -315,13 +315,16 @@ bank first, because the records may be wrong and the money may already have
 gone back. If it has, dismiss it with a note saying how, and the member's
 page then says the club checked it and closed it. If it really is owed, try
 **Mark paid back** before you pay, once the card refund has gone through: the
-app can record it only on that card charge, and only while the charge's
-records still hold that much. If it accepts, pay the member by bank transfer
-straight away; it records the refund, queues its Xero refund credit note, and
-the member's page says the whole payment was refunded. If it refuses, the
-records show nothing left: pay the member anyway if they are owed, dismiss the
-task with a note saying when and how much, and raise the refund credit note in
-Xero by hand, because the app will not.
+app records it only on that card charge. Where the charge's records read more
+refunded than its card refunds on record, the app corrects them itself first,
+and logs the correction in the audit log, but only for a charge made since the
+app has kept a record of each card refund, on a booking with no account credit
+given back and no other refund task. If it accepts, pay the member by bank
+transfer straight away; it records the refund, queues its Xero refund credit
+note, and the member's page says the whole payment was refunded. If it
+refuses, it says why: pay the member anyway if they are owed, dismiss the task
+with a note saying when and how much, and raise the refund credit note in Xero
+by hand, because the app will not.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price

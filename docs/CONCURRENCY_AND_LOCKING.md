@@ -3218,6 +3218,22 @@ race's own recovery rows (one per intent, on the booking) beside the cancel's,
 and it reads the race intent's captured charge under the same `Payment` row
 lock its allocation then writes, on that charge alone (`INV-PAY-133`).
 
+**#4154's guarded correction is a new writer of a charge's refunded total, and
+takes no new key.** Where the race's charge holds too little for the task, the
+completion lowers that one charge's `refundedAmountCents` to its recorded refund
+rows before allocating, inside the same transaction and under the `Payment` row
+lock the completion took first (`lockPaymentForRefundedTotal`) - the lock every
+writer of that column takes before touching it (`INV-PAY-103`). It runs after
+the card refund gate, so never while a card refund on the payment is still
+moving, and writes through the shared compare-and-set
+(`compareAndSetRefundedAmount`) taking the smaller of the row's total and the
+rows' sum, so a writer that slipped past cannot be undone into a raise. The
+payment's aggregate is re-derived in the same transaction
+(`reconcilePaymentAggregates`). No `lock(1)`: a cancellation's hand-back
+completion never takes it, and the correction moves no booking status or
+capacity. A refusal anywhere later in the completion rolls the correction back
+with it.
+
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
 holds nothing. Until #2760 it was

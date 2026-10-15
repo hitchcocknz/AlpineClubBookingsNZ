@@ -1440,7 +1440,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
     // 375 -> 376 (#4104 review, CL3): a failed-later card refund not re-sent,
     // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
-    ).toEqual({ pinned: 127, unpinned: 376 });
+    // 376 -> 377 (#4154): a capacity race's charge corrected before its hand-back,
+    // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
+    ).toEqual({ pinned: 127, unpinned: 377 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {
