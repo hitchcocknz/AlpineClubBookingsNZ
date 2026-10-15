@@ -10,6 +10,7 @@ import {
 import {
   buildBookingCancellationRefundIdempotencyKey,
   buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking,
+  isBookingCancelCardRefundRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
@@ -85,8 +86,8 @@ export async function readCancelledCardRefundState(bookingId: string): Promise<C
   });
   // `startsWith` is SQL LIKE, where `_` matches any one character, so the
   // trailing `_` alone would let booking `ab`'s read take booking `abc`'s rows.
-  // The prefix is checked again here, exactly.
-  const own = rows.filter((row) => row.idempotencyKey === buildBookingCancellationRefundIdempotencyKey(bookingId) || row.idempotencyKey.startsWith(capacityRacePrefix));
+  // The key is checked again here, exactly, by the census's own rule (#4147).
+  const own = rows.filter((row) => isBookingCancelCardRefundRecoveryKey(bookingId, row.idempotencyKey));
   const states = await Promise.all(own.map(cardRefundRowState));
   return FURTHEST_FROM_DONE_FIRST.find((state) => states.includes(state));
 }
