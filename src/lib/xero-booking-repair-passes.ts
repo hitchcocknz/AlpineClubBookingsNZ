@@ -24,6 +24,7 @@ import { createCountMap } from "./xero-booking-repair-utils";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 import { readModificationNoteWording } from "@/lib/xero-refund-method";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 export function buildPassReport(pass: number, bookings: BookingXeroRepairBookingSummary[]): BookingXeroRepairPassReport {
   const bookingsWithFindings = bookings.filter((booking) => booking.findings.length > 0);
@@ -362,7 +363,7 @@ async function releaseRepairedSupplementaryInvoiceIfAlreadyPaid(params: {
       stripePaymentIntentId: params.paymentIntentId,
       ...editReviewChargeRequestCriteria(params.bookingModificationId),
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
     select: { status: true, amountCents: true },
   });
 

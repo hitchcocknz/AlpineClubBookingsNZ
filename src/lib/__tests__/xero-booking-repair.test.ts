@@ -788,6 +788,59 @@ describe("runBookingXeroRepair", () => {
     expect(unsettledRefundNoteRows(operations as never, links)).toEqual([]);
   });
 
+  it("MUTATION (INV-ADDPAY-041): a note Xero voided is never offered back into the payment's field", async () => {
+    // The void deactivated the mirror and released the field; the create that
+    // raised the note is still in the history.
+    const noteRow = makeOperation({
+      id: "op_voided", entityType: "CREDIT_NOTE", localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided",
+      requestPayload: { allocation: { invoiceId: "inv_primary", amount: 20 }, refundMethod: "internet-banking" },
+    });
+    const backfills = async (metadata: Record<string, unknown>) => {
+      const links = [paymentLink({ id: "link_voided", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role: "REFUND_CREDIT_NOTE", active: false, metadata })];
+      const deps = createDependencies({ bookings: [makeBooking()], links, operations: [noteRow] });
+      vi.mocked(deps.prisma.xeroObjectLink.findMany).mockImplementation((async ({ where }: any) =>
+        links.filter((link) => where?.active === undefined || link.active === where.active)) as never);
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+      return report.passes[0].bookings[0].actions.filter((action) => action.type === "SYNC_PAYMENT_REFUND_CREDIT_NOTE_FIELD");
+    };
+
+    expect(await backfills({ amountCents: 2000, status: "VOIDED" })).toEqual([]);
+    expect(await backfills({ amountCents: 2000, status: "DELETED" })).toEqual([]);
+    // Control: the same history with no recorded void is still backfilled.
+    expect(await backfills({ amountCents: 2000 })).toEqual([
+      expect.objectContaining({ payload: { paymentId: "payment_1", xeroRefundCreditNoteId: "cn_voided" } }),
+    ]);
+  });
+
+  it("MUTATION (INV-ADDPAY-041): a voided note's create beside the reissued note's is no conflict", async () => {
+    const noteRow = (id: string, creditNoteId: string, updatedAt: string) =>
+      makeOperation({
+        id, entityType: "CREDIT_NOTE", localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: creditNoteId,
+        requestPayload: { allocation: { invoiceId: "inv_primary", amount: 20 }, refundMethod: "card" }, updatedAt: new Date(updatedAt),
+      });
+    const conflictSummary = "Refund credit note references conflict across local fields, links, or past operations.";
+    const summaries = async (voidedMetadata: Record<string, unknown>) => {
+      const booking = makeBooking();
+      Object.assign(booking.payment!, { xeroRefundCreditNoteId: "cn_live" });
+      const links = [
+        paymentLink({ id: "link_voided", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role: "REFUND_CREDIT_NOTE", active: false, metadata: voidedMetadata }),
+        paymentLink({ id: "link_live", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_live", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 2000 } }),
+      ];
+      const deps = createDependencies({
+        bookings: [booking], links,
+        operations: [noteRow("op_live", "cn_live", "2026-06-02T00:00:00.000Z"), noteRow("op_voided", "cn_voided", "2026-06-01T00:00:00.000Z")],
+      });
+      vi.mocked(deps.prisma.xeroObjectLink.findMany).mockImplementation((async ({ where }: any) =>
+        links.filter((link) => where?.active === undefined || link.active === where.active)) as never);
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+      return report.passes[0].bookings[0].findings.map((finding) => finding.summary);
+    };
+
+    expect(await summaries({ amountCents: 2000, status: "VOIDED" })).not.toContain(conflictSummary);
+    // Control: unvoided, the two creates still disagree.
+    expect(await summaries({ amountCents: 2000 })).toContain(conflictSummary);
+  });
+
   it("MUTATION (#3880 F1): a bank payment holding only per-refund notes is offered no backfill of its canonical field", async () => {
     // Empty by design: a review's per-refund note is never the payment's one note.
     const reviewNote = (id: string, creditNoteId: string) =>
@@ -5362,6 +5415,7 @@ describe("runBookingXeroRepair", () => {
               paymentMethodId: "pm_123",
               reason: null,
               createdAt: new Date("2026-05-01T00:00:00Z"),
+              insertionSeq: 1,
               updatedAt: new Date("2026-05-01T00:00:00Z"),
             },
             {
@@ -5376,6 +5430,7 @@ describe("runBookingXeroRepair", () => {
               paymentMethodId: null,
               reason: "date_change",
               createdAt: new Date("2026-05-02T00:00:00Z"),
+              insertionSeq: 2,
               updatedAt: new Date("2026-05-02T00:00:00Z"),
             },
           ],
@@ -5423,6 +5478,35 @@ describe("runBookingXeroRepair", () => {
     });
     expect(booking.payment.status).toBe("REFUNDED");
     expect(report.summary.bookingsWithFindings).toBe(0);
+  });
+
+  // #4132 (`INV-PAY-133`): two captures written in one transaction share a
+  // `createdAt`. The pinned allocation is newest first by insertion order, so
+  // the row inserted LAST is refunded first - here the ADDITIONAL, though the
+  // read returns it second (a `createdAt`-only sort keeps the read's order).
+  it("pins a tied pair of late captures newest first by insertion order (#4132)", async () => {
+    const booking = lateCaptureRefundBooking();
+    const tiedAt = new Date("2026-05-01T00:00:00Z");
+    const [primary, additional] = booking.payment.transactions;
+    Object.assign(primary!, { createdAt: tiedAt, insertionSeq: 1 });
+    Object.assign(additional!, { createdAt: tiedAt, insertionSeq: 2 });
+    const deps = createDependencies({ bookings: [booking] });
+
+    await runBookingXeroRepair(CLUB_FORMAT_TEST, {
+      apply: true,
+      applyActionKeys: ["late-capture-refund:booking_1:payment_1:13000"],
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    expect(deps.refundPaymentTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allocation: [
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ],
+      }),
+    );
   });
 
   // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`

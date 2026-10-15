@@ -29,7 +29,8 @@ vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info:
 
 import { cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack } from "@/lib/cancel-card-refund-shortfall";
 import { cancelPreviewCardShortfall, previewCancelCardRefundSplit } from "@/lib/cancel-card-refund-shortfall-preview";
-import { CAPTURED_ROWS_OLDEST_FIRST, foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
+import { compareLedgerRowsOldestFirst, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { paidCancellationBranch } from "@/lib/paid-cancellation-event";
 import { planStripeRefundAllocation } from "@/lib/payment-transactions";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
@@ -43,6 +44,8 @@ type Txn = {
   amountCents: number;
   refundedAmountCents: number;
   createdAt: Date;
+  /** Assigned by `store` in the order the rows are given, as the database's sequence would (#4132). */
+  insertionSeq?: number;
 };
 
 type PaymentRow = {
@@ -69,10 +72,11 @@ function bank(cents: number, refunded = 0, day = 20): Txn {
  * One payment and its ledger, read the way the planner (`payment.findUnique`
  * with its transactions) and the non-card headroom (`paymentTransaction.findMany`
  * over captured rows) read them; a backfill `create` appends a row and counts.
- * The transactions come back oldest first, ties in stored (insertion) order.
+ * The transactions come back oldest first, ties in insertion order
+ * (`LEDGER_ROWS_OLDEST_FIRST`, #4132): each row is numbered in the order given.
  */
 function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
-  const rows = transactions.map((row) => ({ ...row }));
+  const rows = transactions.map((row, index) => ({ ...row, insertionSeq: index + 1 }));
   const row: PaymentRow = {
     id: "payment-1",
     status: "SUCCEEDED",
@@ -86,7 +90,7 @@ function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
     ...payment,
   };
   const tasks: Record<string, { id: string; status: string; amountCents: number }> = {};
-  const ordered = () => [...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const ordered = () => [...rows].sort(compareLedgerRowsOldestFirst);
   const db = {
     rows,
     $executeRaw: vi.fn(async () => 0),
@@ -100,7 +104,7 @@ function store(transactions: Txn[], payment: Partial<PaymentRow> = {}) {
     paymentTransaction: {
       findMany: vi.fn(async ({ where }: { where: { status: { in: string[] } } }) => rows.filter((txn) => where.status.in.includes(txn.status)).map((txn) => ({ ...txn }))),
       create: vi.fn(async ({ data }: { data: Omit<Txn, "id" | "createdAt"> }) => {
-        const created = { ...data, id: `txn-backfilled-${rows.length}`, createdAt: new Date(Date.UTC(2026, 6, 1)) } as Txn;
+        const created = { ...data, id: `txn-backfilled-${rows.length}`, createdAt: new Date(Date.UTC(2026, 6, 1)), insertionSeq: rows.length + 1 } as Txn & { insertionSeq: number };
         rows.push(created);
         return created;
       }),
@@ -184,8 +188,8 @@ describe("the preview and the claim read the ledger in one order (#4119)", () =>
   it("loads the capture ledger in the claim's order, oldest first", async () => {
     const db = store([card(14_000), bank(6_000, 0, 2)]);
     await previewCancelCardRefundSplit(db as never, { paymentId: "payment-1", refundAmountCents: 14_000 });
-    expect(db.payment.findUnique).toHaveBeenCalledWith(expect.objectContaining({ include: { transactions: { orderBy: CAPTURED_ROWS_OLDEST_FIRST } } }));
-    expect(CAPTURED_ROWS_OLDEST_FIRST).toEqual({ createdAt: "asc" });
+    expect(db.payment.findUnique).toHaveBeenCalledWith(expect.objectContaining({ include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } }));
+    expect(LEDGER_ROWS_OLDEST_FIRST).toEqual([{ createdAt: "asc" }, { insertionSeq: "asc" }]);
   });
 });
 
