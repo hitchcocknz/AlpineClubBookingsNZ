@@ -9,7 +9,7 @@ import {
 } from "@/lib/manual-refund-task-settlement-rules";
 import {
   buildBookingCancellationRefundIdempotencyKey,
-  buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking,
+  bookingCancelCardRefundRecoveryWhere,
   isBookingCancelCardRefundRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
@@ -72,21 +72,13 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
  * the one furthest from done: a dead one first, then one still being sent.
  */
 export async function readCancelledCardRefundState(bookingId: string): Promise<CardRefundState | undefined> {
-  const capacityRacePrefix = buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId);
   const rows = await prisma.paymentRecoveryOperation.findMany({
-    where: {
-      // On `@@index([bookingId])`, so the prefix match never scans the table.
-      bookingId,
-      OR: [
-        { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
-        { idempotencyKey: { startsWith: capacityRacePrefix } },
-      ],
-    },
+    // On `@@index([bookingId])`, so the prefix match never scans the table.
+    where: bookingCancelCardRefundRecoveryWhere(bookingId),
     select: { id: true, idempotencyKey: true, status: true, attempts: true, nextRetryAt: true },
   });
-  // `startsWith` is SQL LIKE, where `_` matches any one character, so the
-  // trailing `_` alone would let booking `ab`'s read take booking `abc`'s rows.
-  // The key is checked again here, exactly, by the census's own rule (#4147).
+  // `startsWith` is SQL LIKE, where `_` matches any one character, so the query alone
+  // would let booking `ab`'s read take booking `abc`'s rows: the exact rule decides (#4147).
   const own = rows.filter((row) => isBookingCancelCardRefundRecoveryKey(bookingId, row.idempotencyKey));
   const states = await Promise.all(own.map(cardRefundRowState));
   return FURTHEST_FROM_DONE_FIRST.find((state) => states.includes(state));

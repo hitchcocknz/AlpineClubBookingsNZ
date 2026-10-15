@@ -80,11 +80,10 @@ export function isRefundRequestRefundRecoveryKey(key: string) {
   return key.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX);
 }
 
-// Capacity-race auto-refund durability: the recovery-operation dedup key for a
-// payment that succeeded AFTER the final capacity claim failed (the booking was
-// cancelled inside the reconciliation transaction and the full charge must be
-// handed back). One row per (booking, intent): a Stripe event redelivery for
-// the same intent upserts the same row, never a second refund debt.
+// Capacity-race auto-refund durability: the recovery-operation dedup key for a payment that
+// succeeded AFTER the final capacity claim failed (the booking was cancelled inside the reconciliation
+// transaction and the full charge must be handed back). One row per (booking, intent): a Stripe
+// event redelivery for the same intent upserts the same row, never a second refund debt.
 export function buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId: string, paymentIntentId: string) {
   return `${buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)}${paymentIntentId}`;
 }
@@ -94,8 +93,12 @@ export function buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookin
   return `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_`;
 }
 
-// #4147 (`INV-SSOT`): THIS booking's cancel's card refund - a member cancel's row, or the capacity race's
-// per intent - as `readCancelledCardRefundState` and the census's V5 read it. Exact, never SQL `LIKE`.
+// #4147 (`INV-SSOT`): THIS booking's cancel's card refund (a member cancel's row; a capacity race's per intent), as the
+// booking page and census V5 read it. The query narrows; the exact test decides (SQL `LIKE` reads `_` as a wildcard).
+export const bookingCancelCardRefundRecoveryWhere = (bookingId: string) => ({
+  bookingId,
+  OR: [{ idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) }, { idempotencyKey: { startsWith: buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId) } }],
+});
 export const isBookingCancelCardRefundRecoveryKey = (bookingId: string, key: string): boolean =>
   key === buildBookingCancellationRefundIdempotencyKey(bookingId) || key.startsWith(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId));
 
@@ -105,10 +108,7 @@ export const isBookingCancelCardRefundRecoveryKey = (bookingId: string, key: str
 // `capacity_claim_failed_<bookingId>_<pi>_<txn>_<amount>` are identical between
 // the inline attempt and any replay — Stripe answers a repeat with the original
 // refund and the ledger dedupes on refund id, never a double refund.
-export function buildCapacityClaimFailedRefundStripeKeyPrefix(
-  bookingId: string,
-  paymentIntentId: string,
-) {
+export function buildCapacityClaimFailedRefundStripeKeyPrefix(bookingId: string, paymentIntentId: string) {
   return `capacity_claim_failed_${bookingId}_${paymentIntentId}`;
 }
 
