@@ -41,6 +41,7 @@ import {
   useFinishedStayQuotes,
 } from "@/components/admin/booking-requests/booking-change-request-finished-stay";
 import { DecidedChangeRequestSummary } from "@/components/admin/booking-requests/booking-change-request-decided";
+import { RequestedGuestNights } from "@/components/admin/booking-requests/requested-guest-nights";
 import {
   EMPTY_DECISION_DRAFT,
   statusBadgeClass,
@@ -438,6 +439,7 @@ export function BookingChangeRequestsPanel({
                       guests={request.requestedChanges?.requested?.addGuests}
                       returnTo={(href) => buildHrefWithReturnTo(href, currentPath)}
                     />
+                    <RequestedGuestNights guests={request.requestedGuestNights} format={format} />
                     {request.reason ? (
                       <p className="mt-2 text-muted-foreground">{request.reason}</p>
                     ) : null}

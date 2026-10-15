@@ -133,3 +133,36 @@ describe("GET /api/admin/booking-change-requests — acceptsOfficerGuests (#4030
     expect(byId["structured-finished"]).not.toHaveProperty("guests");
   });
 });
+
+describe("GET /api/admin/booking-change-requests — requestedGuestNights (#4088)", () => {
+  it("answers each guest's requested nights, as runs, for the card", async () => {
+    mocks.findMany.mockResolvedValue([
+      row(
+        "grid",
+        {
+          original: { ...original, guests: [{ id: "g1", firstName: "Jo", lastName: "Bloggs", stayStart: "2026-06-10", stayEnd: "2026-06-14" }] },
+          requested: { guestStayRanges: [{ guestId: "g1", nights: ["2026-06-10", "2026-06-11", "2026-06-13"] }] },
+        },
+        finished,
+      ),
+      row("free-finished", freeText, finished),
+    ]);
+    const body = await list();
+    expect(body.data.map((r: { requestedGuestNights: unknown }) => r.requestedGuestNights)).toEqual([
+      [
+        {
+          name: "Jo Bloggs",
+          runs: [
+            { firstNight: "2026-06-10", lastNight: "2026-06-11" },
+            { firstNight: "2026-06-13", lastNight: "2026-06-13" },
+          ],
+          nightCount: 3,
+          added: false,
+          unchanged: false,
+          fillsGaps: false,
+        },
+      ],
+      [],
+    ]);
+  });
+});

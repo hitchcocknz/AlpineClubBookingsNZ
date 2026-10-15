@@ -275,9 +275,9 @@ Pinned by `src/lib/__tests__/booking-request-corrections.test.ts`.
 A `LOCKED_PERIOD` change request names the change it asks for. `POST
 /api/bookings/[id]/change-requests` refuses one that carries no new dates, no
 guest added or removed and no guest's nights (400, `STRUCTURED_CHANGE_REQUIRED`);
-the note and `requestedEffectiveDate` are context, never a change, and a guest
-stay range counts only with both bounds and nights different from the guest's
-own, yet approval applies every two-bound range. All
+the note and `requestedEffectiveDate` are context, never a change, and a guest's
+two-bound range or grid night set counts only when it changes their nights;
+approval applies every one. All
 guest nights are read by `normalizeGuestStayRange`, a moved date the named
 nights do not reach is refused, and a typed guest named like
 one of the owner's dependants is refused at submit and in the officer's entry by
@@ -298,5 +298,6 @@ them. An applying approval carries the figures its check showed; if the edit
 produces different ones under the locks it is refused and rolled back. It then runs through #3750's path unchanged (`INV-MOD-019`), and the
 approval's audit row lists the guests entered. Guarded by
 `booking-change-request-structured.test.ts`,
+`booking-change-request-grid-nights.test.ts`,
 `booking-change-request-officer-entry.test.ts` and the realdb cases in
 `booking-change-request-execution.realdb.test.ts`.
