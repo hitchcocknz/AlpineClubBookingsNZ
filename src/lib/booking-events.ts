@@ -134,6 +134,30 @@ export async function recordBookingEvent(
   }
 }
 
+/** #4125: the capacity race's refund, made - inline or by the recovery runner. */
+export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge capacity was no longer available.";
+
+/**
+ * #4125: record the capacity race's card refund as made - the REFUNDED event
+ * the member's narrative reads as the cancellation's settlement. Written for
+ * the amount actually refunded (the frozen plan's total), EXACTLY ONCE across
+ * the inline attempt (`payment-reconciliation.ts`) and the recovery runner's
+ * replay (`payment-recovery.ts`): each writes only when its own close moved
+ * the `capacity_claim_failed_refund_recovery_<booking>_<intent>` row to
+ * `SUCCEEDED` (`count > 0`), as the duplicate capture's event below does, and
+ * a closed row is never reopened (`card-refund-failed-later.ts`). Base
+ * client, after the close; a failed write is logged and swallowed.
+ */
+export async function recordCapacityRaceRefundEvent(
+  input: { bookingId: string; amountCents: number; actorMemberId: string | null },
+  db: BookingEventClient = prisma
+): Promise<void> {
+  await recordBookingEvent(
+    { ...input, type: BookingEventType.REFUNDED, reason: CAPACITY_RACE_REFUND_EVENT_REASON },
+    db
+  );
+}
+
 /**
  * Record the #1992 duplicate-capture auto-refund as a durable, admin-only
  * BookingEvent (#2008).

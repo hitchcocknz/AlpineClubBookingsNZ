@@ -1135,6 +1135,48 @@ describe("markBookingPaymentSucceeded", () => {
       expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
+    // #4125: the REFUNDED event says what was refunded - the frozen plan's
+    // total, which is less than the charge when the payment ledger shows less
+    // refundable - never the full charge.
+    it("records the inline REFUNDED event for the planned refund, not the full charge (#4125)", async () => {
+      primeCapacityRaceLoss();
+      mocks.planStripeRefundAllocation.mockResolvedValue({
+        slices: [{ paymentTransactionId: "txn-1", amountCents: 9000 }],
+        plannedAmountCents: 9000,
+        totalRefundableCents: 9000,
+      });
+
+      const result = await markBookingPaymentSucceeded({
+        format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId: "pi_race", amountCents: 10000, paymentMethodId: "pm_123",
+      });
+
+      expect(result.outcome).toBe("cancelled_refunded");
+      const refunded = bookingEvents.create.mock.calls
+        .map(([args]) => (args as { data: { type: string; amountCents: number | null; reason: string | null } }).data)
+        .filter((event) => event.type === "REFUNDED");
+      expect(refunded).toEqual([
+        expect.objectContaining({ amountCents: 9000, reason: "Automatic refund after lodge capacity was no longer available." }),
+      ]);
+    });
+
+    // #4125: the event is the close's - written only by the close that moved
+    // the row to SUCCEEDED. A close the runner already made (count 0), or one
+    // that failed, leaves the event to the runner's own close.
+    it.each([
+      ["the runner already closed the row", () => mocks.markCapacityClaimFailedRefundRecoverySucceeded.mockResolvedValue({ count: 0 })],
+      ["the close failed", () => mocks.markCapacityClaimFailedRefundRecoverySucceeded.mockRejectedValue(new Error("db down"))],
+    ])("writes no inline REFUNDED event when %s (#4125)", async (_label, arrange) => {
+      primeCapacityRaceLoss();
+      arrange();
+
+      const result = await markBookingPaymentSucceeded({
+        format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId: "pi_race", amountCents: 10000, paymentMethodId: "pm_123",
+      });
+
+      expect(result.outcome).toBe("cancelled_refunded");
+      expect(bookingEvents.create.mock.calls.map(([args]) => (args as { data: { type: string } }).data.type)).toEqual(["CANCELLED"]);
+    });
+
     // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
     // without throwing. The pre-persisted row stays open, re-planned on the
     // refused slice's next key; the door reports a failure (no close, so no

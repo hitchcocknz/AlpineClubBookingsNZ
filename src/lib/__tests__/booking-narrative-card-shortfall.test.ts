@@ -82,7 +82,7 @@ describe("#4097: the booking page names each part of a card refund shortfall and
   });
 
   it.each([
-    ["still on its way", "on-its-way", "$60.00 is on its way to your card"],
+    ["still on its way", "on-its-way", "$60.00 is on its way to your original payment method"],
     ["paid back another way", "paid-another-way", "$60.00 could not go back to your card and was paid back to you another way"],
     ["settled", "settled", "$60.00 was refunded to your card on 5 May 2026"],
   ] as const)("MUTATION: the card's part, %s, as its own refund stands", (_label, card, clause) => {

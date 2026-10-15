@@ -54,7 +54,7 @@ import { isRecoveryReplaySettled, sizeRecoveryReplayAsk } from "@/lib/additional
 import { mintOrdinaryAskIntent, refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
 import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinary-ask-request";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
-import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { recordCapacityRaceRefundEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
@@ -554,6 +554,7 @@ export async function enqueueRefundRequestRefundRecovery({
 
 import {
   BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
+  CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
   buildBookingCancellationRefundIdempotencyKey,
   buildBookingCancellationRefundMetadata,
   buildBookingModificationRefundMetadata,
@@ -2242,28 +2243,20 @@ async function processBookingModificationRefundOperation(
   // REFUND_BOOKING_MODIFICATION carrying a `duplicate_capture_<bookingId>_<pi>`
   // idempotency key). On this recovery-replay path record the admin-only
   // history event, gated on the terminal SUCCEEDED transition actually flipping
-  // the operation (count > 0) so it lands EXACTLY ONCE across the inline and
-  // cron paths: if the inline refund already closed the operation and recorded
-  // the event, this replay sees count 0 and records nothing. The guarded
-  // updateMany sets the identical terminal fields completePaymentRecoveryOperation
-  // would.
+  // the operation (`completePaymentRecoveryOperation` true) so it lands EXACTLY
+  // ONCE across the inline and cron paths: if the inline refund already closed
+  // the operation and recorded the event, this replay records nothing. #4125:
+  // the capacity race's REFUNDED event, the same way, for what the plan refunded.
+  if (operation.idempotencyKey.startsWith(CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX)) {
+    if (await completePaymentRecoveryOperation(operation.id)) {
+      await recordCapacityRaceRefundEvent({ bookingId: operation.bookingId, amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0), actorMemberId: null });
+    }
+    return;
+  }
   const duplicateCapturePrefix =
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(operation.bookingId);
   if (operation.idempotencyKey.startsWith(duplicateCapturePrefix)) {
-    const transition = await prisma.paymentRecoveryOperation.updateMany({
-      where: {
-        id: operation.id,
-        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-      },
-      data: {
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-        nextRetryAt: null,
-        lastError: null,
-        processingStartedAt: null,
-        succeededAt: new Date(),
-      },
-    });
-    if (transition.count > 0) {
+    if (await completePaymentRecoveryOperation(operation.id)) {
       await recordDuplicateCaptureRefundEvent({
         bookingId: operation.bookingId,
         amountCents: operation.amountCents,
@@ -2285,17 +2278,7 @@ async function processBookingModificationRefundOperation(
   // replay that actually moves the operation to SUCCEEDED (delta D6), so an
   // inline success whose close was lost is not recorded twice.
   if (isLateCaptureRefundStripeKeyPrefix(operation.stripeKeyPrefix)) {
-    const transition = await prisma.paymentRecoveryOperation.updateMany({
-      where: { id: operation.id, status: { not: PaymentRecoveryOperationStatus.SUCCEEDED } },
-      data: {
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-        nextRetryAt: null,
-        lastError: null,
-        processingStartedAt: null,
-        succeededAt: new Date(),
-      },
-    });
-    if (transition.count > 0) {
+    if (await completePaymentRecoveryOperation(operation.id)) {
       await finishApprovedLateCaptureRefundAfterReplay({
         ...operation,
         amountCents: plan.reduce((sum, slice) => sum + slice.amountCents, 0),

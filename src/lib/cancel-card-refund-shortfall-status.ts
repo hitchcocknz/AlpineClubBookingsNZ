@@ -6,8 +6,29 @@ import {
   closeKeysOf,
   type CardShortfallTaskStatuses,
 } from "@/lib/manual-refund-task-settlement-rules";
-import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
+import {
+  buildBookingCancellationRefundIdempotencyKey,
+  CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
+} from "@/lib/payment-recovery-keys";
+import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
+import type { CardRefundState } from "@/lib/booking-narrative-cancelled-post-payment";
 import { prisma } from "@/lib/prisma";
+
+type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
+
+/**
+ * #4125: where one card refund recovery row stands. Closed `SUCCEEDED` is made,
+ * unless its close is a "Paid another way" record (`closeKeysOf`); a row the
+ * runner will still send is on its way (`isPaymentRecoveryOperationInFlight`);
+ * any other is dead - stalled until the club acts.
+ */
+async function cardRefundRowState(row: CardRefundRow): Promise<CardRefundState> {
+  if (row.status === PaymentRecoveryOperationStatus.SUCCEEDED) {
+    const closed = await prisma.manualRefundTask.count({ where: { occurrenceKey: { in: closeKeysOf(row.id) } } });
+    return closed > 0 ? "paid-another-way" : "settled";
+  }
+  return isPaymentRecoveryOperationInFlight(row) ? "on-its-way" : "stalled";
+}
 
 /**
  * #4097 (`INV-PAY-129`): WHERE A CARD REFUND SHORTFALL'S CANCEL STANDS, for the
@@ -33,11 +54,38 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
   if (Object.keys(statuses).length === 0) return statuses;
   const cardRefund = await prisma.paymentRecoveryOperation.findUnique({
     where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
-    select: { id: true, status: true },
+    select: { id: true, status: true, attempts: true, nextRetryAt: true },
   });
   if (cardRefund) {
-    const closed = await prisma.manualRefundTask.count({ where: { occurrenceKey: { in: closeKeysOf(cardRefund.id) } } });
-    statuses.card = closed > 0 ? "paid-another-way" : cardRefund.status === PaymentRecoveryOperationStatus.SUCCEEDED ? "settled" : "on-its-way";
+    // A dead card part still reads as owed here: the shortfall's own sentence has no "stalled" yet.
+    const state = await cardRefundRowState(cardRefund);
+    statuses.card = state === "stalled" ? "on-its-way" : state;
   }
   return statuses;
 }
+
+/**
+ * #4125: WHERE A CARD CANCEL'S REFUND STANDS when no REFUNDED event says it was
+ * made, for the same two pages. One read, of the cancel's card refund row - the
+ * member's cancel (`booking_cancel_refund_recovery_<booking>`) or the capacity
+ * race's (`capacity_claim_failed_refund_recovery_<booking>_<intent>`) - plus a
+ * second only for a closed row, to tell a "Paid another way" close from a
+ * refund made. No row reads as absent (`undefined`), which the narrative
+ * takes as on its way. Several rows (a second intent's capacity race) read as
+ * the one furthest from done: a dead one first, then one still being sent.
+ */
+export async function readCancelledCardRefundState(bookingId: string): Promise<CardRefundState | undefined> {
+  const rows = await prisma.paymentRecoveryOperation.findMany({
+    where: {
+      OR: [
+        { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
+        { idempotencyKey: { startsWith: `${CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX}${bookingId}_` } },
+      ],
+    },
+    select: { id: true, status: true, attempts: true, nextRetryAt: true },
+  });
+  const states = await Promise.all(rows.map(cardRefundRowState));
+  return FURTHEST_FROM_DONE_FIRST.find((state) => states.includes(state));
+}
+
+const FURTHEST_FROM_DONE_FIRST: readonly CardRefundState[] = ["stalled", "on-its-way", "paid-another-way", "settled"];

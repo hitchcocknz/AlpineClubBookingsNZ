@@ -58,7 +58,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { nothingToPayNarrative, nothingToPayWithFinancialReviewNarrative } from "@/lib/booking-narrative-nothing-to-pay";
 import type { BookingAmountOwed } from "@/lib/booking-payment-state";
-import { buildCancelledPostPaymentNarrative } from "@/lib/booking-narrative-cancelled-post-payment";
+import { buildCancelledPostPaymentNarrative, type CardRefundState } from "@/lib/booking-narrative-cancelled-post-payment";
 import type { CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 
 export type BookingNarrativeState =
@@ -160,6 +160,8 @@ export interface ResolveBookingNarrativeInput {
   ownerCreditHidden?: boolean;
   /** #4097 (`INV-PAY-129`): a card cancel's shortfall tasks, by part, read by the caller. Absent reads as still owed. */
   cardShortfallStatuses?: CardShortfallTaskStatuses;
+  /** #4125: where a card cancel's refund stands on its recovery row, read by the caller. Absent reads as on its way. */
+  cardRefundState?: CardRefundState;
 }
 
 const PAID_EVENT_TYPES: BookingEventType[] = [
@@ -248,6 +250,7 @@ function buildCancelledNarrative(
   events: NarrativeEvent[],
   club: BoundClubTime, format: ClubFormat, ownerCreditHidden: boolean,
   cardShortfallStatuses: CardShortfallTaskStatuses = {},
+  cardRefundState?: CardRefundState,
 ): BookingNarrative {
   // A booking held for admin review that was rejected is cancelled via the
   // shared cancel flow; surface it as "declined" with the admin's reason.
@@ -316,7 +319,7 @@ function buildCancelledNarrative(
     );
     return buildCancelledPostPaymentNarrative(
       paidEvent,
-      cancelEvent, settlementEvent, club, format, ownerCreditHidden, cardShortfallStatuses,
+      cancelEvent, settlementEvent, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState,
     );
   }
 
@@ -564,6 +567,7 @@ export function resolveBookingNarrative({
   financialReviewPending = false,
   ownerCreditHidden = false,
   cardShortfallStatuses = {},
+  cardRefundState,
 }: ResolveBookingNarrativeInput, format: ClubFormat): BookingNarrative {
   const ordered = sortedByOccurredAt(events);
   const status = booking.status;
@@ -590,12 +594,12 @@ export function resolveBookingNarrative({
     argument for its own shape.
   */
   if (status === "CANCELLED" || status === "BUMPED") {
-    return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses);
+    return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState);
   }
 
   if (status === "AWAITING_REVIEW") {
     if (booking.adminReviewStatus === "REJECTED") {
-      return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses);
+      return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState);
     }
     return {
       state: "under_review",
