@@ -107,7 +107,7 @@ export async function GET(req: NextRequest) {
       // #4124: the ceiling is worked out here, where the card-refund rows are
       // Dates, and only the figures go to the screen - the ceiling, and the
       // card refund still owed that it netted (`appealCardRefundOwedCents`, the
-      // screen's "Less ... see Refunds owed" line) - never the rows.
+      // screen's "Less ... not yet made" line) - never the rows.
       const { payment: loadedPayment, ...bookingRest } = listed.booking;
       const ceiling = refundAppealCeilingParts(loadedPayment, listed.booking.creditsFromCancellation);
       // The payment's own columns only, named: never its hand-back or card-refund rows.

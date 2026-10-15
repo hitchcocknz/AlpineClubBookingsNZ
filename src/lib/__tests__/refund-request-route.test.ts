@@ -234,9 +234,9 @@ describe("POST /api/bookings/[id]/refund-request", () => {
     expect(mocks.refundRequestCreate).not.toHaveBeenCalled();
   });
 
-  // #4124: a card refund still being sent (here refused and being retried) is
+  // #4124: a card refund not yet made (here refused and being retried) is
   // money already promised back, so the member may not appeal for it again.
-  describe("with a card refund still being sent on the payment (#4124)", () => {
+  describe("with a card refund not yet made on the payment (#4124)", () => {
     function withCardDebt(amountCents: number) {
       cancelledAfterEdit();
       mocks.manualRefundTaskAggregate.mockResolvedValue({ _sum: { amountCents: null } });

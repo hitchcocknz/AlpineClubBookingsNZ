@@ -54,7 +54,7 @@ function ceiling(manualRefundTasks: { amountCents: number | null }[]) {
   return resolve(manualRefundTasks).maxRefundableCents;
 }
 
-/** #4124: a card refund still being sent - a recovery row with nothing made yet. */
+/** #4124: a card refund not yet made - a recovery row with nothing made yet. */
 const OPEN_CARD_REFUND = {
   id: "op-1",
   type: "REFUND_BOOKING_MODIFICATION",
@@ -77,7 +77,7 @@ describe("booking page refund-appeal ceiling (#3827)", () => {
   });
 });
 
-describe("booking page refund-appeal ceiling net of a card refund still being sent (#4124)", () => {
+describe("booking page refund-appeal ceiling net of a card refund not yet made (#4124)", () => {
   it("nets the card refund and hands the owner its figure for the form's line", () => {
     const payment = resolve([], { recoveryOperations: [OPEN_CARD_REFUND] });
     expect(payment.maxRefundableCents).toBe(10000);
@@ -94,6 +94,15 @@ describe("booking page refund-appeal ceiling net of a card refund still being se
     const payment = resolve([], { recoveryOperations: [OPEN_CARD_REFUND], refundedAmountCents: 17500 });
     expect(payment.maxRefundableCents).toBe(0);
     expect(payment.appealCardRefundOwedCents).toBe(2500);
+  });
+
+  // #4124 delta review: the figure is what the card refund actually took off,
+  // never more - $10 refundable, a $5 hand-back open and a $10 card refund
+  // still owed leave $0, of which the card refund took $5.
+  it("blames the card refund only for what it took off the ceiling", () => {
+    const payment = resolve([{ amountCents: 500 }], { recoveryOperations: [{ ...OPEN_CARD_REFUND, amountCents: 1000 }], refundedAmountCents: 19000 });
+    expect(payment.maxRefundableCents).toBe(0);
+    expect(payment.appealCardRefundOwedCents).toBe(500);
   });
 
   it("does not blame the card refund for a ceiling that was zero without it", () => {

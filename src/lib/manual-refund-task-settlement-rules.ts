@@ -447,8 +447,9 @@ export const OPEN_HAND_BACKS_FOR_REFUND_APPEAL_SELECT = {
  * A screen's refund-appeal ceiling (`INV-PAY-118`), from those two reads and
  * (#4124) the payment's open card-refund debts (`netCollectedCardRefundSelect`),
  * netted as `refundAppealHandedBackParts` nets them on the server, so a screen
- * offers the ceiling the route enforces. `cardRefundOwedCents` is that debt, for
- * the line saying why the ceiling is lower - zero when it was zero without it.
+ * offers the ceiling the route enforces. `cardRefundOwedCents` is what that debt
+ * actually took off (never more than the ceiling held without it), for the line
+ * saying why the ceiling is lower.
  */
 export function refundAppealCeilingParts(
   payment: (CardRefundOwedPaymentRow & { manualRefundTasks?: readonly { amountCents: number | null }[] }) | null | undefined,
@@ -458,9 +459,10 @@ export function refundAppealCeilingParts(
     sumOpenNonCancellationHandBackCents(payment?.manualRefundTasks) +
     sumInternetBankingLateCashCreditCents(creditsFromCancellation);
   const cardDebtCents = payment ? openCardRefundOwedCents(payment) : 0;
+  const withoutCardDebtCents = getRemainingRefundableCentsNetOf(payment, promisedCents);
   return {
     ceilingCents: getRemainingRefundableCentsNetOf(payment, promisedCents + cardDebtCents),
-    cardRefundOwedCents: getRemainingRefundableCentsNetOf(payment, promisedCents) > 0 ? cardDebtCents : 0,
+    cardRefundOwedCents: Math.min(cardDebtCents, withoutCardDebtCents),
   };
 }
 

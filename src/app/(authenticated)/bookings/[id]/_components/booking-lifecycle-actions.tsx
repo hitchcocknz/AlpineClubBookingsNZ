@@ -123,9 +123,12 @@ export function BookingLifecycleActions({
         booking.payment &&
         booking.payment.status !== "REFUNDED" &&
         maxRefundableCents <= 0 &&
-        appealCardRefundOwedCents > 0 && (
-          // #4124: the button is hidden because a card refund still being sent
-          // is everything left to refund - say so rather than hide it silently.
+        appealCardRefundOwedCents > 0 &&
+        // Only where the appeal button would otherwise offer an appeal: never
+        // beside one already pending (the button's own `hasPending`).
+        !booking.refundRequests.some((request) => request.status === "PENDING") && (
+          // #4124: the button is hidden because a card refund not yet made is
+          // everything left to refund - say so rather than hide it silently.
           <p className="text-sm text-muted-foreground">
             {appealCardRefundOwedMemberNote(money.cents(appealCardRefundOwedCents), true)}
           </p>

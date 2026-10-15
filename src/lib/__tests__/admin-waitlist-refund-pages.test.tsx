@@ -968,9 +968,9 @@ describe("Admin refund and credit review page", () => {
     expect(screen.getByText("Gross paid:").parentElement).toHaveTextContent("Gross paid: $200.00");
   });
 
-  // #4124: a card refund still being sent is netted from the ceiling, and the
+  // #4124: a card refund not yet made is netted from the ceiling, and the
   // officer is told why it is lower, and where that refund is tracked.
-  it("says under the ceiling how much of it is a card refund still being sent", async () => {
+  it("says under the ceiling how much of it is a card refund not yet made", async () => {
     mocks.currentSearch = "";
     mocks.sessionUser = { id: "admin-2", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] };
     mockEditedPendingAppeal(2500);
@@ -979,7 +979,11 @@ describe("Admin refund and credit review page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
 
     expect(screen.getByText("Max refundable: $75.00")).toBeTruthy();
-    expect(screen.getByText("Less $25.00 of card refund still being sent — see Refunds owed.")).toBeTruthy();
+    const note = screen.getByText("Less $25.00 of card refund not yet made for this payment (retrying, or stopped and listed on Stuck states).");
+    // The note and the maximum describe the amount box.
+    const limits = document.getElementById("approvedAmountLimits");
+    expect(limits?.contains(note)).toBe(true);
+    expect(screen.getByRole("textbox", { name: /Refund Amount/i }).getAttribute("aria-describedby")).toContain("approvedAmountLimits");
   });
 
   it("CONTROL: shows no card refund line when none was netted", async () => {
@@ -991,7 +995,7 @@ describe("Admin refund and credit review page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
 
     expect(screen.getByText("Max refundable: $75.00")).toBeTruthy();
-    expect(screen.queryByText(/card refund still being sent/)).toBeNull();
+    expect(screen.queryByText(/card refund not yet made/)).toBeNull();
   });
 
   /*
@@ -1022,6 +1026,9 @@ describe("Admin refund and credit review page", () => {
         noEmails: false,
         creditsFromCancellation: [],
         appealCeilingCents: 15000, // #4124: the list route's `refundAppealCeilingParts`
+        // #4124 delta review: a card refund owed on the child's own payment is
+        // already in the organiser cap's room, so no "Less ..." line here.
+        appealCardRefundOwedCents: 2_500,
         payment: { status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, stripePaymentIntentId: null },
         organiserCardMaxRefundableCents: pending ? 0 : 4_000,
         organiserCardCombinedRefundPending: pending,
@@ -1059,6 +1066,8 @@ describe("Admin refund and credit review page", () => {
       } else {
         expect(screen.getByText("Max refundable: $40.00")).toBeTruthy();
         expect(screen.queryByText(/still being made or reconciled/)).toBeNull();
+        expect(screen.getByText("Refunded to the group organiser's card; the most that payment can still return for this booking.")).toBeTruthy();
+        expect(screen.queryByText(/card refund not yet made/)).toBeNull();
       }
       view.unmount();
     }

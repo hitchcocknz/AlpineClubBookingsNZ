@@ -1496,8 +1496,10 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   no transaction of its own, so the ordinary appeal refunded $0 while
   queuing a full Xero note and promising the money.
   - **One cap** (`organiserCardAppealCap`): the room a child refund debt may
-    take, less what is already handed back; zero while the group cancel's
-    own combined refund is unmade. The approval reads it under `lock(1)`;
+    take, less open hand-backs and late-cash credit
+    (`refundAppealHandedBackParts`); the room already nets the child's own
+    refund debts (#4124). Zero while the group cancel's own combined refund
+    is unmade. The approval reads it under `lock(1)` and the Payment row;
     screens read it as advice (`organiserCardAppealCeilingFor`).
   - **Refused past it, never clamped**: a 409 naming what can still be
     refunded, or saying to decline, before the request is claimed.

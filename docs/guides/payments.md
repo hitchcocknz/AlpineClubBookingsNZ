@@ -227,8 +227,9 @@ note for its cancellation. While it is open its amount counts as already promise
 appeal can only be approved for what is left. An appeal's limit also leaves
 out every other task still open on the payment, a cancellation's own
 included, any account credit already given for a bank transfer that
-arrived after the cancellation, and any card refund still owed (shown under
-Refunds owed). Because an appeal is only ever
+arrived after the cancellation, and any card refund on the payment not yet
+made (being retried, or stopped and listed on
+[Stuck States](stuck-states.md#close-a-card-refund-stripe-gave-up-on)). Because an appeal is only ever
 made after the booking is cancelled, the cancellation never counted this task,
 and it can be dismissed (with a note) if the club settles it another way.
 

@@ -646,13 +646,14 @@ export default function RefundRequestsPage() {
                                     : undefined
                                 }
                                 className="w-40"
+                                aria-describedby="approvedAmountLimits"
                               />
                               {req.booking.organiserCardCombinedRefundPending ? (
                                 <p className="text-xs text-muted-foreground">
                                   {ORGANISER_CARD_APPEAL_PENDING_ADMIN_NOTE}
                                 </p>
                               ) : (
-                                <>
+                                <div id="approvedAmountLimits" className="space-y-2">
                                   <p className="text-xs text-muted-foreground">
                                     Max refundable: {formatCents(maxRefundable, format)}
                                   </p>
@@ -661,10 +662,8 @@ export default function RefundRequestsPage() {
                                       {ORGANISER_CARD_APPEAL_CEILING_NOTE}
                                     </p>
                                   )}
-                                  {req.booking.organiserCardMaxRefundableCents == null && req.booking.appealCardRefundOwedCents > 0 && (
-                                    <p className="text-xs text-muted-foreground">{appealCardRefundOwedOfficerNote(formatCents(req.booking.appealCardRefundOwedCents, format))}</p>
-                                  )}
-                                </>
+                                  {req.booking.organiserCardMaxRefundableCents == null && req.booking.appealCardRefundOwedCents > 0 && <p className="text-xs text-muted-foreground">{appealCardRefundOwedOfficerNote(formatCents(req.booking.appealCardRefundOwedCents, format))}</p>}
+                                </div>
                               )}
                             </div>
                             <div className="space-y-2">

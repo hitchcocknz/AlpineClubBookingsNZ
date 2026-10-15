@@ -453,9 +453,9 @@ describe("reopening a dismissed refund APPEAL hand-back (#3827, D-3813-7, INV-PA
     expect(mocks.lockPaymentForRefundedTotal).not.toHaveBeenCalled();
   });
 
-  // #4124: a card refund still being sent on the payment is money already
+  // #4124: a card refund not yet made on the payment is money already
   // promised back, so a reopened appeal task cannot promise it again.
-  it("refuses once a card refund still being sent has taken that cash", async () => {
+  it("refuses once a card refund not yet made has taken that cash", async () => {
     mocks.findUnique.mockResolvedValue(dismissedAppeal({ amountCents: 20000, refundedAmountCents: 10000 }));
     mocks.cardRefundOperations = [
       {
