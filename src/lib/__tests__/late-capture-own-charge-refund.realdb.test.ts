@@ -28,6 +28,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Stripe from "stripe";
 
+import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
 
 /** The one shared double: the LAST file to register a factory wins, so every realdb file registers this same one. */
@@ -52,30 +53,6 @@ const PAID_CENTS = 30_000;
 const KEPT_FEE_CENTS = 5_000;
 const LATE_CENTS = 24_000;
 const KEY_PREFIX = `late_cancel_refund_${BOOKING_ID}_${LATE_INTENT}`;
-
-/** Standalone fail-closed copy: importing this file must not register another suite. */
-function assertSafeRaceDbUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Late-capture own-charge refund proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
-  }
-  const port = Number.parseInt(parsed.port, 10);
-  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
-    throw new Error(
-      `Refusing to run late-capture own-charge refund proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
-    );
-  }
-  const host = parsed.hostname.toLowerCase();
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
-    throw new Error("Late-capture own-charge refund proof DB must be loopback-only.");
-  }
-  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  if (!databaseName.includes("concurrency_race_1881")) {
-    throw new Error("Late-capture own-charge refund proof DB name must contain 'concurrency_race_1881'.");
-  }
-}
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let webhook: typeof import("@/lib/stripe-webhook-service");
@@ -261,7 +238,7 @@ function stripeRefund(
       prisma.paymentTransaction.findUniqueOrThrow({ where: { id }, select: { refundedAmountCents: true, status: true } });
 
     beforeAll(async () => {
-      assertSafeRaceDbUrl(RACE_DB_URL);
+      assertSafeRaceDbUrl(RACE_DB_URL, "late-capture own-charge refund"); // the one shared guard (INV-SSOT-001)
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       webhook = await import("@/lib/stripe-webhook-service");
