@@ -190,10 +190,11 @@ describe("membership subscription confirmation", () => {
       } } }],
     }]);
     mocks.chargeFindMany.mockResolvedValue([{
-      id: "charge-closed", familyGroupId: "family-1", membershipTypeId: "type-1", billingBasis: "PER_FAMILY", status: "NOT_REQUIRED",
+      id: "charge-closed", createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      familyGroupId: "family-1", membershipTypeId: "type-1", billingBasis: "PER_FAMILY", status: "NOT_REQUIRED",
       coverage: [
-        { memberId: "parent-1", memberName: "Parent Member", subscription: { status: "PAID", member: { familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
-        { memberId: "member-1", memberName: "Kid Member", subscription: { status: "NOT_INVOICED", member: { familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
+        { memberName: "Parent Member", subscriptionStatusAtClose: "PAID", subscription: { memberId: "parent-1", status: "PAID", member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
+        { memberName: "Kid Member", subscriptionStatusAtClose: "PAID", subscription: { memberId: "member-1", status: "NOT_INVOICED", member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
       ],
     }]);
     mocks.chargeUpsert.mockResolvedValue({ id: "charge-rebill" });
@@ -205,7 +206,7 @@ describe("membership subscription confirmation", () => {
     expect(preview.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
 
     const result = await confirmSubscriptionBillingPreview({
-      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH",
+      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH", confirmedByMemberId: "officer-1",
     });
 
     expect(mocks.chargeUpsert).toHaveBeenCalledWith(expect.objectContaining({
@@ -218,7 +219,21 @@ describe("membership subscription confirmation", () => {
     const warningFingerprint = preview.exceptions[0]!.fingerprint;
     const resolve = mocks.exceptionUpdateMany.mock.calls[0]![0] as { where: { fingerprint?: { notIn: string[] } } };
     expect(resolve.where.fingerprint?.notIn ?? []).not.toContain(warningFingerprint);
-    expect(mocks.audit).toHaveBeenCalledTimes(0);
+    // The officer's audit row records the warning they confirmed through (#4110 review F7).
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    const [entry] = mocks.audit.mock.calls[0]! as [{ memberId: string; details: string }];
+    expect(entry.memberId).toBe("officer-1");
+    expect(JSON.parse(entry.details)).toMatchObject({
+      source: "ANNUAL_BATCH",
+      chargeCount: 1,
+      exceptionCount: 0,
+      totalCents: 30_000,
+      acknowledgedWarnings: [{
+        code: "CLOSED_FAMILY_PARTLY_REVERSED",
+        familyGroupId: "family-1",
+        context: { closedChargeId: "charge-closed", reversedMemberNames: ["Kid Member"] },
+      }],
+    });
   });
 
   it("membership approval withholds a partly-reversed closed family: no charge, the warning OPEN for Finance, and counted (#4110 review F2)", async () => {

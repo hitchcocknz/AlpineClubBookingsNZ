@@ -695,19 +695,20 @@ describe("membership subscription billing", () => {
   ) {
     return {
       id: `charge-${status.toLowerCase()}`,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
       familyGroupId: "family-1",
       membershipTypeId: "type-1",
       billingBasis: "PER_FAMILY",
       status,
       // The fourth element is the family the covered member is in NOW (default:
-      // still this one).
+      // still this one). The member id is the subscription's (#4110 review F5).
       coverage: coveredStatuses.map(([memberName, subscriptionStatus, statusAtClose, nowInFamily]) => ({
-        memberId: memberName,
         memberName,
         subscriptionStatusAtClose: statusAtClose ?? null,
         subscription: {
+          memberId: memberName,
           status: subscriptionStatus,
-          member: { familyGroupMemberships: [{ familyGroupId: nowInFamily ?? "family-1" }] },
+          member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: nowInFamily ?? "family-1" }] },
         },
       })),
       ...overrides,
@@ -762,16 +763,46 @@ describe("membership subscription billing", () => {
       ["re-billable"],
     );
     expect(preview.entries).toHaveLength(0);
-    // Never silently unbilled: the officer gets an exception that says why,
-    // and what to do, rather than the late-joiner wording.
+    // Never silently unbilled: the officer is asked to decide (#4110 decision
+    // 4), with exactly the two choices and no advice to unpay anyone.
     expect(preview.exceptions).toEqual([
       expect.objectContaining({
-        code: "FAMILY_ALREADY_BILLED",
+        code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
         memberId: "re-billable",
-        message: expect.stringMatching(/^First-re-billable Member was not required to pay when family family-1's .* charge was closed as already paid, and now needs a subscription\. .*mark their subscription paid; if not, reverse a family member's manual payment/),
-        context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required", exemptAtClose: true }),
+        message: "First-re-billable Member was not required to pay when the family's Full charge was closed as already paid, and now needs a subscription. The family is not billed again. Decide how to bill First-re-billable Member: if the family fee already covers everyone in the family, mark them Paid; otherwise invoice just the difference in Xero by hand.",
+        context: expect.objectContaining({ existingFamilyChargeId: "charge-not_required", reason: "EXEMPT_AT_CLOSE" }),
       }),
     ]);
+    expect(preview.exceptions[0]!.message).not.toMatch(/unpaid|reverse/i);
+  });
+
+  it("keys the exempt-at-close member on the subscription's member, not the coverage snapshot a merge leaves stale (#4110 review F5)", async () => {
+    const charge = familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["re-billable", "NOT_INVOICED", "NOT_REQUIRED"]]);
+    // A member merge keeps the coverage row's own memberId as the merged-away id.
+    Object.assign(charge.coverage[1]!, { memberId: "merged-away" });
+    const preview = await previewFamily([charge], ["re-billable"]);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({ code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", memberId: "re-billable" }),
+    ]);
+  });
+
+  it("counts a covered member in two families only through their BILLING family, the main loop's rule (#4110 review F3)", async () => {
+    const twoFamilies = (billingFamilyGroupId: string) => {
+      const charge = familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["Kid Member", "NOT_INVOICED", "PAID"]]);
+      charge.coverage[1]!.subscription.member = {
+        billingFamilyGroupId,
+        familyGroupMemberships: [{ familyGroupId: "family-1" }, { familyGroupId: "family-2" }],
+      };
+      return charge;
+    };
+    // Billed through family-2: the reversal is not family-1's, which stays billed.
+    const elsewhere = await previewFamily([twoFamilies("family-2")], ["re-billable"]);
+    expect(elsewhere.entries).toHaveLength(0);
+    expect(elsewhere.exceptions).toEqual([expect.objectContaining({ code: "FAMILY_ALREADY_BILLED" })]);
+    // Billed through family-1: the reversal is family-1's, which is billed again.
+    const here = await previewFamily([twoFamilies("family-1")]);
+    expect(here.entries).toHaveLength(1);
+    expect(here.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
   });
 
   it("a covered member who moved to another family and was then reversed does not re-bill the family they left (#4110 review F2)", async () => {
@@ -785,15 +816,48 @@ describe("membership subscription billing", () => {
     ]);
   });
 
-  it("with two closed charges for one family, the still-settled one wins: a reversal covered only by the older charge raises FAMILY_ALREADY_BILLED (#4110 review F4)", async () => {
+  const OLDER = { id: "charge-older", createdAt: new Date("2026-05-01T00:00:00.000Z") };
+  const NEWER = { id: "charge-newer", createdAt: new Date("2026-06-01T00:00:00.000Z") };
+
+  it("two closed charges, the newest wins (owner, 16 Oct 2026): a reversal under the OLDER charge re-bills nothing, and the officer is asked to decide for that member (#4110 decision 5)", async () => {
     const preview = await previewFamily([
-      familyCharge("NOT_REQUIRED", [["Kid Member", "NOT_INVOICED", "PAID"]], { id: "charge-older" }),
-      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"]], { id: "charge-newer" }),
+      // "re-billable" is the member previewed: paid under the older charge, since reversed.
+      familyCharge("NOT_REQUIRED", [["re-billable", "NOT_INVOICED", "PAID"]], OLDER),
+      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"]], NEWER),
     ], ["re-billable"]);
     expect(preview.entries).toHaveLength(0);
     expect(preview.exceptions).toEqual([
-      expect.objectContaining({ code: "FAMILY_ALREADY_BILLED", context: expect.objectContaining({ existingFamilyChargeId: "charge-newer" }) }),
+      expect.objectContaining({
+        code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
+        memberId: "re-billable",
+        context: expect.objectContaining({ existingFamilyChargeId: "charge-newer", reason: "REVERSED_UNDER_OLDER_CHARGE" }),
+      }),
     ]);
+  });
+
+  it("two closed charges, the newest wins: a reversal under the NEWEST re-bills the family even while the older is settled (owner, 16 Oct 2026)", async () => {
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"]], OLDER),
+      familyCharge("NOT_REQUIRED", [["Kid Member", "NOT_INVOICED", "PAID"]], NEWER),
+    ]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.exceptions).toEqual([]);
+  });
+
+  it("decides the same whatever order the family charges arrive in: same plan, same token (#4110 review F4)", async () => {
+    const charges = () => [
+      familyCharge("NOT_REQUIRED", [["re-billable", "NOT_INVOICED", "PAID"]], OLDER),
+      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["Cub Member", "NOT_INVOICED", "NOT_REQUIRED"]], NEWER),
+    ];
+    const inOrder = await previewFamily(charges(), ["re-billable"]);
+    const reversedOrder = await previewFamily(charges().reverse(), ["re-billable"]);
+    expect(reversedOrder.exceptions).toEqual(inOrder.exceptions);
+    // A confirm re-reads the rows in whatever order the database returns them;
+    // the token must not change, or it reads as "preview changed".
+    expect(reversedOrder.confirmationToken).toBe(inOrder.confirmationToken);
+    expect(mocks.charges.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    }));
   });
 
   it("a moved member is left out of the partial-reversal count too: every payment still in the family reversed is a full reversal (#4110 review F2)", async () => {

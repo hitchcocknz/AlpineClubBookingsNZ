@@ -240,3 +240,35 @@ export const WITHHELD_ON_APPROVAL_NOTE =
 export function invoicingWarningEntryKey(item: { familyGroupId: string | null; membershipTypeId: string | null }): string {
   return `${item.membershipTypeId}:family:${item.familyGroupId}`;
 }
+
+/**
+ * #4110 decisions 4 and 5 (owner, 16 Oct 2026): a member of a family that a
+ * closed charge still bills, whom the officer must decide how to bill — one
+ * who was exempt at the close and now needs a subscription, or one whose
+ * payment under an OLDER closed charge was reversed while the newest closed
+ * charge still stands. The family is never billed again for them. The
+ * exception withholds, regenerates on every preview until the member is
+ * settled or holds a Xero invoice, and so stays OPEN until Finance acts.
+ */
+export const CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE = "CLOSED_FAMILY_MEMBER_NEEDS_DECISION";
+
+/** True for an exception that asks the officer to decide (counted apart in the panel). */
+export function isOfficerDecisionException(code: string): boolean {
+  return code === CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE;
+}
+
+/** The two choices decision 4 gives the officer, worded once. */
+export function closedFamilyMemberDecisionMessage(input: {
+  memberName: string;
+  membershipTypeName: string;
+  reason: "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE";
+}): string {
+  const why = input.reason === "EXEMPT_AT_CLOSE"
+    ? `${input.memberName} was not required to pay when the family's ${input.membershipTypeName} charge was closed as already paid, and now needs a subscription.`
+    : `${input.memberName}'s payment under an earlier closed ${input.membershipTypeName} family charge was reversed, but the family's newer charge, closed as already paid, still stands.`;
+  return (
+    `${why} The family is not billed again. Decide how to bill ${input.memberName}: ` +
+    "if the family fee already covers everyone in the family, mark them Paid; " +
+    "otherwise invoice just the difference in Xero by hand."
+  );
+}
