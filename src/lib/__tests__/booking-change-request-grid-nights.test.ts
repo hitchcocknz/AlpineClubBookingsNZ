@@ -451,6 +451,15 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
         fillsGaps: true,
       },
     ]);
+    // A snapshot from before names were stored still reads as a sentence.
+    const unnamed = {
+      ...requestedChanges,
+      original: {
+        ...requestedChanges.original,
+        guests: [{ id: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }],
+      },
+    };
+    expect(describeRequestedGuestNights(unnamed)[0]).toMatchObject({ name: "A guest on the booking" });
     // A range that only covers nights the guest already holds fills nothing.
     const narrow = {
       ...requestedChanges,
