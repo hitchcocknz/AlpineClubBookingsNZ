@@ -23,8 +23,9 @@
  *   depend on the row order. A new unordered read feeding a fold, a plan or a
  *   "first/last" pick fails here until someone orders it or says why not;
  * - an unordered `findFirst` must be a lookup of one row - a unique key
- *   (`id`, `stripePaymentIntentId`) in its `where`, or `id` alone selected for
- *   an existence check - or be declared in `UNPROVEN_FIRST_READS`;
+ *   (`id`, `stripePaymentIntentId`) with a string literal in its `where`, or
+ *   a named, reasoned site in EXISTENCE_READS / UNIQUE_EXPRESSION_READS /
+ *   UNPROVEN_FIRST_READS. Selecting `id` alone proves no existence-only use;
  * - an in-memory `.sort` over ledger rows whose comparator reads `createdAt`
  *   must also read the tiebreak (the shared comparators do);
  * - raw SQL that orders `PaymentTransaction` by `"createdAt"` must also name
@@ -127,17 +128,67 @@ const UNORDERED_ROW_SETS: Record<string, string> = {
 
 /**
  * Unordered `findFirst` reads the walk cannot prove return at most one row (no
- * unique key in the `where`, and more than `id` selected), by `file > function`,
+ * literal unique key in the `where`), by `file > function > result binding`,
  * with why the row it happens to meet cannot matter.
  */
 const UNPROVEN_FIRST_READS: Record<string, string> = {
-  "src/lib/saved-card-charge-settle.ts > adoptSavedCardChargeAttemptForIntent":
+  "src/lib/saved-card-charge-settle.ts > adoptSavedCardChargeAttemptForIntent > row":
     "looks the attempt row up by `reference`, the saved-card idempotency key, which embeds the row's own id " +
     "(savedCardChargeIdempotencyKey(bookingId, row.id)), and re-checks that key against the row it got, so " +
     "only that one row can be adopted.",
-  "src/lib/payment-reconciliation.ts > settleBookingPaymentInTransaction":
+  "src/lib/payment-reconciliation.ts > settleBookingPaymentInTransaction > otherSettledCapture":
     "KNOWN, PRE-EXISTING and out of #4132's scope (#4177): `otherSettledCapture` reads one of several " +
     "captures with no order. Tracked in #4177; remove this entry when that fix orders the read.",
+};
+
+/**
+ * Reviewed id-only reads: the named result is consumed only as existence evidence.
+ * A binding distinguishes calls in one function (including Promise.all tuples).
+ * These declarations document consumer review, not an automatic data-flow proof.
+ */
+const EXISTENCE_READS: Record<string, string> = {
+  "src/lib/booking-cancel.ts > paymentEligibleForPaidCancelPath > capturedTransaction":
+    "returns Boolean(capturedTransaction) to choose the paid cancellation path; no row id is consumed.",
+  "src/lib/booking-cancel.ts > paymentHasCaptureEvidence > capturedTransaction":
+    "passes Boolean(capturedTransaction) to paymentShowsCaptureEvidence; no row id is consumed.",
+  "src/lib/manual-booking-payment-state.ts > getBookingManualPaymentState > [stampedTransaction, activeLink, mintOperation]":
+    "uses stampedTransaction only in Boolean(stampedTransaction || activeLink || mintOperation) for the Xero block.",
+  "src/lib/manual-booking-payment-state.ts > getBookingManualPaymentState > [openTask, settledStripe]":
+    "tests settledStripe in an else-if to set reverseBlockedReason; no row id is consumed.",
+  "src/lib/payment-reconciliation.ts > assertNoXeroInvoiceEvidence > stampedTransaction":
+    "tests stampedTransaction to throw the Xero invoice refusal; no row id is consumed.",
+  "src/lib/payment-reconciliation.ts > reverseManualBookingPayment > settledStripeTransaction":
+    "tests settledStripeTransaction to refuse reversing after a card capture; no row id is consumed.",
+  "src/lib/xero-booking-edit-settlement.ts > readInternetBankingReceiptCaptured > captured":
+    "returns captured !== null as the receipt-captured boolean; no row id is consumed.",
+  "src/lib/xero-inbound/invoice-paid-effects.ts > syncInternetBankingPaymentsForPaidInvoice > existingPrimary":
+    "tests !existingPrimary before creating a primary receipt only when none exists; no row id is consumed.",
+  "src/lib/xero-inbound/settlement-conflicts.ts > findSecondInstrumentSettlement > bankCashRecorded":
+    "tests bankCashRecorded before loading the conflict marker; the selected ledger id is never consumed.",
+  "src/lib/xero-operation-retry.ts > retryXeroSyncOperation > recordPayment":
+    "wraps this read directly in Boolean to decide recordPayment for the supplementary invoice.",
+};
+
+/**
+ * Unique-key expressions cannot be proven non-null by this syntax walk. Each
+ * declaration records the reviewed guarantee; a new variable/property source
+ * fails closed even if its TypeScript spelling looks like a string id.
+ */
+const UNIQUE_EXPRESSION_READS: Record<string, string> = {
+  "src/lib/booking-cancel.ts > performBookingCancellation > additionalTransaction":
+    "stripePaymentIntentId uses payment.additionalPaymentIntentId inside if (payment.additionalPaymentIntentId), excluding null.",
+  "src/lib/card-refund-paid-another-way-xero.ts > paidAnotherWayXeroRoute > capture":
+    "stripePaymentIntentId uses lateCaptureIntent after the lateCaptureIntent === null branch returns.",
+  "src/lib/late-capture-refund-credit-note.ts > creditBackLateCaptureRefunds > capture":
+    "stripePaymentIntentId uses the function's required paymentIntentId: string parameter, never a nullable value.",
+  "src/lib/late-capture-repair-refund-record.ts > recordAndNoteRepairedLateCaptureRefunds > transaction":
+    "stripePaymentIntentId uses a key from refundedByIntent, a Map<string, number> populated only with truthy intent ids.",
+  "src/lib/xero-kept-late-capture-invoice.ts > createXeroKeptLateCaptureInvoice > capture":
+    "stripePaymentIntentId uses paymentIntentId from the validated kept-capture queued payload, whose intent id is a required string.",
+  "src/lib/xero-supplementary-invoice-late-capture.ts > releaseXeroSupplementaryInvoiceForCapturedPaymentIntent > captured":
+    "stripePaymentIntentId uses the function's required paymentIntentId: string parameter, never a nullable value.",
+  "src/lib/xero-waiting-invoice-reaper.ts > decideWaitingOperation > transaction":
+    "stripePaymentIntentId uses params.paymentIntentId, a required string in this function's parameter type.",
 };
 
 /**
@@ -159,39 +210,44 @@ const RAW_SQL_WITHOUT_INSERTION_SEQ: Record<string, string> = {
 
 type Order = "ledger" | "other" | "none" | "unreadable";
 /** For an unordered `findFirst`: how the walk knows at most one row can answer, if it does. */
-type Lookup = "unique-key" | "existence" | "unproven";
-type Site = { key: string; kind: "read" | "relation"; method: string; order: Order; lookup?: Lookup };
+type Lookup = "unique-literal" | "unique-expression" | "id-only" | "unproven";
+type Site = { key: string; kind: "read" | "relation"; method: string; order: Order; lookup?: Lookup; lookupKey?: string };
 
 /** Columns a `findFirst` may name in its `where` to be read as a lookup of at most one row. */
 const UNIQUE_KEYS = new Set(["id", "stripePaymentIntentId"]);
 
-/**
- * An unordered `findFirst` is a lookup of one row when its `where` names a
- * unique column with a plain value (not `{ not: null }` or `{ in: [...] }`), or
- * an existence check when it selects `id` alone. Anything else returns
- * whichever matching row PostgreSQL meets first.
- */
+/** Only a string literal proves a non-null unique-key value without type/data-flow analysis. */
 function classifyLookup(query: ts.Expression | undefined): Lookup {
   if (!query || !ts.isObjectLiteralExpression(query)) return "unproven";
   const where = property(query, "where")?.initializer;
-  if (
-    where &&
-    ts.isObjectLiteralExpression(where) &&
-    where.properties.some(
-      (candidate) =>
-        ts.isPropertyAssignment(candidate) &&
-        UNIQUE_KEYS.has(candidate.name.getText()) &&
-        !ts.isObjectLiteralExpression(candidate.initializer) &&
-        candidate.initializer.kind !== ts.SyntaxKind.NullKeyword,
-    )
-  ) {
-    return "unique-key";
+  if (where && ts.isObjectLiteralExpression(where)) {
+    const values = where.properties.flatMap((candidate) =>
+      ts.isPropertyAssignment(candidate) && UNIQUE_KEYS.has(candidate.name.getText())
+        ? [candidate.initializer]
+        : [],
+    );
+    if (values.some((value) => ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value))) {
+      return "unique-literal";
+    }
+    if (values.some((value) =>
+      ts.isIdentifier(value) || ts.isPropertyAccessExpression(value),
+    )) return "unique-expression";
   }
   const select = property(query, "select")?.initializer;
-  if (select && ts.isObjectLiteralExpression(select) && select.properties.length === 1 && property(select, "id")) {
-    return "existence";
+  if (select && ts.isObjectLiteralExpression(select) && select.properties.length === 1 &&
+    property(select, "id")?.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+    return "id-only";
   }
   return "unproven";
+}
+
+/** Nearest result binding, without crossing into the variable holding an enclosing function. */
+function resultBinding(node: ts.Node): string {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isVariableDeclaration(current)) return current.name.getText().replace(/\s+/g, " ");
+    if (ts.isFunctionLike(current)) break;
+  }
+  return "<unbound>";
 }
 
 /** `file > function`, or the module-level `const` a select is declared in. */
@@ -253,47 +309,75 @@ function isUnderCount(node: ts.PropertyAssignment): boolean {
   );
 }
 
-function scanTree(): Site[] {
+function scanSource(file: string, code: string): Site[] {
+  if (!code.includes("paymentTransaction") && !code.includes("transactions")) return [];
   const sites: Site[] = [];
-  for (const file of sourceFiles()) {
-    const code = readFileSync(file, "utf8");
-    if (!code.includes("paymentTransaction") && !code.includes("transactions")) continue;
-    const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
-    const key = (node: ts.Node) => `${relativeSource(file)} > ${siteName(node)}`;
-    const walk = (node: ts.Node) => {
-      if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        READ_METHODS.has(node.expression.name.text) &&
-        ts.isPropertyAccessExpression(node.expression.expression) &&
-        node.expression.expression.name.text === "paymentTransaction"
+  const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
+  const key = (node: ts.Node) => `${file} > ${siteName(node)}`;
+  const walk = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      READ_METHODS.has(node.expression.name.text) &&
+      ts.isPropertyAccessExpression(node.expression.expression) &&
+      node.expression.expression.name.text === "paymentTransaction"
+    ) {
+      const method = node.expression.name.text;
+      const order = classifyQuery(node.arguments[0]);
+      sites.push({
+        key: key(node),
+        kind: "read",
+        method,
+        order,
+        ...(order === "none" && method !== "findMany" ? { lookup: classifyLookup(node.arguments[0]), lookupKey: `${key(node)} > ${resultBinding(node)}` } : {}),
+      });
+    }
+    if (ts.isPropertyAssignment(node) && node.name.getText() === "transactions" && !isUnderCount(node)) {
+      const initializer = node.initializer;
+      if (initializer.kind === ts.SyntaxKind.TrueKeyword) {
+        sites.push({ key: key(node), kind: "relation", method: "include", order: "none" });
+      } else if (
+        ts.isObjectLiteralExpression(initializer) &&
+        initializer.properties.some((candidate) => candidate.name !== undefined && RELATION_READ_KEYS.has(candidate.name.getText()))
       ) {
-        const method = node.expression.name.text;
-        const order = classifyQuery(node.arguments[0]);
-        sites.push({
-          key: key(node),
-          kind: "read",
-          method,
-          order,
-          ...(order === "none" && method !== "findMany" ? { lookup: classifyLookup(node.arguments[0]) } : {}),
-        });
+        sites.push({ key: key(node), kind: "relation", method: "include", order: classifyQuery(initializer) });
       }
-      if (ts.isPropertyAssignment(node) && node.name.getText() === "transactions" && !isUnderCount(node)) {
-        const initializer = node.initializer;
-        if (initializer.kind === ts.SyntaxKind.TrueKeyword) {
-          sites.push({ key: key(node), kind: "relation", method: "include", order: "none" });
-        } else if (
-          ts.isObjectLiteralExpression(initializer) &&
-          initializer.properties.some((candidate) => candidate.name !== undefined && RELATION_READ_KEYS.has(candidate.name.getText()))
-        ) {
-          sites.push({ key: key(node), kind: "relation", method: "include", order: classifyQuery(initializer) });
-        }
-      }
-      ts.forEachChild(node, walk);
-    };
-    walk(source);
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(source);
+  return sites;
+}
+
+function scanTree(): Site[] {
+  return sourceFiles().flatMap((file) => scanSource(relativeSource(file), readFileSync(file, "utf8")))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+type FirstReadDeclarations = Record<"id-only" | "unique-expression" | "unproven", Record<string, string>>;
+const FIRST_READ_DECLARATIONS: FirstReadDeclarations = {
+  "id-only": EXISTENCE_READS,
+  "unique-expression": UNIQUE_EXPRESSION_READS,
+  unproven: UNPROVEN_FIRST_READS,
+};
+
+/** Shared by real-tree enforcement and synthetic fixtures: refuse missing, stale or ambiguous declarations. */
+function firstReadIssues(sites: Site[], declarations: FirstReadDeclarations = FIRST_READ_DECLARATIONS): string[] {
+  const issues: string[] = [];
+  for (const lookup of ["id-only", "unique-expression", "unproven"] as const) {
+    const keys = sites.filter((site) => site.lookup === lookup).map((site) => site.lookupKey!);
+    for (const key of keys) {
+      if (!declarations[lookup][key]) issues.push(`undeclared ${lookup}: ${key}`);
+    }
+    for (const key of Object.keys(declarations[lookup])) {
+      if (!keys.includes(key)) issues.push(`stale ${lookup}: ${key}`);
+    }
   }
-  return sites.sort((a, b) => a.key.localeCompare(b.key));
+  const keys = sites.filter((site) => site.lookup).map((site) => site.lookupKey!);
+  for (const key of new Set(keys)) {
+    if (keys.filter((candidate) => candidate === key).length > 1) issues.push(`ambiguous first read: ${key}`);
+  }
+  return issues.sort();
 }
 
 const unique = (keys: string[]) => [...new Set(keys)].sort();
@@ -382,11 +466,11 @@ describe("every capture-ledger read is ordered by the ledger's order, or declare
 
   it("reads every unordered findFirst as a lookup of one row, or declares why", () => {
     expect(
-      unique(sites.filter((site) => site.lookup === "unproven").map((site) => site.key)),
-      "INV-PAY-133: an unordered PaymentTransaction findFirst names no unique key (id, stripePaymentIntentId) " +
-        "in its where and selects more than id, so it returns whichever matching row PostgreSQL meets first. " +
-        "Order it by LEDGER_ROWS_OLDEST_FIRST / LEDGER_ROWS_NEWEST_FIRST, or declare it in UNPROVEN_FIRST_READS.",
-    ).toEqual(Object.keys(UNPROVEN_FIRST_READS).sort());
+      firstReadIssues(sites),
+      "INV-PAY-133: an unordered PaymentTransaction first read needs a literal unique key, or an exact " +
+        "named declaration with a reason in EXISTENCE_READS, UNIQUE_EXPRESSION_READS or UNPROVEN_FIRST_READS. " +
+        "An id-only select proves no existence-only use; a variable unique key may be null or undefined.",
+    ).toEqual([]);
   });
 
   it("finds no in-memory sort of ledger rows that reads createdAt without the tiebreak", () => {
@@ -402,6 +486,8 @@ describe("every capture-ledger read is ordered by the ledger's order, or declare
     for (const [entry, reason] of Object.entries({
       ...UNORDERED_ROW_SETS,
       ...UNPROVEN_FIRST_READS,
+      ...EXISTENCE_READS,
+      ...UNIQUE_EXPRESSION_READS,
       ...CREATED_AT_ONLY_COMPARATORS,
       ...RAW_SQL_WITHOUT_INSERTION_SEQ,
     })) {
@@ -425,5 +511,83 @@ describe("every capture-ledger read is ordered by the ledger's order, or declare
       'INV-PAY-133: raw SQL orders PaymentTransaction by "createdAt" with no "insertionSeq" tiebreak. Add one, ' +
         "or declare the file in RAW_SQL_WITHOUT_INSERTION_SEQ with the reason the order cannot matter.",
     ).toEqual(Object.keys(RAW_SQL_WITHOUT_INSERTION_SEQ).sort());
+  });
+});
+
+describe("unordered first-read scanner regressions (#4180, INV-PAY-133)", () => {
+  const empty: FirstReadDeclarations = { "id-only": {}, "unique-expression": {}, unproven: {} };
+  const scan = (body: string) => scanSource("fixture.ts", `async function example() { ${body} }`);
+
+  it("ignores commented reads while scanning the same parsed source as the real tree", () => {
+    expect(scan(`
+      // tx.paymentTransaction.findFirst({ select: { id: true } });
+      /* const row = await tx.paymentTransaction.findFirst({ where: { stripePaymentIntentId: nullable } }); */
+    `)).toEqual([]);
+  });
+
+  it("refuses an id-only arbitrary pick whose id is used to update a row", () => {
+    const sites = scan(`
+      const row = await tx.paymentTransaction.findFirst({
+        where: { paymentId, status: "SUCCEEDED" }, select: { id: true },
+      });
+      if (row) await tx.paymentTransaction.update({ where: { id: row.id }, data: { status: "REFUNDED" } });
+    `);
+    expect(firstReadIssues(sites, empty)).toEqual(["undeclared id-only: fixture.ts > example > row"]);
+  });
+
+  it.each(["someNullable", "payment.additionalPaymentIntentId", "undefined"])(
+    "refuses an undeclared unique-key source: %s",
+    (value) => {
+      const sites = scan(`
+        const someNullable: string | null = null;
+        const row = await tx.paymentTransaction.findFirst({
+          where: { stripePaymentIntentId: ${value} }, select: { amountCents: true },
+        });
+        return row?.amountCents;
+      `);
+      expect(firstReadIssues(sites, empty)).toEqual(["undeclared unique-expression: fixture.ts > example > row"]);
+    },
+  );
+
+  it.each(['"pi_literal"', '`pi_literal`'])("accepts a non-null literal unique-key lookup: %s", (value) => {
+    const sites = scan(`const row = await tx.paymentTransaction.findFirst({ where: { stripePaymentIntentId: ${value} } });`);
+    expect(sites).toHaveLength(1);
+    expect(firstReadIssues(sites, empty)).toEqual([]);
+  });
+
+  it.each(["null", "{ not: null }", "{ in: intents }"])("refuses a non-unique predicate: %s", (value) => {
+    const sites = scan(`const row = await tx.paymentTransaction.findFirst({ where: { stripePaymentIntentId: ${value} } });`);
+    expect(firstReadIssues(sites, empty)).toEqual(["undeclared unproven: fixture.ts > example > row"]);
+  });
+
+  it("accepts named existence and guarded-key declarations, but refuses a new pick in the same function", () => {
+    const body = `
+      const exists = await tx.paymentTransaction.findFirst({ where: { paymentId }, select: { id: true } });
+      if (payment.additionalPaymentIntentId) {
+        const guarded = await tx.paymentTransaction.findFirst({ where: { stripePaymentIntentId: payment.additionalPaymentIntentId } });
+        return Boolean(exists) && guarded?.amountCents;
+      }
+    `;
+    const declarations: FirstReadDeclarations = {
+      ...empty,
+      "id-only": { "fixture.ts > example > exists": "The consumer tests Boolean(exists), without using an id." },
+      "unique-expression": { "fixture.ts > example > guarded": "The enclosing if excludes a null additionalPaymentIntentId." },
+    };
+    expect(firstReadIssues(scan(body), declarations)).toEqual([]);
+    expect(firstReadIssues(scan(body + `
+      const chosen = await tx.paymentTransaction.findFirst({ where: { paymentId }, select: { id: true } });
+      return chosen?.id;
+    `), declarations)).toEqual(["undeclared id-only: fixture.ts > example > chosen"]);
+    expect(firstReadIssues(scan(""), declarations)).toEqual([
+      "stale id-only: fixture.ts > example > exists",
+      "stale unique-expression: fixture.ts > example > guarded",
+    ]);
+  });
+
+  it("refuses two reads sharing a declared binding instead of hiding one behind deduplication", () => {
+    const read = `const row = await tx.paymentTransaction.findFirst({ where: { paymentId }, select: { id: true } });`;
+    expect(firstReadIssues(scan(`{ ${read} } { ${read} }`), {
+      ...empty, "id-only": { "fixture.ts > example > row": "Only reviewed for existence; duplicate identities must fail." },
+    })).toEqual(["ambiguous first read: fixture.ts > example > row"]);
   });
 });
