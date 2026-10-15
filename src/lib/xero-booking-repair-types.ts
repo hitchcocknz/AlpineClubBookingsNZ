@@ -463,6 +463,8 @@ export interface BookingClassificationContext {
    * reads the same evidence as the hardening report.
    */
   paymentRefundPaymentLinks: XeroObjectLinkRecord[];
+  /** #4091: the payment's refund notes a link records VOIDED/DELETED, active or not - never backfilled into its field. */
+  cancelledRefundNoteIds?: ReadonlySet<string>;
   bookingLinks: XeroObjectLinkRecord[];
   modificationLinksById: Map<string, XeroObjectLinkRecord[]>;
   paymentOperations: XeroOperationRecord[];

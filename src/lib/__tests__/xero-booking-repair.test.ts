@@ -788,6 +788,30 @@ describe("runBookingXeroRepair", () => {
     expect(unsettledRefundNoteRows(operations as never, links)).toEqual([]);
   });
 
+  it("MUTATION (#4091 owner decision): a note Xero voided is never offered back into the payment's field", async () => {
+    // The void deactivated the mirror and released the field; the create that
+    // raised the note is still in the history.
+    const noteRow = makeOperation({
+      id: "op_voided", entityType: "CREDIT_NOTE", localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided",
+      requestPayload: { allocation: { invoiceId: "inv_primary", amount: 20 }, refundMethod: "internet-banking" },
+    });
+    const backfills = async (metadata: Record<string, unknown>) => {
+      const links = [paymentLink({ id: "link_voided", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role: "REFUND_CREDIT_NOTE", active: false, metadata })];
+      const deps = createDependencies({ bookings: [makeBooking()], links, operations: [noteRow] });
+      vi.mocked(deps.prisma.xeroObjectLink.findMany).mockImplementation((async ({ where }: any) =>
+        links.filter((link) => where?.active === undefined || link.active === where.active)) as never);
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+      return report.passes[0].bookings[0].actions.filter((action) => action.type === "SYNC_PAYMENT_REFUND_CREDIT_NOTE_FIELD");
+    };
+
+    expect(await backfills({ amountCents: 2000, status: "VOIDED" })).toEqual([]);
+    expect(await backfills({ amountCents: 2000, status: "DELETED" })).toEqual([]);
+    // Control: the same history with no recorded void is still backfilled.
+    expect(await backfills({ amountCents: 2000 })).toEqual([
+      expect.objectContaining({ payload: { paymentId: "payment_1", xeroRefundCreditNoteId: "cn_voided" } }),
+    ]);
+  });
+
   it("MUTATION (#3880 F1): a bank payment holding only per-refund notes is offered no backfill of its canonical field", async () => {
     // Empty by design: a review's per-refund note is never the payment's one note.
     const reviewNote = (id: string, creditNoteId: string) =>

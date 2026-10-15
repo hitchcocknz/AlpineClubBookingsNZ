@@ -1424,18 +1424,17 @@ export function classifyBookingContext(
     });
   }
 
-  if (payment && refundCreditNote && !payment.xeroRefundCreditNoteId) {
+  // #4091 (owner decision): a note Xero voided is never written back into the field.
+  const backfillNote = refundCreditNote && !context.cancelledRefundNoteIds?.has(refundCreditNote.objectId) ? refundCreditNote : null;
+  if (payment && backfillNote && !payment.xeroRefundCreditNoteId) {
     const action = addAction(actionMap, {
-      key: `payment-field:refund-credit-note:${payment.id}:${refundCreditNote.objectId}`,
+      key: `payment-field:refund-credit-note:${payment.id}:${backfillNote.objectId}`,
       bookingId: booking.id,
       type: "SYNC_PAYMENT_REFUND_CREDIT_NOTE_FIELD",
       description:
         "Backfill payment.xeroRefundCreditNoteId from an existing refund credit note link or completed operation.",
       safeToAutoApply: true,
-      payload: {
-        paymentId: payment.id,
-        xeroRefundCreditNoteId: refundCreditNote.objectId,
-      },
+      payload: { paymentId: payment.id, xeroRefundCreditNoteId: backfillNote.objectId },
     });
     addFinding(findings, {
       code: "XERO_LINK_MISMATCH",
@@ -1444,7 +1443,7 @@ export function classifyBookingContext(
       safeToAutoApply: true,
       details: {
         paymentId: payment.id,
-        creditNoteId: refundCreditNote.objectId,
+        creditNoteId: backfillNote.objectId,
       },
       actionKeys: [action.key],
     });
