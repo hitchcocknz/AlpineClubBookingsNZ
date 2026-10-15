@@ -32,8 +32,10 @@ import { prisma } from "@/lib/prisma";
  * WHERE IT IS KEPT, without a schema change: on the close's own record (the
  * COMPLETED `ManualRefundTask` the close wrote), in its `reviewContext` - a
  * column only an edit's financial review fills, and every reader of which asks
- * for that kind first. The audit log is not the store: its rows leave the main
- * database for the archive after a year, and the row would come back. The
+ * for that kind first (#4104: the close itself may keep its card-note cover
+ * there, which the resolution keeps beside it). The audit log is not the
+ * store: its rows leave the main database for the archive after a year, and
+ * the row would come back. The
  * resolution names how much Stripe had refunded when it was resolved, so a
  * further card refund for the same close brings the row back.
  *
@@ -91,6 +93,13 @@ export function readPaidTwiceResolution(reviewContext: unknown): PaidTwiceResolu
     return null;
   }
   return { resolvedAt, resolvedByMemberId, note, refundedByCardCents };
+}
+
+/** The record's `reviewContext` as an object to add to, or an empty one. */
+function reviewContextObject(reviewContext: Prisma.JsonValue): Prisma.InputJsonObject {
+  return reviewContext !== null && typeof reviewContext === "object" && !Array.isArray(reviewContext)
+    ? (reviewContext as Prisma.InputJsonObject)
+    : {};
 }
 
 /** A card refund closed as paid another way that Stripe then paid as well. */
@@ -225,7 +234,9 @@ export async function resolveCardRefundPaidTwice(
             ? { equals: Prisma.DbNull }
             : { equals: record.reviewContext as Prisma.InputJsonValue },
       },
-      data: { reviewContext: { paidTwiceResolved: { ...resolution } } },
+      // #4104 (A-F1): beside whatever else the record keeps - a close's
+      // card-note cover stays.
+      data: { reviewContext: { ...reviewContextObject(record.reviewContext), paidTwiceResolved: { ...resolution } } },
     });
     if (claimed.count === 0) {
       throw new CardRefundPaidTwiceError(

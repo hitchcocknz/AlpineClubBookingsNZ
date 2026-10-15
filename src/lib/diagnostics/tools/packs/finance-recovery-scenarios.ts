@@ -10,6 +10,7 @@ import {
   BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX,
   CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
+  CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
   DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX,
   EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
   EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX,
@@ -117,6 +118,11 @@ export const RECOVERY_SCENARIO_CATALOGUE = [
     prefix: ORGANISER_CARD_APPEAL_REFUND_KEY_PREFIX,
     code: "organiser_card_appeal_refund",
     label: "a refund to the group organiser's card for a joiner's approved refund appeal",
+  },
+  {
+    prefix: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
+    code: "card_refund_failed_later",
+    label: "a card refund the card provider accepted and later reported as failed, asked for again",
   },
   {
     prefix: GROUP_SETTLEMENT_REFUND_RECOVERY_PREFIX,

@@ -1123,6 +1123,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX: "booking_cancellation_refund",
     BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX: "booking_modification_refund",
     CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX: "capacity_claim_failed_refund",
+    CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX: "card_refund_failed_later",
     DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX: "duplicate_capture_refund",
     EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX:
       "edit_financial_review_additional_intent",
@@ -1140,6 +1141,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
       "booking_modification_refund",
     buildCapacityClaimFailedRefundRecoveryIdempotencyKey:
       "capacity_claim_failed_refund",
+    buildCardRefundFailedLaterRecoveryKey: "card_refund_failed_later",
     buildDuplicateCaptureRefundRecoveryIdempotencyKey: "duplicate_capture_refund",
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking:
       "duplicate_capture_refund",
@@ -1167,6 +1169,10 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
    * never stored in `PaymentRecoveryOperation."idempotencyKey"`.
    */
   const NOT_A_RECOVERY_KEY: Record<string, string> = {
+    CARD_REFUND_FAILED_LATER_REASON: "Stripe refund metadata",
+    SUPERSEDED_PAYMENT_REFUND_METADATA_REASON: "Stripe refund metadata",
+    cardRefundOperationRefundMetadata: "Stripe metadata",
+    cardRefundFailedLaterRefundId: "parser of a mapped key",
     GROUP_SETTLEMENT_REFUND_RECOVERY_WHERE: "query fragment over a mapped prefix",
     LATE_CAPTURE_REFUND_METADATA_REASON: "Stripe refund metadata",
     ORGANISER_CHILD_REFUND_KEY_WHERE: "query fragment over mapped prefixes",
