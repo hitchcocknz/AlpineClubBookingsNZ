@@ -2426,7 +2426,11 @@ NOT_REQUIRED (closed) family charge -> still counts as billing its family (a new
   settled) -> the next preview re-bills the family on a NEW charge beside the retained row; only SOME payments
   reversed -> CLOSED_FAMILY_PARTLY_REVERSED warning, and an officer's confirm still invoices the full family fee
   (#4110; the unique index covers live charges only); a member NOT_REQUIRED at the close later moved to
-  NOT_INVOICED (assignment save, membership sync) is no reversal -> the family stays billed
+  NOT_INVOICED (assignment save, membership sync) is no reversal -> the family stays billed, and that member gets
+  FAMILY_ALREADY_BILLED worded for it (context.exemptAtClose) so Finance decides; only members STILL in the family
+  count, so a covered member who moved to another family and was then reversed does not re-bill the old one;
+  with two closed charges for one family/type/season, one still settled keeps the family billed, so a reversal
+  covered only by the older charge raises FAMILY_ALREADY_BILLED rather than a re-bill
 membership approval (NEW_MEMBER_APPROVAL) preview with a CLOSED_FAMILY_PARTLY_REVERSED warning -> that family is
   withheld (no charge), the warning persisted OPEN for Finance and counted -> Finance's confirm invoices it and
   RESOLVES the warning (resolvedVia CONFIRM)
