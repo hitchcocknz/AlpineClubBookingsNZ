@@ -510,6 +510,8 @@ describe("#1992 duplicate-capture auto-refund", () => {
       expect.objectContaining({
         bookingId: "booking-1",
         paymentIntentId: DUPLICATE_PI,
+        // #4144: fenced on the plan this attempt sent, so a re-planned row stays owed.
+        sentPlan: [{ paymentTransactionId: "txn-duplicate", amountCents: 10000 }],
       })
     );
     // #2007: the dedicated duplicate-capture template is sent (success variant),
