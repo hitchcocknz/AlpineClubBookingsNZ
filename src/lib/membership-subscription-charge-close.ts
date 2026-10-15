@@ -2,10 +2,12 @@ import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import {
   CLOSE_ALREADY_PAID_REASON_MAX,
-  everyActiveCoveredSubscriptionPaid,
+  everyActiveCoveredSubscriptionSettled,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
+  isSubscriptionSettled,
   PARTLY_PAID_CHARGE_ADVICE,
+  SETTLED_SUBSCRIPTION_STATUSES,
   SUBSCRIPTION_ALREADY_PAID_CODE,
 } from "@/lib/subscription-charge-already-paid";
 import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-invoices";
@@ -23,8 +25,9 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  *     is not used: it records an invoice Xero voided, and this charge never had
  *     one. Confirmation writes `NOT_REQUIRED` only for a `NO_INVOICE` charge, so
  *     `isChargeClosedAsAlreadyPaid` tells the two apart without a schema change.
- *  2. Every covered subscription must still be `PAID`; the same guarded write
- *     bumps its `voidGeneration`.
+ *  2. Every covered subscription must still be settled — `PAID`, or
+ *     `NOT_REQUIRED` for an exempt member (owner decision on #4110, 15 Oct
+ *     2026); the same guarded write bumps its `voidGeneration`.
  *  3. The charge's ACTIVE coverage claims are released (`releasedAt` set, rows
  *     kept), as the void path does (#2147).
  *  4. An audit row naming the officer, the reason, the charge and the
@@ -50,7 +53,7 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * status-guarded `updateMany` (`CONFLICT` + the code + no invoice), so a double
  * click or two officers close once — the loser waits on the row, then matches
  * nothing and reads the charge already closed. The subscription write matches
- * only PAID rows and must touch every one; a manual reversal that committed
+ * only settled rows and must touch every one; a manual reversal that committed
  * first makes it fall short and the whole transaction rolls back, and one that
  * arrives later waits on the row and then finds the member re-billable. The
  * close is refused while an invoice operation for the charge is live (queued,
@@ -136,8 +139,8 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         409,
       );
     }
-    if (!everyActiveCoveredSubscriptionPaid(charge.coverage)) {
-      const unpaid = charge.coverage.filter((row) => row.subscription.status !== "PAID");
+    if (!everyActiveCoveredSubscriptionSettled(charge.coverage)) {
+      const unpaid = charge.coverage.filter((row) => !isSubscriptionSettled(row.subscription.status));
       throw new CloseAlreadyPaidChargeError(
         `Still unpaid: ${unpaid.map((row) => row.memberName).join(", ")}. ${PARTLY_PAID_CHARGE_ADVICE}`,
         409,
@@ -179,10 +182,10 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
     }
 
     const subscriptionIds = charge.coverage.map((row) => row.subscriptionId);
-    // The authoritative PAID re-read: the guard is in the WHERE, so a reversal
+    // The authoritative settled re-read: the guard is in the WHERE, so a reversal
     // that committed after the read above leaves this short and rolls back.
     const stillPaid = await tx.memberSubscription.updateMany({
-      where: { id: { in: subscriptionIds }, status: "PAID" },
+      where: { id: { in: subscriptionIds }, status: { in: [...SETTLED_SUBSCRIPTION_STATUSES] } },
       data: { voidGeneration: { increment: 1 } },
     });
     if (stillPaid.count !== subscriptionIds.length) {

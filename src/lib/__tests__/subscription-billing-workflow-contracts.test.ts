@@ -291,7 +291,25 @@ describe("subscription invoice delivery behavior", () => {
     expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         status: "CONFLICT",
-        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Not every covered subscription is paid, so it can't be closed as paid. Either record the remaining payments and then close it, or reverse every payment recorded for it (Mark as unpaid on the subscription, or void it in Xero) and then Retry to invoice the whole charge.",
+        lastErrorMessage: "Covered subscription is already PAID (Cash Payer); no Xero invoice was created. Not every covered subscription is paid (or not required), so it can't be closed as paid. Either record the remaining payments and then close it, or reverse every payment recorded for it (Mark as unpaid on the subscription, or void it in Xero) and then Retry to invoice the whole charge.",
+      }),
+    }));
+  });
+
+  it("offers the close when the only other covered member is exempt (NOT_REQUIRED) — owner decision on #4110", async () => {
+    mocks.chargeFind.mockResolvedValue(charge({
+      coverage: [
+        { memberName: "Cash Payer", releasedAt: null, subscription: { id: "subscription-1", status: "PAID", manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z") } },
+        { memberName: "Cub Exempt", releasedAt: null, subscription: { id: "subscription-2", status: "NOT_REQUIRED", manuallyMarkedPaidAt: null } },
+      ],
+    }));
+
+    await createXeroMembershipSubscriptionInvoice({ chargeId: "charge-1", syncOperationId: "op-1" });
+
+    expect(mocks.createInvoices).not.toHaveBeenCalled();
+    expect(mocks.chargeUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        lastErrorMessage: expect.stringContaining("Close it as already paid on the Subscriptions page"),
       }),
     }));
   });

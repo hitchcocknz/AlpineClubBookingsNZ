@@ -89,7 +89,7 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
       data: { status: "NOT_REQUIRED", lastErrorCode: null, lastErrorMessage: null },
     });
     expect(mocks.subscriptionUpdateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["sub-1", "sub-2"] }, status: "PAID" },
+      where: { id: { in: ["sub-1", "sub-2"] }, status: { in: ["PAID", "NOT_REQUIRED"] } },
       data: { voidGeneration: { increment: 1 } },
     });
     expect(mocks.coverageUpdateMany).toHaveBeenCalledWith({
@@ -183,6 +183,20 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
     expectNoWrites();
   });
 
+  it("closes a family charge whose other covered member is exempt (NOT_REQUIRED) — owner decision on #4110", async () => {
+    mocks.chargeFindUnique.mockResolvedValue(conflictedCharge({
+      coverage: [
+        { subscriptionId: "sub-1", memberName: "Ana Paid", subscription: { status: "PAID", memberId: "member-1" } },
+        { subscriptionId: "sub-2", memberName: "Cub Exempt", subscription: { status: "NOT_REQUIRED", memberId: "member-2" } },
+      ],
+    }));
+    await expect(closeAlreadyPaidSubscriptionCharge(INPUT)).resolves.toMatchObject({ closed: true });
+    expect(mocks.subscriptionUpdateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["sub-1", "sub-2"] }, status: { in: ["PAID", "NOT_REQUIRED"] } },
+      data: { voidGeneration: { increment: 1 } },
+    });
+  });
+
   it("refuses a charge with no active coverage", async () => {
     mocks.chargeFindUnique.mockResolvedValue(conflictedCharge({ coverage: [] }));
     await expectRefusal(409);
@@ -229,7 +243,7 @@ describe("closeAlreadyPaidSubscriptionCharge (#4098)", () => {
   });
 });
 
-describe("everyActiveCoveredSubscriptionPaid (#4098)", () => {
+describe("everyActiveCoveredSubscriptionSettled (#4098, #4110 exempt decision)", () => {
   it.each([
     ["every active row PAID", [{ releasedAt: null, subscription: { status: "PAID" } }], true],
     ["a row without releasedAt is read as active", [{ subscription: { status: "PAID" } }], true],
@@ -237,8 +251,10 @@ describe("everyActiveCoveredSubscriptionPaid (#4098)", () => {
     ["only released rows", [{ releasedAt: "2026-06-01T00:00:00.000Z", subscription: { status: "PAID" } }], false],
     ["a released unpaid row is ignored", [{ releasedAt: null, subscription: { status: "PAID" } }, { releasedAt: "2026-06-01T00:00:00.000Z", subscription: { status: "NOT_INVOICED" } }], true],
     ["no coverage", [], false],
+    ["an exempt (NOT_REQUIRED) member counts as settled", [{ releasedAt: null, subscription: { status: "PAID" } }, { releasedAt: null, subscription: { status: "NOT_REQUIRED" } }], true],
+    ["an OVERDUE member does not", [{ releasedAt: null, subscription: { status: "PAID" } }, { releasedAt: null, subscription: { status: "OVERDUE" } }], false],
   ])("%s", async (_label, coverage, expected) => {
-    const { everyActiveCoveredSubscriptionPaid } = await import("@/lib/subscription-charge-already-paid");
-    expect(everyActiveCoveredSubscriptionPaid(coverage as never)).toBe(expected);
+    const { everyActiveCoveredSubscriptionSettled } = await import("@/lib/subscription-charge-already-paid");
+    expect(everyActiveCoveredSubscriptionSettled(coverage as never)).toBe(expected);
   });
 });

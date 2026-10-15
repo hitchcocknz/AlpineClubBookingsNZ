@@ -19,7 +19,7 @@ import { useClubTime } from "@/components/club-time-provider";
 import { useClubFormat } from "@/components/club-format-provider";
 import {
   CLOSE_ALREADY_PAID_REASON_MAX,
-  everyActiveCoveredSubscriptionPaid,
+  everyActiveCoveredSubscriptionSettled,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
 } from "@/lib/subscription-charge-already-paid";
@@ -218,12 +218,13 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
   }
 
   // #4098: Close is offered only where the close can succeed — an already-paid
-  // conflict whose every active covered subscription is PAID. A partly paid
+  // conflict whose every active covered subscription is settled (PAID, or
+  // NOT_REQUIRED for an exempt member). A partly paid
   // charge shows its conflict message, which names the paths that work.
   const canOfferClose = (charge: BillingData["charges"][number]) =>
     isChargeClosableAsAlreadyPaid(charge) &&
     charge.coverage.every((row) => row.subscription !== undefined) &&
-    everyActiveCoveredSubscriptionPaid(
+    everyActiveCoveredSubscriptionSettled(
       charge.coverage.map((row) => ({ releasedAt: row.releasedAt ?? null, subscription: row.subscription! })),
     );
 

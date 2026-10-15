@@ -524,6 +524,18 @@ describe("subscription billing panel", () => {
     expect(screen.queryByRole("button", { name: "Close: already paid" })).toBeNull();
   });
 
+  it("offers the close when the other covered member is exempt (NOT_REQUIRED) — owner decision on #4110", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    servePayload(chargePayload({
+      coverage: [
+        { memberName: "Cash Payer", releasedAt: null, subscription: { status: "PAID" } },
+        { memberName: "Cub Exempt", releasedAt: null, subscription: { status: "NOT_REQUIRED" } },
+      ],
+    }));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByRole("button", { name: "Close: already paid" })).toBeTruthy();
+  });
+
   it("keeps the close disabled for a view-only admin (#4098)", async () => {
     mocks.canEdit.mockReturnValue(false);
     servePayload(chargePayload({}));

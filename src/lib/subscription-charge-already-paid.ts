@@ -1,6 +1,7 @@
 import type {
   MembershipFeeBillingBasis,
   MembershipSubscriptionChargeStatus,
+  SubscriptionStatus,
 } from "@prisma/client";
 
 /**
@@ -64,7 +65,7 @@ const REVERSE_PAYMENT_HOW = "Mark as unpaid on the subscription, or void it in X
  * refusals (#4098 review: money F1 / security F1).
  */
 export const PARTLY_PAID_CHARGE_ADVICE =
-  "Not every covered subscription is paid, so it can't be closed as paid. Either record " +
+  "Not every covered subscription is paid (or not required), so it can't be closed as paid. Either record " +
   "the remaining payments and then close it, or reverse every payment recorded for it " +
   `(${REVERSE_PAYMENT_HOW}) and then Retry to invoice the whole charge.`;
 
@@ -106,17 +107,33 @@ export function isChargeClosableAsAlreadyPaid(charge: {
 }
 
 /**
- * True when the charge's ACTIVE coverage is non-empty and every subscription in
- * it is PAID — the second half of what the close needs, after
- * `isChargeClosableAsAlreadyPaid`. A row without `releasedAt` is read as
- * active (the close selects only active rows). The panel offers Close only when
- * this holds, and the close refuses when it does not.
+ * The subscription statuses that count as SETTLED for a charge: PAID, and
+ * NOT_REQUIRED — an exempt member owes nothing (owner decision on #4110,
+ * 15 Oct 2026). Used by the close, the panel's Close offer, the worker's
+ * conflict advice and the preview's "only a reversal re-bills a closed family"
+ * rule, so they all read settled the same way.
  */
-export function everyActiveCoveredSubscriptionPaid(
+export const SETTLED_SUBSCRIPTION_STATUSES = [
+  "PAID",
+  "NOT_REQUIRED",
+] as const satisfies readonly SubscriptionStatus[];
+
+export function isSubscriptionSettled(status: SubscriptionStatus | string): boolean {
+  return (SETTLED_SUBSCRIPTION_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * True when the charge's ACTIVE coverage is non-empty and every subscription in
+ * it is settled (PAID or NOT_REQUIRED) — the second half of what the close
+ * needs, after `isChargeClosableAsAlreadyPaid`. A row without `releasedAt` is
+ * read as active (the close selects only active rows). The panel offers Close
+ * only when this holds, and the close refuses when it does not.
+ */
+export function everyActiveCoveredSubscriptionSettled(
   coverage: ReadonlyArray<{ releasedAt?: Date | string | null; subscription: { status: string } }>,
 ): boolean {
   const active = coverage.filter((row) => row.releasedAt == null);
-  return active.length > 0 && active.every((row) => row.subscription.status === "PAID");
+  return active.length > 0 && active.every((row) => isSubscriptionSettled(row.subscription.status));
 }
 
 /**

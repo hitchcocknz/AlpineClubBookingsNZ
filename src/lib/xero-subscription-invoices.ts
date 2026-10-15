@@ -36,6 +36,7 @@ import { seasonYearsLabel } from "@/lib/season-label";
 import {
   MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES,
   membershipChargeNeedsNoInvoice,
+  everyActiveCoveredSubscriptionSettled,
   STRAY_INVOICE_AFTER_CLOSE_CODE,
   strayInvoiceAfterCloseMessage,
   SUBSCRIPTION_ALREADY_PAID_CODE,
@@ -325,9 +326,11 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
         data: {
           status: "CONFLICT",
           lastErrorCode: SUBSCRIPTION_ALREADY_PAID_CODE,
+          // The advice depends on whether the close can succeed: the same
+          // settled rule (PAID, or NOT_REQUIRED for an exempt member) it uses.
           lastErrorMessage: subscriptionAlreadyPaidConflictMessage(
             alreadyPaid.map((row) => row.memberName),
-            alreadyPaid.length === charge.coverage.length,
+            everyActiveCoveredSubscriptionSettled(charge.coverage),
           ),
         },
       });
