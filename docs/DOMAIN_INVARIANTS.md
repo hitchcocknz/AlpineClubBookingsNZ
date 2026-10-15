@@ -333,7 +333,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-029` | A FAILED Stripe payment keeps its WAITING_PAYMENT Xero op for 24h |
 | `INV-PAY-104` | Waiting invoice retired only when the pay door closes; captures never silent |
 | `INV-PAY-030` | External provider side effects require clear retry and idempotency behaviour |
-| `INV-PAY-128` | Edit, cancel and refund-request card refunds Stripe refuses stay owed |
+| `INV-PAY-128` | Card refunds Stripe refuses, or fails after accepting, stay owed |
 | `INV-PAY-129` | A cancel's card refund shortfall is split: bank transfer, or check first |
 | `INV-PAY-130` | No other card refund door closes or says refunded on a refusal |
 | `INV-PAY-131` | The cancel preview quotes the card only what its plan carries |

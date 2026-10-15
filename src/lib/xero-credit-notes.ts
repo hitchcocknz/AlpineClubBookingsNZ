@@ -37,7 +37,7 @@ import { prisma } from "./prisma";
 import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
-import { readPaidAnotherWayCloseShare } from "@/lib/card-refund-paid-another-way-cash";
+import { readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -83,6 +83,9 @@ import {
   readRefundRequestIdFromPayload,
   REFUND_REQUEST_CREDIT_NOTE_ROLE,
 } from "@/lib/refund-request-credit-note";
+
+/** #4104: how often a card note re-reads the closes' figure until it agrees with the cash read between. */
+const STABLE_CLOSE_READ_ATTEMPTS = 3;
 
 export interface CreateXeroRefundCreditNoteOptions
   extends FindOrCreateXeroContactOptions {
@@ -381,13 +384,34 @@ export async function createXeroCreditNote(
     } else {
       // #3635 round-3 R1: the cash a note may answer, the figure the enqueue
       // capped against, never refunds of late captures Xero never received.
-      const { evidence, eligibleCashCents } = await resolveRefundNoteEligibleCash({
+      // #4104 (A-F2): less the closes' cash their own notes do not cover yet,
+      // as the self-heal sizes a card note: a card note queued before its
+      // refund failed later never bills a close's cash. The two are read
+      // without a lock, so a close committing between them would count on one
+      // side only: read the closes' figure either side of the cash and size
+      // from a pair that agrees.
+      let closesUncoveredCents = await readPaidAnotherWayUncoveredCents(prisma, paymentId);
+      let eligible = await resolveRefundNoteEligibleCash({
         id: payment.id,
         bookingId: payment.bookingId,
         refundedAmountCents: payment.refundedAmountCents,
       });
-      uncoveredCents = Math.max(0, eligibleCashCents - coveredCents);
-      evidenceLog = { cashRefundCents: evidence.cashRefundCents, cashEvidenceSource: evidence.source };
+      for (let attempt = 1; ; attempt += 1) {
+        const after = await readPaidAnotherWayUncoveredCents(prisma, paymentId);
+        if (after === closesUncoveredCents) break;
+        if (attempt >= STABLE_CLOSE_READ_ATTEMPTS) {
+          throw new Error(`A "Paid another way" close on payment ${paymentId} kept changing while its card note was sized; the note will be retried`);
+        }
+        closesUncoveredCents = after;
+        eligible = await resolveRefundNoteEligibleCash({
+          id: payment.id,
+          bookingId: payment.bookingId,
+          refundedAmountCents: payment.refundedAmountCents,
+        });
+      }
+      const { evidence, eligibleCashCents } = eligible;
+      uncoveredCents = Math.max(0, eligibleCashCents - coveredCents - closesUncoveredCents);
+      evidenceLog = { cashRefundCents: evidence.cashRefundCents, cashEvidenceSource: evidence.source, paidAnotherWayUncoveredCents: closesUncoveredCents };
     }
 
     if (uncoveredCents <= 0) {
@@ -440,9 +464,9 @@ export async function createXeroCreditNote(
       // requested), and key the note by the EXECUTION-TIME watermark so a
       // replay under unchanged state mints the identical Xero idempotency
       // key, while changed state produces a consistent new intent.
-      // #3924 round 8: a close's note is exactly its own uncovered share.
-      effectiveRefundAmountCents =
-        paidAnotherWayTaskId !== null ? uncoveredCents : Math.min(refundAmountCents, uncoveredCents);
+      // #3924 round 8: a close's note is its own uncovered share - and (#4104)
+      // never more than its row asked for, as for every other note.
+      effectiveRefundAmountCents = Math.min(refundAmountCents, uncoveredCents);
       effectiveWatermarkCents = coveredCents + effectiveRefundAmountCents;
     }
   } else if (refundRequestId !== null) {
