@@ -561,7 +561,7 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     });
     expect(await run()).toMatchObject({ outcome: "executed" });
     const { input } = mocks.modifyBookingBatch.mock.calls[0][0] as { input: { guestStayRanges: unknown } };
-    expect(input.guestStayRanges).toEqual([
+    expect(input.guestStayRanges, "INV-REQ-012: the executor passes the kept nights").toEqual([
       { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
       { guestId: "g2", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
     ]);

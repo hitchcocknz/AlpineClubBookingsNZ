@@ -340,7 +340,7 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
       guestStayRanges: [{ guestId: "guest-1", nights: ["2026-06-30", "2026-07-02"] }],
     });
     expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
-    expect(describeRequestedGuestNights(storedChanges())).toEqual([
+    expect(describeRequestedGuestNights(storedChanges(), { status: "REQUESTED" })).toEqual([
       {
         name: "Alex Example",
         runs: [
@@ -383,7 +383,7 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
             { guestId: "guest-2", stayStart: "2026-06-30", stayEnd: "2026-07-01" },
           ],
         },
-      }),
+      }, { status: "REQUESTED" }),
     ).toEqual([
       {
         name: "Alex Example",
@@ -410,14 +410,14 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
           removeGuests: [{ id: "guest-2" }],
           guestStayRanges: [{ guestId: "guest-2", stayStart: "2026-06-30", stayEnd: "2026-07-01" }],
         },
-      }),
+      }, { status: "REQUESTED" }),
     ).toEqual([]);
     // An unreadable row (a night that is not a day) lists nobody.
     expect(
       describeRequestedGuestNights({
         original,
         requested: { guestStayRanges: [{ guestId: "guest-1", nights: ["not-a-night"] }] },
-      }),
+      }, { status: "REQUESTED" }),
     ).toEqual([]);
   });
 
@@ -442,7 +442,7 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
       },
       requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }] },
     };
-    expect(describeRequestedGuestNights(requestedChanges)).toEqual([
+    expect(describeRequestedGuestNights(requestedChanges, { status: "REQUESTED" })).toEqual([
       {
         name: "Alex Example",
         runs: [
@@ -461,7 +461,7 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
       ...requestedChanges,
       requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-04" }] },
     };
-    expect(describeRequestedGuestNights(moved)).toEqual([
+    expect(describeRequestedGuestNights(moved, { status: "REQUESTED" })).toEqual([
       {
         name: "Alex Example",
         runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-03" }],
@@ -479,12 +479,12 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
         guests: [{ id: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }],
       },
     };
-    expect(describeRequestedGuestNights(unnamed)[0]).toMatchObject({ name: "A guest on the booking" });
+    expect(describeRequestedGuestNights(unnamed, { status: "REQUESTED" })[0]).toMatchObject({ name: "A guest on the booking" });
     // A range that only covers nights the guest already holds fills nothing.
     const narrow = {
       ...requestedChanges,
       requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-07-02", stayEnd: "2026-07-03" }] },
     };
-    expect(describeRequestedGuestNights(narrow)[0]).toMatchObject({ fillsGaps: false, unchanged: false });
+    expect(describeRequestedGuestNights(narrow, { status: "REQUESTED" })[0]).toMatchObject({ fillsGaps: false, unchanged: false });
   });
 });

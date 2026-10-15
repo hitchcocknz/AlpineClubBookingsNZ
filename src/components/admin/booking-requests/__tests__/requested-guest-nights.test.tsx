@@ -80,7 +80,7 @@ describe("RequestedGuestNights", () => {
       requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-07-03", stayEnd }] },
     });
     const { unmount } = render(
-      <RequestedGuestNights format={CLUB_FORMAT_TEST} guests={describeRequestedGuestNights(guest("2026-07-06"))} />,
+      <RequestedGuestNights format={CLUB_FORMAT_TEST} guests={describeRequestedGuestNights(guest("2026-07-06"), { status: "REQUESTED" })} />,
     );
     expect(screen.getByRole("listitem")).toHaveTextContent(
       `Lee Example: 2 nights: ${day("2026-07-03")}, ${day("2026-07-05")} (no change)`,
@@ -88,7 +88,7 @@ describe("RequestedGuestNights", () => {
     unmount();
     // A Date Out that really moves still re-spreads the stay, gap and all.
     render(
-      <RequestedGuestNights format={CLUB_FORMAT_TEST} guests={describeRequestedGuestNights(guest("2026-07-07"))} />,
+      <RequestedGuestNights format={CLUB_FORMAT_TEST} guests={describeRequestedGuestNights(guest("2026-07-07"), { status: "REQUESTED" })} />,
     );
     expect(screen.getByRole("listitem")).toHaveTextContent(
       `Lee Example: 4 nights: ${day("2026-07-03")} – ${day("2026-07-06")} (fills the gaps in their stay)`,

@@ -88,7 +88,7 @@ describe("nightsKeptByRepeatedRange (#4157)", () => {
   const current = { stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: GAPPED };
 
   it("keeps a gapped guest's nights when the range repeats their own dates", () => {
-    expect(nightsKeptByRepeatedRange(REPEATED, current)).toEqual(GAPPED);
+    expect(nightsKeptByRepeatedRange(REPEATED, current), "INV-REQ-012: a repeated range keeps the nights held").toEqual(GAPPED);
   });
 
   it("applies the range as written when either bound moves", () => {
@@ -115,8 +115,10 @@ describe("approving a range-mode request keeps a gapped guest's nights (#4157)",
       guestStayRanges: [{ guestId: "gap", ...REPEATED }],
     });
     const input = lockedPeriodRequestToBatchInput(request, LIVE);
-    expect(input?.guestStayRanges).toEqual([{ guestId: "gap", ...REPEATED, nights: GAPPED }]);
-    expect(plannedNights(input!)).toMatchObject({ gap: GAPPED });
+    expect(input?.guestStayRanges, "INV-REQ-012: approval passes the kept nights").toEqual([
+      { guestId: "gap", ...REPEATED, nights: GAPPED },
+    ]);
+    expect(plannedNights(input!), "INV-REQ-012: the planner keeps the gap").toMatchObject({ gap: GAPPED });
   });
 
   it("a guest whose range really moves gets the new continuous stay", () => {

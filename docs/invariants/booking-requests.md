@@ -277,7 +277,7 @@ A `LOCKED_PERIOD` change request names the change it asks for. `POST
 guest added or removed and no guest's nights (400, `STRUCTURED_CHANGE_REQUIRED`);
 the note and `requestedEffectiveDate` are context, never a change, and a guest's
 two-bound range or grid night set counts only when it changes their nights;
-approval applies each (`INV-REQ-012`). All
+approval passes every one through (`INV-REQ-012`). All
 guest nights are read by `normalizeGuestStayRange`, a moved date the named
 nights do not reach is refused, and a typed guest named like
 one of the owner's dependants is refused at submit and in the officer's entry by
@@ -288,14 +288,14 @@ nights inside the stay, and shows an estimate that prices only non-member guests
 
 A free-text request from before this rule is decided on a finished stay by the
 officer entering the guests the member described. The entry is accepted only
-when approving applies the request, and only for a request that names no change;
+when approving applies the request, and only for one that names no change;
 it is written into `requestedChanges.requested` (`addGuests`, a summary saying it
 was entered on the member's behalf, and `officerEntry` naming the officer and
 keeping the member's own summary) by the approval's guarded claim, in the
 executor's transaction. A refusal after the claim rolls the entry back with it,
 so no request holds officer-entered guests without the approval that applied
 them. An applying approval carries the figures its check showed; if the edit
-produces different ones under the locks it is refused and rolled back. It then runs through #3750's path unchanged (`INV-MOD-019`), and the
+produces others under the locks it is refused and rolled back. It then runs through #3750's path unchanged (`INV-MOD-019`), and the
 approval's audit row lists the guests entered. Guarded by
 `booking-change-request-structured.test.ts`,
 `booking-change-request-grid-nights.test.ts`,
@@ -310,13 +310,21 @@ owner decision "Keep their nights"). Range mode cannot express gaps (#713), so
 the member's form sends a gapped guest's own dates back unchanged; applied as
 written, that range put the guest on every night inside it and charged for the
 gaps. `lockedPeriodRequestToBatchInput` passes such a guest to the planner as
-their night set, read from the live rows under the executor's locks (else the
-request's snapshot), so range mode stays on. Only a moved bound re-spreads the
-guest over every night of the new range. A guest who already holds every night
-is passed by the two bounds, as before. One rule, `nightsKeptByRepeatedRange`,
-decides this for the executor and for the officer's card, which lists the kept
-nights and marks the guest unchanged; only a moved range is flagged as filling
-gaps. Whether a request names any change is still judged on the ranges as sent.
-Guarded by `booking-change-request-repeated-range.test.ts`,
-`booking-change-request-grid-nights.test.ts` and the realdb cases in
-`booking-change-request-execution.realdb.test.ts`.
+their night set, so range mode stays on, including beside an officer's entry.
+Only a moved bound re-spreads the guest over every night of the new range; a
+guest who already holds every night is passed by the two bounds, as before.
+Whether a request names any change is still judged on the ranges as sent.
+
+One rule, `nightsKeptByRepeatedRange`, reads one source for the executor and
+for the officer's card: the booking's live guest rows (under the executor's
+locks; loaded by the admin list), else the request's snapshot. The card applies
+it only to a pending request, listing the kept nights as unchanged. A decided
+request is described as sent: whether its approval kept or filled the gaps
+depends on when it ran, so a repeated range on a gapped guest is marked neither
+way. Only a moved range is flagged as filling gaps. Guarded by
+`booking-change-request-repeated-range.test.ts`,
+`booking-change-request-execution.test.ts`,
+`booking-change-request-officer-entry.test.ts`,
+`booking-change-request-list-officer-entry.test.ts`,
+`booking-change-request-grid-nights.test.ts`, `requested-guest-nights.test.tsx`
+and the realdb cases in `booking-change-request-execution.realdb.test.ts`.

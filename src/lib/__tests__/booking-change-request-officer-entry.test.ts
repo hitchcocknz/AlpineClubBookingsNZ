@@ -186,6 +186,43 @@ beforeEach(() => {
 });
 
 describe("officer-entered guests on a free-text request (#4030 Part B)", () => {
+  it("applies a gapped guest's repeated range as the nights they hold, beside the officer's entry (#4157)", async () => {
+    // The member's request names no change of its own: it only repeats g1's
+    // dates, which in range mode is all a gapped guest's row can send. The
+    // officer enters the guests; the repeated range rides through the same
+    // mapping and must keep g1's nights (10, 11 and 13 June), not fill the 12th.
+    const held = ["2026-06-10", "2026-06-11", "2026-06-13"];
+    const request = freeTextRequest({
+      guestStayRanges: [{ guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" }],
+    });
+    // The snapshot holds g1's own dates (and, sent before #4088, no nights), so
+    // the range is recognised as a repeat: the request names no change.
+    primeRequest({
+      ...request,
+      original: { ...request.original, guests: [{ id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" }] },
+    });
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        {
+          id: "g1",
+          stayStart: new Date("2026-06-10T00:00:00.000Z"),
+          stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+          nights: held.map((night) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) })),
+        },
+      ],
+    });
+    const result = await run();
+    expect(result, JSON.stringify(result)).toMatchObject({ outcome: "executed", officerEnteredGuests: GRANDCHILDREN });
+    const { input } = mocks.modifyBookingBatch.mock.calls[0][0] as {
+      input: { guestStayRanges: unknown; addGuests: unknown };
+    };
+    expect(input.guestStayRanges, "INV-REQ-012: a repeated range keeps the guest's nights").toEqual([
+      { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14", nights: held },
+    ]);
+    expect(input.addGuests).toEqual(GRANDCHILDREN.map((guest) => expect.objectContaining(guest)));
+  });
+
   it("writes the entry into the request BY THE CLAIM, naming the officer, then applies it", async () => {
     const result = await run();
     expect(result).toMatchObject({
