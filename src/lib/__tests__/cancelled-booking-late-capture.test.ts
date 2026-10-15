@@ -503,18 +503,18 @@ describe("recordAutomaticLateCaptureRefund (#2773 — the record)", () => {
 
     const outcome = await recordAutomaticLateCaptureRefund(capture());
     expect(outcome.handCompletedAfterRefund).toBe(false);
-    // An operator's row is not this writer's: the refund's entry and alert still go.
-    expect(outcome.recordedBefore).toBe(false);
+    // An operator's row, not this writer's: the lost-record recovery writes no entry for it (#4149).
+    expect(outcome.alreadyRecorded).toBe("hand-resolved");
   });
 
-  it("says when this writer's own row was already there, so only the delivery that wrote it audits and alerts (#4149)", async () => {
+  it("passes the writer's answer through, so the lost-record recovery writes its entry only for a row it wrote (#4149)", async () => {
     mocks.recordAutomaticCancelledBookingRefundTask.mockResolvedValueOnce({
       closed: 0,
       created: false,
       alreadyRecorded: "self",
       existingStatus: "DISMISSED",
     });
-    expect((await recordAutomaticLateCaptureRefund(capture())).recordedBefore).toBe(true);
+    expect((await recordAutomaticLateCaptureRefund(capture())).alreadyRecorded).toBe("self");
 
     mocks.recordAutomaticCancelledBookingRefundTask.mockResolvedValueOnce({
       closed: 0,
@@ -522,7 +522,19 @@ describe("recordAutomaticLateCaptureRefund (#2773 — the record)", () => {
       alreadyRecorded: false,
       existingStatus: null,
     });
-    expect((await recordAutomaticLateCaptureRefund(capture())).recordedBefore).toBe(false);
+    expect((await recordAutomaticLateCaptureRefund(capture())).alreadyRecorded).toBe(false);
+  });
+
+  it("dates a record written late by the Stripe refund's day, and leaves the date to the writer otherwise (#4149)", async () => {
+    const refundedOn = new Date("2026-06-25T03:00:00.000Z");
+    await recordAutomaticLateCaptureRefund(capture(), { completedAt: refundedOn });
+    expect(mocks.recordAutomaticCancelledBookingRefundTask).toHaveBeenLastCalledWith(
+      expect.objectContaining({ completedAt: refundedOn }),
+    );
+    await recordAutomaticLateCaptureRefund(capture());
+    expect(mocks.recordAutomaticCancelledBookingRefundTask).toHaveBeenLastCalledWith(
+      expect.objectContaining({ completedAt: undefined }),
+    );
   });
 });
 
@@ -531,7 +543,7 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     await announceAutomaticLateCaptureRefund(capture({ captureKind: "primary" }), {
       bookingDeleted: false,
       recorded: true,
-      recordedBefore: false,
+      alreadyRecorded: false,
       handCompletedAfterRefund: false,
     }, CLUB_FORMAT_TEST);
 
@@ -554,7 +566,7 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     await announceAutomaticLateCaptureRefund(capture(), {
       bookingDeleted: true,
       recorded: true,
-      recordedBefore: false,
+      alreadyRecorded: false,
       handCompletedAfterRefund: false,
     }, CLUB_FORMAT_TEST);
     expect(mocks.sendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledWith(
@@ -566,7 +578,7 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     await announceAutomaticLateCaptureRefund(capture(), {
       bookingDeleted: false,
       recorded: true,
-      recordedBefore: false,
+      alreadyRecorded: false,
       handCompletedAfterRefund: true,
     }, CLUB_FORMAT_TEST);
 

@@ -16,6 +16,13 @@
  *   ONE `refunded_after_cancellation` entry, and ask Stripe for no refund (the
  *   record row is the claim, under `pg_advisory_xact_lock(1)`).
  * - A redelivery once the record exists asks Stripe nothing.
+ * - When the delivery that refunded did write its entry (a lost record write),
+ *   the recovery writes only the row and its own recovered entry.
+ * - A CHANGE payment, through the real modification handler: an OPEN #2700
+ *   task the refund never closed is closed by the redelivery, the self-heal and
+ *   a redelivery racing it close it once; and a refunded change capture the
+ *   cancel left no claim on (classed `settled_by_cancellation`) is still
+ *   recovered from Stripe's refund metadata.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -52,11 +59,14 @@ const PAID_CENTS = 30_000;
 const KEPT_FEE_CENTS = 5_000;
 const LATE_CENTS = 24_000;
 const REFUND_ENTRY = "booking.payment.refunded_after_cancellation";
+const RECOVERED_ENTRY = "booking.payment.auto_refund_record_recovered";
+const REFUNDED_ON = new Date("2026-06-25T00:00:00.000Z");
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let webhook: typeof import("@/lib/stripe-webhook-service");
 let recovery: typeof import("@/lib/late-capture-record-recovery");
 let readRefundCreditNoteGap: (typeof import("@/lib/xero-admin-health"))["readRefundCreditNoteGap"];
+let deletedBookingModificationRefundReason: (typeof import("@/lib/deleted-booking-modification-payment"))["deletedBookingModificationRefundReason"];
 let eventSequence = 0;
 
 /** The late-capture door's refund of the capture, as Stripe lists it. */
@@ -68,7 +78,7 @@ function lateCaptureRefund(): Stripe.Refund {
     currency: "nzd",
     status: "succeeded",
     reason: "requested_by_customer",
-    created: Math.floor(Date.parse("2026-06-25T00:00:00.000Z") / 1000),
+    created: Math.floor(REFUNDED_ON.getTime() / 1000),
     charge: `ch_${LATE_INTENT}`,
     payment_intent: LATE_INTENT,
     metadata: { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture" },
@@ -107,7 +117,7 @@ function lateCaptureRefund(): Stripe.Refund {
      * capture - the handler's marked write - refunded in full with that refund
      * recorded, and no record row.
      */
-    async function seedAfterTheCrash() {
+    async function seedAfterTheCrash(change?: { cancelClaim: boolean; openTask: boolean }) {
       await prisma.booking.create({
         data: {
           id: BOOKING_ID,
@@ -118,6 +128,8 @@ function lateCaptureRefund(): Stripe.Refund {
           status: "CANCELLED",
           totalPriceCents: PAID_CENTS,
           finalPriceCents: PAID_CENTS,
+          // The #2700 raise fires only on a deleted booking.
+          deletedAt: change?.openTask ? new Date("2026-06-20T00:00:00.000Z") : null,
         },
       });
       await prisma.payment.create({
@@ -145,14 +157,15 @@ function lateCaptureRefund(): Stripe.Refund {
               },
               {
                 id: LATE_TXN,
-                kind: "PRIMARY",
+                kind: change ? "ADDITIONAL" : "PRIMARY",
                 source: "STRIPE",
                 stripePaymentIntentId: LATE_INTENT,
                 amountCents: LATE_CENTS,
                 refundedAmountCents: LATE_CENTS,
                 status: "REFUNDED",
-                // The primary handler's own write, before its refund (#3639).
-                reason: "cancelled_booking_late_capture",
+                // The primary handler's own write, before its refund (#3639);
+                // the change handler stamps no marker of its own.
+                reason: change ? null : "cancelled_booking_late_capture",
                 createdAt: new Date("2026-06-25T00:00:00.000Z"),
               },
             ],
@@ -193,10 +206,47 @@ function lateCaptureRefund(): Stripe.Refund {
           metadata: { amountCents: PAID_CENTS - KEPT_FEE_CENTS, invoiceId: "inv-race-4149" },
         },
       });
+      if (!change) return;
+      // The cancel's decision about the booking's own money (#3639 evidence).
+      await prisma.bookingEvent.create({
+        data: {
+          bookingId: BOOKING_ID,
+          type: "CANCELLED",
+          snapshot: { refundMethod: "card", refundPercentage: 100, settledAmountCents: PAID_CENTS - KEPT_FEE_CENTS },
+        },
+      });
+      if (change.cancelClaim) {
+        // The cancel's claim on the change intent: the capture landed after it.
+        await prisma.paymentRecoveryOperation.create({
+          data: {
+            type: "CANCEL_PAYMENT_INTENT",
+            status: "SUCCEEDED",
+            bookingId: BOOKING_ID,
+            paymentId: PAYMENT_ID,
+            paymentIntentId: LATE_INTENT,
+            amountCents: LATE_CENTS,
+            idempotencyKey: "race-4149-cancel-claim",
+          },
+        });
+      }
+      if (change.openTask) {
+        // The confirm route won the race to the capture and asked a person (#2700).
+        await prisma.manualRefundTask.create({
+          data: {
+            bookingId: BOOKING_ID,
+            paymentId: PAYMENT_ID,
+            amountCents: LATE_CENTS,
+            raisedAmountCents: LATE_CENTS,
+            kind: "DELETED_BOOKING_LATE_CAPTURE",
+            reason: deletedBookingModificationRefundReason(LATE_INTENT),
+            status: "OPEN",
+          },
+        });
+      }
     }
 
     /** Stripe's redelivery of `payment_intent.succeeded` for the late capture - the real webhook processor. */
-    async function redeliverLateCapture() {
+    async function redeliverLateCapture(change = false) {
       eventSequence += 1;
       const event = {
         id: `evt_race_4149_${eventSequence}`,
@@ -211,7 +261,7 @@ function lateCaptureRefund(): Stripe.Refund {
             currency: "nzd",
             status: "succeeded",
             payment_method: "pm_race_4149",
-            metadata: { bookingId: BOOKING_ID },
+            metadata: change ? { bookingId: BOOKING_ID, type: "modification_additional" } : { bookingId: BOOKING_ID },
             latest_charge: null,
           },
         },
@@ -236,18 +286,18 @@ function lateCaptureRefund(): Stripe.Refund {
     const recordRows = () =>
       prisma.manualRefundTask.findMany({
         where: { bookingId: BOOKING_ID, paymentId: PAYMENT_ID },
-        select: { status: true, kind: true, reason: true, amountCents: true },
+        select: { status: true, kind: true, reason: true, amountCents: true, completedAt: true },
       });
 
     /**
      * `logAudit` is fire-and-forget: wait (real time - `Date` is frozen) for
      * the expected rows rather than racing them.
      */
-    async function refundEntries(expected: number) {
+    async function refundEntries(expected: number, action = REFUND_ENTRY) {
       const startedAt = process.hrtime.bigint();
       for (;;) {
         const rows = await prisma.auditLog.findMany({
-          where: { targetId: BOOKING_ID, action: REFUND_ENTRY },
+          where: { targetId: BOOKING_ID, action },
           select: { details: true },
         });
         if (rows.length >= expected || realElapsedMs(startedAt) > 3_000) return rows;
@@ -272,6 +322,7 @@ function lateCaptureRefund(): Stripe.Refund {
       webhook = await import("@/lib/stripe-webhook-service");
       recovery = await import("@/lib/late-capture-record-recovery");
       ({ readRefundCreditNoteGap } = await import("@/lib/xero-admin-health"));
+      ({ deletedBookingModificationRefundReason } = await import("@/lib/deleted-booking-modification-payment"));
 
       await deleteFixtures();
       await prisma.member.create({
@@ -312,12 +363,21 @@ function lateCaptureRefund(): Stripe.Refund {
 
       const rows = await recordRows();
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ status: "DISMISSED", kind: "AUTOMATIC_LATE_CAPTURE_RECORD", amountCents: LATE_CENTS });
+      expect(rows[0]).toMatchObject({
+        status: "DISMISSED",
+        kind: "AUTOMATIC_LATE_CAPTURE_RECORD",
+        amountCents: LATE_CENTS,
+        // Dated the refund's day, not the night it was recovered.
+        completedAt: REFUNDED_ON,
+      });
       expect(rows[0]?.reason).toContain(LATE_INTENT);
       expect(await uncoveredCents()).toBe(0);
+      // The delivery that refunded died before its entry and alert, so the recovery writes them.
       const entries = await refundEntries(1);
       expect(entries).toHaveLength(1);
       expect(JSON.parse(String(entries[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, recoveredLostRecord: true });
+      const recovered = await refundEntries(1, RECOVERED_ENTRY);
+      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, reportedAtRefund: false });
       expect(stripe.refundsAsked).toBe(0);
     });
 
@@ -337,6 +397,7 @@ function lateCaptureRefund(): Stripe.Refund {
       // Give any second (wrong) entry the same time to land as the first.
       await refundEntries(2);
       expect(await refundEntries(1)).toHaveLength(1);
+      expect(await refundEntries(2, RECOVERED_ENTRY)).toHaveLength(1);
       expect(stripe.refundsAsked).toBe(0);
       expect(await uncoveredCents()).toBe(0);
     });
@@ -352,6 +413,86 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(stripe.listed).toBe(0);
       expect(await recordRows()).toHaveLength(1);
       expect(await refundEntries(2)).toHaveLength(1);
+    });
+
+    it("writes only the row and its recovered entry when the delivery that refunded already wrote its entry and sent its alert", async () => {
+      armStripe();
+      // The refunding delivery's entry: its record write was lost, so it is marked.
+      await prisma.auditLog.create({
+        data: {
+          action: REFUND_ENTRY,
+          category: "payment",
+          entityType: "Booking",
+          entityId: BOOKING_ID,
+          targetId: BOOKING_ID,
+          details: JSON.stringify({ paymentIntentId: LATE_INTENT, refundId: "re_race_4149_late", recordLost: true }),
+        },
+      });
+
+      expect((await redeliverLateCapture()).init?.status ?? 200).toBe(200);
+
+      expect(await recordRows()).toHaveLength(1);
+      const recovered = await refundEntries(1, RECOVERED_ENTRY);
+      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, reportedAtRefund: true });
+      // No second refund entry - and so no second alert, which is sent beside it.
+      expect(await refundEntries(2)).toHaveLength(1);
+    });
+
+    describe("a change payment, through the real modification handler", () => {
+      it("closes an OPEN #2700 task the refund never closed, on the redelivery, instead of leaving it asking for money Stripe returned", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash({ cancelClaim: true, openTask: true });
+        const stripe = armStripe();
+
+        expect((await redeliverLateCapture(true)).init?.status ?? 200).toBe(200);
+
+        const rows = await recordRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ status: "DISMISSED", completedAt: REFUNDED_ON });
+        expect(await refundEntries(1, RECOVERED_ENTRY)).toHaveLength(1);
+        expect(stripe.refundsAsked).toBe(0);
+      });
+
+      it("closes that OPEN task once when the self-heal races two redeliveries", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash({ cancelClaim: true, openTask: true });
+        const stripe = armStripe();
+
+        const [first, second, healed] = await Promise.all([
+          redeliverLateCapture(true),
+          redeliverLateCapture(true),
+          recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID),
+        ]);
+
+        expect(first.init?.status ?? 200).toBe(200);
+        expect(second.init?.status ?? 200).toBe(200);
+        expect(healed.unresolved).toBe(false);
+        const rows = await recordRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.status).toBe("DISMISSED");
+        await refundEntries(2, RECOVERED_ENTRY);
+        expect(await refundEntries(1, RECOVERED_ENTRY)).toHaveLength(1);
+        expect(stripe.refundsAsked).toBe(0);
+      });
+
+      it("recovers a refunded change capture the cancel left no claim on, though it reads as settled by the cancellation", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash({ cancelClaim: false, openTask: false });
+        const stripe = armStripe();
+
+        expect((await redeliverLateCapture(true)).init?.status ?? 200).toBe(200);
+
+        const rows = await recordRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ status: "DISMISSED", kind: "AUTOMATIC_LATE_CAPTURE_RECORD" });
+        expect(stripe.listed).toBe(1);
+        expect(stripe.refundsAsked).toBe(0);
+        // Nor is it acknowledged as money the cancellation settled.
+        const acknowledged = await prisma.auditLog.count({
+          where: { targetId: BOOKING_ID, action: "booking.payment.late_notice_acknowledged" },
+        });
+        expect(acknowledged).toBe(0);
+      });
     });
   },
 );

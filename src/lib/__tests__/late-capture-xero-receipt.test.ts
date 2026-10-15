@@ -31,12 +31,16 @@ vi.mock("@/lib/prisma", () => ({
 
 import {
   findKeptLateCaptureInvoiceIdForPayment,
+  findClosedLateCaptureRecordIntents,
   findLateCapturePaymentIntents,
   hasXeroReceiptForLateCapture,
   readLateCaptureXeroReceipt,
   readPaidAnotherWayLateCaptureXeroReceipt,
 } from "@/lib/late-capture-xero-receipt";
-import { cancelledBookingPrimaryPaymentRefundReason } from "@/lib/deleted-booking-modification-payment";
+import {
+  cancelledBookingModificationRefundReason,
+  cancelledBookingPrimaryPaymentRefundReason,
+} from "@/lib/deleted-booking-modification-payment";
 
 /**
  * #3635 (review F2, round-3 R1/R5, orchestrator decision 29 Sep 2026): whether
@@ -206,6 +210,22 @@ describe("findLateCapturePaymentIntents (round-3 R1)", () => {
   it("asks nothing for no intents", async () => {
     await expect(findLateCapturePaymentIntents([])).resolves.toEqual(new Set());
     expect(mocks.taskFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("findClosedLateCaptureRecordIntents (#4149)", () => {
+  it("counts an approval task in any status and a closed automatic-refund row, but not an OPEN #2700 row the refund never closed", async () => {
+    mocks.taskFindMany.mockResolvedValue([
+      { lateCaptureApprovalIntentId: "pi_owned", reason: null, status: "OPEN" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingPrimaryPaymentRefundReason("pi_recorded"), status: "DISMISSED" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_by_hand"), status: "COMPLETED" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_open"), status: "OPEN" },
+    ]);
+    const ids = ["pi_owned", "pi_recorded", "pi_by_hand", "pi_open"];
+
+    expect([...(await findClosedLateCaptureRecordIntents(ids))].sort()).toEqual(["pi_by_hand", "pi_owned", "pi_recorded"]);
+    // The OPEN row still marks a known late capture everywhere else (the note-eligible cash).
+    expect([...(await findLateCapturePaymentIntents(ids))].sort()).toEqual([...ids].sort());
   });
 });
 

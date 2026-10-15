@@ -54,18 +54,7 @@ export async function resolveRefundNoteEligibleCash(
   if (evidence.source !== "provider-ledger" || evidence.cashRefundCents <= 0) {
     return { evidence, lateCaptureExcludedCents: 0, eligibleCashCents: evidence.cashRefundCents };
   }
-  const rows = await db.paymentRefund.findMany({
-    where: { paymentId: payment.id, stripePaymentIntentId: { not: null } },
-    select: { stripePaymentIntentId: true, amountCents: true, status: true },
-  });
-  const centsByIntent = new Map<string, number>();
-  for (const row of rows ?? []) {
-    if (!row.stripePaymentIntentId || !isRecordedRefundStatus(row.status)) continue;
-    centsByIntent.set(
-      row.stripePaymentIntentId,
-      (centsByIntent.get(row.stripePaymentIntentId) ?? 0) + Math.max(0, row.amountCents),
-    );
-  }
+  const centsByIntent = await readRecordedRefundCentsByIntent(payment.id, db);
   const lateIntents = await findLateCapturePaymentIntents([...centsByIntent.keys()], db);
   let lateCaptureExcludedCents = 0;
   for (const intent of lateIntents) {
@@ -78,4 +67,28 @@ export async function resolveRefundNoteEligibleCash(
     lateCaptureExcludedCents,
     eligibleCashCents: Math.max(0, evidence.cashRefundCents - lateCaptureExcludedCents),
   };
+}
+
+/**
+ * The payment's recorded refunds, summed per payment intent - which capture
+ * each refunded, by `PaymentRefund.stripePaymentIntentId`. Shared with the
+ * nightly lost-record check (#4149), which asks about exactly these intents.
+ */
+export async function readRecordedRefundCentsByIntent(
+  paymentId: string,
+  db: Pick<Prisma.TransactionClient, "paymentRefund"> = prisma,
+): Promise<Map<string, number>> {
+  const rows = await db.paymentRefund.findMany({
+    where: { paymentId, stripePaymentIntentId: { not: null } },
+    select: { stripePaymentIntentId: true, amountCents: true, status: true },
+  });
+  const centsByIntent = new Map<string, number>();
+  for (const row of rows ?? []) {
+    if (!row.stripePaymentIntentId || !isRecordedRefundStatus(row.status)) continue;
+    centsByIntent.set(
+      row.stripePaymentIntentId,
+      (centsByIntent.get(row.stripePaymentIntentId) ?? 0) + Math.max(0, row.amountCents),
+    );
+  }
+  return centsByIntent;
 }

@@ -68,9 +68,8 @@ import {
  * the club's own setting (owner decision 26 Sep 2026, `INV-PAY-106`), which
  * lives in `late-capture-refund-hold.ts`. The handlers' ordered use of these
  * pieces - record, `booking.payment.refunded_after_cancellation` entry, alert,
- * Xero note - is `finishAutomaticLateCaptureRefund` since #4149, so a redelivery
- * that finds a refund's record lost runs the same sequence once
- * (`late-capture-record-recovery.ts`).
+ * Xero note - is `finishAutomaticLateCaptureRefund` since #4149, beside the
+ * recovery that writes a row a delivery lost (`late-capture-record-recovery.ts`).
  *
  * WHY THE EPILOGUE IS TWO FUNCTIONS AND NOT ONE. The record write must be
  * AWAITED — an un-awaited database write in a route handler can be killed when the
@@ -114,6 +113,8 @@ async function classifyNoticeOnCancelledBooking(params: {
   transactionStatus: PaymentStatus | null;
   /** What Stripe still holds of the capture, when it has been part refunded. */
   heldCents: number | null;
+  /** Whether any of the capture has been refunded (#4149). */
+  anyRefunded: boolean;
 }> {
   const captureRow = await findPaymentTransactionByIntentId({
     paymentIntentId: params.paymentIntentId,
@@ -123,6 +124,7 @@ async function classifyNoticeOnCancelledBooking(params: {
       verdict: "late_capture",
       transactionStatus: captureRow?.status ?? null,
       heldCents: null,
+      anyRefunded: false,
     };
   }
   const [evidence, capturedAfterCancellation] = await Promise.all([
@@ -144,6 +146,7 @@ async function classifyNoticeOnCancelledBooking(params: {
     ),
     transactionStatus: captureRow.status,
     heldCents: captureRefundState(captureRow).heldCents,
+    anyRefunded: captureRefundState(captureRow).anyRefunded,
   };
 }
 
@@ -240,9 +243,14 @@ function reportAcknowledgedLateNotice(params: {
  *
  * #4149: an already-refunded capture may be one whose automatic refund went out
  * while its record did not (a crash, or a lost record write answered 500).
- * `recoverLostRecord` is asked first; when it
- * writes the record (`recoverLostLateCaptureRecord`), that is the notice's
- * answer and no acknowledgement is written beside it.
+ * `recoverLostRecord` is asked first; when it writes the record
+ * (`recoverLostLateCaptureRecord`), that is the notice's answer and no
+ * acknowledgement is written beside it. A refunded CHANGE payment is asked too
+ * when the verdict is `settled_by_cancellation`: its handler's own capture
+ * write stamps no late marker (the row's reason names the change), so with no
+ * cancel claim on its intent its refunded capture reads as money the cancel
+ * settled, and only Stripe's refund metadata tells the late-capture door's
+ * refund apart.
  */
 export async function acknowledgeSettledLateNotice(params: {
   bookingId: string;
@@ -256,11 +264,10 @@ export async function acknowledgeSettledLateNotice(params: {
     paymentIntentId: params.paymentIntent.id,
   });
   if (notice.verdict === "late_capture") return false;
-  if (
-    notice.verdict === "already_refunded" &&
-    params.recoverLostRecord &&
-    (await params.recoverLostRecord())
-  ) {
+  const mayHaveLostRecord =
+    notice.verdict === "already_refunded" ||
+    (params.captureKind === "modification" && notice.anyRefunded);
+  if (mayHaveLostRecord && params.recoverLostRecord && (await params.recoverLostRecord())) {
     return true;
   }
   reportAcknowledgedLateNotice({
@@ -336,11 +343,12 @@ export type LateCaptureRecordOutcome = {
    */
   recorded: boolean;
   /**
-   * #4149: `true` when this writer's own row was already there - another
-   * delivery of the same capture recorded it, and that delivery wrote the audit
-   * entry and sent the alert, so this one does neither.
+   * #4149: the record writer's own answer - `false` when this call closed or
+   * created the row, `"self"` when its row was already there, `"hand-resolved"`
+   * when an operator's was. Only the lost-record recovery reads it: it writes
+   * its entry for a row it wrote itself, never for one another writer had.
    */
-  recordedBefore: boolean;
+  alreadyRecorded: false | "self" | "hand-resolved";
   /**
    * `true` when an operator's hand-`COMPLETED` row was found AFTER the refund —
    * #2774's residual window, where their completion landed inside the caller's own
@@ -374,13 +382,13 @@ export type LateCaptureRecordOutcome = {
  *
  * STILL EXACTLY ONE NOTIFICATION FOR THE EVENT (`INV-ADDPAY-037`). This alert
  * REPLACES the auto-refund alert on this path: the caller returns immediately
- * after it, so the two are mutually exclusive. As with its sibling, a Stripe
- * REDELIVERY of the same event can re-send it — accepted and documented in the
- * registry's frequency note for the same reason it is there: a duplicate says the
- * same true thing twice, whereas deduping would make a redelivery after a FAILED
- * send silent, on a money notification that must not be silenceable — the owner's
- * #2761 ruling (10 Aug 2026), which the orchestrator extended to this alert under
- * #2774 (`INV-ADDPAY-039`'s authority line).
+ * after it, so the two are mutually exclusive. Nothing was refunded, so a Stripe
+ * REDELIVERY of the same event reaches the fence again and re-sends it; that is
+ * accepted and documented in the registry's frequency note, because a duplicate
+ * says the same true thing twice, whereas deduping would make a redelivery after a
+ * FAILED send silent, on a money notification that must not be silenceable — the
+ * owner's #2761 ruling (10 Aug 2026), which the orchestrator extended to this alert
+ * under #2774 (`INV-ADDPAY-039`'s authority line). Its sibling is not deduped either.
  *
  * NO PARTIAL TOP-UP REFUND, DELIBERATELY. The hand-back's amount is carried into
  * both the audit row and the mail so a person can see whether it covered the whole
@@ -481,9 +489,9 @@ export async function reportWithheldLateCaptureRefund(params: {
  *
  * WHY A FAILURE FALLS BACK RATHER THAN THROWING, unlike the #2774 fence. By the
  * time this runs the money is already back with the member. The population picks
- * one sentence and one paragraph of copy; losing the bookkeeping row over it — a
- * 500 replays the whole refund path — would trade a wrong adjective for a lost
- * record. The stale value can only ever be the *less* alarming of the two, so the
+ * one sentence and one paragraph of copy; holding the bookkeeping row back over it
+ * until a redelivery would trade a wrong adjective for a late record. The stale
+ * value can only ever be the *less* alarming of the two, so the
  * failure mode is an under-stated alert on an event that is still reported, and it
  * is logged at ERROR.
  */
@@ -523,9 +531,10 @@ async function resolveLateCaptureBookingDeleted(capture: {
  * surface a lost record appears on until it is written, and the surface the
  * finance card itself names as permanent. This is `INV-ADDPAY-037`'s second named
  * exception; removing it or downgrading it to a log line breaks the rule. Since
- * #4149 the webhook's epilogue (`finishAutomaticLateCaptureRefund`) answers 500 on
- * `recorded: false`: a replay no longer refunds again (#3639), and Stripe's
- * redelivery - or the nightly self-heal - writes the record once.
+ * #4149 the webhook's epilogue (`finishAutomaticLateCaptureRefund`) still writes
+ * the refund entry and sends the alert on `recorded: false`, then answers 500: a
+ * replay no longer refunds again (#3639), and Stripe's redelivery - or the
+ * nightly self-heal - writes the missing row once.
  *
  * THE OUTCOME IT RETURNS IS NOT DECORATION. `handCompletedAfterRefund` is #2774's
  * residual-window detector: the fence read this capture's hand-back task as
@@ -544,6 +553,8 @@ async function resolveLateCaptureBookingDeleted(capture: {
  */
 export async function recordAutomaticLateCaptureRefund(
   capture: CancelledBookingLateCapture,
+  /** #4149: a record written late is dated the Stripe refund's day. */
+  options: { completedAt?: Date } = {},
 ): Promise<LateCaptureRecordOutcome> {
   const bookingDeleted = await resolveLateCaptureBookingDeleted(capture);
 
@@ -555,11 +566,12 @@ export async function recordAutomaticLateCaptureRefund(
       amountCents: capture.amountCents,
       bookingDeleted,
       captureKind: capture.captureKind,
+      completedAt: options.completedAt,
     });
     return {
       bookingDeleted,
       recorded: true,
-      recordedBefore: outcome.alreadyRecorded === "self",
+      alreadyRecorded: outcome.alreadyRecorded,
       handCompletedAfterRefund:
         outcome.existingStatus === ManualRefundTaskStatus.COMPLETED,
     };
@@ -589,7 +601,7 @@ export async function recordAutomaticLateCaptureRefund(
         error: taskErr instanceof Error ? taskErr.message : String(taskErr),
       }),
     });
-    return { bookingDeleted, recorded: false, recordedBefore: false, handCompletedAfterRefund: false };
+    return { bookingDeleted, recorded: false, alreadyRecorded: false, handCompletedAfterRefund: false };
   }
 }
 

@@ -262,7 +262,7 @@ export const STRIPE_IDEMPOTENCY_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
  */
 export async function listRefundsForPaymentIntent(
   paymentIntentId: string,
-  /** #4149: a background sweep bounds its read, as `retrieveRefund`'s does. Omitted, the request is unchanged. */
+  /** #4149: a bounded read with no retries (a webhook's or a nightly sweep's), as `retrieveRefund`'s is. Omitted, the request is unchanged. */
   options?: { timeoutMs: number },
 ): Promise<Stripe.Refund[]> {
   const stripe = await getStripe();

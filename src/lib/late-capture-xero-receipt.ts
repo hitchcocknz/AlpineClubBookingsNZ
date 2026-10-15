@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { ManualRefundTaskStatus, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { KEPT_LATE_CAPTURE_INVOICE_ROLE, xeroCreateCallAttempted } from "@/lib/late-capture-kept-xero-rules";
 import { automaticCancelledBookingRefundTaskReasons } from "@/lib/deleted-booking-modification-payment";
@@ -205,6 +205,28 @@ export async function findLateCapturePaymentIntents(
   paymentIntentIds: readonly string[],
   store: Pick<Prisma.TransactionClient, "manualRefundTask"> = prisma,
 ): Promise<Set<string>> {
+  return findLateCaptureTaskIntents(paymentIntentIds, store, { closedRecordOnly: false });
+}
+
+/**
+ * #4149: the intents whose late capture already HAS its record - an approval
+ * task in any status, or an automatic-refund row no longer `OPEN`. An `OPEN`
+ * row under the same `reason` is the confirm route's #2700 question, which the
+ * automatic refund answers by closing it: while it is still `OPEN` after the
+ * refund, the record was lost, so the lost-record recovery treats the capture
+ * as unrecorded and the record writer closes the row.
+ */
+export async function findClosedLateCaptureRecordIntents(
+  paymentIntentIds: readonly string[],
+): Promise<Set<string>> {
+  return findLateCaptureTaskIntents(paymentIntentIds, prisma, { closedRecordOnly: true });
+}
+
+async function findLateCaptureTaskIntents(
+  paymentIntentIds: readonly string[],
+  store: Pick<Prisma.TransactionClient, "manualRefundTask">,
+  options: { closedRecordOnly: boolean },
+): Promise<Set<string>> {
   const ids = [...new Set(paymentIntentIds)];
   if (ids.length === 0) return new Set();
   const byReason = new Map<string, string>();
@@ -218,7 +240,7 @@ export async function findLateCapturePaymentIntents(
         { reason: { in: [...byReason.keys()] } },
       ],
     },
-    select: { lateCaptureApprovalIntentId: true, reason: true },
+    select: { lateCaptureApprovalIntentId: true, reason: true, status: true },
   });
   const found = new Set<string>();
   for (const task of tasks ?? []) {
@@ -226,7 +248,9 @@ export async function findLateCapturePaymentIntents(
       found.add(task.lateCaptureApprovalIntentId);
     }
     const byTaskReason = task.reason ? byReason.get(task.reason) : undefined;
-    if (byTaskReason) found.add(byTaskReason);
+    if (byTaskReason && !(options.closedRecordOnly && task.status === ManualRefundTaskStatus.OPEN)) {
+      found.add(byTaskReason);
+    }
   }
   return found;
 }

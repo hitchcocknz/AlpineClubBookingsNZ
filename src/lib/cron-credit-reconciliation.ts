@@ -7,6 +7,7 @@ import { reportCronError } from "@/lib/observability-bridge";
 import {
   REFUND_CREDIT_NOTE_GRACE_HOURS,
   getRefundsMissingXeroCreditNotes,
+  readRefundCreditNoteGap,
 } from "@/lib/xero-admin-health";
 import { findOrphanedAppliedCredits } from "@/lib/orphaned-applied-credit-backfill";
 import { queueWaitingPaidAnotherWayNotesForPayment } from "@/lib/paid-another-way-receipt-note";
@@ -77,8 +78,9 @@ export async function reconcileCreditBalances(): Promise<{
     // #4149 (`INV-PAY-106`): a late capture whose automatic refund went out
     // while its record did not is not yet a known late capture, so its refund
     // reads as part of this gap. Its record is written first, which takes the
-    // refund out of the note-eligible cash the enqueue re-caps against; a
-    // payment whose late captures cannot be checked tonight gets no card note.
+    // refund out of the note-eligible cash, and the card ask is re-read from
+    // the gap after it; a payment whose late captures cannot be checked
+    // tonight gets no card note.
     let reEnqueued = 0;
     for (const missing of refundsMissingCreditNotes.payments) {
       const lostRecords = await recoverLostLateCaptureRecordsForPayment(missing.paymentId);
@@ -94,7 +96,17 @@ export async function reconcileCreditBalances(): Promise<{
       }
       if (lostRecords.unresolved) continue;
       try {
-        const cardAskCents = missing.uncoveredCents - missing.paidAnotherWayUncoveredCents;
+        // A recovered record took its refund out of the gap read above, so the
+        // card ask is sized from the gap as it stands now (#4149).
+        const gap =
+          lostRecords.recovered.length > 0
+            ? await readRefundCreditNoteGap({
+                id: missing.paymentId,
+                bookingId: missing.bookingId,
+                refundedAmountCents: missing.refundedAmountCents,
+              })
+            : missing;
+        const cardAskCents = gap.uncoveredCents - gap.paidAnotherWayUncoveredCents;
         if (cardAskCents <= 0) continue;
         const queued = await enqueueXeroRefundCreditNoteOperation(
           missing.paymentId,

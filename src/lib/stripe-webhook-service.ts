@@ -28,12 +28,16 @@ import { findCompletedHandBackForLateCapture } from "@/lib/deleted-booking-modif
 import {
   acknowledgeSettledLateNotice,
   reportWithheldLateCaptureRefund,
-  type CancelledBookingLateCapture,
 } from "@/lib/cancelled-booking-late-capture";
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
 import { holdLateCaptureForTreasurerIfRequired, holdLateCaptureRefusedByStripe } from "@/lib/late-capture-refund-hold";
 import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
-import { finishAutomaticLateCaptureRefund, recoverLostLateCaptureRecord } from "@/lib/late-capture-record-recovery";
+import {
+  describeLateCaptureFromBooking,
+  finishAutomaticLateCaptureRefund,
+  recoverLostLateCaptureRecord,
+  type LateCaptureIdentity,
+} from "@/lib/late-capture-record-recovery";
 import { lateCaptureOwnChargeSlice, refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
@@ -1478,22 +1482,18 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     return;
   }
 
-  // #2773: one shape carrying everything the fence, the record, the audit rows
-  // and the alert need, so the row and the mail cannot disagree about which
-  // capture this was. Built on demand: an acknowledged notice never reads the
-  // owner, so an unreadable owner row cannot fail it.
-  const latePaymentId = booking.payment.id;
-  const describeLateCapture = (): CancelledBookingLateCapture => ({
+  // #2773: one description of this capture for the fence, the record, the
+  // audit rows and the alert, so the row and the mail cannot disagree about
+  // which capture this was (`describeLateCaptureFromBooking`, shared with the
+  // primary handler and the #4149 recovery; an unreadable owner names an
+  // "unknown member" rather than failing the delivery).
+  const lateCaptureIdentity: LateCaptureIdentity = {
     bookingId: booking.id,
-    paymentId: latePaymentId,
+    paymentId: booking.payment.id,
     paymentIntentId: paymentIntent.id,
     amountCents: paymentIntent.amount,
-    memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    openingDeletedAt: booking.deletedAt,
-    captureKind: "modification",
-  });
+    transactionKind: PaymentTransactionKind.ADDITIONAL,
+  };
 
   // #3639: the same question as the primary handler, first. A change payment
   // captured before a cancel that kept it — or a replay of one this handler
@@ -1505,7 +1505,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
       paymentId: booking.payment.id,
       paymentIntent,
       captureKind: "modification",
-      recoverLostRecord: () => recoverLostLateCaptureRecord(describeLateCapture(), { format }),
+      recoverLostRecord: () => recoverLostLateCaptureRecord(booking, lateCaptureIdentity, { format }),
     })
   ) {
     return;
@@ -1522,7 +1522,7 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
       paymentMethodId: getStripePaymentMethodId(paymentIntent),
     });
   }
-  const lateCapture = describeLateCapture();
+  const lateCapture = describeLateCaptureFromBooking(booking, lateCaptureIdentity);
 
   // #2774 — THE FENCE, and its position is deliberate on both sides. AFTER the
   // capture is recorded above, because withholding the refund must not also mean
@@ -1585,7 +1585,8 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
   // `booking-cancel.ts`'s cash task on the same booking is never touched. AFTER
   // the refund and outside every provider call: it takes
   // pg_advisory_xact_lock(1) for its own short transaction. A lost record
-  // write answers 500, and the redelivery writes it (#4149).
+  // write still gets its entry and alert, then answers 500, and the
+  // redelivery writes the row (#4149).
   await finishAutomaticLateCaptureRefund({ capture: lateCapture, format, refundId });
 
   logger.warn(
@@ -1675,21 +1676,15 @@ async function handleCancelledBookingPaymentSucceeded(
     return;
   }
 
-  // #2773: the same shape the sibling handler builds, so the record, the audit
-  // rows and the alert all read one description of this capture (on demand, as
-  // the sibling's).
-  const latePaymentId = booking.payment.id;
-  const describeLateCapture = (): CancelledBookingLateCapture => ({
+  // #2773: the same description the sibling handler builds, so the record, the
+  // audit rows and the alert all read one description of this capture.
+  const lateCaptureIdentity: LateCaptureIdentity = {
     bookingId: booking.id,
-    paymentId: latePaymentId,
+    paymentId: booking.payment.id,
     paymentIntentId: paymentIntent.id,
     amountCents: paymentIntent.amount,
-    memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    openingDeletedAt: booking.deletedAt,
-    captureKind: "primary",
-  });
+    transactionKind: PaymentTransactionKind.PRIMARY,
+  };
 
   // #4149: a replay of a refund whose record was lost writes the record.
   if (
@@ -1698,7 +1693,7 @@ async function handleCancelledBookingPaymentSucceeded(
       paymentId: booking.payment.id,
       paymentIntent,
       captureKind: "primary",
-      recoverLostRecord: () => recoverLostLateCaptureRecord(describeLateCapture(), { format }),
+      recoverLostRecord: () => recoverLostLateCaptureRecord(booking, lateCaptureIdentity, { format }),
     })
   ) {
     return;
@@ -1719,7 +1714,7 @@ async function handleCancelledBookingPaymentSucceeded(
     // #3639: marks this handler's own write, so a crash-and-retry still refunds.
     reason: CANCELLED_BOOKING_LATE_CAPTURE_REASON,
   });
-  const lateCapture = describeLateCapture();
+  const lateCapture = describeLateCaptureFromBooking(booking, lateCaptureIdentity);
 
   // #2774 — the same fence as the sibling handler, in the same position: after the
   // capture is recorded, before the refund, and with a read failure left to

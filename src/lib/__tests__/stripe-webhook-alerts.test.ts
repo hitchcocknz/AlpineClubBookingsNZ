@@ -64,9 +64,14 @@ const {
   mockBookingDefaultsFindUnique,
   mockPaymentRefundFindMany,
   mockFindLateCapturePaymentIntents,
+  mockFindClosedLateCaptureRecordIntents,
+  mockAuditLogFindFirst,
 } = vi.hoisted(() => ({
   mockPaymentRefundFindMany: vi.fn().mockResolvedValue([]),
   mockFindLateCapturePaymentIntents: vi.fn(),
+  // #4149: the lost-record recovery's own reads.
+  mockFindClosedLateCaptureRecordIntents: vi.fn(),
+  mockAuditLogFindFirst: vi.fn(),
   mockPaymentRecoveryOperationFindFirst: vi.fn().mockResolvedValue(null),
   // #3639: the treasurer-approval task and the club's setting. Null is "no task
   // owns this capture" and "the club never saved the setting", which is the
@@ -305,6 +310,9 @@ vi.mock("@/lib/prisma", () => ({
     paymentRefund: {
       findMany: (...args: unknown[]) => mockPaymentRefundFindMany(...args),
     },
+    auditLog: {
+      findFirst: (...args: unknown[]) => mockAuditLogFindFirst(...args),
+    },
     xeroSyncOperation: {
       findMany: async () => [],
     },
@@ -348,6 +356,7 @@ vi.mock("@/lib/late-capture-xero-receipt", () => ({
     mockHasReleasedXeroSupplementaryInvoiceOperationsForPaymentIntent(paymentIntentId),
   // #3635 round-3: no charge.refunded here is of a late capture unless a case says so.
   findLateCapturePaymentIntents: (...args: unknown[]) => mockFindLateCapturePaymentIntents(...args),
+  findClosedLateCaptureRecordIntents: (...args: unknown[]) => mockFindClosedLateCaptureRecordIntents(...args),
 }));
 
 vi.mock("@/lib/xero-operation-outbox", () => ({
@@ -416,6 +425,18 @@ describe("Stripe webhook Xero alerting", () => {
     vi.clearAllMocks();
     mockPaymentRefundFindMany.mockResolvedValue([]);
     mockFindLateCapturePaymentIntents.mockImplementation(async () => new Set<string>());
+    mockFindClosedLateCaptureRecordIntents.mockImplementation(async () => new Set<string>());
+    // #4149: the recovery asks whether the refunding delivery wrote its entry -
+    // answered from the entries this test's deliveries actually wrote.
+    mockAuditLogFindFirst.mockImplementation(
+      async ({ where }: { where: { action: string; entityId: string; details: { contains: string } } }) =>
+        mockLogAudit.mock.calls.some(([entry]) => {
+          const row = entry as { action: string; entityId?: string; details?: string };
+          return row.action === where.action && row.entityId === where.entityId && String(row.details).includes(where.details.contains);
+        })
+          ? { id: "audit-refund-time" }
+          : null,
+    );
     process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
     mockProcessedWebhookCreate.mockResolvedValue({});
     mockProcessedWebhookDeleteMany.mockResolvedValue({ count: 0 });
@@ -1999,15 +2020,16 @@ describe("Stripe webhook Xero alerting", () => {
       expect(mockRefundPaymentTransactions).toHaveBeenCalled();
     });
 
-    it("writes a CRITICAL audit row when the record write fails, and leaves the entry and the alert to the redelivery that writes the record (#4149)", async () => {
+    it("writes a CRITICAL audit row when the record write fails, and still writes the refund entry and sends the alert before the 500 (#4149)", async () => {
       /*
         THE BLOCKER THIS PINS (review of #2760). A container log is not a record,
         so the loss surfaces on the audit log the finance card names as permanent:
         `critical` severity, `outcome: "failure"`, carrying the booking and the
-        payment intent. #4149: the webhook now answers 500, so Stripe redelivers
-        and the redelivery writes the record, the `refunded_after_cancellation`
-        entry and the one alert (`recoverLostLateCaptureRecord`) - so this attempt
-        writes neither, or the event would get two of each.
+        payment intent. #4149: the refund entry (marked `recordLost`) and the one
+        alert still go out from this delivery - the money DID go back and the
+        event must never get neither (`INV-ADDPAY-037`) - and only then does the
+        webhook answer 500, so Stripe redelivers and the redelivery writes the
+        missing row, with no second alert.
 
         Mutation proof: delete the `logAudit` call in the catch and this fails while
         every other test in the file still passes.
@@ -2023,6 +2045,10 @@ describe("Stripe webhook Xero alerting", () => {
         status: "FAILED",
       });
       armCancelledBooking();
+      mockRefundPaymentTransactions.mockResolvedValue({
+        refunds: [{ paymentIntentId: "pi_additional_late", refundId: "re_late_9", amountCents: 2500 }],
+        totalRefundedAmountCents: 2500,
+      });
       mockRecordAutomaticCancelledBookingRefundTask.mockRejectedValueOnce(
         new Error("could not serialize access due to concurrent update"),
       );
@@ -2051,13 +2077,15 @@ describe("Stripe webhook Xero alerting", () => {
         paymentIntentId: "pi_additional_late",
         amountCents: 2500,
       });
-      // The redelivery writes the refund entry and sends the alert, once.
-      expect(mockLogAudit).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: "booking.payment.refunded_after_cancellation",
-        }),
-      );
-      expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
+      const refundRow = mockLogAudit.mock.calls
+        .map(([params]) => params as { action: string; details?: string })
+        .find((params) => params.action === "booking.payment.refunded_after_cancellation");
+      expect(JSON.parse(refundRow?.details ?? "{}")).toMatchObject({
+        paymentIntentId: "pi_additional_late",
+        refundId: "re_late_9",
+        recordLost: true,
+      });
+      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
     });
 
     describe("a delivery that dies between the refund and its record (#4149)", () => {
@@ -2065,15 +2093,19 @@ describe("Stripe webhook Xero alerting", () => {
         id: "re_late_9",
         amount: 2500,
         status: "succeeded",
+        created: Math.floor(Date.parse("2026-06-25T03:00:00.000Z") / 1000),
         metadata: { bookingId: "booking-9", reason: "cancelled_booking_late_capture" },
       };
-      const refundEntries = () =>
+      const entriesOf = (action: string) =>
         mockLogAudit.mock.calls
           .map(([entry]) => entry as { action: string; details?: string })
-          .filter((entry) => entry.action === "booking.payment.refunded_after_cancellation");
+          .filter((entry) => entry.action === action)
+          .map((entry) => JSON.parse(entry.details ?? "{}") as Record<string, unknown>);
+      const refundEntries = () => entriesOf("booking.payment.refunded_after_cancellation");
+      const recoveredEntries = () => entriesOf("booking.payment.auto_refund_record_recovered");
 
       /** The first delivery: the refund goes out and is recorded, then the record write is killed. */
-      async function deliverAndKillBeforeTheRecord() {
+      async function deliverAndLoseTheRecord() {
         mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_record_lost"));
         mockFindPaymentTransactionByIntentId.mockResolvedValue({
           id: "txn-9",
@@ -2108,8 +2140,8 @@ describe("Stripe webhook Xero alerting", () => {
         mockListRefundsForPaymentIntent.mockResolvedValue(stripeRefunds);
       }
 
-      it("is redelivered and recorded exactly once: one row, one refund entry, one alert, no second refund", async () => {
-        await deliverAndKillBeforeTheRecord();
+      it("is redelivered and recorded exactly once: the refunding delivery's entry and alert, then only the row and its recovered entry", async () => {
+        await deliverAndLoseTheRecord();
         armRedelivery();
 
         const redelivered = await POST(makeRequest());
@@ -2117,25 +2149,62 @@ describe("Stripe webhook Xero alerting", () => {
         expect(redelivered.status).toBe(200);
         // The money moved once; the redelivery only writes the record.
         expect(mockRefundPaymentTransactions).toHaveBeenCalledTimes(1);
-        expect(mockListRefundsForPaymentIntent).toHaveBeenCalledWith("pi_additional_late", undefined);
-        // The killed write and the one that landed.
+        // A bounded read, never retried, on the webhook path.
+        expect(mockListRefundsForPaymentIntent).toHaveBeenCalledWith("pi_additional_late", { timeoutMs: 5_000 });
+        // The killed write and the one that landed, dated the refund's day.
         expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenCalledTimes(2);
         expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenLastCalledWith(
-          expect.objectContaining({ paymentIntentId: "pi_additional_late", amountCents: 2500, captureKind: "modification" }),
+          expect.objectContaining({
+            paymentIntentId: "pi_additional_late",
+            amountCents: 2500,
+            captureKind: "modification",
+            completedAt: new Date("2026-06-25T03:00:00.000Z"),
+          }),
         );
-        expect(refundEntries()).toHaveLength(1);
-        expect(JSON.parse(refundEntries()[0]?.details ?? "{}")).toMatchObject({
-          paymentIntentId: "pi_additional_late",
-          refundId: "re_late_9",
-          amountCents: 2500,
-          kind: "modification_additional",
-          recoveredLostRecord: true,
-        });
+        // One refund entry - the refunding delivery's - and one alert, from it.
+        expect(refundEntries()).toEqual([expect.objectContaining({ refundId: "re_late_9", recordLost: true })]);
+        expect(recoveredEntries()).toEqual([
+          expect.objectContaining({ paymentIntentId: "pi_additional_late", refundId: "re_late_9", reportedAtRefund: true }),
+        ]);
         expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
         // It is the record, not an acknowledgement of a settled notice.
         expect(mockLogAudit).not.toHaveBeenCalledWith(
           expect.objectContaining({ action: "booking.payment.late_notice_acknowledged" }),
         );
+      });
+
+      it("writes the refund entry and sends the alert itself when the delivery that refunded died before either", async () => {
+        armCancelledBooking();
+        mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_after_crash"));
+        armRedelivery();
+
+        expect((await POST(makeRequest())).status).toBe(200);
+
+        expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+        expect(recoveredEntries()).toEqual([expect.objectContaining({ reportedAtRefund: false })]);
+        expect(refundEntries()).toEqual([
+          expect.objectContaining({ refundId: "re_late_9", kind: "modification_additional", recoveredLostRecord: true }),
+        ]);
+        expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
+      });
+
+      it("closes a confirm route's OPEN task the refund never closed, rather than leaving it asking a person to repay money Stripe returned", async () => {
+        armCancelledBooking();
+        mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_open_task"));
+        armRedelivery();
+        // The OPEN #2700 row marks a known late capture, but it is not a record.
+        mockFindLateCapturePaymentIntents.mockImplementation(async () => new Set(["pi_additional_late"]));
+        mockRecordAutomaticCancelledBookingRefundTask.mockResolvedValueOnce({
+          closed: 1,
+          created: false,
+          alreadyRecorded: false,
+          existingStatus: null,
+        });
+
+        expect((await POST(makeRequest())).status).toBe(200);
+
+        expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenCalledTimes(1);
+        expect(recoveredEntries()).toHaveLength(1);
       });
 
       it("writes no second entry or alert when another delivery's record landed first (a redelivery racing the original)", async () => {
@@ -2155,13 +2224,14 @@ describe("Stripe webhook Xero alerting", () => {
         expect(response.status).toBe(200);
         expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
         expect(refundEntries()).toHaveLength(0);
+        expect(recoveredEntries()).toHaveLength(0);
         expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
       });
 
       it("leaves a refund the late-capture door did not send (a Stripe dashboard refund) acknowledged, unrecorded", async () => {
         armCancelledBooking();
         mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_dashboard_refund"));
-        armRedelivery([{ id: "re_dashboard", amount: 2500, status: "succeeded", metadata: {} }]);
+        armRedelivery([{ id: "re_dashboard", amount: 2500, status: "succeeded", created: 1, metadata: {} }]);
 
         const response = await POST(makeRequest());
 
@@ -2174,11 +2244,11 @@ describe("Stripe webhook Xero alerting", () => {
         );
       });
 
-      it("asks Stripe nothing and writes nothing when the capture already has its record", async () => {
+      it("asks Stripe nothing and writes nothing when the capture already has its closed record", async () => {
         armCancelledBooking();
         mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_replay_recorded"));
         armRedelivery();
-        mockFindLateCapturePaymentIntents.mockImplementation(async () => new Set(["pi_additional_late"]));
+        mockFindClosedLateCaptureRecordIntents.mockImplementation(async () => new Set(["pi_additional_late"]));
 
         const response = await POST(makeRequest());
 
@@ -2200,6 +2270,51 @@ describe("Stripe webhook Xero alerting", () => {
         expect(mockLogAudit).not.toHaveBeenCalledWith(
           expect.objectContaining({ action: "booking.payment.late_notice_acknowledged" }),
         );
+      });
+
+      describe("a change payment the cancel left no claim on, so its refunded capture reads as settled by the cancellation", () => {
+        function armSettledByCancellation(stripeRefunds: unknown[]) {
+          armCancelledBooking();
+          armRedelivery(stripeRefunds);
+          // No cancel claim on the intent, and the change handler stamps no late
+          // marker: nothing local says the capture landed after the cancel.
+          mockPaymentRecoveryOperationFindFirst.mockResolvedValue(null);
+          // The cancellation recorded a decision about the booking's money.
+          mockBookingEventFindMany.mockResolvedValue([
+            { type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 100, settledAmountCents: 2500, retainedAmountCents: 0 } },
+          ]);
+        }
+
+        it("still writes the lost record when Stripe's refund metadata says the late-capture door sent the refund", async () => {
+          mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_settled_lost_record"));
+          armSettledByCancellation([LATE_CAPTURE_REFUND]);
+
+          expect((await POST(makeRequest())).status).toBe(200);
+
+          expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+          expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenCalledWith(
+            expect.objectContaining({ paymentIntentId: "pi_additional_late", captureKind: "modification" }),
+          );
+          expect(recoveredEntries()).toHaveLength(1);
+          expect(mockLogAudit).not.toHaveBeenCalledWith(
+            expect.objectContaining({ action: "booking.payment.late_notice_acknowledged" }),
+          );
+        });
+
+        it("acknowledges it as settled, unrecorded, when the cancellation's own refund is all Stripe holds", async () => {
+          mockConstructWebhookEvent.mockReturnValue(additionalSucceededEvent("evt_add_settled_by_cancel"));
+          armSettledByCancellation([{ id: "re_cancel", amount: 2500, status: "succeeded", created: 1, metadata: { bookingId: "booking-9", reason: "booking_cancellation" } }]);
+
+          expect((await POST(makeRequest())).status).toBe(200);
+
+          expect(mockRecordAutomaticCancelledBookingRefundTask).not.toHaveBeenCalled();
+          expect(mockLogAudit).toHaveBeenCalledWith(
+            expect.objectContaining({
+              action: "booking.payment.late_notice_acknowledged",
+              details: expect.stringContaining('"verdict":"settled_by_cancellation"'),
+            }),
+          );
+        });
       });
     });
 
@@ -3419,7 +3534,7 @@ describe("Stripe webhook Xero alerting", () => {
       );
     });
 
-    it("answers 500 and audits the loss when the record write fails, so the redelivery writes it (#2773 / #4149)", async () => {
+    it("answers 500 and audits the loss when the record write fails, after its refund entry and alert, so the redelivery writes the row (#2773 / #4149)", async () => {
       mockConstructWebhookEvent.mockReturnValue(
         primarySucceededEvent("evt_primary_record_fails"),
       );
@@ -3441,8 +3556,9 @@ describe("Stripe webhook Xero alerting", () => {
           entityId: "booking-7",
         }),
       );
-      // Reported to a person by the redelivery that writes the record, once.
-      expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
+      // Reported to a person now, once: never neither (`INV-ADDPAY-037`).
+      expect(refundAuditOf()).toMatchObject({ paymentIntentId: "pi_primary_late", kind: "primary", recordLost: true });
+      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
     });
 
     it("a delivery killed between the refund and its record is redelivered and recorded exactly once (#4149)", async () => {
@@ -3456,17 +3572,21 @@ describe("Stripe webhook Xero alerting", () => {
       // Stripe lists the refund the late-capture door sent.
       armCaptureRow("REFUNDED", "cancelled_booking_late_capture");
       mockListRefundsForPaymentIntent.mockResolvedValue([
-        { id: "re_primary_7", amount: 12000, status: "succeeded", metadata: { bookingId: "booking-7", reason: "cancelled_booking_late_capture" } },
+        { id: "re_primary_7", amount: 12000, status: "succeeded", created: 1, metadata: { bookingId: "booking-7", reason: "cancelled_booking_late_capture" } },
       ]);
 
       expect((await POST(makeRequest())).status).toBe(200);
 
       expect(mockRefundPaymentTransactions).toHaveBeenCalledTimes(1);
       expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenCalledTimes(2);
-      expect(refundAuditOf()).toMatchObject({ paymentIntentId: "pi_primary_late", refundId: "re_primary_7", kind: "primary", recoveredLostRecord: true });
+      // The refunding delivery's entry and alert; the redelivery adds only its own entry.
+      expect(refundAuditOf()).toMatchObject({ paymentIntentId: "pi_primary_late", refundId: "re_primary_7", kind: "primary", recordLost: true });
       expect(
         mockLogAudit.mock.calls.filter(([entry]) => (entry as { action: string }).action === "booking.payment.refunded_after_cancellation"),
       ).toHaveLength(1);
+      expect(mockLogAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "booking.payment.auto_refund_record_recovered", entityId: "booking-7" }),
+      );
       expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
       // Never a payment-wide note against the pre-cancel invoice: the capture's own receipt decides.
       expect(mockEnqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
@@ -3591,6 +3711,56 @@ describe("Stripe webhook Xero alerting", () => {
         }),
       );
     }
+
+    it("acknowledges an already-recorded refunded capture with an unreadable owner: 200, as before #4149, never a 500", async () => {
+      mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_recorded_no_owner"));
+      armCancelledBooking("xero-inv-7", null);
+      mockBookingFindUnique.mockResolvedValue({
+        id: "booking-7",
+        status: "CANCELLED",
+        deletedAt: null,
+        checkIn: new Date("2026-09-01"),
+        checkOut: new Date("2026-09-04"),
+        member: null,
+        organisation: null,
+        payment: { id: "payment-7", xeroInvoiceId: "xero-inv-7" },
+      });
+      armCaptureRow("REFUNDED", "cancelled_booking_late_capture");
+      mockFindClosedLateCaptureRecordIntents.mockImplementation(async () => new Set(["pi_primary_late"]));
+
+      const response = await POST(makeRequest());
+
+      expectAcknowledgedWithoutMovingMoney(response);
+      expectAcknowledgementRecorded("already_refunded");
+      expect(mockListRefundsForPaymentIntent).not.toHaveBeenCalled();
+    });
+
+    it("writes a lost record for a capture whose owner cannot be read, naming an unknown member (#4149)", async () => {
+      mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_lost_no_owner"));
+      armCancelledBooking("xero-inv-7", null);
+      mockBookingFindUnique.mockResolvedValue({
+        id: "booking-7",
+        status: "CANCELLED",
+        deletedAt: null,
+        checkIn: new Date("2026-09-01"),
+        checkOut: new Date("2026-09-04"),
+        member: null,
+        organisation: null,
+        payment: { id: "payment-7", xeroInvoiceId: "xero-inv-7" },
+      });
+      armCaptureRow("REFUNDED", "cancelled_booking_late_capture");
+      mockListRefundsForPaymentIntent.mockResolvedValue([
+        { id: "re_primary_7", amount: 12000, status: "succeeded", created: 1, metadata: { bookingId: "booking-7", reason: "cancelled_booking_late_capture" } },
+      ]);
+
+      expect((await POST(makeRequest())).status).toBe(200);
+
+      expect(mockRecordAutomaticCancelledBookingRefundTask).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ memberName: "unknown member" }),
+        expect.anything(),
+      );
+    });
 
     it("acknowledges a notice without reading the booking's owner, so an unreadable owner row cannot fail it (#4149)", async () => {
       mockConstructWebhookEvent.mockReturnValue(primarySucceededEvent("evt_primary_ack_no_owner"));
