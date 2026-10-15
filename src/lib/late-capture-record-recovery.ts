@@ -14,7 +14,7 @@ import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-cred
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
 import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
-import { isLateCaptureRefundMetadata } from "@/lib/payment-recovery-keys";
+import { buildLateCaptureRefundMetadata } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { listRefundsForPaymentIntent } from "@/lib/stripe";
@@ -42,7 +42,7 @@ import { listRefundsForPaymentIntent } from "@/lib/stripe";
  *    #3639 a replay after a refund never refunds again;
  *  - a redelivery that finds the capture refunded with no task row asks Stripe
  *    whether the late-capture refund door sent that refund (its own metadata,
- *    `isLateCaptureRefundMetadata`) and, if it did, runs the same epilogue
+ *    `buildLateCaptureRefundMetadata`) and, if it did, runs the same epilogue
  *    (`recoverLostLateCaptureRecord`);
  *  - the nightly self-heal runs the same check before it raises any note
  *    (`recoverLostLateCaptureRecordsForPayment`), so a capture whose
@@ -134,6 +134,16 @@ function lateCaptureAuditKind(captureKind: CancelledBookingLateCaptureKind): str
 }
 
 /**
+ * A Stripe refund this booking's late-capture refund door sent: its metadata is
+ * exactly the body `buildLateCaptureRefundMetadata` builds, which the webhook's
+ * automatic refund and the treasurer-approved one both send (`INV-PAY-106`).
+ */
+function sentByLateCaptureRefundDoor(metadata: Record<string, string> | null | undefined, bookingId: string): boolean {
+  const sent = buildLateCaptureRefundMetadata(bookingId);
+  return metadata?.reason === sent.reason && metadata?.bookingId === sent.bookingId;
+}
+
+/**
  * The redelivery's half: `true` when this already-refunded capture had lost its
  * record and the epilogue has now written it; `false` when it has a task row of
  * any kind (its record, an operator's, or #3639's approval task) or Stripe
@@ -152,7 +162,7 @@ export async function recoverLostLateCaptureRecord(
       paymentIntentId,
       options.stripeTimeoutMs ? { timeoutMs: options.stripeTimeoutMs } : undefined,
     )
-  ).filter((refund) => isLateCaptureRefundMetadata(refund.metadata, bookingId) && !isRefusedRefundStatus(refund.status));
+  ).filter((refund) => sentByLateCaptureRefundDoor(refund.metadata, bookingId) && !isRefusedRefundStatus(refund.status));
   const [first] = sent;
   if (!first) return false;
 
