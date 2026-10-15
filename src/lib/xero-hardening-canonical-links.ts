@@ -19,8 +19,18 @@
 // the enforcement, except a link stamped per-refund (#3880: a review's
 // bank-transfer hand-back, `isPerDeltaRefundNoteLink`), which is never the
 // field's note and is exempt by the same rule as a Stripe delta.
+//
+// #4161: every still-active mirror of a refund note Xero VOIDED/DELETED, on any
+// payment source, is healed through the link write (`upsertXeroObjectLink`)
+// rather than flipped here, so #4091's normaliser writes it inactive and
+// #4046's post-write rule releases the payment's refund-note pointer. A
+// bank-transfer payment's one canonical note voided before #4091 matched its
+// pointer and was never seen as stale until then.
 import { PaymentSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
+import { asRecord } from "@/lib/xero-json";
+import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import {
   isPerDeltaRefundNoteLink,
   isRefundCreditNoteLinkCancelledInXero,
@@ -79,6 +89,54 @@ export function isPerRefundCreditNoteLink(
     link.xeroObjectType === "CREDIT_NOTE" &&
     (stripePaymentIds.has(link.localId) || isPerDeltaRefundNoteLink(link.metadata))
   );
+}
+
+/**
+ * #4161: a payment refund-note mirror whose recorded Xero status is
+ * VOIDED/DELETED (`isRefundCreditNoteLinkCancelledInXero`), on any payment
+ * source: a card delta, a per-refund note, or a bank-transfer payment's one
+ * canonical note. Read over ACTIVE links, it is drift the nightly cleanup heals
+ * and the drift report lists as stale. ONE rule for both. A wrong-typed
+ * REFUND_CREDIT_NOTE link is malformed and left to the ordinary stale rules.
+ */
+export function isCancelledRefundCreditNoteMirror(
+  link: Pick<CanonicalLinkRecord, "localModel" | "role" | "xeroObjectType"> & { metadata: unknown }
+): boolean {
+  return (
+    link.localModel === "Payment" &&
+    link.role === "REFUND_CREDIT_NOTE" &&
+    link.xeroObjectType === "CREDIT_NOTE" &&
+    isRefundCreditNoteLinkCancelledInXero(link.metadata)
+  );
+}
+
+/**
+ * #4161: heal one cancelled mirror through the link write, re-asserting only the
+ * status already recorded (merged, so no other metadata key moves), so the one
+ * rule in `normalizePaymentRefundLinkWithClient` writes it inactive and the
+ * write releases a pointer that names it. Number and URL are passed back as
+ * recorded because the write sets both. Local rows only, no provider call; the
+ * write locks the link, then the payment, as every refund-note link write does.
+ * Idempotent: a healed link is inactive, so the next scan never selects it.
+ */
+async function healCancelledRefundCreditNoteMirror(link: {
+  localId: string;
+  xeroObjectId: string;
+  xeroObjectNumber: string | null;
+  xeroObjectUrl: string | null;
+  metadata: unknown;
+}) {
+  await upsertXeroObjectLink({
+    localModel: "Payment",
+    localId: link.localId,
+    xeroObjectType: "CREDIT_NOTE",
+    xeroObjectId: link.xeroObjectId,
+    xeroObjectNumber: link.xeroObjectNumber,
+    xeroObjectUrl: link.xeroObjectUrl,
+    role: "REFUND_CREDIT_NOTE",
+    metadata: { status: asRecord(link.metadata)?.status },
+    mergeMetadata: true,
+  });
 }
 
 function getCanonicalCleanupCategory(
@@ -170,6 +228,9 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
         localId: true,
         xeroObjectType: true,
         xeroObjectId: true,
+        // #4161: the heal re-writes the link through the funnel, which sets both.
+        xeroObjectNumber: true,
+        xeroObjectUrl: true,
         role: true,
         // #2901 fix round: the merged inbound status decides whether a Stripe
         // per-delta link still mirrors a LIVE note (see the filter below).
@@ -250,23 +311,26 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
       )
     )
   );
+  // #4161, read-only first: the cancelled mirrors this run will heal, counted
+  // before any write and reported in the result.
+  const cancelledRefundCreditNoteMirrors = links.filter(isCancelledRefundCreditNoteMirror);
   let preservedStripeRefundCreditNoteLinks = 0;
   const staleLinks = links.filter((link) => {
+    // #4161: a cancelled mirror is stale on every source, the pointer's own
+    // note included; it is healed through the link write below.
+    if (isCancelledRefundCreditNoteMirror(link)) {
+      return true;
+    }
     // Stripe payments legitimately hold one ACTIVE refund note per refund
     // delta (INV-ADDPAY-020); the scalar pointer is only the latest of them.
     // A per-refund-stamped note (#3880) is never the scalar's note on any
     // source. Single-canonical enforcement is retained ONLY for the rest
     // (#2901).
     if (isPerRefundCreditNoteLink(link, stripePaymentIds)) {
-      // The exemption shields LIVE per-delta coverage, not the mirror of a
-      // note the operator VOIDED/DELETED in Xero: a cancelled note credits
-      // nothing (INV-ADDPAY-020), so its still-active mirror is stale drift.
-      // Deactivating it here is what re-arms the credit-reconciliation
-      // self-heal to reissue the uncovered delta (#2901 review) — this is a
-      // local link flip, never a provider call.
-      if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
-        return true;
-      }
+      // The exemption shields LIVE per-delta coverage only. A cancelled note
+      // credits nothing (INV-ADDPAY-020); its mirror was returned as stale
+      // above, which is what re-arms the credit-reconciliation self-heal to
+      // reissue the uncovered delta (#2901 review).
       preservedStripeRefundCreditNoteLinks += 1;
       return false;
     }
@@ -282,13 +346,16 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     );
   });
   const staleLinkIds = staleLinks.map((link) => link.id);
+  const flippedLinkIds = staleLinks
+    .filter((link) => !isCancelledRefundCreditNoteMirror(link))
+    .map((link) => link.id);
 
   let deactivatedLinks = 0;
-  if (staleLinkIds.length > 0) {
+  if (flippedLinkIds.length > 0) {
     const updateResult = await prisma.xeroObjectLink.updateMany({
       where: {
         id: {
-          in: staleLinkIds,
+          in: flippedLinkIds,
         },
         active: true,
       },
@@ -297,6 +364,29 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
       },
     });
     deactivatedLinks = updateResult.count;
+  }
+
+  // #4161: one link write per cancelled mirror, each in its own transaction, so
+  // one failure never holds back the rest. A failure fails the task (the cron
+  // run records it) once every other mirror has been tried; the next run
+  // retries only what is still active.
+  const failedHealLinkIds: string[] = [];
+  for (const link of cancelledRefundCreditNoteMirrors) {
+    try {
+      await healCancelledRefundCreditNoteMirror(link);
+      deactivatedLinks += 1;
+    } catch (error) {
+      failedHealLinkIds.push(link.id);
+      logger.error(
+        { err: error, linkId: link.id, paymentId: link.localId, xeroObjectId: link.xeroObjectId },
+        "Could not heal the active mirror of a VOIDED/DELETED Xero refund credit note (#4161)"
+      );
+    }
+  }
+  if (failedHealLinkIds.length > 0) {
+    throw new Error(
+      `Healed ${cancelledRefundCreditNoteMirrors.length - failedHealLinkIds.length} of ${cancelledRefundCreditNoteMirrors.length} active mirrors of VOIDED/DELETED Xero refund credit notes; ${failedHealLinkIds.length} failed (links ${failedHealLinkIds.join(", ")}) and stay for the next run (#4161).`
+    );
   }
 
   const byCategory: XeroCanonicalLinkCleanupResult["byCategory"] = {
@@ -317,6 +407,7 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     keptActiveLinks: links.length - deactivatedLinks,
     deactivatedLinks,
     preservedStripeRefundCreditNoteLinks,
+    cancelledRefundCreditNoteMirrors: cancelledRefundCreditNoteMirrors.length,
     byCategory,
     deactivatedLinkIds: staleLinkIds,
   };

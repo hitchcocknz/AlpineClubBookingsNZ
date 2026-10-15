@@ -575,8 +575,20 @@ describe("Stripe per-delta refund notes vs canonical cleanup and reconciliation 
 
     expect(cleanup.deactivatedLinkIds).toHaveLength(1);
     expect(cleanup.byCategory.paymentRefundCreditNotes).toBe(1);
+    expect(cleanup.cancelledRefundCreditNoteMirrors).toBe(1);
     expect(activeRefundNoteIds()).toEqual(["cn_90"]);
     expect(await sumCoveredRefundCreditNoteCents("pay_1")).toBe(90);
+    // #4161: healed through the link write, so the pointer that named the
+    // voided note moves to the newest other live note (#4046) and its other
+    // metadata survives the merge.
+    expect(state.payments[0].xeroRefundCreditNoteId).toBe("cn_90");
+    expect(cn10!.metadata).toEqual({ amountCents: 10, watermarkCents: 100, status: "VOIDED" });
+
+    // A second run finds nothing left to heal and moves nothing.
+    const again = await cleanupStaleCanonicalXeroObjectLinks();
+    expect(again.cancelledRefundCreditNoteMirrors).toBe(0);
+    expect(again.deactivatedLinkIds).toEqual([]);
+    expect(state.payments[0].xeroRefundCreditNoteId).toBe("cn_90");
   });
 
   it("an account-credit-only cancellation queues NO refund note across repeated reconciliation cycles (#2902 acceptance)", async () => {

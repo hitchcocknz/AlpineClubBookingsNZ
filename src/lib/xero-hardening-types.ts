@@ -155,6 +155,13 @@ export interface XeroCanonicalLinkCleanupResult {
    * link stamped per-refund (#3880). Observability only; the name predates #3880.
    */
   preservedStripeRefundCreditNoteLinks: number;
+  /**
+   * #4161: active refund-note mirrors whose recorded Xero status is
+   * VOIDED/DELETED, counted before any write. Each is healed through the link
+   * write, which also releases a payment pointer naming it; they are included
+   * in `deactivatedLinks`, `deactivatedLinkIds` and the refund-note category.
+   */
+  cancelledRefundCreditNoteMirrors: number;
   byCategory: {
     memberContacts: number;
     paymentInvoices: number;

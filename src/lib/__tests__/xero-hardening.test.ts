@@ -712,6 +712,41 @@ describe("buildXeroReconciliationReport", () => {
     expect(drift?.items?.[0]?.detail).toContain("VOIDED/DELETED");
   });
 
+  it("reports a bank-transfer payment's canonical note voided before #4091 as stale drift, though its pointer names it (#4161)", async () => {
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.operationFindFirst.mockResolvedValue(null);
+    mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+      args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: null, xeroRefundCreditNoteId: "cn_voided" }]
+    );
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        localModel: "Payment",
+        localId: "pay_ib",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_voided",
+        role: "REFUND_CREDIT_NOTE",
+        metadata: { amountCents: 5_000, status: "VOIDED" },
+      },
+    ]);
+    mocks.operationFindMany.mockResolvedValue([]);
+    mocks.operationCount.mockResolvedValue(0);
+
+    const report = await buildXeroReconciliationReport(CLUB_FORMAT_TEST, {
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(report.summary).toEqual(
+      expect.objectContaining({
+        staleCanonicalLinks: 1,
+        missingPaymentRefundCreditNoteLinks: 0,
+        mismatchedCanonicalLinks: 0,
+      })
+    );
+    const drift = report.issueSections.find((section) => section.id === "canonical-link-drift");
+    expect(drift?.items?.[0]?.detail).toContain("releases the payment's refund-note pointer");
+  });
+
   /**
    * #3635 round-3 R6: a hand-made refund note an officer resolved in Xero
    * covers its recorded amount everywhere a note is sized, so over-coverage
@@ -1440,6 +1475,7 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       keptActiveLinks: 1,
       deactivatedLinks: 2,
       preservedStripeRefundCreditNoteLinks: 0,
+      cancelledRefundCreditNoteMirrors: 0,
       byCategory: {
         memberContacts: 1,
         paymentInvoices: 1,
@@ -1522,6 +1558,7 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       keptActiveLinks: 3,
       deactivatedLinks: 0,
       preservedStripeRefundCreditNoteLinks: 3,
+      cancelledRefundCreditNoteMirrors: 0,
       byCategory: {
         memberContacts: 0,
         paymentInvoices: 0,
@@ -1583,24 +1620,31 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
         metadata: { amountCents: 5 },
       },
     ]);
-    mocks.linkUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.upsertXeroObjectLink.mockResolvedValue({});
 
     const result = await cleanupStaleCanonicalXeroObjectLinks();
 
     expect(result.deactivatedLinkIds).toEqual(["link_cn_10_voided"]);
+    expect(result.deactivatedLinks).toBe(1);
+    expect(result.cancelledRefundCreditNoteMirrors).toBe(1);
     expect(result.preservedStripeRefundCreditNoteLinks).toBe(2);
     expect(result.byCategory.paymentRefundCreditNotes).toBe(1);
-    expect(mocks.linkUpdateMany).toHaveBeenCalledWith({
-      where: {
-        id: {
-          in: ["link_cn_10_voided"],
-        },
-        active: true,
-      },
-      data: {
-        active: false,
-      },
-    });
+    // #4161: healed through the link write, which also releases a pointer
+    // naming the note (here `cn_10`); never flipped directly.
+    expect(mocks.linkUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_10",
+        role: "REFUND_CREDIT_NOTE",
+        metadata: { status: "VOIDED" },
+        mergeMetadata: true,
+      })
+    );
+    expect(mocks.upsertXeroObjectLink.mock.calls[0]?.[0]).not.toHaveProperty("active");
   });
 
   it("keeps single-canonical enforcement for non-Stripe refund notes and malformed or foreign links (#2901)", async () => {
@@ -1705,11 +1749,97 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       // Not stamped per-refund: the single-note contract still retires it.
       link("link_old", "pay_ib", "cn_old", { amountCents: 1_000 }),
     ]);
-    mocks.linkUpdateMany.mockResolvedValue({ count: 2 });
+    mocks.linkUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.upsertXeroObjectLink.mockResolvedValue({});
 
     const result = await cleanupStaleCanonicalXeroObjectLinks();
 
     expect(result.deactivatedLinkIds).toEqual(["link_review_voided", "link_old"]);
+    expect(result.deactivatedLinks).toBe(2);
     expect(result.preservedStripeRefundCreditNoteLinks).toBe(2);
+    expect(mocks.linkUpdateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["link_old"] }, active: true },
+      data: { active: false },
+    });
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({ localId: "pay_ib", xeroObjectId: "cn_review_voided", metadata: { status: "VOIDED" } })
+    );
+  });
+
+  describe("#4161: a bank-transfer payment's canonical note voided before #4091", () => {
+    const link = (id: string, xeroObjectId: string, metadata: Record<string, unknown> | null, extra: Record<string, unknown> = {}) => ({
+      id, localModel: "Payment", localId: "pay_ib", xeroObjectType: "CREDIT_NOTE", xeroObjectId, role: "REFUND_CREDIT_NOTE",
+      xeroObjectNumber: `CN-${xeroObjectId}`, xeroObjectUrl: `https://go.xero.com/x/${xeroObjectId}`, metadata, ...extra,
+    });
+    beforeEach(() => {
+      mocks.memberFindMany.mockResolvedValue([]);
+      mocks.subscriptionFindMany.mockResolvedValue([]);
+      mocks.upsertXeroObjectLink.mockResolvedValue({});
+    });
+
+    it("counts the active mirror its pointer still names and heals it through the link write, recorded fields passed back", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_voided" }]
+      );
+      mocks.linkFindMany.mockResolvedValue([
+        // Matches the pointer, so the expectation check alone kept it active.
+        link("link_voided", "cn_voided", { amountCents: 5_000, status: " deleted " }),
+      ]);
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(result.cancelledRefundCreditNoteMirrors).toBe(1);
+      expect(result.deactivatedLinks).toBe(1);
+      expect(result.keptActiveLinks).toBe(0);
+      expect(result.deactivatedLinkIds).toEqual(["link_voided"]);
+      expect(result.byCategory.paymentRefundCreditNotes).toBe(1);
+      expect(mocks.linkUpdateMany).not.toHaveBeenCalled();
+      // Only the recorded status, as recorded, merged: no other metadata key moves.
+      expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith({
+        localModel: "Payment",
+        localId: "pay_ib",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_voided",
+        xeroObjectNumber: "CN-cn_voided",
+        xeroObjectUrl: "https://go.xero.com/x/cn_voided",
+        role: "REFUND_CREDIT_NOTE",
+        metadata: { status: " deleted " },
+        mergeMetadata: true,
+      });
+    });
+
+    it("leaves a live canonical note, an unrecorded status and a malformed voided link to the ordinary rules", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_live" }]
+      );
+      mocks.linkFindMany.mockResolvedValue([
+        link("link_live", "cn_live", { amountCents: 5_000, status: "AUTHORISED" }),
+        // A wrong-typed refund link is stale by the ordinary rule, not healed.
+        link("link_malformed", "inv_x", { status: "VOIDED" }, { xeroObjectType: "INVOICE" }),
+      ]);
+      mocks.linkUpdateMany.mockResolvedValue({ count: 1 });
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(result.cancelledRefundCreditNoteMirrors).toBe(0);
+      expect(result.deactivatedLinkIds).toEqual(["link_malformed"]);
+      expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+    });
+
+    it("tries every mirror when one write fails, then fails the task naming the link left for the next run", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_a" }]
+      );
+      mocks.linkFindMany.mockResolvedValue([
+        link("link_a", "cn_a", { status: "VOIDED" }),
+        link("link_b", "cn_b", { status: "VOIDED" }),
+      ]);
+      mocks.upsertXeroObjectLink.mockRejectedValueOnce(new Error("deadlock")).mockResolvedValueOnce({});
+
+      await expect(cleanupStaleCanonicalXeroObjectLinks()).rejects.toThrow(
+        /Healed 1 of 2 .*links link_a\)/
+      );
+      expect(mocks.upsertXeroObjectLink).toHaveBeenCalledTimes(2);
+    });
   });
 });
