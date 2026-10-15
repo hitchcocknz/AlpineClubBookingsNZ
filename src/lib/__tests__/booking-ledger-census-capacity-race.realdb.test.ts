@@ -123,7 +123,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       }
     }
 
-    /** Stripe makes every refund it is asked for, or (`refuse`) cannot be reached. */
+    /** Stripe makes every refund it is asked for, or (`unreachable`) cannot be reached. */
     function stripeRefunds(answer: "make" | "unreachable") {
       stripeRaceHooks.refund = async (args) => {
         if (answer === "unreachable") throw new Error("race-4147: Stripe unreachable");
