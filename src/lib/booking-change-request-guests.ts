@@ -12,7 +12,8 @@ import {
   guestNightListSchema,
   normalizeGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
-import { eachDateOnlyInRange, formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { parseDateOnly } from "@/lib/date-only";
+import { expandStayEnvelopeToNightKeys } from "@/lib/booking-guest-stay-ranges";
 import {
   resolveModificationStayRanges,
   type LiveGuestStayRow,
@@ -283,9 +284,8 @@ export interface GuestNightsAsDays {
  */
 export function guestNightKeys(guest: GuestNightsAsDays): string[] {
   if (guest.nights && guest.nights.length > 0) return [...new Set(guest.nights)].sort();
-  return eachDateOnlyInRange(parseDateOnly(guest.stayStart), parseDateOnly(guest.stayEnd)).map(
-    formatDateOnly,
-  );
+  // The one envelope expansion (INV-DATE-020), half-open by contract.
+  return expandStayEnvelopeToNightKeys(parseDateOnly(guest.stayStart), parseDateOnly(guest.stayEnd));
 }
 
 /** A live guest's stored range and night rows, as {@link GuestNightsAsDays}. */
