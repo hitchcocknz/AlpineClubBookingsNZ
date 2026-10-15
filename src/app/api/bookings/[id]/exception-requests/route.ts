@@ -6,13 +6,13 @@ import { auth } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
-import { isDateOnlyString } from "@/lib/date-only";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
+import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 import {
   dependantIdentityDeclarationSchema,
 } from "@/lib/booking-dependant-identity";
@@ -47,9 +47,7 @@ import { BookingGuestValidationError } from "@/lib/booking-guests";
  * moved) or byte-identical to the live booking (when they did not). Both are
  * proposals the member never made.
  */
-const nightList = z
-  .array(z.string().refine(isDateOnlyString, { message: "Night must be YYYY-MM-DD" }))
-  .max(370);
+const nightList = guestNightListSchema;
 
 const createSchema = z.object({
   checkIn: z.string().optional(),

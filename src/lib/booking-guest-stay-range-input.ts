@@ -5,6 +5,24 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
+import { z } from "zod";
+
+/** What a member is told about a night that is not a real day (#4088). */
+export const GUEST_NIGHT_INVALID_MESSAGE =
+  "One of the nights chosen isn't a valid date. Please choose the nights again.";
+
+/**
+ * A guest's explicit night set (#713) as a request carries it: `yyyy-mm-dd`
+ * nights, at most a year of them. The one request shape for `nights`, shared by
+ * the booking-policy exception doors and the locked-period change request
+ * (#4088), because zod STRIPS a key a schema does not declare: a door that
+ * forgot `nights` silently turned a guest's chosen nights into the whole stay
+ * (#2562 review, #4088). What the nights MEAN is still decided only by
+ * `normalizeGuestStayRange` below.
+ */
+export const guestNightListSchema = z
+  .array(z.string().refine(isDateOnlyString, { message: GUEST_NIGHT_INVALID_MESSAGE }))
+  .max(370);
 
 export type BookingGuestStayRangeInput = {
   stayStart?: Date | string | null;

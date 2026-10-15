@@ -78,7 +78,13 @@ are listed on the booking for you to relay.
    - **The stay has finished** (fully past, or completed): approving **applies**
      the request (#3750). The button reads **Approve and apply**, and the card
      says so before you click. Every part of the request is applied — guests
-     added, removed or swapped, and date or stay-range changes. Added guests are
+     added, removed or swapped, and date or stay-range changes. A request sent
+     from the booking editor's night-by-night grid names each guest's exact
+     nights, gaps included, and approving applies and prices exactly those
+     nights (#4088). The card counts and lists the nights each guest is asked
+     for, in runs, and marks a guest whose nights would not change, and one
+     whose Date In and Date Out would fill gaps in their stay (approving
+     writes, and charges, every night of that range). Added guests are
      priced at the stay's own season rates; guests already on the booking keep
      exactly what they paid. Any extra is asked for in the usual way (card, or
      internet banking against a supplementary invoice), and the member gets the

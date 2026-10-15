@@ -233,6 +233,8 @@ import "./ib-capacity-cancel-credit-restore.realdb.test";
 // `race-3979-` fixtures, and its email and Xero doubles pass through for every
 // other suite.
 import "./ib-settle-from-cash.realdb.test";
+// #4047: read-only invoice discovery and post-provider audience/lifecycle fences.
+import "./booking-outstanding-observation.realdb.test";
 // #3864 reuses it to prove an edit's stored credit election is never spent on top
 // of an old full-price card intent: the REAL edit, pay-step route and webhook,
 // with the old intent captured and its webhook delivered at each point, end with
@@ -345,6 +347,11 @@ import "./membership-family-rebill.realdb.test";
 // refunded capture still holds. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it
 // owns and cleans its own `race-4131-` fixtures.
 import "./late-capture-own-charge-refund.realdb.test";
+// #4146 reuses it to prove a key-prefix lookup built from an id matches only
+// its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
+// a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
+// its own `race-4146-` fixtures.
+import "./prisma-exact-prefix.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
