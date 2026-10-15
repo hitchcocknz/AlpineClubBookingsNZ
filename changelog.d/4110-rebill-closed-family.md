@@ -7,18 +7,21 @@
   whole confirmation. Until a payment is reversed, a closed family still counts
   as billed, so a member who joins later is not invoiced for it, and an exempt
   (**Not required**) member whose membership type is changed later doesn't
-  count as a reversal: they paid nothing. If only some members' payments were
-  reversed, the preview shows a **Check before confirming** warning that
-  confirming invoices the full family fee. Approving a membership application
-  never confirms through that warning: the family is left for Finance as an
-  open exception, and the approver is told Finance must review it. The
-  club's database gets two small changes to allow this: a family can still
-  have only one charge that is waiting to be invoiced or has been, per
-  membership type and season; and closing a charge records whether each member
-  had paid or was exempt at the time.
+  count as a reversal: they paid nothing. Such a member, if they now need a
+  subscription, is listed as an exception that says so, for Finance to decide.
+  A member who has moved to another family doesn't count either. If only some
+  of the members who had paid are no longer paid, the preview shows a **Check
+  before confirming** warning that confirming invoices the full family fee.
+  Approving a membership application never confirms through that warning: the
+  family is left for Finance as an open exception, and the approver is told
+  Finance must review it. The club's database gets two small changes to allow
+  this: a family can still have only one charge that is waiting to be invoiced
+  or has been, per membership type and season; and closing a charge records
+  whether each member had paid or was exempt at the time.
 
   The Subscriptions page also offers **Close: already paid** only when every
-  member on the charge has paid or is exempt (**Not required**). When only some have, the conflict message says
+  member on the charge has paid or is exempt (**Not required**). When only
+  some have, the conflict message says
   to record the remaining payments and then close, or to reverse every payment
   and then Retry, because Retry alone would conflict again. If an invoice
   attempt was already in Xero at the moment a charge was closed, the charge now
