@@ -10,6 +10,7 @@ import {
 } from "@/lib/xero-admin-health";
 import { findOrphanedAppliedCredits } from "@/lib/orphaned-applied-credit-backfill";
 import { queueWaitingPaidAnotherWayNotesForPayment } from "@/lib/paid-another-way-receipt-note";
+import { recoverLostLateCaptureRecordsForPayment } from "@/lib/late-capture-record-recovery";
 import {
   enqueueXeroRefundCreditNoteOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
@@ -72,8 +73,15 @@ export async function reconcileCreditBalances(): Promise<{
     // its own row. Round 9: and a close whose note waits for a late capture's
     // receipt, whose note step failed after the receipt reached Xero, has that
     // step run again here - idempotent, under the approval task's row lock.
+    //
+    // #4149 (`INV-PAY-106`): a late capture whose automatic refund went out
+    // while its record did not is not yet a known late capture, so its refund
+    // reads as part of this gap. Its record is written first, which takes the
+    // refund out of the note-eligible cash the enqueue re-caps against; a
+    // payment whose late captures cannot be checked tonight gets no card note.
     let reEnqueued = 0;
     for (const missing of refundsMissingCreditNotes.payments) {
+      const lostRecords = await recoverLostLateCaptureRecordsForPayment(missing.paymentId);
       if (missing.paidAnotherWayUncoveredCents > 0) {
         try {
           reEnqueued += await queueWaitingPaidAnotherWayNotesForPayment(missing.paymentId);
@@ -84,6 +92,7 @@ export async function reconcileCreditBalances(): Promise<{
           );
         }
       }
+      if (lostRecords.unresolved) continue;
       try {
         const cardAskCents = missing.uncoveredCents - missing.paidAnotherWayUncoveredCents;
         if (cardAskCents <= 0) continue;

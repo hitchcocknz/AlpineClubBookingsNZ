@@ -237,6 +237,13 @@ export function buildLateCaptureRefundMetadata(
 ): Record<string, string> {
   return { bookingId, reason: LATE_CAPTURE_REFUND_METADATA_REASON };
 }
+/** #4149: a Stripe refund this booking's late-capture refund sent - the body `buildLateCaptureRefundMetadata` builds. */
+export function isLateCaptureRefundMetadata(
+  metadata: Record<string, string> | null | undefined,
+  bookingId: string,
+): boolean {
+  return metadata?.reason === LATE_CAPTURE_REFUND_METADATA_REASON && metadata.bookingId === bookingId;
+}
 // #3639: the recovery row of a treasurer-approved late-capture refund. One per
 // capture: the approval task is one per payment intent (its `occurrenceKey`).
 export const LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX = "late_capture_approval_refund_recovery_";

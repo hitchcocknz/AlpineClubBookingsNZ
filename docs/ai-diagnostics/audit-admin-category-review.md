@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  503
+row-producing sites:  502
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 56,
+category values: admin 108, booking 108, xero 39, family 35, payment 55,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -822,6 +822,12 @@ an officer closing a subscription charge whose members had already paid, filed
 `pnpm run audit:census`): `booking-payment.card-refund.failed-later-not-resent`,
 a card refund Stripe failed later that the app did not make for the booking,
 filed `payment` beside the paid-another-way close the same people read.
+
+#4149 then took one away (`payment` 56 -> 55, 503 -> 502, MEASURED with
+`pnpm run audit:census`): the two late-capture handlers'
+`booking.payment.refunded_after_cancellation` writers became one, in the shared
+epilogue `finishAutomaticLateCaptureRefund`, which also writes the entry for a
+refund whose record a crash lost. Same action, same category, same readers.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

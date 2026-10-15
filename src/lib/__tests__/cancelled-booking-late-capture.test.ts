@@ -511,6 +511,7 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     await announceAutomaticLateCaptureRefund(capture({ captureKind: "primary" }), {
       bookingDeleted: false,
       recorded: true,
+      recordedBefore: false,
       handCompletedAfterRefund: false,
     }, CLUB_FORMAT_TEST);
 
@@ -533,6 +534,7 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     await announceAutomaticLateCaptureRefund(capture(), {
       bookingDeleted: true,
       recorded: true,
+      recordedBefore: false,
       handCompletedAfterRefund: false,
     }, CLUB_FORMAT_TEST);
     expect(mocks.sendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledWith(
@@ -544,6 +546,7 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     await announceAutomaticLateCaptureRefund(capture(), {
       bookingDeleted: false,
       recorded: true,
+      recordedBefore: false,
       handCompletedAfterRefund: true,
     }, CLUB_FORMAT_TEST);
 

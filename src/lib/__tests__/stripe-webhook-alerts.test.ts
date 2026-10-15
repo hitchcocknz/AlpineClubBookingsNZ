@@ -1974,10 +1974,10 @@ describe("Stripe webhook Xero alerting", () => {
       );
     });
 
-    it("still returns 200 when recording that task fails (#2700 / #2760)", async () => {
-      // The money is already back with the member. A 500 here would clear the
-      // processed-event marker and replay the whole refund path for the sake of
-      // a bookkeeping row.
+    it("answers 500 when recording that task fails, so Stripe redelivers and the redelivery writes it (#4149)", async () => {
+      // The money is already back with the member. A 500 no longer replays the
+      // refund path: since #3639 a replay after a refund never refunds again,
+      // and since #4149 it writes the lost record instead.
       mockConstructWebhookEvent.mockReturnValue(
         additionalSucceededEvent("evt_add_cancelled_task_close_fails"),
       );
@@ -1995,21 +1995,19 @@ describe("Stripe webhook Xero alerting", () => {
 
       const response = await POST(makeRequest());
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(500);
       expect(mockRefundPaymentTransactions).toHaveBeenCalled();
     });
 
-    it("writes a CRITICAL audit row when the record write fails, because Stripe will never redeliver a 200", async () => {
+    it("writes a CRITICAL audit row when the record write fails, and leaves the entry and the alert to the redelivery that writes the record (#4149)", async () => {
       /*
-        THE BLOCKER THIS PINS (review of #2760). Answering 200 is right — the money
-        is back with the member and a 500 replays the refund path — but it means
-        Stripe never redelivers and NOTHING else in the tree ever writes that row.
-        Meanwhile the finance card and `INV-ADDPAY-037` both now assert the record
-        is complete. A container log is not a record, so the loss has to surface on
-        the audit log the card itself names as permanent: `critical` severity,
-        `outcome: "failure"`, carrying the booking and the payment intent so a
-        finance operator can reconcile it by hand against the
-        `refunded_after_cancellation` entry beside it.
+        THE BLOCKER THIS PINS (review of #2760). A container log is not a record,
+        so the loss surfaces on the audit log the finance card names as permanent:
+        `critical` severity, `outcome: "failure"`, carrying the booking and the
+        payment intent. #4149: the webhook now answers 500, so Stripe redelivers
+        and the redelivery writes the record, the `refunded_after_cancellation`
+        entry and the one alert (`recoverLostLateCaptureRecord`) - so this attempt
+        writes neither, or the event would get two of each.
 
         Mutation proof: delete the `logAudit` call in the catch and this fails while
         every other test in the file still passes.
@@ -2031,7 +2029,7 @@ describe("Stripe webhook Xero alerting", () => {
 
       const response = await POST(makeRequest());
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(500);
       expect(mockLogAudit).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "booking.payment.auto_refund_record_failed",
@@ -2053,16 +2051,13 @@ describe("Stripe webhook Xero alerting", () => {
         paymentIntentId: "pi_additional_late",
         amountCents: 2500,
       });
-      // The refund entry is still written beside it: the money DID go back, and
-      // reconciling the gap by hand needs both rows.
-      expect(mockLogAudit).toHaveBeenCalledWith(
+      // The redelivery writes the refund entry and sends the alert, once.
+      expect(mockLogAudit).not.toHaveBeenCalledWith(
         expect.objectContaining({
           action: "booking.payment.refunded_after_cancellation",
         }),
       );
-      // And the club is still told at the time — a lost bookkeeping row must not
-      // also cost the notification.
-      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
     });
 
     it("re-reads deletedAt after the Stripe round trip, so a deletion mid-refund is not recorded as 'still on file'", async () => {
@@ -3281,7 +3276,7 @@ describe("Stripe webhook Xero alerting", () => {
       );
     });
 
-    it("still returns 200 and audits the loss when the record write fails (#2773)", async () => {
+    it("answers 500 and audits the loss when the record write fails, so the redelivery writes it (#2773 / #4149)", async () => {
       mockConstructWebhookEvent.mockReturnValue(
         primarySucceededEvent("evt_primary_record_fails"),
       );
@@ -3292,7 +3287,7 @@ describe("Stripe webhook Xero alerting", () => {
 
       const response = await POST(makeRequest());
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(500);
       expect(mockRefundPaymentTransactions).toHaveBeenCalled();
       expect(mockLogAudit).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3303,8 +3298,8 @@ describe("Stripe webhook Xero alerting", () => {
           entityId: "booking-7",
         }),
       );
-      // Still reported to a person, and still exactly one notification.
-      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
+      // Reported to a person by the redelivery that writes the record, once.
+      expect(mockSendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
     });
 
     it("withholds the refund on this path too when a hand-back already exists (#2774)", async () => {

@@ -124,18 +124,12 @@ async function classifyNoticeOnCancelledBooking(params: {
       heldCents: null,
     };
   }
-  const handlerWrite = isLateCaptureHandlerWrite(captureRow.reason);
-  const [evidence, cancelIntentOperation] = await Promise.all([
+  const [evidence, capturedAfterCancellation] = await Promise.all([
     loadCancellationRefundDecisionEvidence(params.bookingId),
-    handlerWrite
-      ? Promise.resolve(null)
-      : prisma.paymentRecoveryOperation.findFirst({
-          where: {
-            type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-            paymentIntentId: params.paymentIntentId,
-          },
-          select: { id: true },
-        }),
+    readCaptureLandedAfterCancellation({
+      paymentIntentId: params.paymentIntentId,
+      reason: captureRow.reason,
+    }),
   ]);
   return {
     verdict: classifyCaptureOnCancelledBooking(
@@ -143,13 +137,36 @@ async function classifyNoticeOnCancelledBooking(params: {
         status: captureRow.status,
         amountCents: captureRow.amountCents,
         refundedAmountCents: captureRow.refundedAmountCents,
-        capturedAfterCancellation: handlerWrite || cancelIntentOperation !== null,
+        capturedAfterCancellation,
       },
       evidence
     ),
     transactionStatus: captureRow.status,
     heldCents: captureRefundState(captureRow).heldCents,
   };
+}
+
+/**
+ * The durable evidence that a capture on a cancelled booking landed AFTER the
+ * cancel (`CapturedRowOnCancelledBooking.capturedAfterCancellation`): the primary
+ * handler's own `CANCELLED_BOOKING_LATE_CAPTURE_REASON` write, or a
+ * `CANCEL_PAYMENT_INTENT` recovery for the intent. One read for the notice's
+ * verdict and the self-heal's lost-record check (#4149,
+ * `late-capture-record-recovery.ts`). Nothing caught, as the verdict's reads.
+ */
+export async function readCaptureLandedAfterCancellation(capture: {
+  paymentIntentId: string;
+  reason: string | null;
+}): Promise<boolean> {
+  if (isLateCaptureHandlerWrite(capture.reason)) return true;
+  const cancelIntentOperation = await prisma.paymentRecoveryOperation.findFirst({
+    where: {
+      type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+      paymentIntentId: capture.paymentIntentId,
+    },
+    select: { id: true },
+  });
+  return cancelIntentOperation !== null;
 }
 
 /**
@@ -219,18 +236,32 @@ function reportAcknowledgedLateNotice(params: {
  * without writing, refunding or alerting; `false` for a genuine late capture,
  * which the handler refunds exactly as before. Awaited, so the audit write is
  * queued before the webhook answers.
+ *
+ * #4149: an already-refunded capture may be one whose automatic refund went out
+ * while its record did not (a crash, or a lost record write answered 500).
+ * `recoverLostRecord` is asked first; when it
+ * writes the record (`recoverLostLateCaptureRecord`), that is the notice's
+ * answer and no acknowledgement is written beside it.
  */
 export async function acknowledgeSettledLateNotice(params: {
   bookingId: string;
   paymentId: string;
   paymentIntent: { id: string; amount: number };
   captureKind: CancelledBookingLateCaptureKind;
+  recoverLostRecord?: () => Promise<boolean>;
 }): Promise<boolean> {
   const notice = await classifyNoticeOnCancelledBooking({
     bookingId: params.bookingId,
     paymentIntentId: params.paymentIntent.id,
   });
   if (notice.verdict === "late_capture") return false;
+  if (
+    notice.verdict === "already_refunded" &&
+    params.recoverLostRecord &&
+    (await params.recoverLostRecord())
+  ) {
+    return true;
+  }
   reportAcknowledgedLateNotice({
     bookingId: params.bookingId,
     paymentId: params.paymentId,
@@ -303,6 +334,12 @@ export type LateCaptureRecordOutcome = {
    * the intent is then NOT a known late capture, and nothing may note it (#3635 N4).
    */
   recorded: boolean;
+  /**
+   * #4149: `true` when this writer's own row was already there - another
+   * delivery of the same capture recorded it, and that delivery wrote the audit
+   * entry and sent the alert, so this one does neither.
+   */
+  recordedBefore: boolean;
   /**
    * `true` when an operator's hand-`COMPLETED` row was found AFTER the refund —
    * #2774's residual window, where their completion landed inside the caller's own
@@ -521,6 +558,7 @@ export async function recordAutomaticLateCaptureRefund(
     return {
       bookingDeleted,
       recorded: true,
+      recordedBefore: outcome.alreadyRecorded === "self",
       handCompletedAfterRefund:
         outcome.existingStatus === ManualRefundTaskStatus.COMPLETED,
     };
@@ -550,7 +588,7 @@ export async function recordAutomaticLateCaptureRefund(
         error: taskErr instanceof Error ? taskErr.message : String(taskErr),
       }),
     });
-    return { bookingDeleted, recorded: false, handCompletedAfterRefund: false };
+    return { bookingDeleted, recorded: false, recordedBefore: false, handCompletedAfterRefund: false };
   }
 }
 

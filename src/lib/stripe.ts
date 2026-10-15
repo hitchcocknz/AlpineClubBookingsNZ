@@ -260,10 +260,17 @@ export const STRIPE_IDEMPOTENCY_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
  * child's refund replay reads before it asks Stripe again, because Stripe keeps
  * an idempotency key for only 24 hours.
  */
-export async function listRefundsForPaymentIntent(paymentIntentId: string): Promise<Stripe.Refund[]> {
+export async function listRefundsForPaymentIntent(
+  paymentIntentId: string,
+  /** #4149: a background sweep bounds its read, as `retrieveRefund`'s does. Omitted, the request is unchanged. */
+  options?: { timeoutMs: number },
+): Promise<Stripe.Refund[]> {
   const stripe = await getStripe();
   const refunds: Stripe.Refund[] = [];
-  for await (const refund of stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 })) {
+  const list = options
+    ? stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 }, { timeout: options.timeoutMs, maxNetworkRetries: 0 })
+    : stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 });
+  for await (const refund of list) {
     refunds.push(refund);
   }
   return refunds;
