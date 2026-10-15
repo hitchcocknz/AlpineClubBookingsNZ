@@ -50,6 +50,7 @@ import {
 } from "@/lib/edit-financial-review-cancel-netting";
 import type { EditReviewSettlementTask } from "@/lib/edit-financial-review-settlement-task";
 import { cardShortfallSettlement } from "@/lib/cancel-card-refund-shortfall-settle";
+import type { CapacityRaceStripeRefunded } from "@/lib/capacity-race-refunded-total-correction";
 
 /**
  * #3032 (epic #2797): WHERE a confirmed review amount goes when the task is
@@ -258,6 +259,7 @@ export async function chooseEditReviewSettlementRoute({
   club,
   store,
   actingMemberId,
+  capacityRace,
 }: {
   task: EditReviewSettlementTask;
   /**
@@ -296,6 +298,8 @@ export async function chooseEditReviewSettlementRoute({
   store: Prisma.TransactionClient;
   /** #4154: the officer completing it, for a capacity race's audited correction; absent on a read-only preview. */
   actingMemberId?: string;
+  /** #4154 review (M1, M4): a capacity race's Stripe read, made before the transaction, and whether its note has an invoice. */
+  capacityRace?: { stripe: CapacityRaceStripeRefunded | null; invoiced: boolean };
 }): Promise<EditReviewSettlementRoute | null> {
   if (task.kind !== ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW) {
     if (direction === ManualRefundTaskDirection.CHARGE_TO_MEMBER) {
@@ -310,7 +314,7 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
-    const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null, format: club.format }); // #4097: null unless a card refund shortfall
+    const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null, format: club.format, capacityRace }); // #4097: null unless a card refund shortfall
     return handsBackByHand(task) && task.paymentId !== null
       ? {
           kind: "local-allocation",

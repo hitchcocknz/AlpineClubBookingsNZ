@@ -693,6 +693,22 @@ async function reversalFloorForTransaction(
  *
  * Read through the one reader of migration history (`readMigrationFinishedAt`).
  */
+/**
+ * #3640, #4154: whether a card refund made at `createdSeconds` predates the
+ * install's refund ledger. A null start (no migration history) predates
+ * nothing. An undated refund is the caller's to read: the refund sync takes it
+ * as made since (`since-ledger`, the safe direction for adding it), #4154's
+ * correction as made before (`pre-ledger`, the safe direction for lowering).
+ */
+export function predatesRefundLedger(
+  createdSeconds: number | null | undefined,
+  ledgerStartSeconds: number | null,
+  undated: "pre-ledger" | "since-ledger",
+): boolean {
+  if (typeof createdSeconds !== "number") return undated === "pre-ledger";
+  return ledgerStartSeconds !== null && createdSeconds < ledgerStartSeconds;
+}
+
 export async function refundLedgerStartSeconds(db: PaymentStore): Promise<number | null> {
   // A database built with `prisma db push` (a dev convenience) has no
   // migration history; it never ran pre-ledger code either, so it reads like
@@ -802,11 +818,8 @@ export async function recordStripeRefundsAgainstTransaction({
       }
       createdRefundsCount += 1;
       createdRefundAmountCents += recorded.amountCents;
-      const predatesLedger =
-        ledgerStartSeconds !== null &&
-        typeof refund.created === "number" &&
-        refund.created < ledgerStartSeconds;
-      if (isRecordedRefundStatus(recorded.status) && !predatesLedger) {
+      // An undated refund counts as new here: only a dated pre-ledger one was already folded in.
+      if (isRecordedRefundStatus(recorded.status) && !predatesRefundLedger(refund.created, ledgerStartSeconds, "since-ledger")) {
         newlyCountedCents += recorded.amountCents;
       }
     }
@@ -832,24 +845,33 @@ export async function recordStripeRefundsAgainstTransaction({
         "Stripe's refunded figure is above the card refunds on record; the refunds on record stand (#4104)",
       );
     }
+    let discardedCents = 0;
     const { previousCents, nextCents } = await compareAndSetRefundedAmount(
       db,
       paymentTransactionId,
-      (row) =>
-        Math.min(
-          row.amountCents,
-          Math.max(
-            row.refundedAmountCents + newlyCountedCents - reversedCents,
-            ledgerRefundedAmountCents,
-            // A subtraction never goes below the payment's floor - and the
-            // floor never RAISES a mirror (that would be the repair the audit
-            // leaves to a person).
-            Math.min(row.refundedAmountCents, reversalFloorCents),
-            0
-          )
-        ),
+      (row) => {
+        const uncapped = Math.max(
+          row.refundedAmountCents + newlyCountedCents - reversedCents,
+          ledgerRefundedAmountCents,
+          // A subtraction never goes below the payment's floor - and the
+          // floor never RAISES a mirror (that would be the repair the audit
+          // leaves to a person).
+          Math.min(row.refundedAmountCents, reversalFloorCents),
+          0
+        );
+        discardedCents = Math.max(0, uncapped - row.amountCents);
+        return Math.min(row.amountCents, uncapped);
+      },
       { writeStatus: true }
     );
+    // #4154 review (M1): the cap is the charge, so cents above it are refund money the total cannot hold - a refund the
+    // app recorded another way too (a hand-back on the same charge), so the member may have been paid twice. Loud, never silent.
+    if (discardedCents > 0) {
+      logger.error(
+        { paymentId, paymentTransactionId, discardedCents, previousCents, nextCents },
+        "A card refund took this charge's refunded total past the charge; the excess was discarded - check whether the member was also paid back another way (#4154)",
+      );
+    }
 
     const payment = await reconcilePaymentAggregates({ paymentId, store: db });
 
@@ -896,20 +918,24 @@ export async function foldIntoTransactionRefundedAmount({
   });
 }
 
-async function sumRecordedRefundsForTransaction(
-  store: PaymentStore,
-  paymentTransactionId: string
-) {
+/** The recorded, non-refused card refunds on one charge (`EXCLUDED_LEDGER_REFUND_STATUSES`): the floor its refunded total keeps, and what #4154's correction lowers to. */
+export async function sumRecordedRefundsForTransaction(store: Pick<PaymentStore, "paymentRefund">, paymentTransactionId: string) {
+  return sumRecordedRefundRows(store, { paymentTransactionId });
+}
+
+/** #4154 review (M2): the same, over every charge on one payment. */
+export async function sumRecordedRefundsForPayment(store: Pick<PaymentStore, "paymentRefund">, paymentId: string) {
+  return sumRecordedRefundRows(store, { paymentId });
+}
+
+async function sumRecordedRefundRows(
+  store: Pick<PaymentStore, "paymentRefund">,
+  where: { paymentTransactionId: string } | { paymentId: string },
+): Promise<number> {
   const recordedRefunds = await store.paymentRefund.aggregate({
-    where: {
-      paymentTransactionId,
-      status: {
-        notIn: EXCLUDED_LEDGER_REFUND_STATUSES,
-      },
-    },
+    where: { ...where, status: { notIn: EXCLUDED_LEDGER_REFUND_STATUSES } },
     _sum: { amountCents: true },
   });
-
   return recordedRefunds._sum.amountCents ?? 0;
 }
 

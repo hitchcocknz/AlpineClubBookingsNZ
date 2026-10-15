@@ -4,13 +4,14 @@ import { PaymentSource, PaymentStatus } from "@prisma/client";
 const mocks = vi.hoisted(() => ({
   processRefund: vi.fn(),
   loggerWarn: vi.fn(),
+  loggerError: vi.fn(),
 }));
 
 vi.mock("@/lib/logger", () => ({
   default: {
     warn: mocks.loggerWarn,
     info: vi.fn(),
-    error: vi.fn(),
+    error: mocks.loggerError,
     debug: vi.fn(),
   },
 }));
@@ -40,6 +41,7 @@ import {
   markPaymentIntentTransactionFailed,
   PartialRefundError,
   planStripeRefundAllocation,
+  predatesRefundLedger,
   reconcilePaymentAggregates,
   recordInternetBankingPaymentTransaction,
   RefundAllocationRacedError,
@@ -1750,6 +1752,27 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
   // the old max-based total already counted it (from Stripe's amount_refunded).
   // The first sync that lists it inserts its row for the first time: that must
   // not add it again.
+  // #4154 review (M1): the charge caps the total, so cents above it are refund money the total cannot hold - logged, never silent.
+  describe("a refund the charge's total cannot hold is logged as an error", () => {
+    it("MUTATION: credit for the whole charge, then a card refund on top: capped at the charge, the discarded cents named", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      await webhookSync(ctx);
+      expect(ctx.transaction.refundedAmountCents).toBe(PAID_CENTS);
+      expect(mocks.loggerError).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentTransactionId: ctx.transaction.id, discardedCents: CARD_REFUND_CENTS }),
+        expect.stringContaining("#4154"),
+      );
+    });
+
+    it("CONTROL: a refund within the charge logs no error", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx);
+      await webhookSync(ctx);
+      expect(mocks.loggerError).not.toHaveBeenCalled();
+    });
+  });
+
   describe("a refund older than the refund ledger", () => {
     const PRE_LEDGER_CENTS = 3000;
     const preLedgerRefund = {
@@ -2332,5 +2355,21 @@ describe("#4104 review - what the refund sender and the snapshot floor do with a
     const result = await refundPaymentTransactions({ format: CLUB_FORMAT_TEST, paymentId: "payment_1", amountCents: 2000, store: store as never });
     expect(result.failedLaterDebts).toEqual([debt]);
     expect(mocks.loggerWarn).toHaveBeenCalledWith(expect.objectContaining({ failedLaterDebts: [debt] }), expect.stringContaining("#4104"));
+  });
+});
+
+// #4154 review (M9): ONE rule for "made before the refund ledger", whose undated reading is each caller's to name.
+describe("predatesRefundLedger", () => {
+  it("a dated refund predates the ledger only when made before its start; no start predates nothing", () => {
+    expect(predatesRefundLedger(999, 1_000, "since-ledger")).toBe(true);
+    expect(predatesRefundLedger(1_000, 1_000, "pre-ledger")).toBe(false);
+    expect(predatesRefundLedger(999, null, "pre-ledger")).toBe(false);
+  });
+
+  it("MUTATION: an undated refund is read as its caller names, whatever the start", () => {
+    for (const start of [1_000, null]) {
+      expect(predatesRefundLedger(null, start, "pre-ledger")).toBe(true);
+      expect(predatesRefundLedger(undefined, start, "since-ledger")).toBe(false);
+    }
   });
 });

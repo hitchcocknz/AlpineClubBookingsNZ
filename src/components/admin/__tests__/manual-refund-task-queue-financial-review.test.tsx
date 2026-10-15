@@ -178,14 +178,32 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     const intro = screen.getByTestId("manual-refund-task-card-shortfall-check-intro");
     expect(intro.textContent).toMatch(/Check Stripe and\s+the bank before paying anything, then contact the member with what you found/);
     expect(intro.textContent).toMatch(/dismiss it with a note/);
-    // Paying it is only the answer once the check shows it is owed - and once the app has said it can record it.
-    expect(intro.textContent).toMatch(/If it really is owed, try\s+marking it paid back before paying/);
-    expect(intro.textContent).toMatch(/if the app accepts, pay it by bank transfer/);
+    // Paying it is only the answer once the check shows it is owed - and (#4154 review M3) only after the
+    // app has accepted the mark: mark first, then pay, on every surface.
+    expect(intro.textContent).toMatch(/If it really is owed, mark it\s+paid back first/);
+    expect(intro.textContent).toMatch(/Pay it by bank transfer straight after it accepts/);
+    expect(intro.textContent).not.toMatch(/pay it by bank transfer,? (then|and) mark/i);
     // #4154: a capacity race's too - whose member is told on the booking page only, never by email.
     expect(intro.textContent).toMatch(/from a booking cancelled because its dates filled up during the card payment/);
     expect(intro.textContent).toMatch(/on their booking page,\s+and for a cancellation by email unless emails were turned off/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+  });
+
+  it("#4154 review (M3): a part to check's paid-back dialog says to mark first and pay straight after, never that the money has already gone", async () => {
+    await renderQueue({ tasks: [{ ...HAND_BACK_TASK, cardShortfallCheck: true }], viewerCanViewBookings: true });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/The app first checks it can record this; pay straight after it accepts\./);
+    expect(dialog.textContent).not.toMatch(/once the money has actually gone back/);
+  });
+
+  it("CONTROL: a cash hand-back's paid-back dialog keeps its sentence", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/once the money has actually gone back to the member/);
+    expect(dialog.textContent).not.toMatch(/first checks it can record this/);
   });
 
   it("a cash hand-back does not print it", async () => {

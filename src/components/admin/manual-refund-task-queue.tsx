@@ -671,6 +671,10 @@ function resolutionDescription({
   if (task.groupOrganiserHandBack === true) {
     return "Only do this once the money has actually gone back to the organiser. It records that the club repaid them and who did it; the joiners' refunds are already in the ledger, so nothing more is written there or on the bookings' history.";
   }
+  // #4154 review (M3): a part to check is marked first and paid after - a refusal after paying would leave money gone unrecorded.
+  if (task.cardShortfallCheck === true) {
+    return "Only do this once you have checked the member really is owed it. The app first checks it can record this; pay straight after it accepts. It writes the refund into the payment ledger and records a refund on the booking's history. If it refuses, follow what it says.";
+  }
   return "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history.";
 }
 
@@ -1619,9 +1623,10 @@ export function ManualRefundTaskQueue() {
                 The member is told only that the club will be in touch: on their booking page,
                 and for a cancellation by email unless emails were turned off. Check Stripe and
                 the bank before paying anything, then contact the member with what you found. If
-                they were refunded, dismiss it with a note saying how. If it really is owed, try
-                marking it paid back before paying, once any bank-transfer part and the card refund
-                are done: if the app accepts, pay it by bank transfer; if not, follow what it says.
+                they were refunded, dismiss it with a note saying how. If it really is owed, mark it
+                paid back first, once any bank-transfer part and the card refund are done: the app
+                first checks it can record it. Pay it by bank transfer straight after it accepts; if
+                it refuses, follow what it says.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (

@@ -2,7 +2,13 @@ import "server-only";
 
 import { ManualRefundTaskStatus, PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 
-import { capacityRaceChargeForHandBack } from "@/lib/capacity-race-refunded-total-correction";
+import {
+  CAPACITY_RACE_XERO_SENTENCE,
+  capacityRaceChargeForHandBack,
+  capacityRaceNothingToAllocateMessage,
+  type CapacityRaceStripeRefunded,
+  type CapacityRaceXero,
+} from "@/lib/capacity-race-refunded-total-correction";
 import type { ClubFormat } from "@/lib/club-format";
 import { capacityRaceShortfallIntentId } from "@/lib/capacity-race-shortfall-task-key";
 import { cancelCardShortfallOccurrenceKey, cancelCardShortfallPart } from "@/lib/manual-refund-task-settlement-rules";
@@ -29,7 +35,9 @@ import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-
  *   while one of them is still moving. Nor (#4104) while a card refund on the
  *   payment that Stripe failed later is owed again by a row of its own. The refusal names the next step by the
  *   row's state - running, failed and waiting to retry, or stopped (close it
- *   as Paid another way) - on the recovery module's own rules.
+ *   as Paid another way) - on the recovery module's own rules. A capacity
+ *   race's (#4154 review M10) never says to mark this after that close, which
+ *   its correction would refuse: stopped, it says to dismiss with a note.
  * - **A part to check waits for its bank-transfer sibling**, which was sized on
  *   the same non-card charges: completed first, the check part would use that
  *   money and leave the bank part told to dismiss. Once the bank part is
@@ -56,16 +64,23 @@ export const CARD_SHORTFALL_CARD_STOPPED_MESSAGE =
 export const CARD_SHORTFALL_BANK_PART_FIRST_MESSAGE =
   "Mark the bank-transfer part of this cancellation's refund first: it is settled on the money this part would otherwise use. Then mark this, if the check shows it is really owed.";
 
+/** #4154 review (M3): an officer marks first and pays after, so a refusal says what to do with money still owed. */
 export const CARD_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE =
-  "The payment's records show nothing left to refund for this - it may already have gone back. Check Stripe and the bank: if the member has been refunded, dismiss this task with a note saying how.";
+  "The payment's records show nothing left to refund for this - it may already have gone back. Check Stripe and the bank: if the member has been refunded, dismiss this task with a note saying how. If it really is owed, the app cannot record it here: refund it by bank transfer, dismiss this task with a note saying when and how much, and raise its refund credit note in Xero by hand if the booking has a Xero invoice.";
 
 /**
- * #4154 (`INV-PAY-133`): a capacity race's part to check, when the race's own
- * card charge holds nothing for it. The app cannot record a bank refund there,
- * so it says what to do with money the treasurer pays anyway.
+ * #4154 review (M10): a capacity race's card refund that failed. Never "close
+ * it as Paid another way, then mark this": that close is another refund task
+ * on the booking, which the race's correction refuses (`other-task`), so the
+ * part can then only be dismissed - the owner's way out where the correction
+ * cannot run.
  */
-export const CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE =
-  "The payment's records show none of this card charge left to refund, so the app cannot record this as paid back - it may already have gone back. Check Stripe and the bank. If the member has had it, dismiss this task with a note saying how. If it is really owed, refund it by bank transfer, dismiss this task with a note saying when and how much, and raise its refund credit note in Xero by hand: the app will not raise one.";
+export const CAPACITY_RACE_CARD_AWAITING_RETRY_MESSAGE =
+  "The card refund for this booking failed and is waiting to retry: wait for its retry to go through, then mark this. If its retries run out, the app will say what to do then.";
+
+export function capacityRaceCardStoppedMessage(xero: CapacityRaceXero): string {
+  return `The card refund for this booking has stopped retrying, so the app cannot record this part as paid back. Check Stripe and the bank. Close the card refund as Paid another way on the Stuck States page once the member has had that money back another way. If this part is really owed too, refund it by bank transfer and dismiss this task with a note saying when and how much. ${CAPACITY_RACE_XERO_SENTENCE[xero]}`;
+}
 
 /**
  * The payment's captured charges the card refund cannot carry, newest first:
@@ -94,27 +109,45 @@ export function nonCardChargeHeadroom(
     .map((row) => ({ id: row.id, headroomCents: Math.max(0, row.amountCents - row.refundedAmountCents) }));
 }
 
+/** The refusals a card refund still moving gets: a member cancel's, or (review M10) a capacity race's, which never says to mark this after a Paid another way close. */
+type CardRefundRefusals = { stillRefunding: string; awaitingRetry: string; stopped: string };
+const CANCEL_CARD_REFUND_REFUSALS: CardRefundRefusals = {
+  stillRefunding: CARD_SHORTFALL_CARD_STILL_REFUNDING_MESSAGE,
+  awaitingRetry: CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE,
+  stopped: CARD_SHORTFALL_CARD_STOPPED_MESSAGE,
+};
+
 /** Why the card refund recovery is not settled, as the refusal says it - or null when it is (or there is none). */
-function cardRefundRefusal(cardRefund: { status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null; lastError: string | null } | null): string | null {
+function cardRefundRefusal(
+  cardRefund: { status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null; lastError: string | null } | null,
+  says: CardRefundRefusals,
+): string | null {
   if (!cardRefund || cardRefund.status === PaymentRecoveryOperationStatus.SUCCEEDED) return null;
-  if (isPaymentRecoveryOperationExhausted(cardRefund)) return CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
+  if (isPaymentRecoveryOperationExhausted(cardRefund)) return says.stopped;
   // A raw-string READ: the enum member stays in the recovery module (INV-PAY-056's census).
   if (cardRefund.status === "FAILED" || (cardRefund.status === PaymentRecoveryOperationStatus.PENDING && cardRefund.lastError)) {
-    return isPaymentRecoveryOperationInFlight(cardRefund) ? CARD_SHORTFALL_CARD_AWAITING_RETRY_MESSAGE : CARD_SHORTFALL_CARD_STOPPED_MESSAGE;
+    return isPaymentRecoveryOperationInFlight(cardRefund) ? says.awaitingRetry : says.stopped;
   }
-  return CARD_SHORTFALL_CARD_STILL_REFUNDING_MESSAGE;
+  return says.stillRefunding;
 }
 
 /** Null for any other task; for a shortfall, its settlement's preferred charges, or the refusal. */
 export async function cardShortfallSettlement(
-  task: { id: string; kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null },
+  task: { id: string; kind: string | null; occurrenceKey: string | null; bookingId: string; paymentId: string | null; booking: { memberId: string | null } },
   store: Prisma.TransactionClient,
-  /** What this completion settles, and who: a capacity race's correction (#4154) needs both. */
-  completion: { amountCents: number; actingMemberId: string | null; format: ClubFormat },
+  /**
+   * What this completion settles, and who: a capacity race's correction (#4154) needs both. For a capacity race,
+   * too, what Stripe says its charge refunded (read before the transaction) and whether the booking has a Xero
+   * invoice its note would credit (#4154 review M1, M4); a race without them refuses as Stripe unread.
+   */
+  completion: { amountCents: number; actingMemberId: string | null; format: ClubFormat; capacityRace?: { stripe: CapacityRaceStripeRefunded | null; invoiced: boolean } },
 ): Promise<{ preferTransactionIds: string[]; onlyTransactionIds?: string[]; nothingToAllocateMessage?: string } | null> {
   const part = cancelCardShortfallPart(task);
   if (part === null || task.paymentId === null) return null;
   await lockPaymentForRefundedTotal(store, task.paymentId);
+  const raceIntentId = capacityRaceShortfallIntentId(task);
+  const race = { stripe: completion.capacityRace?.stripe ?? null, invoiced: completion.capacityRace?.invoiced ?? true };
+  const raceXero: CapacityRaceXero = race.invoiced ? "invoiced" : "no-invoice";
   // #4104 review (MM3): the cancel's own recovery row, and any card refund on
   // this payment Stripe failed later and that is owed again by a row of its own
   // (`card_refund_failed_later_<refund>`) - card money still moving either way.
@@ -132,24 +165,28 @@ export async function cardShortfallSettlement(
   const ownOrFailedLater = (cardRefunds ?? []).filter(
     (row) => row.idempotencyKey.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) || isBookingCancelCardRefundRecoveryKey(task.bookingId, row.idempotencyKey),
   );
-  const refusal = ownOrFailedLater.map(cardRefundRefusal).find((message) => message !== null);
+  const says: CardRefundRefusals =
+    raceIntentId === null
+      ? CANCEL_CARD_REFUND_REFUSALS
+      : { ...CANCEL_CARD_REFUND_REFUSALS, awaitingRetry: CAPACITY_RACE_CARD_AWAITING_RETRY_MESSAGE, stopped: capacityRaceCardStoppedMessage(raceXero) };
+  const refusal = ownOrFailedLater.map((row) => cardRefundRefusal(row, says)).find((message) => message !== null);
   if (refusal) throw new ManualBookingPaymentError(refusal, 409);
   // #4154 (`INV-PAY-133`, PR #4159 review F2/F4): a capacity race's settles on
   // the race's own card charge and nowhere else - never a non-card charge, nor
   // a charge captured later on the same payment. Short there, the allocation
   // refuses (`onlyTransactionIds`) with the race's own way out.
   // Where that charge holds too little, the owner's guarded recalculation (#4154) corrects it first, or names what blocked it.
-  const raceIntentId = capacityRaceShortfallIntentId(task);
   if (raceIntentId !== null) {
     const { chargeId } = await capacityRaceChargeForHandBack(store, {
-      task: { id: task.id, bookingId: task.bookingId, paymentId: task.paymentId },
+      task: { id: task.id, bookingId: task.bookingId, paymentId: task.paymentId, booking: task.booking },
       raceIntentId,
       amountCents: completion.amountCents,
+      stripe: race.stripe,
+      invoiced: race.invoiced,
       actingMemberId: completion.actingMemberId,
       format: completion.format,
-      nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE,
     });
-    return { preferTransactionIds: [chargeId], onlyTransactionIds: [chargeId], nothingToAllocateMessage: CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE };
+    return { preferTransactionIds: [chargeId], onlyTransactionIds: [chargeId], nothingToAllocateMessage: capacityRaceNothingToAllocateMessage(raceXero) };
   }
   // A part to check settles only on what the bank-transfer part leaves (coordinator, PR #4122).
   if (part === "check") {

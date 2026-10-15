@@ -81,6 +81,9 @@ const mocks = vi.hoisted(() => ({
   failedLaterRecoveryRows: vi.fn((): unknown[] => []),
   // #4154: a capacity race's own card refund rows, answered only to a query that asks for them.
   capacityRaceRecoveryRows: vi.fn((): unknown[] => []),
+  // #4154 review (M1): what Stripe says a race's charge refunded, read before the transaction; and the charge's refund rows.
+  capacityRaceStripeRead: vi.fn(async (): Promise<unknown> => null),
+  recordedRefundsForTransaction: vi.fn(async () => 0),
   paymentFindUnique: vi.fn(),
   // #3827 (`INV-PAY-117`): the by-hand review route's pre-claim cap reads the
   // payment and the open hand-backs on the completion's own transaction.
@@ -144,6 +147,7 @@ vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
   applyLocalRefundAllocation: (...a: unknown[]) =>
     mocks.applyLocalRefundAllocation(...a),
   lockPaymentForRefundedTotal: (...a: unknown[]) => mocks.lockPaymentForRefundedTotal(...a),
+  sumRecordedRefundsForTransaction: (...a: unknown[]) => mocks.recordedRefundsForTransaction(...(a as [])),
   planStripeRefundAllocation: (...a: unknown[]) =>
     mocks.planStripeRefundAllocation(...a),
   refundPaymentTransactions: (...a: unknown[]) =>
@@ -153,6 +157,10 @@ vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
   RefundAllocationRacedError: class RefundAllocationRacedError extends Error {},
   isCapturedTransactionStatus: (status: string) =>
     ["SUCCEEDED", "PARTIALLY_REFUNDED", "REFUNDED"].includes(status),
+}));
+vi.mock("@/lib/capacity-race-refunded-total-correction", async (importOriginal) => ({
+  ...((await importOriginal()) as object),
+  readCapacityRaceStripeRefundedForTask: (...a: unknown[]) => mocks.capacityRaceStripeRead(...(a as [])),
 }));
 vi.mock("@/lib/payment-recovery", () => ({
   // #3835: the status sets the card cap's debt read routes through - the real ones.
@@ -2554,6 +2562,8 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
         { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 2000, refundedAmountCents: 0 },
       ]);
       mocks.paymentRecoveryOperationFindUnique.mockResolvedValue(null);
+      // #4154 review (M1): Stripe agrees with the race charge's refund rows (none) unless a case says otherwise.
+      mocks.capacityRaceStripeRead.mockResolvedValue(part === "race" ? { readable: true, refundedCents: 0 } : null);
       // The task itself, and (for a part to check) its bank-transfer sibling, already closed unless a case says so.
       siblingBankStatus = "COMPLETED";
       const task = mocks.manualRefundTaskFindUnique.getMockImplementation();
@@ -2637,13 +2647,16 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     // #4154 (`INV-PAY-133`): a capacity race's task to check waits for that race's own card refund row(s), one per intent.
     it.each([
       ["still being sent", { status: "PENDING", attempts: 0, nextRetryAt: LATER, lastError: null }, /still being refunded; mark this once it settles/],
-      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /has stopped retrying: close it as Paid another way on the Stuck States page/],
+      // #4154 review (M10): a race's own words - never "close it as Paid another way, then mark this", which its correction refuses.
+      ["waiting to retry", { status: "FAILED", attempts: 2, nextRetryAt: LATER, lastError: "Stripe refused" }, /^The card refund for this booking failed and is waiting to retry: wait for its retry to go through, then mark this\. If its retries run out, the app will say what to do then\.$/],
+      ["dead, retries spent", { status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }, /^The card refund for this booking has stopped retrying, so the app cannot record this part as paid back\..*Close the card refund as Paid another way on the Stuck States page.*dismiss this task with a note saying when and how much\. Then raise its refund credit note in Xero by hand/],
     ] as const)("MUTATION: a capacity race's part to check is refused while its card refund is %s, and completes once it is made", async (_label, row, message) => {
       shortfallTask("race");
       raceChargeRows();
-      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([row]);
+      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([row]).mockReturnValueOnce([row]);
 
       await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
+      await expect(complete()).rejects.toMatchObject({ message: expect.not.stringMatching(/Paid another way[^.]*, then mark this/) });
       expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
 
       mocks.capacityRaceRecoveryRows.mockReturnValueOnce([{ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, lastError: null }]);
@@ -2692,7 +2705,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
       await expect(complete()).rejects.toMatchObject({
         status: 400,
-        message: expect.stringMatching(/^The payment's records show none of this card charge left to refund.*raise its refund credit note in Xero by hand.*\(The app could not correct the charge's records itself: the payment's records hold no captured charge/),
+        message: expect.stringMatching(/^The payment's records show too little of this card charge left to refund.*raise its refund credit note in Xero by hand.*\(The app could not correct the charge's records itself: the payment's records hold no captured charge/),
       });
       expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
       expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
@@ -2704,8 +2717,33 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       raceChargeRows();
       mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
 
-      await expect(complete()).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/^The payment's records show none of this card charge left to refund/) });
+      await expect(complete()).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/^The payment's records show too little of this card charge left to refund.*Then raise its refund credit note in Xero by hand/) });
       expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ onlyTransactionIds: ["txn-race"] }));
+    });
+
+    // #4154 review (M4): a race's payment usually has no Xero invoice, so no note is queued - and none is asked for by hand.
+    it("MUTATION: a race on a booking with no Xero invoice is never told to raise a Xero note by hand", async () => {
+      shortfallTask("race", null);
+      raceChargeRows();
+      mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
+
+      await expect(complete()).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/^The payment's records show too little of this card charge left to refund.*The booking has no Xero invoice to credit, so no refund credit note is needed\.$/) });
+    });
+
+    // #4154 review (M1): Stripe is asked before the transaction, and a late or unread one stops the completion before any write.
+    it.each([
+      ["unread", { readable: false }, /^The app could not reach Stripe/],
+      ["ahead of the refund rows", { readable: true, refundedCents: 1 }, /^Stripe shows \$0\.01 of this card charge refunded, but the app has recorded only \$0\.00/],
+    ] as const)("MUTATION: a race whose charge Stripe reads %s is refused (409) before its claim, still OPEN", async (_label, stripe, message) => {
+      shortfallTask("race");
+      raceChargeRows();
+      mocks.capacityRaceStripeRead.mockResolvedValue(stripe);
+
+      await expect(complete()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(message) });
+      expect(mocks.capacityRaceStripeRead).toHaveBeenCalledWith("task-9");
+      expect(mocks.capacityRaceStripeRead.mock.invocationCallOrder[0]!).toBeLessThan(mocks.transaction.mock.invocationCallOrder[0]!);
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
     });
 
     it("a member cancel's part to check keeps #4097's settlement: non-card charges first, any charge after", async () => {
