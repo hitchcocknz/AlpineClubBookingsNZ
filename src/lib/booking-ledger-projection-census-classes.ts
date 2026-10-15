@@ -67,8 +67,8 @@ export const BOOKING_LEDGER_CENSUS_GATE_POLICY = {
   /**
    * Owner decision, #4075 (15 Oct 2026): a paid refund appeal on a cancelled
    * booking is a separate, named give-back (the kept fee stays as charged), and
-   * one that matches its recorded outcome to the cent agrees: `REFUND_APPEAL_PAID`
-   * is listed, never acknowledged one by one. A mismatch still disagrees.
+   * one that matches its recorded outcome to the cent agrees, so it is listed
+   * only: `REFUND_APPEAL_PAID` is never acknowledged one by one. A mismatch still disagrees.
    */
   refundAppealPaidHoldsGate: false,
 } as const;

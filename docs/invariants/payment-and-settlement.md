@@ -1515,6 +1515,9 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
   - **The ledger's kept figure stays the cancel's**: the group child planner
     takes these debts back out of the child's refunds
     (`organiserCardAppealRefundsFromRows`).
+  - **Read as the request's own refund row** (`readApprovedAppealOutcomes`,
+    #4120): for the refund-requests screen's "Refunded" figure and the
+    census's `REFUND_APPEAL_PAID`.
   - Proven by `admin-refund-request-organiser-card.test.ts`,
     `organiser-card-appeal-refund-key.test.ts` and
     `organiser-child-refund.realdb.test.ts`.

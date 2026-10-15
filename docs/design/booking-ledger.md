@@ -596,7 +596,7 @@ is missing; `CHANGE_FEE_REVERSED_BY_CANCELLATION`;
 cancel: it returns more than the cancel kept and no charge line says so. It is
 sized from each approved appeal's own outcome as the refund-requests screen
 reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by card
-or by its own completed hand-back, and never from the lines. An appeal's
+(its own, or the group organiser's, #3956) or by its own completed hand-back, and never from the lines. An appeal's
 hand-back is never the cancel's in-flight or dismissed one, nor is its card
 refund still retrying the cancel's in-flight refund, because the cancel never
 netted either. An unpaid, dismissed or declined appeal explains nothing, nor
