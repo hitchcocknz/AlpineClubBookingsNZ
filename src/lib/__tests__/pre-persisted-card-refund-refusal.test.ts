@@ -151,7 +151,7 @@ describe("the edit financial review's card refund (#4103)", () => {
     const result = await settle();
 
     expect(result.stripeRefundId).toBe("re_txn_a");
-    expect(markEditFinancialReviewRefundRecoverySucceeded).toHaveBeenCalledWith({ taskId: "task_1" });
+    expect(markEditFinancialReviewRefundRecoverySucceeded).toHaveBeenCalledWith({ idempotencyKey: key, sentPlan: [a, b] });
     expect(recordBookingEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "REFUNDED", amountCents: 5000 }));
     expect(replanOn(key)).toBeUndefined();
   });

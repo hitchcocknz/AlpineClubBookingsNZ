@@ -1589,19 +1589,25 @@ let webhookClient: PrismaClient;
 
     // #4036 review: the refused replay finds the door's intent, and another
     // ask records that same intent before the runner's claim-held write. The
-    // runner must not write over that row: its write rolls back, and the retry
-    // finds no unrecorded match and fails closed.
-    it("#4036: an adopted intent another ask recorded meanwhile is never written over - the replay fails, and its retry fails closed", async () => {
+    // runner must not write over that row: its write rolls back. The other ask
+    // is a ledger row written AFTER this recovery's row, as production always
+    // writes it, so the retry finds the recovery overtaken (#4150): it closes
+    // with nothing to mint (`isRecoveryOvertakenByLaterAsk`, #3340's rule).
+    it("#4036: an adopted intent another ask recorded meanwhile is never written over - the replay fails, and its retry completes the recovery as overtaken, minting nothing", async () => {
       const { stripe, recovery, doorIntent } = await increaseWhoseReplyIsLost();
       await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { stripeCustomerId: "cus_race_4036_moved" } });
       stripeRaceHooks.create = stripe.create as never;
       const OTHER_ROW = { reason: "date_change_price_increase", amountCents: 6_000 };
+      // One second after the recovery row (the frozen clock would stamp both
+      // the same instant, and the overtake rule is a strict `>`).
+      const OTHER_ROW_WRITTEN_AT = new Date("2026-07-01T00:00:01.000Z");
+      expect(recovery.createdAt.getTime()).toBeLessThan(OTHER_ROW_WRITTEN_AT.getTime());
       ordinaryAskMintHooks.afterMint = async ({ intent, adopted }) => {
         expect(adopted).toBe(true);
         await webhookClient.paymentTransaction.create({
           data: {
             paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: intent.id,
-            status: "PENDING", ...OTHER_ROW,
+            status: "PENDING", createdAt: OTHER_ROW_WRITTEN_AT, ...OTHER_ROW,
           },
         });
       };
@@ -1619,14 +1625,17 @@ let webhookClient: PrismaClient;
       const failed = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } });
       expect(failed).toMatchObject({ status: "FAILED", attempts: 1, paymentIntentId: recovery.paymentIntentId });
 
-      // The retry: the one match is now on the ledger, so nothing is adopted.
+      // The retry: another ask's row now stands on the ledger, written after
+      // this recovery's row, so a later mint priced the booking and this
+      // recovery has nothing left to mint - it completes, and nothing is
+      // adopted or written over.
       ordinaryAskMintHooks.afterMint = null;
       await prisma.paymentRecoveryOperation.update({ where: { id: recovery.id }, data: { nextRetryAt: new Date("2026-06-01T00:00:00.000Z") } });
-      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("succeeded");
       expect(await otherRow()).toEqual({ ...OTHER_ROW, carriedAskCents: 0, bookingModificationId: null });
       expect(stripe.intents.size).toBe(1);
       expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } }))
-        .toMatchObject({ status: "FAILED", attempts: 2, paymentIntentId: recovery.paymentIntentId });
+        .toMatchObject({ status: "SUCCEEDED", attempts: 2, paymentIntentId: recovery.paymentIntentId, nextRetryAt: null, succeededAt: expect.any(Date) });
     });
 
     it("#4036: a refused replay does not adopt an intent another edit's unfinished recovery could own (same door, same amount)", async () => {
