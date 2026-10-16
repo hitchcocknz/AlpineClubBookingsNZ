@@ -9,7 +9,9 @@ import type { DataMigrationVerification } from "./types";
  * migration replaces the whole row's `contentHtml` with the corrected starter
  * copy, but only where the row still equals the exact #1945 text (owner
  * decision, 16 Oct 2026). A privacy page an admin edited, even by appending a
- * line, keeps its own text byte for byte.
+ * line, keeps its own text byte for byte. On a page it does update, the
+ * header's "Last updated" date moves to the correction's date, but only where
+ * the header is still the starter one (owner decision, 17 Oct 2026).
  *
  * No seed for the first case: the pre-state is whatever the migration chain
  * itself produces.
@@ -17,6 +19,16 @@ import type { DataMigrationVerification } from "./types";
 const OLD_LINE = "<li><strong>System audit logs:</strong> Retained for 90 days, then automatically pruned.</li>";
 const NEW_MARKER = "An entry kept as evidence of an incident is kept, with its IP address and browser details, for at least 10 years.";
 const CLUB_NOTE = "<p>Our club also keeps paper sign-in sheets for one season.</p>";
+const OLD_DATE = "Last updated 1 April 2026";
+const NEW_DATE = "Last updated 17 October 2026";
+const CLUB_HEADER = "Our privacy promise to members.";
+
+const headerState = `
+  SELECT
+    position('${OLD_DATE}' IN "headerText") > 0 AS "oldDate",
+    position('${NEW_DATE}' IN "headerText") > 0 AS "newDate"
+  FROM "PageContent" WHERE "slug" = 'privacy'
+`;
 
 const sectionState = `
   SELECT
@@ -26,7 +38,7 @@ const sectionState = `
 `;
 
 const verification: DataMigrationVerification = {
-  migration: "20261118010000_correct_starter_privacy_audit_retention",
+  migration: "20261119010000_correct_starter_privacy_audit_retention",
   intent:
     "Replace the untouched starter privacy page with the copy stating the real audit-log retention schedule, and leave a privacy page a club edited untouched.",
   idempotentReRun: true,
@@ -39,6 +51,11 @@ const verification: DataMigrationVerification = {
           claim: "section 7 no longer says audit logs are pruned after 90 days; it states the class-by-class schedule",
           sql: sectionState,
           rows: [{ oldLine: false, newSchedule: true }],
+        },
+        {
+          claim: "the starter header's Last updated date moves to the correction's date",
+          sql: headerState,
+          rows: [{ oldDate: false, newDate: true }],
         },
         {
           claim: "the privacy row itself survives — the update rewrites a field, it never deletes the page",
@@ -65,6 +82,46 @@ const verification: DataMigrationVerification = {
           sql: `SELECT position('${CLUB_NOTE}' IN "contentHtml") > 0 AS "kept" FROM "PageContent" WHERE "slug" = 'privacy'`,
           rows: [{ kept: true }],
         },
+        {
+          claim: "an edited page's header keeps its date — nothing on a skipped row moves",
+          sql: headerState,
+          rows: [{ oldDate: true, newDate: false }],
+        },
+      ],
+    },
+    {
+      name: "a club that edited its privacy page by adding its own note at the top",
+      seed: `
+        UPDATE "PageContent"
+        SET "contentHtml" = '${CLUB_NOTE}' || "contentHtml"
+        WHERE "slug" = 'privacy';
+      `,
+      expectations: [
+        {
+          claim: "a page with text added before the starter copy is untouched — the guard is equality, not a suffix match",
+          sql: sectionState,
+          rows: [{ oldLine: true, newSchedule: false }],
+        },
+      ],
+    },
+    {
+      name: "a club that kept the starter privacy text but rewrote its header",
+      seed: `
+        UPDATE "PageContent"
+        SET "headerText" = '${CLUB_HEADER}'
+        WHERE "slug" = 'privacy';
+      `,
+      expectations: [
+        {
+          claim: "the untouched section 7 is still corrected",
+          sql: sectionState,
+          rows: [{ oldLine: false, newSchedule: true }],
+        },
+        {
+          claim: "the club's own header is kept byte for byte",
+          sql: `SELECT "headerText" FROM "PageContent" WHERE "slug" = 'privacy'`,
+          rows: [{ headerText: CLUB_HEADER }],
+        },
       ],
     },
   ],
@@ -82,6 +139,20 @@ const verification: DataMigrationVerification = {
         "Overwrites every club's privacy page, including pages an admin wrote for their own club — silent loss of a club's legal text.",
       find: `AND "contentHtml" = $previous$`,
       replace: `AND "contentHtml" LIKE '%' OR "contentHtml" = $previous$`,
+    },
+    {
+      name: "match pages that merely end with the starter text",
+      harm:
+        "Overwrites a club page that added its own text above the starter copy, losing the club's addition.",
+      find: `AND "contentHtml" = $previous$`,
+      replace: `AND "contentHtml" LIKE '%' || $previous$`,
+    },
+    {
+      name: "drop the header guard and always write the new header",
+      harm:
+        "Replaces a club's own privacy header with the starter one, silently discarding its wording.",
+      find: `WHEN "headerText" = 'How we collect`,
+      replace: `WHEN "headerText" IS NOT NULL OR "headerText" = 'How we collect`,
     },
   ],
 };

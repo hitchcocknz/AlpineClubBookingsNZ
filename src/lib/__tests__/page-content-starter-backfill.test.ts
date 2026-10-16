@@ -117,7 +117,7 @@ const PRIVACY_AUDIT_RETENTION_MIGRATION_PATH = join(
   process.cwd(),
   "prisma",
   "migrations",
-  "20261118010000_correct_starter_privacy_audit_retention",
+  "20261119010000_correct_starter_privacy_audit_retention",
   "migration.sql",
 );
 
@@ -698,5 +698,17 @@ describe("starter privacy audit-retention update migration (#4031)", () => {
     expect(page!.contentHtml).not.toContain("Retained for 90 days, then automatically pruned");
     expect(page!.contentHtml).toContain("at least 10 years");
     expect(sql).toContain("updatedAt");
+  });
+
+  it("bumps the header's Last updated date only where the header is still the starter one", () => {
+    // 17 Oct 2026 decision: the starter header (written once, by the policy
+    // backfill) moves to the seed's header; any other header is kept.
+    const page = starterPageContent.find((p) => p.slug === "privacy");
+    const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
+    const previousHeader = page!.headerText.replace("Last updated 17 October 2026", "Last updated 1 April 2026");
+    expect(policyPagesSql).toContain(sqlQuote(previousHeader));
+    expect(statementsOnly(sql)).toContain(`WHEN "headerText" = ${sqlQuote(previousHeader)}`);
+    expect(statementsOnly(sql)).toContain(`THEN ${sqlQuote(page!.headerText)}`);
+    expect(statementsOnly(sql)).toContain(`ELSE "headerText"`);
   });
 });
