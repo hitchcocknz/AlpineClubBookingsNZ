@@ -100,6 +100,19 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("lockPaymentForRefundedTotal(tx, PAYMENT_ID)");
   });
 
+  // #4154: the capacity race's shortfall task rides the same harness.
+  it("wires the capacity race's shortfall task proof the same way (#4154)", () => {
+    const harness = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"), "utf8");
+    expect(harness).toContain('import "./capacity-race-refund-shortfall-task.realdb.test";');
+    const suite = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/capacity-race-refund-shortfall-task.realdb.test.ts"), "utf8");
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("a partial plan: the card refunds what it carries, the rest is ONE task to check");
+    expect(suite).toContain("the card refund still being sent: completion is refused, and nothing corrected, until the runner makes the race's refund");
+    expect(suite).toContain("an empty plan whose records drifted: nothing by card, the whole charge to check");
+    expect(suite).toContain("a later intent's charge captured on the payment, holding plenty, is never the task's");
+    expect(suite).toContain("a charge made before the refund ledger started is never corrected");
+  });
+
   // #4125: the capacity race's runner-recorded refund rides the same harness.
   it("wires the capacity race's runner-recorded refund proof the same way (#4125)", () => {
     const harness = readFileSync(
