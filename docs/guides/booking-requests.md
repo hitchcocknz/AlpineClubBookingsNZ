@@ -90,7 +90,8 @@ are listed on the booking for you to relay.
      change, and one whose moved Date In and Date Out would fill gaps in their
      stay (approving writes, and charges, every night of that range). Once a
      request is decided, the card says what happened: a request approved since
-     this release lists the nights the guest kept, marked as no change, and a
+     this release (applied, or only acknowledged on a stay still running)
+     lists the nights the guest kept, marked as no change, and a
      declined request shows the nights the guest held when it was sent. A request approved before
      this release filled the gaps, so a guest with gaps whose dates were only
      repeated is listed with the dates as asked and neither mark. Added guests are

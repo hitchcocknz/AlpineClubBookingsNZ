@@ -91,9 +91,10 @@ export const storedLockedPeriodRequestSchema = z.object({
       .default([]),
   }),
   /**
-   * #4157: written by the approval that APPLIES the request, in its guarded
-   * claim — each guest whose repeated range kept the nights they held, with
-   * those nights (`INV-REQ-012`). Present, even empty, only on a request
+   * #4157: written by an approval's guarded claim, whether it applies the
+   * request or only acknowledges it (`acknowledgedKeptNightsRecord`) — each
+   * guest whose repeated range keeps the nights they held, with those nights
+   * (`INV-REQ-012`). Present, even empty, only on a request
    * approved under that rule, so the officer's card can tell it from one
    * approved before this release, which filled the gaps instead. A top-level
    * key the older schema strips, so a previous colour still reads the row.
@@ -204,6 +205,21 @@ export function withKeptNightsRecord(
     ...stored,
     keptNights: [...kept].map(([guestId, nights]) => ({ guestId, nights: [...nights] })),
   };
+}
+
+/**
+ * #4157: the record an approval that ACKNOWLEDGES a request (a running stay,
+ * nothing applied) writes in its claim, so the officer's card reads the
+ * decided request as it read while pending: `withKeptNightsRecord` over
+ * `keptNightsByGuest`, against `liveGuests`. `null` for a row the request's own
+ * schema cannot read, which is left as it is.
+ */
+export function acknowledgedKeptNightsRecord(
+  requestedChanges: unknown,
+  liveGuests: ReadonlyArray<LiveRequestGuestRow>,
+): Record<string, unknown> | null {
+  const stored = storedLockedPeriodRequestSchema.safeParse(requestedChanges);
+  return stored.success ? withKeptNightsRecord(requestedChanges, keptNightsByGuest(stored.data, liveGuests)) : null;
 }
 
 /**
@@ -387,11 +403,11 @@ function rangeFillsGaps(range: StoredNights, current: GuestNightsAsDays | undefi
  *  - pending (`REQUESTED`): as approval will apply it, against
  *    `context.guests` — the booking's live rows, the source approval reads
  *    (`keptNightsSource`) — else the snapshot: the kept nights, "no change";
- *  - approved with the applying approval's `keptNights` record: exactly as
- *    recorded, the kept nights, "no change";
- *  - approved without that record (before this release, or an approval that
- *    applied nothing): listed as asked with neither mark, since an approval
- *    before this release filled the gaps. Such a row says "no change" at all
+ *  - approved with the approval's `keptNights` record (applying or
+ *    acknowledging): exactly as recorded, the kept nights, "no change";
+ *  - approved without that record (before this release, or an unreadable
+ *    row): listed as asked with neither mark, since an approval before this
+ *    release filled the gaps, or only acknowledged the request. Such a row says "no change" at all
  *    only where its snapshot holds the guest's night rows;
  *  - declined: nothing was applied, so as a pending request reads, against the
  *    snapshot. Live rows are never read for a decided request: a decision may

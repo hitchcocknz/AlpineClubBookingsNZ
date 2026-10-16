@@ -577,6 +577,47 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     ]);
   });
 
+  it("records the kept nights from the live rows when the snapshot holds none (#4157)", async () => {
+    // Sent before #4088: the snapshot has g1's dates and no night rows. Under
+    // the locks g1 holds 10 and 12 June, and the claim must record those.
+    const gapped = ["2026-06-10", "2026-06-12"];
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest({
+              guestStayRanges: [{ guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" }],
+            }),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: ["g1", "g2"].map((id) => ({
+        id,
+        stayStart: new Date("2026-06-10T00:00:00.000Z"),
+        stayEnd: new Date("2026-06-13T00:00:00.000Z"),
+        nights: (id === "g1" ? gapped : ["2026-06-10", "2026-06-11", "2026-06-12"]).map((night) => ({
+          stayDate: new Date(`${night}T00:00:00.000Z`),
+        })),
+      })),
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+    const claim = mocks.updateMany.mock.calls[0][0] as { data: { requestedChanges: Record<string, unknown> } };
+    expect(claim.data.requestedChanges.keptNights, "INV-REQ-012: the record is built from the live rows").toEqual([
+      { guestId: "g1", nights: gapped },
+    ]);
+  });
+
   it("keeps the request pending when the booking has moved since the request (drift)", async () => {
     mocks.bookingFindUnique.mockResolvedValue({
       ...finishedBooking,

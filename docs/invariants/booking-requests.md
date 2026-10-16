@@ -318,12 +318,13 @@ judged on the ranges as sent.
 `keptNightsByGuest` decides this from one source, for the executor and for the
 officer's card: the booking's live guest rows (under the executor's locks;
 loaded by the admin list for pending requests only), else the request's
-snapshot. The applying approval's guarded claim records the kept nights as
+snapshot. An approval's guarded claim, whether it applies the request or only
+acknowledges it on a running stay, records the kept nights as
 `requestedChanges.keptNights`, empty when none, a key the older schema strips.
 The card reads a pending request against that source and a declined one
 against its snapshot, listing the kept nights as unchanged; an approval with
 the record exactly as recorded. An approval without it (one before this
-release, or one that applied nothing) is listed as asked with neither mark,
+release) is listed as asked with neither mark,
 and is unchanged only where its snapshot holds night rows. Guarded by
 `booking-change-request-repeated-range.test.ts`,
 `booking-change-request-execution.test.ts`,

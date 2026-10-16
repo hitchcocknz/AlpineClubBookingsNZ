@@ -275,4 +275,15 @@ describe("the officer's card reads a decided request without the live rows (#415
     const recorded = { ...request, keptNights: [{ guestId: "gap", nights: GAPPED }] };
     expect(card("APPROVED", recorded), "INV-REQ-012: a recorded approval kept them").toMatchObject(KEPT);
   });
+
+  it("reads the record itself, not the snapshot, where the snapshot holds no nights", () => {
+    // Sent before #4088: the snapshot has the guest's dates and no night rows,
+    // so only the record can say the approval kept 10 and 12 June.
+    const unsnapshotted = {
+      ...request,
+      original: { ...request.original, guests: [{ ...snapshotGuest("gap", undefined), firstName: "Gap", lastName: "Guest" }] },
+      keptNights: [{ guestId: "gap", nights: GAPPED }],
+    };
+    expect(card("APPROVED", unsnapshotted), "INV-REQ-012: the record is what was kept").toMatchObject(KEPT);
+  });
 });
