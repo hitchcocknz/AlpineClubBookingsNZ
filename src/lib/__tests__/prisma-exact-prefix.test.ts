@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { exactPrefix } from "@/lib/prisma-exact-prefix";
+import { exactContains, exactPrefix } from "@/lib/prisma-exact-prefix";
 
 const REPO_ROOT = resolve(__dirname, "../../..");
 
@@ -10,6 +10,12 @@ describe("exactPrefix (#4146)", () => {
     expect(exactPrefix("duplicate_capture_b1_")).toEqual({ startsWith: "duplicate\\_capture\\_b1\\_" });
     expect(exactPrefix("a%b\\c")).toEqual({ startsWith: "a\\%b\\\\c" });
     expect(exactPrefix("payment:cm1abc:refund-credit-note:")).toEqual({ startsWith: "payment:cm1abc:refund-credit-note:" });
+  });
+
+  it("escapes a contains operand the same way (#4165)", () => {
+    expect(exactContains("DATA_EXPORT")).toEqual({ contains: "DATA\\_EXPORT" });
+    expect(exactContains("a%b\\c")).toEqual({ contains: "a\\%b\\\\c" });
+    expect(exactContains("data-export")).toEqual({ contains: "data-export" });
   });
 
   it("stays wired into the race harness CI runs against a real database", () => {

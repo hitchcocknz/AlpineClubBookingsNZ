@@ -3216,7 +3216,7 @@ conflict under its unique
 settle never rolls back on it. Its completion is the one above, reading the
 race's own recovery rows (one per intent, on the booking) beside the cancel's,
 and it reads the race intent's captured charge under the same `Payment` row
-lock its allocation then writes, on that charge alone (`INV-PAY-134`).
+lock its allocation then writes, on that charge alone (`INV-PAY-135`).
 
 **#4154's guarded correction is a new writer of a charge's refunded total, and
 takes no new key.** Where the race's charge holds too little for the task, the
@@ -4966,8 +4966,10 @@ Stripe call:
   plan (`sentPlanRowWhere`). A row the runner holds on the same plan is
   closed: its replay of the same keys is answered with the door's refunds, and
   only the close that moved the row writes a record - the duplicate capture's
-  event and the capacity race's REFUNDED event (`closeCapacityRaceRefundRecordingEvent`,
-  close and event in one transaction) - so it is written once. A row another
+  event, and the capacity race's and the member cancel's REFUNDED event
+  (`closeRefundRowRecordingEvent`, close and event in one transaction, the
+  runner's close the same way; #4125, #4145, `INV-PAY-134`) - so it is written
+  once. A row another
   writer re-planned is not on that plan and is left open: one moved after a
   refusal, or after Stripe's later report that a refund failed, is still owed;
   one re-planned only by the runner marking a slice made is left to the

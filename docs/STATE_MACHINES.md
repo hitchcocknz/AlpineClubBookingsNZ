@@ -536,7 +536,33 @@ the shared `buildBookingCancellationRefundMetadata` helper
 per-cancellation value the cron cannot reconstruct from the persisted
 operation), so a Stripe-succeeded-but-unrecorded refund (or a cron tick racing
 the inline call) is replayed by Stripe, never repeated and never rejected as an
-`idempotency_error` for a reused key with mismatched parameters. An outstanding additional
+`idempotency_error` for a reused key with mismatched parameters. The
+`REFUNDED` booking event commits with whichever close moves that operation to
+`SUCCEEDED` - the inline refund's, or the cron's when the inline refund threw,
+was refused or made only some slices - in the close's own transaction, dated by
+it and for the frozen plan's total, so it is written once and never for a
+refund still owed (#4145, `INV-PAY-134`). A "Paid another way" close records
+only what the row's slices took from the refunds recorded on the payment, as
+that event dated by the latest of them as Stripe made it - never before the
+cancel - and marked as that close's (none made, none written). The page tells
+each part from where it is recorded: the card's from that marked event (with
+none - a cancel made before #4145 - from what the row's slices took from the
+payment's recorded refunds, by the rule the close used,
+`cardRefundMadeForOperation`, undated), what the record says was paid back,
+and as closed by the club only what the record left unpaid
+(`paidAnotherWayUnpaidCents`). A part the payment no longer held when it
+closed is none of these and is not said. Stated limit: the event's dated part
+keeps what the close found, even a refund that later fails and is owed again
+on its own row; the undated part follows the refunds as recorded now, within
+what the record's paid-back and unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,
+whatever became of the refund, so a later close writes no second one; the
+booking page reads an open or paid-another-way row ahead of that event.
+Stated limit, the deploy boundary, both ways and history only while both
+colours serve: an old image's cancel writes its up-front event even after a
+new runner closed the row and recorded one (two events), and an old image's
+runner closes a new cancel's row with no event (none). An edit financial
+review's credit or refund landing after the cancel is never read as the
+cancellation's settlement. An outstanding additional
 PaymentIntent is retired durably (#1350): the claim transaction persists a
 `CANCEL_PAYMENT_INTENT` recovery operation alongside the FAILED flip, the
 Phase-2 inline Stripe cancel stays best-effort (logged, never allowed to
@@ -1701,7 +1727,8 @@ says the full amount "is being refunded" and carries
 cancelled it. The `REFUNDED` event is written once the refund is made, for the
 plan's total (never the full charge), by whichever close moves the row to
 `SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
-same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+same transaction as that close (`closeRefundRowRecordingEvent`, which a member
+cancel's close shares since #4145), so a
 crash cannot leave the row closed without its event, and a failed insert
 leaves the row open for the runner's replay. A close that finds the row
 already closed writes nothing, so the event lands exactly once. The inline
@@ -1709,12 +1736,19 @@ close takes the row only while it is still on the plan the attempt sent
 (#4144), so a row re-planned after Stripe later failed the refund stays open
 and owed, with no event. Until it lands, the booking
 page and the payment-link page read the row
-(`readCancelledCardRefundState`, which reads a member cancel's
+(`readCancelledCardRefund`, which reads a member cancel's
 `booking_cancel_refund_recovery_<bookingId>` row the same way): still being
 sent says "on its way to your original payment method"; a dead row (retries
 spent, or failed with no retry) says the club will be in touch - as does a
-dead card part of a card refund shortfall; a row closed without the event says
-it was refunded, or paid back another way. No cancellation policy decided a
+dead card part of a card refund shortfall; a row closed "Paid another way"
+says so, with what its record paid back and left unpaid (the slices Stripe had
+made first, a member cancel's or a capacity race's, are recorded by that close
+and said apart, as is another row's refund the runner made, and what the
+sentence does not say - the rest past the plan, or a part its payment no longer
+held - is followed up). A capacity race's refund is never told as more than its
+rows' frozen plans together (`cardRefundPlanCents`), whatever its state: a
+`CANCELLED` snapshot written before #4125 froze the full charge; a capacity race's row the runner closed before #4125,
+which wrote no event, says it was refunded. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
 snapshot, whose `settledAmountCents` is the plan's total: when the payment
@@ -1722,7 +1756,7 @@ ledger showed less refundable than the charge (or nothing - an empty plan,
 which never reads "no refund was due"), the rest is neither refunded nor
 retained, and the narrative says the club will be in touch about it. That
 promise is backed by a once-ever officers' alert on the booking naming the
-rest (`alertCapacityRaceRefundShortfall`) and (#4154, `INV-PAY-134`) by a
+rest (`alertCapacityRaceRefundShortfall`) and (#4154, `INV-PAY-135`) by a
 hand-back task to check for it, raised OPEN in the void's claim. The
 narrative counts every settlement event of a capacity race, so the task
 marked paid back (its REFUNDED event) removes the follow-up line; dismissed,
@@ -2186,7 +2220,7 @@ Where that charge holds too little, the completion first lowers its refunded
 total to its refund rows when every guard holds (the owner's guarded
 recalculation), else is refused naming the guard (DISMISSED and a Xero note by
 hand). See
-[`INV-PAY-134`](invariants/payment-and-settlement.md#inv-pay-134).
+[`INV-PAY-135`](invariants/payment-and-settlement.md#inv-pay-135).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

@@ -2448,7 +2448,7 @@ describe("#4147: a capacity race's cancel is judged by its own refund rows and w
     });
   });
 
-  // #4154 (`INV-PAY-134`): the rest the plan did not carry is #4097's part to check, raised with the cancel.
+  // #4154 (`INV-PAY-135`): the rest the plan did not carry is #4097's part to check, raised with the cancel.
   describe("its task to check (#4154)", () => {
     /** $190 charged, $120 planned and made; the $70 rest a task to check, closed `task`; paid back, its own line. */
     function withTask(task: "OPEN" | "COMPLETED" | "DISMISSED"): BookingLedgerCensusRow {

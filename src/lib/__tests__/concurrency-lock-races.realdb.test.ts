@@ -302,6 +302,13 @@ import "./capacity-race-refund-shortfall-task.realdb.test";
 // page's read of the row says still being sent, dead or made. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4125-` fixtures.
 import "./capacity-race-refund-event.realdb.test";
+// #4145 reuses it to prove a member cancel's card refund writes one REFUNDED
+// booking event, dated by the close that made it and for the frozen plan's
+// total - the cancel's own close or the recovery runner's, never both - through
+// the real cancel, runner and "paid another way" close, and that the booking
+// page's narrative follows each path. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4145-` fixtures.
+import "./cancel-card-refund-event.realdb.test";
 // #4147 reuses it to prove the booking-ledger census reads a capacity race's
 // cancel by its own refund rows: through the REAL capacity race, back-post and
 // recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post
@@ -357,6 +364,12 @@ import "./ledger-insertion-seq.realdb.test";
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
 // its own `race-4146-` fixtures.
 import "./prisma-exact-prefix.realdb.test";
+// #4165 reuses it to prove the audit category filters' literal action
+// prefixes select the same real rows the wildcard ones did, on every category
+// and on a member's own timeline, and refuse the rows only a `_` reached.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4165` rows.
+import "./audit-query-exact-prefix.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

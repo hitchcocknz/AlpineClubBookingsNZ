@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof of #4154 (`INV-PAY-134`): the part of a capacity race's
+ * Real-PostgreSQL proof of #4154 (`INV-PAY-135`): the part of a capacity race's
  * charge its card refund plan does not carry is a hand-back task to check,
  * raised with the cancel, which the officers can close either way.
  *
@@ -16,7 +16,7 @@
  *   the webhook door settles nothing more and writes no second. The card refund
  *   ADDS to the drifted total, so the charge reads all of it refunded and the
  *   census reports the drift. Marked paid back, the owner's guarded
- *   recalculation (`INV-PAY-134`) lowers the charge to its refund rows, audited
+ *   recalculation (`INV-PAY-135`) lowers the charge to its refund rows, audited
  *   before and after, and the task lands on that charge alone (never on a
  *   charge captured later on the payment, its own case) - posting its `BANK_REFUND` line and ONE Xero refund
  *   note keyed on the task; the member's page reads the whole charge refunded
@@ -75,7 +75,7 @@ const CHECK_KEY = `cancel-card-shortfall:${BOOKING_ID}:capacity-race:${INTENT}:c
 const LATE_TXN = "race-4154-txn-late";
 const LATE_INTENT = "pi_race_4154_late";
 // After this database's refund ledger started (its migration runs at real time), as a live charge's is; the
-// double's refunds are later still. A charge from before it is one the correction must refuse (`INV-PAY-134`).
+// double's refunds are later still. A charge from before it is one the correction must refuse (`INV-PAY-135`).
 const CHARGE_MADE_AT = new Date("2098-06-01T00:00:00.000Z");
 const LATE_CHARGE_MADE_AT = new Date("2098-07-01T00:00:00.000Z");
 const CORRECTION_ACTION = "booking-payment.capacity-race.refunded-total-corrected";

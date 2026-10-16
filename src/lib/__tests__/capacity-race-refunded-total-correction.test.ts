@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #4154 (`INV-PAY-134`, owner decision 15 Oct 2026: "Guarded recalculation"):
+ * #4154 (`INV-PAY-135`, owner decision 15 Oct 2026: "Guarded recalculation"):
  * a capacity race's card charge whose refunded total reads more than its refund
  * rows is corrected - lowered to them - before its hand-back is recorded, and
  * only when every condition holds. Each condition is shown blocking ALONE
@@ -124,7 +124,7 @@ const expectBlocked = async (store: ReturnType<typeof world>, blocked: CapacityR
   nothingWritten();
 };
 
-describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-134)", () => {
+describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-135)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     doubles.ledgerStart.mockResolvedValue(LEDGER_START);

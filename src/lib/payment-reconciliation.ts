@@ -1444,7 +1444,7 @@ async function settleBookingPaymentInTransaction(
       // <amount>` Stripe keys, Stripe answers repeats with the original
       // refunds, and the ledger dedupes on refund id.
       const { slices: refundPlan, plannedAmountCents: plannedRefundCents } = await planStripeRefundAllocation({ paymentId: payment.id, amountCents, store: tx });
-      // #4154 (`INV-PAY-134`): what the plan does not carry is a hand-back task to check, raised with the cancel.
+      // #4154 (`INV-PAY-135`): what the plan does not carry is a hand-back task to check, raised with the cancel.
       const shortfallTaskRaised = await raiseCapacityRaceRefundShortfallTask(tx, { bookingId: booking.id, paymentId: payment.id, paymentIntentId, chargedCents: amountCents, plannedRefundCents, format: settlement.format });
       if (plannedRefundCents > 0) {
         await enqueueCapacityClaimFailedRefundRecovery({

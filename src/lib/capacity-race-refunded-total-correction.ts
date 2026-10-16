@@ -27,7 +27,7 @@ import { formatCents } from "@/lib/utils";
 import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**
- * #4154 (`INV-PAY-134`, owner decision on #4154, 15 Oct 2026: "Guarded
+ * #4154 (`INV-PAY-135`, owner decision on #4154, 15 Oct 2026: "Guarded
  * recalculation"): A CAPACITY RACE'S CARD CHARGE WHOSE REFUNDED TOTAL READS
  * MORE THAN ITS REFUND ROWS, CORRECTED SO ITS HAND-BACK CAN BE RECORDED.
  *
@@ -141,7 +141,7 @@ export const CAPACITY_RACE_XERO_SENTENCE: Record<CapacityRaceXero, string> = {
 };
 
 /**
- * #4154 (`INV-PAY-134`): a capacity race's part to check, when the race's own
+ * #4154 (`INV-PAY-135`): a capacity race's part to check, when the race's own
  * card charge holds too little for it. The app cannot record a bank refund
  * there, so it says what to do with money the treasurer pays anyway.
  */

@@ -9,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 
 /**
- * #4159 review round 2 (F2, `INV-PAY-134`): A CARD REFUND THE CHARGE'S
+ * #4159 review round 2 (F2, `INV-PAY-135`): A CARD REFUND THE CHARGE'S
  * REFUNDED TOTAL COULD NOT HOLD.
  *
  * `recordStripeRefundsAgainstTransaction` caps a charge's refunded total at the

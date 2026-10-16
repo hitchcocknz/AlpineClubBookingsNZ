@@ -190,7 +190,7 @@ export type EditReviewSettlementRoute =
        * "marked paid by hand". Words on the Xero note only; settlement and ledger unchanged. */
       handedBackInCash?: true;
       /** #4097 (`INV-PAY-129`): a card refund shortfall settles on its non-card charges first; its refusal names dismissing.
-       * #4154 (`INV-PAY-134`): a capacity race's, on the race's own charge only, with its own refusal. */
+       * #4154 (`INV-PAY-135`): a capacity race's, on the race's own charge only, with its own refusal. */
       cardShortfall?: { preferTransactionIds: string[]; onlyTransactionIds?: string[]; nothingToAllocateMessage?: string };
     }
   | {

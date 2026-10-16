@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * #4159 review round 2 (F1, `INV-PAY-134`): a capacity race's part to check
+ * #4159 review round 2 (F1, `INV-PAY-135`): a capacity race's part to check
  * whose record keeps a card note's cover is NOTED bank cash, with or without a
  * note row of its own - so the legacy-mirror cash keeps it, and the card note
  * already in Xero answers it rather than reading as over-coverage.

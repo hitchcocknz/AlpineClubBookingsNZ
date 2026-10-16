@@ -29,7 +29,7 @@ export function settlementWriteRefusal(error: unknown, route?: { kind: string; c
   // matched by its words so a caller's mocked module needs no new export.
   if (error instanceof Error && error.message === "Refund amount exceeds captured payments") {
     // #4097 (`INV-PAY-129`): a card refund shortfall the ledger holds nothing for is dismissed, not repriced.
-    // #4154 (`INV-PAY-134`): a capacity race's names its own way out.
+    // #4154 (`INV-PAY-135`): a capacity race's names its own way out.
     if (route?.cardShortfall) return new ManualBookingPaymentError(route.cardShortfall.nothingToAllocateMessage ?? CARD_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE, 400);
     return new ManualBookingPaymentError("That is more than was ever captured on this payment — check the amount against the booking's payment history.", 400);
   }
