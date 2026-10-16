@@ -511,3 +511,127 @@ describe("POST /api/bookings/[id]/modify-quote — one-code fields on a several-
   });
 });
 
+
+/*
+  #4197 — the breakdown adds up to `priceDiffCents` with promotions too. The
+  difference is measured from the stored final price, which carries the
+  booking's previous promo adjustment, so the breakdown reverses that
+  adjustment whether its code is kept or removed.
+*/
+describe("POST /api/bookings/[id]/modify-quote — the breakdown sums with promotions (#4197)", () => {
+  /** Aroha's draft carrying one code, SPRING10, at -$25.00. */
+  function oneCodeDraft() {
+    return {
+      ...memberDraft(),
+      discountCents: 2_500,
+      promoAdjustmentCents: -2_500,
+      finalPriceCents: 17_500,
+      promoRedemptions: [
+        {
+          id: "r-a",
+          promoCodeId: "pc-a",
+          applicationOrder: 0,
+          priceAdjustmentCents: -2_500,
+          guestTargets: [],
+          promoCode: { id: "pc-a", code: "SPRING10", internal: false, assignments: [], lodges: [] },
+        },
+      ],
+    };
+  }
+
+  /** The promo engine adjusts the price by `cents` for whichever code it runs. */
+  function engineAdjusts(cents: number) {
+    h.validateAndCalculatePromoDiscount.mockResolvedValue({
+      beneficiaryMemberIds: [],
+      selectedGuestIndexes: [0],
+      discount: {
+        discountCents: -cents,
+        priceAdjustmentCents: cents,
+        freeNightsUsed: 0,
+        eligibleGuestCount: 1,
+        allocations: [],
+        targets: [],
+        adjustmentTargets: [],
+      },
+    });
+  }
+
+  /** The stay as stored: two nights at their locked $100.00. */
+  function pricesTheStoredStay() {
+    h.priceGuests.mockResolvedValue({
+      totalPriceCents: 20_000,
+      guests: [
+        {
+          priceCents: 20_000,
+          perNightCents: [10_000, 10_000],
+          nightDates: [D("2026-08-14"), D("2026-08-15")],
+        },
+      ],
+    });
+  }
+
+  async function quote(body: Record<string, unknown>) {
+    const res = await POST(req(body), { params });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    const lines = json.itemizedChanges as Array<{ label: string; amountCents: number }>;
+    expect(lines.reduce((sum, line) => sum + line.amountCents, 0)).toBe(json.priceDiffCents);
+    return json;
+  }
+
+  it("a kept code re-priced on a longer stay: its new line and its old one reversed", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    engineAdjusts(-3_000);
+
+    const body = await quote({ checkOut: "2026-08-17" });
+
+    // $300.00 - $30.00 against the stored $175.00.
+    expect(body.priceDiffCents).toBe(9_500);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Date change: 2 nights → 3 nights", amountCents: 10_000 },
+      { label: "Promo 'SPRING10'", amountCents: -3_000 },
+      { label: "Previous promo 'SPRING10'", amountCents: 2_500 },
+    ]);
+  });
+
+  it("a removed code: its previous adjustment reversed, and nothing else", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    pricesTheStoredStay();
+
+    const body = await quote({ removePromoCode: true });
+
+    expect(body.priceDiffCents).toBe(2_500);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Removed promo 'SPRING10'", amountCents: 2_500 },
+    ]);
+    expect(h.validateAndCalculatePromoDiscount).not.toHaveBeenCalled();
+  });
+
+  it("a newly applied code on a booking with none: its line alone", async () => {
+    h.promoCodeFindUnique.mockResolvedValue(MATES50_ROW);
+    engineAdjusts(-5_000);
+
+    const body = await quote({ promoCode: "MATES50", checkOut: "2026-08-17" });
+
+    expect(body.priceDiffCents).toBe(5_000);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Date change: 2 nights → 3 nights", amountCents: 10_000 },
+      { label: "Promo 'MATES50'", amountCents: -5_000 },
+    ]);
+  });
+
+  it("a new code replacing the stored one: the new line, and the old one reversed", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    h.promoCodeFindUnique.mockResolvedValue(MATES50_ROW);
+    pricesTheStoredStay();
+    engineAdjusts(-5_000);
+
+    const body = await quote({ promoCode: "MATES50" });
+
+    expect(body.priceDiffCents).toBe(-2_500);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Promo 'MATES50'", amountCents: -5_000 },
+      { label: "Previous promo 'SPRING10'", amountCents: 2_500 },
+    ]);
+  });
+});

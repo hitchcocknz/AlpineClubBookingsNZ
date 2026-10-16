@@ -213,10 +213,11 @@ function booking(overrides: Record<string, unknown> = {}) {
     otherLodgeId: null,
     checkIn: D("2026-08-01"),
     checkOut: D("2026-08-03"),
-    totalPriceCents: 10600,
+    // The stored guest prices summed: 2000 + 4800 + 4800 (#4197).
+    totalPriceCents: 11600,
     discountCents: 0,
     promoAdjustmentCents: 0,
-    finalPriceCents: 10600,
+    finalPriceCents: 11600,
     payment: null,
     promoRedemption: null,
     guests: [
@@ -360,11 +361,6 @@ describe("modify-quote — other-lodge member rate", () => {
   });
 
   it("itemises the re-rate once, so the breakdown adds up to the total (#4197)", async () => {
-    // The stored total as the sum of the stored guest prices (2000 + 4800 + 4800),
-    // which is what the breakdown's old side reads.
-    h.bookingFindUnique.mockResolvedValue(
-      booking({ totalPriceCents: 11600, finalPriceCents: 11600 }),
-    );
     const res = await POST(
       req({
         otherLodgeId: "lodge-partner",

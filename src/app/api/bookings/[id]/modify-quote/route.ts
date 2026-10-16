@@ -2423,10 +2423,15 @@ export async function POST(
     });
   }
 
-  // Show removed promo as the inverse of its previous signed adjustment.
-  if (promoChange.removePromoCodeRequested && booking.promoAdjustmentCents !== 0) {
+  // The previous signed adjustment, reversed, whether its codes were removed or
+  // kept (#4197). `priceDiffCents` is measured from the stored final price, which
+  // carries it, so without this a kept code's line above reads as all new.
+  if (booking.promoAdjustmentCents !== 0) {
+    const previousLabel = bookingPromoCodeLabel(booking) || "adjustment";
     itemizedChanges.push({
-      label: `Removed promo '${bookingPromoCodeLabel(booking) || "adjustment"}'`,
+      label: promoChange.removePromoCodeRequested
+        ? `Removed promo '${previousLabel}'`
+        : `Previous promo '${previousLabel}'`,
       amountCents: -booking.promoAdjustmentCents,
     });
   }
