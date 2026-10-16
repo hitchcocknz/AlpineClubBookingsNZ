@@ -77,6 +77,7 @@ function xeroHealth(overrides?: {
   pending?: number;
   missingInvoices?: number;
   refundsMissingCreditNotes?: number;
+  bankRefundsMissingCreditNotes?: number;
 }): XeroAdminHealthSnapshot {
   return {
     unlinkedMembers: { count: 0, href: "/admin/members" },
@@ -92,6 +93,10 @@ function xeroHealth(overrides?: {
     missingInvoices: { count: overrides?.missingInvoices ?? 0 },
     refundsMissingCreditNotes: {
       count: overrides?.refundsMissingCreditNotes ?? 0,
+      graceHours: 24,
+    },
+    bankRefundsMissingCreditNotes: {
+      count: overrides?.bankRefundsMissingCreditNotes ?? 0,
       graceHours: 24,
     },
     contactGroupMismatches: { count: 0, cacheReady: true },
@@ -259,6 +264,17 @@ describe("classifyFinanceSyncHealth", () => {
         "refunds-missing-credit-notes"
       ).found.tone
     ).toBe("amber");
+  });
+
+  it("#4162: flags voided bank-transfer refund notes as amber, linking to where they are answered", () => {
+    const { found } = signal(
+      { ...healthyInput(), xeroHealth: xeroHealth({ bankRefundsMissingCreditNotes: 2 }) },
+      "bank-refunds-missing-credit-notes"
+    );
+    expect(found).toMatchObject({ tone: "amber", value: "2", href: "/admin/stuck-states" });
+    expect(
+      signal(healthyInput(), "bank-refunds-missing-credit-notes").found.tone
+    ).toBe("green");
   });
 
   it("is amber when stored facts are stale or missing", () => {

@@ -141,6 +141,7 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
       },
       missingInvoices: { count: 0 },
       refundsMissingCreditNotes: { count: 0, graceHours: 24 },
+      bankRefundsMissingCreditNotes: { count: 0, graceHours: 24 },
       contactGroupMismatches: { count: 0, cacheReady: true },
       contactLinkMismatches: { count: 0, cacheReady: true },
       apiBudget: {
@@ -259,6 +260,7 @@ describe("getStuckStateDashboard", () => {
         },
         missingInvoices: { count: 9 },
         refundsMissingCreditNotes: { count: 10, graceHours: 24 },
+        bankRefundsMissingCreditNotes: { count: 3, graceHours: 24 },
         contactGroupMismatches: { count: 12, cacheReady: true },
         contactLinkMismatches: { count: 11, cacheReady: true },
         apiBudget: {
@@ -346,6 +348,14 @@ describe("getStuckStateDashboard", () => {
           severity: "critical",
           owner: "Finance",
           count: 10,
+        }),
+        // #4162: voided bank-transfer refund notes, answered on this page.
+        expect.objectContaining({
+          id: "xero-bank-refund-voided-credit-notes",
+          severity: "warning",
+          owner: "Finance",
+          count: 3,
+          href: "/admin/stuck-states#bank-refund-voids",
         }),
         expect.objectContaining({
           id: "email-token-recovery",

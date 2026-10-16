@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   areas: [] as string[],
   listDeadCardRefunds: vi.fn(),
   listCardRefundsPaidTwice: vi.fn(),
+  listBankRefundVoids: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: async () => ({ user: { id: "officer-1" } }) }));
@@ -27,6 +28,9 @@ vi.mock("@/lib/card-refund-paid-another-way", () => ({
 }));
 vi.mock("@/lib/card-refund-paid-twice", () => ({
   listCardRefundsPaidTwice: mocks.listCardRefundsPaidTwice,
+}));
+vi.mock("@/lib/bank-refund-void-report", () => ({
+  listBankRefundVoids: mocks.listBankRefundVoids,
 }));
 vi.mock("@/lib/club-time/server", async () => {
   const { bindClubTime, requireClubTimeZone } = await import("@/lib/club-time");
@@ -69,9 +73,26 @@ const PAID_TWICE = {
   refundedByCardCents: 9_000,
 };
 
+const BANK_VOID = {
+  linkId: "link-1",
+  paymentId: "p-3",
+  bookingId: "b-3",
+  bookingReference: "BK-0003",
+  voidedCreditNoteId: "cn-3",
+  voidedCreditNoteNumber: "CN-0003",
+  amountCents: 12_000,
+  voidedAt: "2026-06-20T00:00:00.000Z",
+  liveNotes: [],
+  flag: null,
+  reRecordOf: null,
+  reRecordRefusal: null,
+  answerable: true,
+};
+
 beforeEach(() => {
   mocks.listDeadCardRefunds.mockResolvedValue([DEAD]);
   mocks.listCardRefundsPaidTwice.mockResolvedValue([PAID_TWICE]);
+  mocks.listBankRefundVoids.mockResolvedValue([BANK_VOID]);
 });
 
 afterEach(() => {
@@ -86,6 +107,9 @@ describe("who sees the card refunds Stripe gave up on", () => {
 
     expect(mocks.listDeadCardRefunds).not.toHaveBeenCalled();
     expect(mocks.listCardRefundsPaidTwice).not.toHaveBeenCalled();
+    // #4162: nor the voided bank-transfer refund notes.
+    expect(mocks.listBankRefundVoids).not.toHaveBeenCalled();
+    expect(screen.queryByText("Bank-transfer refunds with a voided credit note")).not.toBeInTheDocument();
     expect(screen.queryByText("Card refunds Stripe gave up on")).not.toBeInTheDocument();
     expect(screen.queryByText(/still owed/)).not.toBeInTheDocument();
     expect(screen.queryByText("Card refunds paid back twice")).not.toBeInTheDocument();
@@ -117,5 +141,14 @@ describe("who sees the card refunds Stripe gave up on", () => {
     expect(mocks.listCardRefundsPaidTwice).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Card refunds paid back twice")).toBeInTheDocument();
     expect(screen.getByText(/\$90\.00 refunded to the card after \$90\.00 was paid back another way/)).toBeInTheDocument();
+  });
+
+  it("#4162 (Q5): a Finance viewer sees the voided bank-transfer refund notes beside the card refund lists", async () => {
+    mocks.areas = ["support", "finance"];
+    render(await AdminStuckStatesPage());
+
+    expect(mocks.listBankRefundVoids).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Bank-transfer refunds with a voided credit note")).toBeInTheDocument();
+    expect(screen.getByText(/\$120\.00 refund/)).toBeInTheDocument();
   });
 });
