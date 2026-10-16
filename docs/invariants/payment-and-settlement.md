@@ -1428,26 +1428,25 @@ short).
   with the close moving their pre-persisted recovery row to `SUCCEEDED` (the
   door's, or the runner's), in its transaction
   (`closeRefundRowRecordingEvent`). A close that moves nothing writes nothing.
-  - **Never on a failure**: an inline refund that threw, was refused or made
-    only some slices writes none; the page reads the row
-    (`readCancelledCardRefund`).
+  - **Never on a failure**: an inline refund that threw, was refused or was
+    part-made writes none; the page reads the row (`readCancelledCardRefund`).
   - **Dated by that close, for the frozen plan's total**; a failed insert
-    rolls the close back for the runner.
+    rolls it back.
   - **Paid another way records only what reached the card**: the slices
-    recorded refunds filled, dated by Stripe's latest but never before the
+    recorded refunds filled, dated by Stripe's latest, never before the
     cancel, marked as that close's (`isMadeBeforePaidAnotherWayEvent`). The
     page tells each part from its source: card refunds by their events (a
     capacity race's every row), or undated by the close's rule
     (`cardRefundMadeForOperation`); the record's paid-back amount; and only
-    `paidAnotherWayUnpaidCents` as closed. A capped part is not said; a
-    capacity race follows it up.
-  - **One per cancel**: a cancel made before #4145 wrote its event up front,
-    so a later close records none; the page prefers an open or
-    paid-another-way row to it.
+    `paidAnotherWayUnpaidCents` as closed. A capped part is unsaid; a
+    capacity race, capped at its rows' plans, follows it up.
+  - **One per cancel**: a pre-#4145 cancel's up-front event means a later
+    close records none; the page prefers an open or paid-another-way row to it.
   - **Stated limits, history only.** While both colours serve, an old cancel
     can write its up-front event after a new close recorded one, and an old
-    runner can close a new cancel's row with none. A refund recorded after
-    the close, or failing later, is not re-told.
+    runner can close a new cancel's row with none. The event's dated part
+    keeps what the close found, even a refund failing later; the undated part
+    follows the refunds as recorded now.
   - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
     never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,

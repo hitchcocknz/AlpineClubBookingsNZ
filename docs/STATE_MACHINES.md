@@ -551,9 +551,10 @@ payment's recorded refunds, by the rule the close used,
 `cardRefundMadeForOperation`, undated), what the record says was paid back,
 and as closed by the club only what the record left unpaid
 (`paidAnotherWayUnpaidCents`). A part the payment no longer held when it
-closed is none of these and is not said. A refund Stripe made before the close
-and recorded after it, or one that fails later and is owed again on its own
-row, is not re-told there (a stated limit). A cancel made before #4145 wrote its event up front,
+closed is none of these and is not said. Stated limit: the event's dated part
+keeps what the close found, even a refund that later fails and is owed again
+on its own row; the undated part follows the refunds as recorded now, within
+what the record's paid-back and unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,
 whatever became of the refund, so a later close writes no second one; the
 booking page reads an open or paid-another-way row ahead of that event.
 Stated limit, the deploy boundary, both ways and history only while both
@@ -1744,7 +1745,9 @@ says so, with what its record paid back and left unpaid (the slices Stripe had
 made first, a member cancel's or a capacity race's, are recorded by that close
 and said apart, as is another row's refund the runner made, and what the
 sentence does not say - the rest past the plan, or a part its payment no longer
-held - is followed up); a capacity race's row the runner closed before #4125,
+held - is followed up). A capacity race's refund is never told as more than its
+rows' frozen plans together (`cardRefundPlanCents`), whatever its state: a
+`CANCELLED` snapshot written before #4125 froze the full charge; a capacity race's row the runner closed before #4125,
 which wrote no event, says it was refunded. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
