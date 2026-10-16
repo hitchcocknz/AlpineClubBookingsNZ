@@ -17,8 +17,10 @@
   a payment reversed under the older one is listed the same way; when the
   family is billed again, a payment still standing under either charge still
   brings up the **Check before confirming** warning. An invoice Finance raises
-  by hand for the difference never stops the family being billed again after
-  a later reversal. A member who has moved to another family doesn't
+  by hand for the difference doesn't stop the family being billed again after
+  a later reversal, but the preview warns first that the member already holds
+  it (an approval leaves that family for Finance); a parent's own family
+  invoice still holds the family back. A member who has moved to another family doesn't
   count either. If only some
   of the members who had paid are no longer paid, the preview shows a **Check
   before confirming** warning that confirming invoices the full family fee.
