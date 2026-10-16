@@ -1177,6 +1177,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     cardRefundFailedLaterRefundId: "parser of a mapped key",
     GROUP_SETTLEMENT_REFUND_RECOVERY_WHERE: "query fragment over a mapped prefix",
     LATE_CAPTURE_REFUND_METADATA_REASON: "Stripe refund metadata",
+    LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON: "Stripe refund metadata (#4170)",
     ORGANISER_CHILD_REFUND_KEY_WHERE: "query fragment over mapped prefixes",
     REISSUED_ASK_REASON: "ledger reason",
     bookingModificationIdForAdditionalIntentRecoveryKey: "parser of a mapped key",

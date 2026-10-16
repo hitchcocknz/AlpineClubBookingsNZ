@@ -16,8 +16,10 @@ import {
 import type { BookingModificationSettlementMethod } from "@/lib/booking-modify";
 import { defaultCorrectionSettlementMethod } from "@/lib/booking-finished-stay-correction";
 import {
+  keptNightsByGuest,
   lockedPeriodRequestToBatchInput,
   storedLockedPeriodRequestSchema,
+  withKeptNightsRecord,
   type StoredLockedPeriodRequest,
 } from "@/lib/booking-change-request-stored";
 import {
@@ -393,6 +395,9 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
       // #4030 Part B: the officer's entry, for a request that names nothing.
       const officerGuests = params.officerEnteredGuests ?? null;
       let officerRequestedChanges: Record<string, unknown> | null = null;
+      // The request as this approval applies it: the member's, or with the
+      // officer's entry written in.
+      let appliedRequest = stored.data;
       let requestedInput = memberInput;
       if (officerGuests) {
         if (memberInput) {
@@ -425,10 +430,8 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
           officerGuests,
           { officerMemberId: actorMemberId, enteredAt: new Date() },
         );
-        requestedInput = lockedPeriodRequestToBatchInput(
-          storedLockedPeriodRequestSchema.parse(officerRequestedChanges),
-          booking,
-        );
+        appliedRequest = storedLockedPeriodRequestSchema.parse(officerRequestedChanges);
+        requestedInput = lockedPeriodRequestToBatchInput(appliedRequest, booking);
       }
       if (!requestedInput) {
         return {
@@ -439,7 +442,14 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
 
       // (6) The guarded claim. `version` is the optimistic token every mutating
       // write bumps; a lost claim changes nothing. The officer's entry (#4030)
-      // rides the same statement, so it exists only alongside this approval.
+      // rides the same statement, so it exists only alongside this approval,
+      // and so does the record of the nights each guest kept (#4157,
+      // `INV-REQ-012`) — read from the same live rows the batch input used —
+      // which tells the officer's card this approval kept them.
+      const recordedChanges = withKeptNightsRecord(
+        officerRequestedChanges ?? request.requestedChanges,
+        keptNightsByGuest(appliedRequest, booking.guests),
+      );
       const claim = await tx.bookingChangeRequest.updateMany({
         where: {
           id: requestId,
@@ -448,9 +458,7 @@ export async function approveAndExecuteLockedPeriodChangeRequest(params: {
           version: expectedVersion,
         },
         data: {
-          ...(officerRequestedChanges
-            ? { requestedChanges: officerRequestedChanges as Prisma.InputJsonObject }
-            : {}),
+          requestedChanges: recordedChanges as Prisma.InputJsonObject,
           status: "APPROVED",
           version: { increment: 1 },
           adminNotes: params.adminNotes,

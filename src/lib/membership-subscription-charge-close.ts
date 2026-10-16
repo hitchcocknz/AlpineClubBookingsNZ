@@ -2,9 +2,12 @@ import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import {
   CLOSE_ALREADY_PAID_REASON_MAX,
+  everyActiveCoveredSubscriptionSettled,
   isChargeClosableAsAlreadyPaid,
   isChargeClosedAsAlreadyPaid,
+  isSubscriptionSettled,
   PARTLY_PAID_CHARGE_ADVICE,
+  SETTLED_SUBSCRIPTION_STATUSES,
   SUBSCRIPTION_ALREADY_PAID_CODE,
 } from "@/lib/subscription-charge-already-paid";
 import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-invoices";
@@ -22,10 +25,12 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  *     is not used: it records an invoice Xero voided, and this charge never had
  *     one. Confirmation writes `NOT_REQUIRED` only for a `NO_INVOICE` charge, so
  *     `isChargeClosedAsAlreadyPaid` tells the two apart without a schema change.
- *  2. Every covered subscription must still be `PAID`; the same guarded write
- *     bumps its `voidGeneration`.
+ *  2. Every covered subscription must still be settled — `PAID`, or
+ *     `NOT_REQUIRED` for an exempt member (owner decision on #4110, 15 Oct
+ *     2026); the same guarded write bumps its `voidGeneration`.
  *  3. The charge's ACTIVE coverage claims are released (`releasedAt` set, rows
- *     kept), as the void path does (#2147).
+ *     kept), as the void path does (#2147), each recording the status its
+ *     subscription was settled with (`subscriptionStatusAtClose`, #4110 review).
  *  4. An audit row naming the officer, the reason, the charge and the
  *     subscriptions.
  *
@@ -39,28 +44,43 @@ import { findLiveSubscriptionInvoiceOperation } from "@/lib/xero-subscription-in
  * gives the new charge a fresh idempotency key. Keeping the claims would leave a
  * reversed member silently unbillable, and without the bump a re-bill would
  * collapse onto this closed charge's key and raise nothing. A PER_FAMILY charge
- * is the exception: the preview still counts the closed row as the family's
- * charge (FAMILY_ALREADY_BILLED), because a second family charge would collide
- * with the family/type/season unique index (#4110).
+ * re-bills the same way after a reversal (owner decisions, 15 Oct 2026): the
+ * preview keeps counting a closed family charge as billed — a new joiner still
+ * meets FAMILY_ALREADY_BILLED — until a covered member's PAYMENT is reversed
+ * (PAID at the close, no longer settled), then bills the family again (warning
+ * when only some payments were reversed), and the family/type/season unique
+ * index covers only live charges (#4110), so the new family charge sits beside
+ * this retained row. An exempt member, NOT_REQUIRED at the close, had no
+ * payment to reverse: an assignment save or membership sync that later moves
+ * them to NOT_INVOICED does not re-bill the family (#4110 review F1).
  *
  * GUARDS AND RACES. No advisory lock, like the void release and the family
  * markers: every write is guarded in its own WHERE. The charge claim is a
  * status-guarded `updateMany` (`CONFLICT` + the code + no invoice), so a double
  * click or two officers close once — the loser waits on the row, then matches
  * nothing and reads the charge already closed. The subscription write matches
- * only PAID rows and must touch every one; a manual reversal that committed
+ * only settled rows and must touch every one; a manual reversal that committed
  * first makes it fall short and the whole transaction rolls back, and one that
  * arrives later waits on the row and then finds the member re-billable. The
  * close is refused while an invoice operation for the charge is live (queued,
- * running or awaiting payment): a worker mid-Xero-call writes back after the
- * provider responds without a status guard, and during a rollout an old pod's
- * worker does not know the closed status at all. What remains is a Retry or
- * enqueue that creates or re-pends an operation concurrently with the close. It
- * cannot reopen the charge: the enqueue's status write, the worker's own
- * already-paid conflict write and the outbox failure handler's write all
- * exclude `NOT_REQUIRED`, and a new worker skips a `NOT_REQUIRED` charge. An
- * old pod during a rollout could still process that operation; that is a
- * stated limit.
+ * running or awaiting payment), chiefly because during a rollout an old pod's
+ * worker does not know the closed status at all. Against a new worker the
+ * close is safe even without that refusal: every charge-status write the
+ * invoice pipeline makes — the enqueue's, the worker's conflict, INVOICE_CREATED,
+ * EMAILED and EMAIL_FAILED writes, and the outbox failure handler's — matches
+ * only live charges, so none can reopen a closed one. A worker whose Xero call
+ * was already in flight when the close landed loses its INVOICE_CREATED write:
+ * it links nothing, downgrades nothing, sends no email, and leaves
+ * STRAY_INVOICE_AFTER_CLOSE on the closed charge naming the invoice to void. A
+ * Retry that loses its status write to a close reports no work. An old pod
+ * during a rollout could still process an operation queued concurrently with
+ * the close; that is a stated limit.
+ *
+ * AUDIT SUBJECT. The row names the officer (memberId) and the charge (entity),
+ * and lists the covered member ids in its details, but sets no
+ * subjectMemberId: that column holds ONE member, so on a family charge it would
+ * put the close on one arbitrary member's timeline, and a row per member would
+ * multiply one act and widen what members read (INV-PRIV) beyond the decision.
  */
 
 export class CloseAlreadyPaidChargeError extends Error {
@@ -76,6 +96,7 @@ export type CloseAlreadyPaidChargeResult = {
   message: string;
 };
 
+const CHANGED_WHILE_CLOSING_MESSAGE = "This charge changed while you were closing it. Refresh and try again.";
 const ALREADY_CLOSED_MESSAGE = "This charge is already closed as paid.";
 
 export async function closeAlreadyPaidSubscriptionCharge(input: {
@@ -125,8 +146,8 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         409,
       );
     }
-    const unpaid = charge.coverage.filter((row) => row.subscription.status !== "PAID");
-    if (unpaid.length > 0) {
+    if (!everyActiveCoveredSubscriptionSettled(charge.coverage)) {
+      const unpaid = charge.coverage.filter((row) => !isSubscriptionSettled(row.subscription.status));
       throw new CloseAlreadyPaidChargeError(
         `Still unpaid: ${unpaid.map((row) => row.memberName).join(", ")}. ${PARTLY_PAID_CHARGE_ADVICE}`,
         409,
@@ -162,29 +183,46 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         return { closed: false, message: ALREADY_CLOSED_MESSAGE };
       }
       throw new CloseAlreadyPaidChargeError(
-        "This charge changed while you were closing it. Refresh and try again.",
+        CHANGED_WHILE_CLOSING_MESSAGE,
         409,
       );
     }
 
     const subscriptionIds = charge.coverage.map((row) => row.subscriptionId);
-    // The authoritative PAID re-read: the guard is in the WHERE, so a reversal
+    // The authoritative settled re-read: the guard is in the WHERE, so a reversal
     // that committed after the read above leaves this short and rolls back.
     const stillPaid = await tx.memberSubscription.updateMany({
-      where: { id: { in: subscriptionIds }, status: "PAID" },
+      where: { id: { in: subscriptionIds }, status: { in: [...SETTLED_SUBSCRIPTION_STATUSES] } },
       data: { voidGeneration: { increment: 1 } },
     });
     if (stillPaid.count !== subscriptionIds.length) {
       throw new CloseAlreadyPaidChargeError(
-        "A covered subscription is no longer paid. Refresh, then Retry the charge to invoice it.",
+        `A covered subscription stopped being paid while you were closing this charge. ${PARTLY_PAID_CHARGE_ADVICE}`,
         409,
       );
     }
 
-    const released = await tx.membershipSubscriptionChargeCoverage.updateMany({
-      where: { chargeId: charge.id, releasedAt: null },
-      data: { releasedAt: new Date() },
-    });
+    // Each claim records the status its subscription was settled with (#4110
+    // review F1): only a later move away from PAID is a reversed payment that
+    // re-bills a closed family, so an exempt member's NOT_REQUIRED moving to
+    // NOT_INVOICED is not. The subscription rows are locked by the write above
+    // until commit, so the statuses cannot move between these writes, and
+    // together they release every active claim the guard above counted.
+    const releasedAt = new Date();
+    let releasedCount = 0;
+    for (const status of SETTLED_SUBSCRIPTION_STATUSES) {
+      const released = await tx.membershipSubscriptionChargeCoverage.updateMany({
+        where: { chargeId: charge.id, releasedAt: null, subscription: { status } },
+        data: { releasedAt, subscriptionStatusAtClose: status },
+      });
+      releasedCount += released.count;
+    }
+    if (releasedCount !== subscriptionIds.length) {
+      throw new CloseAlreadyPaidChargeError(
+        CHANGED_WHILE_CLOSING_MESSAGE,
+        409,
+      );
+    }
 
     await createAuditLog({
       action: "membership-subscription-billing.close-already-paid",
@@ -200,7 +238,7 @@ export async function closeAlreadyPaidSubscriptionCharge(input: {
         status: "NOT_REQUIRED",
         subscriptionIds,
         memberIds: charge.coverage.map((row) => row.subscription.memberId),
-        coverageReleased: released.count,
+        coverageReleased: releasedCount,
       }),
     }, tx);
 

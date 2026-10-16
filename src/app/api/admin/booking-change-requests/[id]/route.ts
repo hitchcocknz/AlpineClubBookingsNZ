@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
@@ -9,6 +10,7 @@ import {
   finishedStayApprovalResponse,
   includeRequestDetail,
 } from "@/lib/booking-change-request-admin-decision";
+import { acknowledgedKeptNightsRecord } from "@/lib/booking-change-request-stored";
 
 const reviewSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
@@ -142,6 +144,23 @@ export async function PATCH(
     }
   }
 
+  // #4157 (`INV-REQ-012`): an acknowledging approval applies nothing, but
+  // records the nights each guest's repeated range keeps, as an applying one
+  // does, so the officer's card reads the decided request as it read while
+  // pending. Read from the booking's live guest rows, the card's own source.
+  // Only this request's own claim (status-guarded below) writes the column
+  // while it is REQUESTED, so the record cannot overwrite another write.
+  const recordedChanges =
+    parsed.data.status === "APPROVED"
+      ? acknowledgedKeptNightsRecord(
+          existing.requestedChanges,
+          await prisma.bookingGuest.findMany({
+            where: { bookingId: existing.booking.id },
+            select: { id: true, stayStart: true, stayEnd: true, nights: { select: { stayDate: true } } },
+          }),
+        )
+      : null;
+
   const reviewedAt = new Date();
   const claim = await prisma.bookingChangeRequest.updateMany({
     // kind guard is defence-in-depth behind the POLICY_EXCEPTION refusal above:
@@ -158,6 +177,7 @@ export async function PATCH(
       reviewedByMemberId: session.user.id,
       reviewedAt,
       linkedModificationId: parsed.data.linkedModificationId ?? null,
+      ...(recordedChanges ? { requestedChanges: recordedChanges as Prisma.InputJsonObject } : {}),
     },
   });
 

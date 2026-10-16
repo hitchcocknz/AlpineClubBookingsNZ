@@ -657,7 +657,15 @@ export const AUDIT_CENSUS_TOTALS = {
   // a card refund Stripe failed later that the app did not make for the
   // booking, awaited on the ledger writer's transaction under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 503,
+  // 503 -> 503 (#4149): the two late-capture handlers'
+  // `booking.payment.refunded_after_cancellation` writers became ONE shared
+  // writer (`reportAutomaticLateCaptureRefund`, -1), and the lost-record
+  // recovery adds `booking.payment.auto_refund_record_recovered` (+1).
+  // RE-MEASURED with `pnpm run audit:census`.
+  // 503 -> 504 (#4170, folded into #4149): a `charge.refunded` on a marked late
+  // capture refunded outside the app writes
+  // `booking.payment.late_capture_refunded_outside_app`. RE-MEASURED.
+  writeSites: 504,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -757,7 +765,10 @@ export const AUDIT_CENSUS_TOTALS = {
     // 271 -> 272 (#3827, composed by #3829): the guest-acceptance re-price record, above.
     // 272 -> 273 (#3750): the executed change-request approval, above. `logAudit`
     // because it is written after the approval has committed.
-    logAudit: { total: 273, uncategorised: 0 },
+    // 273 -> 273 (#4149): the two handlers' refund entries, one shared writer,
+    // and the lost-record recovery's own entry.
+    // 273 -> 274 (#4170): the refunded-outside-the-app entry.
+    logAudit: { total: 274, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -1054,7 +1065,10 @@ export const AUDIT_CENSUS_TOTALS = {
     // officer and reason beside the billing actions the same people read.
     // 55 -> 56 (#4104 review, CL3): a card refund Stripe failed later that the
     // app did not make for the booking - read by the people who reconcile it.
-    payment: 56,
+    // 56 -> 56 (#4149): the two handlers' refund entries, one shared writer,
+    // and the lost-record recovery's own entry, read by the same people.
+    // 56 -> 57 (#4170): the refunded-outside-the-app entry, read by the same people.
+    payment: 57,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -1466,26 +1480,18 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#0": "payment",
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#1": "payment",
   "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0": "payment",
-  // #2760 INSERTED A WRITER AHEAD OF THE ONE THAT USED TO BE `#0` HERE, which is
-  // the renumbering hazard this file's header warns about: `#0` was
-  // `booking.payment.refunded_after_cancellation` and became
-  // `booking.payment.auto_refund_record_failed`, with the refund row pushed to
-  // `#1`. Both are `payment`, so the identity pin would have passed while silently
-  // meaning something else — which is why #2760 listed BOTH ordinals.
-  //
-  // #2773 MOVED THAT WRITER OUT AGAIN, so `#0` HERE HAS REVERTED TO MEANING
-  // `booking.payment.refunded_after_cancellation` AND `#1` NO LONGER EXISTS. Said
-  // out loud because it is the same hazard in reverse and it is just as silent: the
-  // category never changed, so nothing in this map could have caught it. The writer
-  // now lives at `recordAutomaticLateCaptureRefund` below, shared by BOTH
-  // late-capture handlers — the whole point of #2773 is that there is one
-  // implementation of this record rather than a copy per handler.
-  "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#0": "payment",
-  // Untouched by #2773, and worth stating because the sibling above moved: this
-  // handler gained NO audit write. Its record failure is audited by the shared
-  // epilogue, not inline, so `#0` still means
-  // `booking.payment.refunded_after_cancellation` exactly as it did before #2760.
-  "src/lib/stripe-webhook-service.ts::handleCancelledBookingPaymentSucceeded#0": "payment",
+  // #4149 MOVED BOTH HANDLERS' `booking.payment.refunded_after_cancellation`
+  // WRITERS into one shared writer, so neither handler writes an audit row of
+  // its own any more and both `#0` identities are gone (#2760 and #2773 had
+  // each renumbered them; their history is in git). The delivery that refunded
+  // writes it, and the lost-record recovery only when that delivery died first.
+  "src/lib/late-capture-record-recovery.ts::reportAutomaticLateCaptureRefund#0": "payment",
+  // #4149: the recovery's own `booking.payment.auto_refund_record_recovered`
+  // entry, beside it. A booking id in `targetId` and no member column, as above.
+  "src/lib/late-capture-record-recovery.ts::recoverLostLateCaptureRecord#0": "payment",
+  // #4170: a marked late capture refunded outside the app, named rather than
+  // noted. A booking id in `targetId` and no member column, as above.
+  "src/lib/late-capture-unrecorded-refunds.ts::readUnrecordedLateCaptureRefund#0": "payment",
   /*
     #2773 / #2774 — the three write sites of the shared late-capture epilogue,
     pinned on arrival rather than left unlisted.

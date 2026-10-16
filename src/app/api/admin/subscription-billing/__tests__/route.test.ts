@@ -376,6 +376,14 @@ describe("admin subscription billing route", () => {
     expect(mocks.revalidatePath).not.toHaveBeenCalled();
   });
 
+  it("GET returns each charge's active coverage with its subscription status, so the panel offers Close only where it can succeed (#4098)", async () => {
+    const response = await GET(new NextRequest("http://localhost/api/admin/subscription-billing?seasonYear=2026&decisionDate=2026-07-13"));
+    expect(response.status).toBe(200);
+    expect(mocks.charges.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      include: { coverage: { select: expect.objectContaining({ memberName: true, releasedAt: true, subscription: { select: { status: true } } }) } },
+    }));
+  });
+
   it("CLOSE_ALREADY_PAID requires finance edit — a denied guard closes nothing", async () => {
     mocks.requireAdmin.mockResolvedValue({ ok: false, response: NextResponse.json({ error: "Forbidden" }, { status: 403 }) });
     const response = await POST(request({ action: "CLOSE_ALREADY_PAID", chargeId: "charge-1", reason: "Paid in cash" }));

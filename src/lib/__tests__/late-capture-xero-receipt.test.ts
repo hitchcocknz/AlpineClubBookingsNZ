@@ -31,12 +31,16 @@ vi.mock("@/lib/prisma", () => ({
 
 import {
   findKeptLateCaptureInvoiceIdForPayment,
+  findClosedLateCaptureRecords,
   findLateCapturePaymentIntents,
   hasXeroReceiptForLateCapture,
   readLateCaptureXeroReceipt,
   readPaidAnotherWayLateCaptureXeroReceipt,
 } from "@/lib/late-capture-xero-receipt";
-import { cancelledBookingPrimaryPaymentRefundReason } from "@/lib/deleted-booking-modification-payment";
+import {
+  cancelledBookingModificationRefundReason,
+  cancelledBookingPrimaryPaymentRefundReason,
+} from "@/lib/deleted-booking-modification-payment";
 
 /**
  * #3635 (review F2, round-3 R1/R5, orchestrator decision 29 Sep 2026): whether
@@ -206,6 +210,49 @@ describe("findLateCapturePaymentIntents (round-3 R1)", () => {
   it("asks nothing for no intents", async () => {
     await expect(findLateCapturePaymentIntents([])).resolves.toEqual(new Set());
     expect(mocks.taskFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("findClosedLateCaptureRecords (#4149)", () => {
+  it("never reads a treasurer-approved row as a hand completion: the approval marker on the confirm route's own #2700 row wins", async () => {
+    mocks.taskFindMany.mockResolvedValue([
+      // #3639: the hold put the marker on the confirm route's OPEN row, and the approval completed it.
+      { lateCaptureApprovalIntentId: "pi_held", reason: cancelledBookingModificationRefundReason("pi_held"), status: "COMPLETED" },
+    ]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "record" });
+  });
+
+  it("still reads a SEPARATE unmarked hand-COMPLETED #2700 row on an approved capture as a hand completion: two payments", async () => {
+    mocks.taskFindMany.mockResolvedValue([
+      { lateCaptureApprovalIntentId: "pi_held", reason: null, status: "DISMISSED" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_held"), status: "COMPLETED" },
+    ]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "hand-completed" });
+    // In either order.
+    mocks.taskFindMany.mockResolvedValue([
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_held"), status: "COMPLETED" },
+      { lateCaptureApprovalIntentId: "pi_held", reason: null, status: "DISMISSED" },
+    ]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "hand-completed" });
+  });
+
+
+  it("counts an approval task in any status and a closed automatic-refund row, not an OPEN #2700 row the refund never closed, and tells a hand completion apart", async () => {
+    mocks.taskFindMany.mockResolvedValue([
+      { lateCaptureApprovalIntentId: "pi_owned", reason: null, status: "OPEN" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingPrimaryPaymentRefundReason("pi_recorded"), status: "DISMISSED" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_by_hand"), status: "COMPLETED" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_open"), status: "OPEN" },
+    ]);
+    const ids = ["pi_owned", "pi_recorded", "pi_by_hand", "pi_open"];
+
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(ids))).toEqual({
+      pi_owned: "record",
+      pi_recorded: "record",
+      pi_by_hand: "hand-completed",
+    });
+    // The OPEN row still marks a known late capture everywhere else (the note-eligible cash).
+    expect([...(await findLateCapturePaymentIntents(ids))].sort()).toEqual([...ids].sort());
   });
 });
 

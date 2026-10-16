@@ -52,7 +52,10 @@ vi.mock("@/lib/club-time/server", () => ({
 }));
 
 import { POST } from "@/app/api/bookings/[id]/change-requests/route";
-import { CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE } from "@/lib/booking-change-request-guests";
+import {
+  CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE,
+  CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
+} from "@/lib/booking-change-request-guests";
 import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
 import {
   describeRequestedGuestNights,
@@ -272,6 +275,45 @@ describe("POST /api/bookings/[id]/change-requests keeps a grid request's night s
   });
 });
 
+describe("POST /api/bookings/[id]/change-requests judges the ranges approval applies (#4157)", () => {
+  it("refuses a request that names one guest's dates twice, in the member's words", async () => {
+    // Crafted: the guest's own dates, then the same guest with no dates, and
+    // a later check-out. Approval applies one entry per guest, so this says
+    // two things; it is refused before anything is stored.
+    const response = await post({
+      checkOut: "2026-07-04",
+      guestStayRanges: [
+        { guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-04" },
+        { guestId: "guest-1" },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error, "INV-REQ-012: a guest named twice is refused").toBe(
+      CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
+    );
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("stores only the entries approval applies: a dateless entry asks for nothing", async () => {
+    const response = await post({
+      addGuests: [grandchild],
+      guestStayRanges: [{ guestId: "guest-1" }],
+    });
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
+    const stored = storedChanges() as { requested: { guestStayRanges: unknown } };
+    expect(stored.requested.guestStayRanges, "INV-REQ-012: only applied entries are stored").toEqual([]);
+  });
+
+  it("still refuses a one-bound entry, rather than dropping it", async () => {
+    const response = await post({
+      addGuests: [grandchild],
+      guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30" }],
+    });
+    expect(response.status).toBe(400);
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+});
+
 describe("the stored grid request, read back for approval (#4088)", () => {
   const live = { checkIn: day("2026-06-30"), checkOut: day("2026-07-03") };
 
@@ -340,7 +382,7 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
       guestStayRanges: [{ guestId: "guest-1", nights: ["2026-06-30", "2026-07-02"] }],
     });
     expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
-    expect(describeRequestedGuestNights(storedChanges())).toEqual([
+    expect(describeRequestedGuestNights(storedChanges(), { status: "REQUESTED" })).toEqual([
       {
         name: "Alex Example",
         runs: [
@@ -383,7 +425,7 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
             { guestId: "guest-2", stayStart: "2026-06-30", stayEnd: "2026-07-01" },
           ],
         },
-      }),
+      }, { status: "REQUESTED" }),
     ).toEqual([
       {
         name: "Alex Example",
@@ -410,20 +452,21 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
           removeGuests: [{ id: "guest-2" }],
           guestStayRanges: [{ guestId: "guest-2", stayStart: "2026-06-30", stayEnd: "2026-07-01" }],
         },
-      }),
+      }, { status: "REQUESTED" }),
     ).toEqual([]);
     // An unreadable row (a night that is not a day) lists nobody.
     expect(
       describeRequestedGuestNights({
         original,
         requested: { guestStayRanges: [{ guestId: "guest-1", nights: ["not-a-night"] }] },
-      }),
+      }, { status: "REQUESTED" }),
     ).toEqual([]);
   });
 
-  it("marks a guest with gaps whose request repeats their Date In and Date Out as filling the gaps, not unchanged", () => {
-    // Approving writes every night of a two-bound range (the planner reads no
-    // night set from it), so 1 July would be added and charged.
+  it("marks a guest with gaps whose request repeats their Date In and Date Out as no change, listing the nights they keep (#4157)", () => {
+    // Approval keeps the nights the guest holds where their range only repeats
+    // their own dates (owner decision on #4157), so 1 July is neither added
+    // nor charged, and the card shows the two nights that stand.
     const requestedChanges = {
       original: {
         checkIn: "2026-06-30",
@@ -441,11 +484,30 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
       },
       requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }] },
     };
-    expect(describeRequestedGuestNights(requestedChanges)).toEqual([
+    expect(describeRequestedGuestNights(requestedChanges, { status: "REQUESTED" })).toEqual([
       {
         name: "Alex Example",
-        runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-02" }],
-        nightCount: 3,
+        runs: [
+          { firstNight: "2026-06-30", lastNight: "2026-06-30" },
+          { firstNight: "2026-07-02", lastNight: "2026-07-02" },
+        ],
+        nightCount: 2,
+        added: false,
+        unchanged: true,
+        fillsGaps: false,
+      },
+    ]);
+    // A range that really moves a bound re-spreads the guest's nights: every
+    // night of it, the gap included, which the card still flags.
+    const moved = {
+      ...requestedChanges,
+      requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-04" }] },
+    };
+    expect(describeRequestedGuestNights(moved, { status: "REQUESTED" })).toEqual([
+      {
+        name: "Alex Example",
+        runs: [{ firstNight: "2026-06-30", lastNight: "2026-07-03" }],
+        nightCount: 4,
         added: false,
         unchanged: false,
         fillsGaps: true,
@@ -459,12 +521,12 @@ describe("each guest's requested nights, for the officer's card (#4088)", () => 
         guests: [{ id: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }],
       },
     };
-    expect(describeRequestedGuestNights(unnamed)[0]).toMatchObject({ name: "A guest on the booking" });
+    expect(describeRequestedGuestNights(unnamed, { status: "REQUESTED" })[0]).toMatchObject({ name: "A guest on the booking" });
     // A range that only covers nights the guest already holds fills nothing.
     const narrow = {
       ...requestedChanges,
       requested: { guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-07-02", stayEnd: "2026-07-03" }] },
     };
-    expect(describeRequestedGuestNights(narrow)[0]).toMatchObject({ fillsGaps: false, unchanged: false });
+    expect(describeRequestedGuestNights(narrow, { status: "REQUESTED" })[0]).toMatchObject({ fillsGaps: false, unchanged: false });
   });
 });
