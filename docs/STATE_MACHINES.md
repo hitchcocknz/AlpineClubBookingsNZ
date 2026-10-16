@@ -3535,6 +3535,28 @@ retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
   none (#3971)
 ```
 
+### A voided bank-transfer refund note (#4162, `INV-ADDPAY-042`)
+
+```text
+refund note on an INTERNET_BANKING payment voided in Xero
+  -> inbound sync: link inactive, refunded total recounted from live notes
+     (PaymentTransaction allocation and BANK_REFUND line stand)
+  -> past the 24h grace, no resolution: LISTED on Stuck States (finance:view)
+LISTED -> RE_RECORDED      (Record again: finance:edit, lock(1) then the Payment
+                            row; total put back by what the recount took out;
+                            one refund-note outbox row keyed re-record:<id>)
+  RE_RECORDED, its note raised and covering the amount -> done
+  RE_RECORDED, its note row failed or never covered it -> LISTED, flagged
+  RE_RECORDED, its note voided in turn -> that note is LISTED, flagged
+LISTED -> CONFIRMED_CANCELLED (Confirm: same tiers; "cancelled" unwinds the
+                            allocation and reverses the BANK_REFUND line;
+                            "replaced in Xero" moves nothing) -> done
+```
+
+A resolution is never updated or deleted, so each voided note is answered at
+most once (unique on payment and note). Pinned by
+`bank-refund-void-resolution.realdb.test.ts`.
+
 To verify: status strings, stale processing reset, tenant selection, link
 cleanup, and exact retry exhaustion alerts. The resolved-in-Xero arm is pinned
 by `xero-operation-retry.test.ts` and `xero-booking-repair.test.ts` (#3635).

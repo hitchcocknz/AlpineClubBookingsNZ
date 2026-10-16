@@ -1040,7 +1040,8 @@ The same link write moves `Payment.xeroRefundCreditNoteId` to the newest other
 live note that may be canonical (never a per-refund note, #3880), or clears it,
 as the #2901 repair apply does, so the nightly missing-link report never sees a
 pointer to an inactive mirror (#4046). A refund left with no live note shows no
-drift in that report, by design; making it visible is #4162. A mirror voided
+drift in that report, by design; on a bank transfer it is listed for the
+treasurer instead (#4162, below). A mirror voided
 before #4091 (still active, its pointer naming it) is healed by the nightly
 `link-cleanup` through this same write (#4161).
 
@@ -1079,6 +1080,30 @@ rail, `INV-ADDPAY-021`). The inbound sync returns the refunded amount to what th
 live notes say, and nothing is re-raised automatically. If the refund was real,
 the treasurer records it again, and only then does a request raise the fresh
 note, under its own key.
+
+**Answering a voided bank-transfer refund note (#4162, `INV-ADDPAY-042`).** The
+voided note is listed on Stuck States, under finance:view, once its mirror is
+inactive and the void is a day old (`listBankRefundVoids`), with the payment's
+live refund notes beside it; the health snapshot, the finance-sync tile, the
+stuck-state queue and the nightly digest (an informational section) count it.
+The card self-heal never sees it. **Record again** raises one fresh note for the
+voided note's recorded amount: an ordinary refund-note outbox row whose payload
+carries `reRecordId`, keyed `re-record:<id>` (correlation key and Xero key, the
+latter `payment:<id>:refund-credit-note:re-record:<id>:<own cover>:v3`, plus the
+after-void suffix once one of its own notes is voided), sized by its record less
+what its own notes cover (`readReRecordShare`), and copying the voided note's
+method, wording and credited invoice (`INV-PAY-101`). A replacement of the
+payment's one canonical note becomes canonical; a per-refund note's stays
+per-refund. **Confirm** writes no Xero call.
+
+**Deploy note (#4162).** A draining older worker knows no `reRecordId`. Running a
+record-again row, it sizes the note from the payment-wide gap, capped at the
+row's amount, so it never raises more than the voided note's amount, and its key
+carries the after-void suffix, so it never replays the voided note. It can raise
+less only where the payment's account-credit records already disagree with
+Xero; the row is still found by its id (`noteOperationId`), so a short note lists
+the item again, flagged. Avoid recording refunds again until the old colour's
+outbox has drained.
 
 **Deploy and rollback note (#4091).** The previous release writes a voided
 canonical bank-transfer mirror active, re-adopts a voided note through its

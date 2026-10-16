@@ -5203,6 +5203,45 @@ enqueue joins its caller's transaction. An inbound void racing a create's
 record on one payment can take the same two rows in the opposite order; that
 predates #4161 and is not changed here.
 
+## Answering a voided bank-transfer refund note (#4162)
+
+`reRecordBankTransferRefund` and `confirmBankTransferRefundCancelled`
+(`src/lib/bank-refund-void-resolution.ts`, `INV-ADDPAY-042`) answer a refund
+note Xero voided on a bank-transfer payment. Both are settlement-money
+transitions (`INV-LOCK-001`): the first puts the payment's `refundedAmountCents`
+back and queues its note; the second takes the refund back out of the
+payment's `PaymentTransaction` allocation, reverses its `BANK_REFUND` line and
+keeps the refunded total no higher than that detail. Every edit, acceptance,
+paid cancel and refund appeal reads those figures to size a refund, so each
+takes global `lock(1)` FIRST, then the Payment row
+(`lockPaymentForRefundedTotal`) BEFORE it reads the payment, then re-reads the
+voided note's link, its resolution and the totals. That is the order every
+holder of both already takes (`INV-LOCK-002`: the paid cancel, "Paid another
+way", the refund appeal); no holder of the Payment row takes `lock(1)` after
+it. The cancellation's unwind re-takes the row it holds. The claim is the
+`BankRefundVoidResolution` insert, unique on (payment, voided note): a double
+click queues on `lock(1)` and the second reads the row answered and writes
+nothing (`bank-refund-void-resolution.realdb.test.ts`). Registered as
+`reRecordBankTransferRefund#1` and `confirmBankTransferRefundCancelled#1`.
+
+The record-again's note is an outbox row inserted in the same transaction, sized
+from its own record and keyed on it (`re-record:<id>`); the worker is kicked
+after the commit, so no provider call runs under either lock. Its counterparts:
+
+- **The inbound void's recount** (`repairRefundedPaymentBusinessState`) takes
+  no lock: its compare-and-set on the Payment row as it read it loses to the
+  record-again's write and recounts. A recount before the fresh note is linked
+  lowers the total again; the note is still raised in full (it is sized from
+  its record), and the total comes back when the note's own inbound sync counts
+  it. Proven against real PostgreSQL.
+- **#4161's heal** takes the link and the Payment row `NOWAIT`, so while either
+  answer holds the row it defers and heals on a later run; it also defers while
+  the record-again's note row could still mint. Proven against real
+  PostgreSQL.
+- **A refund-note create on the payment** that could still mint refuses the
+  record-again (`findBlockingRefundCreditNoteOperationId`), and the note's own
+  run keeps the in-flight claim (#3880).
+
 ## One Xero contact, one local home: the contact-home key (#3367)
 
 **Audience: developer.** The rule this key enforces is `INV-INT-018`

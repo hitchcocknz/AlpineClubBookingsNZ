@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  504
+row-producing sites:  506
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 57,
+category values: admin 108, booking 108, xero 39, family 35, payment 59,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -835,6 +835,12 @@ lost-record recovery adds `booking.payment.auto_refund_record_recovered`, also
 `booking.payment.late_capture_refunded_outside_app`, a late capture the
 late-capture handler marked as its own but refunded some other way, named for
 the same people instead of being noted in Xero.
+
+#4162 then added two (`payment` 57 -> 59, 504 -> 506, MEASURED with
+`pnpm run audit:census`): `booking-payment.bank-refund.re-recorded` and
+`booking-payment.bank-refund.void-confirmed`, the treasurer's answers to a
+bank-transfer refund whose Xero credit note was voided, read by the people who
+reconcile that refund.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

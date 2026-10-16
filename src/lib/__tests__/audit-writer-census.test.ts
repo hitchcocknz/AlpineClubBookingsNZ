@@ -1444,7 +1444,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // entries became one pinned shared writer, `reportAutomaticLateCaptureRefund`,
     // and the lost-record recovery's own entry is pinned beside it.
     // 127 -> 128 pinned (#4170): the refunded-outside-the-app entry, pinned beside them.
-    ).toEqual({ pinned: 128, unpinned: 376 });
+    // 376 -> 378 (#4162): a voided bank-transfer refund recorded again, and one
+    // confirmed, both unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
+    ).toEqual({ pinned: 128, unpinned: 378 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

@@ -1086,7 +1086,7 @@ export async function buildXeroReconciliationReport(
               correlationKey: null,
               detail: `${item.amountCents === null ? "Amount unknown" : formatCents(item.amountCents, format)} refund, its note voided in Xero${
                 item.flag === "note-failed"
-                  ? "; recorded again, but its fresh note did not reach Xero"
+                  ? "; recorded again, but its fresh note did not reach Xero for the full amount"
                   : item.flag === "voided-again"
                     ? `; this note re-recorded ${item.reRecordOf}, and was voided too`
                     : ""

@@ -245,9 +245,9 @@ export function BankRefundVoidsPanel({
                   </div>
                   {row.flag === "note-failed" ? (
                     <div className="text-xs font-medium text-warning-11">
-                      Recorded again, but its fresh credit note did not reach Xero.{" "}
+                      Recorded again, but its fresh credit note did not reach Xero for the full amount.{" "}
                       <Link href="/admin/xero" className="underline">
-                        Retry it from Xero operations
+                        Check it on the Xero screen
                       </Link>
                       .
                     </div>

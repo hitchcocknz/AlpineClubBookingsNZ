@@ -1105,6 +1105,12 @@ finance:view gate it lists the closes Stripe paid as well
 /api/admin/payments/card-refunds/[id]/paid-twice-resolved` ->
 `resolveCardRefundPaidTwice`), gated `finance:edit` in the list, under its own
 finance banner, and in the route; it moves no money and touches no Xero.
+Under the same finance:view gate it lists the bank-transfer refunds whose Xero
+credit note was voided (`listBankRefundVoids`, #4162, `INV-ADDPAY-042`), each
+answered once in `BankRefundVoidsPanel` -> `POST
+/api/admin/payments/bank-refund-voids/[id]/re-record` or `/confirm-cancelled`
+-> `reRecordBankTransferRefund` / `confirmBankTransferRefundCancelled`, gated
+`finance:edit` in the panel (its own finance banner) and the routes.
 `src/lib/booking-provider-mismatches.ts` answers the same provider-divergence
 questions for a single booking (paid while the club's records hold no Xero invoice,
 Stripe refund with no Xero credit note, waitlist offer whose email needs

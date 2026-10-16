@@ -159,6 +159,29 @@ booking's payments in Stripe afterwards and recover any double refund by hand.
 **Rollback.** Do not roll back across this release while late payments on
 cancelled bookings are arriving: the same gap opens in the other direction.
 
+### Answer voided bank-transfer refund notes after cutover (#4162)
+
+**What changes.** Stuck States gains a list of bank-transfer refunds whose Xero
+credit note was voided, each answered with **Record again** or **Confirm**. The
+release adds one table (`BankRefundVoidResolution`); nothing existing is
+rewritten. The first time the page loads after the upgrade, every refund note
+voided in Xero more than a day before is listed, including old ones: decide
+each with your treasurer. Before the upgrade, the owner can count that backlog
+read-only:
+`SELECT count(*) FROM "XeroObjectLink" l JOIN "Payment" p ON p.id = l."localId" WHERE l."localModel" = 'Payment' AND l.role = 'REFUND_CREDIT_NOTE' AND NOT l.active AND upper(trim(l.metadata->>'status')) IN ('VOIDED', 'DELETED') AND p.source = 'INTERNET_BANKING'`.
+
+**The window.** **Record again** queues a fresh refund credit note. If the old
+colour's outbox worker picks it up while both colours serve, it sizes the note
+the old way: never more than the voided note's amount, and under a key that
+cannot bring the voided note back, but on a payment whose account-credit records
+already disagree with Xero it can raise less. The row then comes back on the
+list, marked as not reaching Xero for the full amount; ask a developer to
+reconcile it.
+
+**What to do.** Until cutover completes and the old colour's outbox has
+drained, tell your treasurer not to use **Record again**. **Confirm** is safe at
+any time.
+
 ### Do not mark an edit's refund task paid back until cutover completes (#3827)
 
 **What changes.** When a change lowers the price of a booking paid by internet

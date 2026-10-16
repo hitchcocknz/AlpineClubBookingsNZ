@@ -1593,9 +1593,39 @@ decision and would need its own owner decision.
   inbound sync returns the refunded amount to what the live notes say and
   nothing is re-raised automatically. A fresh note is raised only once the
   treasurer records the refund again. A refund with no live note shows no
-  drift in the reconciliation report, by design (#4046); visibility is #4162.
+  drift in the reconciliation report, by design (#4046); the treasurer
+  answers it on Stuck States (`INV-ADDPAY-042`).
   Pinned by `xero-refund-note-void-pointer.realdb.test.ts`,
   `xero-refund-note-crash-window.test.ts`, `xero-sync.test.ts`,
   `xero-booking-repair.test.ts`, `xero-operation-retry.test.ts`,
   `xero-operation-outbox.test.ts`, `xero-hardening.test.ts` and
   `xero-refund-note-after-void-key.test.ts`.
+
+### INV-ADDPAY-042
+
+- **A voided bank-transfer refund note is listed until the treasurer answers
+  it, once; nothing answers it automatically** (#4162, owner decisions 16 and
+  17 Oct 2026). `listBankRefundVoids` (`bank-refund-void-report.ts`) lists each
+  `REFUND_CREDIT_NOTE` link on an `INTERNET_BANKING` payment that is inactive,
+  recorded VOIDED or DELETED, past the 24-hour grace, with no
+  `BankRefundVoidResolution`; the unique (payment, note) pair is the claim. A
+  record-again whose own note did not land comes back flagged; one whose note
+  Xero voided too comes back as that note's item. The card report and its
+  self-heal stay card-only.
+- **Record again** (`reRecordBankTransferRefund`) re-raises the voided note's
+  recorded amount, which the request confirms (a moved figure is a 409; an
+  unreadable one refuses). It puts back only the part the void's recount took
+  out of the refunded total, and queues one note keyed
+  `re-record:<resolution id>`, sized from its own record (`readReRecordShare`),
+  copying the voided note's method, wording and invoice (`INV-PAY-101`).
+  Refused while a refund-note create could still mint, or when the voided
+  note's create was resolved in Xero (`INV-INT-025`). No booking event, no
+  member email.
+- **Confirm** (`confirmBankTransferRefundCancelled`) records why. Cancelled
+  takes the amount back out of the payment's transactions and reverses its
+  `BANK_REFUND` line, so the detail matches the total and no later reconcile
+  restores it; replaced by hand in Xero moves nothing.
+- Both take `lock(1)`, then the Payment row (`INV-LOCK-001`). Pinned by
+  `bank-refund-void-resolution.realdb.test.ts`,
+  `bank-refund-void-resolution.test.ts`, `bank-refund-void-report.test.ts`,
+  `bank-refund-voids-panel.test.tsx` and the routes' `routes.test.ts`.

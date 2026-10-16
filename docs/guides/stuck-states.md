@@ -278,6 +278,35 @@ This action does not cover two kinds of refund:
 Those two still show in the **Exhausted recovery operations** count. Ask a
 developer to reconcile them.
 
+### Answer a bank-transfer refund whose Xero credit note was voided
+
+When someone voids a bank-transfer refund's credit note in Xero, the club's
+records stop counting that refund: Xero is how bank transfers are recorded. The
+app never raises the note again by itself (#4162). A day after the void, the
+refund is listed under **Bank-transfer refunds with a voided credit note**,
+shown with Finance view. Each row shows the refund's amount, the voided note,
+and any live refund credit notes still on the payment - so you can see a note
+you already replaced by hand in Xero.
+
+Answer each one with Finance edit:
+
+1. **Record again**, if the member was paid back. One fresh credit note is
+   raised in Xero for exactly the voided note's amount, which you confirm but
+   cannot change. The refund is counted on the payment again. The member is not
+   told. To record a different amount, raise that note by hand in Xero, then use
+   **Confirm** with "Replaced by hand in Xero".
+2. **Confirm**, choosing why:
+   - **Refund cancelled** - the member was not paid. The refund is taken back
+     out of the payment's records and its booking ledger line is reversed.
+   - **Replaced by hand in Xero** - the member was paid and a note you made in
+     Xero records it. Nothing in the club's records changes.
+
+A reason is required either way, and goes in the audit log. Each voided note
+can be answered once. If a recorded-again note does not reach Xero for the full
+amount, the row comes back marked so: retry a failed note from the Xero screen,
+or ask a developer if the note went through for less. If Xero voids the fresh
+note too, that note is listed in its turn.
+
 ### A booking change's card request that stopped on its first refusal
 
 When a booking change raises the price, the app asks the member's card for the
@@ -314,6 +343,7 @@ The page has no settings. What it shows:
 | Generated timestamp | When the dashboard was last computed (shown in the header) |
 | Card refunds Stripe gave up on | Each dead card refund still owed, with a **Paid another way** close. Shown to Finance view (on a page that needs Support view), closed with Finance edit |
 | Card refunds paid back twice | Each refund closed as paid another way that Stripe also refunded to the card afterwards, with both amounts and a **Resolved** action. Shown to Finance view, resolved with Finance edit |
+| Bank-transfer refunds with a voided credit note | Each bank-transfer refund whose Xero credit note was voided more than a day ago, with **Record again** and **Confirm**. Shown to Finance view, answered with Finance edit |
 
 ### Who sees the named rows
 
@@ -346,6 +376,10 @@ without widening who can read the membership roll.
 | **Paid another way** says the late card charge's Xero record "changed while you were closing it" | An officer resolved or withdrew the charge's record in Xero while you were closing the refund | Reload the page. The dialog then says what will be recorded in Xero now |
 | **Exhausted recovery operations** counts a booking change's card request that stopped on its first refusal, and the email says its card request is "already recorded for another change to the same booking" | Two changes to one booking ended up with one card request, recorded for the other change; a retry would be refused the same way, so the app stopped at once | The money is still owed. See [A booking change's card request that stopped on its first refusal](#a-booking-changes-card-request-that-stopped-on-its-first-refusal) |
 | **Mark resolved** says Stripe's refund to the card changed | Stripe refunded the card again since you opened the dialog | Check the new amount with the member before marking it resolved |
+| **Record again** is greyed out, saying another refund credit note is "still on its way to Xero" | Another refund note on the same payment has not finished | Wait for it, then reload the page |
+| **Record again** is greyed out, saying the note "was marked resolved by hand in Xero" | An officer resolved the voided note's original create in Xero, so a fresh note could credit the member twice | Raise any further note by hand in Xero, then **Confirm** with "Replaced by hand in Xero" |
+| A voided bank-transfer refund row says "amount unknown", with both answers greyed out | The voided note's amount was never recorded | Ask a developer to reconcile it |
+| **Record again** or **Confirm** says the amount or the payment's refunds changed | Something moved on the payment since the page loaded | Reload the page and check before answering again |
 
 ## Related links
 

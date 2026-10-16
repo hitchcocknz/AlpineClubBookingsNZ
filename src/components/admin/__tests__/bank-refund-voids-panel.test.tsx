@@ -156,7 +156,7 @@ describe("the voided bank-transfer refund panel", () => {
       row({ flag: "note-failed", answerable: false }),
       row({ linkId: "link-2", bookingReference: "BK-0002", flag: "voided-again", reRecordOf: "cn-original" }),
     ]);
-    expect(screen.getByText(/Recorded again, but its fresh credit note did not reach Xero/)).toBeInTheDocument();
+    expect(screen.getByText(/Recorded again, but its fresh credit note did not reach Xero for the full amount/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record the refund for booking BK-0001 again" })).not.toBeInTheDocument();
     expect(screen.getByText("This note recorded cn-original again, and Xero voided it too.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Record the refund for booking BK-0002 again" })).toBeEnabled();
