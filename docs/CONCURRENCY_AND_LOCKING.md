@@ -3206,6 +3206,50 @@ refund's recording are serialised by the row every refunded-total writer takes
 first. Its Xero refund note is an outbox row queued inside the completion
 transaction, with no provider call (`INV-PAY-129`).
 
+**#4154 adds one more create, inside the capacity void's claim, and no key.**
+Where the race's frozen card refund plan is short of the charge, the settle
+inserts the part to check of the same task (`raiseCapacityRaceRefundShortfallTask`)
+after freezing the plan, under the locks it already holds (`lock(1)`, the
+lodge key, the member's credit-ledger key where it takes one), on no
+conflict under its unique
+`occurrenceKey`. A key already held is logged, never thrown, so the webhook's
+settle never rolls back on it. Its completion is the one above, reading the
+race's own recovery rows (one per intent, on the booking) beside the cancel's,
+and it reads the race intent's captured charge under the same `Payment` row
+lock its allocation then writes, on that charge alone (`INV-PAY-135`).
+
+**#4154's guarded correction is a new writer of a charge's refunded total, and
+takes no new key.** Where the race's charge holds too little for the task, the
+completion lowers that one charge's `refundedAmountCents` to its recorded refund
+rows before allocating, inside the same transaction and under the `Payment` row
+lock (`lockPaymentForRefundedTotal`) - the lock every writer of that column
+takes before touching it (`INV-PAY-103`), and which the writer
+(`capacityRaceChargeForHandBack`) takes itself as well as its caller. It runs
+after the card refund gate, which refuses only while the race's own card refund
+recovery row, or a card refund on the payment that Stripe failed later, is not
+SUCCEEDED. No other refund reaches the race's charge meanwhile: the booking is
+cancelled, so no member cancel or edit refunds it; the correction refuses while
+the booking or payment has any other refund task, which shuts out every
+hand-back and "Paid another way" close; and a refund made in the Stripe
+dashboard is checked before the transaction against Stripe's own
+`amount_refunded` (read outside it, bounded, no retries), while its later
+`charge.refunded` recording (`recordStripeRefundsAgainstTransaction`) queues on
+the same row lock. Two completions of one task serialise on that lock too, and
+the second loses the task's status claim. It writes through the shared compare-and-set
+(`compareAndSetRefundedAmount`) taking the smaller of the row's total and the
+rows' sum, so a writer that slipped past cannot be undone into a raise. The
+payment's aggregate is re-derived in the same transaction
+(`reconcilePaymentAggregates`). No `lock(1)`: a cancellation's hand-back
+completion never takes it, and the correction moves no booking status or
+capacity. A refusal anywhere later in the completion rolls the correction back
+with it. **One window remains, and is stated rather than closed:** a refund made
+in Stripe after the completion's Stripe read but recorded only after its commit
+can still pay the member twice, since the read is outside the transaction and
+no lock reaches Stripe. Its recording then meets the charge's cap, and
+`recordStripeRefundsAgainstTransaction` alerts the officers after its own commit
+(`alertCardRefundCapOverflow`, once per charge and set of counted refunds),
+never inside the transaction.
+
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
 holds nothing. Until #2760 it was

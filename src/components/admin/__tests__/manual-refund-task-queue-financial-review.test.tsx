@@ -163,7 +163,13 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     });
     const intro = screen.getByTestId("manual-refund-task-card-shortfall-intro");
     expect(intro.textContent).toMatch(/card refund could not carry all of the refund due/);
-    expect(intro.textContent).toMatch(/pay it by bank transfer/);
+    // #4154 review: one order on every hand-back - mark first, then pay straight after the app accepts.
+    expect(intro.textContent).toMatch(/mark it paid back\s+first/);
+    expect(intro.textContent).toMatch(/then pay it by bank\s+transfer straight after the app accepts/);
+    // #4159 review round 2 (F4): a Xero note only where the booking has an invoice to credit.
+    expect(intro.textContent).toMatch(/where the booking has a Xero invoice, raises its refund credit note/);
+    expect(intro.textContent).not.toMatch(/which also raises its Xero refund credit note/);
+    expect(intro.textContent).not.toMatch(/pay it by bank\s+transfer, then mark/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();
@@ -176,13 +182,34 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
       viewerCanViewBookings: true,
     });
     const intro = screen.getByTestId("manual-refund-task-card-shortfall-check-intro");
-    expect(intro.textContent).toMatch(/Check Stripe and the bank before paying anything, then\s+contact the member with what you found/);
+    expect(intro.textContent).toMatch(/Check Stripe and\s+the bank before paying anything, then contact the member with what you found/);
     expect(intro.textContent).toMatch(/dismiss it with a note/);
-    // Paying it is only the answer once the check shows it is owed.
-    expect(intro.textContent).toMatch(/if it really is owed, pay it\s+by bank transfer/);
-    expect(intro.textContent).toMatch(/on their booking page, and by\s+email unless emails were turned off/);
+    // Paying it is only the answer once the check shows it is owed - and (#4154 review M3) only after the
+    // app has accepted the mark: mark first, then pay, on every surface.
+    expect(intro.textContent).toMatch(/If it really is owed, mark it\s+paid\s+back first/);
+    expect(intro.textContent).toMatch(/pay it by bank transfer\s+straight after the app accepts/);
+    expect(intro.textContent).not.toMatch(/pay it by bank transfer,? (then|and) mark/i);
+    // #4154: a capacity race's too - whose member is told on the booking page only, never by email.
+    expect(intro.textContent).toMatch(/from a booking cancelled because its dates filled up during the card payment/);
+    expect(intro.textContent).toMatch(/on their booking page,\s+and for a cancellation by email unless emails were turned off/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+  });
+
+  it("#4154 review (M3): a part to check's paid-back dialog says to mark first and pay straight after, never that the money has already gone", async () => {
+    await renderQueue({ tasks: [{ ...HAND_BACK_TASK, cardShortfallCheck: true }], viewerCanViewBookings: true });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/The app first checks it can record this; pay straight after it accepts\./);
+    expect(dialog.textContent).not.toMatch(/once the money has actually gone back/);
+  });
+
+  it("CONTROL: a cash hand-back's paid-back dialog keeps its sentence", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/once the money has actually gone back to the member/);
+    expect(dialog.textContent).not.toMatch(/first checks it can record this/);
   });
 
   it("a cash hand-back does not print it", async () => {

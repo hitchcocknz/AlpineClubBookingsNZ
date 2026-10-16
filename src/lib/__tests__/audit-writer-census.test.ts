@@ -1444,7 +1444,10 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // entries became one pinned shared writer, `reportAutomaticLateCaptureRefund`,
     // and the lost-record recovery's own entry is pinned beside it.
     // 127 -> 128 pinned (#4170): the refunded-outside-the-app entry, pinned beside them.
-    ).toEqual({ pinned: 128, unpinned: 376 });
+    // 376 -> 377 unpinned (#4154): a capacity race's charge corrected before its
+    // hand-back, unpinned `payment`. 128 pinned, 377 unpinned RE-MEASURED by this
+    // suite on the sync with #4149/#4170 (505 sites minus 128 pinned).
+    ).toEqual({ pinned: 128, unpinned: 377 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

@@ -283,7 +283,9 @@ by the club", worked out the same way the cancel works them out.
 
 - **The part to refund by bank transfer** is what the payment's other
   (non-card) charges still hold. The member is told the club will refund it by
-  bank transfer: pay it by bank transfer, then mark it paid back. That records
+  bank transfer: mark it paid back first, then pay it by bank transfer straight
+  after the app accepts - it refuses while the card refund is still moving, or
+  where the payment's records no longer hold the money. Accepted, it records
   the refund on the payment and the booking ledger and queues one Xero refund
   credit note for exactly that amount, worded as a bank transfer, beside the
   card refund's own note; nothing needs recording in Xero by hand. A booking
@@ -292,16 +294,75 @@ by the club", worked out the same way the cancel works them out.
   records show it already refunded, or nothing holds it. The member is told
   only that the club will be in touch. Check Stripe and the bank, then contact
   the member with what you found. If they have had the money, dismiss it with
-  a note saying how. If it really is owed, pay it by bank transfer and mark it
-  paid back - after the bank-transfer part, which the app requires, since both
-  are settled on the same money. Where the payment's records show nothing left
-  to refund, the app refuses to mark it and says to dismiss it.
+  a note saying how. If it really is owed, mark it paid back first - after the
+  bank-transfer part, which the app requires, since both are settled on the
+  same money. The app first checks it can record it: pay it by bank transfer
+  straight after it accepts. Where the payment's records show nothing left to
+  refund, the app refuses and says what to do instead: dismiss it with a note,
+  and if the member really is owed, pay them anyway and raise the refund credit
+  note in Xero by hand where the booking has a Xero invoice.
 
 **Neither part can be marked paid back until the card refund itself has gone
 through.** While Stripe is still making it, the app says to mark the part once
 it settles. If the card refund failed and is waiting to retry, wait for the
-retry. If its retries have run out, close it as **Paid another way** on this
-page once the member has had that money back, then mark the part.
+retry. If its retries have run out, close it as **Paid another way** on
+[Stuck States](stuck-states.md#close-a-card-refund-stripe-gave-up-on) once the
+member has had that money back, then mark the part.
+
+**The same part to check when the dates fill up during a card payment
+(#4154).** If a member's card payment completes after the last beds went, the
+booking is cancelled and the card refunded automatically - but only for what
+the payment's records show can go back to the card. When that is less than
+the charge, or nothing, the rest appears here as one part to check, and the
+officers are emailed once. The member's booking page says the club will be in
+touch about it; no email goes to the member about it. Check Stripe and the
+bank first, because the records may be wrong and the money may already have
+gone back. If it has, dismiss it with a note saying how, and the member's
+page then says the club checked it and closed it. If it really is owed, use
+**Mark paid back** first, once the card refund has gone through, and pay
+straight after the app accepts. The app first checks it can record it, only on
+that card charge:
+
+- It asks Stripe what the charge has refunded. If Stripe shows more than the
+  app has recorded (a refund made in the Stripe dashboard that has not reached
+  the app yet), or Stripe cannot be reached, it refuses for now: try again in a
+  few minutes, and do not pay until it accepts. If it keeps refusing, check the
+  charge in Stripe; if the member is owed, refund them by bank transfer and
+  dismiss the task with a note saying when and how much.
+- Where the charge's records read more refunded than its card refunds on
+  record, it corrects them itself first, and logs the correction in the audit
+  log, but only for a charge made since the app has kept a record of each card
+  refund, on a booking with no account credit given back and no other refund
+  task.
+
+If it accepts, pay the member by bank transfer straight away; it records the
+refund, queues its Xero refund credit note, and the member's page says the
+whole payment was refunded. If the nightly Xero check already raised a card
+refund note for that money, the app counts it and its own note covers only the
+rest. If the app cannot tell that note apart from one for another charge on the
+payment, it refuses and says so, and its message then never asks for a note by
+hand. A booking with no Xero invoice to credit gets no
+note - usual here, since a payment that lost the race is rarely invoiced. If it
+refuses, it says why: pay the member anyway if they are owed, and dismiss the
+task with a note saying when and how much. Raise the refund credit note in Xero
+by hand only where it says to (the booking has an invoice and no note covers it
+yet).
+
+If the card refund itself stopped retrying, close it as **Paid another way**
+on Stuck States once the member has had that money back, but do not then mark
+this part: that close is another refund task, so the app cannot record this
+one. Dismiss it with a note instead, as the app says.
+
+One gap the app cannot close: a refund made in the Stripe dashboard in the
+moments between **Mark paid back** and your bank transfer. When that refund
+reaches the app, the charge already reads fully refunded, so officers are
+emailed that a card refund took the charge past what was charged. Where the
+member has already had money back another way on that payment - any hand-back
+marked paid back, a card refund closed as Paid another way, or account credit
+given back - the email says they may have been paid twice: check Stripe, the
+bank and their account credit, and recover any overpayment. Otherwise it says
+the charge's records drifted: check the charge in Stripe against the booking's
+payment records.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price

@@ -457,6 +457,32 @@ describe("resolveBookingNarrative", () => {
       expect(narrate(events)).toBe(`${OPENING} $100.00 was refunded on 20 May 2026. No further payment is required.`);
     });
 
+    // #4154 (`INV-PAY-135`): the rest is a task to check (#4097's `check` part), read live.
+    describe("its task to check (#4154)", () => {
+      const withTask = (events: NarrativeEvent[], check: "OPEN" | "COMPLETED" | "DISMISSED", cardRefundState?: "on-its-way" | "stalled") =>
+        resolveBookingNarrative({ club: CLUB, booking: booking({ status: "CANCELLED" }), events, cardRefundState, cardShortfallStatuses: { check } }, CLUB_FORMAT_TEST).message;
+      const refunded = event(BookingEventType.REFUNDED, "2026-05-05T00:00:00.000Z", { amountCents: 8000 });
+
+      it("still OPEN: the club will be in touch about the rest", () => {
+        expect(withTask([raceCancel(8000), refunded], "OPEN")).toBe(`${OPENING} $80.00 was refunded on 5 May 2026; the club will be in touch about the remaining $20.00. No further payment is required.`);
+      });
+
+      it.each([
+        ["after a refund made", [raceCancel(8000), refunded], undefined, "$80.00 was refunded on 5 May 2026 and the club checked the remaining $20.00 and closed it."],
+        ["with the card refund stalled", [raceCancel(8000)], "stalled", "$80.00 is being refunded to you and the club checked the remaining $20.00 and closed it; the club will be in touch about the card refund."],
+        ["after an empty plan", [raceCancel(0)], undefined, "The club checked the $100.00 and closed it."],
+      ] as const)("MUTATION: dismissed %s, says the club checked it and closed it - never that it will be in touch", (_label, events, state, clause) => {
+        const message = withTask([...events], "DISMISSED", state);
+        expect(message).toBe(`${OPENING} ${clause} No further payment is required.`);
+        expect(message).not.toContain("in touch about the remaining");
+      });
+
+      it("paid back: its REFUNDED event counts, so the whole charge reads refunded", () => {
+        const paidBack = event(BookingEventType.REFUNDED, "2026-05-20T00:00:00.000Z", { amountCents: 2000, reason: "manual_refund_completed" });
+        expect(withTask([raceCancel(8000), refunded, paidBack], "COMPLETED")).toBe(`${OPENING} $100.00 was refunded on 20 May 2026. No further payment is required.`);
+      });
+    });
+
     it("a refund recorded twice never reads as more than was paid", () => {
       const events = [
         raceCancel(10000),
