@@ -2272,6 +2272,28 @@ describe("retryXeroSyncOperation", () => {
     );
   });
 
+  it("MUTATION (INV-ADDPAY-041): a PARTIAL row's repair never writes a note Xero voided into the payment's pointer", async () => {
+    mocks.findUniquePayment.mockResolvedValue({ id: "pay_123", source: "STRIPE" });
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        status: "PARTIAL", entityType: "CREDIT_NOTE", operationType: "CREATE", xeroObjectId: "cn_123",
+        requestPayload: { allocation: { invoiceId: "inv_123", amount: 12.34 } },
+        responsePayload: { allocation: { allocations: [{ amount: 12.34 }] } },
+      })
+    );
+    mocks.findManyXeroObjectLink.mockImplementation((async ({ where }: any) =>
+      where?.role === "REFUND_CREDIT_NOTE" ? [{ xeroObjectId: "cn_123", metadata: { amountCents: 1234, status: "VOIDED" } }] : []) as never);
+    mocks.updatePayment.mockResolvedValue({ id: "pay_123" });
+
+    try {
+      await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+      expect(mocks.updatePayment).not.toHaveBeenCalledWith(expect.objectContaining({ data: { xeroRefundCreditNoteId: "cn_123" } }));
+    } finally {
+      mocks.findManyXeroObjectLink.mockImplementation((async () => []) as never);
+    }
+  });
+
   it("repairs partial refund credit note follow-up actions", async () => {
     mocks.findUniquePayment.mockResolvedValue({ id: "pay_123", source: "STRIPE" });
     mocks.findUniqueOperation.mockResolvedValue(

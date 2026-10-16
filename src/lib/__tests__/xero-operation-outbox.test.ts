@@ -1195,6 +1195,8 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
         findFirst: vi.fn().mockResolvedValue(null),
         findMany: vi.fn().mockResolvedValue([]),
       },
+      // `INV-ADDPAY-041`: the key's voided-note read.
+      xeroObjectLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     await expect(
@@ -1211,6 +1213,7 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     // The queued-row dedupe; the #3635 coverage read goes through the store too.
     expect(store.xeroSyncOperation.findFirst).toHaveBeenCalledTimes(1);
     expect(store.xeroSyncOperation.findMany).toHaveBeenCalledTimes(1);
+    expect(store.xeroObjectLink.findMany).toHaveBeenCalledTimes(1);
     // The global-prisma delegates stayed untouched.
     expect(mocks.findUniquePayment).not.toHaveBeenCalled();
     expect(mocks.findFirstOperation).not.toHaveBeenCalled();
@@ -1420,6 +1423,65 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
 
     expect(mocks.sumCoveredRefundCreditNoteCents).not.toHaveBeenCalled();
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("#4091: once Xero voided the payment's one note, a re-request repoints nothing and queues a fresh create", async () => {
+    // The void released the field, and the lookup no longer re-adopts the
+    // voided note (`findCanonicalPaymentRefundCreditNote`, its own test).
+    mocks.findCanonicalPaymentRefundCreditNote.mockResolvedValue(null);
+
+    await expect(enqueueXeroRefundCreditNoteOperation("payment_1", 5000)).resolves.toEqual({
+      queueOperationId: "op_credit_note_1",
+      message: "Xero refund credit note queued for background processing.",
+    });
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ operationType: "CREATE", entityType: "CREDIT_NOTE", localId: "payment_1", status: "PENDING" }),
+    );
+    expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION (INV-ADDPAY-041): the fresh note's row key names the voided note, so the failed panel never reads the voided create as its repair", async () => {
+    mocks.findManyLinks.mockImplementation((async ({ where }: any) =>
+      where?.role === "REFUND_CREDIT_NOTE"
+        ? [
+            { xeroObjectId: "cn_voided", metadata: { amountCents: 5000, watermarkCents: 5000, status: "VOIDED" } },
+            // A voided note at another amount is not one this key could replay.
+            { xeroObjectId: "cn_other", metadata: { amountCents: 700, watermarkCents: 700, status: "VOIDED" } },
+          ]
+        : []) as never);
+
+    try {
+      await enqueueXeroRefundCreditNoteOperation("payment_1", 5000);
+
+      expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ correlationKey: "payment:payment_1:refund-credit-note:5000:v1:after-void:cn_voided" }),
+      );
+    } finally {
+      mocks.findManyLinks.mockImplementation((async () => []) as never);
+    }
+  });
+
+  it("MUTATION (INV-ADDPAY-041, final lens F1): a reissue's row key landing on a LIVE note's key names that note", async () => {
+    // A ($50, watermark 5000) voided; B ($30, watermark 8000) live: A's reissue lands on watermark 8000.
+    mocks.findUniquePayment.mockResolvedValue({ id: "payment_1", source: "STRIPE", refundedAmountCents: 8000, xeroRefundCreditNoteId: "cn_B" });
+    mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(3000);
+    mocks.findManyLinks.mockImplementation((async ({ where }: any) =>
+      where?.role === "REFUND_CREDIT_NOTE"
+        ? [
+            { xeroObjectId: "cn_A", metadata: { amountCents: 5000, watermarkCents: 5000, status: "VOIDED" } },
+            { xeroObjectId: "cn_B", metadata: { amountCents: 3000, watermarkCents: 8000 } },
+          ]
+        : []) as never);
+    try {
+      await enqueueXeroRefundCreditNoteOperation("payment_1", 5000);
+
+      // Not B's own `…:8000:v2`, which the failed panel would read as this row's repair.
+      expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ correlationKey: "payment:payment_1:refund-credit-note:8000:v2:after-void:cn_B" }),
+      );
+    } finally {
+      mocks.findManyLinks.mockImplementation((async () => []) as never);
+    }
   });
 
   it("skips queueing when the webhook delta is zero", async () => {
