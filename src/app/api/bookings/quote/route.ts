@@ -41,9 +41,8 @@ import {
   type MemberGuestConsentGuestFields,
 } from "@/lib/member-guest-add-policy";
 import {
-  BookingGuestStayRangeValidationError,
-  type NormalizedBookingGuestStayRange,
-  normalizeGuestStayRanges,
+  BOOKING_REQUEST_GUESTS_MAX, BookingGuestStayRangeValidationError, guestNightListSchema,
+  type NormalizedBookingGuestStayRange, normalizeGuestStayRanges,
 } from "@/lib/booking-guest-stay-range-input";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
@@ -75,10 +74,10 @@ const quoteSchema = z.object({
       memberId: z.string().min(1).optional(),
       stayStart: z.string().optional(),
       stayEnd: z.string().optional(),
-      // Explicit included nights for a multi date range stay (issue #713).
-      nights: z.array(z.string()).max(370).optional(),
+      // Explicit included nights for a multi date range stay (#713; shared shape, #4199).
+      nights: guestNightListSchema.optional(),
     })
-  ).min(1),
+  ).min(1).max(BOOKING_REQUEST_GUESTS_MAX),
   forMemberId: z.string().optional(),
 });
 

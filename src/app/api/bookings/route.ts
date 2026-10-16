@@ -122,8 +122,7 @@ import {
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
 import {
-  BookingGuestStayRangeValidationError,
-  normalizeGuestStayRanges,
+  BOOKING_REQUEST_GUESTS_MAX, BookingGuestStayRangeValidationError, guestNightListSchema, normalizeGuestStayRanges,
 } from "@/lib/booking-guest-stay-range-input";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import {
@@ -165,12 +164,12 @@ const createBookingSchema = z.object({
         stayEnd: z.string().optional(),
         // Explicit included nights for a multi date range stay (issue #713).
         // When present, the guest stays exactly these nights (may be
-        // non-contiguous) and the booking range auto-expands to cover them.
-        nights: z.array(dateOnlyString).max(370).optional(),
+        // non-contiguous) and the booking range auto-expands to cover them (#4199: shared shape).
+        nights: guestNightListSchema.optional(),
       })
     )
     .min(1)
-    .max(200),
+    .max(BOOKING_REQUEST_GUESTS_MAX),
   // #2721: the booker's answers to "this guest has the same name as your own
   // recorded dependant". One entry per dependant the collision was with, each
   // naming that dependant explicitly — see `booking-dependant-identity.ts` for

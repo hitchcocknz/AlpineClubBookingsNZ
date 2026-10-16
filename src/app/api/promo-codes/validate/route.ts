@@ -34,7 +34,7 @@ import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
-import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import { BOOKING_REQUEST_GUESTS_MAX, guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 import { type PromoPreviewEdit, resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { workPartyWindowOverlapsStay } from "@/lib/work-party";
@@ -83,7 +83,7 @@ const validateSchema = z
           bookingGuestId: z.string().min(1).max(64).optional(),
         })
       )
-      .min(1),
+      .min(1).max(BOOKING_REQUEST_GUESTS_MAX),
     forMemberId: z.string().optional(),
     promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
     // #3827: several codes, in the booker's order (D-3813-2), each with its own

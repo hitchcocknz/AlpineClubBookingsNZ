@@ -15,7 +15,8 @@ export const GUEST_NIGHT_INVALID_MESSAGE =
  * A guest's explicit night set (#713) as a request carries it: `yyyy-mm-dd`
  * nights, at most a year of them. The one request shape for `nights`, shared by
  * the booking-policy exception doors and the locked-period change request
- * (#4088), because zod STRIPS a key a schema does not declare: a door that
+ * (#4088), and by create, quote and the promo preview (#4199), because zod
+ * STRIPS a key a schema does not declare: a door that
  * forgot `nights` silently turned a guest's chosen nights into the whole stay
  * (#2562 review, #4088). What the nights MEAN is still decided only by
  * `normalizeGuestStayRange` below.
@@ -23,6 +24,16 @@ export const GUEST_NIGHT_INVALID_MESSAGE =
 export const guestNightListSchema = z
   .array(z.string().refine(isDateOnlyString, { message: GUEST_NIGHT_INVALID_MESSAGE }))
   .max(370);
+
+/**
+ * The most guests one booking request may name (#4199): the bound the create
+ * route already set (the booking-request doors spell the same 200 for their own
+ * guest lists), shared by the doors that price a party — create, quote and the
+ * promo preview — so a
+ * hostile payload cannot turn a per-guest loop (pricing, consent, stay
+ * resolution) into an unbounded one. Far above any real party.
+ */
+export const BOOKING_REQUEST_GUESTS_MAX = 200;
 
 export type BookingGuestStayRangeInput = {
   stayStart?: Date | string | null;
