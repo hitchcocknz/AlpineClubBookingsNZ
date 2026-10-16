@@ -53,13 +53,9 @@ describe("promo adjustment line", () => {
         availablePromoCodes={[]}
         appliedNewPromo={null}
         prefillPromoCode={undefined}
-        checkIn="2026-08-01"
-        checkOut="2026-08-03"
+        guestStays={{ checkIn: "2026-08-01", checkOut: "2026-08-03", existing: null, added: [] }}
         remainingGuests={[]}
         addedGuests={[]}
-        perGuestDatesEnabled={false}
-        isInProgressEdit={false}
-        getExistingGuestRange={() => ({ stayStart: "2026-08-01", stayEnd: "2026-08-03" })}
         quote={null}
         forMemberId={undefined}
         lodgeId={null}
