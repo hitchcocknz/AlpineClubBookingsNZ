@@ -16,13 +16,17 @@ import {
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 import type { PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
+import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
+import { cardRefundMadeForOperation } from "@/lib/open-card-refund-owed";
 
 type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
+/** A "Paid another way" close's record: what it paid back, and what the row still owed. */
+type CloseRecord = { amountCents: number | null; raisedAmountCents: number | null };
 
 /**
  * #4125: where a card cancel's refund stands on its recovery row, for the
  * narrative (`cardRefundState`); #4145: closed "Paid another way", what that
- * close's record says (`cardRefundClose`) - paid back, left unpaid, and owed.
+ * close's record says (`cardRefundClose`) - paid back, left unpaid, and made.
  */
 export interface CancelledCardRefund {
   cardRefundState?: CardRefundState;
@@ -31,22 +35,17 @@ export interface CancelledCardRefund {
 
 /**
  * #4125: where one card refund recovery row stands. Closed `SUCCEEDED` is made,
- * unless its close is a "Paid another way" record (`closeKeysOf`), which says
- * what was paid back, what was left unpaid and what the row still owed; a row
- * the runner will still send is on its way (`isPaymentRecoveryOperationInFlight`);
+ * unless its close is a "Paid another way" record (`closeKeysOf`); a row the
+ * runner will still send is on its way (`isPaymentRecoveryOperationInFlight`);
  * any other is dead - stalled until the club acts.
  */
-async function cardRefundRowState(row: CardRefundRow): Promise<{ state: CardRefundState; close?: PaidAnotherWayClose }> {
+async function cardRefundRowState(row: CardRefundRow): Promise<{ state: CardRefundState; record?: CloseRecord }> {
   if (row.status === PaymentRecoveryOperationStatus.SUCCEEDED) {
     const record = await prisma.manualRefundTask.findFirst({
       where: { occurrenceKey: { in: closeKeysOf(row.id) } },
       select: { amountCents: true, raisedAmountCents: true },
     });
-    if (!record) return { state: "settled" };
-    return {
-      state: "paid-another-way",
-      close: { paidBackCents: record.amountCents ?? 0, unpaidCents: paidAnotherWayUnpaidCents(record), raisedCents: record.raisedAmountCents },
-    };
+    return record ? { state: "paid-another-way", record } : { state: "settled" };
   }
   return { state: isPaymentRecoveryOperationInFlight(row) ? "on-its-way" : "stalled" };
 }
@@ -88,7 +87,8 @@ export async function readCardShortfallTaskStatuses(bookingId: string): Promise<
  * race's (`capacity_claim_failed_refund_recovery_<booking>_<intent>`) - plus a
  * second only for a closed row, to tell a "Paid another way" close from a
  * refund made, and read what its record says (#4145; summed over a capacity
- * race's rows). No row reads as absent (`undefined`), which the narrative
+ * race's rows) - with, from the row's payment, what its slices took from the
+ * refunds recorded on it, by the rule the close used (`cardRefundMadeForOperation`). No row reads as absent (`undefined`), which the narrative
  * takes as on its way. Several rows (a second intent's capacity race) read as
  * the one furthest from done: a dead one first, then one still being sent.
  */
@@ -96,21 +96,29 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
   const rows = await prisma.paymentRecoveryOperation.findMany({
     // On `@@index([bookingId])`, so the prefix match never scans the table.
     where: bookingCancelCardRefundRecoveryWhere(bookingId),
-    select: { id: true, idempotencyKey: true, status: true, attempts: true, nextRetryAt: true },
+    select: { id: true, idempotencyKey: true, paymentId: true, status: true, attempts: true, nextRetryAt: true },
   });
   // `startsWith` is SQL LIKE, where `_` matches any one character, so the query alone
   // would let booking `ab`'s read take booking `abc`'s rows: the exact rule decides (#4147).
   const own = rows.filter((row) => isBookingCancelCardRefundRecoveryKey(bookingId, row.idempotencyKey));
-  const standings = await Promise.all(own.map(cardRefundRowState));
+  const standings = await Promise.all(own.map(async (row) => ({ row, ...(await cardRefundRowState(row)) })));
   const cardRefundState = FURTHEST_FROM_DONE_FIRST.find((state) => standings.some((each) => each.state === state));
   if (cardRefundState !== "paid-another-way") return { cardRefundState };
-  const closes = standings.flatMap((each) => (each.close ? [each.close] : []));
+  const closed = standings.flatMap(({ row, record }) => (record ? [{ row, record }] : []));
+  const payments = await prisma.payment.findMany({
+    where: { id: { in: [...new Set(closed.map(({ row }) => row.paymentId))] } },
+    select: { id: true, status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+  });
+  const made = (row: { id: string; paymentId: string }) => {
+    const payment = payments.find((each) => each.id === row.paymentId);
+    return payment ? cardRefundMadeForOperation(payment, row.id).madeCents : 0;
+  };
   return {
     cardRefundState,
     cardRefundClose: {
-      paidBackCents: closes.reduce((sum, each) => sum + each.paidBackCents, 0),
-      unpaidCents: closes.reduce((sum, each) => sum + each.unpaidCents, 0),
-      raisedCents: closes.some((each) => each.raisedCents === null) ? null : closes.reduce((sum, each) => sum + (each.raisedCents ?? 0), 0),
+      paidBackCents: closed.reduce((sum, { record }) => sum + (record.amountCents ?? 0), 0),
+      unpaidCents: closed.reduce((sum, { record }) => sum + paidAnotherWayUnpaidCents(record), 0),
+      madeCents: closed.reduce((sum, { row }) => sum + made(row), 0),
     },
   };
 }

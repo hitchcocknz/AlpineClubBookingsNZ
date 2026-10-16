@@ -172,6 +172,7 @@ import type { PaidBackChoice } from "@/lib/card-refund-paid-back";
 import { getNetCollectedPaymentParts } from "@/lib/payment-net-collected";
 import { openCardRefundOwedCents } from "@/lib/open-card-refund-owed";
 import { CAPACITY_RACE_REFUND_EVENT_REASON } from "@/lib/booking-events";
+import { MANUAL_SETTLEMENT_REVERSAL_EVENT_KIND } from "@/lib/manual-settlement-reversal-event";
 
 const CREATED = new Date("2026-06-20T00:00:00.000Z");
 
@@ -426,6 +427,35 @@ describe("closing a dead card refund as paid another way", () => {
       select: { type: true, occurredAt: true, snapshot: true },
     });
     expect(mocks.createBookingEvent).toHaveBeenCalledWith({ data: expect.objectContaining({ amountCents: 5_000, occurredAt: cancelledAt }) });
+  });
+
+  it("#4145 MUTATION: a cancel earlier than Stripe's time leaves the made part dated by Stripe - the cancel is a floor, not the date", async () => {
+    mixedSlices();
+    mocks.findBookingEvents.mockImplementation(async (args) =>
+      (args as { where: { type: unknown } }).where.type === "CANCELLED" ? [{ type: "CANCELLED", occurredAt: new Date("2026-06-24T00:00:00.000Z"), snapshot: { refundMethod: "card" } }] : [],
+    );
+
+    await close(10_000, "Bank transfer", "full", 10_000);
+
+    expect(mocks.createBookingEvent).toHaveBeenCalledWith({ data: expect.objectContaining({ occurredAt: new Date("2026-06-25T00:00:00.000Z") }) });
+  });
+
+  it("#4145 MUTATION: a settlement marker is not the cancel - one after the made time but before the cancel does not date the event", async () => {
+    mixedSlices();
+    // The made part's latest refund reads 00:00:00.000; a settlement marker at .200; the real cancel at .700.
+    const realCancel = new Date("2026-06-25T00:00:00.700Z");
+    mocks.findBookingEvents.mockImplementation(async (args) =>
+      (args as { where: { type: unknown } }).where.type === "CANCELLED"
+        ? [
+            { type: "CANCELLED", occurredAt: new Date("2026-06-25T00:00:00.200Z"), snapshot: { kind: MANUAL_SETTLEMENT_REVERSAL_EVENT_KIND } },
+            { type: "CANCELLED", occurredAt: realCancel, snapshot: { refundMethod: "card" } },
+          ]
+        : [],
+    );
+
+    await close(10_000, "Bank transfer", "full", 10_000);
+
+    expect(mocks.createBookingEvent).toHaveBeenCalledWith({ data: expect.objectContaining({ occurredAt: realCancel }) });
   });
 
   it.each([

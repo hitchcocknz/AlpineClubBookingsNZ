@@ -24,7 +24,7 @@ import type { BookingNarrative, NarrativeEvent } from "@/lib/booking-narrative";
 import { formatCents } from "@/lib/utils";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
-import { isCancelCardRefundEvent, isMadeBeforePaidAnotherWayEvent } from "@/lib/cancel-card-refund-event-reason";
+import { CAPACITY_RACE_REFUND_EVENT_REASON, isCancelCardRefundEvent, isMadeBeforePaidAnotherWayEvent } from "@/lib/cancel-card-refund-event-reason";
 
 /**
  * #4125: what the club follows up - a dead card refund, a part no refund
@@ -57,57 +57,68 @@ function joinClauses(clauses: readonly string[], none: string): string {
   return clauses.length > 1 ? `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}` : (clauses[0] ?? none);
 }
 
-/** #4145: what reached the card before a "Paid another way" close, from the events that close marked. */
-type MadeBeforePaidAnotherWay = { cents: number; on: Date } | undefined;
+/**
+ * #4145: the card parts of a paid-another-way refund its events date: the part
+ * the close found made, which it marked (`markedCents`) - and a capacity race's
+ * every row's own refund, each written by the close that made it
+ * (`CAPACITY_RACE_REFUND_EVENT_REASON`), so a row the runner made beside one
+ * paid another way is told too.
+ */
+type CardPartsMade = { datedCents: number; on: Date | null; markedCents: number };
 
-function madeBeforePaidAnotherWay(settlementEvents: readonly NarrativeEvent[]): MadeBeforePaidAnotherWay {
+function cardPartsMade(settlementEvents: readonly NarrativeEvent[], capacityRace: boolean): CardPartsMade {
+  const sum = (events: readonly NarrativeEvent[]) => events.reduce((total, event) => total + (event.amountCents ?? 0), 0);
   const marked = settlementEvents.filter(isMadeBeforePaidAnotherWayEvent);
-  const last = marked[marked.length - 1];
-  return last ? { cents: marked.reduce((sum, event) => sum + (event.amountCents ?? 0), 0), on: last.occurredAt } : undefined;
+  const dated = capacityRace
+    ? settlementEvents.filter((event) => event.type === BookingEventType.REFUNDED && event.reason === CAPACITY_RACE_REFUND_EVENT_REASON)
+    : marked;
+  return { datedCents: sum(dated), on: dated[dated.length - 1]?.occurredAt ?? null, markedCents: sum(marked) };
 }
 
 /**
- * #4145 (`INV-PAY-134`): what a "Paid another way" close recorded, read off its
- * record by the page (`readCancelledCardRefund`): what the officer paid back,
- * what it left unpaid and the club closed (`paidAnotherWayUnpaidCents`), and
- * what the row still owed when it closed (`raisedCents`), summed over the rows.
+ * #4145 (`INV-PAY-134`): what a "Paid another way" close recorded, read by the
+ * page (`readCancelledCardRefund`), summed over the rows: what the officer paid
+ * back and what it left unpaid for the club to close (its record,
+ * `paidAnotherWayUnpaidCents`), and what the row's slices took from the refunds
+ * recorded on its payment (`cardRefundMadeForOperation`, the close's own rule).
  */
 export interface PaidAnotherWayClose {
   paidBackCents: number;
   unpaidCents: number;
-  /** Null where a record did not keep it. */
-  raisedCents: number | null;
+  madeCents: number;
 }
 
 /**
  * #4145 (`INV-PAY-134`): a cancel's card refund by where its row stands, dated
  * by its own event. A row closed "Paid another way" is said in its parts, each
- * from where it is recorded: what reached the card first - dated by the event
- * that close marked, or, with none, the due less what the row still owed
- * (`raisedCents`), undated: an up-front event a cancel wrote before #4145 was
- * written whatever became of the refund - what the officer paid back, and only
- * what the close left unpaid as closed by the club. A part the row's payment
- * no longer held when it closed (capped below its slices) is said as none of
- * these: nothing records where it went.
+ * from where it is recorded: the card's dated by its events (`cardPartsMade`),
+ * what the officer paid back and what the close left unpaid (its record), and
+ * any card part no event dates - an up-front event a cancel wrote before #4145
+ * was written whatever became of the refund - undated, from the refunds
+ * themselves. A part the row's payment no longer held when it closed (capped
+ * below its slices) is none of these, and is not said. Returns the clauses and
+ * the cents they say.
  */
 function ownCardRefundClauses(
   cents: number,
   state: CardRefundState,
-  { cardEvent, made, close }: { cardEvent: NarrativeEvent | undefined; made: MadeBeforePaidAnotherWay; close: PaidAnotherWayClose | undefined },
+  { cardEvent, made, close }: { cardEvent: NarrativeEvent | undefined; made: CardPartsMade; close: PaidAnotherWayClose | undefined },
   { club, format }: { club: BoundClubTime; format: ClubFormat },
-): string[] {
+): { clauses: string[]; saidCents: number } {
   const money = (amount: number) => formatCents(amount, format);
-  if (state !== "paid-another-way") return [cardRefundClause(money(cents), state, cardEvent ? club.instantDate(cardEvent.occurredAt) : null)];
-  const madeCents = made && made.cents < cents ? made.cents : 0;
+  if (state !== "paid-another-way") {
+    return { clauses: [cardRefundClause(money(cents), state, cardEvent ? club.instantDate(cardEvent.occurredAt) : null)], saidCents: cents };
+  }
+  const datedCents = Math.min(made.datedCents, cents);
   // A caller that read no record (an older page) says the rest was paid back, as before.
-  const paidBack = Math.min(close?.paidBackCents ?? cents - madeCents, cents - madeCents);
-  const unpaid = Math.min(close?.unpaidCents ?? 0, cents - madeCents - paidBack);
-  const undatedMade = !made && close?.raisedCents != null ? Math.min(Math.max(0, cents - close.raisedCents), cents - paidBack - unpaid) : 0;
-  const clauses = made && madeCents > 0 ? [cardRefundClause(money(madeCents), "settled", club.instantDate(made.on))] : [];
+  const paidBack = Math.min(close?.paidBackCents ?? cents - datedCents, cents - datedCents);
+  const unpaid = Math.min(close?.unpaidCents ?? 0, cents - datedCents - paidBack);
+  const undatedMade = Math.min(Math.max(0, (close?.madeCents ?? 0) - made.markedCents), cents - datedCents - paidBack - unpaid);
+  const clauses = datedCents > 0 && made.on ? [cardRefundClause(money(datedCents), "settled", club.instantDate(made.on))] : [];
   if (undatedMade > 0) clauses.push(cardRefundClause(money(undatedMade), "settled", null));
   if (paidBack > 0) clauses.push(cardRefundClause(money(paidBack), state, null));
   if (unpaid > 0) clauses.push(`the club checked the ${clauses.length > 0 ? "remaining " : ""}${money(unpaid)} and closed it`);
-  return clauses;
+  return { clauses, saidCents: datedCents + undatedMade + paidBack + unpaid };
 }
 
 /**
@@ -121,14 +132,14 @@ function cardShortfallClause(
   parts: { cardCents: number; bankCents: number; checkCents: number },
   statuses: CardShortfallTaskStatuses,
   { cardEvent, made, close, retainedAmountCents, club, format }: {
-    cardEvent: NarrativeEvent | undefined; made: MadeBeforePaidAnotherWay; close: PaidAnotherWayClose | undefined; retainedAmountCents: number; club: BoundClubTime; format: ClubFormat;
+    cardEvent: NarrativeEvent | undefined; made: CardPartsMade; close: PaidAnotherWayClose | undefined; retainedAmountCents: number; club: BoundClubTime; format: ClubFormat;
   },
 ): string {
   const money = (cents: number) => formatCents(cents, format);
   const clauses: string[] = [];
   if (parts.cardCents > 0) {
     // The card part as its own refund stands, as the cancellation email says it.
-    clauses.push(...ownCardRefundClauses(parts.cardCents, statuses.card ?? "settled", { cardEvent, made, close }, { club, format }));
+    clauses.push(...ownCardRefundClauses(parts.cardCents, statuses.card ?? "settled", { cardEvent, made, close }, { club, format }).clauses);
   }
   if (parts.bankCents > 0) {
     const status = statuses.bank ?? "OPEN";
@@ -223,13 +234,8 @@ export function buildCancelledPostPaymentNarrative(
 
   let settlementClause: string;
   const followUps: string[] = [];
-  // #4145: what a "Paid another way" close found already made, and what it paid back.
-  // A capacity race's due is the CANCELLED snapshot's, which before #4125 was the
-  // full charge, not the plan: the due less what its rows owed is no card refund.
-  const paidAnotherWay = {
-    made: madeBeforePaidAnotherWay(settlementEvents),
-    close: cardRefundClose && capacityRace ? { ...cardRefundClose, raisedCents: null } : cardRefundClose,
-  };
+  // #4145: what reached the card, and what a "Paid another way" close recorded.
+  const paidAnotherWay = { made: cardPartsMade(settlementEvents, capacityRace), close: cardRefundClose };
   // What the clause below accounts for, refunded or paid back: a capacity race follows up the rest.
   let accountedCents = settledAmountCents;
   if (snapshot?.cardShortfall) {
@@ -257,8 +263,11 @@ export function buildCancelledPostPaymentNarrative(
     // (`buildCancelledNarrative`'s `paidEvent`) sends it to the pre-payment
     // narrative. `booking-narrative.test.ts` pins that.
     const state = cardRefundState ?? "on-its-way";
-    accountedCents = ownCard || state === "paid-another-way" ? snapshot.settledAmountCents : settledAmountCents;
-    const clauses = ownCardRefundClauses(accountedCents, state, { cardEvent: ownCard ? settlementEvent : undefined, ...paidAnotherWay }, { club, format });
+    const dueCents = ownCard || state === "paid-another-way" ? snapshot.settledAmountCents : settledAmountCents;
+    const { clauses, saidCents } = ownCardRefundClauses(dueCents, state, { cardEvent: ownCard ? settlementEvent : undefined, ...paidAnotherWay }, { club, format });
+    // #4145: a capacity race follows up what the clauses do not say - the snapshot's
+    // due was the full charge before #4125, and a capped close leaves a part unsaid.
+    accountedCents = saidCents;
     if (retainedAmountCents > 0) clauses.push(`${formatCents(retainedAmountCents, format)} was retained`);
     settlementClause = joinClauses(clauses, "");
     if (state === "stalled") followUps.push(STALLED_CARD_REFUND);

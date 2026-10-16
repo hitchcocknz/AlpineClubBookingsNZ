@@ -17,6 +17,13 @@ import { BookingEventType } from "@prisma/client";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
 
+/**
+ * #4125: the REFUNDED reason of a capacity race's card refund, written by the
+ * close that made it. Here, not in `booking-events.ts`, so the pure narrative
+ * can tell a capacity race's card parts by it (#4145).
+ */
+export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge capacity was no longer available.";
+
 /** Every cancel card refund reason ends so, before #4145 and since. */
 const CANCEL_CARD_REFUND_REASON_END = "refunded to the original payment method.";
 

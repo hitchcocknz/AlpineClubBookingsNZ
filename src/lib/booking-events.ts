@@ -19,7 +19,12 @@
  * transition is never rolled back purely because its narrative event failed.
  */
 import { BookingEventType, Prisma } from "@prisma/client";
-import { cancelCardRefundEventReason, isCancelCardRefundEvent, MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT } from "@/lib/cancel-card-refund-event-reason";
+import {
+  CAPACITY_RACE_REFUND_EVENT_REASON,
+  cancelCardRefundEventReason,
+  isCancelCardRefundEvent,
+  MADE_BEFORE_PAID_ANOTHER_WAY_SNAPSHOT,
+} from "@/lib/cancel-card-refund-event-reason";
 import type { ClubFormat } from "@/lib/club-format";
 import type { CancellationLedgerSnapshot } from "@/lib/paid-cancellation-event";
 import { prisma } from "@/lib/prisma";
@@ -139,8 +144,11 @@ export async function recordBookingEvent(
   }
 }
 
-/** #4125: the capacity race's refund, made - inline or by the recovery runner. */
-export const CAPACITY_RACE_REFUND_EVENT_REASON = "Automatic refund after lodge capacity was no longer available.";
+/**
+ * #4125: the reason of the capacity race's refund, made - inline or by the
+ * recovery runner. Its home is the pure module the narrative reads (`INV-SSOT`).
+ */
+export { CAPACITY_RACE_REFUND_EVENT_REASON };
 
 /**
  * #4125, #4145 (`INV-PAY-134`): a pre-persisted card refund, made - its

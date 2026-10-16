@@ -435,7 +435,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       ]);
       // Marked as the close's own, so the page reads it as the card's part.
       expect(await prisma.bookingEvent.count({ where: { bookingId: BOOKING_ID, type: "REFUNDED", snapshot: { path: ["kind"], equals: "card_refund_made_before_paid_another_way" } } })).toBe(1);
-      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundClose: { paidBackCents: 4_000, unpaidCents: 0, raisedCents: 4_000 } });
+      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundClose: { paidBackCents: 4_000, unpaidCents: 0, madeCents: 6_000 } });
       expect(await narrative()).toContain(
         `$60.00 was refunded to your card on ${club.instantDate(FROZEN_AT)}, $40.00 could not go back to your card and was paid back to you another way and $100.00 was retained`,
       );
@@ -463,7 +463,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await refundedEvents()).toEqual([
         { amountCents: 3_000, reason: "$30.00 of the 50% refund ($100.00) refunded to the original payment method.", actorMemberId: null, occurredAt: FROZEN_AT },
       ]);
-      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundClose: { paidBackCents: 5_000, unpaidCents: 2_000, raisedCents: 7_000 } });
+      expect(await readCancelledCardRefund(BOOKING_ID)).toEqual({ cardRefundState: "paid-another-way", cardRefundClose: { paidBackCents: 5_000, unpaidCents: 2_000, madeCents: 3_000 } });
       const message = await narrative();
       expect(message).toContain(
         `$30.00 was refunded to your card on ${club.instantDate(FROZEN_AT)}, $50.00 could not go back to your card and was paid back to you another way, the club checked the remaining $20.00 and closed it and $100.00 was retained`,
