@@ -198,7 +198,7 @@ are the literal `1`.
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge identity mutations while an import resolves bundle slugs to immutable lodge ids. A lodge update/deactivation then takes its immutable target-lodge capacity key before re-reading the lodge and active-lodge/dependency predicates. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
 | **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` / `tryLockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), fences the drain's policy read before incident reconciliation, and excludes member merge while policy reconciliation enumerates bookings and inserts queue rows. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers and merge take the blocking form. The drain takes the fail-fast form, releases a contended exact queue claim without consuming an attempt, and otherwise composes policy-set → sorted member-lifecycle → sorted `Member FOR KEY SHARE` rows → coverage-owner. |
-| **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. The #4098 close-as-already-paid writer (`closeAlreadyPaidSubscriptionCharge`, `membership-subscription-charge-close.ts`) also takes **no** advisory lock, like the #2147 void release it mirrors: in one transaction it claims the charge with a status-guarded `updateMany` (`CONFLICT` + `SUBSCRIPTION_ALREADY_PAID` + no invoice), then re-checks PAID in the `WHERE` of the subscription write that bumps `voidGeneration` (a short count rolls back), then releases the coverage claims. It refuses while an invoice operation for the charge is queued or running, so it never races a worker mid-Xero-call. A concurrent close loses the claim and reads the charge closed; a manual reversal committing first rolls it back; the members are PAID, so a concurrent confirm never bills them either way. |
+| **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. The #4098 close-as-already-paid writer (`closeAlreadyPaidSubscriptionCharge`, `membership-subscription-charge-close.ts`) also takes **no** advisory lock, like the #2147 void release it mirrors: in one transaction it claims the charge with a status-guarded `updateMany` (`CONFLICT` + `SUBSCRIPTION_ALREADY_PAID` + no invoice), then re-checks PAID in the `WHERE` of the subscription write that bumps `voidGeneration` (a short count rolls back), then releases the coverage claims. It refuses while an invoice operation for the charge is queued or running, which covers an old pod's worker during a rollout. It does not rely on that refusal against a new worker: every charge-status write in the invoice pipeline (`liveChargeWhere` in `subscription-charge-already-paid.ts`, shared by the enqueue, the worker and the outbox failure handler) matches only live charges, so a worker whose Xero call was in flight when the close landed loses its `INVOICE_CREATED` write, links and emails nothing, and leaves `STRAY_INVOICE_AFTER_CLOSE` on the closed charge naming the invoice to void, written in the same transaction as the lost claim (only when that attempt raised or adopted the invoice; a voided charge or a resumed invoice just finishes as skipped). A concurrent close loses the claim and reads the charge closed; a manual reversal committing first rolls it back; the members are PAID, so a concurrent confirm never bills them either way. A later re-bill of a closed or voided family (#4110) runs inside confirm under this season key, and the family/type/season partial unique index (live charges only) still refuses a second LIVE family charge if two confirms ever raced past it. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `acquireMemberPartnerLinkLocks` (`member-partner-lock.ts`), called by `lockPartnerMembers` (`member-partner-link.ts`), existing-member parent-link writers, nomination mapping, the reviewed move (`bed-allocation-move.ts`) and member merge (`member-merge.ts`) | — | Serialises partner-link invariants across every member touched by a link, including the direct parent/partner exclusion in `INV-LIFE-024`; same-family keys are sorted. The CONFIRMED partial uniques are per side (`memberAId`, `memberBId`), so "at most one confirmed partner" is enforced by this key alone — every writer of a partner link, every existing-member writer that adds a direct parent, and every reader whose relationship read decides such a write must hold the complete affected set. Partner-only service paths take ONLY this family. Parent writers take any member-lifecycle keys first, then this family; the reviewed move and merge likewise take it after member-lifecycle, so the edge remains one-way (#2595, #3271). Create-new-member paths are structurally outside this cross-table race because the generated child id cannot already own a partner row; the closed-world writer census records those sites rather than silently exempting them. |
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
@@ -3236,12 +3236,11 @@ holder of `lock(1)` in the tree is `assignBedRange`, which runs on
 an admin assigning a bed range concurrently with a Stripe delivery would blow a
 defaulted budget with a `P2028`. Copying the admin precedent is the wrong fix in
 the other direction — a webhook has Stripe's own delivery timeout over it, and a
-handler that sits on a lock for 30s trades a lost row for a lost delivery. The
-caller must answer 200 (the money is already back with the member, and a 500
-replays the whole refund path for a bookkeeping row), so Stripe never
-redelivers: a failure here is unrecoverable, and its caller therefore writes a
-`critical` `booking.payment.auto_refund_record_failed` audit row rather than
-only logging. See `INV-ADDPAY-037`.
+handler that sits on a lock for 30s trades a lost row for a lost delivery. A
+failure here writes a `critical` `booking.payment.auto_refund_record_failed`
+audit row, and since #4149 the webhook then answers 500 (after its refund entry
+and alert): a replay no longer refunds again (#3639), so Stripe's redelivery
+writes the row (`late-capture-record-recovery.ts`). See `INV-ADDPAY-037`.
 
 **TWO CALLERS SINCE #2773, AND THAT CHANGES THE COHORT'S FOOTPRINT RATHER THAN ITS
 SHAPE.** `handleCancelledBookingPaymentSucceeded` — the late-capture handler for a
@@ -3252,6 +3251,24 @@ key, same budget, same single-key acquisition, no new tier and no new ordering: 
 only difference is that one more Stripe event type can now be the thing waiting on
 `lock(1)`. Both callers make every provider call outside the transaction, and both
 re-read `Booking.deletedAt` outside it.
+
+**#4149 ADDS CALLERS OF THE SAME WRITER, NOT A NEW PARTICIPANT.** A webhook
+redelivery that finds a late capture refunded with no closed record row (an
+`OPEN` #2700 task the refund never closed counts as none), and the nightly
+credit-reconciliation self-heal before it raises a card note, both call this
+writer through `recoverLostLateCaptureRecord`: same key, same budget, no new tier
+or ordering. Each asks Stripe which door sent the refund BEFORE the transaction,
+never inside it. The writer's row is the claim that makes the recovery
+exactly-once: two deliveries, a delivery racing the self-heal, or a retried lost
+write serialise on `lock(1)`, the later finds the row (`alreadyRecorded`), and
+only the recovery that closed or created it writes its
+`booking.payment.auto_refund_record_recovered` entry and re-sends the alert
+(and, when the refunding delivery died before its entry, writes that too). A
+hand-`COMPLETED` #2700 row beside a door refund is escalated instead, through the
+writer's own #2774 escalation: its `critical` entry for every detection, its email
+claimed once ever per capture (`sendAdminAlertOnceEver`, no lock: the claim is the
+guard, and a send that throws gives it back). Proved on real
+PostgreSQL by `late-capture-record-recovery.realdb.test.ts`.
 
 **AND ONE READ THAT IS DELIBERATELY OUTSIDE EVERY LOCK (#2774,
 `INV-ADDPAY-039`).** Before refunding, both handlers call
@@ -4922,8 +4939,10 @@ Stripe call:
   plan (`sentPlanRowWhere`). A row the runner holds on the same plan is
   closed: its replay of the same keys is answered with the door's refunds, and
   only the close that moved the row writes a record - the duplicate capture's
-  event and the capacity race's REFUNDED event (`closeCapacityRaceRefundRecordingEvent`,
-  close and event in one transaction) - so it is written once. A row another
+  event, and the capacity race's and the member cancel's REFUNDED event
+  (`closeRefundRowRecordingEvent`, close and event in one transaction, the
+  runner's close the same way; #4125, #4145, `INV-PAY-134`) - so it is written
+  once. A row another
   writer re-planned is not on that plan and is left open: one moved after a
   refusal, or after Stripe's later report that a refund failed, is still owed;
   one re-planned only by the runner marking a slice made is left to the

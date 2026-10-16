@@ -5,6 +5,7 @@ import { resolveBookingNarrative, type NarrativeBooking, type NarrativeEvent } f
 import type { CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { bindClubTime, requireClubTimeZone } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { cancelCardRefundEventReason } from "@/lib/cancel-card-refund-event-reason";
 
 /**
  * #4097 (`INV-PAY-129`): the booking page's narrative for a card cancel whose
@@ -35,7 +36,19 @@ function event(type: BookingEventType, occurredAt: string, extra: Partial<Narrat
   return { type, occurredAt: new Date(occurredAt), amountCents: null, reason: null, snapshot: null, ...extra };
 }
 
-function narrate(parts: { cardCents: number; bankCents: number; checkCents: number }, statuses: CardShortfallTaskStatuses) {
+/** The card part's REFUNDED event, as the close that made it writes it (#4145). */
+function cardRefunded(occurredAt: string, cardCents: number): NarrativeEvent {
+  return event(BookingEventType.REFUNDED, occurredAt, {
+    amountCents: cardCents,
+    reason: cancelCardRefundEventReason({ cardRefundCents: cardCents, policy: { refundPercentage: 100, refundAmountCents: 10000 }, shortfall: true, format: CLUB_FORMAT_TEST }),
+  });
+}
+
+function narrate(
+  parts: { cardCents: number; bankCents: number; checkCents: number },
+  statuses: CardShortfallTaskStatuses,
+  settlements: NarrativeEvent[] = parts.cardCents > 0 ? [cardRefunded("2026-05-05T01:00:00.000Z", parts.cardCents)] : [],
+) {
   const events = [
     event(BookingEventType.MEMBER_PAID, "2026-05-02T00:00:00.000Z", { amountCents: 12000 }),
     event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
@@ -51,9 +64,7 @@ function narrate(parts: { cardCents: number; bankCents: number; checkCents: numb
         cardShortfall: parts,
       },
     }),
-    ...(parts.cardCents > 0
-      ? [event(BookingEventType.REFUNDED, "2026-05-05T01:00:00.000Z", { amountCents: parts.cardCents })]
-      : []),
+    ...settlements,
   ];
   return resolveBookingNarrative({ club: CLUB, booking: BOOKING, events, cardShortfallStatuses: statuses }, CLUB_FORMAT_TEST).message;
 }
@@ -113,6 +124,28 @@ describe("#4097: the booking page names each part of a card refund shortfall and
   it("both parts follow their own task, and a zero plan names no card refund", () => {
     expect(narrate({ cardCents: 0, bankCents: 3000, checkCents: 7000 }, { bank: "COMPLETED", check: "OPEN" })).toBe(
       `${LEAD}$30.00 was refunded to you by bank transfer, the club will be in touch about the remaining $70.00 and $20.00 was retained. No further payment is required.`,
+    );
+  });
+
+  // #4145: the card part's REFUNDED event is written by the close that made it -
+  // the runner's, when the inline refund failed - so a bank part paid back by
+  // hand in the meantime records its own REFUNDED first. The card's date is its
+  // own event's, never the hand-back's.
+  it("MUTATION: dates the card's part by its own event when a bank part was paid back first", () => {
+    const bankPaid = event(BookingEventType.REFUNDED, "2026-05-07T01:00:00.000Z", { amountCents: 4000, reason: "manual_refund_completed" });
+    expect(narrate({ cardCents: 6000, bankCents: 4000, checkCents: 0 }, { bank: "COMPLETED", card: "settled" }, [bankPaid, cardRefunded("2026-05-09T01:00:00.000Z", 6000)])).toBe(
+      `${LEAD}$60.00 was refunded to your card on 9 May 2026, $40.00 was refunded to you by bank transfer and $20.00 was retained. No further payment is required.`,
+    );
+  });
+
+  it("a card part still on its way says so beside a bank part already paid back, with no date of the hand-back's", () => {
+    const bankPaid = event(BookingEventType.REFUNDED, "2026-05-07T01:00:00.000Z", { amountCents: 4000, reason: "manual_refund_completed" });
+    expect(narrate({ cardCents: 6000, bankCents: 4000, checkCents: 0 }, { bank: "COMPLETED", card: "on-its-way" }, [bankPaid])).toBe(
+      `${LEAD}$60.00 is on its way to your original payment method, $40.00 was refunded to you by bank transfer and $20.00 was retained. No further payment is required.`,
+    );
+    // Closed with no event of its own (a row closed before #4145): made, undated.
+    expect(narrate({ cardCents: 6000, bankCents: 4000, checkCents: 0 }, { bank: "COMPLETED", card: "settled" }, [bankPaid])).toContain(
+      "$60.00 was refunded to your card, $40.00 was refunded",
     );
   });
 

@@ -197,8 +197,21 @@ vi.mock("@/lib/member-credit", () => ({
   },
 }));
 
+const CLOSE_TX = vi.hoisted(() => ({ closeTx: true }));
 vi.mock("@/lib/booking-events", () => ({
   recordBookingEvent: mocks.recordBookingEvent,
+  // #4145: the cancel's REFUNDED event commits with the close that moved its
+  // row (proved against PostgreSQL in cancel-card-refund-event.realdb.test.ts);
+  // here the close runs on a stand-in transaction and a moved row records the
+  // event through the same spy.
+  closeRefundRowRecordingEvent: async (
+    input: { bookingId: string; amountCents: number; actorMemberId: string | null; reason: string },
+    close: (tx: unknown) => Promise<boolean>,
+  ) => {
+    if (!(await close(CLOSE_TX))) return false;
+    mocks.recordBookingEvent({ ...input, type: "REFUNDED" });
+    return true;
+  },
 }));
 
 vi.mock("@/lib/waitlist", () => ({
@@ -2051,7 +2064,7 @@ describe("cancelBooking credit refunds", () => {
 
     await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
-    expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledWith({ idempotencyKey: "booking_cancel_refund_recovery_booking_1", sentPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50 }] });
+    expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledWith({ idempotencyKey: "booking_cancel_refund_recovery_booking_1", sentPlan: [{ paymentTransactionId: "ptx_1", amountCents: 50 }], store: CLOSE_TX });
     expect(mocks.recordBookingCancellationRefundRecoveryInlineError).not.toHaveBeenCalled();
   });
 
@@ -2443,7 +2456,7 @@ describe("cancelBooking credit refunds", () => {
       // Happy path closes the operation.
       expect(
         mocks.markBookingCancellationRefundRecoverySucceeded
-      ).toHaveBeenCalledWith({ idempotencyKey: "booking_cancel_refund_recovery_booking_1", sentPlan: [{ paymentTransactionId: "ptx_1", amountCents: 5000 }] });
+      ).toHaveBeenCalledWith({ idempotencyKey: "booking_cancel_refund_recovery_booking_1", sentPlan: [{ paymentTransactionId: "ptx_1", amountCents: 5000 }], store: CLOSE_TX });
       expect(
         mocks.markBookingCancellationRefundRecoverySucceeded.mock
           .invocationCallOrder[0]
@@ -2769,6 +2782,21 @@ describe("cancelBooking credit refunds", () => {
       );
       expect(mocks.recordBookingCancellationRefundRecoveryInlineError).toHaveBeenCalledTimes(queued ? 1 : 0);
       expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledTimes(queued ? 0 : 1);
+      // #4145: REFUNDED only with the close that recorded the refund made; one
+      // still owed is the runner's to record when its close moves the row.
+      const refunded = mocks.recordBookingEvent.mock.calls.filter(([event]) => event.type === "REFUNDED");
+      expect(refunded).toEqual(queued ? [] : [[{ bookingId: "booking_1", type: "REFUNDED", actorMemberId: "member_1", amountCents: 5000, reason: "50% refunded to the original payment method." }]]);
+    });
+
+    it("#4145: writes no REFUNDED event when its close loses the row - the runner's close recorded it", async () => {
+      mocks.markBookingCancellationRefundRecoverySucceeded.mockResolvedValueOnce({ count: 0 });
+      mocks.recoveryOperationFindUnique.mockResolvedValueOnce({ id: "op_1", status: "SUCCEEDED", attempts: 1 });
+
+      const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+      expect(result.status).toBe(200);
+      expect(mocks.markBookingCancellationRefundRecoverySucceeded).toHaveBeenCalledTimes(1);
+      expect(mocks.recordBookingEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "REFUNDED" }));
     });
 
     it("a zero plan calls neither Stripe nor recovery, and (#4097) records the whole refund, to check when nothing holds it", async () => {

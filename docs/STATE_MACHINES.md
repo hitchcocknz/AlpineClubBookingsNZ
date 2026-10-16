@@ -536,7 +536,33 @@ the shared `buildBookingCancellationRefundMetadata` helper
 per-cancellation value the cron cannot reconstruct from the persisted
 operation), so a Stripe-succeeded-but-unrecorded refund (or a cron tick racing
 the inline call) is replayed by Stripe, never repeated and never rejected as an
-`idempotency_error` for a reused key with mismatched parameters. An outstanding additional
+`idempotency_error` for a reused key with mismatched parameters. The
+`REFUNDED` booking event commits with whichever close moves that operation to
+`SUCCEEDED` - the inline refund's, or the cron's when the inline refund threw,
+was refused or made only some slices - in the close's own transaction, dated by
+it and for the frozen plan's total, so it is written once and never for a
+refund still owed (#4145, `INV-PAY-134`). A "Paid another way" close records
+only what the row's slices took from the refunds recorded on the payment, as
+that event dated by the latest of them as Stripe made it - never before the
+cancel - and marked as that close's (none made, none written). The page tells
+each part from where it is recorded: the card's from that marked event (with
+none - a cancel made before #4145 - from what the row's slices took from the
+payment's recorded refunds, by the rule the close used,
+`cardRefundMadeForOperation`, undated), what the record says was paid back,
+and as closed by the club only what the record left unpaid
+(`paidAnotherWayUnpaidCents`). A part the payment no longer held when it
+closed is none of these and is not said. Stated limit: the event's dated part
+keeps what the close found, even a refund that later fails and is owed again
+on its own row; the undated part follows the refunds as recorded now, within
+what the record's paid-back and unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,
+whatever became of the refund, so a later close writes no second one; the
+booking page reads an open or paid-another-way row ahead of that event.
+Stated limit, the deploy boundary, both ways and history only while both
+colours serve: an old image's cancel writes its up-front event even after a
+new runner closed the row and recorded one (two events), and an old image's
+runner closes a new cancel's row with no event (none). An edit financial
+review's credit or refund landing after the cancel is never read as the
+cancellation's settlement. An outstanding additional
 PaymentIntent is retired durably (#1350): the claim transaction persists a
 `CANCEL_PAYMENT_INTENT` recovery operation alongside the FAILED flip, the
 Phase-2 inline Stripe cancel stays best-effort (logged, never allowed to
@@ -783,8 +809,10 @@ LOCKED_PERIOD request, stay finished -> officer approves
        nights where the request stored them, night rows included (#4030, #4088)   (else stays REQUESTED)
   -> request names no change: the officer's entered guests (#4030), else stays REQUESTED
        entry on a request that names a change, or nights outside the stay -> stays REQUESTED
-  -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry)
+  -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry,
+       and the nights each guest kept, requestedChanges.keptNights (#4157))
   -> modifyBookingBatch(finishedStayCorrection) on the same transaction
+       a guest's range that only repeats their own dates keeps the nights they hold (#4157)
        figures differ from the officer's check -> refused, rolled back (#4030)
        over-capacity past night -> refused until the officer confirms (whole-lodge hold: always refused)
        no active season / member-night clash / a guest who cannot be booked -> refused
@@ -1701,7 +1729,8 @@ says the full amount "is being refunded" and carries
 cancelled it. The `REFUNDED` event is written once the refund is made, for the
 plan's total (never the full charge), by whichever close moves the row to
 `SUCCEEDED`: the inline attempt's close or the recovery runner's, in the
-same transaction as that close (`closeCapacityRaceRefundRecordingEvent`), so a
+same transaction as that close (`closeRefundRowRecordingEvent`, which a member
+cancel's close shares since #4145), so a
 crash cannot leave the row closed without its event, and a failed insert
 leaves the row open for the runner's replay. A close that finds the row
 already closed writes nothing, so the event lands exactly once. The inline
@@ -1709,12 +1738,19 @@ close takes the row only while it is still on the plan the attempt sent
 (#4144), so a row re-planned after Stripe later failed the refund stays open
 and owed, with no event. Until it lands, the booking
 page and the payment-link page read the row
-(`readCancelledCardRefundState`, which reads a member cancel's
+(`readCancelledCardRefund`, which reads a member cancel's
 `booking_cancel_refund_recovery_<bookingId>` row the same way): still being
 sent says "on its way to your original payment method"; a dead row (retries
 spent, or failed with no retry) says the club will be in touch - as does a
-dead card part of a card refund shortfall; a row closed without the event says
-it was refunded, or paid back another way. No cancellation policy decided a
+dead card part of a card refund shortfall; a row closed "Paid another way"
+says so, with what its record paid back and left unpaid (the slices Stripe had
+made first, a member cancel's or a capacity race's, are recorded by that close
+and said apart, as is another row's refund the runner made, and what the
+sentence does not say - the rest past the plan, or a part its payment no longer
+held - is followed up). A capacity race's refund is never told as more than its
+rows' frozen plans together (`cardRefundPlanCents`), whatever its state: a
+`CANCELLED` snapshot written before #4125 froze the full charge; a capacity race's row the runner closed before #4125,
+which wrote no event, says it was refunded. No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
 snapshot, whose `settledAmountCents` is the plan's total: when the payment
@@ -2251,10 +2287,16 @@ assume them away.** An operator who resolves the `OPEN` task by hand before the
 refund lands leaves a row that matches neither the close nor the card's filter, so
 that refund reaches no card and is named only at WARN — the carve-out #2774 D1 keeps,
 an orchestrator decision the owner has not ruled on (authority line under
-`INV-ADDPAY-039`). And if the record write itself fails the handler still
-answers 200, so the row is lost for good; the `critical`
-`booking.payment.auto_refund_record_failed` audit entry is the only place it
-surfaces.
+`INV-ADDPAY-039`). And if the record write itself fails, the `critical`
+`booking.payment.auto_refund_record_failed` audit entry names it and, since #4149,
+the handler still writes the refund entry (marked `recordLost`) and sends the
+alert, then answers 500: Stripe's redelivery (or the nightly self-heal, before it
+raises any card note) writes the missing row once - closing a still-`OPEN` #2700
+task - with a `booking.payment.auto_refund_record_recovered` entry, and sends
+the alert again, because the first read its recipients from the database that
+had just failed: a duplicate, never a silence (#2761;
+`late-capture-record-recovery.ts`). A `charge.refunded` arriving before that row
+queues no generic card note (#4170).
 
 **AND SINCE #2774 ONE THING CAN STOP THE REFUND ITSELF (`INV-ADDPAY-039`).** If a
 `ManualRefundTask` for the capture is already `COMPLETED`, an operator has paid the
@@ -2415,9 +2457,53 @@ FAILED operation -> Xero Operations Retry -> same row PENDING, same correlation 
 provider reference exists but snapshot differs -> CONFLICT (no provider rewrite)
 outbox claim -> a covered subscription already PAID, no invoice yet -> CONFLICT (SUBSCRIPTION_ALREADY_PAID; no provider call)
 CONFLICT (SUBSCRIPTION_ALREADY_PAID) -> officer "Close: already paid" (finance edit, required reason) -> NOT_REQUIRED (#4098)
-  only while EVERY covered subscription is still PAID (re-checked in the guarded write); releases the
+  only while EVERY covered subscription is still settled — PAID, or NOT_REQUIRED for an exempt member
+  (re-checked in the guarded write); releases the
   charge's ACTIVE coverage claims and bumps each voidGeneration; audited; a repeat is a no-op success;
-  refused (409, no write) while an invoice operation for the charge is queued or running
+  refused (409, no write) while an invoice operation for the charge is queued or running, or while
+  any covered subscription is unsettled (advice: pay the rest then close, or unpay every one then Retry);
+  Close is offered only where every active covered subscription is settled
+NOT_REQUIRED (closed) family charge -> still counts as billing its family (a new joiner -> FAMILY_ALREADY_BILLED)
+  until a covered member's PAYMENT is reversed (PAID at the close, recorded on the released claim, and no longer
+  settled) -> the next preview re-bills the family on a NEW charge beside the retained row; only SOME payments
+  reversed -> CLOSED_FAMILY_PARTLY_REVERSED warning, and an officer's confirm still invoices the full family fee
+  (#4110; the unique index covers live charges only); a member NOT_REQUIRED at the close later moved to
+  NOT_INVOICED (assignment save, membership sync) is no reversal -> the family stays billed; only members still
+  BILLED through the family count (their billing family when they are in several), so a covered member who moved
+  to another family and was then reversed does not re-bill the old one
+two closed charges for one family/type/season, no live one -> the NEWEST closed charge decides alone WHETHER the
+  family is re-billed (owner, 16 Oct 2026: "newest charge wins"; rows are grouped and sorted, never read in arrival
+  order): while it is settled the family stays billed even if a payment only an older closed charge covered was
+  reversed; when it re-bills, the CLOSED_FAMILY_PARTLY_REVERSED warning still counts a payment standing under ANY
+  closed charge for the family (decision 1)
+member a closed charge for the family covered who is no longer settled — exempt at that close and now owing, or
+  paid there and since reversed — while the newest still bills the family ->
+  CLOSED_FAMILY_MEMBER_NEEDS_DECISION (withheld, counted under "Needs your decision"; the family is never re-billed;
+  Finance marks the member Paid if the family fee covers everyone, otherwise invoices the difference in Xero by
+  hand) -> regenerated by every preview, so it stays OPEN across runs and refreshes -> member settled or holding
+  a Xero invoice -> no longer regenerated -> the next confirm or refresh RESOLVES it (#4110 decisions 4 and 5);
+  a covered member still settled (a tier-exempt child still NOT_REQUIRED) gets no exception at all
+bare live Xero invoice held by a member a closed charge for that family AND type covered without a standing payment
+  (exempt at a close, or reversed under an older charge and not paid at the newest close: Finance's difference
+  invoice) -> does not suppress the family, so a later reversal still re-bills it; any other bare invoice, including
+  a parent's own family invoice when they were paid at the newest close, suppresses as #2161 requires
+family with a reversal under the newest closed charge, held back (#2161 bare invoice, active family claim or
+  operator marker) -> every member a closed charge covered who is no longer settled (reversed under the newest or
+  an older charge, or exempt at a close) gets CLOSED_FAMILY_MEMBER_NEEDS_DECISION naming what holds the family
+  (an invoice, a family charge or an operator's marker); a new joiner gets none; never a re-bill, and an approval
+  bills nothing
+re-bill of a closed family while a member's difference invoice passed the hold (same type, basis not per-member) ->
+  CLOSED_FAMILY_REBILL_BESIDE_INVOICE warning naming the member and invoice (an officer confirms through it; an
+  approval withholds the family for Finance)
+stated limit: a member PAID through a Xero invoice at the close, moved to an exempt type (the sync's NOT_REQUIRED
+  write clears the link) and back (NOT_INVOICED), reads as reversed until the next paid-status refresh relinks
+  the still-paid invoice; a preview in that window offers the family for re-billing
+membership approval (NEW_MEMBER_APPROVAL) preview with a CLOSED_FAMILY_PARTLY_REVERSED warning -> that family is
+  withheld (no charge), the warning persisted OPEN for Finance and counted -> Finance's confirm invoices it and
+  RESOLVES the warning (resolvedVia CONFIRM)
+VOIDED family charge -> never counts as billing its family -> re-billed by the next preview (#2147, #4110)
+invoice attempt in Xero when the close lands -> guarded INVOICE_CREATED write matches nothing -> no link,
+  no downgrade, no email; the closed charge carries STRAY_INVOICE_AFTER_CLOSE naming the invoice to void
 provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
 stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDUAL_MODE exception (no invoice; basis must change)
@@ -2445,9 +2531,17 @@ writes `NOT_REQUIRED` only for `NO_INVOICE`. The close releases the claims
 (rather than keeping them, as a `NO_INVOICE` charge does) so the subscription is
 left exactly as a member marked paid before billing: skipped while PAID, and
 re-billable with a fresh idempotency key if the manual payment is later
-reversed. It takes no advisory lock — the charge claim and the PAID check are
-each a guarded write, so two closes close once and a reversal that commits first
-rolls the close back.
+reversed — on a per-family charge too. A closed family charge keeps counting
+as its family's charge while every subscription it covered is settled, so a new
+joiner still meets `FAMILY_ALREADY_BILLED`; a reversal stops it counting, and
+the family/type/season partial unique index (live charges only, #4110) lets the
+re-bill's new family charge sit beside the retained row. A VOIDED family charge
+never counts. It takes no advisory lock — the charge claim and
+the PAID check are each a guarded write, so two closes close once and a
+reversal that commits first rolls the close back. Every charge-status write the
+invoice pipeline makes is guarded to live charges, so none can reopen a closed
+charge; an attempt already in Xero when the close lands leaves its invoice as a
+stray the officer voids, named on the closed charge.
 
 ## Member Subscription Status Transitions
 
@@ -2500,10 +2594,18 @@ marks the covering `MembershipSubscriptionCharge` `VOIDED` (kept for audit, neve
 re-enqueued), releases its coverage claim (`releasedAt` set — row kept), and
 bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
 fresh idempotency key. Closing a charge as already paid (#4098) releases its
-claims and bumps the generation the same way, leaving the row `PAID`. A
-closed per-family charge still counts as the family's charge in the preview
-(`FAMILY_ALREADY_BILLED`): a second family charge would hit the
-family/type/season unique index, which #4110 tracks.
+claims and bumps the generation the same way, leaving the row `PAID`. A voided
+per-family charge never counts as the family's charge in the preview; a closed
+one does until a covered member's payment is reversed — `PAID` at the close
+(the close records each claim's status in `subscriptionStatusAtClose`) and no
+longer settled — so a new joiner is still refused but a reversed member is
+billed again on a new family charge, with a warning when only some payments
+were reversed (owner decisions, 15 Oct 2026; #4110). An exempt member,
+`NOT_REQUIRED` at the close, had no payment to reverse: an assignment save or
+membership sync that later moves them to `NOT_INVOICED` leaves the family
+billed, and Finance is asked to decide how to bill them
+(`CLOSED_FAMILY_MEMBER_NEEDS_DECISION`, owner decision 4, 16 Oct 2026). With
+two closed charges for one family the newest decides (owner decision 5).
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
 sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero

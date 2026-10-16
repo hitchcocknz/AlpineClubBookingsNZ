@@ -489,9 +489,12 @@ const TRANSACTION_OPENERS = [
   // hold each write their caller's rows inside their fenced transaction.
   "writeReissuedAskUnderRecovery(",
   "holdAdditionalIntentRecoveryClaim(",
-  // #4125: the capacity race's refund close runs its caller's close callback in
-  // the transaction that also writes the REFUNDED event.
+  // #4125, #4145: a card refund row's close runs its caller's close callback in
+  // the transaction that also writes the REFUNDED event - the generic helper,
+  // the capacity race's and the member cancel runner's.
+  "closeRefundRowRecordingEvent(",
   "closeCapacityRaceRefundRecordingEvent(",
+  "closeCancellationRefundAfterReplay(",
 ] as const;
 
 /**

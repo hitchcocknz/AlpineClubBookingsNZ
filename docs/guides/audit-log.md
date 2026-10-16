@@ -505,7 +505,7 @@ and the data download rather than every page that happens to quote an entry.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-503 now record a category, measured on every build rather than estimated.
+504 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
 now refused three separate ways. Giving the 82 places a category and stopping the
@@ -527,7 +527,7 @@ that order and both landing in this release; this is the second:
    maintenance script outside the normal path.
 
 The practical effect for you: an entry recorded the ordinary way — through the
-platform’s own recording step, which is how every one of the 503 places does it —
+platform’s own recording step, which is how every one of the 504 places does it —
 cannot be born without a category any more. **It is not a mathematical
 guarantee**, and it is worth saying so rather than overclaiming: someone writing
 directly to the database table in a migration, or building a query by hand, is
@@ -851,6 +851,40 @@ when that is present.
 | `refundId` | The Stripe refund this event made, or `null` when it sent nothing (then `noRefundSentReason` says why) |
 | `refundedNowCents` | What went back to the card now |
 | `alreadyRefundedOnCaptureCents` | Present only when part of the payment had already been refunded, for example in the Stripe dashboard. Not asked for again, and never taken from another card charge instead |
+| `recordLost` | Present (`true`) when the app could not save the "Refunded automatically" row at the time. The email still went out; the row is saved later, as below |
+| `recoveredLostRecord` | Present (`true`) only on an entry written late, because the server stopped before it could write this entry or send the email at the time of the refund. Then `refundedCents` is what Stripe shows went back, and the email is sent with it |
+
+**When the row is saved later (#4149).** If the "Refunded automatically" row
+could not be saved at the moment of the refund, the app saves it when Stripe
+sends the payment notice again, or overnight at the latest, and writes one
+`booking.payment.auto_refund_record_recovered` entry, category `payment`. It
+sends the email again unless the refund's own entry shows the row was saved
+then: the first email may have failed with the row, and a second copy is better
+than none.
+
+| Field | What it means |
+| --- | --- |
+| `paymentIntentId`, `refundId` | The late payment, and the first refund Stripe shows the app sent for it |
+| `amountCents` | The whole late payment |
+| `refundedCents` | What Stripe shows went back, across the refunds the app sent for it |
+| `kind` | `primary` for the booking's own payment, `modification_additional` for a payment for a change |
+| `refundTimeReport` | What the refund left at the time: `none` (the server stopped first, so the recovery wrote the refund's entry too), `record_lost` (its entry says the row could not be saved), or `reported` (an older entry from a refund whose row did save) |
+| `alertSent` | Whether this recovery sent the email |
+| `repairRefund` | Present (`true`) when the refund was the booking repair tool's own: its record is written as the repair tool writes it, with no "refunded automatically" entry or email |
+
+**A late payment refunded some other way (#4170).** If a card payment that
+arrived after its booking was cancelled is refunded outside the app - in the
+Stripe dashboard, say, even before Stripe's own "payment succeeded" notice
+reached the app - the app writes one
+`booking.payment.late_capture_refunded_outside_app` entry, category `payment`,
+severity `important`, with `paymentIntentId`, `refundIds`, `refundedCents` and
+`creditNoteQueued: false`, and emails everyone who can edit Finance, once for
+that payment (the email shows what was refunded outside the app, never the
+app's own refunds of it), through its own alert that cannot be switched off (*Late payment
+refunded outside the app - check Xero*); if that email could not be sent, the
+nightly check sends it. No Xero credit note is raised for it, because
+Xero never received that payment; record it by hand only if it was recorded
+there. A refund the app's own repair tool made is not one of these.
 
 ### Issue-report screenshot entries (#2703)
 
