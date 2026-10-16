@@ -295,6 +295,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Internet banking hold needs attention: {{memberName}}",
     "defaultBody": "Internet Banking Hold Needs Attention\n\n{{holdKeptNote}}\n\nMember: {{memberName}}\nBooking: {{bookingReference}} ({{bookingId}})\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nHold deadline: {{holdUntil}}\nPaid so far: {{paidAmount}}\nStill owing: {{amountOwing}}\nXero invoice: {{xeroInvoiceNumber}}\nOpen the invoice in Xero: {{xeroObjectUrl}}\n\nView Payments: {{reviewUrl}}"
   },
+  "admin-late-capture-refunded-outside-app": {
+    "defaultSubject": "Late payment refunded outside the app - check Xero: {{memberName}}",
+    "defaultBody": "Late Payment Refunded Outside the App\n\nA card payment that arrived after this booking was cancelled has been refunded outside the app - for example in the Stripe dashboard.\n\n{{outsideAppRefundNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount refunded: {{amount}}\nStripe reference: {{paymentIntentId}}\n\nView Payments: {{reviewUrl}}"
+  },
   "admin-late-capture-held": {
     "defaultSubject": "Late payment held for approval: {{memberName}}",
     "defaultBody": "Late Payment Held for Approval\n\nA card payment went through after its booking was cancelled and has NOT been refunded - your club has a treasurer approve these refunds, or the card provider refused the automatic refund - so the money is still with the club.\n\nOpen the refund tasks on the payments board and either refund it to the card (through Stripe) or close it without refunding, with a note - for example, when the cancellation was a mistake.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount held: {{amount}}\n\nView Payments: {{reviewUrl}}"
