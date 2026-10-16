@@ -284,6 +284,10 @@ describe("POST /api/bookings/[id]/exception-requests", () => {
       "more stay ranges than the shared bound",
       { guestStayRanges: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => ({ guestId: `g${i}`, nights: ["2026-07-04"] })) },
     ],
+    [
+      "more added guests than the shared bound",
+      { addGuests: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, () => ({ firstName: "Sam", lastName: "Smith", ageTier: "ADULT", isMember: false })) },
+    ],
     ["more removals than the shared bound", { removeGuestIds: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => `g${i}`) }],
   ])("refuses %s at the schema (#4199)", async (_label, body) => {
     const res = await POST(postReq({ ...body, memberMessage: "please" }), params);

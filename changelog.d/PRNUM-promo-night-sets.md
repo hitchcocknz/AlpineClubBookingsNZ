@@ -8,3 +8,7 @@
   What a member is charged does not change: that always came from the price
   summary. When the grid is off and a guest has their own Date In and Date Out,
   the box still prices those dates as one continuous stay, as before.
+
+  Behind the scenes, every booking request that names guests (new bookings,
+  quotes, edits, exception requests and the promo code box) now checks a
+  guest's nights the same way and accepts at most 200 guests.
