@@ -302,19 +302,15 @@ export const REISSUED_ASK_REASON = "modification_reissued_ask";
 // completed EDIT_FINANCIAL_REVIEW task contributes to when the officer decides
 // the MEMBER owes the club.
 //
-// SCOPED TO THE EDIT (`BookingModification`), NOT TO THE TASK, and that INVERTS
-// what the first #3170 round shipped. The reasoning that produced the task-scoped
-// key was right about the mechanism and wrong about the goal: one edit can raise
-// TWO review tasks over one `BookingModification` row, and under a shared key
-// Stripe answers the second review's mint with the FIRST review's intent. That is
-// now the DESIRED behaviour, because the owner's 30 Aug 2026 decision on #3170 is
-// that both reviews contribute to ONE request for the total. Two separate
-// requests is the arrangement that lost the money:
-// `queueSupersededAdditionalIntentCancellations` cancels every OTHER outstanding
-// additional on the payment when a new one is minted, and
-// `reconcilePaymentAggregates` carries a single `additionalAmountCents`, so a
-// $200 request followed by a $30 request collected $30 of $230 with both tasks
-// reading COMPLETED.
+// SCOPED TO THE EDIT (`BookingModification`), NOT TO THE TASK (inverting the
+// first #3170 round). One edit can raise two reviews over one row, and under
+// a shared key Stripe answers the second review's mint with the FIRST review's
+// intent - now the DESIRED behaviour: the owner's 30 Aug 2026 decision on #3170
+// is that both reviews contribute to ONE request for the total. Two requests lost
+// money: `queueSupersededAdditionalIntentCancellations` cancels every OTHER
+// outstanding additional on the payment when one is minted, and
+// `reconcilePaymentAggregates` carries one `additionalAmountCents`, so $200 then
+// $30 collected $30 of $230, both tasks COMPLETED.
 //
 // WHICH OF THE TWO EACH KEY BELONGS TO, stated here because it is the subtlety
 // most likely to be got wrong later:

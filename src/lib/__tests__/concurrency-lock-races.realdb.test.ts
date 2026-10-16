@@ -348,8 +348,8 @@ import "./late-capture-own-charge-refund.realdb.test";
 // and cleans its own `race-4149-` fixtures.
 import "./late-capture-record-recovery.realdb.test";
 // #4132 reuses it to prove a payment's ledger rows written in one transaction
-// keep insertion order (`createdAt`, then `insertionSeq`) after an UPDATE moves
-// one in the heap, through the loader, the mirror, the reduction's ask and the
+// keep insertion order (`createdAt`, then `insertionSeq`) after CLUSTER
+// deliberately changes heap order, through the loader, mirror, reduction's ask and
 // card refund plan. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
 // cleans its own `race-4132-` fixtures.
 import "./ledger-insertion-seq.realdb.test";
