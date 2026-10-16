@@ -8027,6 +8027,19 @@ describe("a refund request's own note never answers for the payment's refund not
     expect(booking.findings).toContainEqual(ambiguousNote);
   });
 
+  // #4195: a request's note Xero voided still answers for that request's cash.
+  // The void moves no refunded total (the inbound repair reads only the
+  // payment's own refund-note roles), and the request, never the
+  // cancellation's note, raises the replacement (`INV-PAY-118`).
+  it("MUTATION (#4195): a request whose note Xero voided keeps its cash out of the cancellation's note", async () => {
+    const voided = { ...requestLink, active: false, metadata: { ...requestLink.metadata, status: "VOIDED" } };
+    for (const operation of [requestNote(), requestNote({ requestPayload: null })]) {
+      const booking = await run({ operations: [operation], links: [voided], payment: { refundedAmountCents: 3000 } });
+      expect(booking.findings).not.toContainEqual(ambiguousNote);
+      expect(booking.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
+    }
+  });
+
   // Review F2 at a19beb492: no other arm reads a request's note, so its own
   // failed create is reported here, with its Retry and its own wording.
   it("reports a request's failed note with its Retry", async () => {

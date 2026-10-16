@@ -8,6 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import { readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 
 /**
  * True when a Xero credit-note status still contributes to refund coverage.
@@ -116,11 +117,44 @@ export async function cancelledRefundNoteIds(
   return new Set(links.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)).map((link) => link.xeroObjectId));
 }
 
-/** What a refund note's idempotency key is built on: a watermark (v2), an amount (v1), or a close's own rows (v3). */
+/**
+ * #4195 (`INV-ADDPAY-041`, `INV-PAY-118`): ONE refund request's own notes on a
+ * payment, active or not, matched on the request its link records. `live` is
+ * the note that covers the request; `cancelledIds` (sorted) are those Xero
+ * recorded VOIDED/DELETED, which the request never re-adopts, even on a mirror
+ * still active from before #4195 - it raises a fresh note instead.
+ */
+export async function refundRequestOwnNotes(
+  paymentId: string,
+  refundRequestId: string,
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+) {
+  const own = (await readRefundRequestNoteLinks(paymentId, db)).filter(
+    (link) => readRefundRequestIdFromPayload(link.metadata) === refundRequestId,
+  );
+  return {
+    live: own.find((link) => link.active && !isRefundCreditNoteLinkCancelledInXero(link.metadata)) ?? null,
+    cancelledIds: own.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)).map((link) => link.xeroObjectId).sort(),
+  };
+}
+
+/** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */
+async function readRefundRequestNoteLinks(paymentId: string, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
+  return (await db.xeroObjectLink.findMany({
+    where: { localModel: "Payment", localId: paymentId, xeroObjectType: "CREDIT_NOTE", role: REFUND_REQUEST_CREDIT_NOTE_ROLE },
+    select: { xeroObjectId: true, xeroObjectNumber: true, active: true, metadata: true },
+  })) ?? [];
+}
+
+/**
+ * What a refund note's idempotency key is built on: a watermark (v2), an amount
+ * (v1), a close's own rows (v3), or (#4195) one refund request's own note.
+ */
 export type RefundNoteKeyScope =
   | { watermarkCents: number }
   | { amountCents: number }
-  | { closeRowsWhere: Prisma.XeroSyncOperationWhereInput };
+  | { closeRowsWhere: Prisma.XeroSyncOperationWhereInput }
+  | { refundRequestId: string };
 
 /**
  * A refund-note link's recorded watermark or amount, or null when neither the
@@ -158,13 +192,19 @@ async function recordedRefundNoteFigure(
  * closed) - or, once a "Paid another way" close has a voided note, every note
  * its own rows raised (v3). A lost attempt's own note has no link yet, so its
  * retry keeps its key; with no void the key is byte-identical. The one home
- * for the enqueue's correlation key and the executor's Xero key.
+ * for the enqueue's correlation key and the executor's Xero key. A refund
+ * request's key (#4195) names that request's own voided notes, each raised
+ * under the request's one key before it.
  */
 export async function refundNoteKeyAfterVoidParts(
   paymentId: string,
   scope: RefundNoteKeyScope,
   db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "xeroSyncOperation">,
 ): Promise<string[]> {
+  if ("refundRequestId" in scope) {
+    const { cancelledIds } = await refundRequestOwnNotes(paymentId, scope.refundRequestId, db);
+    return cancelledIds.length > 0 ? ["after-void", ...cancelledIds] : [];
+  }
   const links = await readRefundNoteLinks(paymentId, db);
   const voided = links.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata));
   if (voided.length === 0) return [];
@@ -189,9 +229,10 @@ export async function refundNoteKeyAfterVoidParts(
 /**
  * `INV-ADDPAY-041` defence in depth: throws, before anything is recorded, when
  * Xero answered a refund-note create with a note this payment must not take -
- * one Xero reports or a link records VOIDED/DELETED, or one another create row
- * on this payment already raised. No key reuse can then re-adopt or relabel a
- * note; the row fails with this message for an officer to read.
+ * one Xero reports or a link records VOIDED/DELETED (a refund request's own
+ * note's link too, #4195), or one another create row on this payment already
+ * raised. No key reuse can then re-adopt or relabel a note; the row fails with
+ * this message for an officer to read.
  */
 export async function assertFreshRefundNoteFromCreate(
   paymentId: string,
@@ -200,7 +241,13 @@ export async function assertFreshRefundNoteFromCreate(
   db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "xeroSyncOperation">,
 ): Promise<void> {
   const voidedInXero = typeof created.status === "string" && !isIncludedRefundCreditNoteStatus(created.status);
-  if (voidedInXero || (await refundNoteIdSets(paymentId, db)).cancelled.has(created.creditNoteID)) {
+  if (
+    voidedInXero ||
+    (await refundNoteIdSets(paymentId, db)).cancelled.has(created.creditNoteID) ||
+    (await readRefundRequestNoteLinks(paymentId, db)).some(
+      (link) => link.xeroObjectId === created.creditNoteID && isRefundCreditNoteLinkCancelledInXero(link.metadata),
+    )
+  ) {
     throw new Error(
       `Refusing to record Xero credit note ${created.creditNoteID} for payment ${paymentId}: Xero answered with a VOIDED or DELETED note, which is never re-adopted (INV-ADDPAY-041). Check the note in Xero before retrying.`,
     );

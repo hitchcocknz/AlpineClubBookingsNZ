@@ -531,6 +531,39 @@ describe("upsertXeroObjectLink", () => {
     });
   });
 
+  describe("#4195: a refund request's own note, voided in Xero (INV-ADDPAY-041)", () => {
+    const writeRequestNote = (status: string | undefined) =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_request", role: "REFUND_REQUEST_CREDIT_NOTE",
+        metadata: { ...(status ? { status } : {}), total: 50 }, mergeMetadata: true,
+      });
+
+    it.each(["VOIDED", "DELETED", "voided"])("MUTATION: a %s mirror is written inactive, and moves no pointer and no sibling", async (status) => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await writeRequestNote(status);
+
+      // Before #4195 the request role skipped every void rule and stayed active.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ active: false }), update: expect.objectContaining({ active: false }) }),
+      );
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a live request note keeps the activity its write gives it", async () => {
+      await writeRequestNote("AUTHORISED");
+      await writeRequestNote(undefined);
+
+      for (const [call] of mocks.txLinkUpsert.mock.calls as Array<[{ create: { active: boolean }; update: { active: boolean } }]>) {
+        expect(call.create.active).toBe(true);
+        expect(call.update.active).toBe(true);
+      }
+      expect(mocks.txLinkUpsert).toHaveBeenCalledTimes(2);
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
   it("merges inbound metadata over the outbound per-delta keys when mergeMetadata is set (#1354)", async () => {
     const txLinkFindUnique = vi.fn().mockResolvedValue({
       metadata: { amountCents: 3000, watermarkCents: 8000 },

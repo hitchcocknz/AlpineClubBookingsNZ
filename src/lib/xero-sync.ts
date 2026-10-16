@@ -603,6 +603,13 @@ async function normalizePaymentRefundLinkWithClient(
     return link;
   }
 
+  // #4195: a refund request's own note (`INV-PAY-118`) takes the same void
+  // rule (`INV-ADDPAY-041`). It is never the payment's one note, so nothing
+  // below applies to it, and it never names the pointer.
+  if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE && link.xeroObjectType === "CREDIT_NOTE") {
+    return isRefundCreditNoteLinkCancelledInXero(link.metadata) ? { ...link, active: false } : link;
+  }
+
   if (link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectType === "CREDIT_NOTE") {
     // A note the incoming write records VOIDED/DELETED in Xero credits nothing,
     // so its mirror is written inactive on every payment: a Stripe or

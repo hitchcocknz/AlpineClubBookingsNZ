@@ -1521,3 +1521,67 @@ describe("INV-ADDPAY-041 (#4091): the reissue's Xero key names only the voided n
     expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, "payment:cmpayment0001xyz:refund-credit-note:8000:v2"]);
   });
 });
+
+describe("#4195 (INV-ADDPAY-041): a refund request's own note, voided in Xero", () => {
+  const REQUEST_KEY = `payment:${PAYMENT_ID}:refund-request-credit-note:rr_1:v1`;
+  /** The operator's retry of the request's row, run inline as `xero-operation-retry.ts` runs it. */
+  function retryRequestNote(refundRequestId = "rr_1") {
+    return createXeroCreditNote(PAYMENT_ID, 5000, { refundRequestId, refundMethod: "internet-banking", repairExistingLink: true });
+  }
+  /** Xero voids the note; its mirror records VOIDED but stays active - the shape a pre-#4195 sync left. */
+  function voidInXero(noteId: string) {
+    state.xero.notes.get(noteId)!.status = "VOIDED";
+    const link = state.links.find((candidate) => candidate.xeroObjectId === noteId)!;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+  }
+  const requestLinks = () =>
+    state.links
+      .filter((link) => link.role === "REFUND_REQUEST_CREDIT_NOTE")
+      .map((link) => ({ id: link.xeroObjectId, requestId: (link.metadata as Row).refundRequestId, status: (link.metadata as Row).status ?? null }));
+
+  beforeEach(() => seedPayment(PaymentSource.INTERNET_BANKING));
+
+  it("a live own note still covers its request: the retry raises nothing", async () => {
+    expect(await retryRequestNote()).toBe("cn_1");
+    expect(await retryRequestNote()).toBe("cn_1");
+    expect([...state.xero.noteKeys.keys()]).toEqual([REQUEST_KEY]);
+  });
+
+  it("MUTATION: a voided own note never covers the request - the retry raises a fresh note under a key naming it", async () => {
+    await retryRequestNote();
+    voidInXero("cn_1");
+
+    // Before #4195 the lookup took the active, voided mirror as the request's cover.
+    expect(await retryRequestNote()).toBe("cn_2");
+
+    // And without the key's suffix Xero would have replayed cn_1 for the same key.
+    expect([...state.xero.noteKeys.keys()]).toEqual([REQUEST_KEY, `${REQUEST_KEY}:after-void:cn_1`]);
+    expect(requestLinks()).toEqual([
+      { id: "cn_1", requestId: "rr_1", status: "VOIDED" },
+      { id: "cn_2", requestId: "rr_1", status: null },
+    ]);
+    expect(state.payment!.xeroRefundCreditNoteId).toBeNull();
+    // Once the fresh note is live it covers the request.
+    expect(await retryRequestNote()).toBe("cn_2");
+    expect(state.xero.notes.size).toBe(2);
+  });
+
+  it("MUTATION: a Xero that hands the voided note back for the new key is refused, and nothing is recorded", async () => {
+    await retryRequestNote();
+    voidInXero("cn_1");
+    state.xero.noteKeys.set(`${REQUEST_KEY}:after-void:cn_1`, "cn_1");
+    const linksBefore = JSON.stringify(state.links);
+
+    await expect(retryRequestNote()).rejects.toThrow(/VOIDED or DELETED note, which is never re-adopted \(INV-ADDPAY-041\)/);
+
+    expect(JSON.stringify(state.links)).toBe(linksBefore);
+  });
+
+  it("another request's voided note neither covers this request nor changes its key", async () => {
+    await retryRequestNote("rr_other");
+    voidInXero("cn_1");
+
+    expect(await retryRequestNote()).toBe("cn_2");
+    expect([...state.xero.noteKeys.keys()]).toEqual([`payment:${PAYMENT_ID}:refund-request-credit-note:rr_other:v1`, REQUEST_KEY]);
+  });
+});
