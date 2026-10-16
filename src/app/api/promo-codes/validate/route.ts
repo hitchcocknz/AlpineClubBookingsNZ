@@ -36,9 +36,13 @@ import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
 import {
   BookingGuestStayRangeValidationError,
+  guestNightListSchema,
   type NormalizedBookingGuestStayRange,
-  normalizeGuestStayRanges,
 } from "@/lib/booking-guest-stay-range-input";
+import {
+  resolvePromoPreviewStays,
+  type PromoPreviewStoredGuest,
+} from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { workPartyWindowOverlapsStay } from "@/lib/work-party";
 import { bookingFinalPriceCents } from "@/lib/booking-final-price";
@@ -70,6 +74,11 @@ const validateSchema = z
           memberId: z.string().min(1).optional(),
           stayStart: z.string().optional(),
           stayEnd: z.string().optional(),
+          // #4199: the guest's own night set from the booking editor's grid
+          // (#713), so the preview prices the nights the quote and the save
+          // price instead of the range around them. The one request shape for
+          // `nights` (`guestNightListSchema`); without it zod strips the key.
+          nights: guestNightListSchema.optional(),
           // #3827 (D-3813-4): optional, and it can only make a guest MORE
           // pending. Whether a guest awaits acceptance is decided server-side
           // below, the way the create decides it; no client sends this today.
@@ -161,16 +170,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { code, checkIn, checkOut } = parsed.data;
-  let guests: Array<(typeof parsed.data.guests)[number] & NormalizedBookingGuestStayRange>;
-  try {
-    guests = normalizeGuestStayRanges(parsed.data.guests, { checkIn, checkOut });
-  } catch (error) {
-    if (error instanceof BookingGuestStayRangeValidationError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
-  }
+  const { code } = parsed.data;
   // On-behalf promo validation follows the booking create/quote rule (#1442):
   // bookings:edit holders validate against the target member; an unauthorized
   // forMemberId is rejected rather than silently checked against the caller.
@@ -190,6 +190,8 @@ export async function POST(req: NextRequest) {
   // (D-3492-3/4, D-3813-4) nor tells the caller anything.
   let storedGuestById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }> | null =
     null;
+  // #4199: the edited booking and the rows the request names, for the planner.
+  let editStays: Parameters<typeof resolvePromoPreviewStays>[0]["edit"] = null;
   if (parsed.data.bookingId) {
     const booking = await bookingForPromoLookup({
       bookingId: parsed.data.bookingId,
@@ -199,17 +201,56 @@ export async function POST(req: NextRequest) {
     if (!booking) {
       return NextResponse.json({ error: "Booking not found" }, { status: 404 });
     }
-    const bookingGuestIds = guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : []));
-    storedGuestById = new Map(
-      bookingGuestIds.length
-        ? (
-            await prisma.bookingGuest.findMany({
-              where: { bookingId: booking.id, id: { in: bookingGuestIds } },
-              select: { id: true, memberId: true, consentStatus: true },
-            })
-          ).map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }])
-        : [],
+    const bookingGuestIds = parsed.data.guests.flatMap((guest) =>
+      guest.bookingGuestId ? [guest.bookingGuestId] : [],
     );
+    const storedRows = bookingGuestIds.length
+      ? await prisma.bookingGuest.findMany({
+          where: { bookingId: booking.id, id: { in: bookingGuestIds } },
+          select: {
+            id: true,
+            memberId: true,
+            consentStatus: true,
+            stayStart: true,
+            stayEnd: true,
+            nights: { select: { stayDate: true } },
+          },
+        })
+      : [];
+    storedGuestById = new Map(
+      storedRows.map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }]),
+    );
+    editStays = {
+      booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+      storedGuests: storedRows.map(
+        (row): PromoPreviewStoredGuest => ({
+          id: row.id,
+          memberId: row.memberId,
+          stayStart: row.stayStart,
+          stayEnd: row.stayEnd,
+          nights: row.nights,
+        }),
+      ),
+    };
+  }
+  // #4199: each guest's nights, resolved as the save resolves them — on an edit
+  // through the modification planner (`INV-EXCEPT-022`), so a grid guest's gap
+  // is not priced, and the envelope is the one the save would write.
+  let checkIn: Date;
+  let checkOut: Date;
+  let guests: Array<(typeof parsed.data.guests)[number] & NormalizedBookingGuestStayRange>;
+  try {
+    ({ checkIn, checkOut, guests } = resolvePromoPreviewStays({
+      checkIn: parsed.data.checkIn,
+      checkOut: parsed.data.checkOut,
+      guests: parsed.data.guests,
+      edit: editStays,
+    }));
+  } catch (error) {
+    if (error instanceof BookingGuestStayRangeValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    throw error;
   }
   /** The stored row for this guest, only when it is this guest's own member's row. */
   const storedRowFor = (guest: { bookingGuestId?: string; memberId?: string }) => {
