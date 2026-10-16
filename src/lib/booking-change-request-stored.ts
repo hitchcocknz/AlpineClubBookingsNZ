@@ -14,6 +14,7 @@ import {
 import { guestName } from "@/lib/bed-allocation-display-names";
 import { collapseNightRuns } from "@/lib/bed-allocation-board-window";
 import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import { effectiveStayRangeByGuest } from "@/lib/booking-modification-stay-ranges";
 
 /**
  * A LOCKED_PERIOD change request's stored `requestedChanges`, read back, and
@@ -145,7 +146,14 @@ function snapshotRanges(stored: StoredLockedPeriodRequest): Map<string, GuestNig
  * The guest ranges a stored request applies: both bounds or a night set, for a
  * guest it does not also remove.
  */
-function appliedRanges(stored: StoredLockedPeriodRequest) {
+type AppliedRange = {
+  guestId: string;
+  stayStart: string | null;
+  stayEnd: string | null;
+  nights?: string[];
+};
+
+function appliedRanges(stored: StoredLockedPeriodRequest): AppliedRange[] {
   const removed = new Set(stored.requested.removeGuests.map((guest) => guest.id));
   return (
     stored.requested.guestStayRanges
@@ -166,18 +174,32 @@ function appliedRanges(stored: StoredLockedPeriodRequest) {
 
 /**
  * #4157 (owner decision "Keep their nights", `INV-REQ-012`): each guest whose
- * applied range only repeats their own Date In and Date Out, with the nights
- * they keep, read from `liveGuests` (else the snapshot). The batch input
- * passes these nights to the planner; the applying approval records them on
- * the request (`withKeptNightsRecord`).
+ * EFFECTIVE applied range — the entry the planner applies, the last one for
+ * that guest (`effectiveStayRangeByGuest`) — only repeats their own Date In and
+ * Date Out, with the nights they keep, read from `liveGuests` (else the
+ * snapshot). An earlier entry the planner ignores is never judged: a repeat
+ * followed by a moved range or a night set is a change, and keeps nothing.
+ * The batch input passes these nights to the planner on that entry; an
+ * approval records them on the request (`withKeptNightsRecord`).
  */
 export function keptNightsByGuest(
   stored: StoredLockedPeriodRequest,
   liveGuests: ReadonlyArray<LiveRequestGuestRow> | undefined,
 ): Map<string, string[]> {
-  const snapshot = snapshotRanges(stored);
+  return keptNightsOfEffectiveRanges(
+    effectiveStayRangeByGuest(appliedRanges(stored)),
+    snapshotRanges(stored),
+    liveGuests,
+  );
+}
+
+function keptNightsOfEffectiveRanges(
+  effective: ReadonlyMap<string, AppliedRange>,
+  snapshot: ReadonlyMap<string, GuestNightsAsDays>,
+  liveGuests: ReadonlyArray<LiveRequestGuestRow> | undefined,
+): Map<string, string[]> {
   return new Map(
-    appliedRanges(stored).flatMap((range) => {
+    [...effective.values()].flatMap((range) => {
       const kept = nightsKeptByRepeatedRange(
         range,
         keptNightsSource(range.guestId, liveGuests, snapshot.get(range.guestId)),
@@ -289,9 +311,12 @@ export function lockedPeriodRequestToBatchInput(
   // they hold, so approval neither fills nor charges their gaps. It stays in
   // the list, as an explicit night set, for the reason above: range mode must
   // not switch off. A range that moves a bound is applied as written.
-  const kept = keptNightsByGuest(stored, booking.guests);
+  // Only on the entry the planner applies for that guest — the last — so an
+  // earlier repeat can never overwrite a later moved range or night set.
+  const effective = effectiveStayRangeByGuest(requestedRanges);
+  const kept = keptNightsOfEffectiveRanges(effective, currentRanges, booking.guests);
   const guestStayRanges = requestedRanges.map((range) => {
-    const nights = kept.get(range.guestId);
+    const nights = effective.get(range.guestId) === range ? kept.get(range.guestId) : undefined;
     return nights ? { ...range, nights } : range;
   });
   if (
@@ -424,9 +449,9 @@ export function describeRequestedGuestNights(
   const approved = context.status === "APPROVED";
   const record = approved && keptNights ? new Map(keptNights.map((entry) => [entry.guestId, entry.nights])) : null;
   const approvedUnrecorded = approved && !keptNights;
-  const removed = new Set(requested.removeGuests.map((guest) => guest.id));
-  const existing = requested.guestStayRanges.flatMap((range) => {
-    if (removed.has(range.guestId)) return [];
+  // One line per guest, for the entry approval applies (the last one for that
+  // guest), so the card never describes an entry the planner ignores (#4157).
+  const existing = [...effectiveStayRangeByGuest(appliedRanges(parsed.data)).values()].flatMap((range) => {
     const guest = original.guests.find((candidate) => candidate.id === range.guestId);
     const snapshot =
       guest?.stayStart && guest.stayEnd

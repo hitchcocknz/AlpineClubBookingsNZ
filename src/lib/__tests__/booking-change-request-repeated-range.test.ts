@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { nightsKeptByRepeatedRange } from "@/lib/booking-change-request-guests";
 import {
   describeRequestedGuestNights,
+  keptNightsByGuest,
   lockedPeriodRequestToBatchInput,
   storedLockedPeriodRequestSchema,
   storedRequestNamesNoChange,
@@ -285,5 +286,95 @@ describe("the officer's card reads a decided request without the live rows (#415
       keptNights: [{ guestId: "gap", nights: GAPPED }],
     };
     expect(card("APPROVED", unsnapshotted), "INV-REQ-012: the record is what was kept").toMatchObject(KEPT);
+  });
+});
+
+describe("a request that names one guest more than once (#4157)", () => {
+  // The submission schema accepts duplicate guest ids, and the planner applies
+  // the LAST entry for a guest. The kept nights belong to that entry alone: an
+  // earlier repeat must never overwrite a later night set or moved range.
+  const EXPLICIT = ["2026-06-11", "2026-06-12"];
+  const repeatThen = (later: Record<string, unknown>) =>
+    stored({
+      addGuests: [ADD_FRIEND],
+      guestStayRanges: [
+        { guestId: "gap", ...REPEATED },
+        { guestId: "gap", ...later },
+      ],
+    });
+
+  it("repeat then night set: the night set is applied as sent, nothing kept", () => {
+    const request = repeatThen({ nights: EXPLICIT });
+    const input = lockedPeriodRequestToBatchInput(request, LIVE);
+    expect(input?.guestStayRanges, "INV-REQ-012: only the applied entry may keep nights").toEqual([
+      { guestId: "gap", ...REPEATED },
+      { guestId: "gap", stayStart: null, stayEnd: null, nights: EXPLICIT },
+    ]);
+    expect(plannedNights(input!)).toMatchObject({ gap: EXPLICIT });
+    expect(keptNightsByGuest(request, LIVE.guests)).toEqual(new Map());
+  });
+
+  it("repeat then moved range: the moved range is applied as sent, nothing kept", () => {
+    const request = repeatThen({ stayStart: "2026-06-11", stayEnd: "2026-06-13" });
+    const input = lockedPeriodRequestToBatchInput(request, LIVE);
+    expect(input?.guestStayRanges, "INV-REQ-012: only the applied entry may keep nights").toEqual([
+      { guestId: "gap", ...REPEATED },
+      { guestId: "gap", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+    ]);
+    expect(plannedNights(input!)).toMatchObject({ gap: ["2026-06-11", "2026-06-12"] });
+    expect(keptNightsByGuest(request, LIVE.guests)).toEqual(new Map());
+  });
+
+  it("moved range then repeat: the repeat is applied, and keeps the nights on that entry only", () => {
+    const request = stored({
+      addGuests: [ADD_FRIEND],
+      guestStayRanges: [
+        { guestId: "gap", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+        { guestId: "gap", ...REPEATED },
+      ],
+    });
+    const input = lockedPeriodRequestToBatchInput(request, LIVE);
+    expect(input?.guestStayRanges).toEqual([
+      { guestId: "gap", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+      { guestId: "gap", ...REPEATED, nights: GAPPED },
+    ]);
+    expect(plannedNights(input!)).toMatchObject({ gap: GAPPED });
+    expect(keptNightsByGuest(request, LIVE.guests)).toEqual(new Map([["gap", GAPPED]]));
+  });
+
+  it("the card lists the guest once, as the applied entry reads", () => {
+    const card = (later: Record<string, unknown>) =>
+      describeRequestedGuestNights(
+        {
+          original: {
+            checkIn: "2026-06-10",
+            checkOut: "2026-06-13",
+            guests: [{ ...snapshotGuest("gap", GAPPED), firstName: "Gap", lastName: "Guest" }],
+          },
+          requested: { guestStayRanges: [{ guestId: "gap", ...REPEATED }, { guestId: "gap", ...later }] },
+        },
+        { status: "REQUESTED", guests: LIVE.guests },
+      );
+    expect(card({ nights: EXPLICIT }), "INV-REQ-012: the card reads the applied entry").toEqual([
+      {
+        name: "Gap Guest",
+        runs: [{ firstNight: "2026-06-11", lastNight: "2026-06-12" }],
+        nightCount: 2,
+        added: false,
+        unchanged: false,
+        fillsGaps: false,
+      },
+    ]);
+    // The moved range puts the guest on the 11th, inside their stored gap.
+    expect(card({ stayStart: "2026-06-11", stayEnd: "2026-06-13" })).toEqual([
+      {
+        name: "Gap Guest",
+        runs: [{ firstNight: "2026-06-11", lastNight: "2026-06-12" }],
+        nightCount: 2,
+        added: false,
+        unchanged: false,
+        fillsGaps: true,
+      },
+    ]);
   });
 });

@@ -116,6 +116,21 @@ export function deltaHasStayRangeInputs(input: StayRangeDeltaInput): boolean {
   );
 }
 
+/**
+ * Which of a delta's `guestStayRanges` entries applies to each guest: THE rule,
+ * shared by the planner below and every surface that predicts it (#4157). A
+ * request may name one guest more than once, and the LAST entry for a guest is
+ * the one applied; an earlier one is ignored. A caller that judges an entry by
+ * itself (the change request's kept nights, the officer's card) must judge the
+ * one this returns, or it describes and alters an entry the planner never
+ * reads.
+ */
+export function effectiveStayRangeByGuest<Entry extends { guestId: string }>(
+  entries: ReadonlyArray<Entry> | null | undefined,
+): Map<string, Entry> {
+  return new Map((entries ?? []).map((entry) => [entry.guestId, entry]));
+}
+
 function toDate(value: Date | string | null | undefined, fallback: Date): Date {
   if (value instanceof Date) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -214,9 +229,7 @@ export function resolveModificationStayRanges<Guest extends LiveGuestStayRow>(ar
     args.requested?.checkOut ?? toDate(args.input.checkOut, bookingCheckOut);
 
   const removeSet = new Set(args.input.removeGuestIds ?? []);
-  const rangeByGuestId = new Map(
-    (args.input.guestStayRanges ?? []).map((range) => [range.guestId, range]),
-  );
+  const rangeByGuestId = effectiveStayRangeByGuest(args.input.guestStayRanges);
   const remainingGuests = args.guests.filter((guest) => !removeSet.has(guest.id));
   const addGuests = args.input.addGuests ?? [];
 

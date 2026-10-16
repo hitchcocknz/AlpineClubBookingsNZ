@@ -311,6 +311,8 @@ the member's form sends a gapped guest's own dates back unchanged; applied as
 written, that range put the guest on every night inside it and charged for the
 gaps. `lockedPeriodRequestToBatchInput` passes such a guest to the planner as
 their night set, so range mode stays on, including beside an officer's entry.
+A guest named more than once is judged on the entry the planner applies, the
+last (`effectiveStayRangeByGuest`); an earlier repeat keeps nothing.
 Only a moved bound re-spreads the guest; a guest who already holds every night
 is passed by the two bounds. Whether a request names any change is still
 judged on the ranges as sent.
