@@ -15,6 +15,10 @@
  *   runner's retry made it again: refunded to the card, on the retry's date.
  * - The retry failed later too, raised dead on a row of its own: stalled, and
  *   the club follows it up - then closed "Paid another way": said so.
+ * - #4166 round 2 (F1): another door's refund of the same amount on the same
+ *   charge, recorded first (R), holds the cancel's slice by amount. The writer
+ *   records which row made a failed refund by what was sent, so the cancel's
+ *   (X) failing is told as its own, and R failing is not.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -89,6 +93,8 @@ let cancelBooking: (typeof import("@/lib/booking-cancel"))["cancelBooking"];
 let enqueueCapacityClaimFailedRefundRecovery: (typeof import("@/lib/payment-recovery"))["enqueueCapacityClaimFailedRefundRecovery"];
 let runPaymentRecoveryOperationNow: (typeof import("@/lib/payment-recovery"))["runPaymentRecoveryOperationNow"];
 let recordRefusedCardRefund: (typeof import("@/lib/card-refund-status-sync"))["recordRefusedCardRefund"];
+let recordStripeRefundsAgainstTransaction: (typeof import("@/lib/payment-transactions"))["recordStripeRefundsAgainstTransaction"];
+let parseRefundAllocationPlan: (typeof import("@/lib/open-card-refund-owed"))["parseRefundAllocationPlan"];
 let closeCardRefundPaidAnotherWay: (typeof import("@/lib/card-refund-paid-another-way"))["closeCardRefundPaidAnotherWay"];
 let readCancelledCardRefund: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCancelledCardRefund"];
 let readCardShortfallTaskStatuses: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCardShortfallTaskStatuses"];
@@ -224,6 +230,8 @@ let markerFinishedAt: Date | null = null;
       ({ cancelBooking } = await import("@/lib/booking-cancel"));
       ({ enqueueCapacityClaimFailedRefundRecovery, runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery"));
       ({ recordRefusedCardRefund } = await import("@/lib/card-refund-status-sync"));
+      ({ recordStripeRefundsAgainstTransaction } = await import("@/lib/payment-transactions"));
+      ({ parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed"));
       ({ closeCardRefundPaidAnotherWay } = await import("@/lib/card-refund-paid-another-way"));
       ({ readCancelledCardRefund, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status"));
       ({ resolveBookingNarrative } = await import("@/lib/booking-narrative"));
@@ -286,6 +294,9 @@ let markerFinishedAt: Date | null = null;
 
         const owedAgain = await stripeFailsLater(made[0]);
         expect(owedAgain).toMatchObject({ status: "PENDING", attempts: 0, amountCents: MEMBER_REFUND_CENTS });
+        // #4166 (F1): the writer records the cancel row as the refund's maker.
+        const cancelRow = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: CANCEL_KEY } });
+        expect(parseRefundAllocationPlan(owedAgain.allocationPlan)?.[0]?.madeByOperationId).toBe(cancelRow.id);
         expect((await readCancelledCardRefund(BOOKING_ID)).cardRefundFailedLater).toEqual([{ amountCents: MEMBER_REFUND_CENTS, state: "on-its-way" }]);
         const failed = await narrative();
         expect(failed).toContain(`$100.00 is on its way to your original payment method ${RETAINED}`);
@@ -312,6 +323,67 @@ let markerFinishedAt: Date | null = null;
         const closed = await narrative();
         expect(closed).toContain(`$100.00 could not go back to your card and was paid back to you another way ${RETAINED}`);
         expect(closed).not.toContain("was refunded");
+      });
+    });
+
+    // #4166 round 2 (F1): an approved appeal's inline refund R and the cancel's
+    // X, both $100.00 on the one charge, R recorded first, inside the cancel
+    // row's window - so by amount R fills the cancel's slice.
+    describe("a same-amount refund from another door, recorded first", () => {
+      const APPEAL = { bookingId: BOOKING_ID, reason: "refund_appeal_approved", refundRequestId: "rr-4166" };
+
+      async function bothRefunded(rStatus: "pending" | "succeeded") {
+        await paidBooking("PAID");
+        await prisma.bookingEvent.create({ data: { bookingId: BOOKING_ID, type: "MEMBER_PAID", occurredAt: PAID_AT, amountCents: PAID_CENTS } });
+        const r = {
+          id: "re_race_4166_appeal",
+          object: "refund",
+          amount: MEMBER_REFUND_CENTS,
+          currency: "nzd",
+          status: rStatus,
+          reason: "requested_by_customer",
+          created: Math.floor(FROZEN_AT.getTime() / 1000),
+          charge: "ch_race_4166",
+          payment_intent: INTENT,
+          metadata: APPEAL,
+        } as unknown as Stripe.Refund;
+        const made = stripeAccepts();
+        const accept = stripeRaceHooks.refund;
+        if (!accept) throw new Error("no Stripe double");
+        // R is recorded while the cancel asks Stripe for X - after the cancel planned
+        // its refund and raised its row, before X is recorded - so it is inside the
+        // row's window and, recorded first, takes the slice by amount.
+        stripeRaceHooks.refund = async (args) => {
+          stripeRaceHooks.refund = accept;
+          await recordStripeRefundsAgainstTransaction({ paymentId: PAYMENT_ID, paymentTransactionId: TXN_ID, refunds: [r], fallbackPaymentIntentId: INTENT });
+          vi.setSystemTime(new Date(FROZEN_AT.getTime() + 500));
+          return accept(args);
+        };
+        expect((await cancelBooking(BOOKING_ID, MEMBER_ID, "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card")).status).toBe(200);
+        const cancelRow = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: CANCEL_KEY } });
+        expect(cancelRow.status).toBe("SUCCEEDED");
+        expect(await narrative()).toContain(`$100.00 was refunded on ${club.instantDate(FROZEN_AT)} and $100.00 was retained`);
+        return { r, x: made[0], cancelRow };
+      }
+      const madeByRecorded = (row: { allocationPlan: unknown }) => parseRefundAllocationPlan(row.allocationPlan)?.[0]?.madeByOperationId;
+
+      it("MUTATION: X, the cancel's, fails: the writer records the cancel row as its maker, and the page says it is on its way", async () => {
+        const { x, cancelRow } = await bothRefunded("succeeded");
+
+        const owedAgain = await stripeFailsLater(x);
+        expect(madeByRecorded(owedAgain)).toBe(cancelRow.id);
+        const failed = await narrative();
+        expect(failed).toContain("$100.00 is on its way to your original payment method and $100.00 was retained");
+        expect(failed).not.toContain("was refunded");
+      });
+
+      it("MUTATION: R, the appeal's, fails: no row of the payment sent it, so the cancel's refund still reads refunded", async () => {
+        const { r } = await bothRefunded("pending");
+
+        const owedAgain = await stripeFailsLater(r);
+        expect(madeByRecorded(owedAgain)).toBeNull();
+        expect((await readCancelledCardRefund(BOOKING_ID)).cardRefundFailedLater).toBeUndefined();
+        expect(await narrative()).toContain(`$100.00 was refunded on ${club.instantDate(FROZEN_AT)} and $100.00 was retained`);
       });
     });
 
@@ -348,6 +420,8 @@ let markerFinishedAt: Date | null = null;
         const made = await raceRefunded();
 
         const owedAgain = await stripeFailsLater(made[0]);
+        const raceRow = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: RACE_KEY } });
+        expect(parseRefundAllocationPlan(owedAgain.allocationPlan)?.[0]?.madeByOperationId).toBe(raceRow.id);
         expect((await readCancelledCardRefund(BOOKING_ID)).cardRefundFailedLater).toEqual([{ amountCents: RACE_PLANNED_CENTS, state: "on-its-way" }]);
         const failed = await narrative();
         expect(failed).toContain(`$150.00 is on its way to your original payment method; ${REST}`);
