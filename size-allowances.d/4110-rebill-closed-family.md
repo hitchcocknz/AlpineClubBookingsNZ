@@ -9,13 +9,14 @@ reason: the panel's read of the charge queue now carries each covered
   payload the panel reads in one place.
 
 file: src/lib/membership-subscription-billing.ts
-lines: 1772
+lines: 1802
 reason: the preview decides which family charges still bill their family
   (owner decisions on #4110: a closed charge does until a covered member's
   payment is reversed; the newest closed charge decides; a member exempt at
   the close or reversed under an older charge is an exception asking Finance
-  to decide), and the confirm acknowledges or withholds the partial-reversal
-  warning. Each rule reads the family-charge query's own rows and feeds the
+  to decide; every closed charge informs the warning and that exception; a
+  bare invoice never suppresses a closed family), and the confirm acknowledges
+  or withholds the partial-reversal warning. Each rule reads the family-charge query's own rows and feeds the
   same billedFamilyTypes map and exceptions list the preview loop uses. The
   predicates, wording and the billing-family resolution already live in
   subscription-charge-already-paid.ts and membership-billing-family.ts; what
