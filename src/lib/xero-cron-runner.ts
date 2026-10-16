@@ -12,6 +12,7 @@ import {
   cleanupStaleCanonicalXeroObjectLinks,
   sendXeroReconciliationReport,
 } from "@/lib/xero-hardening";
+import { canonicalLinkCleanupFailureMessage } from "@/lib/xero-hardening-shared";
 import { runXeroInboundReconciliationCycle } from "@/lib/xero-inbound-reconciliation";
 import {
   reconcileXeroCreditSync,
@@ -164,16 +165,18 @@ async function runRecordedXeroTask<T>({
   task,
   work,
   recordCronRun,
+  statusFor = cronStatusForResult,
 }: {
   task: XeroCronTask;
   work: () => Promise<T> | T;
   recordCronRun: (input: RecordCronJobRunInput) => Promise<void> | void;
+  statusFor?: (result: T) => CronJobRunStatus;
 }): Promise<T> {
   const outcome = await runRecordedCronTask({
     jobName: XERO_CRON_JOB_NAMES[task],
     work,
     recordCronRun,
-    statusFor: cronStatusForResult,
+    statusFor,
     summaryFor: resultSummaryFor,
   });
   if (!outcome.ok) throw outcome.error;
@@ -316,13 +319,23 @@ export async function runXeroCronTaskList(
             backfillHistoricalXeroObjectLinks,
         });
       } else if (task === "link-cleanup") {
-        payload.linkCleanup = await runRecordedXeroTask({
+        // #4161: a cleanup whose refund-note heals partly failed returns its
+        // result rather than throwing; the run is recorded FAILURE with that
+        // summary and reported like any other task failure.
+        const linkCleanup = await runRecordedXeroTask({
           task,
           recordCronRun,
           work:
             taskDependencies.cleanupStaleCanonicalXeroObjectLinks ??
             cleanupStaleCanonicalXeroObjectLinks,
+          statusFor: (result) => (canonicalLinkCleanupFailureMessage(result) ? "FAILURE" : "SUCCESS"),
         });
+        payload.linkCleanup = linkCleanup;
+        const healFailure = canonicalLinkCleanupFailureMessage(linkCleanup);
+        if (healFailure) {
+          failures.push({ task, message: healFailure });
+          (dependencies.log ?? logger).error({ task }, healFailure);
+        }
       } else if (task === "report") {
         payload.reconciliationReport = await runRecordedXeroTask({
           task,

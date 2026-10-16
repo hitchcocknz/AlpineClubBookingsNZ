@@ -1415,6 +1415,16 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // cuid; taken after `lock(1)` where the caller holds it. See
   // docs/CONCURRENCY_AND_LOCKING.md -> the #3640 paragraph.
   "src/lib/payment-transactions.ts": 1,
+  // #4161 / #4192: the nightly link cleanup's refund-note heal locks the one
+  // `XeroObjectLink` row it is about to re-write (`SELECT 1 … FOR UPDATE`),
+  // re-reads it through Prisma under that lock, and writes nothing unless it
+  // is still the cancelled mirror the scan saw. Order: link, then the Payment
+  // row the link write's pointer release updates - the #2901 repair apply's
+  // order. The refund-note create records payment-then-link, so the heal
+  // defers any payment with a credit-note operation that could still mint.
+  // Keyed on an immutable cuid; no advisory lock. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Refund-note link heal (#4161)".
+  "src/lib/xero-hardening-canonical-links.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   sendReconciliationReportAlert: vi.fn(),
   resolveStripeCashRefundEvidence: vi.fn(),
   paymentRefundFindMany: vi.fn(),
+  healExecuteRaw: vi.fn(),
+  healOperationFindFirst: vi.fn(),
 }));
 
 // #2902: the over-coverage drift class compares coverage against the
@@ -106,6 +108,7 @@ import {
   maybeNotifyXeroRepeatedFailure,
   sendXeroReconciliationReport,
 } from "@/lib/xero-hardening";
+import { canonicalLinkCleanupFailureMessage } from "@/lib/xero-hardening-shared";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 describe("maybeNotifyXeroRepeatedFailure", () => {
@@ -1421,9 +1424,33 @@ describe("backfillHistoricalXeroObjectLinks", () => {
 });
 
 describe("cleanupStaleCanonicalXeroObjectLinks", () => {
+  /** What a scan mock returns, read without recording a call: the heal's re-read sees the same rows. */
+  async function scanRows<T>(mock: typeof mocks.linkFindMany, args: unknown): Promise<T[]> {
+    const impl = mock.getMockImplementation();
+    return ((impl ? await impl(args) : []) ?? []) as T[];
+  }
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.linkUpdateMany.mockResolvedValue({ count: 2 });
+    mocks.healOperationFindFirst.mockResolvedValue(null);
+    // #4161: each heal's own transaction - the link row lock, the re-read
+    // under it, the pointer read and the still-minting refusal.
+    mocks.transaction.mockImplementation(async (callback) =>
+      callback({
+        $executeRaw: mocks.healExecuteRaw,
+        xeroObjectLink: {
+          findUnique: async ({ where }: { where: { id: string } }) => {
+            const row = (await scanRows<{ id: string; active?: boolean }>(mocks.linkFindMany, { where: {} })).find((link) => link.id === where.id);
+            return row ? { ...row, active: row.active ?? true } : null;
+          },
+        },
+        payment: {
+          findUnique: async ({ where }: { where: { id: string } }) =>
+            (await scanRows<{ id: string }>(mocks.paymentFindMany, {})).find((payment) => payment.id === where.id) ?? null,
+        },
+        xeroSyncOperation: { findFirst: mocks.healOperationFindFirst },
+      }),
+    );
   });
 
   it("deactivates active canonical links that no longer match the local canonical fields", async () => {
@@ -1476,6 +1503,11 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       deactivatedLinks: 2,
       preservedStripeRefundCreditNoteLinks: 0,
       cancelledRefundCreditNoteMirrors: 0,
+      healedCancelledRefundCreditNoteMirrors: 0,
+      pointedInactiveCancelledRefundNoteMirrors: 0,
+      releasedInactiveRefundNotePointers: 0,
+      deferredRefundNoteHealLinkIds: [],
+      failedRefundNoteHealLinkIds: [],
       byCategory: {
         memberContacts: 1,
         paymentInvoices: 1,
@@ -1559,6 +1591,11 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       deactivatedLinks: 0,
       preservedStripeRefundCreditNoteLinks: 3,
       cancelledRefundCreditNoteMirrors: 0,
+      healedCancelledRefundCreditNoteMirrors: 0,
+      pointedInactiveCancelledRefundNoteMirrors: 0,
+      releasedInactiveRefundNotePointers: 0,
+      deferredRefundNoteHealLinkIds: [],
+      failedRefundNoteHealLinkIds: [],
       byCategory: {
         memberContacts: 0,
         paymentInvoices: 0,
@@ -1642,9 +1679,13 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
         role: "REFUND_CREDIT_NOTE",
         metadata: { status: "VOIDED" },
         mergeMetadata: true,
-      })
+      }),
+      { store: expect.any(Object) }
     );
     expect(mocks.upsertXeroObjectLink.mock.calls[0]?.[0]).not.toHaveProperty("active");
+    // On the heal's own transaction, after the link row lock.
+    expect(mocks.upsertXeroObjectLink.mock.calls[0]?.[1]).toEqual({ store: expect.any(Object) });
+    expect(mocks.healExecuteRaw).toHaveBeenCalledTimes(1);
   });
 
   it("keeps single-canonical enforcement for non-Stripe refund notes and malformed or foreign links (#2901)", async () => {
@@ -1754,7 +1795,8 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
 
     const result = await cleanupStaleCanonicalXeroObjectLinks();
 
-    expect(result.deactivatedLinkIds).toEqual(["link_review_voided", "link_old"]);
+    // Flipped links first, then the mirrors healed through the link write.
+    expect(result.deactivatedLinkIds).toEqual(["link_old", "link_review_voided"]);
     expect(result.deactivatedLinks).toBe(2);
     expect(result.preservedStripeRefundCreditNoteLinks).toBe(2);
     expect(mocks.linkUpdateMany).toHaveBeenCalledWith({
@@ -1762,7 +1804,8 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       data: { active: false },
     });
     expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
-      expect.objectContaining({ localId: "pay_ib", xeroObjectId: "cn_review_voided", metadata: { status: "VOIDED" } })
+      expect.objectContaining({ localId: "pay_ib", xeroObjectId: "cn_review_voided", metadata: { status: "VOIDED" } }),
+      { store: expect.any(Object) }
     );
   });
 
@@ -1805,7 +1848,8 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
         role: "REFUND_CREDIT_NOTE",
         metadata: { status: " deleted " },
         mergeMetadata: true,
-      });
+      }, { store: expect.any(Object) });
+      expect(result.healedCancelledRefundCreditNoteMirrors).toBe(1);
     });
 
     it("leaves a live canonical note, an unrecorded status and a malformed voided link to the ordinary rules", async () => {
@@ -1836,10 +1880,134 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       ]);
       mocks.upsertXeroObjectLink.mockRejectedValueOnce(new Error("deadlock")).mockResolvedValueOnce({});
 
-      await expect(cleanupStaleCanonicalXeroObjectLinks()).rejects.toThrow(
-        /Healed 1 of 2 .*links link_a\)/
-      );
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
       expect(mocks.upsertXeroObjectLink).toHaveBeenCalledTimes(2);
+      // Returned, not thrown, and only the heal that landed is counted.
+      expect(result.failedRefundNoteHealLinkIds).toEqual(["link_a"]);
+      expect(result.healedCancelledRefundCreditNoteMirrors).toBe(1);
+      expect(result.deactivatedLinks).toBe(1);
+      expect(result.deactivatedLinkIds).toEqual(["link_b"]);
+      expect(canonicalLinkCleanupFailureMessage(result)).toMatch(/1 refund-note link.*link_a/);
+      expect(canonicalLinkCleanupFailureMessage({ failedRefundNoteHealLinkIds: [] })).toBeNull();
+    });
+
+    it("re-checks under the row lock: a mirror no longer active or no longer cancelled is skipped with no write and not counted", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_a" }]
+      );
+      const scanned = [link("link_a", "cn_a", { status: "VOIDED" }), link("link_b", "cn_b", { status: "VOIDED" })];
+      mocks.linkFindMany.mockResolvedValue(scanned);
+      // Between the scan and the lock: link_a was deactivated, link_b's status changed.
+      mocks.transaction.mockImplementation(async (callback) =>
+        callback({
+          $executeRaw: mocks.healExecuteRaw,
+          xeroObjectLink: {
+            findUnique: async ({ where }: { where: { id: string } }) =>
+              where.id === "link_a" ? { ...scanned[0], active: false } : { ...scanned[1], active: true, metadata: { status: "AUTHORISED" } },
+          },
+          payment: { findUnique: async () => ({ xeroRefundCreditNoteId: "cn_a" }) },
+          xeroSyncOperation: { findFirst: mocks.healOperationFindFirst },
+        }),
+      );
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+      expect(result.cancelledRefundCreditNoteMirrors).toBe(2);
+      expect(result.healedCancelledRefundCreditNoteMirrors).toBe(0);
+      expect(result.deactivatedLinks).toBe(0);
+      expect(result.deactivatedLinkIds).toEqual([]);
+    });
+
+    it("defers, with no write, a payment with a credit-note operation that could still mint (the create records payment-then-link)", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_a" }]
+      );
+      mocks.linkFindMany.mockResolvedValue([link("link_a", "cn_a", { status: "VOIDED" })]);
+      mocks.healOperationFindFirst.mockResolvedValue({ id: "op_running" });
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+      expect(result.deferredRefundNoteHealLinkIds).toEqual(["link_a"]);
+      expect(result.failedRefundNoteHealLinkIds).toEqual([]);
+      expect(result.deactivatedLinks).toBe(0);
+      expect(canonicalLinkCleanupFailureMessage(result)).toBeNull();
+      // The refusal is the #2901 repair's own, scoped to this payment.
+      expect(mocks.healOperationFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ localId: "pay_ib", entityType: "CREDIT_NOTE" }) })
+      );
+    });
+  });
+
+  describe("#4192: a pointer that still names its own inactive cancelled mirror", () => {
+    const link = (id: string, localId: string, xeroObjectId: string, active: boolean, metadata: Record<string, unknown> | null) => ({
+      id, localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", xeroObjectId, role: "REFUND_CREDIT_NOTE",
+      xeroObjectNumber: null, xeroObjectUrl: null, active, metadata,
+    });
+    const inactive = [
+      link("link_pointed", "pay_card", "cn_latest", false, { amountCents: 500, status: "VOIDED" }),
+      // Not named by its payment's pointer: left alone.
+      link("link_unpointed", "pay_card", "cn_old", false, { status: "VOIDED" }),
+      // Named, but its status is unknown or live: never touched (#2901 refuses those too).
+      link("link_unknown", "pay_other", "cn_unknown", false, { amountCents: 100 }),
+      // Another payment's mirror of the pointed note id: the pair must match.
+      link("link_decoy", "pay_other", "cn_latest", false, { status: "VOIDED" }),
+    ];
+    beforeEach(() => {
+      mocks.memberFindMany.mockResolvedValue([]);
+      mocks.subscriptionFindMany.mockResolvedValue([]);
+      mocks.upsertXeroObjectLink.mockResolvedValue({});
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE"
+          ? [{ id: "pay_card" }]
+          : [
+              { id: "pay_card", xeroInvoiceId: "inv_card", xeroRefundCreditNoteId: "cn_latest" },
+              { id: "pay_other", xeroInvoiceId: null, xeroRefundCreditNoteId: "cn_unknown" },
+            ]
+      );
+      mocks.linkFindMany.mockImplementation(async (args?: { where?: { active?: boolean } }) =>
+        args?.where?.active === false ? inactive : args?.where?.active === true ? [] : inactive
+      );
+    });
+
+    it("counts it first and routes it through the link write's pointer release, apart from the active-link counts", async () => {
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(result.pointedInactiveCancelledRefundNoteMirrors).toBe(1);
+      expect(result.releasedInactiveRefundNotePointers).toBe(1);
+      expect(result.scannedActiveLinks).toBe(0);
+      expect(result.keptActiveLinks).toBe(0);
+      expect(result.deactivatedLinks).toBe(0);
+      expect(mocks.upsertXeroObjectLink).toHaveBeenCalledTimes(1);
+      expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+        expect.objectContaining({ localId: "pay_card", xeroObjectId: "cn_latest", metadata: { status: "VOIDED" }, mergeMetadata: true }),
+        { store: expect.any(Object) }
+      );
+      // The candidate query is scoped to inactive refund-note mirrors of the scanned pointers.
+      expect(mocks.linkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ active: false, localId: { in: ["pay_card", "pay_other"] }, xeroObjectId: { in: ["cn_latest", "cn_unknown"] } }),
+        })
+      );
+    });
+
+    it("skips it with no write when the pointer moved after the scan", async () => {
+      mocks.transaction.mockImplementation(async (callback) =>
+        callback({
+          $executeRaw: mocks.healExecuteRaw,
+          xeroObjectLink: { findUnique: async () => inactive[0] },
+          payment: { findUnique: async () => ({ xeroRefundCreditNoteId: "cn_other_live" }) },
+          xeroSyncOperation: { findFirst: mocks.healOperationFindFirst },
+        }),
+      );
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(result.pointedInactiveCancelledRefundNoteMirrors).toBe(1);
+      expect(result.releasedInactiveRefundNotePointers).toBe(0);
+      expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
     });
   });
 });

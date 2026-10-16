@@ -42,6 +42,7 @@ vi.mock("@/lib/xero-operation-queue", () => ({
 }));
 
 import {
+  XeroCronRunnerError,
   runXeroCronTaskList,
   runXeroCronTasks,
 } from "@/lib/xero-cron-runner";
@@ -165,5 +166,41 @@ describe("xero cron runner", () => {
         jobName: "xero-link-backfill",
       })
     );
+  });
+
+  it("records a link cleanup whose refund-note heals partly failed as FAILURE, with its summary, and fails the run (#4161)", async () => {
+    const recordCronRun = vi.fn();
+    const cleanup = { deactivatedLinks: 1, failedRefundNoteHealLinkIds: ["link_a"], deferredRefundNoteHealLinkIds: [] };
+
+    const run = runXeroCronTasks("link-cleanup", {
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => false),
+      log: { error: vi.fn() },
+      tasks: { cleanupStaleCanonicalXeroObjectLinks: vi.fn(async () => cleanup) as never },
+    });
+
+    const error = await run.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(XeroCronRunnerError);
+    expect((error as XeroCronRunnerError).payload.linkCleanup).toEqual(cleanup);
+    expect((error as XeroCronRunnerError).message).toContain("link_a");
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: "xero-link-cleanup", status: "FAILURE", resultSummary: cleanup })
+    );
+  });
+
+  it("does not fail the run for a heal only deferred behind a credit-note create (#4161)", async () => {
+    const recordCronRun = vi.fn();
+
+    await runXeroCronTasks("link-cleanup", {
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => false),
+      tasks: {
+        cleanupStaleCanonicalXeroObjectLinks: vi.fn(async () => ({ failedRefundNoteHealLinkIds: [], deferredRefundNoteHealLinkIds: ["link_b"] })) as never,
+      },
+    });
+
+    expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobName: "xero-link-cleanup", status: "SUCCESS" }));
   });
 });

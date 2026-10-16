@@ -31,6 +31,7 @@ import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { asRecord } from "@/lib/xero-json";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
+import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 import {
   isPerDeltaRefundNoteLink,
   isRefundCreditNoteLinkCancelledInXero,
@@ -110,34 +111,108 @@ export function isCancelledRefundCreditNoteMirror(
   );
 }
 
+/** The shape of a refund-note link the heal re-checks and re-writes. */
+const HEAL_LINK_SELECT = {
+  id: true,
+  localModel: true,
+  localId: true,
+  xeroObjectType: true,
+  xeroObjectId: true,
+  xeroObjectNumber: true,
+  xeroObjectUrl: true,
+  role: true,
+  active: true,
+  metadata: true,
+} as const;
+
+/** Why the heal wrote nothing for a link: its state moved, or a create is in flight. */
+type HealOutcome = "healed" | "skipped" | "deferred";
+
 /**
- * #4161: heal one cancelled mirror through the link write, re-asserting only the
- * status already recorded (merged, so no other metadata key moves), so the one
- * rule in `normalizePaymentRefundLinkWithClient` writes it inactive and the
- * write releases a pointer that names it. Number and URL are passed back as
- * recorded because the write sets both. Local rows only, no provider call; the
- * write locks the link, then the payment, as every refund-note link write does.
- * Idempotent: a healed link is inactive, so the next scan never selects it.
+ * #4161 / #4192: heal one refund-note link through the link write. `expect`
+ * names what the scan saw: an ACTIVE cancelled mirror (#4161), or an INACTIVE
+ * cancelled mirror its own payment's pointer still names (#4192, left by the
+ * old cleanup's direct flip). Under the link's row lock it re-reads the link
+ * and writes nothing ("skipped") unless that still holds; it writes nothing
+ * ("deferred") while any credit-note operation that could still mint on the
+ * payment exists, the #2901 repair's refusal
+ * (`findBlockingRefundCreditNoteOperationId`), because that create records
+ * payment-then-link, the reverse of this order. Otherwise it re-asserts only
+ * the recorded status (merged, so no other metadata key moves) with the
+ * recorded number and URL, so `normalizePaymentRefundLinkWithClient` writes it
+ * inactive and the write releases a pointer naming it (#4046). Order: link,
+ * then payment, as the repair apply and the inbound void write. Local rows
+ * only, no provider call. Idempotent: a healed link matches neither shape.
  */
-async function healCancelledRefundCreditNoteMirror(link: {
-  localId: string;
-  xeroObjectId: string;
-  xeroObjectNumber: string | null;
-  xeroObjectUrl: string | null;
-  metadata: unknown;
-}) {
-  await upsertXeroObjectLink({
-    localModel: "Payment",
-    localId: link.localId,
-    xeroObjectType: "CREDIT_NOTE",
-    xeroObjectId: link.xeroObjectId,
-    xeroObjectNumber: link.xeroObjectNumber,
-    xeroObjectUrl: link.xeroObjectUrl,
-    role: "REFUND_CREDIT_NOTE",
-    metadata: { status: asRecord(link.metadata)?.status },
-    mergeMetadata: true,
+async function healRefundNoteLink(linkId: string, expect: "active" | "pointedInactive"): Promise<HealOutcome> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT 1 FROM "XeroObjectLink" WHERE "id" = ${linkId} FOR UPDATE`;
+    const link = await tx.xeroObjectLink.findUnique({ where: { id: linkId }, select: HEAL_LINK_SELECT });
+    if (!link || !isCancelledRefundCreditNoteMirror(link) || link.active !== (expect === "active")) {
+      return "skipped";
+    }
+    if (expect === "pointedInactive") {
+      const payment = await tx.payment.findUnique({ where: { id: link.localId }, select: { xeroRefundCreditNoteId: true } });
+      if (payment?.xeroRefundCreditNoteId !== link.xeroObjectId) return "skipped";
+    }
+    if (await findBlockingRefundCreditNoteOperationId(link.localId, tx)) {
+      return "deferred";
+    }
+    await upsertXeroObjectLink(
+      {
+        localModel: "Payment",
+        localId: link.localId,
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: link.xeroObjectId,
+        xeroObjectNumber: link.xeroObjectNumber,
+        xeroObjectUrl: link.xeroObjectUrl,
+        role: "REFUND_CREDIT_NOTE",
+        metadata: { status: asRecord(link.metadata)?.status },
+        mergeMetadata: true,
+      },
+      { store: tx }
+    );
+    return "healed";
   });
 }
+
+/**
+ * #4192: the INACTIVE cancelled refund-note mirrors that their own payment's
+ * pointer still names, among the pointers the canonical scan read. Matched on
+ * the exact (payment, note) pair; an inactive note whose status is unknown or
+ * live is never touched, as the #2901 repair refuses to reactivate one.
+ */
+async function findPointedInactiveCancelledMirrors(
+  pointers: ReadonlyArray<{ id: string; xeroRefundCreditNoteId: string | null }>
+): Promise<string[]> {
+  const pointerByPayment = new Map(
+    pointers.flatMap((payment) => (payment.xeroRefundCreditNoteId ? [[payment.id, payment.xeroRefundCreditNoteId] as const] : []))
+  );
+  const ids: string[] = [];
+  const paymentIds = [...pointerByPayment.keys()];
+  // Bounded IN lists, well under PostgreSQL's bind-parameter limit.
+  for (let start = 0; start < paymentIds.length; start += 1_000) {
+    const chunk = paymentIds.slice(start, start + 1_000);
+    const links = await prisma.xeroObjectLink.findMany({
+      where: {
+        active: false,
+        localModel: "Payment",
+        role: "REFUND_CREDIT_NOTE",
+        xeroObjectType: "CREDIT_NOTE",
+        localId: { in: chunk },
+        xeroObjectId: { in: chunk.map((id) => pointerByPayment.get(id)!) },
+      },
+      select: HEAL_LINK_SELECT,
+    });
+    for (const link of links ?? []) {
+      if (link.active === false && pointerByPayment.get(link.localId) === link.xeroObjectId && isCancelledRefundCreditNoteMirror(link)) {
+        ids.push(link.id);
+      }
+    }
+  }
+  return ids;
+}
+
 
 function getCanonicalCleanupCategory(
   link: Pick<CanonicalLinkRecord, "localModel" | "role">
@@ -311,9 +386,11 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
       )
     )
   );
-  // #4161, read-only first: the cancelled mirrors this run will heal, counted
-  // before any write and reported in the result.
+  // Read-only first: the cancelled mirrors this run will heal, active ones
+  // (#4161) and inactive ones a pointer still names (#4192), counted before
+  // any write and reported in the result.
   const cancelledRefundCreditNoteMirrors = links.filter(isCancelledRefundCreditNoteMirror);
+  const pointedInactiveMirrorIds = await findPointedInactiveCancelledMirrors(payments);
   let preservedStripeRefundCreditNoteLinks = 0;
   const staleLinks = links.filter((link) => {
     // #4161: a cancelled mirror is stale on every source, the pointer's own
@@ -345,17 +422,14 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
       expectation.xeroObjectId !== link.xeroObjectId
     );
   });
-  const staleLinkIds = staleLinks.map((link) => link.id);
-  const flippedLinkIds = staleLinks
-    .filter((link) => !isCancelledRefundCreditNoteMirror(link))
-    .map((link) => link.id);
+  const flippedLinks = staleLinks.filter((link) => !isCancelledRefundCreditNoteMirror(link));
 
   let deactivatedLinks = 0;
-  if (flippedLinkIds.length > 0) {
+  if (flippedLinks.length > 0) {
     const updateResult = await prisma.xeroObjectLink.updateMany({
       where: {
         id: {
-          in: flippedLinkIds,
+          in: flippedLinks.map((link) => link.id),
         },
         active: true,
       },
@@ -366,28 +440,34 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     deactivatedLinks = updateResult.count;
   }
 
-  // #4161: one link write per cancelled mirror, each in its own transaction, so
-  // one failure never holds back the rest. A failure fails the task (the cron
-  // run records it) once every other mirror has been tried; the next run
-  // retries only what is still active.
-  const failedHealLinkIds: string[] = [];
-  for (const link of cancelledRefundCreditNoteMirrors) {
+  // #4161 / #4192: one link write per mirror, each in its own transaction, so
+  // one failure never holds back the rest. Failures are returned, never thrown
+  // after a partial success: the cron records the task FAILURE from them
+  // (`canonicalLinkCleanupFailureMessage`) and the next run retries them.
+  const healedLinks: typeof links = [];
+  let releasedInactiveRefundNotePointers = 0;
+  const deferredRefundNoteHealLinkIds: string[] = [];
+  const failedRefundNoteHealLinkIds: string[] = [];
+  const heal = async (linkId: string, expect: "active" | "pointedInactive", onHealed: () => void) => {
     try {
-      await healCancelledRefundCreditNoteMirror(link);
-      deactivatedLinks += 1;
+      const outcome = await healRefundNoteLink(linkId, expect);
+      if (outcome === "healed") onHealed();
+      if (outcome === "deferred") deferredRefundNoteHealLinkIds.push(linkId);
     } catch (error) {
-      failedHealLinkIds.push(link.id);
+      failedRefundNoteHealLinkIds.push(linkId);
       logger.error(
-        { err: error, linkId: link.id, paymentId: link.localId, xeroObjectId: link.xeroObjectId },
-        "Could not heal the active mirror of a VOIDED/DELETED Xero refund credit note (#4161)"
+        { err: error, linkId },
+        "Could not heal the mirror of a VOIDED/DELETED Xero refund credit note (#4161)"
       );
     }
+  };
+  for (const link of cancelledRefundCreditNoteMirrors) {
+    await heal(link.id, "active", () => healedLinks.push(link));
   }
-  if (failedHealLinkIds.length > 0) {
-    throw new Error(
-      `Healed ${cancelledRefundCreditNoteMirrors.length - failedHealLinkIds.length} of ${cancelledRefundCreditNoteMirrors.length} active mirrors of VOIDED/DELETED Xero refund credit notes; ${failedHealLinkIds.length} failed (links ${failedHealLinkIds.join(", ")}) and stay for the next run (#4161).`
-    );
+  for (const linkId of pointedInactiveMirrorIds) {
+    await heal(linkId, "pointedInactive", () => (releasedInactiveRefundNotePointers += 1));
   }
+  deactivatedLinks += healedLinks.length;
 
   const byCategory: XeroCanonicalLinkCleanupResult["byCategory"] = {
     memberContacts: 0,
@@ -397,7 +477,8 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     otherCanonicalLinks: 0,
   };
 
-  for (const link of staleLinks) {
+  const deactivated = [...flippedLinks, ...healedLinks];
+  for (const link of deactivated) {
     byCategory[getCanonicalCleanupCategory(link)] += 1;
   }
 
@@ -408,7 +489,12 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     deactivatedLinks,
     preservedStripeRefundCreditNoteLinks,
     cancelledRefundCreditNoteMirrors: cancelledRefundCreditNoteMirrors.length,
+    healedCancelledRefundCreditNoteMirrors: healedLinks.length,
+    pointedInactiveCancelledRefundNoteMirrors: pointedInactiveMirrorIds.length,
+    releasedInactiveRefundNotePointers,
+    deferredRefundNoteHealLinkIds,
+    failedRefundNoteHealLinkIds,
     byCategory,
-    deactivatedLinkIds: staleLinkIds,
+    deactivatedLinkIds: deactivated.map((link) => link.id),
   };
 }
