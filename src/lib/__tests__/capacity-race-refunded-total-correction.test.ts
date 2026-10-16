@@ -44,6 +44,9 @@ vi.mock("@/lib/stripe-cash-refund-evidence", () => ({ accountCreditDispositionCe
 vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
   readResolvedRefundCreditNoteCoverage: doubles.resolvedNotes,
   sumRefundCreditNoteCoverageCents: doubles.noteCoverage,
+  // Round 5: what one close's own notes put in coverage (`readPaidAnotherWayCloseShare`), keyed by the record it names.
+  sumRefundCreditNoteCoverageOfRowsCents: async (_paymentId: string, rowsWhere: { requestPayload: { equals: string } }) =>
+    closeNotesInCoverage.get(rowsWhere.requestPayload.equals) ?? 0,
 }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: doubles.audit }));
 vi.mock("@/lib/logger", () => ({ default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
@@ -75,16 +78,21 @@ type Refund = { amountCents: number; status: string; stripeCreatedAt: Date | nul
 
 /** The baseline: a $200 charge made after the ledger started, reading all of it refunded, with $140 of card refund on record. */
 /** A completed task on the payment whose bank cash the note pipeline reads (`readPaidAnotherWayCash`), noted by `noteRows`. */
-type BankCashRecord = { id: string; kind: string; occurrenceKey: string; amountCents: number; reviewContext: unknown; noteRows: number };
+/** Its own notes put `inCoverageCents` into the payment's coverage: sent and linked, or (round 5) none, when FAILED or queued. */
+type BankCashRecord = { id: string; kind: string; occurrenceKey: string; amountCents: number; reviewContext: unknown; noteRows: number; inCoverageCents: number };
+const closeNotesInCoverage = new Map<string, number>();
 
 function world(over: { charges?: Charge[]; otherCharges?: Charge[]; refunds?: Refund[]; otherTasks?: number; bankCash?: BankCashRecord[] } = {}) {
+  closeNotesInCoverage.clear();
+  for (const record of over.bankCash ?? []) closeNotesInCoverage.set(record.id, record.inCoverageCents);
   const charges = over.charges ?? [{ id: "txn-race", amountCents: 20_000, refundedAmountCents: 20_000, createdAt: at(2_000) }];
   const otherCharges = over.otherCharges ?? [];
   const refunds = (over.refunds ?? [{ amountCents: 14_000, status: "succeeded", stripeCreatedAt: at(3_000) }]).map((refund) => ({ paymentTransactionId: "txn-race", ...refund }));
   return {
     // The race intent's charges, or (round 3) the payment's other captured charges, as the query asks.
     paymentTransaction: { findMany: vi.fn(async ({ where }: { where: { id?: { not: string } } }) => (where.id ? otherCharges : charges)) },
-    manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0), update: vi.fn(async () => ({})), findMany: vi.fn(async () => over.bankCash ?? []) },
+    manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0), update: vi.fn(async () => ({})), findMany: vi.fn(async () => over.bankCash ?? []),
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) => over.bankCash?.find((task) => task.id === where.id) ?? null) },
     xeroSyncOperation: { count: vi.fn(async ({ where }: { where: { requestPayload: { equals: string } } }) => over.bankCash?.find((task) => task.id === where.requestPayload.equals)?.noteRows ?? 0) },
     paymentRefund: {
       findMany: vi.fn(async () => refunds.filter((refund) => refund.paymentTransactionId === "txn-race")),
@@ -306,7 +314,7 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
       doubles.noteCoverage.mockResolvedValue(14_000 + 5_000);
       const store = world({
         otherTasks: 1,
-        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 5_000, reviewContext: null, noteRows: 1 }],
+        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 5_000, reviewContext: null, noteRows: 1, inCoverageCents: 5_000 }],
       });
       await expect(run(store)).rejects.toMatchObject({
         message: `${capacityRaceNothingToAllocateMessage("invoiced")} (The app could not correct the charge's records itself: ${CAPACITY_RACE_CORRECTION_BLOCKED_REASON["other-task"]}.)`,
@@ -317,9 +325,30 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
       doubles.noteCoverage.mockResolvedValue(14_000 + 5_000 + 1);
       const store = world({
         otherTasks: 1,
-        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 5_000, reviewContext: null, noteRows: 1 }],
+        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 5_000, reviewContext: null, noteRows: 1, inCoverageCents: 5_000 }],
       });
       await expect(run(store)).rejects.toMatchObject({ message: expect.stringContaining(CAPACITY_RACE_XERO_SENTENCE.noted) });
+    });
+
+    // Round 5 (1): a noted record's own note explains coverage only once it is in it.
+    it("MUTATION (round 5, 1): a hand-back noted but whose note is not in coverage (FAILED) explains none of a card note's excess - the refusal says to check that note", async () => {
+      // $140.00 of card refunds on record, and an $80.00 card note beside them; the $100.00 hand-back's own note never sent.
+      doubles.noteCoverage.mockResolvedValue(14_000 + 8_000);
+      const store = world({
+        otherTasks: 1,
+        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 10_000, reviewContext: null, noteRows: 1, inCoverageCents: 0 }],
+      });
+      await expect(run(store)).rejects.toMatchObject({ message: expect.stringContaining(CAPACITY_RACE_XERO_SENTENCE.noted) });
+      await expect(run(store)).rejects.toMatchObject({ message: expect.not.stringContaining("raise its refund credit note in Xero by hand") });
+    });
+
+    it("CONTROL (round 5, 1): the same hand-back with its note sent explains the coverage it put there", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 10_000);
+      const store = world({
+        otherTasks: 1,
+        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 10_000, reviewContext: null, noteRows: 1, inCoverageCents: 10_000 }],
+      });
+      await expect(run(store)).rejects.toMatchObject({ message: expect.stringContaining("Then raise its refund credit note in Xero by hand") });
     });
 
     // Round 4 (F4): the gaps the lens named.

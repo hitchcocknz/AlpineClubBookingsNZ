@@ -21,7 +21,7 @@ import {
 } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { getPaymentIntent } from "@/lib/stripe";
-import { paidAnotherWayCardNoteCoverContext, readPaidAnotherWayCash } from "@/lib/card-refund-paid-another-way-cash";
+import { paidAnotherWayCardNoteCoverContext, readPaidAnotherWayCash, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import { formatCents } from "@/lib/utils";
 import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -200,7 +200,8 @@ export async function readCapacityRaceStripeRefundedForTask(taskId: string): Pro
 /**
  * Round 3 (1), round 4 (F2, F3): THE PAYMENT'S XERO NOTE COVERAGE ITS RECORDS DO NOT EXPLAIN - what a capacity race's
  * every refusal reads before it says anything about Xero. Coverage (`sumRefundCreditNoteCoverageCents`) less what the
- * payment's recorded card refunds and the bank cash its closes and hand-backs noted (`readPaidAnotherWayCash`) explain:
+ * payment's recorded card refunds and the bank cash its closes and hand-backs noted explain, as far as their own notes
+ * are in that coverage (`readPaidAnotherWayCash` less `readPaidAnotherWayUncoveredCents`):
  * what is left is a card note for money with no record behind it (the self-heal's, for a race's stray total). A note
  * resolved by hand whose amount cannot be read may cover anything. Either way (`mayCover`), a refusal never asks for a
  * note by hand without saying to check the one there.
@@ -212,8 +213,10 @@ export async function noteMayCover(
   const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, store);
   const unreadable = resolved.unreadableOperationIds.length > 0;
   const beyondRows = (await sumRefundCreditNoteCoverageCents(paymentId, resolved, store)) - (await sumRecordedRefundsForPayment(store, paymentId));
-  // The noted bank cash is read only when there is coverage left for it to explain.
-  const cardNoteCoversCents = beyondRows > 0 ? Math.max(0, beyondRows - (await readPaidAnotherWayCash(store, paymentId)).notedCents) : 0;
+  // Round 5 (1): the closes' and hand-backs' noted bank cash explains coverage only as far as their own notes are in it
+  // (`readPaidAnotherWayUncoveredCents`: a note queued, FAILED or not yet linked is not). Read only when coverage is left.
+  const notesInCoverage = async () => (await readPaidAnotherWayCash(store, paymentId)).notedCents - (await readPaidAnotherWayUncoveredCents(store, paymentId));
+  const cardNoteCoversCents = beyondRows > 0 ? Math.max(0, beyondRows - (await notesInCoverage())) : 0;
   return { cardNoteCoversCents, unreadable, mayCover: cardNoteCoversCents > 0 || unreadable };
 }
 

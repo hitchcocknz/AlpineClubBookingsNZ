@@ -5,10 +5,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * total could not hold reaches the officers, once per charge and refund-row
  * total, through the payment recovery alert - never only the error log.
  */
-type Task = { paymentId: string; kind: string; status: string; occurrenceKey: string | null };
+type Task = {
+  paymentId: string;
+  bookingId?: string;
+  kind: string;
+  status: string;
+  occurrenceKey: string | null;
+  settlementDirection?: string | null;
+  booking?: { payment: { source: string } };
+};
 
 /**
- * Round 4 (F1): a Prisma `where` evaluated against rows - equality, `startsWith`, null, NOT, AND and OR - so the
+ * Round 4 (F1): a Prisma `where` evaluated against rows - equality, `startsWith`, `not`, null, NOT, AND, OR and a
+ * nested relation (round 5) - so the
  * test reads which tasks the alert's read actually counts by their occurrence keys, never only the clause's shape.
  */
 function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
@@ -21,7 +30,9 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     if (typeof condition === "object" && condition && "startsWith" in condition) {
       return typeof value === "string" && value.startsWith((condition as { startsWith: string }).startsWith);
     }
-    return value === condition;
+    if (typeof condition === "object" && condition && "not" in condition) return value !== undefined && value !== (condition as { not: unknown }).not;
+    if (typeof condition === "object" && condition) return typeof value === "object" && value !== null && matches(value as Record<string, unknown>, condition as Record<string, unknown>);
+    return (value ?? null) === condition;
   });
 }
 
@@ -64,7 +75,13 @@ describe("a card refund past its charge alerts the officers (#4159 F2, round 3)"
     doubles.findUnique.mockResolvedValue({ stripePaymentIntentId: "pi_race", payment: { bookingId: "booking-1" } });
   });
 
-  const task = (occurrenceKey: string | null, over: Partial<Task> = {}): Task => ({ paymentId: "payment-1", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", occurrenceKey, ...over });
+  const task = (occurrenceKey: string | null, over: Partial<Task> = {}): Task => ({
+    paymentId: "payment-1", bookingId: "booking-1", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", occurrenceKey, settlementDirection: null,
+    booking: { payment: { source: "STRIPE" } }, ...over,
+  });
+  /** Round 5 (2): a booking-change review completed on the booking. */
+  const review = (source: string, settlementDirection: string | null) =>
+    task(null, { kind: "EDIT_FINANCIAL_REVIEW", paymentId: "payment-1", settlementDirection, booking: { payment: { source } } });
   const messageSent = () => (doubles.alertOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage;
 
   it.each([
@@ -73,6 +90,10 @@ describe("a card refund past its charge alerts the officers (#4159 F2, round 3)"
     ["a card refund closed as Paid another way", task(`${CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX}op-1`)],
     ["an edit's refund hand-back", task(`${EDIT_REFUND_HAND_BACK_KEY_PREFIX}mod-1`)],
     ["an approved refund request's hand-back", task(`${REFUND_REQUEST_HAND_BACK_KEY_PREFIX}req-1`)],
+    // Round 5 (2): an Internet Banking payment can still hold a card charge (`INV-PAY-102`: one refunded before the
+    // switch, or a second instrument kept), so a review paid back by hand on it is money already back another way.
+    ["a booking-change review paid back by hand on a non-card payment", review("INTERNET_BANKING", "REFUND_TO_MEMBER")],
+    ["a review completed before #3170 stored a direction, paid back by hand", review("INTERNET_BANKING", null)],
   ])("MUTATION (round 4, F1): %s completed on the payment - says the member may have been paid twice", async (_label, row) => {
     doubles.tasks = [row];
     await expect(alertCardRefundCapOverflow(OVERFLOW)).resolves.toBe(true);
@@ -94,7 +115,11 @@ describe("a card refund past its charge alerts the officers (#4159 F2, round 3)"
     ["no task at all", []],
     ["a hand-back still OPEN", [task(null, { status: "OPEN" })]],
     ["a completed hand-back on another payment", [task(null, { paymentId: "payment-2" })]],
-    ["a completed review, which is no hand-back", [task(null, { kind: "EDIT_FINANCIAL_REVIEW" })]],
+    // Round 5 (2): a review on a card payment went back on the card - its refund rows explain it - and one that asked
+    // the member to pay moved nothing back.
+    ["a review refunded on the card", [review("STRIPE", "REFUND_TO_MEMBER")]],
+    ["a review that charged the member", [review("INTERNET_BANKING", "CHARGE_TO_MEMBER")]],
+    ["a review paid by hand on another booking", [{ ...review("INTERNET_BANKING", "REFUND_TO_MEMBER"), bookingId: "booking-2" }]],
   ])("CONTROL (round 4, F1): with %s and no credit, says the records drifted and never paid twice", async (_label, rows) => {
     doubles.tasks = rows as Task[];
     await alertCardRefundCapOverflow(OVERFLOW);

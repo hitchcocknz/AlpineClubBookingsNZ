@@ -76,17 +76,27 @@ export function cardRefundCapOverflowMessage(discarded: string, paidAnotherWay: 
 }
 
 /**
- * Round 4 (F1): has the member already had money back another way on this payment or booking? Every completed hand-back
- * - a cancellation's (with `INV-PAY-117`'s exclusion, its census's one spelling), and an edit's, a refund request's or a
- * Paid-another-way close (`NON_CANCELLATION_HAND_BACK_WHERE`) - or account credit given back from the booking. A
+ * Round 4 (F1), round 5 (2, 3): has the member already had money back another way on this payment or booking? A
  * wording-only read: it picks the email's sentence, never a figure.
+ * - Every completed hand-back on the payment: a cancellation's (with `INV-PAY-117`'s exclusion, its census's one
+ *   spelling), and an edit's, a refund request's or a Paid-another-way close (`NON_CANCELLATION_HAND_BACK_WHERE`).
+ * - A booking-change review paid back by hand: completed, owed to the member, on a booking whose payment is not a card
+ *   payment (`local-allocation`, `editReviewRefundGoesBackOnCard`). Such a payment can still hold a card charge - one
+ *   captured before an Internet Banking switch and refunded (`INV-PAY-102`), or a second instrument kept - so a card
+ *   refund can overflow beside that by-hand money.
+ * - Account credit given back from the booking (`accountCreditDispositionCents`). Matched by booking, not by charge,
+ *   so it can say "paid twice" for credit that had nothing to do with this charge: erring on the safe side, since the
+ *   email then asks for a check the drift wording would also want.
  */
 async function memberPaidAnotherWay(paymentId: string, bookingId: string): Promise<boolean> {
   const handBacks = await prisma.manualRefundTask.count({
     where: {
-      paymentId,
       status: "COMPLETED",
-      OR: [{ kind: "CANCELLED_BOOKING_HAND_BACK", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE }, NON_CANCELLATION_HAND_BACK_WHERE],
+      OR: [
+        { paymentId, OR: [{ kind: "CANCELLED_BOOKING_HAND_BACK", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE }, NON_CANCELLATION_HAND_BACK_WHERE] },
+        // A review completed before #3170 stored no direction, and could then only owe the member.
+        { bookingId, kind: "EDIT_FINANCIAL_REVIEW", OR: [{ settlementDirection: "REFUND_TO_MEMBER" }, { settlementDirection: null }], booking: { payment: { source: { not: "STRIPE" } } } },
+      ],
     },
   });
   return handBacks > 0 || (await accountCreditDispositionCents(prisma, bookingId)) > 0;
