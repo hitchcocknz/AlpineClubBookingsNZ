@@ -218,6 +218,7 @@ import {
 } from "@/lib/date-only";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
+import { resolvePromoPreviewStays } from "@/lib/promo-preview-stay-ranges";
 
 
 const D = (s: string) => parseDateOnly(s);
@@ -1486,6 +1487,152 @@ function sourceFilesNaming(identifier: string): string[] {
   walk(root);
   return found.sort();
 }
+
+/*
+  #4199 — THE PROMO PREVIEW RESOLVES THE PARTY THE QUOTE RESOLVES.
+
+  The booking editor's promo box sends the edit's PARTY (each remaining guest by
+  row id, then each added guest, each with their own dates or nights), not the
+  delta, and `POST /api/promo-codes/validate` hands that party back to the
+  resolver as the delta it is (`resolvePromoPreviewStays`). This table feeds the
+  SAME edit to both and requires the same guests, in the same order, on the same
+  nights. The in-progress case agrees without the preview pinning anything: an
+  in-progress edit cannot move check-in (the quote's guard refuses it, above),
+  so the dates the editor sends carry the stored check-in, which is exactly what
+  the quote's clamp pins to.
+*/
+type DeltaEntry = { guestId?: string; stayStart?: string; stayEnd?: string; nights?: string[] };
+
+function promoPreviewParty(
+  delta: {
+    checkIn?: string;
+    checkOut?: string;
+    removeGuestIds?: string[];
+    guestStayRanges?: DeltaEntry[];
+    addGuests?: Array<DeltaEntry & { ageTier: string; isMember: boolean; memberId?: string }>;
+  },
+  guests: ReturnType<typeof liveGuest>[],
+  overrides: Parameters<typeof bookingWith>[1] = {},
+) {
+  const booking = bookingWith(guests, overrides);
+  const removed = new Set(delta.removeGuestIds ?? []);
+  const entries = new Map((delta.guestStayRanges ?? []).map((entry) => [entry.guestId, entry]));
+  const stayOf = (entry: DeltaEntry | undefined) => ({
+    stayStart: entry?.stayStart,
+    stayEnd: entry?.stayEnd,
+    nights: entry?.nights,
+  });
+  const party = [
+    ...guests
+      .filter((guest) => !removed.has(guest.id))
+      .map((guest) => ({
+        ageTier: guest.ageTier,
+        isMember: guest.isMember,
+        memberId: guest.memberId ?? undefined,
+        bookingGuestId: guest.id,
+        ...stayOf(entries.get(guest.id)),
+      })),
+    ...(delta.addGuests ?? []).map((added) => ({
+      ageTier: added.ageTier,
+      isMember: added.isMember,
+      memberId: added.memberId,
+      ...stayOf(added),
+    })),
+  ];
+  const resolved = resolvePromoPreviewStays({
+    checkIn: delta.checkIn ? D(delta.checkIn) : booking.checkIn,
+    checkOut: delta.checkOut ? D(delta.checkOut) : booking.checkOut,
+    guests: party,
+    edit: {
+      booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+      storedGuests: guests.map((guest) => ({
+        id: guest.id,
+        memberId: guest.memberId,
+        stayStart: guest.stayStart,
+        stayEnd: guest.stayEnd,
+        nights: guest.nights,
+      })),
+    },
+  });
+  return partyShape(resolved.guests);
+}
+
+const GAPPED_GUESTS = [
+  liveGuest("g1", "Ann", "2026-09-01", "2026-09-04", ["2026-09-01", "2026-09-03"]),
+  liveGuest("g2", "Bob", "2026-09-01", "2026-09-04"),
+  liveGuest("g3", "Cal", "2026-09-01", "2026-09-04"),
+];
+
+const PROMO_PREVIEW_CASES: Array<
+  [string, Parameters<typeof promoPreviewParty>[0], ReturnType<typeof liveGuest>[], Parameters<typeof bookingWith>[1]]
+> = [
+  [
+    "grid mode with a gap",
+    {
+      guestStayRanges: [
+        { guestId: "g1", nights: ["2026-09-01", "2026-09-03"] },
+        { guestId: "g2", nights: ["2026-09-01", "2026-09-02", "2026-09-03"] },
+        { guestId: "g3", nights: ["2026-09-02"] },
+      ],
+    },
+    GAPPED_GUESTS,
+    {},
+  ],
+  [
+    "range mode: a gapped guest sent continuous dates is continuous (#4189)",
+    {
+      guestStayRanges: [
+        { guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-04" },
+        { guestId: "g2", stayStart: "2026-09-02", stayEnd: "2026-09-04" },
+        { guestId: "g3", stayStart: "2026-09-01", stayEnd: "2026-09-04" },
+      ],
+    },
+    GAPPED_GUESTS,
+    {},
+  ],
+  [
+    "an added guest, with and without nights of their own",
+    { addGuests: [{ ...ADD_ADULT, nights: ["2026-09-02", "2026-09-05"] }, ADD_CHILD] },
+    GAPPED_GUESTS,
+    {},
+  ],
+  ["a removed guest", { removeGuestIds: ["g2"] }, GAPPED_GUESTS, {}],
+  ["moved dates with no ranges", { checkIn: "2026-09-08", checkOut: "2026-09-11" }, GAPPED_GUESTS, {}],
+  [
+    "in progress: check-in pinned to the stored day",
+    {
+      checkOut: "2026-08-14",
+      guestStayRanges: [{ guestId: "g2", stayStart: "2026-08-08", stayEnd: "2026-08-14" }],
+      addGuests: [ADD_ADULT],
+    },
+    IN_PROGRESS_GUESTS,
+    IN_PROGRESS_BOOKING,
+  ],
+];
+
+describe("#4199 the promo preview resolves the party the quote resolves", () => {
+  for (const [name, delta, guests, overrides] of PROMO_PREVIEW_CASES) {
+    it(`agrees on every guest's nights: ${name}`, async () => {
+      const route = await runRoute(delta, guests, overrides);
+      expect(route.status).toBe(200);
+      expect(route.ratedParty).not.toBeNull();
+      expect(promoPreviewParty(delta, guests, overrides)).toEqual(route.ratedParty);
+    });
+  }
+
+  it("the comparison has teeth: pricing the grid party as ranges disagrees", async () => {
+    const [, delta, guests] = PROMO_PREVIEW_CASES[0]!;
+    const route = await runRoute(delta, guests);
+    const asRanges = {
+      guestStayRanges: (delta.guestStayRanges ?? []).map((entry) => ({
+        guestId: entry.guestId,
+        stayStart: entry.nights![0],
+        stayEnd: formatDateOnly(new Date(D(entry.nights!.at(-1)!).getTime() + 86_400_000)),
+      })),
+    };
+    expect(promoPreviewParty(asRanges, guests)).not.toEqual(route.ratedParty);
+  });
+});
 
 describe("#2563 exactly one stay-range resolution exists, and the route calls it", () => {
   it("the quote route declares none of the private helpers it used to own", () => {
