@@ -261,6 +261,9 @@ let markerFinishedAt: Date | null = null;
     beforeEach(async () => {
       resetStripeRaceHooks();
       await deletePaymentRows();
+      // Again for each test: another suite run beside this one (#4104's) restores the
+      // marker in its own afterAll, which would make these refunds read as backlog.
+      await setCutoff(new Date("2026-01-01T00:00:00.000Z"));
       vi.setSystemTime(FROZEN_AT);
     });
 
