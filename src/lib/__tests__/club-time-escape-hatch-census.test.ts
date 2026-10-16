@@ -659,8 +659,13 @@ const CENSUS_CEILING = {
    * 227/229 -> 228 (sync of `main` f1ecdb5ff into epic #3789): #3817's removal
    * (`member-dietary.ts`) and #50's addition (`other-lodges.ts`) are disjoint.
    * Re-measured by RUNNING this suite on the composed tree, never added.
+   *
+   * 228 -> 227 (#4189): `booking-change-request-guests.ts` drops its only
+   * `parseDateOnly` use. `guestNightKeys` moved to
+   * `booking-modification-stay-ranges.ts`, which already imported this
+   * adapter. Re-measured by RUNNING this suite on this tree.
    */
-  dateOnlyImporters: 228,
+  dateOnlyImporters: 227,
   /**
    * `new Date(y, m, d)` — local midnight in the HOST's zone.
    *
