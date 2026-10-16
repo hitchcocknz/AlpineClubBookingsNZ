@@ -1448,14 +1448,15 @@ short).
   - **Stated limits, history only.** While both colours serve, an old cancel
     can write its up-front event after a new close recorded one, and an old
     runner can close a new cancel's row with none.
-  - **A refund failing later is told by the row owing it** (#4166), off
-    the dated part first.
+  - **A refund failing later is told by the row owing it** (#4166).
   - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
     never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,
     `card-refund-paid-another-way.test.ts`,
     `booking-narrative-own-card-refund.test.ts`,
     `booking-narrative-card-shortfall.test.ts`,
+    `booking-narrative-failed-later-refund.test.ts`,
+    `cancelled-card-refund-failed-later.test.ts`,
     `capacity-race-refund-event.realdb.test.ts`,
     `cancel-card-refund-event.realdb.test.ts` and
     `cancel-card-refund-failed-later.realdb.test.ts`.

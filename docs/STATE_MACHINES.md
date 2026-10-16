@@ -555,8 +555,13 @@ closed is none of these and is not said. A refund the close recorded that
 Stripe later fails, owed again on a row of its own
 (`card_refund_failed_later_<refund>`, #4104), is said by that row - made again
 (dated by its close), on its way, stalled (the club follows it up) or paid
-another way - and taken off the dated part first, the rest keeping its date; a
-retry that fails too is said by the row owing it (#4166). The undated part
+another way, said with the cancel's own paid-another-way close as one total -
+and taken off the part it was in, the rest keeping its date; a retry that
+fails too is said by the row owing it (#4166). Which row made the refund is
+what the failed-later writer recorded on that row (`madeByOperationId`, by the
+metadata sent, never by amount); a row raised before #4166 is matched by
+amount. A paid-another-way close's refund is told only if Stripe made it by
+that close, and dated only if recorded by it. The undated part
 follows the refunds as recorded now, within what the record's paid-back and
 unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,
 whatever became of the refund, so a later close writes no second one; the
@@ -3730,7 +3735,10 @@ nothing more; the open row that counted it - the slice marked with it
 payment stood before the failure when the refund carries exactly the metadata
 that row's runner sends (`cardRefundOperationRefundMetadata`) - has that slice
 moved to its next key; with none, a new row is raised per failed Stripe refund, for exactly its amount on
-its charge, under a key Stripe has never seen. A row someone may be writing (a
+its charge, under a key Stripe has never seen, recording on its slice which row
+made the refund (`madeByOperationId`, #4166): the one row on the payment whose
+runner metadata the refund carried, or among several the one whose slice it
+fills, else null. A row someone may be writing (a
 worker's attempt, or a row no worker has claimed yet) is never moved: the
 failure is retried later, or, met by that row's own door or worker replaying
 its key, handed back to it as refused. A closed row is never reopened. A new
