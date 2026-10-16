@@ -100,6 +100,8 @@ type ReconciliationBooking = Prisma.BookingGetPayload<{
   };
 }>;
 
+import type { CapacityCancellationRefund } from "@/lib/booking-card-refund-copy";
+
 export type MarkBookingPaymentSucceededResult = {
   outcome:
     | "paid"
@@ -117,6 +119,7 @@ export type MarkBookingPaymentSucceededResult = {
   bookingId: string;
   bumpedBookingIds: string[];
   refundError?: string;
+  capacityRefund?: CapacityCancellationRefund;
 };
 
 const PAYABLE_SUCCESS_STATUS_LIST = [
@@ -2273,6 +2276,7 @@ export async function markBookingPaymentSucceeded({
 
       return {
         outcome: "cancelled_refunded",
+        capacityRefund: { chargedAmountCents: amountCents, plannedRefundCents },
         bookingId,
         bumpedBookingIds: [],
       };
@@ -2314,6 +2318,7 @@ export async function markBookingPaymentSucceeded({
 
       return {
         outcome: "cancelled_refund_failed",
+        capacityRefund: { chargedAmountCents: amountCents, plannedRefundCents },
         bookingId,
         bumpedBookingIds: [],
         refundError: refundErrorMessage,

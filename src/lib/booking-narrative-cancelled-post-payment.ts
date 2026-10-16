@@ -23,37 +23,13 @@ import type { CancellationEventSnapshot } from "@/lib/booking-events";
 import type { BookingNarrative, NarrativeEvent } from "@/lib/booking-narrative";
 import { formatCents } from "@/lib/utils";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
-import { cardRefundOnItsWay } from "@/lib/booking-modified-email-copy";
+import { cardRefundClause, withClubFollowUp } from "@/lib/booking-card-refund-copy";
 import { CAPACITY_RACE_REFUND_EVENT_REASON, isCancelCardRefundEvent, isMadeBeforePaidAnotherWayEvent } from "@/lib/cancel-card-refund-event-reason";
 
-/**
- * #4125: what the club follows up - a dead card refund, a part no refund
- * covers - appended to a clause after "; ", or the whole clause when nothing
- * else is said (`INV-SSOT`).
- */
-function withClubFollowUp(clause: string, subjects: string[]): string {
-  if (subjects.length === 0) return clause;
-  const followUp = `the club will be in touch about ${subjects.join(" and ")}`;
-  return clause ? `${clause}; ${followUp}` : followUp;
-}
 const STALLED_CARD_REFUND = "the card refund";
 
 /** #4097, #4154: a part to check that the club checked and dismissed (`INV-SSOT`). */
 const checkedAndClosed = (amount: string) => `the club checked the ${amount} and closed it`;
-
-/** #4097, #4125: one card refund, by where it stands - the shortfall's card part and a whole card refund alike (`INV-SSOT`). */
-function cardRefundClause(amount: string, state: CardRefundState, refundedOn: string | null): string {
-  switch (state) {
-    case "on-its-way":
-      return cardRefundOnItsWay(amount);
-    case "paid-another-way":
-      return `${amount} could not go back to your card and was paid back to you another way`;
-    case "stalled":
-      return `${amount} is being refunded to you`;
-    case "settled":
-      return `${amount} was refunded to your card${refundedOn ? ` on ${refundedOn}` : ""}`;
-  }
-}
 
 /** #4097, #4145: clauses said "a, b and c", or `none` when there are none. */
 function joinClauses(clauses: readonly string[], none: string): string {
@@ -293,10 +269,16 @@ export function buildCancelledPostPaymentNarrative(
       settlementEvent.type === BookingEventType.CREDITED
         ? "added to your account credit"
         : "refunded";
-    settlementClause =
-      retainedAmountCents > 0
-        ? `${formatCents(settledAmountCents, format)} was ${verb} on ${settledOn} and ${formatCents(retainedAmountCents, format)} was retained`
-        : `${formatCents(settledAmountCents, format)} was ${verb} on ${settledOn}`;
+    // A capacity shortfall can also be paid back by bank transfer (#4159).
+    // Only the automatic card refund's own events prove a card destination.
+    const settledClause = capacityRace && settlementEvents.every((event) =>
+      event.type === BookingEventType.REFUNDED && event.reason === CAPACITY_RACE_REFUND_EVENT_REASON,
+    )
+      ? cardRefundClause(formatCents(settledAmountCents, format), "settled", settledOn)
+      : `${formatCents(settledAmountCents, format)} was ${verb} on ${settledOn}`;
+    settlementClause = retainedAmountCents > 0
+      ? `${settledClause} and ${formatCents(retainedAmountCents, format)} was retained`
+      : settledClause;
   } else if (snapshot?.refundMethod === "manual" && settledAmountCents > 0) {
     // B5 (#2262): a cash / off-Xero settlement is handed back by a person, so
     // there is no settlement event YET — one is written when the club marks the
