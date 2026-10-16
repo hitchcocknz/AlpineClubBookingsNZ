@@ -1,17 +1,4 @@
-import { PaymentStatus, type Prisma } from "@prisma/client";
-
-/**
- * #4119: the order the fold walks a payment's captured rows, and the order the
- * capture ledger loads in (`loadPaymentWithTransactions`), so the cancel's
- * claim and the cancel preview fold onto the same rows. Deliberately no `id`
- * tiebreak: rows written in one transaction can share a `createdAt`, and the
- * ledger's readers rely on them coming back in insertion order, which a cuid
- * `id` does not follow (an `id` tiebreak broke the #3954 real-PostgreSQL race
- * proof). A deterministic tiebreak needs a monotonic column (#4132).
- */
-export const CAPTURED_ROWS_OLDEST_FIRST = {
-  createdAt: "asc",
-} as const satisfies Prisma.PaymentTransactionOrderByWithRelationInput;
+import { PaymentStatus } from "@prisma/client";
 
 /**
  * #1491 (review): the part of a PARTIALLY_REFUNDED payment mirror's refunded
@@ -25,8 +12,10 @@ export const CAPTURED_ROWS_OLDEST_FIRST = {
  * cancel preview (#4119, `INV-PAY-131`), which applies the same steps to its
  * read in memory (`refundHeadroomIncrementCents`), so both plan the card refund
  * from the same ledger. `readCapturedRowsOldestFirst` is asked only for a
- * partly refunded payment; `apply` returns what the row actually took, and the
- * rest moves on to the next row.
+ * partly refunded payment, and reads in `LEDGER_ROWS_OLDEST_FIRST`
+ * (`payment-ledger-order.ts`, #4132), so a tie between captured rows always
+ * folds onto the row inserted first; `apply` returns what the row actually
+ * took, and the rest moves on to the next row.
  */
 export async function foldMirrorRefundIntoLedger<R extends { refundedAmountCents: number }>(
   payment: { status: PaymentStatus | string; refundedAmountCents: number },

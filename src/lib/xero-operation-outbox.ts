@@ -38,6 +38,7 @@ import {
   createXeroCreditNote,
 } from "@/lib/xero-credit-notes";
 import { readRefundRequestIdFromPayload } from "@/lib/refund-request-credit-note";
+import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 import {
   readModificationNoteWording,
   readRefundNoteWording,
@@ -1005,14 +1006,13 @@ export async function enqueueXeroRefundCreditNoteOperation(
   // gets its own note, while replays of the same state produce the same key and
   // collide into the PENDING/RUNNING dedupe just below.
   const correlationKey = buildXeroIdempotencyKey(
-    "payment",
-    paymentId,
-    "refund-credit-note",
-    stepped ? watermarkCents : noteAmountCents,
-    stepped ? "v2" : "v1",
+    "payment", paymentId, "refund-credit-note", stepped ? watermarkCents : noteAmountCents, stepped ? "v2" : "v1",
     ...reviewTaskKeyParts(options?.reviewTaskId),
-    ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : [])
+    ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : []),
+    ...(await refundNoteKeyAfterVoidParts(paymentId, options?.paidAnotherWayTaskId // `INV-ADDPAY-041`, the executor's rule
+      ? { closeRowsWhere: paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId) } : stepped ? { watermarkCents } : { amountCents: noteAmountCents }, db))
   );
+
 
   // #3635: a non-Stripe payment issues one refund, so the resolved create for
   // THIS refund carries this very key; its hand-made note covers it.

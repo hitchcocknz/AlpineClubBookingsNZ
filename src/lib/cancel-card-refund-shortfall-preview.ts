@@ -23,7 +23,7 @@ import {
  *
  * 1. a partly refunded mirror's unattributed refund is folded onto the captured
  *    rows (`foldMirrorRefundIntoLedger`, capped by `refundHeadroomIncrementCents`),
- *    in the claim's row order (`CAPTURED_ROWS_OLDEST_FIRST`, through the loader);
+ *    in the claim's row order (`LEDGER_ROWS_OLDEST_FIRST`, through the loader);
  * 2. a pre-ledger payment's charges are read as its backfill would write them
  *    (`legacyBackfillRows`) - a GET must not write them, racing the cancel's own;
  * 3. the card plan is the claim's own planner (`planCardRefundFromLedger`);
@@ -46,8 +46,18 @@ export async function previewCancelCardRefundSplit(
     row.refundedAmountCents += taken;
     return taken;
   });
-  // A backfilled row is the newest; only the planned total is read here, and it does not depend on the order.
-  const ledger = [...rows, ...legacyBackfillRows(payment).map((row, index) => ({ ...row, id: `legacy-backfill-${index}`, createdAt: new Date() }))];
+  // A backfilled row is the newest (inserted after every stored row, #4132); only the planned total is read here,
+  // and it does not depend on the order.
+  const lastSeq = rows.reduce((max, row) => Math.max(max, row.insertionSeq), 0);
+  const ledger = [
+    ...rows,
+    ...legacyBackfillRows(payment).map((row, index) => ({
+      ...row,
+      id: `legacy-backfill-${index}`,
+      createdAt: new Date(),
+      insertionSeq: lastSeq + 1 + index,
+    })),
+  ];
   const { plannedAmountCents: plannedCardRefundCents } = planCardRefundFromLedger(ledger, params.refundAmountCents);
   return sizeCancelCardShortfall(
     { refundAmountCents: params.refundAmountCents, plannedCardRefundCents },
