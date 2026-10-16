@@ -12,9 +12,13 @@
   count, and the family is not billed again: if the family fee already covers
   everyone in the family, mark them Paid; otherwise invoice just the
   difference in Xero by hand. The exception stays open until one of those is
-  done. If a family has two closed charges, only the newest one counts, so a
-  payment reversed under the older one is listed the same way rather than
-  billing the family again. A member who has moved to another family doesn't
+  done; a member who is still exempt isn't listed. If a family has two closed
+  charges, only the newest one decides whether the family is billed again, so
+  a payment reversed under the older one is listed the same way; when the
+  family is billed again, a payment still standing under either charge still
+  brings up the **Check before confirming** warning. An invoice Finance raises
+  by hand for the difference never stops the family being billed again after
+  a later reversal. A member who has moved to another family doesn't
   count either. If only some
   of the members who had paid are no longer paid, the preview shows a **Check
   before confirming** warning that confirming invoices the full family fee.
