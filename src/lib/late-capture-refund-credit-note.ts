@@ -277,6 +277,16 @@ export async function queueLateCaptureRefundCreditNote(params: {
 }
 
 /**
+ * The `kind` a `booking.payment.refunded_after_cancellation` entry names:
+ * every writer of that entry reads it here (#4149), so the rows are told apart
+ * by the row itself, whichever door refunded.
+ */
+export function lateCaptureAuditKind(captureKind: "primary" | "modification" | null): string | null {
+  if (captureKind === null) return null;
+  return captureKind === "primary" ? "primary" : ADDITIONAL_ASK_INTENT_TYPE;
+}
+
+/**
  * #3639: the record and the Xero correction of a treasurer-approved late-capture
  * refund, written wherever that refund actually went out - inline after the
  * approval, or by the recovery cron replaying it (review F4). The audit entry is
@@ -303,12 +313,7 @@ export async function finishApprovedLateCaptureRefund(refund: {
       paymentIntentId: refund.paymentIntentId,
       refundId: refund.refundId,
       amountCents: refund.amountCents,
-      kind:
-        refund.captureKind === null
-          ? null
-          : refund.captureKind === "primary"
-            ? "primary"
-            : ADDITIONAL_ASK_INTENT_TYPE,
+      kind: lateCaptureAuditKind(refund.captureKind),
       approvedByMemberId: refund.approvedByMemberId,
       manualRefundTaskId: refund.manualRefundTaskId,
     }),
