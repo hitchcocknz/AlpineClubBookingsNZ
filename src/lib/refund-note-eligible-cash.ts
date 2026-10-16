@@ -31,6 +31,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import {
   resolveStripeCashRefundEvidence,
   type StripeCashRefundEvidence,
@@ -108,6 +109,8 @@ async function findMarkedLateCaptureIntents(
   if (paymentIntentIds.length === 0) return [];
   const rows = await db.paymentTransaction.findMany({
     where: { stripePaymentIntentId: { in: [...paymentIntentIds] }, reason: CANCELLED_BOOKING_LATE_CAPTURE_REASON },
+    // The ledger's order (#4132, INV-PAY-133), though only membership is read.
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: { stripePaymentIntentId: true },
   });
   return (rows ?? []).map((row) => row.stripePaymentIntentId).filter((intent): intent is string => Boolean(intent));
