@@ -297,6 +297,13 @@ import "./cancel-card-refund-shortfall.realdb.test";
 // page's read of the row says still being sent, dead or made. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4125-` fixtures.
 import "./capacity-race-refund-event.realdb.test";
+// #4145 reuses it to prove a member cancel's card refund writes one REFUNDED
+// booking event, dated by the close that made it and for the frozen plan's
+// total - the cancel's own close or the recovery runner's, never both - through
+// the real cancel, runner and "paid another way" close, and that the booking
+// page's narrative follows each path. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4145-` fixtures.
+import "./cancel-card-refund-event.realdb.test";
 // #4147 reuses it to prove the booking-ledger census reads a capacity race's
 // cancel by its own refund rows: through the REAL capacity race, back-post and
 // recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post

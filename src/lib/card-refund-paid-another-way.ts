@@ -21,6 +21,8 @@ import {
 } from "@/lib/card-refund-paid-another-way-xero";
 import { PAID_BACK_CHOICES, type PaidBackChoice } from "@/lib/card-refund-paid-back";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
+import { getClubFormat } from "@/lib/club-format-settings";
+import { recordCardRefundMadeBeforePaidAnotherWay } from "@/lib/cancel-card-refund-paid-another-way-event";
 import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX, normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
@@ -454,6 +456,7 @@ export async function closeCardRefundPaidAnotherWay(
   // `INV-LOCK-004`: the club's zone, for a late charge's receipt date, is read
   // before the transaction.
   const clubZone: ClubTimeZone = await readClubTimeZoneOutsideRequest();
+  const format = await getClubFormat(); // #4145: a cancel's made part's event, below
 
   const result = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
@@ -604,6 +607,8 @@ export async function closeCardRefundPaidAnotherWay(
       amountCents: input.amountCents,
       officerMemberId: input.actingMemberId,
     });
+    // #4145 (`INV-PAY-134`): a cancel's slices made before this close went back to the card.
+    await recordCardRefundMadeBeforePaidAnotherWay(tx, operation, { payment, format });
 
     // M3 / round 5 / round 6: the note now, or the late charge's receipt first.
     let xeroQueued: PaidAnotherWayXeroQueued;
