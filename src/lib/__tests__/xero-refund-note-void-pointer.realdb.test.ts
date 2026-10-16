@@ -20,6 +20,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -499,6 +500,53 @@ let cleanupStaleCanonicalXeroObjectLinks: (typeof import("@/lib/xero-hardening-c
       expect(await storedRows()).toEqual(before);
 
       await prisma.xeroSyncOperation.update({ where: { id: running.id }, data: { status: "SUCCEEDED" } });
+      await cleanupStaleCanonicalXeroObjectLinks();
+      expect(await state()).toEqual({ pointer: null, active: [] });
+    });
+
+    it("#4161: a heal never waits on a Payment row another writer holds: it defers at once with no write, and the next run heals", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_voided", [
+        { id: "cn_voided", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, status: "VOIDED" } },
+      ]);
+      const { id: linkId } = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID }, select: { id: true } });
+      const before = await storedRows();
+
+      // A payment-first writer (the create's record, or the enqueue's
+      // existing-note branch in a group cancel) holding the Payment row, on
+      // its own connection.
+      let releaseHolder!: () => void;
+      const holderMayCommit = new Promise<void>((resolve) => (releaseHolder = resolve));
+      let markHeld!: () => void;
+      const paymentHeld = new Promise<void>((resolve) => (markHeld = resolve));
+      const holder = prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT 1 FROM "Payment" WHERE "id" = ${PAYMENT_ID} FOR UPDATE`;
+          markHeld();
+          await holderMayCommit;
+        },
+        { timeout: 60_000, maxWait: 10_000 },
+      );
+      await paymentHeld;
+      // Without NOWAIT the heal would wait on the holder; this backstop lets
+      // the holder go after 10s so such a run fails on the assertions below
+      // instead of hanging.
+      const backstop = setTimeout(releaseHolder, 10_000);
+      const startedNs = process.hrtime.bigint();
+      let busy: Awaited<ReturnType<typeof cleanupStaleCanonicalXeroObjectLinks>>;
+      try {
+        busy = await cleanupStaleCanonicalXeroObjectLinks();
+      } finally {
+        clearTimeout(backstop);
+        releaseHolder();
+        await holder;
+      }
+
+      expect(realElapsedMs(startedNs)).toBeLessThan(5_000);
+      expect(busy.deferredRefundNoteHealLinkIds).toContain(linkId);
+      expect(busy.failedRefundNoteHealLinkIds).not.toContain(linkId);
+      expect(busy.deactivatedLinkIds).not.toContain(linkId);
+      expect(await storedRows()).toEqual(before);
+
       await cleanupStaleCanonicalXeroObjectLinks();
       expect(await state()).toEqual({ pointer: null, active: [] });
     });
