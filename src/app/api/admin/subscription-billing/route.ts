@@ -95,7 +95,9 @@ async function loadBillingData(seasonYear: number, decisionDate: Date) {
       where: { seasonYear },
       orderBy: { createdAt: "desc" },
       take: 100,
-      include: { coverage: { select: { memberId: true, memberName: true } } },
+      // #4098: releasedAt and the subscription's status let the panel offer Close
+      // only when every ACTIVE covered subscription is settled (PAID or NOT_REQUIRED).
+      include: { coverage: { select: { memberId: true, memberName: true, releasedAt: true, subscription: { select: { status: true } } } } },
     }),
     prisma.membershipBillingException.findMany({
       where: { seasonYear, status: "OPEN" },

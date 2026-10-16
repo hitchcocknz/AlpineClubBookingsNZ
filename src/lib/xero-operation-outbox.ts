@@ -75,7 +75,7 @@ import {
 } from "@/lib/xero-group-settlement-invoice-voids";
 import { createXeroMembershipSubscriptionInvoice } from "@/lib/xero-subscription-invoices";
 import {
-  MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES,
+  liveChargeWhere,
   membershipChargeNeedsNoInvoice,
 } from "@/lib/subscription-charge-already-paid";
 import {
@@ -3278,7 +3278,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // status-guarded too, so a close landing after the read still stands.
         if (currentCharge && !membershipChargeNeedsNoInvoice(currentCharge)) {
           await prisma.membershipSubscriptionCharge.updateMany({
-            where: { id: subscriptionChargeId, status: { notIn: [...MEMBERSHIP_CHARGE_NO_INVOICE_STATUSES] } },
+            where: liveChargeWhere(subscriptionChargeId),
             data: {
               status: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "QUEUED",
               lastErrorCode: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "XERO_FAILED",

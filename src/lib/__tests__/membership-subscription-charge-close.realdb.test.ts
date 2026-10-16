@@ -11,7 +11,12 @@
  *     subscription's `voidGeneration` bumped once, not twice;
  *   - the PAID re-check is the `WHERE` of the subscription write, so a manual
  *     reversal that commits while the close waits for the row makes the close
- *     roll back whole — the charge stays in CONFLICT with its claims active.
+ *     roll back whole — the charge stays in CONFLICT with its claims active;
+ *   - the invoice WORKER itself (#4098 review, F3 of the #4110 round): an
+ *     attempt already in Xero when the charge is closed loses its recording
+ *     write, and the same transaction leaves the stray marker on the closed
+ *     charge, links nothing and emails nothing; a resume whose charge was
+ *     voided meanwhile finishes as skipped.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -23,7 +28,7 @@
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
  *   pnpm exec vitest run src/lib/__tests__/membership-subscription-charge-close.realdb.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -36,6 +41,12 @@ const SUBSCRIPTION_IDS = ["race-4098-sub-a", "race-4098-sub-b"] as const;
 const CHARGE_ID = "race-4098-charge";
 const SEASON_YEAR = 2026;
 const REASON = "Paid in cash at the AGM";
+const CORRELATION_KEY = `membership-charge:${CHARGE_ID}:invoice-and-email:v1`;
+const STALE_ATTEMPT_ID = "race-4098-op-stale";
+const RETRY_ATTEMPT_ID = "race-4098-op-retry";
+const STRAY_INVOICE_ID = "race-4098-stray-invoice";
+const STRAY_INVOICE_NUMBER = "INV-RACE-4098";
+const HELD_INVOICE_ID = "race-4098-held-invoice";
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 function assertSafeRaceDbUrl(url: string): void {
@@ -73,6 +84,9 @@ let observerClient: import("@prisma/client").PrismaClient;
   () => {
     async function deleteFixtures() {
       await prisma.auditLog.deleteMany({ where: { entityId: CHARGE_ID } });
+      await prisma.xeroSyncOperation.deleteMany({ where: { OR: [{ localId: CHARGE_ID }, { correlationKey: CORRELATION_KEY }] } });
+      await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [CHARGE_ID, ...SUBSCRIPTION_IDS] } } });
+      await prisma.membershipSubscriptionChargeComponent.deleteMany({ where: { chargeId: CHARGE_ID } });
       await prisma.membershipSubscriptionChargeCoverage.deleteMany({ where: { chargeId: CHARGE_ID } });
       await prisma.membershipSubscriptionCharge.deleteMany({ where: { id: CHARGE_ID } });
       await prisma.memberSubscription.deleteMany({ where: { id: { in: [...SUBSCRIPTION_IDS] } } });
@@ -255,6 +269,277 @@ let observerClient: import("@prisma/client").PrismaClient;
       expect(JSON.parse(audits[0]!.details ?? "{}")).toMatchObject({ reason: REASON, subscriptionIds: [...SUBSCRIPTION_IDS] });
     });
 
+    it("a worker's guarded write that waits on a close's uncommitted claim matches no row once the close commits (#4098 review, concurrency F3)", async () => {
+      // Hold the close's transaction open AFTER its claim: the close claims the
+      // charge row (CONFLICT -> NOT_REQUIRED, uncommitted) and then queues on a
+      // subscription row this holder has locked. The invoice worker's recording
+      // write — the real liveChargeWhere guard — then queues on the charge row
+      // the close holds. Releasing lets the close commit, and PostgreSQL
+      // re-evaluates the worker's WHERE against the committed NOT_REQUIRED row.
+      const { liveChargeWhere } = await import("@/lib/subscription-charge-already-paid");
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let locked!: () => void;
+      const lockedInHolder = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      let holderPid = 0;
+      const holder = lockHolderClient.$transaction(
+        async (tx) => {
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+          holderPid = pid;
+          await tx.$queryRaw`SELECT id FROM "MemberSubscription" WHERE id = ${SUBSCRIPTION_IDS[1]} FOR UPDATE`;
+          locked();
+          await released;
+        },
+        { timeout: 15_000 },
+      );
+      await lockedInHolder;
+
+      const closing = close();
+      await waitForBlockedBy(holderPid, 1);
+      // `.then` sends it now: a Prisma query is lazy until awaited or chained.
+      const workerWrite = prisma.membershipSubscriptionCharge.updateMany({
+        where: liveChargeWhere(CHARGE_ID),
+        data: { status: "INVOICE_CREATED", xeroInvoiceId: "race-4098-stray-invoice", xeroInvoiceNumber: "INV-STRAY" },
+      }).then((result) => result);
+      try {
+        // The close behind the holder, and the worker behind the close.
+        await waitForBlockedBy(holderPid, 2);
+      } finally {
+        release();
+      }
+      await holder;
+      await expect(closing).resolves.toMatchObject({ closed: true });
+      await expect(workerWrite).resolves.toEqual({ count: 0 });
+
+      const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
+      expect(charge).toMatchObject({ status: "NOT_REQUIRED", xeroInvoiceId: null });
+    });
+
+    /**
+     * The invoice worker against a fake Xero (no provider call). `onCreateInvoice`
+     * runs while the worker's createInvoices call is in flight, i.e. after the
+     * worker read the charge and before it records the invoice; `onContact`
+     * runs at the earlier contact lookup, which a resume also reaches.
+     */
+    async function withFakeXero<T>(
+      hooks: { onCreateInvoice?: () => Promise<void>; onContact?: () => Promise<void> },
+      run: (xero: { accountingApi: Record<string, ReturnType<typeof vi.fn>> }) => Promise<T>,
+    ): Promise<T> {
+      const xero = {
+        accountingApi: {
+          getInvoices: vi.fn(async () => ({ body: { invoices: [] } })),
+          createInvoices: vi.fn(async () => {
+            await hooks.onCreateInvoice?.();
+            return { body: { invoices: [{ invoiceID: STRAY_INVOICE_ID, invoiceNumber: STRAY_INVOICE_NUMBER }] } };
+          }),
+          emailInvoice: vi.fn(async () => ({ body: {} })),
+        },
+      };
+      const [apiClient, contacts] = await Promise.all([import("@/lib/xero-api-client"), import("@/lib/xero-contacts")]);
+      const spies = [
+        vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero, tenantId: "tenant-4098" } as never),
+        vi.spyOn(apiClient, "callXeroApi").mockImplementation(((call: () => unknown) => call()) as never),
+        vi.spyOn(contacts, "findOrCreateXeroContact").mockImplementation((async () => {
+          await hooks.onContact?.();
+          return "contact-4098";
+        }) as never),
+      ];
+      try {
+        return await run(xero);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    }
+
+    /** An outbox attempt for the charge, as the outbox claim leaves it. */
+    async function invoiceAttempt(id: string, status: "RUNNING" | "PENDING", startedAt: Date | null) {
+      await prisma.xeroSyncOperation.create({
+        data: {
+          id,
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          localModel: "MembershipSubscriptionCharge",
+          localId: CHARGE_ID,
+          status,
+          idempotencyKey: CORRELATION_KEY,
+          correlationKey: CORRELATION_KEY,
+          queueType: "MEMBERSHIP_SUBSCRIPTION_INVOICE",
+          requestPayload: { queueType: "MEMBERSHIP_SUBSCRIPTION_INVOICE" },
+          startedAt,
+        },
+      });
+    }
+
+    /**
+     * Records, per statement, every UPDATE on this charge's row — including a
+     * guarded UPDATE that matched nothing — with its transaction id, so a test
+     * can show which writes shared a transaction. A statement-level trigger
+     * fires for zero rows; its transition table says what (if anything) changed.
+     */
+    async function recordChargeUpdates(run: () => Promise<unknown>) {
+      await prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS race_4098_charge_updates (seq serial PRIMARY KEY, tx bigint, row_count int, error_code text)`);
+      await prisma.$executeRawUnsafe(`TRUNCATE race_4098_charge_updates`);
+      await prisma.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION race_4098_record_charge_update() RETURNS trigger AS $$
+        BEGIN
+          INSERT INTO race_4098_charge_updates (tx, row_count, error_code)
+          SELECT txid_current(), COUNT(*)::int, MAX("lastErrorCode") FROM changed WHERE "id" = '${CHARGE_ID}';
+          RETURN NULL;
+        END $$ LANGUAGE plpgsql`);
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS race_4098_charge_update_trigger ON "MembershipSubscriptionCharge"`);
+      await prisma.$executeRawUnsafe(
+        `CREATE TRIGGER race_4098_charge_update_trigger AFTER UPDATE ON "MembershipSubscriptionCharge" REFERENCING NEW TABLE AS changed FOR EACH STATEMENT EXECUTE FUNCTION race_4098_record_charge_update()`,
+      );
+      try {
+        await run();
+        return await prisma.$queryRawUnsafe<Array<{ tx: bigint; row_count: number; error_code: string | null }>>(
+          `SELECT tx, row_count, error_code FROM race_4098_charge_updates ORDER BY seq`,
+        );
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS race_4098_charge_update_trigger ON "MembershipSubscriptionCharge"`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS race_4098_record_charge_update()`);
+        await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS race_4098_charge_updates`);
+      }
+    }
+
+    it("an invoice attempt in Xero when the charge is closed loses its claim, and that transaction marks the stray (#4098 review, F3 of the #4110 round)", async () => {
+      const { createXeroMembershipSubscriptionInvoice } = await import("@/lib/xero-subscription-invoices");
+      const { markStaleRunningXeroOperationFailed } = await import("@/lib/xero-stale-operations");
+      const { STRAY_INVOICE_AFTER_CLOSE_CODE } = await import("@/lib/subscription-charge-already-paid");
+      // The charge is queued and nobody has paid yet, so the worker goes to Xero.
+      await prisma.membershipSubscriptionCharge.update({
+        where: { id: CHARGE_ID },
+        data: {
+          status: "QUEUED", lastErrorCode: null, lastErrorMessage: null,
+          components: { create: [{ label: "Family fee", description: "Race 4098 family fee", annualAmountCents: 30_000, chargedAmountCents: 30_000, prorated: false, xeroAccountCode: "203", sortOrder: 0 }] },
+        },
+      });
+      await prisma.memberSubscription.updateMany({
+        where: { id: { in: [...SUBSCRIPTION_IDS] } },
+        data: { status: "NOT_INVOICED", manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+      });
+      // Claimed long enough ago that the stale-RUNNING reset may fail it.
+      await invoiceAttempt(STALE_ATTEMPT_ID, "RUNNING", new Date("2026-06-30T00:00:00.000Z"));
+
+      // While its Xero call hangs: the stale-RUNNING reset fails the attempt;
+      // the members pay by hand; a Retry's attempt finds them paid and parks the
+      // charge in CONFLICT (the real worker, which makes no Xero call); and the
+      // officer closes it — no invoice operation is live any more, so the
+      // close's own refusal does not fire.
+      const onCreateInvoice = async () => {
+        await expect(
+          markStaleRunningXeroOperationFailed(STALE_ATTEMPT_ID, async () => {}, new Date("2026-07-01T00:00:00.000Z")),
+        ).resolves.toMatchObject({ outcome: "marked" });
+        await prisma.memberSubscription.updateMany({
+          where: { id: { in: [...SUBSCRIPTION_IDS] } },
+          data: { status: "PAID", manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z"), manuallyMarkedPaidByMemberId: OFFICER_ID },
+        });
+        await invoiceAttempt(RETRY_ATTEMPT_ID, "RUNNING", new Date("2026-07-01T00:00:00.000Z"));
+        await expect(
+          createXeroMembershipSubscriptionInvoice({ chargeId: CHARGE_ID, syncOperationId: RETRY_ATTEMPT_ID }),
+        ).resolves.toBeNull();
+        await expect(close()).resolves.toMatchObject({ closed: true });
+      };
+
+      let xeroCalls!: { accountingApi: Record<string, ReturnType<typeof vi.fn>> };
+      let outcome: unknown;
+      const updates = await recordChargeUpdates(() =>
+        withFakeXero({ onCreateInvoice }, async (xero) => {
+          xeroCalls = xero;
+          outcome = await createXeroMembershipSubscriptionInvoice({ chargeId: CHARGE_ID, syncOperationId: STALE_ATTEMPT_ID });
+        }),
+      );
+
+      expect(outcome).toBeNull();
+      // The worker began on the fresh-raise path (`!charge.xeroInvoiceId`): it
+      // raised one invoice and never emailed it.
+      expect(xeroCalls.accountingApi.createInvoices).toHaveBeenCalledTimes(1);
+      expect(xeroCalls.accountingApi.emailInvoice).not.toHaveBeenCalled();
+      // The closed charge stays closed and unlinked, and names the stray.
+      const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
+      expect(charge).toMatchObject({ status: "NOT_REQUIRED", xeroInvoiceId: null, xeroInvoiceNumber: null, lastErrorCode: STRAY_INVOICE_AFTER_CLOSE_CODE });
+      expect(charge.lastErrorMessage).toContain(STRAY_INVOICE_NUMBER);
+      // In the losing transaction: the worker's guarded claim matched no row,
+      // and the stray marker is the next write in that same transaction.
+      const markerAt = updates.findIndex((row) => row.error_code === STRAY_INVOICE_AFTER_CLOSE_CODE);
+      expect(markerAt).toBeGreaterThan(0);
+      expect(updates[markerAt]).toMatchObject({ row_count: 1 });
+      expect(updates[markerAt - 1]).toMatchObject({ row_count: 0, tx: updates[markerAt]!.tx });
+      // Nothing else of the invoice was recorded: no subscription link or
+      // downgrade, and no object link for the charge or its subscriptions.
+      const subscriptions = await prisma.memberSubscription.findMany({
+        where: { id: { in: [...SUBSCRIPTION_IDS] } },
+        select: { status: true, xeroInvoiceId: true },
+      });
+      expect(subscriptions).toEqual([{ status: "PAID", xeroInvoiceId: null }, { status: "PAID", xeroInvoiceId: null }]);
+      expect(await prisma.xeroObjectLink.count({ where: { localId: { in: [CHARGE_ID, ...SUBSCRIPTION_IDS] } } })).toBe(0);
+      // The attempt's own outcome is the stray, for Xero Operations.
+      const attempt = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: STALE_ATTEMPT_ID } });
+      expect(attempt).toMatchObject({ status: "PARTIAL", xeroObjectId: STRAY_INVOICE_ID });
+      expect(attempt.responsePayload).toMatchObject({ conflict: STRAY_INVOICE_AFTER_CLOSE_CODE });
+    });
+
+    it("a resume whose charge was voided while it was in Xero finishes as skipped and marks no stray (#4098 review, F3 of the #4110 round)", async () => {
+      const { createXeroMembershipSubscriptionInvoice } = await import("@/lib/xero-subscription-invoices");
+      // The invoice was raised on an earlier attempt and its email failed; this
+      // attempt resumes from the held invoice id.
+      await prisma.membershipSubscriptionCharge.update({
+        where: { id: CHARGE_ID },
+        data: {
+          status: "EMAIL_FAILED", lastErrorCode: "EMAIL_FAILED", lastErrorMessage: "Xero email failed",
+          xeroInvoiceId: HELD_INVOICE_ID, xeroInvoiceNumber: "INV-HELD",
+          components: { create: [{ label: "Family fee", description: "Race 4098 family fee", annualAmountCents: 30_000, chargedAmountCents: 30_000, prorated: false, xeroAccountCode: "203", sortOrder: 0 }] },
+        },
+      });
+      await prisma.memberSubscription.updateMany({
+        where: { id: { in: [...SUBSCRIPTION_IDS] } },
+        data: { status: "UNPAID", xeroInvoiceId: HELD_INVOICE_ID, manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+      });
+      await invoiceAttempt(RETRY_ATTEMPT_ID, "RUNNING", new Date("2026-07-01T00:00:00.000Z"));
+
+      // While the resume is at Xero, the membership sync sees the invoice
+      // VOIDED and releases it, once per covered member, through its own
+      // release (#4110 review F8: the real writer, not a copy of its writes).
+      const { releaseVoidedSubscriptionInvoice } = await import("@/lib/xero-membership-sync");
+      const onContact = async () => {
+        for (const [index, subscriptionId] of SUBSCRIPTION_IDS.entries()) {
+          await releaseVoidedSubscriptionInvoice({
+            subscriptionId,
+            memberId: MEMBER_IDS[index]!,
+            seasonYear: SEASON_YEAR,
+            voidedInvoiceId: HELD_INVOICE_ID,
+          });
+        }
+      };
+
+      let xeroCalls!: { accountingApi: Record<string, ReturnType<typeof vi.fn>> };
+      const outcome = await withFakeXero({ onContact }, async (xero) => {
+        xeroCalls = xero;
+        return createXeroMembershipSubscriptionInvoice({ chargeId: CHARGE_ID, syncOperationId: RETRY_ATTEMPT_ID });
+      });
+
+      expect(outcome).toBeNull();
+      expect(xeroCalls.accountingApi.createInvoices).not.toHaveBeenCalled();
+      expect(xeroCalls.accountingApi.emailInvoice).not.toHaveBeenCalled();
+      const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
+      // VOIDED, no stray marker: this attempt raised nothing new.
+      expect(charge).toMatchObject({ status: "VOIDED", lastErrorCode: null });
+      const attempt = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: RETRY_ATTEMPT_ID } });
+      expect(attempt.status).toBe("SUCCEEDED");
+      expect(attempt.responsePayload).toEqual({ skipped: true, reason: "VOIDED" });
+      // The void's release stands: nothing relinked the members.
+      const subscriptions = await prisma.memberSubscription.findMany({
+        where: { id: { in: [...SUBSCRIPTION_IDS] } },
+        select: { status: true, xeroInvoiceId: true },
+      });
+      expect(subscriptions).toEqual([{ status: "NOT_INVOICED", xeroInvoiceId: null }, { status: "NOT_INVOICED", xeroInvoiceId: null }]);
+    });
+
     it("rolls back whole when a reversal commits while the close waits for the subscription row", async () => {
       let release!: () => void;
       const released = new Promise<void>((resolve) => {
@@ -286,7 +571,7 @@ let observerClient: import("@prisma/client").PrismaClient;
       release();
       await reversal;
 
-      await expect(closing).rejects.toMatchObject({ status: 409, message: expect.stringContaining("no longer paid") });
+      await expect(closing).rejects.toMatchObject({ status: 409, message: expect.stringContaining("stopped being paid while you were closing this charge") });
       const charge = await prisma.membershipSubscriptionCharge.findUniqueOrThrow({ where: { id: CHARGE_ID } });
       expect(charge).toMatchObject({ status: "CONFLICT", lastErrorCode: "SUBSCRIPTION_ALREADY_PAID" });
       const subscriptions = await prisma.memberSubscription.findMany({
