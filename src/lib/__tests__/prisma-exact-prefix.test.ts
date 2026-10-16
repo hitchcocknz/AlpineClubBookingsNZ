@@ -18,6 +18,15 @@ describe("exactPrefix (#4146)", () => {
     expect(exactContains("data-export")).toEqual({ contains: "data-export" });
   });
 
+  it.each(["", "John_Smith", "100%", "folder\\name", "a_%\\b"])(
+    "preserves insensitive mode while escaping %j (#4190)",
+    (value) => {
+      expect(exactContains(value, "insensitive")).toEqual({
+        ...exactContains(value), mode: "insensitive",
+      });
+    },
+  );
+
   it("stays wired into the race harness CI runs against a real database", () => {
     // The PostgreSQL proof self-skips without the race flag; hosted CI reaches
     // it only through the harness's import.

@@ -60,6 +60,7 @@ export function assertSafeExactPrefixRaceDbUrl(url: string): void {
 }
 
 let prisma: PrismaClient;
+let exactContains: typeof import("@/lib/prisma-exact-prefix")["exactContains"];
 let exactPrefix: typeof import("@/lib/prisma-exact-prefix")["exactPrefix"];
 let findOtherDuplicateCaptureRefundOperation: typeof import("@/lib/payment-recovery")["findOtherDuplicateCaptureRefundOperation"];
 let keys: typeof import("@/lib/payment-recovery-keys");
@@ -86,7 +87,7 @@ async function clean(): Promise<void> {
       assertSafeExactPrefixRaceDbUrl(RACE_DB_URL);
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
-      ({ exactPrefix } = await import("@/lib/prisma-exact-prefix"));
+      ({ exactPrefix, exactContains } = await import("@/lib/prisma-exact-prefix"));
       ({ findOtherDuplicateCaptureRefundOperation } = await import("@/lib/payment-recovery"));
       keys = await import("@/lib/payment-recovery-keys");
       handBack = await import("@/lib/group-organiser-hand-back-rules");
@@ -164,6 +165,46 @@ async function clean(): Promise<void> {
         expect(literal.map((row) => row.key)).toEqual(["race-4146:%_\\:x"]);
       } finally {
         await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: "race-4146:" } } });
+      }
+    });
+
+    it("CONTRAST: bare insensitive contains wildcards decoys; exactContains matches literal text (#4190)", async () => {
+      const fixtureKeys = [
+        "race-4146:before-JoHn_SmItH-after",
+        "race-4146:before-JoHnXSmItH-after",
+        "race-4146:before-100%-after",
+        "race-4146:before-100percent-after",
+        "race-4146:before-FoLdEr\\NaMe-after",
+        "race-4146:before-FoLdErNaMe-after",
+        "race-4146:before-MiX_%\\EnD-after",
+        "race-4146:before-MiXabEnD-after",
+      ] as const;
+      await prisma.alertCooldown.createMany({ data: fixtureKeys.map((key) => ({ key, lastAlertedAt: NIGHT })) });
+      try {
+        for (const [value, literal, decoy] of [
+          ["john_smith", fixtureKeys[0], fixtureKeys[1]],
+          ["100%", fixtureKeys[2], fixtureKeys[3]],
+          ["folder\\name", fixtureKeys[4], fixtureKeys[5]],
+          ["mix_%\\end", fixtureKeys[6], fixtureKeys[7]],
+        ] as const) {
+          const scope = { key: { in: [literal, decoy] } };
+          const bare = await prisma.alertCooldown.findMany({
+            where: { AND: [scope, { key: { contains: value, mode: "insensitive" } }] },
+            select: { key: true },
+          });
+          expect(bare.map((row) => row.key)).toContain(decoy);
+          const exact = await prisma.alertCooldown.findMany({
+            where: { AND: [scope, { key: exactContains(value, "insensitive") }] },
+            select: { key: true },
+          });
+          expect(exact.map((row) => row.key)).toEqual([literal]);
+          // Omitting mode must retain case sensitivity (URL/path reference checks).
+          expect(await prisma.alertCooldown.count({
+            where: { AND: [scope, { key: exactContains(value) }] },
+          })).toBe(value === "100%" ? 1 : 0);
+        }
+      } finally {
+        await prisma.alertCooldown.deleteMany({ where: { key: { in: [...fixtureKeys] } } });
       }
     });
 
