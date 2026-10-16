@@ -360,6 +360,29 @@ describe("modify-quote — other-lodge member rate", () => {
     });
   });
 
+  it("itemises the re-rate once, so the breakdown adds up to the total (#4197)", async () => {
+    // The stored total as the sum of the stored guest prices (2000 + 4800 + 4800),
+    // which is what the breakdown's old side reads.
+    h.bookingFindUnique.mockResolvedValue(
+      booking({ totalPriceCents: 11600, finalPriceCents: 11600 }),
+    );
+    const res = await POST(
+      req({
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+    const body = await res.json();
+
+    // The re-rated guest's whole change is on the re-rate line; the stay line
+    // must not count it a second time.
+    expect(body.priceDiffCents).toBe(-2800);
+    expect(body.itemizedChanges).toEqual([
+      { label: expect.stringContaining("other-lodge member rate"), amountCents: -2800 },
+    ]);
+  });
+
   it("unticking clears the locks the other way, so the guest goes back to the non-member rate", async () => {
     h.bookingFindUnique.mockResolvedValue(
       booking({
