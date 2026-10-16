@@ -44,6 +44,13 @@ function propertyValueAt(source: string, start: number): string {
   let depth = 0;
   for (let i = start; i < source.length; i += 1) {
     const ch = source[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      // Skip a quoted string whole, so a `,` or bracket inside it never ends the value.
+      const close = source.indexOf(ch, i + 1);
+      if (close === -1) return source.slice(start);
+      i = close;
+      continue;
+    }
     if (ch === "(" || ch === "[" || ch === "{") depth += 1;
     else if (ch === ")" || ch === "]" || ch === "}") {
       if (depth === 0) return source.slice(start, i);
@@ -57,8 +64,9 @@ function retentionClassLiteralsIn(source: string): string[] {
   const code = stripComments(source);
   return [...code.matchAll(/\bretentionClass\s*:/g)].flatMap((match) => {
     const raw = propertyValueAt(code, match.index + match[0].length);
-    // A nested object is not a class value (the archive DDL manifest's `{ ddl }`).
-    if (raw.trimStart().startsWith("{")) return [];
+    // A filter or the archive DDL manifest's `{ ddl }` is not a class value;
+    // Prisma's `{ set: … }` is a write, so its literals are read like any other.
+    if (/^\s*\{\s*(?:in|notIn|not|equals|ddl)\s*:/.test(raw)) return [];
     if (raw.includes("`")) return ["<template literal>"];
     // A comparison operand is a condition, not a value written to the column.
     const value = raw
@@ -85,7 +93,12 @@ function migrationAuditInsertClasses(sql: string): Array<string | null> {
     });
   const updates = statements
     .filter((statement) => /UPDATE\s+"AuditLog"[\s\S]*\bSET\b[\s\S]*"retentionClass"\s*=/i.test(statement))
-    .map((statement) => statement.match(/"retentionClass"\s*=\s*'([^']*)'/)?.[1] ?? null);
+    // Only a plain literal assignment inside SET is readable; a CASE, an
+    // expression, or a match only in WHERE reads as null and fails.
+    .map((statement) => {
+      const setClause = statement.match(/\bSET\b([\s\S]*?)(?:\bWHERE\b|\bFROM\b|$)/i)?.[1] ?? "";
+      return setClause.match(/"retentionClass"\s*=\s*'([^']*)'\s*(?:,|$)/)?.[1] ?? null;
+    });
   return [...inserts, ...updates];
 }
 
@@ -122,11 +135,19 @@ describe("audit retention class writers stay on the known set (#3940)", () => {
     expect(retentionClassLiteralsIn("{ retentionClass: `${a}` }")).toEqual(["<template literal>"]);
     expect(retentionClassLiteralsIn('{ retentionClass: audience === "admin" ? log.retentionClass : undefined }')).toEqual([]);
     expect(retentionClassLiteralsIn('{ retentionClass: { ddl: "TEXT" } }')).toEqual([]);
+    expect(retentionClassLiteralsIn('{ retentionClass: { in: ["critical"] } }')).toEqual([]);
+    expect(retentionClassLiteralsIn('{ retentionClass: { set: "standrad" } }')).toEqual(["standrad"]);
+    expect(retentionClassLiteralsIn('{ retentionClass: c ? "a,b)" : "standrad" }')).toEqual(["a,b)", "standrad"]);
     const sql = `INSERT INTO "AuditLog" ("id", "retentionClass", "expiresAt")\nSELECT\n  'x',\n  'standrad',\n  timezone('UTC', statement_timestamp()) + interval '7 years';\n`;
     expect(migrationAuditInsertClasses(sql)).toEqual(["standrad"]);
     expect(migrationAuditInsertClasses(`INSERT INTO "AuditLog" ("id", "retentionClass") VALUES ('x', 'critical');`)).toEqual([null]);
     const reordered = `INSERT INTO "AuditLog" ("id", "retentionClass", "severity", "expiresAt")\nSELECT\n  'x',\n  'standrad',\n  'critical',\n  timezone('UTC', statement_timestamp()) + interval '7 years';\n`;
     expect(migrationAuditInsertClasses(reordered)).toEqual([null]);
     expect(migrationAuditInsertClasses(`UPDATE "AuditLog" SET "retentionClass" = 'standrad' WHERE "id" = 'x';`)).toEqual(["standrad"]);
+    expect(
+      migrationAuditInsertClasses(
+        `UPDATE "AuditLog" SET "retentionClass" = CASE WHEN true THEN 'standrad' END WHERE "retentionClass" = 'critical';`
+      )
+    ).toEqual([null]);
   });
 });
