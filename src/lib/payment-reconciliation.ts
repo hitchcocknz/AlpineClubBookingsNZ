@@ -73,6 +73,7 @@ import {
   MANUAL_SETTLE_FROM_PAYMENT_STATUS_LIST,
 } from "@/lib/booking-payment-state";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import {
   bookingHasCapacityOverride,
@@ -1185,7 +1186,10 @@ async function settleBookingPaymentInTransaction(
           tx,
           payment.id
         );
+        // #4177 (`INV-PAY-133`): when several qualify, the OLDEST-INSERTED is the
+        // settled one (#4163's rule): (c′) re-checks it, `settledPaymentIntentId` names it.
         const otherSettledCapture = await tx.paymentTransaction.findFirst({
+          orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
           where: {
             paymentId: payment.id,
             kind: PaymentTransactionKind.PRIMARY,
