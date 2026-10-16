@@ -195,6 +195,8 @@ vi.mock("@/lib/booking-policies", () => ({
 }));
 vi.mock("@/lib/member-credit", () => ({
   getMemberCreditBalance: vi.fn().mockResolvedValue(0),
+  // #3809: a reduction asks what of it gives back applied credit; none here.
+  deriveBookingAppliedCreditCents: vi.fn().mockResolvedValue(0),
   // #3369: the one home for the account-credit refusal four settlement paths
   // share. Real, not stubbed: the mock must not turn a refusal into a pass.
   requireMemberCreditRecipient: (memberId: string | null) => {
@@ -1348,6 +1350,61 @@ describe("#4197 the quote's breakdown adds up to its total", () => {
   });
 });
 
+describe("#4197 re-rates, fees and rate recalculations add up too", () => {
+  /**
+   * Drive the route as an officer on a member whole-lodge booking, the only
+   * booking a #2337 link is allowed on: one converted from a member's
+   * whole-lodge request.
+   */
+  async function officerQuote(delta: Record<string, unknown>) {
+    h.authorizationRole.mockReturnValue("ADMIN");
+    h.bookingRequestFindFirst.mockResolvedValue({ id: "request-1" });
+    h.bookingFindUnique.mockResolvedValue({
+      ...bookingWith(DEFAULT_GUESTS),
+      wholeLodgeHold: true,
+    });
+    const res = await POST(req(delta), { params });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  }
+  const LINK_ANN = { linkGuestToMember: [{ guestId: "g1", memberId: "member-9" }] };
+
+  it("a member link is itemised once, on its own line", async () => {
+    // Ann's locks clear, so her three nights re-price at 5,000: +2,400. Nobody
+    // else moves, so there is no stay line to count her a second time.
+    const { status, body } = await officerQuote(LINK_ANN);
+    expect(status).toBe(200);
+    expect(sumOfLines(body)).toBe(body.priceDiffCents);
+    expect(body.itemizedChanges).toEqual([
+      {
+        label: "Linked Ann Guest to member (re-rated)",
+        amountCents: 3 * NIGHT_CENTS - 3 * BOOKED_NIGHT_CENTS,
+      },
+    ]);
+  });
+
+  it("a member link never rides a date change, so its line is always the re-rate alone", async () => {
+    // A link is only offered on a booking converted from a whole-lodge request,
+    // which keeps its negotiated price; only a link-only edit is exempt from that
+    // block. The "including their date change" wording is therefore reached by
+    // the other-lodge re-rate (`modify-quote-other-lodge-rate.test.ts`).
+    const { status, body } = await officerQuote({ ...LINK_ANN, checkOut: "2026-09-05" });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/negotiated booking-request price/);
+  });
+
+  it("with a change fee, the lines add up to the net charge", async () => {
+    h.calculateChangeFee.mockReturnValue({ feeCents: 1_500 });
+    const route = await runRoute({ checkIn: "2026-09-02", checkOut: "2026-09-05" });
+    expect(route.status).toBe(200);
+    expect(route.body.itemizedChanges).toContainEqual({
+      label: "Late-notice change fee",
+      amountCents: 1_500,
+    });
+    expect(route.body.netChargeCents).toBe((route.body.priceDiffCents as number) + 1_500);
+    expect(sumOfLines(route.body)).toBe(route.body.netChargeCents);
+  });
+});
+
 describe("#2563 a refused delta is refused identically, with the same guest number", () => {
   const REFUSALS: Array<[string, Record<string, unknown>, string]> = [
     [
@@ -1610,6 +1667,61 @@ function sourceFilesNaming(identifier: string): string[] {
   walk(root);
   return found.sort();
 }
+
+describe("#4197 a stay under way: the breakdown adds up too", () => {
+  // Today is 10 Aug, inside the 8-12 Aug stay: tonight is already under way, so
+  // each guest's 11th is the one future night an edit can move or give back.
+  async function inProgressQuote(
+    delta: Record<string, unknown>,
+    money: { promoAdjustmentCents?: number } = {},
+  ) {
+    const stored = bookingWith(IN_PROGRESS_GUESTS, IN_PROGRESS_BOOKING);
+    const promoAdjustmentCents = money.promoAdjustmentCents ?? 0;
+    h.bookingFindUnique.mockResolvedValue({
+      ...stored,
+      promoAdjustmentCents,
+      discountCents: Math.max(0, -promoAdjustmentCents),
+      finalPriceCents: stored.totalPriceCents + promoAdjustmentCents,
+    });
+    const res = await POST(req(delta), { params });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(res.status).toBe(200);
+    expect(sumOfLines(body)).toBe(body.priceDiffCents);
+    return body;
+  }
+  const CAL_CREDIT = {
+    label: "Removed from future nights: Cal Guest (Adult, Non-member)",
+    amountCents: -BOOKED_NIGHT_CENTS,
+  };
+
+  it("a removed guest's future nights are credited once", async () => {
+    const body = await inProgressQuote({ removeGuestIds: ["g3"] });
+    expect(body.priceDiffCents).toBe(-BOOKED_NIGHT_CENTS);
+    // Nobody who stays moves, so there is no future-night line to carry Cal's
+    // credit a second time.
+    expect(body.itemizedChanges).toEqual([CAL_CREDIT]);
+  });
+
+  it("a removed guest beside an extension: the extension and the credit, each once", async () => {
+    const body = await inProgressQuote({ checkOut: "2026-08-14", removeGuestIds: ["g3"] });
+    expect(body.itemizedChanges).toEqual([
+      // Ann and Bob each buy the 12th and 13th.
+      { label: "Future-night date change", amountCents: 4 * NIGHT_CENTS },
+      CAL_CREDIT,
+    ]);
+  });
+
+  it("a stored promo adjustment is carried over with no promo line", async () => {
+    const body = await inProgressQuote(
+      { checkOut: "2026-08-13" },
+      { promoAdjustmentCents: -1_000 },
+    );
+    expect(body.newPromoAdjustmentCents).toBe(-1_000);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Future-night date change", amountCents: 3 * NIGHT_CENTS },
+    ]);
+  });
+});
 
 describe("#2563 exactly one stay-range resolution exists, and the route calls it", () => {
   it("the quote route declares none of the private helpers it used to own", () => {

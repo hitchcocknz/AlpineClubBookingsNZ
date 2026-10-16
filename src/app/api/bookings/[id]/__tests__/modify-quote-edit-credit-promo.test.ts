@@ -579,7 +579,7 @@ describe("POST /api/bookings/[id]/modify-quote — the breakdown sums with promo
     return json;
   }
 
-  it("a kept code re-priced on a longer stay: its new line and its old one reversed", async () => {
+  it("a kept code re-priced on a longer stay: one net line", async () => {
     h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
     engineAdjusts(-3_000);
 
@@ -589,8 +589,7 @@ describe("POST /api/bookings/[id]/modify-quote — the breakdown sums with promo
     expect(body.priceDiffCents).toBe(9_500);
     expect(body.itemizedChanges).toEqual([
       { label: "Date change: 2 nights → 3 nights", amountCents: 10_000 },
-      { label: "Promo 'SPRING10'", amountCents: -3_000 },
-      { label: "Previous promo 'SPRING10'", amountCents: 2_500 },
+      { label: "Promo 'SPRING10' (re-priced)", amountCents: -500 },
     ]);
   });
 
@@ -631,7 +630,50 @@ describe("POST /api/bookings/[id]/modify-quote — the breakdown sums with promo
     expect(body.priceDiffCents).toBe(-2_500);
     expect(body.itemizedChanges).toEqual([
       { label: "Promo 'MATES50'", amountCents: -5_000 },
-      { label: "Previous promo 'SPRING10'", amountCents: 2_500 },
+      { label: "Previous promo 'SPRING10' reversed", amountCents: 2_500 },
     ]);
+  });
+
+  it("a kept code that re-prices to the same amount adds no promo line", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    pricesTheStoredStay();
+    engineAdjusts(-2_500);
+
+    const body = await quote({ checkOut: "2026-08-16" });
+
+    expect(body.priceDiffCents).toBe(0);
+    expect(body.itemizedChanges).toEqual([]);
+  });
+
+  it("a kept code that lapses reads as removed", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    h.validateAndCalculatePromoDiscount.mockResolvedValue({
+      error: "This promo code has expired",
+      beneficiaryMemberIds: [],
+    });
+
+    const body = await quote({ checkOut: "2026-08-17" });
+
+    expect(body.promoStillValid).toBe(false);
+    expect(body.priceDiffCents).toBe(30_000 - 17_500);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Date change: 2 nights → 3 nights", amountCents: 10_000 },
+      { label: "Removed promo 'SPRING10'", amountCents: 2_500 },
+    ]);
+  });
+
+  it("a refused code shows its refusal, not a reversal of the stored code", async () => {
+    // The save refuses the whole edit, so there is nothing to itemise for the
+    // promotion; the promo card shows `promoValidation.error`.
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    h.promoCodeFindUnique.mockResolvedValue(null);
+    pricesTheStoredStay();
+
+    const res = await POST(req({ promoCode: "NOPE" }), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.promoValidation).toEqual({ valid: false, error: "Promo code not found" });
+    expect(body.itemizedChanges).toEqual([]);
   });
 });

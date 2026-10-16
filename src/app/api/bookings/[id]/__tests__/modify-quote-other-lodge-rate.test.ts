@@ -378,6 +378,67 @@ describe("modify-quote — other-lodge member rate", () => {
     ]);
   });
 
+  it("a re-rate beside a date change says its line includes the guest's date change (#4197)", async () => {
+    // One more night: the owner and the stranger keep their locked nights and buy
+    // the 3rd at their rates; the visitor's whole stay re-prices at the member rate.
+    const nightDates = [D("2026-08-01"), D("2026-08-02"), D("2026-08-03")];
+    h.priceGuests.mockResolvedValue({
+      totalPriceCents: 13200,
+      guests: [
+        { priceCents: 3000, perNightCents: [1000, 1000, 1000], nightDates },
+        { priceCents: 3000, perNightCents: [1000, 1000, 1000], nightDates },
+        { priceCents: 7200, perNightCents: [2400, 2400, 2400], nightDates },
+      ],
+    });
+    const res = await POST(
+      req({
+        checkOut: "2026-08-04",
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.priceDiffCents).toBe(13200 - 11600);
+    expect(body.itemizedChanges).toEqual([
+      {
+        label: expect.stringMatching(/other-lodge member rate, including their date change$/),
+        amountCents: 3000 - 4800,
+      },
+      { label: "Date change: 2 nights → 3 nights", amountCents: 1000 + 2400 },
+    ]);
+  });
+
+  it("an untouched guest priced differently with no date change reads as a recalculation (#4197)", async () => {
+    // The owner's nights do not move but come back dearer. In real data the
+    // pre-check-in gate parks an unlocked strand before this line is built
+    // (#3166); the pricer is stubbed here to reach the label regardless.
+    h.priceGuests.mockResolvedValue({
+      totalPriceCents: 9300,
+      guests: [
+        { priceCents: 2500, perNightCents: [1250, 1250], nightDates: [] },
+        { priceCents: 2000, perNightCents: [1000, 1000], nightDates: [] },
+        { priceCents: 4800, perNightCents: [2400, 2400], nightDates: [] },
+      ],
+    });
+    const res = await POST(
+      req({
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+    const body = await res.json();
+
+    expect(body.priceDiffCents).toBe(9300 - 11600);
+    expect(body.itemizedChanges).toEqual([
+      { label: expect.stringMatching(/other-lodge member rate$/), amountCents: -2800 },
+      { label: "Price recalculated (rate difference)", amountCents: 500 },
+    ]);
+  });
+
   it("unticking clears the locks the other way, so the guest goes back to the non-member rate", async () => {
     h.bookingFindUnique.mockResolvedValue(
       booking({
