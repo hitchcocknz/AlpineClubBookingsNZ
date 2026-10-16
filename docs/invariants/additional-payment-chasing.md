@@ -1577,7 +1577,8 @@ decision and would need its own owner decision.
   conflict check all leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`, `xero-refund-note-status.ts`), so no request, retry or
   repair writes one back into `Payment.xeroRefundCreditNoteId`. The nightly
-  link cleanup heals a mirror left active before #4091 through that write (#4161).
+  link cleanup heals a mirror left active before #4091 through
+  `upsertXeroObjectLink` (#4161).
 - **The reissue's key.** `refundNoteKeyAfterVoidParts` is the one home for the
   outbox row's correlation key and the Xero idempotency key. Once the payment
   has a voided refund note, it appends `after-void:<sorted ids>`: every refund
