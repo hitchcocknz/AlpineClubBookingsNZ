@@ -18,5 +18,19 @@
  * `ILIKE` (`mode: "insensitive"`) uses the same escape character.
  */
 export function exactPrefix(prefix: string): { startsWith: string } {
-  return { startsWith: prefix.replace(/[\\%_]/g, "\\$&") };
+  return { startsWith: escapeLike(prefix) };
+}
+
+/**
+ * #4165: the same for `contains`, which Prisma sends as `LIKE '%' || value ||
+ * '%'`, equally unescaped. `audit-query.ts` uses it for its legacy action-name
+ * fragments, one of which (`DATA_EXPORT`) holds a `_`.
+ */
+export function exactContains(value: string): { contains: string } {
+  return { contains: escapeLike(value) };
+}
+
+/** PostgreSQL's three `LIKE` metacharacters, each preceded by its default escape. */
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, "\\$&");
 }

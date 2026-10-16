@@ -1095,7 +1095,9 @@ is
 rather than writing its own (#3434 retired nine hand-rolled copies, each
 supporting a different slice of the grammar). It models the scalar operators,
 `AND`/`OR`/`NOT`, the to-one and to-many relation filters and a compound-unique
-key, and it **throws**, naming the operator and the column, on anything it does
+key — `startsWith` and `contains` as the unescaped `LIKE` Prisma sends, so `_`
+and `%` are wildcards and a backslash escapes, as `exactPrefix` relies on (#4165;
+`audit-query-exact-prefix.realdb.test.ts` checks it against PostgreSQL) — and it **throws**, naming the operator and the column, on anything it does
 not — including a column the fake row never carried, which is how a
 `storeMember` fixture one self-relation column short of the merge's sweep was
 found. Teach it a new operator in that file, with a case in

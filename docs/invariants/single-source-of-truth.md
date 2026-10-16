@@ -559,7 +559,13 @@ never `{ startsWith: prefix }`. #4146.
   carries no id. A literal `_` still matches any one character; a bare literal
   passes only because no sibling prefix differs from it at an underscore. The
   census judges spelling, not value: a computed string bound to an UPPER_SNAKE
-  name passes, and a reviewer catches that.
+  name passes, and a reviewer catches that. It reads `startsWith` only, not
+  `contains`.
+- **Fixed prefixes that decide visibility use it too.** The audit category
+  filters (`audit-query.ts`) do since #4165, with `exactContains` for their
+  `contains` fragments: a bare `xero_` also took every `xero.` action, now named
+  instead. `audit-legacy-filter-exact-prefix.test.ts`
+  replays every known action to show no row changed category or member timeline.
 - **Scope the query as well where an indexed column allows.** An exact prefix
   still matches a longer id that begins with the same id and delimiter, so the
   duplicate-capture lookup is also scoped by `bookingId`.
