@@ -160,8 +160,10 @@ import {
   type InProgressGuestRangePlanResult,
   type BookingEditGuestRangePlan,
 } from "@/lib/booking-edit-guest-ranges";
-import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { addDaysDateOnly, countNightsDateOnly, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import { getCapacityFullNights } from "@/lib/capacity-full-nights";
+import { getGuestBedNightKeys, sameNightKeys } from "@/lib/booking-guest-stay-ranges";
+import { promoBreakdownLines } from "@/lib/booking-edit-promo-lines";
 import { overCapacityNights } from "@/lib/over-capacity-confirmation";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
@@ -766,6 +768,7 @@ export async function POST(
       input: otherLodgeInput,
       role: actorRole,
       eligibleGuestIds: otherLodgeEligibleGuestIds,
+      linkedGuestIds: new Set(linkByGuestId.keys()),
     });
     await assertOtherLodgeExists(prisma, otherLodgeElection.otherLodgeId);
   } catch (error) {
@@ -1173,6 +1176,13 @@ export async function POST(
       })
     : undefined;
 
+  // The guests this edit re-rates whole: a #2337 link or an other-lodge tick.
+  // Their locks are cleared so they price afresh, and each gets its own line in
+  // the breakdown, which the stay line therefore leaves out (#4197).
+  const rerateGuestIds = new Set<string>([
+    ...guestMemberLinks.map((link) => link.guestId),
+    ...otherLodgeElection.repriceGuestIds,
+  ]);
   const proposedGuestRows = [
     ...proposedRemainingGuests.map((entry) => {
       const link = linkByGuestId.get(entry.guest.id);
@@ -1181,9 +1191,6 @@ export async function POST(
       // otherwise, so an ordinary date change still prices an already-recognised
       // other-club guest at the member rate.
       const otherLodgeMember = otherLodgeElection.flaggedGuestIds.has(
-        entry.guest.id,
-      );
-      const otherLodgeRateChanged = otherLodgeElection.repriceGuestIds.has(
         entry.guest.id,
       );
       return {
@@ -1200,7 +1207,7 @@ export async function POST(
         // The same locks the save prices with, cleared for the same reasons,
         // from the one home (#3531): the preview's re-rate delta equals the
         // save's by construction rather than by two agreeing comments.
-        ...editedGuestPricingLocks(entry.guest, Boolean(link) || otherLodgeRateChanged),
+        ...editedGuestPricingLocks(entry.guest, rerateGuestIds.has(entry.guest.id)),
       };
     }),
     ...(normalizedAddGuestsWithRanges ?? []).map((g) => ({
@@ -1550,8 +1557,8 @@ export async function POST(
   const policyAdjustedGuestsForPricing = await resolveGuestRateMembershipTypes(prisma, {
     seasonYear,
     guests: guestsForPricing,
-    // #2543: this route performs SEVEN or more pricing passes in one request and
-    // differences two of them into the member's settlement delta, so every pass
+    // #2543: this route performed SEVEN or more pricing passes in one request and
+    // differenced two of them into the member's settlement delta, so every pass
     // is handed the one mode resolved above. Left to peek independently, an admin
     // save landing between two passes made the delta wrong by the entire
     // member/non-member spread on every remaining guest.
@@ -1977,6 +1984,44 @@ export async function POST(
     });
   }
 
+  /**
+   * #4197: every party line below is read off `priceBreakdown`, the ONE pricing
+   * pass that produced `newTotalPriceCents`, over the nights and locked sold
+   * prices the shared resolver gave each guest (`INV-EXCEPT-022`, `INV-SSOT`).
+   * The old side is each guest's stored price, as the removed-guest line reads.
+   * So the lines sum to `priceDiffCents` (and, with the change-fee line, to
+   * `netChargeCents`) only while the stored `totalPriceCents` equals the stored
+   * guest prices summed and the stored final price is that total plus the
+   * stored promo adjustment, which is how every writer stores them.
+   */
+  const pricedGuestAt = (index: number) => {
+    const priced = priceBreakdown?.guests[index];
+    if (!priced) {
+      throw new Error(`The modify quote has no priced guest at position ${index}.`);
+    }
+    return priced;
+  };
+  /** The remaining guest at `index`'s nights before and after the edit, as keys. */
+  const guestNightKeysAt = (index: number) => {
+    const entry = proposedRemainingGuests[index];
+    if (!entry) throw new Error(`The modify quote has no remaining guest at position ${index}.`);
+    return {
+      before: getGuestBedNightKeys(entry.guest, booking),
+      after: getGuestBedNightKeys(
+        { stayStart: entry.stayStart, stayEnd: entry.stayEnd, nights: pricedGuestAt(index).nightDates },
+        booking,
+      ),
+    };
+  };
+  const guestNightsMovedAt = (index: number) => {
+    const { before, after } = guestNightKeysAt(index);
+    return !sameNightKeys(before, after);
+  };
+  // A re-rate line carries the guest's whole change. Splitting out a date part
+  // would need a second pricing pass at their old rate, so the label says so.
+  const withDateChange = (label: string, index: number) =>
+    guestNightsMovedAt(index) ? `${label}, including their date change` : label;
+
   // #2337: a per-link re-rate line so the officer sees the money each link moves
   // BEFORE committing (quote-first). The linked guest is a remaining guest, so its
   // new member-rate price sits at its position in priceBreakdown; the delta is
@@ -1991,10 +2036,12 @@ export async function POST(
       const index = indexByGuestId.get(link.guestId);
       const guest = remainingGuests.find((g) => g.id === link.guestId);
       if (index === undefined || !guest) continue;
-      const newPriceCents = priceBreakdown.guests[index]?.priceCents ?? 0;
       itemizedChanges.push({
-        label: `Linked ${link.previousFirstName} ${link.previousLastName} to member (re-rated)`,
-        amountCents: newPriceCents - guest.priceCents,
+        label: withDateChange(
+          `Linked ${link.previousFirstName} ${link.previousLastName} to member (re-rated)`,
+          index,
+        ),
+        amountCents: pricedGuestAt(index).priceCents - guest.priceCents,
       });
     }
   }
@@ -2016,7 +2063,7 @@ export async function POST(
     priceBreakdown
       ? proposedRemainingGuests.map((entry, index) => ({
           guestId: entry.guest.id,
-          priceCents: priceBreakdown.guests[index]?.priceCents ?? entry.guest.priceCents,
+          priceCents: pricedGuestAt(index).priceCents,
         }))
       : null;
   if (priceBreakdown && otherLodgeElection.repriceGuestIds.size > 0) {
@@ -2027,13 +2074,15 @@ export async function POST(
       const index = indexByGuestId.get(guestId);
       const guest = remainingGuests.find((g) => g.id === guestId);
       if (index === undefined || !guest) continue;
-      const newPriceCents = priceBreakdown.guests[index]?.priceCents ?? 0;
       const nowFlagged = otherLodgeElection.flaggedGuestIds.has(guestId);
       itemizedChanges.push({
-        label: `${guest.firstName} ${guest.lastName} re-rated at the ${
-          nowFlagged ? "other-lodge member" : "non-member"
-        } rate`,
-        amountCents: newPriceCents - guest.priceCents,
+        label: withDateChange(
+          `${guest.firstName} ${guest.lastName} re-rated at the ${
+            nowFlagged ? "other-lodge member" : "non-member"
+          } rate`,
+          index,
+        ),
+        amountCents: pricedGuestAt(index).priceCents - guest.priceCents,
       });
     }
   }
@@ -2041,81 +2090,52 @@ export async function POST(
   const oldNights = getStayNights(booking.checkIn, booking.checkOut).length;
   const newNights = getStayNights(newCheckIn, newCheckOut).length;
   const datesChanged = targetDatesChanged;
-  const guestRangesChanged = proposedRemainingGuests.some((entry) => {
-    const currentStayStart = storedDateOnly(
-      entry.guest.stayStart ?? booking.checkIn
-    );
-    const currentStayEnd = storedDateOnly(
-      entry.guest.stayEnd ?? booking.checkOut
-    );
-    return (
-      currentStayStart.getTime() !== entry.stayStart.getTime() ||
-      currentStayEnd.getTime() !== entry.stayEnd.getTime()
-    );
-  });
 
-  // 1. Date change cost: price remaining guests at new dates vs old dates
+  // 1. Date change cost: the remaining guests' new prices against their stored ones
   if (inProgressPlan) {
-    if (inProgressPlan.futureExistingDeltaCents !== 0) {
+    // #4197: the guests who stay. A removed guest's future credit is in the
+    // planner's `futureExistingDeltaCents` too, and has its own line below, so
+    // reading the whole figure counted it twice, under a date-change label.
+    const futureRangeChangeCents = inProgressPlan.proposedExistingGuests
+      .filter((entry) => !entry.removedFromFuture)
+      .reduce((sum, entry) => sum + entry.futureDeltaCents, 0);
+    if (futureRangeChangeCents !== 0) {
       itemizedChanges.push({
         label:
           newCheckOut.getTime() !== new Date(booking.checkOut).getTime()
             ? "Future-night date change"
             : "Future-night guest range change",
-        amountCents: inProgressPlan.futureExistingDeltaCents,
+        amountCents: futureRangeChangeCents,
       });
     }
-  } else if ((datesChanged || guestRangesChanged) && remainingGuests.length > 0) {
-    const oldRemainingForPricing = remainingGuests.map((g) => ({
-      ageTier: g.ageTier as AgeTier,
-      isMember: g.isMember,
-      memberId: g.memberId ?? null,
-      stayStart: storedDateOnly(g.stayStart ?? booking.checkIn),
-      stayEnd: storedDateOnly(g.stayEnd ?? booking.checkOut),
-    }));
-    const newRemainingForPricing = proposedRemainingGuests.map((entry) => ({
-      ageTier: entry.guest.ageTier as AgeTier,
-      isMember: entry.guest.isMember,
-      memberId: entry.guest.memberId ?? null,
-      stayStart: entry.stayStart,
-      stayEnd: entry.stayEnd,
-    }));
-
-    try {
-      const oldPriceForRemaining = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
-        ownerMemberId: bookingOwner(booking).memberId,
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-        guests: oldRemainingForPricing,
-        seasons: seasonRateData,
-        groupDiscount,
-        subscriptionLockoutMode,
-      });
-      const newPriceForRemaining = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
-        ownerMemberId: bookingOwner(booking).memberId,
-        checkIn: newCheckIn,
-        checkOut: newCheckOut,
-        guests: newRemainingForPricing,
-        seasons: seasonRateData,
-        groupDiscount,
-        seasonYear,
-        subscriptionLockoutMode,
-      });
-      const dateChangeCost =
-        newPriceForRemaining.totalPriceCents -
-        oldPriceForRemaining.totalPriceCents;
-
-      if (dateChangeCost !== 0) {
-        const nightLabel =
+  } else if (priceBreakdown) {
+    let stayChangeCents = 0;
+    let guestNightsChanged = false;
+    // Whether every guest moved with the booking, night for night, so the line
+    // can call it a date change rather than a guest-range change.
+    const shiftDays = countNightsDateOnly(storedDateOnly(booking.checkIn), newCheckIn);
+    const shifted = (key: string) =>
+      formatDateOnly(addDaysDateOnly(parseDateOnly(key), shiftDays));
+    let everyGuestMovedWithBooking = true;
+    proposedRemainingGuests.forEach((entry, index) => {
+      if (rerateGuestIds.has(entry.guest.id)) return;
+      stayChangeCents += pricedGuestAt(index).priceCents - entry.guest.priceCents;
+      const { before, after } = guestNightKeysAt(index);
+      guestNightsChanged ||= !sameNightKeys(before, after);
+      everyGuestMovedWithBooking &&= sameNightKeys(after, before.map(shifted));
+    });
+    if (stayChangeCents !== 0) {
+      itemizedChanges.push({
+        label:
           oldNights !== newNights
             ? `Date change: ${oldNights} night${oldNights !== 1 ? "s" : ""} → ${newNights} night${newNights !== 1 ? "s" : ""}`
-            : guestRangesChanged
-              ? "Guest stay range change"
-            : "Date change (rate difference)";
-        itemizedChanges.push({ label: nightLabel, amountCents: dateChangeCost });
-      }
-    } catch {
-      // If pricing fails for old dates (unlikely), skip itemization
+            : datesChanged && everyGuestMovedWithBooking
+              ? "Date change (rate difference)"
+              : guestNightsChanged
+                ? "Guest stay range change"
+                : "Price recalculated (rate difference)",
+        amountCents: stayChangeCents,
+      });
     }
   }
 
@@ -2163,37 +2183,16 @@ export async function POST(
         amountCents: entry.priceCents,
       });
     }
-  } else if (normalizedAddGuestsWithRanges && normalizedAddGuestsWithRanges.length > 0) {
-    for (const guest of normalizedAddGuestsWithRanges) {
-      try {
-        const guestPrice = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
-          ownerMemberId: bookingOwner(booking).memberId,
-          checkIn: newCheckIn,
-          checkOut: newCheckOut,
-          guests: [
-            {
-              ageTier: guest.ageTier,
-              isMember: guest.isMember,
-              memberId: guest.memberId ?? null,
-              stayStart: guest.stayStart,
-              stayEnd: guest.stayEnd,
-            },
-          ],
-          seasons: seasonRateData,
-          groupDiscount,
-          seasonYear,
-          subscriptionLockoutMode,
-        });
-        const tierLabel = guest.ageTier.charAt(0) + guest.ageTier.slice(1).toLowerCase();
-        const memberLabel = guest.isMember ? "Member" : "Non-member";
-        itemizedChanges.push({
-          label: `Added: ${guest.firstName} ${guest.lastName} (${tierLabel}, ${memberLabel})`,
-          amountCents: guestPrice.totalPriceCents,
-        });
-      } catch {
-        // skip itemization if pricing fails
-      }
-    }
+  } else if (normalizedAddGuestsWithRanges && priceBreakdown) {
+    // #4197: each added guest's price in the party pass, on their own nights.
+    normalizedAddGuestsWithRanges.forEach((guest, index) => {
+      const tierLabel = guest.ageTier.charAt(0) + guest.ageTier.slice(1).toLowerCase();
+      const memberLabel = guest.isMember ? "Member" : "Non-member";
+      itemizedChanges.push({
+        label: `Added: ${guest.firstName} ${guest.lastName} (${tierLabel}, ${memberLabel})`,
+        amountCents: pricedGuestAt(proposedRemainingGuests.length + index).priceCents,
+      });
+    });
   }
 
   // 4. Per-removed-guest credits (use their stored priceCents)
@@ -2419,10 +2418,14 @@ export async function POST(
     }
 
     if (requested && refusal) {
-      // Invalid new code — the save refuses the whole edit, so the discount
-      // stays 0 here; don't fall back to the old codes. Checked before the
-      // removal below: a one-code removal on a several-code booking is
-      // refused too (#3828), not previewed as removing every code.
+      // Invalid new code — the save refuses the whole edit, which leaves the
+      // stored promotion where it is, so the preview keeps it too (#4197): the
+      // totals then show what the save would leave, with no promo line to
+      // explain. Checked before the removal below: a one-code removal on a
+      // several-code booking is refused too (#3828), not previewed as removing
+      // every code.
+      newDiscountCents = booking.discountCents;
+      newPromoAdjustmentCents = booking.promoAdjustmentCents;
       promoValidation = { valid: false, error: refusal };
     } else if (requested && requested.length === 0) {
       // User wants to remove every code (for reuse later).
@@ -2449,21 +2452,18 @@ export async function POST(
     }
   }
 
-  // Add promo line item
-  if (newPromoAdjustmentCents !== 0) {
-    itemizedChanges.push({
-      label: appliedPromoCodeLabel ? `Promo '${appliedPromoCodeLabel}'` : "Promo discount",
-      amountCents: newPromoAdjustmentCents,
-    });
-  }
-
-  // Show removed promo as the inverse of its previous signed adjustment.
-  if (promoChange.removePromoCodeRequested && booking.promoAdjustmentCents !== 0) {
-    itemizedChanges.push({
-      label: `Removed promo '${bookingPromoCodeLabel(booking) || "adjustment"}'`,
-      amountCents: -booking.promoAdjustmentCents,
-    });
-  }
+  itemizedChanges.push(
+    ...promoBreakdownLines({
+      // An in-progress edit carries the stored adjustment over unchanged.
+      carriedOver: Boolean(inProgressPlan),
+      // A refused code refuses the save; the promo card shows why instead.
+      refused: promoValidation?.valid === false,
+      storedCodes: bookingPromoCodeLabel(booking),
+      storedAdjustmentCents: booking.promoAdjustmentCents,
+      appliedCodes: appliedPromoCodeLabel,
+      newAdjustmentCents: newPromoAdjustmentCents,
+    }),
+  );
 
   const newFinalPriceCents = inProgressPlan
     ? inProgressPlan.newFinalPriceCents

@@ -221,6 +221,9 @@ Things worth knowing:
   lodge, and everybody else on the booking keeps the price they were quoted. Set
   the tick on its own, though: combine it with a date change, adding or removing
   somebody, or a promo code and the edit is refused as usual.
+- **Not with a member link for the same person.** Linking a placeholder guest
+  to a member already re-rates them, so changing that guest's tick in the same
+  change is refused: save the link first, then change the tick.
 - **Only one lodge per booking.** A party split across two visiting clubs needs
   the officer to pick the one that applies, or to price the second club's people
   by hand.
