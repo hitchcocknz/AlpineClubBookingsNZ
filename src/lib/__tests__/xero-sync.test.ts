@@ -319,6 +319,46 @@ describe("findCanonicalPaymentRefundCreditNote", () => {
     );
   });
 
+  describe("INV-ADDPAY-041 (#4091): a note Xero voided is never re-adopted", () => {
+    // A bank-transfer payment whose one refund note Xero voided: its mirror is
+    // inactive and recorded VOIDED, but its refund payment link and its
+    // succeeded create still name it.
+    function voidedNoteOnPayment(field: string | null, active: Array<{ xeroObjectId: string; xeroObjectNumber: string }> = []) {
+      mocks.paymentFindUnique.mockResolvedValue({ xeroRefundCreditNoteId: field });
+      mocks.linkFindMany.mockImplementation(async ({ where }: any) => {
+        if (where?.role === "REFUND_CREDIT_NOTE") {
+          return where.active
+            ? active
+            : [{ xeroObjectId: "cn_voided", metadata: { amountCents: 20_000, status: "VOIDED" } }, ...active.map((link) => ({ ...link, metadata: { amountCents: 500 } }))];
+        }
+        if (where?.role === "REFUND_PAYMENT") return [{ metadata: { creditNoteId: "cn_voided" } }];
+        return [];
+      });
+      mocks.operationFindFirst.mockImplementation(async ({ where }: any) =>
+        where.xeroObjectId.notIn?.includes("cn_voided") ? null : { xeroObjectId: "cn_voided", xeroObjectNumber: "CN-V" },
+      );
+    }
+
+    it("MUTATION: with the field released, neither its refund payment nor its create re-adopts it - a later request raises a fresh note", async () => {
+      voidedNoteOnPayment(null);
+
+      await expect(findCanonicalPaymentRefundCreditNote("payment_1")).resolves.toBeNull();
+      expect(mocks.operationFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ xeroObjectId: { not: null, notIn: ["cn_voided"] } }) }),
+      );
+    });
+
+    it("MUTATION: a field still naming the voided note does not re-adopt it, and a live note is still found", async () => {
+      voidedNoteOnPayment("cn_voided", [{ xeroObjectId: "cn_live", xeroObjectNumber: "CN-L" }]);
+
+      await expect(findCanonicalPaymentRefundCreditNote("payment_1")).resolves.toEqual({
+        xeroObjectId: "cn_live",
+        xeroObjectNumber: "CN-L",
+        source: "link",
+      });
+    });
+  });
+
   it("falls back to the latest succeeded credit note create when no durable link exists yet", async () => {
     mocks.linkFindMany.mockImplementation(async ({ where }: any) => {
       if (where?.role === "REFUND_CREDIT_NOTE") {
@@ -437,6 +477,57 @@ describe("upsertXeroObjectLink", () => {
       expect(mocks.txLinkUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expect.objectContaining({ xeroObjectId: { not: "cn_canonical", notIn: ["cn_review"] } }) }),
       );
+    });
+  });
+
+  describe("#4091: a bank-transfer payment's one canonical note, voided in Xero", () => {
+    const voidCanonical = () =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE",
+        metadata: { status: "VOIDED", total: 200 }, mergeMetadata: true,
+      });
+
+    it("MUTATION: the mirror is written inactive and the pointer is released", async () => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await voidCanonical();
+
+      // Before the fix the canonical branch wrote it active: the field named it.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ active: false }), update: expect.objectContaining({ active: false }) }),
+      );
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: null },
+      });
+    });
+
+    it("MUTATION: a voided note retires no sibling, so the pointer can move to another live note", async () => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+      mocks.txLinkFindMany.mockResolvedValue([
+        { id: "link_review", xeroObjectId: "cn_review", metadata: { amountCents: 3000, perDelta: true }, createdAt: new Date("2026-06-03T00:00:00.000Z") },
+        { id: "link_other", xeroObjectId: "cn_other", metadata: { amountCents: 5000 }, createdAt: new Date("2026-06-02T00:00:00.000Z") },
+      ]);
+
+      await voidCanonical();
+
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: "cn_other" },
+      });
+    });
+
+    it("MUTATION: a redelivered void, after the pointer was released, stays inactive and retires nothing", async () => {
+      // With the field empty the canonical branch fell back to the incoming
+      // note itself, so a redelivery re-armed the mirror and retired siblings.
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await voidCanonical();
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false }) }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
     });
   });
 
