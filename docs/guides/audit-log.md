@@ -877,8 +877,10 @@ Stripe dashboard, say, even before Stripe's own "payment succeeded" notice
 reached the app - the app writes one
 `booking.payment.late_capture_refunded_outside_app` entry, category `payment`,
 severity `important`, with `paymentIntentId`, `refundIds`, `refundedCents` and
-`creditNoteQueued: false`, and emails the people who handle failed card
-payments, once for that payment. No Xero credit note is raised for it, because
+`creditNoteQueued: false`, and emails everyone who can edit Finance, once for
+that payment, through its own alert that cannot be switched off (*Late payment
+refunded outside the app - check Xero*); if that email could not be sent, the
+nightly check sends it. No Xero credit note is raised for it, because
 Xero never received that payment; record it by hand only if it was recorded
 there. A refund the app's own repair tool made is not one of these.
 

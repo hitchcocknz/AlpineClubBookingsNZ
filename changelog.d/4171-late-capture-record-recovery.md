@@ -20,7 +20,17 @@
   invoice. It now leaves that refund to the late payment's own record. A late
   payment refunded some other way (the Stripe dashboard), even before Stripe's
   "payment succeeded" notice arrived, is named in the audit log, emailed once
-  to the people who handle failed card payments, and never noted in Xero as
-  ordinary cash. The nightly check now also finds a late payment whose record
-  was lost even when it shows no gap in Xero, and a treasurer-approved refund is
-  no longer mistaken for a possible double payment.
+  to everyone who can edit Finance in its own alert that cannot be switched off
+  (*Late payment refunded outside the app - check Xero*), and never noted in
+  Xero as ordinary cash. The nightly check now also finds a late payment whose
+  record was lost even when it shows no gap in Xero (looking back 30 days), and
+  a treasurer-approved refund is no longer mistaken for a possible double
+  payment; a possible double payment is escalated once, and again if that email
+  failed. A late refund the repair tool made is recovered the same way.
+- **A refund of a payment made in a stale tab after its booking was cancelled
+  is no longer credited in Xero (#4173, closed here).** When a member paid for
+  a change in an old tab after the booking was cancelled, the app refunded it
+  as a superseded payment, and the nightly Xero check then raised a credit note
+  against the booking's original invoice for money Xero never received. That
+  refund is now left out of what a credit note may answer, the nightly check no
+  longer asks Stripe about it every night, and no alert is sent for it.
