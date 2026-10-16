@@ -30,6 +30,9 @@ const failedLater = vi.hoisted(() => ({
   keep: vi.fn<(...args: unknown[]) => Promise<{ debts: unknown[]; readAsRefused: string[] }>>(async () => ({ debts: [], readAsRefused: [] })),
   alert: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
 }));
+// #4159 review round 2 (F2): the officers' alert for refund money a charge's total cannot hold, observed here.
+const capOverflow = vi.hoisted(() => ({ alert: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true) }));
+vi.mock("@/lib/card-refund-cap-overflow", () => ({ alertCardRefundCapOverflow: capOverflow.alert }));
 vi.mock("@/lib/card-refund-failed-later", () => ({
   keepFailedLaterCardRefundsOwed: failedLater.keep,
   alertFailedLaterCardRefunds: failedLater.alert,
@@ -45,6 +48,7 @@ import {
   recordInternetBankingPaymentTransaction,
   RefundAllocationRacedError,
   refundPaymentTransactions,
+  recordStripeRefundsAgainstTransaction,
   syncRefundsFromStripeCharge,
 } from "@/lib/payment-transactions";
 import { predatesRefundLedger } from "@/lib/payment-transaction-status";
@@ -1770,6 +1774,31 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
       await settleCredit(ctx);
       await webhookSync(ctx);
       expect(mocks.loggerError).not.toHaveBeenCalled();
+      expect(capOverflow.alert).not.toHaveBeenCalled();
+    });
+
+    // #4159 review round 2 (F2): logged is not enough - the officers are told, after the commit, never inside it.
+    const record = (store: unknown) =>
+      recordStripeRefundsAgainstTransaction({ paymentId: "payment_1", paymentTransactionId: "txn_1", refunds: [cardRefund("re_over", CARD_REFUND_CENTS)], store: store as never });
+
+    it("MUTATION: on its own commit, the discarded cents reach the officers' alert - after the transaction - and are returned", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      let committed = false;
+      const root = { ...ctx.store, $connect: () => undefined, $transaction: async (fn: (tx: unknown) => Promise<unknown>) => { const out = await fn(ctx.store); committed = true; return out; } };
+      capOverflow.alert.mockImplementationOnce(async () => { expect(committed).toBe(true); return true; });
+      const result = await record(root);
+      const overflow = { paymentId: "payment_1", paymentTransactionId: "txn_1", discardedCents: CARD_REFUND_CENTS, recordedRefundCents: CARD_REFUND_CENTS };
+      expect(result.capOverflow).toEqual(overflow);
+      expect(capOverflow.alert).toHaveBeenCalledWith(overflow);
+    });
+
+    it("joined to a caller's transaction, it alerts nothing itself and returns the discarded cents for the caller", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      const result = await record(ctx.store);
+      expect(result.capOverflow).toMatchObject({ discardedCents: CARD_REFUND_CENTS });
+      expect(capOverflow.alert).not.toHaveBeenCalled();
     });
   });
 

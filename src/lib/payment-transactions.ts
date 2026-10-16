@@ -19,6 +19,7 @@ import {
   type FailedLaterKind,
 } from "@/lib/card-refund-failed-later";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
+import { alertCardRefundCapOverflow, type CardRefundCapOverflow } from "@/lib/card-refund-cap-overflow";
 import logger from "@/lib/logger";
 import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
@@ -849,8 +850,9 @@ export async function recordStripeRefundsAgainstTransaction({
       },
       { writeStatus: true }
     );
-    // #4154 review (M1): cents above the charge are refund money the total cannot hold - perhaps also paid back by hand. Loud, never silent.
+    // #4154 review (M1, round 2 F2): cents above the charge are refund money the total cannot hold - perhaps also paid back by hand. Logged, and the officers alerted after the commit.
     if (discardedCents > 0) logger.error({ paymentId, paymentTransactionId, discardedCents, previousCents, nextCents }, "A card refund took this charge's refunded total past the charge; the excess was discarded - check whether the member was also paid back another way (#4154)");
+    const capOverflow: CardRefundCapOverflow | null = discardedCents > 0 ? { paymentId, paymentTransactionId, discardedCents, recordedRefundCents: ledgerRefundedAmountCents } : null;
 
     const payment = await reconcilePaymentAggregates({ paymentId, store: db });
 
@@ -867,10 +869,13 @@ export async function recordStripeRefundsAgainstTransaction({
       failedLaterDebts,
       /** #4104: refunds its caller was told counted that a row it is moving owns; the caller reads them as refused. */
       readAsRefused,
+      /** #4159 review round 2 (F2): refund money the charge's total could not hold, or null. */
+      capOverflow,
     };
   });
   // Alerted once its commit is ours; joined to a caller's transaction, returned for the caller to alert after its commit.
   if (isRootPrismaClient(store)) await alertFailedLaterCardRefunds(recorded.failedLaterDebts);
+  if (isRootPrismaClient(store) && recorded.capOverflow) await alertCardRefundCapOverflow(recorded.capOverflow);
   return recorded;
 }
 
