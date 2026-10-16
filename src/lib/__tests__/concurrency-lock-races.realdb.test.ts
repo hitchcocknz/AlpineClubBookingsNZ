@@ -342,8 +342,8 @@ import "./membership-subscription-charge-close.realdb.test";
 // owns and cleans its own `race-4131-` fixtures.
 import "./late-capture-own-charge-refund.realdb.test";
 // #4132 reuses it to prove a payment's ledger rows written in one transaction
-// keep insertion order (`createdAt`, then `insertionSeq`) after an UPDATE moves
-// one in the heap, through the loader, the mirror, the reduction's ask and the
+// keep insertion order (`createdAt`, then `insertionSeq`) after CLUSTER
+// deliberately changes heap order, through the loader, mirror, reduction's ask and
 // card refund plan. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
 // cleans its own `race-4132-` fixtures.
 import "./ledger-insertion-seq.realdb.test";
@@ -352,6 +352,12 @@ import "./ledger-insertion-seq.realdb.test";
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
 // its own `race-4146-` fixtures.
 import "./prisma-exact-prefix.realdb.test";
+// #4165 reuses it to prove the audit category filters' literal action
+// prefixes select the same real rows the wildcard ones did, on every category
+// and on a member's own timeline, and refuse the rows only a `_` reached.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4165` rows.
+import "./audit-query-exact-prefix.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

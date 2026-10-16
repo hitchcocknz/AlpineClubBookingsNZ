@@ -14,7 +14,8 @@
  * - scalar equality, including `null` (IS NULL) and `Date` compared by instant;
  * - the scalar filter object: `equals`, `not` (nested: `not: null`,
  *   `not: { in }`), `in`, `notIn`, `lt`, `lte`, `gt`, `gte`, `startsWith`,
- *   `contains`;
+ *   `contains` — the last two as the unescaped SQL `LIKE` Prisma sends, so `_`
+ *   and `%` are wildcards and a backslash escapes (#4165);
  * - the logical keys `AND`, `OR`, `NOT`, each accepting one clause or a list;
  * - relation filters: to-one `is` / `isNot` (`is: null` is "no related row"),
  *   to-many `some` / `none`, and Prisma's to-one shorthand
@@ -178,6 +179,49 @@ function nullUnderNegation(label: string, operator: string, at: string): never {
 }
 
 /**
+ * `startsWith` / `contains` as the SQL Prisma sends for them (#4165). Prisma
+ * (7.10, PostgreSQL) writes `LIKE operand || '%'` and `LIKE '%' || operand ||
+ * '%'` WITHOUT escaping the operand, so its `_` matches any one character, its
+ * `%` any run, and a backslash makes the next character literal (PostgreSQL's
+ * default `LIKE` escape) — which is how `exactPrefix` asks for a literal match.
+ * Reading the operand as plain text would answer the opposite way on both: a
+ * bare `"xero_"` would miss the `xero.` row PostgreSQL returns, and an escaped
+ * `"MEMBERSHIP\\_APPLICATION"` would miss the row it is written to find.
+ * Case-sensitive, as `LIKE` is (`mode: "insensitive"` is unmodelled and throws).
+ * `prisma-exact-prefix.realdb.test.ts` and `audit-query-exact-prefix.realdb.test.ts`
+ * pin the PostgreSQL side of this.
+ */
+function likePattern(operand: string, operator: string): RegExp {
+  // The whole pattern Prisma sends, so an operand's trailing backslash escapes
+  // Prisma's own `%` as PostgreSQL reads it: `startsWith: "a\\"` is `LIKE 'a\%'`,
+  // which matches exactly `a%`.
+  const pattern = operator === "startsWith" ? `${operand}%` : `%${operand}%`;
+  // By character, not UTF-16 unit: PostgreSQL's `_` is one character, so the
+  // regex runs with `u` and the pattern is split the same way.
+  const chars = Array.from(pattern);
+  let body = "";
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
+    if (char === "\\" && index + 1 < chars.length) {
+      index += 1;
+      body += escapeRegExp(chars[index]);
+    } else if (char === "_") {
+      body += ".";
+    } else if (char === "%") {
+      body += ".*";
+    } else {
+      body += escapeRegExp(char);
+    }
+  }
+  return new RegExp(`^${body}$`, "su");
+}
+
+/** A literal character in a `u`-flag regex, where `-` and `/` must not be escaped. */
+function escapeRegExp(char: string): string {
+  return char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * One scalar column against one condition: a literal, `null`, or a filter
  * object. `negated` is true inside a logical `NOT`, where a comparison over a
  * NULL column has no two-valued answer and throws instead.
@@ -255,11 +299,7 @@ function matchesScalar(
           return false;
         }
         if (typeof actual !== "string") return false;
-        const holds =
-          operator === "startsWith"
-            ? actual.startsWith(operand as string)
-            : actual.includes(operand as string);
-        if (!holds) return false;
+        if (!likePattern(operand as string, operator).test(actual)) return false;
         break;
       }
       default:
