@@ -177,8 +177,13 @@ async function readFailedLaterCardRefunds(
       const payment = payments.find((each) => each.id === row.paymentId);
       if (!payment) return [row.id, null] as const;
       const marked = payment.recoveryOperations.find((op) => parseRefundAllocationPlan(op.allocationPlan)?.some((slice) => slice.madeRefundId === refundId));
-      // As the payment stood before the failure: the refund still counted, as the failed-later writer read it.
-      const before = { ...payment, refunds: payment.refunds.map((each) => (each.stripeRefundId === refundId ? { ...each, status: "pending" } : each)) };
+      // As the payment stood before the failure, as the failed-later writer read it: the refund
+      // still counted, and the row that owes it again not yet raised (in Stripe's same second, it would take it).
+      const before = {
+        ...payment,
+        recoveryOperations: payment.recoveryOperations.filter((op) => op.id !== row.id),
+        refunds: payment.refunds.map((each) => (each.stripeRefundId === refundId ? { ...each, status: "pending" } : each)),
+      };
       return [row.id, marked?.id ?? cardRefundSliceFilledBy(before, refundId)?.operation.id ?? null] as const;
     }),
   );

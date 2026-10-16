@@ -172,6 +172,14 @@ describe("readCancelledCardRefund reads the cancel's refunds that failed later (
     expect((await readCancelledCardRefund(BOOKING)).cardRefundFailedLater).toEqual([{ amountCents: 9_000, state: "stalled" }]);
   });
 
+  it("MUTATION: a retry failed in Stripe's same second is still the chain's - the row owing it never made it", async () => {
+    const first = failedLaterRow("re_cancel", { status: PaymentRecoveryOperationStatus.SUCCEEDED, succeededAt: RETRIED, nextRetryAt: null });
+    const second = failedLaterRow("re_retry", { createdAt: RETRIED, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
+    rows([cancelRow()], [first, second], [refund("re_cancel", "failed"), refund("re_retry", "failed", RETRIED)]);
+
+    expect((await readCancelledCardRefund(BOOKING)).cardRefundFailedLater).toEqual([{ amountCents: 9_000, state: "stalled" }]);
+  });
+
   it("a row the LIKE wildcard matched that is not a failed-later key is ignored", async () => {
     rows([cancelRow()], [failedLaterRow("re_cancel", { idempotencyKey: "cardXrefund_failed_later_re_cancel" })], [refund("re_cancel", "failed")]);
 
