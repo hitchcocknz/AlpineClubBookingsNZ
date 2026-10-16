@@ -217,6 +217,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
+import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
 
 
 const D = (s: string) => parseDateOnly(s);
@@ -1254,11 +1255,6 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
       "Guest 1 Date In must use yyyy-mm-dd format.",
     ],
     [
-      "a malformed night in an explicit night set",
-      { guestStayRanges: [{ guestId: "g3", nights: ["not-a-date"] }] },
-      "Guest 3 night 1 must use yyyy-mm-dd format.",
-    ],
-    [
       "an ADDED guest's own bad range — numbered AFTER the remaining guests",
       {
         addGuests: [{ ...ADD_ADULT, stayStart: "2026-09-02" }],
@@ -1307,6 +1303,24 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
       expect(() => runFreeze(delta)).toThrow(message);
     });
   }
+
+  // #4199: a malformed night no longer reaches the resolver from a request. The
+  // preview and the save both read `nights` through `guestNightListSchema`, so
+  // both refuse it at the schema with the same body and the shared wording; the
+  // resolver keeps its own refusal for a delta that does not come through a
+  // request schema (a stored delta replayed by approval), and the freeze too.
+  it("refuses a malformed night in an explicit night set at the request schema, and the resolver still refuses it", async () => {
+    const delta = { guestStayRanges: [{ guestId: "g3", nights: ["not-a-date"] }] };
+    const route = await runRoute(delta);
+    expect(route.status).toBe(400);
+    expect(route.body.error).toBe("Invalid input");
+    expect(JSON.stringify(route.body.details)).toContain(GUEST_NIGHT_INVALID_MESSAGE);
+    expect(h.priceGuests).not.toHaveBeenCalled();
+
+    const message = "Guest 3 night 1 must use yyyy-mm-dd format.";
+    await expect(runPlanner(delta)).rejects.toMatchObject({ message, status: 400 });
+    expect(() => runFreeze(delta)).toThrow(message);
+  });
 
   it("prices nothing and checks no capacity once a range is refused", async () => {
     const route = await runRoute({
