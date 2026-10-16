@@ -603,24 +603,17 @@ async function normalizePaymentRefundLinkWithClient(
     return link;
   }
 
-  // #4195: a refund request's own note (`INV-PAY-118`) takes the same void
-  // rule (`INV-ADDPAY-041`). It is never the payment's one note, so nothing
-  // below applies to it, and it never names the pointer.
-  if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE && link.xeroObjectType === "CREDIT_NOTE") {
-    return isRefundCreditNoteLinkCancelledInXero(link.metadata) ? { ...link, active: false } : link;
-  }
-
-  if (link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectType === "CREDIT_NOTE") {
-    // A note the incoming write records VOIDED/DELETED in Xero credits nothing,
-    // so its mirror is written inactive on every payment: a Stripe or
-    // per-refund note (#2901) and a bank-transfer payment's one canonical note
-    // (#4091). Else an inbound re-reconcile re-arms phantom coverage (upsert
-    // forces `active` from this return). It claims nothing, so retires no sibling.
+  if ((link.role === "REFUND_CREDIT_NOTE" || link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) && link.xeroObjectType === "CREDIT_NOTE") {
+    // A note the incoming write records VOIDED/DELETED in Xero credits nothing, so its mirror is
+    // written inactive on every payment: a Stripe or per-refund note (#2901), a bank-transfer
+    // payment's one canonical note (#4091) and a refund request's own note (#4195, `INV-PAY-118`).
+    // Else an inbound re-reconcile re-arms phantom coverage (upsert forces `active` from this
+    // return). It claims nothing, so retires no sibling.
     if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
-      // The pointer moves after this link row is written: link, then payment,
-      // the order the repair apply locks them in.
+      // The pointer moves after this link row is written: link, then payment, the repair apply's order.
       return { ...link, active: false };
     }
+    if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) return link; // never the payment's one note below
 
     const payment = await client.payment.findUnique({
       where: { id: link.localId },

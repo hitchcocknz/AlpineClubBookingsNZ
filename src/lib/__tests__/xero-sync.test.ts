@@ -560,6 +560,9 @@ describe("upsertXeroObjectLink", () => {
         expect(call.update.active).toBe(true);
       }
       expect(mocks.txLinkUpsert).toHaveBeenCalledTimes(2);
+      // Never the payment's one note: it retires no refund note and reads no payment.
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentFindUnique).not.toHaveBeenCalled();
       expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
     });
   });

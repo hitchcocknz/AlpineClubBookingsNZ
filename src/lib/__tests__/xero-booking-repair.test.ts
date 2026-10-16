@@ -8032,7 +8032,7 @@ describe("a refund request's own note never answers for the payment's refund not
   // payment's own refund-note roles), and the request, never the
   // cancellation's note, raises the replacement (`INV-PAY-118`).
   it("MUTATION (#4195): a request whose note Xero voided keeps its cash out of the cancellation's note", async () => {
-    const voided = { ...requestLink, active: false, metadata: { ...requestLink.metadata, status: "VOIDED" } };
+    const voided = { ...requestLink, active: false, metadata: { amountCents: 3000, refundRequestId: "rr_1", status: "VOIDED" } };
     for (const operation of [requestNote(), requestNote({ requestPayload: null })]) {
       const booking = await run({ operations: [operation], links: [voided], payment: { refundedAmountCents: 3000 } });
       expect(booking.findings).not.toContainEqual(ambiguousNote);
