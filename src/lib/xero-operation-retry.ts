@@ -70,7 +70,11 @@ import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import type { ClubFormat } from "@/lib/club-format";
 import { readRefundRequestIdFromPayload } from "@/lib/refund-request-credit-note";
 import { findResolvedSiblingSince } from "@/lib/xero-resolved-in-xero-fences";
-import { membershipChargeNeedsNoInvoice } from "@/lib/subscription-charge-already-paid";
+import {
+  isStrayInvoiceAfterCloseOutcome,
+  membershipChargeNeedsNoInvoice,
+  STRAY_INVOICE_AFTER_CLOSE_OPERATION_REASON,
+} from "@/lib/subscription-charge-already-paid";
 
 /**
  * The `@/lib/xero` module namespace, named because an `import()` type written
@@ -1067,6 +1071,11 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
   }
 
   if (operation.status === "PARTIAL") {
+    // #4098 review (money F4): a subscription invoice raised after its charge
+    // was closed as already paid is a stray to void, not a payload to repair.
+    if (isStrayInvoiceAfterCloseOutcome(operation.responsePayload)) {
+      return { supported: false, reason: STRAY_INVOICE_AFTER_CLOSE_OPERATION_REASON };
+    }
     if (operation.entityType === "INVOICE" && operation.operationType === "CREATE") {
       if (!partialInvoiceOperationHasPaymentFault(operation)) {
         return {
