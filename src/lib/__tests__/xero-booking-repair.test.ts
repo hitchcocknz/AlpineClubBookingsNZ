@@ -8032,12 +8032,19 @@ describe("a refund request's own note never answers for the payment's refund not
   // payment's own refund-note roles), and the request, never the
   // cancellation's note, raises the replacement (`INV-PAY-118`).
   it("MUTATION (#4195): a request whose note Xero voided keeps its cash out of the cancellation's note", async () => {
-    const voided = { ...requestLink, active: false, metadata: { amountCents: 3000, refundRequestId: "rr_1", status: "VOIDED" } };
-    for (const operation of [requestNote(), requestNote({ requestPayload: null })]) {
-      const booking = await run({ operations: [operation], links: [voided], payment: { refundedAmountCents: 3000 } });
+    // Its mirror is inactive now, so the loader (active links only) never reads it: the row's amount counts.
+    const inactive = await run({ operations: [requestNote()], links: [], payment: { refundedAmountCents: 3000 } });
+    // A mirror left active before #4195 still records VOIDED: with the row's payload gone, its amount counts.
+    const voidedStillActive = { ...requestLink, metadata: { amountCents: 3000, refundRequestId: "rr_1", status: "VOIDED" } };
+    const legacy = await run({ operations: [requestNote({ requestPayload: null })], links: [voidedStillActive], payment: { refundedAmountCents: 3000 } });
+    for (const booking of [inactive, legacy]) {
       expect(booking.findings).not.toContainEqual(ambiguousNote);
       expect(booking.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
     }
+    // Neither the row nor an active mirror says the amount: a person sizes it, never the tool.
+    const unknown = await run({ operations: [requestNote({ requestPayload: null })], links: [], payment: { refundedAmountCents: 3000 } });
+    expect(unknown.findings).toContainEqual(ambiguousNote);
+    expect(unknown.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
   });
 
   // Review F2 at a19beb492: no other arm reads a request's note, so its own
