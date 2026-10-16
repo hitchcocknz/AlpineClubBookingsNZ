@@ -213,6 +213,8 @@ describe("resolveBookingNarrative", () => {
         }),
         event(BookingEventType.REFUNDED, "2026-05-06T00:00:00.000Z", {
           amountCents: 9000,
+          // As the cancel's close writes it (`cancelCardRefundEventReason`, #4145).
+          reason: "75% refunded to the original payment method.",
         }),
       ],
     }, CLUB_FORMAT_TEST);

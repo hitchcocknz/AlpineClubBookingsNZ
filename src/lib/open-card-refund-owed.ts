@@ -344,8 +344,8 @@ export function cardRefundSlicesByOperation(
  */
 function attributeRecordedRefunds(
   payment: CardRefundOwedPaymentRow,
-  /** #4104: told which slice each recorded refund filled (`cardRefundSliceFilledBy`). */
-  onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number) => void,
+  /** #4104: told which slice each recorded refund filled, and with how much (`cardRefundSliceFilledBy`). */
+  onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number, cents: number) => void,
 ): {
   operations: Array<{ operation: CardRefundOperationRow; slices: CardRefundSlice[] }>;
   lateCentsByOperation: Map<string, number>;
@@ -378,8 +378,8 @@ function attributeRecordedRefunds(
         : undefined;
       if (!refund) continue;
       claimed.add(refund);
-      onFill?.(refund, operation, sliceIndex);
       slice.filledCents = Math.min(slice.amountCents, Math.max(0, refund.amountCents));
+      onFill?.(refund, operation, sliceIndex, slice.filledCents);
       if (operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime()) {
         lateCentsByOperation.set(operation.id, (lateCentsByOperation.get(operation.id) ?? 0) + slice.filledCents);
       }
@@ -395,8 +395,8 @@ function attributeRecordedRefunds(
       if (!candidate || !operationWindowTakes(candidate.operation, refund)) continue;
       const slice = candidate.slices.find((each) => sliceTakes(each, refund, leftCents));
       if (!slice) continue;
-      onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice));
       const takenCents = Math.min(leftCents, slice.amountCents - slice.filledCents);
+      onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice), takenCents);
       slice.filledCents += takenCents;
       leftCents -= takenCents;
       const { succeededAt } = candidate.operation;
@@ -423,6 +423,28 @@ export function cardRefundSliceFilledBy(
     if (refund.stripeRefundId === stripeRefundId && owner === null) owner = { operation, sliceIndex };
   });
   return owner;
+}
+
+/**
+ * #4145 (`INV-PAY-134`): what the recorded refunds made of one operation's
+ * slices - marked or matched, by the attribution the owed figure runs - and
+ * when Stripe made the latest of them (`stripeMadeAt`). A slice whose refund
+ * failed later and was handed to a row of its own counts nothing: no recorded
+ * refund made it.
+ */
+export function cardRefundMadeForOperation(
+  payment: CardRefundOwedPaymentRow,
+  operationId: string,
+): { madeCents: number; lastMadeAt: Date | null } {
+  let madeCents = 0;
+  let lastMadeAt: Date | null = null;
+  attributeRecordedRefunds(payment, (refund, operation, _sliceIndex, cents) => {
+    if (operation.id !== operationId || cents <= 0) return;
+    madeCents += cents;
+    const madeAt = stripeMadeAt(refund);
+    if (lastMadeAt === null || madeAt.getTime() > lastMadeAt.getTime()) lastMadeAt = madeAt;
+  });
+  return { madeCents, lastMadeAt };
 }
 
 /**
