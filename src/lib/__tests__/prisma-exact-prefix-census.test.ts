@@ -4,13 +4,13 @@ import { describe, expect, it } from "vitest";
 import { stripComments } from "@/lib/__tests__/support/strip-comments";
 
 /**
- * #4146 (`INV-SSOT-006`): every Prisma `startsWith` whose prefix carries an id
- * or user input goes through `exactPrefix`.
+ * #4146 (`INV-SSOT-006`): every Prisma `startsWith` or `contains` whose operand carries an id
+ * or user input goes through `exactPrefix` or `exactContains`.
  *
  * Prisma sends `startsWith: p` as SQL `LIKE p || '%'` without escaping `p`, so
  * a `_` or `%` in a prefix built from an id, or typed by a person, is a
  * wildcard. This reads `src/` from disk (comments stripped) and judges the
- * value of every `startsWith:` property. Allowed bare: a string literal, or an
+ * value of every `startsWith:` and `contains:` property. Allowed bare: a string literal, or an
  * UPPER_SNAKE constant. Anything else (a template literal, a `build…(` call, a
  * variable) must be written `field: exactPrefix(p)` instead, or appear in
  * `ALLOWED` below with the reason its value can carry neither.
@@ -18,7 +18,7 @@ import { stripComments } from "@/lib/__tests__/support/strip-comments";
  * BLIND SPOTS. It judges the expression's spelling, not its value: a
  * lower-case alias of a constant is listed, and an UPPER_SNAKE name bound to a
  * computed string would pass. `prisma-exact-prefix.ts` itself is the one file
- * not read: it spells the escaped `startsWith` the rest must not.
+ * not read: it spells the escaped operands the rest must not.
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 const SRC = join(REPO_ROOT, "src");
@@ -66,20 +66,28 @@ function bareValueAllowed(value: string): boolean {
   return /^(["'])(?:(?!\1)[^\\]|\\.)*\1$/.test(value) || /^[A-Z][A-Z0-9_]*$/.test(value);
 }
 
+/** Run the same scanner on production files and synthetic regression fixtures. */
+function inspectSource(source: string): string[] {
+  const values: string[] = [];
+  const code = stripComments(source);
+  // Shorthand and computed keys cannot establish a literal operand.
+  for (const match of code.matchAll(/(?:\{|,)\s*(?:startsWith|contains)\s*[,}]|\[\s*["'`](?:startsWith|contains)["'`]\s*\]/g)) {
+    values.push(match[0].trim());
+  }
+  for (const match of code.matchAll(/(?:\b(?:startsWith|contains)|["'](?:startsWith|contains)["'])\s*:\s*/g)) {
+    const value = valueAt(code, (match.index ?? 0) + match[0].length);
+    if (!bareValueAllowed(value)) values.push(value);
+  }
+  return values;
+}
+
 function census(): { unexplained: string[]; allowedSeen: Set<string>; scanned: number } {
   const unexplained: string[] = [];
   const allowedSeen = new Set<string>();
   const files = sourceFiles(SRC).filter((file) => relative(REPO_ROOT, file).split("\\").join("/") !== HELPER);
   for (const file of files) {
     const rel = relative(REPO_ROOT, file).split("\\").join("/");
-    const source = stripComments(readFileSync(file, "utf8"));
-    // #4146 review: the shorthand `{ startsWith }` and a computed key are refused outright.
-    for (const shorthand of source.matchAll(/(?:\{|,)\s*startsWith\s*[,}]|\[\s*["'`]startsWith["'`]\s*\]/g)) {
-      unexplained.push(`${rel}|${shorthand[0].trim()}`);
-    }
-    for (const match of source.matchAll(/\bstartsWith\s*:\s*/g)) {
-      const value = valueAt(source, (match.index ?? 0) + match[0].length);
-      if (bareValueAllowed(value)) continue;
+    for (const value of inspectSource(readFileSync(file, "utf8"))) {
       const key = `${rel}|${value}`;
       if (key in ALLOWED) allowedSeen.add(key);
       else unexplained.push(key);
@@ -88,18 +96,18 @@ function census(): { unexplained: string[]; allowedSeen: Set<string>; scanned: n
   return { unexplained, allowedSeen, scanned: files.length };
 }
 
-describe("every id- or input-carrying Prisma startsWith goes through exactPrefix (#4146, INV-SSOT-006)", () => {
+describe("every id- or input-carrying Prisma startsWith/contains uses literal matching (#4146, #4190, INV-SSOT-006)", () => {
   const result = census();
 
   it("reads the tree it claims to", () => {
     expect(result.scanned).toBeGreaterThan(500);
   });
 
-  it("finds no bare startsWith whose value could carry an id or user input", () => {
+  it("finds no bare startsWith/contains whose value could carry an id or user input", () => {
     expect(
       result.unexplained,
-      "INV-SSOT-006: Prisma's `startsWith` is SQL LIKE and does not escape `_` or `%`, so a prefix built from an id " +
-        "or typed by a person can match another record. Write `field: exactPrefix(prefix)` " +
+      "INV-SSOT-006: Prisma's `startsWith`/`contains` is SQL LIKE and does not escape `_` or `%`, so a prefix built from an id " +
+        "or typed by a person can match another record. Write `field: exactPrefix(prefix)` or `field: exactContains(value)` (optionally case-insensitive) " +
         "(src/lib/prisma-exact-prefix.ts). Only a value that can carry neither belongs in ALLOWED, with its reason.",
     ).toEqual([]);
   });
@@ -109,6 +117,18 @@ describe("every id- or input-carrying Prisma startsWith goes through exactPrefix
       Object.keys(ALLOWED).filter((key) => !result.allowedSeen.has(key)),
       "INV-SSOT-006: an ALLOWED entry no longer matches a site; remove it.",
     ).toEqual([]);
+  });
+
+  it("rejects dynamic contains in ordinary, quoted, computed and shorthand properties (#4190)", () => {
+    for (const source of [
+      '{ contains: query, mode: "insensitive" }',
+      '{ contains: `${id}:` }',
+      '{ "contains": query }',
+      '{ ["contains"]: query }',
+      '{ contains }',
+    ]) expect(inspectSource(source), `INV-SSOT-006: missed ${source}`).not.toEqual([]);
+    expect(inspectSource('/* contains: query */ field: exactContains(query, "insensitive")')).toEqual([]);
+    expect(inspectSource('{ contains: "hut-fees" }')).toEqual([]);
   });
 
   it("judges the spellings it is meant to (non-vacuity)", () => {

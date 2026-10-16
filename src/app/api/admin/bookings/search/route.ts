@@ -6,7 +6,7 @@ import {
   parseBookingDeletedVisibility,
 } from "@/lib/booking-delete-visibility";
 import { prisma } from "@/lib/prisma";
-import { exactPrefix } from "@/lib/prisma-exact-prefix";
+import { exactContains, exactPrefix } from "@/lib/prisma-exact-prefix";
 import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
 import { formatDateOnly } from "@/lib/date-only";
@@ -143,9 +143,9 @@ export async function GET(request: NextRequest) {
             member: {
               is: {
                 OR: [
-                  { firstName: { contains: q, mode: "insensitive" } },
-                  { lastName: { contains: q, mode: "insensitive" } },
-                  { email: { contains: q, mode: "insensitive" } },
+                  { firstName: exactContains(q, "insensitive") },
+                  { lastName: exactContains(q, "insensitive") },
+                  { email: exactContains(q, "insensitive") },
                 ],
               },
             },
@@ -158,8 +158,8 @@ export async function GET(request: NextRequest) {
             organisation: {
               is: {
                 OR: [
-                  { name: { contains: q, mode: "insensitive" } },
-                  { email: { contains: q, mode: "insensitive" } },
+                  { name: exactContains(q, "insensitive") },
+                  { email: exactContains(q, "insensitive") },
                 ],
               },
             },
