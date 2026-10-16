@@ -14,7 +14,7 @@ reason: the preview decides which family charges still bill their family
   (owner decisions on #4110: a closed charge does until a covered member's
   payment is reversed; the newest closed charge decides; a member exempt at
   the close or reversed under an older charge is an exception asking Finance
-  to decide; every closed charge informs the warning and that exception; a
+  to decide; every closed charge informs the warning and that exception;
   only a difference invoice passes the family hold; a re-bill beside a
   member's invoice warns; a reversal the hold keeps back is a decision), and
   the confirm acknowledges
