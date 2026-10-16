@@ -5,7 +5,7 @@ import type { AgeTier, Prisma } from "@prisma/client";
 import { hash } from "bcryptjs";
 import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { exactPrefix } from "@/lib/prisma-exact-prefix";
+import { exactContains, exactPrefix } from "@/lib/prisma-exact-prefix";
 import {
   computeAgeTier,
   getAgeTierSettings,
@@ -437,9 +437,9 @@ export async function listAdminMembers(
     ? {
         OR: [
           { id: exactPrefix(trimmedQuery) },
-          { firstName: { contains: trimmedQuery, mode: "insensitive" } },
-          { lastName: { contains: trimmedQuery, mode: "insensitive" } },
-          { email: { contains: trimmedQuery, mode: "insensitive" } },
+          { firstName: exactContains(trimmedQuery, "insensitive") },
+          { lastName: exactContains(trimmedQuery, "insensitive") },
+          { email: exactContains(trimmedQuery, "insensitive") },
           ...(queryTerms.length > 1
             ? [
                 {
@@ -447,9 +447,9 @@ export async function listAdminMembers(
                   // carry the outer contextual type into the callback.
                   AND: queryTerms.map((term): Prisma.MemberWhereInput => ({
                     OR: [
-                      { firstName: { contains: term, mode: "insensitive" } },
-                      { lastName: { contains: term, mode: "insensitive" } },
-                      { email: { contains: term, mode: "insensitive" } },
+                      { firstName: exactContains(term, "insensitive") },
+                      { lastName: exactContains(term, "insensitive") },
+                      { email: exactContains(term, "insensitive") },
                     ],
                   })),
                 },
