@@ -1052,9 +1052,9 @@ same `cancelled_booking_late_capture` reason, wrote the same
 `booking.payment.refunded_after_cancellation` audit entry, and left no
 `ManualRefundTask` and no unmuteable mail — so an operator holding a
 `refunded_after_cancellation` entry with no card row had to know which handler wrote
-it before they could tell whether the card was broken. **Both now route through the
-same shared epilogue** (`src/lib/cancelled-booking-late-capture.ts`), which is one
-implementation rather than a copy per handler: one record writer, one `deletedAt`
+it before they could tell whether the card was broken. **Both now route through one
+shared epilogue** (`finishAutomaticLateCaptureRefund`,
+`src/lib/late-capture-record-recovery.ts`): one record writer, one `deletedAt`
 re-read, one alert decision.
 
 **WHAT "EVERY ORDERING" MEANS ON THE PRIMARY PATH, checked rather than assumed.**
@@ -1126,17 +1126,18 @@ is worse than the partial claim it replaced:
   **`COMPLETED`** variant of the same ordering is a different matter entirely and is
   now `INV-ADDPAY-039`: it means the club has already paid the member back, and it
   is fenced.
-- **The record write itself failing.** The caller must answer 200 — the money is
-  already back with the member and a 500 replays the whole refund path for a
-  bookkeeping row — so Stripe never redelivers and nothing else in the tree ever
-  writes that row. A container log is not a record when the card claims
-  completeness, so the caller writes
+- **The record write itself failing.** Since #4149 the delivery still writes the
+  `refunded_after_cancellation` entry (`recordLost`) and the alert, then answers
+  500; a replay never refunds again, so the redelivery or the nightly self-heal
+  writes the missing row once, with a `booking.payment.auto_refund_record_recovered`
+  entry and the alert again (`late-capture-record-recovery.ts`). Meanwhile the
+  writer adds
   `booking.payment.auto_refund_record_failed` (`severity: "critical"`,
   `outcome: "failure"`, `category: "payment"`, carrying the booking and the
-  payment intent) beside the `refunded_after_cancellation` entry. **That audit row
-  is the recovery surface**: it is the one place a finance operator can find an
-  automatic refund the card does not hold. Removing it, or downgrading it to a log
-  line, breaks this rule.
+  payment intent). **That audit row is the recovery surface** while the row is
+  missing: it is the one place a finance operator can find an automatic refund
+  the card does not hold. Removing it, or downgrading it to a log line, breaks
+  this rule.
 
 **The writer's obligations, none of them optional:**
 
@@ -1178,8 +1179,8 @@ is worse than the partial claim it replaced:
   `lock(1)` in the tree — `assignBedRange`, up to 366 nights — runs on
   `{ maxWait: 10_000, timeout: 30_000 }`, so on the 2s/5s default an admin
   assigning a bed range concurrently with a Stripe delivery blows this
-  transaction with a `P2028` and the row is lost for good (see the second
-  exception above). Copying the 30s admin precedent into a webhook is the
+  transaction with a `P2028` and the row waits for Stripe's redelivery (see the
+  second exception above). Copying the 30s admin precedent into a webhook is the
   opposite error: Stripe's delivery timeout is the ceiling on a handler, so it
   would trade a lost row for a lost delivery. This is the `lock(1)` cohort's only
   webhook-triggered participant, and `docs/CONCURRENCY_AND_LOCKING.md` records it
@@ -1196,16 +1197,16 @@ second.** `handleCancelledBookingAdditionalPaymentSucceeded` has always mailed t
 club at the moment it happens, naming the member, the stay, the amount, the payment
 intent, and the fact that the capture was auto-refunded and the supplementary Xero
 invoice was not released; since #2773 the primary handler sends the same mail in
-place of the generic muteable one it used to send. **"One" is per EVENT, and there
-are three mutually exclusive kinds of it, never two at once:** the ordinary
-auto-refund alert, the withheld-refund alert when `INV-ADDPAY-039`'s fence fires,
-and the possible-double-payment alert when a hand-completion is found after the
-refund. The shared epilogue picks exactly one and the fenced path returns before the
-ordinary one can be reached. What was missing was somewhere to look afterwards, which
-is what this rule adds. Anyone tempted to "add an alert" here should read
-`INV-ADDPAY-038` first: that mail was rewritten by #2761 rather than joined by
-another, because a second notification for one event is noise, and noise is how the
-first one stops being read. No pending count anywhere reaches these rows either —
+place of the generic muteable one it used to send. **"One" is per EVENT, of three
+kinds:** the ordinary auto-refund alert, the withheld-refund alert when
+`INV-ADDPAY-039`'s fence fires, and the possible-double-payment alert when a
+hand-completion is found after the refund. The epilogue picks one, and the fenced
+path returns before the ordinary one. Two deliberate exceptions (#4149): a lost
+record re-sends the ordinary alert (#2761: a duplicate, never a silence), and a
+hand-completion found only later raises the double-payment alert after it, once.
+What was missing was somewhere to look afterwards, which is what this rule adds.
+Read `INV-ADDPAY-038` before adding an alert: #2761 rewrote that mail rather than
+joining it, because a second notification is noise. No pending count anywhere reaches these rows either —
 every one of them counts `status: "OPEN"`, and #2761's owner decision explicitly
 left badges and the digest alone.
 

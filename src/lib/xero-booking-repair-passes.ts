@@ -13,11 +13,9 @@ import { sliceAfterRecordedRefusals } from "@/lib/refused-card-refund-retry";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { classifyEditReviewChargeCapture } from "./xero-booking-repair-payments";
 import type {
-  BookingXeroRepairAction,
-  BookingXeroRepairBookingSummary,
-  BookingXeroRepairPassReport,
-  XeroBookingRepairActionStatus,
+  BookingXeroRepairAction, BookingXeroRepairBookingSummary, BookingXeroRepairPassReport, XeroBookingRepairActionStatus,
 } from "./xero-booking-repair-types";
+import { LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON } from "@/lib/payment-recovery-keys";
 import type { RepairDependencies } from "./xero-booking-repair-deps";
 import { describeRefusedRepairedLateCaptureRefund, describeRepairedLateCaptureRefund, madeRepairRefunds } from "@/lib/late-capture-repair-result-message";
 import { createCountMap } from "./xero-booking-repair-utils";
@@ -269,7 +267,7 @@ async function applyLateCaptureRefundRepair(
       reason: "requested_by_customer",
       metadata: {
         bookingId,
-        reason: "cancelled_booking_late_capture_repair",
+        reason: LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON,
       },
       idempotencyKeyPrefix: `late_cancel_refund_repair_${bookingId}`,
     });
