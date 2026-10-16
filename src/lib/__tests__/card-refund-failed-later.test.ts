@@ -420,3 +420,56 @@ describe("the officers' alert", () => {
     await expect(alertFailedLaterCardRefunds([{ ...debt, outcome: "raised" }])).resolves.toBeUndefined();
   });
 });
+
+// #4166 (F1): the row raised to owe a refund records which row made it - by the
+// metadata that row's runner sends, never by amount alone - so the booking page
+// tells a cancel's failed refund from another door's of the same amount.
+describe("#4166: the new row records which row made the refund, by what was sent", () => {
+  const CLOSED_AT = new Date("2026-06-20T00:00:10.000Z");
+  const cancelRow = row({
+    id: "op-cancel",
+    status: "SUCCEEDED",
+    nextRetryAt: null,
+    idempotencyKey: "booking_cancel_refund_recovery_booking-1",
+    succeededAt: CLOSED_AT,
+  });
+  const APPEAL = { bookingId: "booking-1", reason: "refund_appeal_approved", refundRequestId: "rr-1" };
+  const recorded = (stripeRefundId: string, status: string, at: Date) => ({ stripeRefundId, paymentTransactionId: "txn-1", amountCents: 4_000, status, createdAt: at, stripeCreatedAt: at });
+  /** R, an approved appeal's refund made inline (no row), recorded first; X, the cancel's - both $40.00 on txn-1, inside the cancel row's window. */
+  function bothRecorded(failing: "re_appeal" | "re_1") {
+    const tx = fakeTx({ rows: [cancelRow] });
+    tx.paymentRefund.findMany = vi.fn(async () => [
+      recorded("re_appeal", failing === "re_appeal" ? "failed" : "succeeded", new Date("2026-06-20T00:00:02.000Z")),
+      recorded("re_1", failing === "re_1" ? "failed" : "succeeded", REFUNDED_AT),
+    ]);
+    return tx;
+  }
+  const madeBy = (tx: ReturnType<typeof fakeTx>) => (inserted(tx)?.allocationPlan as Array<{ madeByOperationId?: string | null }>)[0]?.madeByOperationId;
+
+  it("the cancel's own refund: the cancel row", async () => {
+    const tx = fakeTx({ rows: [cancelRow] });
+    await keep(tx);
+    expect(inserted(tx)?.allocationPlan).toEqual([{ paymentTransactionId: "txn-1", amountCents: 4_000, madeByOperationId: "op-cancel" }]);
+  });
+
+  it("MUTATION: X (the cancel's) fails while R of the same amount holds the cancel slice by amount: still the cancel row", async () => {
+    const tx = bothRecorded("re_1");
+    await keep(tx);
+    expect(madeBy(tx)).toBe("op-cancel");
+  });
+
+  it("MUTATION: R (the appeal's) fails, filling the cancel slice by amount: no row of this payment sent it, so none", async () => {
+    const tx = bothRecorded("re_appeal");
+    await keep(tx, { ...REFUND, id: "re_appeal", metadata: APPEAL });
+    expect(inserted(tx)?.idempotencyKey).toBe("card_refund_failed_later_re_appeal");
+    expect(madeBy(tx)).toBeNull();
+  });
+
+  it("several rows that send the same metadata (failed-later retries): the one whose slice it fills", async () => {
+    const retry = (id: string, at: Date) =>
+      row({ id, status: "SUCCEEDED", nextRetryAt: null, idempotencyKey: `card_refund_failed_later_re_${id}`, stripeKeyPrefix: `card_refund_failed_later_re_${id}`, createdAt: at, succeededAt: new Date(at.getTime() + 10_000) });
+    const tx = fakeTx({ rows: [retry("a", new Date("2026-06-10T00:00:00.000Z")), retry("b", RAISED_AT)] });
+    await keep(tx, { ...REFUND, metadata: { bookingId: "booking-1", reason: "card_refund_failed_later" } });
+    expect(madeBy(tx)).toBe("b");
+  });
+});

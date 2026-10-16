@@ -21,7 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import type { FailedLaterCardRefund, PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
 import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
-import { cardRefundMadeForOperation, cardRefundSliceFilledBy, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { cardRefundMadeForOperation, cardRefundPaymentBeforeFailure, cardRefundSliceFilledBy, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 
 type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
 /** A "Paid another way" close's record: what it paid back, and what the row still owed. */
@@ -108,7 +108,7 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
   const rows = await prisma.paymentRecoveryOperation.findMany({
     // On `@@index([bookingId])`, so the prefix match never scans the table.
     where: bookingCancelCardRefundRecoveryWhere(bookingId),
-    select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, allocationPlan: true, status: true, attempts: true, nextRetryAt: true },
+    select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, allocationPlan: true, status: true, attempts: true, nextRetryAt: true, succeededAt: true },
   });
   // `startsWith` is SQL LIKE, where `_` matches any one character, so the query alone
   // would let booking `ab`'s read take booking `abc`'s rows: the exact rule decides (#4147).
@@ -143,25 +143,29 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
  * #4166 (`INV-PAY-134`): THE CANCEL'S CARD REFUNDS THAT FAILED AFTER A CLOSE
  * RECORDED THEM. A refund Stripe failed later on a row already closed is owed
  * by a row of its own (`card_refund_failed_later_<refund>`, #4104); it is this
- * cancel's when one of the cancel's own rows made it - the slice it fills, marked
- * with it (`madeRefundId`) or not, as the payment stood before it failed
- * (`cardRefundSliceFilledBy`, the rule the failed-later writer used) - or when
- * a failed-later row of this cancel made it (its retry failed too). Each is
- * told by the last row of that chain. Read only where one of the cancel's rows
- * closed; one query of the booking's failed-later rows otherwise finds none.
- * `madeByRow`: what each cancel row's failed refunds were, for its close's
- * made figure, which no longer counts them.
+ * cancel's when one of the cancel's own rows made it, or a failed-later row of
+ * this cancel did (its retry failed too). Which row made it is what the writer
+ * recorded on the row (`madeByOperationId`: by what was sent, not by amount);
+ * a row raised before #4166 is read by the slice the refund fills as the
+ * payment stood before it failed (`cardRefundPaymentBeforeFailure`). Each is
+ * told by the last row of its chain, and only where the cancel's row is closed:
+ * made (its event covers its whole plan), or paid another way, where only a
+ * refund that close counted is told - made by Stripe by the close - and dated
+ * only if recorded by it, as its event was (`dated`). Read only where one of
+ * the cancel's rows closed. `madeByRow`: what each cancel row's counted failed
+ * refunds were, for its close's made figure, which no longer counts them.
  */
 async function readFailedLaterCardRefunds(
   bookingId: string,
-  standings: ReadonlyArray<{ row: { id: string }; state: CardRefundState }>,
+  standings: ReadonlyArray<{ row: { id: string; succeededAt: Date | null }; state: CardRefundState }>,
 ): Promise<{ parts: FailedLaterCardRefund[]; madeByRow: Map<string, number> }> {
   const none = { parts: [], madeByRow: new Map<string, number>() };
-  if (!standings.some(({ state }) => state === "settled" || state === "paid-another-way")) return none;
+  const closed = standings.filter(({ state }) => state === "settled" || state === "paid-another-way");
+  if (closed.length === 0) return none;
   const rows = await prisma.paymentRecoveryOperation.findMany({
     // On `@@index([bookingId])`; exact, and the key's own rule decides (#4146).
     where: { bookingId, idempotencyKey: exactPrefix(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) },
-    select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, status: true, attempts: true, nextRetryAt: true, succeededAt: true },
+    select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, allocationPlan: true, status: true, attempts: true, nextRetryAt: true, succeededAt: true },
   });
   const failed = (rows ?? []).flatMap((row) => {
     const refundId = cardRefundFailedLaterRefundId(row.idempotencyKey);
@@ -172,44 +176,51 @@ async function readFailedLaterCardRefunds(
     where: { id: { in: [...new Set(failed.map(({ row }) => row.paymentId))] } },
     select: { id: true, status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
   });
+  const paymentOf = (paymentId: string) => payments.find((each) => each.id === paymentId);
   const madeBy = new Map(
     failed.map(({ row, refundId }) => {
-      const payment = payments.find((each) => each.id === row.paymentId);
-      if (!payment) return [row.id, null] as const;
-      // As the payment stood before the failure, as the failed-later writer read it: the refund
-      // still counted, and the row that owes it again not yet raised - so a slice marked with
-      // it is filled by it, and that row, raised in Stripe's same second, does not take it.
-      const before = {
-        ...payment,
-        recoveryOperations: payment.recoveryOperations.filter((op) => op.id !== row.id),
-        refunds: payment.refunds.map((each) => (each.stripeRefundId === refundId ? { ...each, status: "pending" } : each)),
-      };
-      return [row.id, cardRefundSliceFilledBy(before, refundId)?.operation.id ?? null] as const;
+      const recorded = parseRefundAllocationPlan(row.allocationPlan)?.[0]?.madeByOperationId;
+      if (recorded !== undefined) return [row.id, recorded] as const;
+      const payment = paymentOf(row.paymentId);
+      return [row.id, payment ? (cardRefundSliceFilledBy(cardRefundPaymentBeforeFailure(payment, refundId), refundId)?.operation.id ?? null) : null] as const;
     }),
   );
-  const roots = new Map(standings.map(({ row }) => [row.id, row.id]));
+  // Each failed-later row of this cancel, with the failed refund its cancel row made (the head of its chain).
+  const roots = new Set(closed.map(({ row }) => row.id));
+  const headOf = new Map<string, { root: string; head: (typeof failed)[number] }>();
   for (let grew = true; grew; ) {
     grew = false;
-    for (const [id, maker] of madeBy) {
-      const root = maker === null ? undefined : roots.get(maker);
-      if (root !== undefined && !roots.has(id)) {
-        roots.set(id, root);
-        grew = true;
-      }
+    for (const each of failed) {
+      const maker = madeBy.get(each.row.id) ?? null;
+      if (maker === null || headOf.has(each.row.id)) continue;
+      const found = roots.has(maker) ? { root: maker, head: each } : headOf.get(maker);
+      if (!found) continue;
+      headOf.set(each.row.id, found);
+      grew = true;
     }
   }
-  const ours = failed.filter(({ row }) => roots.has(row.id));
   // A row whose own retry failed later too is told by the row that owes that retry.
-  const last = ours.filter(({ row }) => !ours.some((each) => madeBy.get(each.row.id) === row.id));
+  const last = failed.filter(({ row }) => headOf.has(row.id) && !failed.some((each) => headOf.has(each.row.id) && madeBy.get(each.row.id) === row.id));
   const parts: FailedLaterCardRefund[] = [];
   const madeByRow = new Map<string, number>();
   for (const { row } of last) {
+    const { root, head } = headOf.get(row.id) as { root: string; head: (typeof failed)[number] };
+    const close = closed.find((each) => each.row.id === root);
+    if (!close) continue;
+    let dated = true;
+    if (close.state === "paid-another-way") {
+      // F2: only what that close counted - its made figure and its event - is told, and added back.
+      const refund = paymentOf(head.row.paymentId)?.refunds.find((each) => each.stripeRefundId === head.refundId);
+      const closedAt = close.row.succeededAt?.getTime() ?? Number.POSITIVE_INFINITY;
+      if (!refund || (refund.stripeCreatedAt ?? refund.createdAt).getTime() > closedAt) continue;
+      dated = refund.createdAt.getTime() <= closedAt;
+      madeByRow.set(root, (madeByRow.get(root) ?? 0) + head.row.amountCents);
+    }
     const { state, record } = await cardRefundRowState(row);
-    const root = roots.get(row.id) as string;
-    madeByRow.set(root, (madeByRow.get(root) ?? 0) + row.amountCents);
     parts.push({
       amountCents: row.amountCents,
       state,
+      ...(dated ? {} : { dated }),
       ...(state === "settled" ? { madeAt: row.succeededAt } : {}),
       ...(record ? { paidBackCents: record.amountCents ?? row.amountCents, unpaidCents: paidAnotherWayUnpaidCents(record) } : {}),
     });

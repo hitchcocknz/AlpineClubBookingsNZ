@@ -73,7 +73,7 @@ const failedLaterRow = (refundId: string, extra: Partial<Op> = {}): Op => ({
 
 const asRow = (op: Op) => ({ paymentId: "pay-1", attempts: 0, nextRetryAt: null, ...op });
 
-type Refund = { stripeRefundId: string; amountCents: number; status: string; createdAt: Date };
+type Refund = { stripeRefundId: string; amountCents: number; status: string; createdAt: Date; stripeCreatedAt?: Date };
 const refund = (stripeRefundId: string, status: string, createdAt = MADE, amountCents = 9_000): Refund => ({ stripeRefundId, amountCents, status, createdAt });
 
 function payment(ops: Op[], refunds: Refund[]) {
@@ -83,7 +83,7 @@ function payment(ops: Op[], refunds: Refund[]) {
     amountCents: 12_000,
     refundedAmountCents: 0,
     recoveryOperations: ops.map((op) => ({ type: "REFUND_BOOKING_MODIFICATION", paymentTransactionId: null, ...op })),
-    refunds: refunds.map((each) => ({ ...each, paymentTransactionId: "txn-1", stripeCreatedAt: each.createdAt })),
+    refunds: refunds.map((each) => ({ ...each, paymentTransactionId: "txn-1", stripeCreatedAt: each.stripeCreatedAt ?? each.createdAt })),
   };
 }
 
@@ -212,6 +212,62 @@ describe("readCancelledCardRefund reads the cancel's refunds that failed later (
       cardRefundState: "paid-another-way",
       cardRefundFailedLater: [{ amountCents: 6_000, state: "on-its-way" }],
       cardRefundClose: { paidBackCents: 3_000, unpaidCents: 0, madeCents: 6_000 },
+    });
+  });
+});
+
+// #4166 round 2: the writer records which row made the refund (`madeByOperationId`),
+// and the page prefers that record to matching by amount.
+describe("readCancelledCardRefund prefers the row the writer recorded as the refund's maker (#4166, F1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.findClose.mockResolvedValue(null);
+  });
+  const recordedBy = (maker: string | null) => [{ paymentTransactionId: "txn-1", amountCents: 9_000, madeByOperationId: maker }];
+  /** R, another door's refund of the same amount on the same charge, recorded before X, the cancel's - both inside the cancel row's window. */
+  const R_AT = new Date("2026-06-20T00:00:02.000Z");
+
+  it("MUTATION: X (the cancel's) failed while R holds the cancel slice by amount - the recorded maker says it is the cancel's", async () => {
+    rows([cancelRow()], [failedLaterRow("re_cancel", { allocationPlan: recordedBy("op-cancel") })], [refund("re_appeal", "succeeded", R_AT), refund("re_cancel", "failed")]);
+
+    expect((await readCancelledCardRefund(BOOKING)).cardRefundFailedLater).toEqual([{ amountCents: 9_000, state: "on-its-way" }]);
+  });
+
+  it("MUTATION: R (the other door's) failed and fills the cancel slice by amount - the writer recorded no maker, so it is not the cancel's", async () => {
+    rows([cancelRow()], [failedLaterRow("re_appeal", { allocationPlan: recordedBy(null) })], [refund("re_appeal", "failed", R_AT), refund("re_cancel", "succeeded")]);
+
+    expect(await readCancelledCardRefund(BOOKING)).toEqual({ cardRefundState: "settled" });
+  });
+});
+
+// #4166 round 2 (F2): a "Paid another way" close counted only what Stripe had
+// made by then, and dated only what was recorded by then.
+describe("readCancelledCardRefund tells a paid-another-way close's failed refund only as that close counted it (#4166, F2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.findClose.mockImplementation(async ({ where }: { where: { occurrenceKey: { in: string[] } } }) =>
+      where.occurrenceKey.in.some((key) => key.includes("op-cancel")) ? { amountCents: 9_000, raisedAmountCents: 9_000 } : null,
+    );
+  });
+  const byCancel = [{ paymentTransactionId: "txn-1", amountCents: 9_000, madeByOperationId: "op-cancel" }];
+
+  it("MUTATION: made by Stripe after the close - the close never counted it: not told, and not added to its made figure", async () => {
+    const after = new Date("2026-06-21T00:00:00.000Z");
+    rows([cancelRow()], [failedLaterRow("re_late", { allocationPlan: byCancel })], [refund("re_late", "failed", after)]);
+
+    expect(await readCancelledCardRefund(BOOKING)).toEqual({
+      cardRefundState: "paid-another-way",
+      cardRefundClose: { paidBackCents: 9_000, unpaidCents: 0, madeCents: 0 },
+    });
+  });
+
+  it("MUTATION: made before the close, recorded after it - counted but not dated: told as undated, and added back", async () => {
+    rows([cancelRow()], [failedLaterRow("re_late", { allocationPlan: byCancel })], [{ ...refund("re_late", "failed", new Date("2026-06-21T00:00:00.000Z")), stripeCreatedAt: MADE }]);
+
+    expect(await readCancelledCardRefund(BOOKING)).toEqual({
+      cardRefundState: "paid-another-way",
+      cardRefundFailedLater: [{ amountCents: 9_000, state: "on-its-way", dated: false }],
+      cardRefundClose: { paidBackCents: 9_000, unpaidCents: 0, madeCents: 9_000 },
     });
   });
 });

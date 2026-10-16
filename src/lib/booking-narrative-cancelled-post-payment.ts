@@ -69,18 +69,44 @@ export interface FailedLaterCardRefund {
   madeAt?: Date | null;
   paidBackCents?: number;
   unpaidCents?: number;
+  /**
+   * False where a "Paid another way" close counted the refund as made but did
+   * not date it (recorded after that close): it comes off the undated part.
+   * Absent reads as dated.
+   */
+  dated?: boolean;
 }
 
-/** What the failed-later parts say: their clauses, the cents they say, and whether one is stalled (the club follows it up). */
-type FailedLaterTold = { clauses: string[]; saidCents: number; stalled: boolean };
+/** What "Paid another way" closes' records say: what was paid back, and what they left unpaid. */
+type PaidAnotherWayTold = { paidBackCents: number; unpaidCents: number };
+
+/**
+ * #4145, #4166 (`INV-SSOT`): what "Paid another way" records say, appended to
+ * `clauses` - the cancel's own close and its failed-later rows' together, as
+ * one total each: what was paid back, and as closed by the club only what was
+ * left unpaid, "remaining" after another clause.
+ */
+function pushPaidAnotherWayClauses(clauses: string[], { paidBackCents, unpaidCents }: PaidAnotherWayTold, money: (cents: number) => string): void {
+  if (paidBackCents > 0) clauses.push(cardRefundClause(money(paidBackCents), "paid-another-way", null));
+  if (unpaidCents > 0) clauses.push(checkedAndClosed(`${clauses.length > 0 ? "remaining " : ""}${money(unpaidCents)}`));
+}
+
+/**
+ * What the failed-later parts say: their clauses (all but paid another way,
+ * which the caller says with its own close, `pushPaidAnotherWayClauses`), what
+ * paid another way, the cents they say, and whether one is stalled (the club
+ * follows it up).
+ */
+type FailedLaterTold = { clauses: string[]; paidAnotherWay: PaidAnotherWayTold; saidCents: number; stalled: boolean };
 
 const FAILED_LATER_ORDER: readonly CardRefundState[] = ["settled", "on-its-way", "stalled", "paid-another-way"];
 
 /**
- * #4166: refunded parts an event says (the dated one first), less the refunds
- * of them Stripe failed later. Each failed refund comes off the first part
- * first - a close records every refund it found made - and is said by its own
- * row instead, each state once; never more than the parts held.
+ * #4166: refunded parts an event says (the dated one first, then any undated),
+ * less the refunds of them Stripe failed later. Each failed refund comes off
+ * its own part first - the dated one, unless the reader found it undated
+ * (`dated`) - then the other, and is said by its own row instead, each state
+ * once; never more than the parts held.
  */
 function lessFailedLater(
   parts: readonly number[],
@@ -94,13 +120,17 @@ function lessFailedLater(
     room -= amountCents;
     return { ...each, amountCents };
   });
-  let owed = failed.reduce((sum, each) => sum + each.amountCents, 0);
-  const kept = parts.map((cents) => {
-    const off = Math.min(cents, owed);
-    owed -= off;
-    return cents - off;
-  });
-  const told: FailedLaterTold = { clauses: [], saidCents: 0, stalled: false };
+  const kept = [...parts];
+  for (const each of failed) {
+    let owed = each.amountCents;
+    const order = kept.map((_, index) => index);
+    for (const index of each.dated === false ? order.reverse() : order) {
+      const off = Math.min(kept[index] ?? 0, owed);
+      kept[index] = (kept[index] ?? 0) - off;
+      owed -= off;
+    }
+  }
+  const told: FailedLaterTold = { clauses: [], paidAnotherWay: { paidBackCents: 0, unpaidCents: 0 }, saidCents: 0, stalled: false };
   for (const state of FAILED_LATER_ORDER) {
     const group = failed.filter((each) => each.state === state && each.amountCents > 0);
     const cents = group.reduce((sum, each) => sum + each.amountCents, 0);
@@ -113,11 +143,13 @@ function lessFailedLater(
       continue;
     }
     // A record read with no figure says the whole was paid back, as `ownCardRefundClauses` does.
-    const paidBack = group.reduce((sum, each) => sum + Math.min(each.paidBackCents ?? each.amountCents, each.amountCents), 0);
-    const unpaid = group.reduce((sum, each) => sum + Math.min(each.unpaidCents ?? 0, each.amountCents - Math.min(each.paidBackCents ?? each.amountCents, each.amountCents)), 0);
-    if (paidBack > 0) told.clauses.push(cardRefundClause(money(paidBack), state, null));
-    if (unpaid > 0) told.clauses.push(checkedAndClosed(money(unpaid)));
-    told.saidCents += paidBack + unpaid;
+    for (const each of group) {
+      const paidBack = Math.min(each.paidBackCents ?? each.amountCents, each.amountCents);
+      const unpaid = Math.min(each.unpaidCents ?? 0, each.amountCents - paidBack);
+      told.paidAnotherWay.paidBackCents += paidBack;
+      told.paidAnotherWay.unpaidCents += unpaid;
+      told.saidCents += paidBack + unpaid;
+    }
   }
   return { kept, told };
 }
@@ -180,7 +212,9 @@ function ownCardRefundClauses(
     // #4166: only a refund made can have failed later; one still owed is said as a whole.
     const { kept: [keptCents = 0], told } = lessFailedLater([cents], state === "settled" ? failedLater : [], { club, format });
     const clauses = keptCents > 0 ? [cardRefundClause(money(keptCents), state, cardEvent ? club.instantDate(cardEvent.occurredAt) : null)] : [];
-    return { clauses: [...clauses, ...told.clauses], saidCents: keptCents + told.saidCents, stalled: told.stalled };
+    clauses.push(...told.clauses);
+    pushPaidAnotherWayClauses(clauses, told.paidAnotherWay, money);
+    return { clauses, saidCents: keptCents + told.saidCents, stalled: told.stalled };
   }
   const datedCents = Math.min(made.datedCents, cents);
   // A caller that read no record (an older page) says the rest was paid back, as before.
@@ -192,8 +226,12 @@ function ownCardRefundClauses(
   const clauses = keptDated > 0 && made.on ? [cardRefundClause(money(keptDated), "settled", club.instantDate(made.on))] : [];
   if (keptUndated > 0) clauses.push(cardRefundClause(money(keptUndated), "settled", null));
   clauses.push(...told.clauses);
-  if (paidBack > 0) clauses.push(cardRefundClause(money(paidBack), state, null));
-  if (unpaid > 0) clauses.push(`the club checked the ${clauses.length > 0 ? "remaining " : ""}${money(unpaid)} and closed it`);
+  // The cancel's own close and its failed-later rows paid another way, said together.
+  pushPaidAnotherWayClauses(
+    clauses,
+    { paidBackCents: paidBack + told.paidAnotherWay.paidBackCents, unpaidCents: unpaid + told.paidAnotherWay.unpaidCents },
+    money,
+  );
   return { clauses, saidCents: keptDated + keptUndated + told.saidCents + paidBack + unpaid, stalled: told.stalled };
 }
 
@@ -374,6 +412,7 @@ export function buildCancelledPostPaymentNarrative(
     // #4166 (`INV-PAY-134`): a refund the event recorded that Stripe failed later is said by its own row.
     const { kept: [keptCents = 0], told } = lessFailedLater([settledAmountCents], credited ? [] : cardRefundFailedLater, { club, format });
     const clauses = keptCents > 0 ? [`${formatCents(keptCents, format)} was ${verb} on ${settledOn}`, ...told.clauses] : told.clauses;
+    pushPaidAnotherWayClauses(clauses, told.paidAnotherWay, (cents) => formatCents(cents, format));
     if (retainedAmountCents > 0) clauses.push(`${formatCents(retainedAmountCents, format)} was retained`);
     settlementClause = joinClauses(clauses, "");
     accountedCents = keptCents + told.saidCents;

@@ -93,7 +93,7 @@ describe("#4166: a member cancel's card refund that failed after its REFUNDED ev
     [
       "paid back in part another way",
       failedLater(9000, "paid-another-way", { paidBackCents: 5000, unpaidCents: 4000 }),
-      "$50.00 could not go back to your card and was paid back to you another way, the club checked the $40.00 and closed it and $30.00 was retained.",
+      "$50.00 could not go back to your card and was paid back to you another way, the club checked the remaining $40.00 and closed it and $30.00 was retained.",
     ],
     ["paid another way, read with no record figure", failedLater(9000, "paid-another-way"), "$90.00 could not go back to your card and was paid back to you another way and $30.00 was retained."],
   ] as const)("MUTATION: all of it failed, its row %s, says so - never refunded on the event's date", (_label, part, clause) => {
@@ -179,5 +179,58 @@ describe("#4166: a capacity race's card refund that failed after its REFUNDED ev
     expect(narrate([raceCancel(8000), raceRefunded(8000)], [failedLater(3000, "stalled")])).toBe(
       `${OPENING} $50.00 was refunded on 5 May 2026 and $30.00 is being refunded to you; the club will be in touch about the card refund and the remaining $20.00.${END}`,
     );
+  });
+});
+
+describe("#4166 round 2: paid-another-way parts, and the dated and undated parts", () => {
+  /** $40.00 reached the card and was dated by the close's event, $20.00 more it counted undated, $30.00 was paid another way. */
+  const close: PaidAnotherWayClose = { paidBackCents: 3000, unpaidCents: 0, madeCents: 6000 };
+  const narratePaw = (parts: FailedLaterCardRefund[], record: PaidAnotherWayClose = close) =>
+    narrate([PAID, CANCELLED, cardRefunded(4000, true)], parts, { cardRefundState: "paid-another-way", cardRefundClose: record });
+
+  it("MUTATION: a failed refund the close dated comes off the dated part; one it counted undated, off the undated part", () => {
+    expect(narratePaw([failedLater(2000, "on-its-way")])).toBe(
+      `${LEAD}$20.00 was refunded to your card on 5 May 2026, $20.00 was refunded to your card, $20.00 is on its way to your original payment method, $30.00 could not go back to your card and was paid back to you another way and $30.00 was retained.${END}`,
+    );
+    expect(narratePaw([failedLater(2000, "on-its-way", { dated: false })])).toBe(
+      `${LEAD}$40.00 was refunded to your card on 5 May 2026, $20.00 is on its way to your original payment method, $30.00 could not go back to your card and was paid back to you another way and $30.00 was retained.${END}`,
+    );
+  });
+
+  it("MUTATION: the cancel's close and a failed-later row both paid another way are said as one total, once", () => {
+    const message = narratePaw([failedLater(4000, "paid-another-way", { paidBackCents: 4000, unpaidCents: 0 })]);
+    expect(message).toBe(
+      `${LEAD}$20.00 was refunded to your card, $70.00 could not go back to your card and was paid back to you another way and $30.00 was retained.${END}`,
+    );
+    expect(message.match(/could not go back/g)).toHaveLength(1);
+  });
+
+  it("MUTATION: what both left unpaid is one total too, 'remaining' after the clauses before it", () => {
+    const partClose: PaidAnotherWayClose = { paidBackCents: 2000, unpaidCents: 1000, madeCents: 6000 };
+    expect(narratePaw([failedLater(4000, "paid-another-way", { paidBackCents: 3000, unpaidCents: 1000 })], partClose)).toBe(
+      `${LEAD}$20.00 was refunded to your card, $50.00 could not go back to your card and was paid back to you another way, the club checked the remaining $20.00 and closed it and $30.00 was retained.${END}`,
+    );
+  });
+
+  it("a failed-later row paid another way in part, alone, says 'remaining' after the clause before it", () => {
+    expect(narrate([PAID, CANCELLED, cardRefunded(9000)], [failedLater(9000, "paid-another-way", { paidBackCents: 5000, unpaidCents: 4000 })])).toBe(
+      `${LEAD}$50.00 could not go back to your card and was paid back to you another way, the club checked the remaining $40.00 and closed it and $30.00 was retained.${END}`,
+    );
+  });
+});
+
+describe("#4166 round 2: a capacity race the runner closed before #4125, with no event", () => {
+  const OPENING = "This booking was cancelled on 5 May 2026, after you paid $100.00 on 5 May 2026, because the dates filled up while your payment was going through.";
+  const raceCancel = event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
+    amountCents: 10000,
+    snapshot: { policySummary: "x", refundMethod: "card", cancelledBecause: "capacity_race", refundPercentage: 100, paidAmountCents: 10000, settledAmountCents: 10000, retainedAmountCents: 0 },
+  });
+
+  it.each([
+    ["none failed", undefined, "$100.00 was refunded to your card."],
+    ["on its way", [failedLater(10000, "on-its-way")], "$100.00 is on its way to your original payment method."],
+    ["stalled", [failedLater(10000, "stalled")], "$100.00 is being refunded to you; the club will be in touch about the card refund."],
+  ] as const)("MUTATION: its refund, failed later and %s, is told by its row", (_label, parts, clause) => {
+    expect(narrate([raceCancel], parts ? [...parts] : undefined)).toBe(`${OPENING} ${clause}${END}`);
   });
 });

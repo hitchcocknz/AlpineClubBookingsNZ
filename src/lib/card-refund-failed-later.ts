@@ -66,6 +66,7 @@ import logger from "@/lib/logger";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import {
   CARD_REFUND_OPERATION_WHERE,
+  cardRefundPaymentBeforeFailure,
   cardRefundSliceFilledBy,
   parseRefundAllocationPlan,
 } from "@/lib/open-card-refund-owed";
@@ -182,12 +183,33 @@ function sentByRow(row: PaymentRecoveryOperation, refund: FailedLaterRefundInput
 /** The open row that counted this refund as made: the slice it moves, or (`sliceIndex` null) a plan-less row that re-derives what it sends. */
 type OpenOwner = { row: PaymentRecoveryOperation; sliceIndex: number | null };
 
-/** The open row that counted this refund as made, or "owed" when one already owes it, or null. */
+/**
+ * #4166: which row made a refund no open row owes, for the row raised to owe
+ * it (`madeByOperationId`): the one row on the payment whose runner metadata it
+ * carries exactly (`sentByRow`) - by what was sent, not by amount, so a refund
+ * of the same amount on the same charge from another door is never taken for
+ * it - or, where several carry it (a booking's failed-later retries), the one
+ * whose slice it fills; else none.
+ */
+function madeByRow(
+  rows: ReadonlyArray<PaymentRecoveryOperation>,
+  refund: FailedLaterRefundInput,
+  filled: { operation: { id: string } } | null,
+): string | null {
+  const senders = rows.filter((row) => sentByRow(row, refund));
+  if (senders.length === 1) return senders[0]?.id ?? null;
+  return filled && senders.some((row) => row.id === filled.operation.id) ? filled.operation.id : null;
+}
+
+/**
+ * The open row that counted this refund as made, or "owed" when one already
+ * owes it, or else (`madeBy`) the row that made it, for the new row's record.
+ */
 async function findOwner(
   tx: Prisma.TransactionClient,
   payment: { id: string; status: string; amountCents: number; refundedAmountCents: number },
   refund: FailedLaterRefundInput,
-): Promise<OpenOwner | "owed" | null> {
+): Promise<OpenOwner | "owed" | { madeBy: string | null }> {
   const refundId = refund.id;
   const rows = await tx.paymentRecoveryOperation.findMany({ where: { paymentId: payment.id, ...CARD_REFUND_OPERATION_WHERE } });
   if (rows.some((row) => row.idempotencyKey === buildCardRefundFailedLaterRecoveryKey(refundId))) return "owed";
@@ -203,21 +225,13 @@ async function findOwner(
     where: { paymentId: payment.id },
     select: { stripeRefundId: true, paymentTransactionId: true, amountCents: true, status: true, createdAt: true, stripeCreatedAt: true },
   });
-  const filled = cardRefundSliceFilledBy(
-    {
-      ...payment,
-      recoveryOperations: rows,
-      refunds: refunds.map((each) => (each.stripeRefundId === refundId ? { ...each, status: "pending" } : each)),
-    },
-    refundId,
-  );
-  if (!filled) return null;
-  const row = open.find((each) => each.id === filled.operation.id);
+  const filled = cardRefundSliceFilledBy(cardRefundPaymentBeforeFailure({ ...payment, recoveryOperations: rows, refunds }, refundId), refundId);
+  const row = filled ? open.find((each) => each.id === filled.operation.id) : undefined;
   // A closed row's refund is owed by a row of its own, and so (CM) is one this
   // row's runner did not send: it sends its unmarked slice anyway. An open row
   // with no plan (a superseded intent's) re-derives what its charge still holds
   // by itself, and reads its own replay as refused (#4104 review, ML2).
-  if (!row || !sentByRow(row, refund)) return null;
+  if (!filled || !row || !sentByRow(row, refund)) return { madeBy: madeByRow(rows, refund, filled) };
   return { row, sliceIndex: parseRefundAllocationPlan(row.allocationPlan) ? filled.sliceIndex : null };
 }
 
@@ -252,7 +266,7 @@ export async function keepFailedLaterCardRefundOwed(
   const owner = await findOwner(tx, payment, refund);
   if (owner === "owed") return {};
 
-  if (owner) {
+  if ("row" in owner) {
     const { row, sliceIndex } = owner;
     if (sliceIndex === null) {
       // #4104 review (ML2): a superseded intent's plan-less row asks for what its
@@ -274,6 +288,7 @@ export async function keepFailedLaterCardRefundOwed(
         amountCents: slice.amountCents,
         stripeKeySuffix: nextRefusedRefundKeySuffix(slice.stripeKeySuffix),
         failedRefundIds: [...(slice.failedRefundIds ?? []), refund.id],
+        ...(slice.madeByOperationId === undefined ? {} : { madeByOperationId: slice.madeByOperationId }),
       };
     });
     const outcome = isPaymentRecoveryOperationExhausted(row) ? "re-planned-dead" : "re-planned";
@@ -360,7 +375,8 @@ export async function keepFailedLaterCardRefundOwed(
         amountCents: refund.amount,
         idempotencyKey,
         stripeKeyPrefix: idempotencyKey,
-        allocationPlan: [{ paymentTransactionId, amountCents: refund.amount }] as unknown as Prisma.InputJsonValue,
+        // #4166: which row made the refund, so the booking page tells it by what was sent, not by amount.
+        allocationPlan: [{ paymentTransactionId, amountCents: refund.amount, madeByOperationId: owner.madeBy }] as unknown as Prisma.InputJsonValue,
         // Dead by the recovery module's own rule (attempts spent): never
         // claimed, and closable as paid another way. Not a FAILED write, which
         // has one route (`INV-PAY-056`).
