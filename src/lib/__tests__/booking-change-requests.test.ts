@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   bookingChangeRequestCount: vi.fn(),
   bookingChangeRequestFindUnique: vi.fn(),
   bookingChangeRequestUpdateMany: vi.fn(),
+  bookingGuestFindMany: vi.fn(),
   bookingModificationFindUnique: vi.fn(),
   checkRateLimit: vi.fn(),
   getClientIp: vi.fn(),
@@ -45,6 +46,10 @@ vi.mock("@/lib/prisma", () => ({
       count: (...args: unknown[]) => mocks.bookingChangeRequestCount(...args),
       findUnique: (...args: unknown[]) => mocks.bookingChangeRequestFindUnique(...args),
       updateMany: (...args: unknown[]) => mocks.bookingChangeRequestUpdateMany(...args),
+    },
+    // #4157: an acknowledging approval reads the guests' nights; none unless a case says.
+    bookingGuest: {
+      findMany: async (...args: unknown[]) => (await mocks.bookingGuestFindMany(...args)) ?? [],
     },
     bookingModification: {
       findUnique: (...args: unknown[]) => mocks.bookingModificationFindUnique(...args),
@@ -494,6 +499,58 @@ describe("booking change requests", () => {
         subjectMemberId: "member-1",
       })
     );
+  });
+
+  it("an acknowledging approval records the nights a gapped guest's repeated range keeps (#4157)", async () => {
+    // A running stay: approving only acknowledges. The guest holds 10 and 12
+    // June inside 10-13 June, and the request repeats those dates.
+    const at = (night: string) => new Date(`${night}T00:00:00.000Z`);
+    const requestedChanges = {
+      original: {
+        checkIn: "2026-06-10",
+        checkOut: "2026-06-13",
+        guests: [{ id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" }],
+      },
+      requested: { guestStayRanges: [{ guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" }] },
+    };
+    const booking = { id: "booking-1", memberId: "member-1", checkOut: new Date("2026-05-27T00:00:00.000Z"), status: "PAID" };
+    mocks.auth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mocks.bookingGuestFindMany.mockResolvedValue([
+      {
+        id: "g1",
+        stayStart: at("2026-06-10"),
+        stayEnd: at("2026-06-13"),
+        nights: [{ stayDate: at("2026-06-10") }, { stayDate: at("2026-06-12") }],
+      },
+    ]);
+    mocks.bookingChangeRequestUpdateMany.mockResolvedValue({ count: 1 });
+    const decide = async (status: "APPROVED" | "REJECTED") => {
+      mocks.bookingChangeRequestFindUnique.mockReset();
+      mocks.bookingChangeRequestFindUnique
+        .mockResolvedValueOnce({ id: "request-1", status: "REQUESTED", kind: "LOCKED_PERIOD", requestedChanges, booking })
+        .mockResolvedValueOnce({ id: "request-1", status, requestedChanges, booking });
+      mocks.bookingChangeRequestUpdateMany.mockClear();
+      const response = await patchAdminBookingChangeRequest(
+        new NextRequest("http://localhost/api/admin/booking-change-requests/request-1", {
+          method: "PATCH",
+          headers: { "content-type": "application/json", "x-forwarded-for": "127.0.0.1" },
+          body: JSON.stringify({ status, execute: false }),
+        }),
+        { params: Promise.resolve({ id: "request-1" }) },
+      );
+      expect(response.status).toBe(200);
+      return (mocks.bookingChangeRequestUpdateMany.mock.calls[0][0] as { data: Record<string, unknown> }).data;
+    };
+    expect((await decide("APPROVED")).requestedChanges, "INV-REQ-012: the acknowledgement records kept nights").toEqual({
+      ...requestedChanges,
+      keptNights: [{ guestId: "g1", nights: ["2026-06-10", "2026-06-12"] }],
+    });
+    // Read from the booking's own guests.
+    expect(mocks.bookingGuestFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { bookingId: "booking-1" } }),
+    );
+    // A declined request records nothing: the card reads its snapshot.
+    expect(await decide("REJECTED")).not.toHaveProperty("requestedChanges");
   });
 
   it("approves and links the executed booking modification when its id is provided", async () => {

@@ -544,6 +544,7 @@ File:
 | `INV-REQ-009` | A corrected school name is stored only against the confirmed record |
 | `INV-REQ-010` | A corrected request never keeps beds held for its old shape |
 | `INV-REQ-011` | A request names a structured change; officers enter guests atomically |
+| `INV-REQ-012` | A range repeating a guest's own dates keeps their nights |
 
 ### Subscription-lockout pricing, admin date overrides and member-facing email
 
