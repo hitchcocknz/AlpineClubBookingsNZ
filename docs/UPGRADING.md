@@ -154,6 +154,23 @@ once. Two things can write the old text back afterwards:
 Re-export your configuration bundle after upgrading, and re-check `/privacy`
 after any bundle import.
 
+### Count audit entries with an unrecognised retention class before you upgrade (#3940)
+
+**What changes.** The nightly audit prune now treats an entry whose retention
+class is not one of the four the app writes as an entry with no class: it is
+deleted at its expiry date unless its severity is critical (seven years).
+Previously such an entry matched no rule and was kept forever. No migration
+runs; this is a change to the prune's predicate only.
+
+**Before deployment (recommended).** Run the read-only count in
+[`AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` → "Rows with an unrecognised retention class"](AUDIT_RETENTION_ARCHIVE_RUNBOOK.md#rows-with-an-unrecognised-retention-class-3940)
+on a restored copy of your database, not on production. The first nightly run
+after cutover deletes those rows once, permanently, with no archive copy. Most
+installs have none, because the app only writes the four known classes.
+
+**Rollback.** Rolling the code back stops further deletions but does not bring
+back rows already pruned. Only your pre-upgrade backup does.
+
 ### Count old audit entries with no severity before you upgrade (#3524)
 
 **What changes.** The nightly audit prune now deletes an unclassified entry whose
