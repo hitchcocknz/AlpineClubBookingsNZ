@@ -1519,6 +1519,30 @@ function deferred() {
     }
     const added = booking.guests.find((guest) => ![GUEST_ID, GUEST_2_ID].includes(guest.id))!;
     expect(added.nights).toHaveLength(3);
+    // The approval recorded what it kept, and the decided card reads it back:
+    // the guest's own two nights, "no change".
+    const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect(request.status).toBe("APPROVED");
+    expect((request.requestedChanges as { keptNights?: unknown }).keptNights).toEqual([
+      { guestId: GUEST_ID, nights: ["2026-06-10", "2026-06-12"] },
+    ]);
+    const { describeRequestedGuestNights } = await import("@/lib/booking-change-request-stored");
+    expect(
+      describeRequestedGuestNights(request.requestedChanges, { status: request.status }).find(
+        (guest) => !guest.added,
+      ),
+      "INV-REQ-012: the decided card reads the recorded kept nights",
+    ).toEqual({
+      name: "Original Guest",
+      runs: [
+        { firstNight: "2026-06-10", lastNight: "2026-06-10" },
+        { firstNight: "2026-06-12", lastNight: "2026-06-12" },
+      ],
+      nightCount: 2,
+      added: false,
+      unchanged: true,
+      fillsGaps: false,
+    });
   }, 60_000);
 
   it("#4157: in a mixed party the repeated guest keeps their nights and the moved guest gets the new continuous stay", async () => {
@@ -1546,6 +1570,11 @@ function deferred() {
       ["2026-06-12", STORED_NIGHT_CENTS, "SOLD"],
     ]);
     expect(nightsOf(GUEST_2_ID).map(([night]) => night)).toEqual(["2026-06-11", "2026-06-12"]);
+    // Recorded: the repeated guest only; the moved guest's range was applied.
+    const request = await prisma.bookingChangeRequest.findUniqueOrThrow({ where: { id: REQUEST_ID } });
+    expect((request.requestedChanges as { keptNights?: unknown }).keptNights).toEqual([
+      { guestId: GUEST_ID, nights: ["2026-06-10", "2026-06-12"] },
+    ]);
   }, 60_000);
 
   it("trimming a kept guest while adding another is charged on the trimmed night (F3/F4)", async () => {

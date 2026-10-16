@@ -311,17 +311,20 @@ the member's form sends a gapped guest's own dates back unchanged; applied as
 written, that range put the guest on every night inside it and charged for the
 gaps. `lockedPeriodRequestToBatchInput` passes such a guest to the planner as
 their night set, so range mode stays on, including beside an officer's entry.
-Only a moved bound re-spreads the guest over every night of the new range; a
-guest who already holds every night is passed by the two bounds, as before.
-Whether a request names any change is still judged on the ranges as sent.
+Only a moved bound re-spreads the guest; a guest who already holds every night
+is passed by the two bounds. Whether a request names any change is still
+judged on the ranges as sent.
 
-One rule, `nightsKeptByRepeatedRange`, reads one source for the executor and
-for the officer's card: the booking's live guest rows (under the executor's
-locks; loaded by the admin list), else the request's snapshot. The card applies
-it only to a pending request, listing the kept nights as unchanged. A decided
-request is described as sent: whether its approval kept or filled the gaps
-depends on when it ran, so a repeated range on a gapped guest is marked neither
-way. Only a moved range is flagged as filling gaps. Guarded by
+`keptNightsByGuest` decides this from one source, for the executor and for the
+officer's card: the booking's live guest rows (under the executor's locks;
+loaded by the admin list for pending requests only), else the request's
+snapshot. The applying approval's guarded claim records the kept nights as
+`requestedChanges.keptNights`, empty when none, a key the older schema strips.
+The card reads a pending request against that source and a declined one
+against its snapshot, listing the kept nights as unchanged; an approval with
+the record exactly as recorded. An approval without it (one before this
+release, or one that applied nothing) is listed as asked with neither mark,
+and is unchanged only where its snapshot holds night rows. Guarded by
 `booking-change-request-repeated-range.test.ts`,
 `booking-change-request-execution.test.ts`,
 `booking-change-request-officer-entry.test.ts`,

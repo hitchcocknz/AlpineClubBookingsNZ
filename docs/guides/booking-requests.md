@@ -88,10 +88,12 @@ are listed on the booking for you to relay.
      on every night of their new dates. The card counts and lists the nights
      each guest is asked for, in runs, and marks a guest whose nights would not
      change, and one whose moved Date In and Date Out would fill gaps in their
-     stay (approving writes, and charges, every night of that range). On an
-     approved or declined request, a guest with gaps whose dates were only
-     repeated is listed as asked, with neither mark: whether approving kept or
-     filled their gaps depends on whether it was approved before #4157. Added guests are
+     stay (approving writes, and charges, every night of that range). Once a
+     request is decided, the card says what happened: a request approved since
+     this release lists the nights the guest kept, marked as no change, and a
+     declined request shows the nights the guest held when it was sent. A request approved before
+     this release filled the gaps, so a guest with gaps whose dates were only
+     repeated is listed with the dates as asked and neither mark. Added guests are
      priced at the stay's own season rates; guests already on the booking keep
      exactly what they paid. Any extra is asked for in the usual way (card, or
      internet banking against a supplementary invoice), and the member gets the

@@ -72,20 +72,9 @@ export async function GET(req: NextRequest) {
             },
             // #3369: the owner may be an Organisation; bookingOwner() reads both.
             organisation: { select: { name: true, email: true } },
-            // #4030: the member ids already on the booking, so the officer's
-            // member finder disables them. #4157: and each guest's range and
-            // night rows, so the card reads a pending request against the
-            // nights approval keeps (`INV-REQ-012`). Neither reaches the
-            // screen beyond the member ids, below.
-            guests: {
-              select: {
-                id: true,
-                memberId: true,
-                stayStart: true,
-                stayEnd: true,
-                nights: { select: { stayDate: true } },
-              },
-            },
+            // #4030: the member ids already on the booking, and nothing else
+            // about its guests, so the officer's member finder disables them.
+            guests: { where: { memberId: { not: null } }, select: { memberId: true } },
             payment: {
               select: {
                 id: true,
@@ -106,6 +95,36 @@ export async function GET(req: NextRequest) {
     prisma.bookingChangeRequest.count({ where }),
   ]);
 
+  // #4157 (`INV-REQ-012`): a pending request's card reads a repeated range
+  // against the nights approval keeps — the booking's live guest rows. Loaded
+  // only for the pending rows' bookings: a decided request never reads them,
+  // so the approved and declined views load no night rows at all. Kept on the
+  // server; nothing about these guests reaches the screen.
+  const pendingBookingIds = [
+    ...new Set(requests.filter((request) => request.status === "REQUESTED").map((request) => request.booking.id)),
+  ];
+  const liveGuestsByBooking = new Map<
+    string,
+    Array<{ id: string; stayStart: Date; stayEnd: Date; nights: Array<{ stayDate: Date }> }>
+  >();
+  if (pendingBookingIds.length > 0) {
+    const liveGuests = await prisma.bookingGuest.findMany({
+      where: { bookingId: { in: pendingBookingIds } },
+      select: {
+        id: true,
+        bookingId: true,
+        stayStart: true,
+        stayEnd: true,
+        nights: { select: { stayDate: true } },
+      },
+    });
+    for (const { bookingId, ...guest } of liveGuests) {
+      const list = liveGuestsByBooking.get(bookingId) ?? [];
+      list.push(guest);
+      liveGuestsByBooking.set(bookingId, list);
+    }
+  }
+
   // #3750: whether approving a request EXECUTES it — its booking's stay has
   // finished — answered here from the same `isFinishedStay` the decision route
   // asks, so the panel's wording and the route's behaviour cannot disagree.
@@ -120,19 +139,18 @@ export async function GET(req: NextRequest) {
       executesOnApproval &&
       request.status === "REQUESTED" &&
       storedRequestNamesNoChange(request.requestedChanges, booking);
-    // #4030 review S7: the guests' member ids reach the screen only where
-    // the officer's finder uses them, and nothing else about the guests does.
-    const memberGuests = guests.flatMap(({ memberId }) => (memberId ? [{ memberId }] : []));
     return {
       ...request,
-      booking: acceptsOfficerGuests ? { ...booking, guests: memberGuests } : booking,
+      // #4030 review S7: the guests' member ids reach the screen only where
+      // the officer's finder uses them.
+      booking: acceptsOfficerGuests ? { ...booking, guests } : booking,
       executesOnApproval,
       acceptsOfficerGuests,
       // #4088: each guest's requested nights, as runs, for the card; #4157:
       // a pending request read against the live rows approval reads.
       requestedGuestNights: describeRequestedGuestNights(request.requestedChanges, {
         status: request.status,
-        guests,
+        guests: liveGuestsByBooking.get(booking.id),
       }),
     };
   });

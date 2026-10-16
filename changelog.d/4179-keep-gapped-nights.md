@@ -13,5 +13,8 @@
   marks them "(no change)", read from the booking itself, so it matches what
   approving will do even for requests sent before this release. "(fills the
   gaps in their stay)" now appears only where a guest's dates really move.
-  On a request already approved or declined, such a guest is listed with the
-  dates as asked and neither mark.
+  Once approved, the request remembers which guests kept their nights, so the
+  card still shows them with "(no change)"; a declined request shows the
+  nights the guest held when it was sent. A request approved before this
+  release, which filled the gaps, lists such a guest with the dates as asked
+  and neither mark.

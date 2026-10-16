@@ -221,6 +221,12 @@ describe("officer-entered guests on a free-text request (#4030 Part B)", () => {
       { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14", nights: held },
     ]);
     expect(input.addGuests).toEqual(GRANDCHILDREN.map((guest) => expect.objectContaining(guest)));
+    // One claim writes both the officer's entry and the record of kept nights.
+    const claim = mocks.updateMany.mock.calls[0][0] as {
+      data: { requestedChanges: { keptNights: unknown; requested: Record<string, unknown> } };
+    };
+    expect(claim.data.requestedChanges.keptNights).toEqual([{ guestId: "g1", nights: held }]);
+    expect(claim.data.requestedChanges.requested.officerEntry).toMatchObject({ officerMemberId: "officer-1" });
   });
 
   it("writes the entry into the request BY THE CLAIM, naming the officer, then applies it", async () => {

@@ -232,6 +232,10 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
         adminNotes: "Added the guest who stayed.",
         internalNotes: "Confirmed with the hut warden.",
         reviewedByMemberId: "officer-1",
+        // #4157: the request as the member sent it, plus the applying
+        // approval's record of kept nights — empty, but present, so the card
+        // reads this as an approval made under that rule.
+        requestedChanges: { ...storedRequest(), keptNights: [] },
       }),
     });
     expect(mocks.update).toHaveBeenCalledWith({
@@ -564,6 +568,12 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     expect(input.guestStayRanges, "INV-REQ-012: the executor passes the kept nights").toEqual([
       { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
       { guestId: "g2", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+    ]);
+    // The guarded claim records what was kept, for the officer's card: g1
+    // only, since g2's range moved.
+    const claim = mocks.updateMany.mock.calls[0][0] as { data: { requestedChanges: Record<string, unknown> } };
+    expect(claim.data.requestedChanges.keptNights, "INV-REQ-012: the approval records the kept nights").toEqual([
+      { guestId: "g1", nights: gapped },
     ]);
   });
 

@@ -375,11 +375,11 @@ describe("booking change requests", () => {
     mocks.bookingChangeRequestFindMany.mockResolvedValue([
       {
         id: "request-1",
-        booking: { checkOut: new Date("2026-05-27T00:00:00.000Z"), status: "PAID", guests: [] },
+        booking: { checkOut: new Date("2026-05-27T00:00:00.000Z"), status: "PAID" },
       },
       {
         id: "request-2",
-        booking: { checkOut: new Date("2026-05-20T00:00:00.000Z"), status: "COMPLETED", guests: [] },
+        booking: { checkOut: new Date("2026-05-20T00:00:00.000Z"), status: "COMPLETED" },
       },
     ]);
     mocks.bookingChangeRequestCount.mockResolvedValue(1);
@@ -417,7 +417,7 @@ describe("booking change requests", () => {
     mocks.bookingChangeRequestFindMany.mockResolvedValue([
       {
         id: "locked-1",
-        booking: { checkOut: new Date("2026-05-27T00:00:00.000Z"), status: "PAID", guests: [] },
+        booking: { checkOut: new Date("2026-05-27T00:00:00.000Z"), status: "PAID" },
       },
     ]);
     mocks.bookingChangeRequestCount.mockResolvedValue(1);
