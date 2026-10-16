@@ -94,10 +94,10 @@ offered to them at all:
 
 ### Always-on alerts
 
-Six alerts are sent outside this grid. They have no checkbox anywhere and cannot
+Seven alerts are sent outside this grid. They have no checkbox anywhere and cannot
 be muted — not here, and not in [Delivery Rules](notification-rules.md), because
 their templates (`admin-email-failure`, `admin-late-capture-auto-refund`,
-`admin-late-capture-hand-back-conflict`,
+`admin-late-capture-hand-back-conflict`, `admin-late-capture-refunded-outside-app`,
 `admin-second-instrument-settlement-conflict`,
 `admin-bank-transfer-settlement-figure`) are locked to always-send:
 
@@ -107,6 +107,7 @@ their templates (`admin-email-failure`, `admin-late-capture-auto-refund`,
 | *Email delivery permanently failed* | Every admin whose role can **edit** Support & System | A member email has used up its automatic retries and will not be retried |
 | *Payment refunded automatically — booking already deleted / already cancelled* | Every admin whose role can **edit** Finance | A member's payment landed after the booking had already been cancelled, so the charge was returned to them automatically. This happens for a booking's own payment and for a payment for a change to it, and the mail says which. Nothing failed and nothing is owed — the mail exists so the money movement is not invisible, and it names whether the booking was also deleted, in which case remaking it means charging the member again |
 | *Automatic refund withheld — already paid back by hand* / *Payment may have been refunded TWICE — reconcile* | Every admin whose role can **edit** Finance | Somebody had already marked a hand-back task for that payment as paid back, which records the refund in the ledger. The automatic refund was withheld so the member is not paid twice — or, if the hand-back was recorded at the exact moment the refund was going out, it went as well and the two have to be reconciled. This is the one mail that may be telling you money left the club twice, which is why it cannot be switched off either |
+| *Late payment refunded outside the app - check Xero* | Every admin whose role can **edit** Finance | A card payment that arrived after its booking was cancelled was refunded somewhere other than the app - in the Stripe dashboard, for example (#4170). The app has no record of that refund and raised no Xero credit note, because Xero never received the payment. Sent once per payment, and again by the nightly check if a send failed; money left the club with no record the app wrote, which is why it cannot be switched off |
 | *Booking may have been paid twice — card and Xero* | Every admin whose role can **edit** Finance | A card payment had already settled the booking (or settled it before it was cancelled), and Xero then reported its Internet Banking invoice paid as well. The bank payment is recorded and nothing was refunded or credited automatically, so the mail links the booking and the Xero invoice for a person to reconcile. The club may be holding the price twice, which is why it cannot be switched off |
 | *Bank transfer amount needs checking* | Every admin whose role can **edit** Finance | Xero reported a booking's bank-transfer invoice paid, and the app either kept the amount it had recorded instead of the cash the invoice collected (it could not tie that cash to this booking alone), or the cash is not what the booking owes (#3979). A wrong recorded amount sizes every later refund and credit, which is why it cannot be switched off |
 
@@ -116,12 +117,14 @@ notice is money moving without anybody deciding it, which is why a club cannot
 switch it off; it is the same event the **"Refunded automatically — nothing to pay
 back"** card on [Payments](payments.md) records. The fourth is the same money seen
 from the other side — a refund deliberately not sent, or one sent twice — and
-produces no card row at all, so the mail is the whole notice. The only way to change
+produces no card row at all, so the mail is the whole notice. The fifth is money
+that left by a route the app did not take, so neither a card row nor a Xero note
+follows it. The only way to change
 who receives one of these is to change who holds the access it is sent to — Support &
-System edit for the first two, Finance edit for the two refund notices, which for the
-built-in roles means the Full Admins and the Treasurer.
+System edit for the first two, Finance edit for the three refund notices, which for
+the built-in roles means the Full Admins and the Treasurer.
 
-If a club has nobody holding the area at all, the alert is not dropped: both refund
+If a club has nobody holding the area at all, the alert is not dropped: the refund
 notices fall back to Support & System editors, and then to the club's own support
 address — the one set in [Email Messages](email-messages.md), or the address in the
 club's configuration if none is set — so it can never be sent to nobody.

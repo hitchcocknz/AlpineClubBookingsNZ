@@ -1,3 +1,4 @@
+import { LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE } from "@/lib/late-capture-outside-app-note";
 import {
   EMAIL_AUDIT_DEFAULTS,
   type EmailAuditTemplateName,
@@ -122,6 +123,9 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // audience and the same unmuteable sender, and delivery-locked below: this is
   // the one mail on the path that says money may have left the club twice.
   "admin-late-capture-hand-back-conflict",
+  // #4170: a late capture refunded OUTSIDE the app - no record, no Xero note the
+  // app could raise. Same admin audience, unmuteable sender, delivery-locked below.
+  "admin-late-capture-refunded-outside-app",
   "admin-pending-deadline",
   "admin-booking-bumped",
   "admin-capacity-warning",
@@ -217,6 +221,8 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // thing that pulls a person to reconcile real money, so it must not be
   // silenceable club-wide any more than its sibling.
   "admin-late-capture-hand-back-conflict",
+  // #4170: the same lock - money left the club with no record the app wrote.
+  "admin-late-capture-refunded-outside-app",
   // #3638: the same lock for the same reason as #2774 — this alert says the
   // club may hold the price twice (a card payment and a Xero payment on one
   // booking), and nothing is refunded or credited automatically, so muting it
@@ -643,6 +649,8 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "refundOutcomeNote",
     "lateCaptureLeadNote",
   ],
+  // #4170: {{outsideAppRefundNote}} is the instruction - what the app did not do, and when to record it.
+  "admin-late-capture-refunded-outside-app": ["memberName", "paymentIntentId", "amount", "outsideAppRefundNote"],
   // #2774: {{handBackConflictNote}} is the whole message - it is the sentence
   // that says whether the money went out or was withheld. An override that drops
   // it turns a reconciliation notice into an unexplained mention of a booking, on
@@ -937,25 +945,29 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     // would tell an admin the other kind sends nothing.
     triggerSummary:
       "Stripe captured a payment after the booking had already been cancelled (deleted or not) - either the booking's own payment or one for a change to it - so the capture was refunded in full automatically and recorded on the payments board",
-    // The frequency sentence used to claim "webhook redeliveries do not
-    // re-send", and that was not true. The record write is idempotent on the
-    // payment intent; this mail is not. A Stripe redelivery re-enters the
-    // handler whenever the first attempt failed AFTER the alert — the COMPLETED
-    // stamp or the webhook log throwing sends the request to the outer catch,
-    // which deletes the lease claim and answers 500 — and a lease takeover after
-    // expiry does the same (`stripe-webhook-service.ts` says outright that a
-    // handler may legitimately run more than once for one event).
+    // The delivery that refunds sends it, even when its record write is lost
+    // (#4149); since #3639 a redelivery after the refund never refunds or sends
+    // again, and the lost-record recovery sends it only when the refunding
+    // delivery died before sending (`late-capture-record-recovery.ts`). Two
+    // deliveries racing one event before either refunded can each send it.
     //
-    // The honest wording is shipped rather than the send being deduped, and that
-    // is a deliberate choice on a money notification: the alert is the event's
-    // ONE notification (`INV-ADDPAY-037`), it is fire-and-forget with a `.catch`
-    // that only logs, and gating it on the record writer's `alreadyRecorded`
-    // outcome would mean a redelivery after a FAILED send is silent — trading a
-    // rare duplicate for a rare silence, on the path where the owner's #2761
-    // decision was that this must not be silenceable. A duplicate says the same
-    // true thing twice; a silence says nothing about money that moved.
+    // That duplicate is shipped rather than deduped, deliberately, on a money
+    // notification: the alert is the event's ONE notification (`INV-ADDPAY-037`),
+    // it is fire-and-forget with a `.catch` that only logs, and gating it on the
+    // record writer's `alreadyRecorded` outcome would make the racing delivery
+    // silent whenever the first one's send FAILED — trading a rare duplicate for
+    // a rare silence, on the path where the owner's #2761 decision was that this
+    // must not be silenceable. A duplicate says the same true thing twice; a
+    // silence says nothing about money that moved. The recovery's own skip reads
+    // the refund-time audit entry, so a send that never happened is never assumed.
     frequency:
-      "On each late capture the webhook refunds automatically — rare; once per payment intent per delivery, and a Stripe redelivery of the same event can re-send it",
+      "On each late capture the webhook refunds automatically — rare; once per refund, sent when the money goes back even if its record is saved later, and two deliveries racing the same event can each send it",
+  },
+  "admin-late-capture-refunded-outside-app": {
+    triggerSummary:
+      "A card payment that went through after its booking was cancelled was refunded outside the app - for example in the Stripe dashboard - so the app holds no record of the refund and raised no Xero credit note for it",
+    frequency:
+      "Once ever per capture - claim-guarded, and raised again by the nightly check if a send failed",
   },
   "admin-late-capture-hand-back-conflict": {
     triggerSummary:
@@ -966,7 +978,7 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     // failed after the alert. Deduping it would make a redelivery after a FAILED
     // send silent on money that may have moved twice.
     frequency:
-      "Only when an operator's hand-back and the automatic refund claim the same capture - rare; once per delivery, and a Stripe redelivery of the same event can re-send it",
+      "Only when an operator's hand-back and the automatic refund claim the same capture - rare; a withheld refund's mail once per delivery (a Stripe redelivery can re-send it), a possible double refund's once ever per capture (#4149)",
   },
   "admin-minors-review": {
     triggerSummary:
@@ -1548,6 +1560,7 @@ export function sampleValue(token: string): string {
   if (token === "settlementFigureNote") {
     return ibSettlementFigureParagraph({ keptReason: "folded-refund", owed: null, hasSupplementaryInvoice: false });
   }
+  if (token === "outsideAppRefundNote") return LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE;
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
   }
@@ -2095,6 +2108,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "secondInstrumentConflictNote",
   // #3979: the bank-transfer settlement alert's what-needs-a-person sentence.
   "settlementFigureNote",
+  // #4170: the outside-the-app refund alert's instruction.
+  "outsideAppRefundNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and
   // paid-twice arms cannot collapse into one claim when an admin saves the template
   // — the {{bookingStateLabel}} construction (#2761), plus the subject requirement
