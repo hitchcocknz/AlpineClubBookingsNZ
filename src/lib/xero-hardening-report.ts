@@ -675,16 +675,11 @@ export async function buildXeroReconciliationReport(
   const mismatchedCanonicalLinks = mismatchedCanonicalExpectations.length;
 
   const staleCanonicalLinkRecords = links.filter((link) => {
-    // The still-active mirror of a note VOIDED/DELETED in Xero is the drift
-    // the nightly cleanup heals, on every source (#2901 fix round, #4161): a
-    // bank-transfer payment's one canonical note voided before #4091 matches
-    // its pointer, so the expectation check below never saw it.
-    if (isCancelledRefundCreditNoteMirror(link)) {
-      return true;
-    }
-    // Exempt only LIVE per-delta coverage.
-    if (isPerRefundCreditNoteLink(link, stripePaymentIds)) {
-      return false;
+    // A VOIDED/DELETED note's active mirror is drift the cleanup heals on any
+    // source (#2901, #4161), even a bank note its pointer names. Exempt only
+    // LIVE per-delta coverage.
+    if (isCancelledRefundCreditNoteMirror(link) || isPerRefundCreditNoteLink(link, stripePaymentIds)) {
+      return isCancelledRefundCreditNoteMirror(link);
     }
     const expectation = canonicalExpectationByScope.get(buildCanonicalScopeKey(link));
     if (!expectation) {
