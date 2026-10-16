@@ -981,7 +981,7 @@ describe("Stripe webhook Xero alerting", () => {
       // No task row names the capture yet.
       mockFindLateCapturePaymentIntents.mockImplementation(async () => new Set<string>());
       mockPaymentFindUnique.mockResolvedValue({ bookingId: "booking-3", booking: { status: "CANCELLED" } });
-      mockPaymentTransactionFindUnique.mockResolvedValue({ paymentId: "payment-3", reason: captureReason });
+      mockPaymentTransactionFindUnique.mockResolvedValue({ paymentId: "payment-3", reason: captureReason, refundedAmountCents: 3800 });
       mockEnqueueXeroRefundCreditNoteOperation.mockResolvedValue({ queueOperationId: "op_generic", message: "queued" });
     };
 

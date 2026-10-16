@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   landedAfterMany: vi.fn(),
   findClosed: vi.fn(),
   superseded: vi.fn(),
+  knownDoor: vi.fn(),
   paymentFindUnique: vi.fn(),
   paymentTransactionFindUnique: vi.fn(),
   paymentRefundFindMany: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("@/lib/late-capture-xero-receipt", () => ({
 vi.mock("@/lib/late-capture-record-recovery", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/late-capture-record-recovery")),
   findSupersededRefundOnlyIntents: (...args: unknown[]) => mocks.superseded(...args),
+  findIntentsWithKnownDoorRefund: (...args: unknown[]) => mocks.knownDoor(...args),
 }));
 vi.mock("@/lib/cancelled-booking-late-capture", () => ({
   lateCaptureDoubleRefundAlertKey: (paymentIntentId: string) => `late-capture-double-refund:${paymentIntentId}`,
@@ -111,6 +113,7 @@ beforeEach(() => {
   mocks.sendOutsideAppAlert.mockResolvedValue(undefined);
   mocks.findClosed.mockResolvedValue(new Map());
   mocks.superseded.mockResolvedValue(new Set());
+  mocks.knownDoor.mockResolvedValue(new Set());
   mocks.auditLogFindMany.mockResolvedValue([]);
   mocks.landedAfterMany.mockImplementation(async (intents: string[]) => new Set(intents));
 });
@@ -121,7 +124,8 @@ describe("readUnrecordedLateCaptureRefund — charge.refunded before the record 
 
   beforeEach(() => {
     mocks.paymentFindUnique.mockResolvedValue({ bookingId: "booking-1", booking: { status: "CANCELLED" } });
-    mocks.paymentTransactionFindUnique.mockResolvedValue({ paymentId: "payment-1", reason: null });
+    // The capture's whole refunded total, which the alert reads when it is sent.
+    mocks.paymentTransactionFindUnique.mockResolvedValue({ paymentId: "payment-1", reason: null, refundedAmountCents: 4000 });
     mocks.landedAfter.mockResolvedValue(false);
   });
 
@@ -150,7 +154,8 @@ describe("readUnrecordedLateCaptureRefund — charge.refunded before the record 
     ]);
     expect(mocks.sendOutsideAppAlert).toHaveBeenCalledTimes(1);
     expect(mocks.sendOutsideAppAlert).toHaveBeenCalledWith(
-      expect.objectContaining({ memberName: "Alice Example", bookingId: "booking-1", paymentIntentId: INTENT, refundedCents: 2500 }),
+      // The capture's whole refunded total, read at send time - not this event's 2500.
+      expect.objectContaining({ memberName: "Alice Example", bookingId: "booking-1", paymentIntentId: INTENT, refundedCents: 4000 }),
       CLUB_FORMAT_TEST,
     );
     expect(mocks.cooldown.has(`late-capture-refunded-outside-app:${INTENT}`)).toBe(true);
@@ -233,7 +238,7 @@ describe("findPaymentsWithUnrecordedLateCaptures — the self-heal's own list (#
 
     await expect(findPaymentsWithUnrecordedLateCaptures(NOW, 1)).resolves.toEqual(["late"]);
     expect(mocks.superseded).toHaveBeenCalledWith(
-      new Map([["pi_superseded", 2500], ["pi_escalated", 2500], ["pi_outside", 2500], ["pi_late", 2500]]),
+      new Map(["superseded", "escalated", "outside", "late"].map((id) => [`pi_${id}`, { refundedCents: 2500, bookingId: `booking-${id}` }])),
     );
     // Its claim held, the alert is not sent again.
     expect(mocks.sendOutsideAppAlert).not.toHaveBeenCalled();
@@ -241,6 +246,7 @@ describe("findPaymentsWithUnrecordedLateCaptures — the self-heal's own list (#
 
   it("raises the outside-the-app alert again when its claim is not held (a send that threw), and still does not list it", async () => {
     mocks.paymentRefundFindMany.mockResolvedValue([refund("outside", "pi_outside", "succeeded", 1800)]);
+    mocks.paymentTransactionFindUnique.mockResolvedValue({ refundedAmountCents: 1800 });
     mocks.auditLogFindMany.mockResolvedValueOnce([{ details: JSON.stringify({ paymentIntentId: "pi_outside" }) }]);
 
     await expect(findPaymentsWithUnrecordedLateCaptures(NOW)).resolves.toEqual([]);
@@ -251,6 +257,31 @@ describe("findPaymentsWithUnrecordedLateCaptures — the self-heal's own list (#
     // Held now: the next night sends nothing.
     await findPaymentsWithUnrecordedLateCaptures(NOW);
     expect(mocks.sendOutsideAppAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a hand-completed capture whose door-refund check already found none", async () => {
+    mocks.paymentRefundFindMany.mockResolvedValue([refund("hand", "pi_hand"), refund("late", "pi_late")]);
+    mocks.findClosed.mockResolvedValueOnce(new Map([["pi_hand", "hand-completed"]]));
+    mocks.cooldown.set("late-capture-hand-completed-checked:pi_hand", NOW);
+
+    await expect(findPaymentsWithUnrecordedLateCaptures(NOW)).resolves.toEqual(["late"]);
+  });
+
+  it("lists a hand-completed change payment even without landed-after evidence: the #2700 row is the evidence", async () => {
+    mocks.paymentRefundFindMany.mockResolvedValue([refund("hand", "pi_hand")]);
+    mocks.findClosed.mockResolvedValueOnce(new Map([["pi_hand", "hand-completed"]]));
+    mocks.landedAfterMany.mockResolvedValueOnce(new Set());
+
+    await expect(findPaymentsWithUnrecordedLateCaptures(NOW)).resolves.toEqual(["hand"]);
+  });
+
+  it("keeps listing a capture named outside the app when a door refund is known for it too", async () => {
+    mocks.paymentRefundFindMany.mockResolvedValue([refund("outside", "pi_outside")]);
+    mocks.auditLogFindMany.mockResolvedValueOnce([{ details: JSON.stringify({ paymentIntentId: "pi_outside" }) }]);
+    mocks.cooldown.set("late-capture-refunded-outside-app:pi_outside", NOW);
+    mocks.knownDoor.mockResolvedValueOnce(new Set(["pi_outside"]));
+
+    await expect(findPaymentsWithUnrecordedLateCaptures(NOW)).resolves.toEqual(["outside"]);
   });
 
   it("asks nothing further when no refund is in the window", async () => {

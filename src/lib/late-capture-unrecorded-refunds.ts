@@ -8,7 +8,9 @@ import { sendAdminLateCaptureRefundedOutsideAppAlert } from "@/lib/email";
 import { UNMUTEABLE_ALERT_SENT } from "@/lib/email/admin-alert-send-result";
 import { findCapturesLandedAfterCancellation, readCaptureLandedAfterCancellation } from "@/lib/late-capture-landed-after";
 import {
+  findIntentsWithKnownDoorRefund,
   findSupersededRefundOnlyIntents,
+  lateCaptureHandCompletedCheckedKey,
   parseAuditDetails,
   readMemberName,
   sentByLateCaptureRefundDoor,
@@ -100,7 +102,7 @@ export async function readUnrecordedLateCaptureRefund(params: {
     { bookingId, paymentId, paymentIntentId, refundedCents: params.refundedCents },
     "A late capture was refunded outside the app's late-capture refund: no record or Xero note is written for it; the repair tool's case (#4170)",
   );
-  await alertLateCaptureRefundedOutsideTheApp({ bookingId, paymentIntentId, refundedCents: params.refundedCents });
+  await alertLateCaptureRefundedOutsideTheApp({ bookingId, paymentIntentId });
   return "refunded_outside_the_app";
 }
 
@@ -113,13 +115,10 @@ export function lateCaptureRefundedOutsideAppAlertKey(paymentIntentId: string): 
  * Its alert: its own unmuteable template (`admin-late-capture-refunded-outside-app`,
  * `INV-ADDPAY-038`), once ever per capture. A send that throws gives the claim
  * back, and the nightly self-heal raises it again (`findPaymentsWithUnrecordedLateCaptures`).
- * Never throws.
+ * The amount is the capture's whole refunded total, read when it is sent, so the
+ * webhook's send and the nightly re-send say the same. Never throws.
  */
-async function alertLateCaptureRefundedOutsideTheApp(alert: {
-  bookingId: string;
-  paymentIntentId: string;
-  refundedCents: number;
-}): Promise<boolean> {
+async function alertLateCaptureRefundedOutsideTheApp(alert: { bookingId: string; paymentIntentId: string }): Promise<boolean> {
   return sendAdminAlertOnceEver({
     key: lateCaptureRefundedOutsideAppAlertKey(alert.paymentIntentId),
     label: "late capture refunded outside the app alert",
@@ -136,6 +135,10 @@ async function alertLateCaptureRefundedOutsideTheApp(alert: {
           organisation: { select: { name: true, email: true } },
         },
       });
+      const capture = await prisma.paymentTransaction.findUnique({
+        where: { stripePaymentIntentId: alert.paymentIntentId },
+        select: { refundedAmountCents: true },
+      });
       await sendAdminLateCaptureRefundedOutsideAppAlert(
         {
           memberName: readMemberName(booking),
@@ -143,7 +146,7 @@ async function alertLateCaptureRefundedOutsideTheApp(alert: {
           checkOut: booking?.checkOut ?? new Date(0),
           bookingId: alert.bookingId,
           paymentIntentId: alert.paymentIntentId,
-          refundedCents: alert.refundedCents,
+          refundedCents: capture?.refundedAmountCents ?? 0,
         },
         await getClubFormat(),
       );
@@ -166,8 +169,9 @@ const LOST_RECORD_LOOKBACK_DAYS = 30;
  * may never show a gap at all. Refunds recorded in the last
  * `LOST_RECORD_LOOKBACK_DAYS` on a cancelled booking, of a capture that landed
  * after the cancel (`findCapturesLandedAfterCancellation`) and has no closed
- * record (`findClosedLateCaptureRecords`). Change payments with no cancel claim
- * reach the recovery only through the gap list, as before.
+ * record (`findClosedLateCaptureRecords`), or a hand-completed #2700 row - itself
+ * evidence of a late capture, a change payment's included. Other change payments
+ * with no cancel claim reach the recovery only through the gap list, as before.
  *
  * NOTHING THAT CANNOT RESOLVE IS LISTED, and that is decided before the cut to
  * `limit`, so a capture that never resolves cannot starve one that would:
@@ -175,11 +179,13 @@ const LOST_RECORD_LOOKBACK_DAYS = 30;
  *   (`findSupersededRefundOnlyIntents`) - no late-capture door sent them, so
  *   Stripe could never prove one, and its refund is already outside the
  *   note-eligible cash by its cancel claim;
- * - a hand-completed capture whose #2774 escalation is claimed (held);
+ * - a hand-completed capture whose #2774 escalation is claimed (held), or whose
+ *   door-refund check already found none (`lateCaptureHandCompletedCheckedKey`);
  * - a capture named refunded outside the app
- *   (`booking.payment.late_capture_refunded_outside_app`): its alert is raised
- *   again here if its claim is not held (a send that threw), and it is not
- *   listed - no door refund will ever appear for it.
+ *   (`booking.payment.late_capture_refunded_outside_app`) with no door refund
+ *   known (`findIntentsWithKnownDoorRefund`): its alert is raised again here if
+ *   its claim is not held (a send that threw), and it is not listed. One with a
+ *   door refund known stays listed: that record can still be proved.
  */
 export async function findPaymentsWithUnrecordedLateCaptures(now: Date, limit = 50): Promise<string[]> {
   const since = new Date(now.getTime() - LOST_RECORD_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
@@ -207,22 +213,33 @@ export async function findPaymentsWithUnrecordedLateCaptures(now: Date, limit = 
   const closed = await findClosedLateCaptureRecords([...byIntent.keys()]);
   const open = [...byIntent.keys()].filter((intent) => closed.get(intent) !== "record");
   const landed = await findCapturesLandedAfterCancellation(open);
-  const candidates = open.filter((intent) => landed.has(intent));
+  // A hand-completed #2700 row is itself evidence of a late capture - a change
+  // payment's included - so it is listed without the landed-after evidence.
+  const candidates = open.filter((intent) => landed.has(intent) || closed.get(intent) === "hand-completed");
   const superseded = await findSupersededRefundOnlyIntents(
-    new Map(candidates.map((intent) => [intent, byIntent.get(intent)!.refundedCents])),
+    new Map(candidates.map((intent) => [intent, { refundedCents: byIntent.get(intent)!.refundedCents, bookingId: byIntent.get(intent)!.bookingId }])),
   );
-  const escalated = await findHeldOnceEverAlertKeys(
-    candidates.filter((intent) => closed.get(intent) === "hand-completed").map(lateCaptureDoubleRefundAlertKey),
+  const handCompleted = candidates.filter((intent) => closed.get(intent) === "hand-completed");
+  const settledHandCompletions = await findHeldOnceEverAlertKeys(
+    [...handCompleted.map(lateCaptureDoubleRefundAlertKey), ...handCompleted.map(lateCaptureHandCompletedCheckedKey)],
     now,
   );
-  const outsideApp = await readRefundedOutsideAppIntents([...new Set(candidates.map((intent) => byIntent.get(intent)!.bookingId))]);
-  for (const intent of candidates.filter((candidate) => outsideApp.has(candidate))) {
-    const { bookingId, refundedCents } = byIntent.get(intent)!;
-    await alertLateCaptureRefundedOutsideTheApp({ bookingId, paymentIntentId: intent, refundedCents });
+  const handCompletionSettled = (intent: string) =>
+    settledHandCompletions.has(lateCaptureDoubleRefundAlertKey(intent)) ||
+    settledHandCompletions.has(lateCaptureHandCompletedCheckedKey(intent));
+  const namedOutsideApp = await readRefundedOutsideAppIntents([...new Set(candidates.map((intent) => byIntent.get(intent)!.bookingId))]);
+  for (const intent of candidates.filter((candidate) => namedOutsideApp.has(candidate))) {
+    await alertLateCaptureRefundedOutsideTheApp({ bookingId: byIntent.get(intent)!.bookingId, paymentIntentId: intent });
   }
+  // One named outside the app stays listed when a door refund is known for it too: that record can still be proved.
+  const withDoorRefund = await findIntentsWithKnownDoorRefund(
+    new Map([...namedOutsideApp].filter((intent) => byIntent.has(intent)).map((intent) => [intent, byIntent.get(intent)!.bookingId])),
+  );
   const listed = candidates.filter(
     (intent) =>
-      !superseded.has(intent) && !outsideApp.has(intent) && !escalated.has(lateCaptureDoubleRefundAlertKey(intent)),
+      !superseded.has(intent) &&
+      !(namedOutsideApp.has(intent) && !withDoorRefund.has(intent)) &&
+      !(closed.get(intent) === "hand-completed" && handCompletionSettled(intent)),
   );
   return [...new Set(listed.map((intent) => byIntent.get(intent)!.paymentId))].slice(0, limit);
 }

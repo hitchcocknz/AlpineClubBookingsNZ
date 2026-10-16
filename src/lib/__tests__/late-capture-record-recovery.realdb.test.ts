@@ -520,6 +520,10 @@ function lateCaptureRefund(): Stripe.Refund {
         unresolved: false,
       });
       expect(await recordRows()).toHaveLength(1);
+      // As the repair tool records its own refund: no "refunded automatically" entry beside the record.
+      const recovered = await refundEntries(1, RECOVERED_ENTRY);
+      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ repairRefund: true, alertSent: false });
+      expect(await refundEntries(1)).toHaveLength(0);
     });
 
     it("re-raises a refunded-outside-the-app alert whose claim is not held, from the nightly self-heal (#4170)", async () => {

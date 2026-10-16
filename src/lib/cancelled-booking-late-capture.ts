@@ -604,12 +604,12 @@ export async function recordAutomaticLateCaptureRefund(
  * query to the residual case for a figure a reader can get from the payment. The
  * booking id and the payment intent id are printed, which is how the row is found.
  *
- * #4149: the double-payment arm is claimed ONCE EVER per capture
+ * #4149: the double-payment arm's EMAIL is claimed once ever per capture
  * (`lateCaptureDoubleRefundAlertKey`), whichever path finds it - this writer at
  * refund time or the lost-record recovery later - and the claim, not the entry,
  * is the gate: a send that throws gives the claim back and the next finder
- * raises it, writing the entry again (allowed: two entries for one double
- * payment say one true thing twice).
+ * sends it. The `critical` entry is written for every detection, outside the
+ * claim, so each finding is on the record.
  */
 /** The once-ever claim of a capture's double-payment escalation (#4149). */
 export function lateCaptureDoubleRefundAlertKey(paymentIntentId: string): string {
@@ -622,39 +622,40 @@ export async function announceAutomaticLateCaptureRefund(
   format: ClubFormat,
 ): Promise<void> {
   if (outcome.handCompletedAfterRefund) {
+    // Every detection is recorded; only the email is claimed once ever (#4149).
+    logAudit({
+      action: "booking.payment.late_capture_double_refund_suspected",
+      category: "payment",
+      severity: "critical",
+      outcome: "failure",
+      entityType: "Booking",
+      entityId: capture.bookingId,
+      targetId: capture.bookingId,
+      details: JSON.stringify({
+        paymentIntentId: capture.paymentIntentId,
+        amountCents: capture.amountCents,
+        bookingDeleted: outcome.bookingDeleted,
+        captureKind: capture.captureKind,
+        // Spelled out for the same reason its withheld sibling spells out
+        // `false`: a reader must not have to infer which way the money went.
+        refundSent: true,
+      }),
+    });
+    logger.error(
+      {
+        bookingId: capture.bookingId,
+        paymentId: capture.paymentId,
+        paymentIntentId: capture.paymentIntentId,
+        amountCents: capture.amountCents,
+        captureKind: capture.captureKind,
+      },
+      "An operator hand-completed this refund task while Stripe was refunding the same capture; the member may have been paid twice (#2774)",
+    );
     await sendAdminAlertOnceEver({
       key: lateCaptureDoubleRefundAlertKey(capture.paymentIntentId),
       label: "late-capture double refund alert",
       context: { bookingId: capture.bookingId, paymentIntentId: capture.paymentIntentId },
       send: async () => {
-        logAudit({
-          action: "booking.payment.late_capture_double_refund_suspected",
-          category: "payment",
-          severity: "critical",
-          outcome: "failure",
-          entityType: "Booking",
-          entityId: capture.bookingId,
-          targetId: capture.bookingId,
-          details: JSON.stringify({
-            paymentIntentId: capture.paymentIntentId,
-            amountCents: capture.amountCents,
-            bookingDeleted: outcome.bookingDeleted,
-            captureKind: capture.captureKind,
-            // Spelled out for the same reason its withheld sibling spells out
-            // `false`: a reader must not have to infer which way the money went.
-            refundSent: true,
-          }),
-        });
-        logger.error(
-          {
-            bookingId: capture.bookingId,
-            paymentId: capture.paymentId,
-            paymentIntentId: capture.paymentIntentId,
-            amountCents: capture.amountCents,
-            captureKind: capture.captureKind,
-          },
-          "An operator hand-completed this refund task while Stripe was refunding the same capture; the member may have been paid twice (#2774)",
-        );
         await sendAdminLateCaptureHandBackConflictAlert({
           memberName: capture.memberName,
           checkIn: capture.checkIn,

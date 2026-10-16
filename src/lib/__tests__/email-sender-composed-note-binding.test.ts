@@ -56,6 +56,8 @@ import {
   sendAdminManualRefundTaskAlert,
 } from "@/lib/email/admin-alerts-finance";
 import { sendAdminInternetBankingHoldKeptAlert } from "@/lib/email/admin-alerts-internet-banking";
+import { sendAdminLateCaptureRefundedOutsideAppAlert } from "@/lib/email/admin-alerts-late-capture";
+import { LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE } from "@/lib/late-capture-outside-app-note";
 import {
   sendAdminBankTransferSettlementFigureAlert,
   sendAdminSecondInstrumentSettlementConflictAlert,
@@ -464,6 +466,35 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(owedRendered).toContain("The member paid more than the booking owes");
     expect(owedRendered).not.toContain("kept the amount");
     expect(owedRendered).toContain("Booking owes: $150.00");
+  });
+
+  it("admin-late-capture-refunded-outside-app: {{outsideAppRefundNote}} says what the app did not do (#4170)", async () => {
+    await sendAdminLateCaptureRefundedOutsideAppAlert(
+      {
+        memberName: "Alice Example",
+        checkIn: new Date("2026-08-01"),
+        checkOut: new Date("2026-08-03"),
+        bookingId: "booking-9",
+        paymentIntentId: "pi_late_9",
+        refundedCents: 2500,
+      },
+      CLUB_FORMAT_TEST,
+    );
+
+    const data = capturedUnmuteableTemplateData();
+    expect(data.outsideAppRefundNote).toBe(LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE);
+    const rendered = renderDefaultBody("admin-late-capture-refunded-outside-app", data);
+    expect(rendered).toContain("raised no Xero credit note");
+    expect(rendered).toContain("Amount refunded: $25.00");
+    expect(rendered).toContain("Stripe reference: pi_late_9");
+    // Unmuteable, named for the event, owned by Finance editors - never the payment-failure mail.
+    const [args] = mocks.sendUnmuteableAdminAlert.mock.calls[0] as [
+      { subject: string; templateName: string; requirement: unknown },
+    ];
+    expect(args.subject).toBe("Late payment refunded outside the app - check Xero: Alice Example");
+    expect(args.templateName).toBe("admin-late-capture-refunded-outside-app");
+    expect(args.requirement).toEqual({ area: "finance", level: "edit" });
+    expect(mocks.sendToAdmins).not.toHaveBeenCalled();
   });
 
   it("admin-manual-refund-task: {{handBackNote}} and {{handBackLabel}} say which hand-back it is (#4042)", async () => {

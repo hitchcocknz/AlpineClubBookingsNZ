@@ -967,7 +967,7 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     triggerSummary:
       "A card payment that went through after its booking was cancelled was refunded outside the app - for example in the Stripe dashboard - so the app holds no record of the refund and raised no Xero credit note for it",
     frequency:
-      "Once per late payment - claim-guarded, and raised again by the nightly check if a send failed",
+      "Once ever per capture - claim-guarded, and raised again by the nightly check if a send failed",
   },
   "admin-late-capture-hand-back-conflict": {
     triggerSummary:
@@ -978,7 +978,7 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     // failed after the alert. Deduping it would make a redelivery after a FAILED
     // send silent on money that may have moved twice.
     frequency:
-      "Only when an operator's hand-back and the automatic refund claim the same capture - rare; a withheld refund's mail once per delivery (a Stripe redelivery can re-send it), a possible double refund's once ever per payment (#4149)",
+      "Only when an operator's hand-back and the automatic refund claim the same capture - rare; a withheld refund's mail once per delivery (a Stripe redelivery can re-send it), a possible double refund's once ever per capture (#4149)",
   },
   "admin-minors-review": {
     triggerSummary:

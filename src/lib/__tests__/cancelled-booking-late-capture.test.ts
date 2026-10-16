@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   sendAdminLateCaptureAutoRefundAlert: vi.fn(),
   sendAdminLateCaptureHandBackConflictAlert: vi.fn(),
   onceEverKeys: [] as string[],
+  onceEverWins: { value: true },
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -64,6 +65,7 @@ vi.mock("@/lib/email", () => ({
 vi.mock("@/lib/admin-alert-once", () => ({
   sendAdminAlertOnceEver: async ({ key, send }: { key: string; send: () => Promise<unknown> }) => {
     mocks.onceEverKeys.push(key);
+    if (!mocks.onceEverWins.value) return false;
     await send();
     return true;
   },
@@ -582,6 +584,26 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
     expect(mocks.sendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledWith(
       expect.objectContaining({ bookingDeleted: true }), CLUB_FORMAT_TEST,
     );
+  });
+
+  it("writes the CRITICAL row for every detection, but sends the conflict email only to the claim's winner (#4149)", async () => {
+    mocks.onceEverWins.value = false;
+    try {
+      await announceAutomaticLateCaptureRefund(capture(), {
+        bookingDeleted: false,
+        recorded: true,
+        alreadyRecorded: false,
+        handCompletedAfterRefund: true,
+      }, CLUB_FORMAT_TEST);
+    } finally {
+      mocks.onceEverWins.value = true;
+    }
+
+    expect(mocks.logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "booking.payment.late_capture_double_refund_suspected", severity: "critical" }),
+    );
+    expect(mocks.sendAdminLateCaptureHandBackConflictAlert).not.toHaveBeenCalled();
+    expect(mocks.sendAdminLateCaptureAutoRefundAlert).not.toHaveBeenCalled();
   });
 
   it("swaps to the conflict alert, with a CRITICAL audit row, on a suspected double payment", async () => {

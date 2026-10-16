@@ -1,6 +1,7 @@
-import { PaymentRecoveryOperationType, PaymentTransactionKind } from "@prisma/client";
+import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType, PaymentTransactionKind } from "@prisma/client";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import { findHeldOnceEverAlertKeys } from "@/lib/admin-alert-once";
+import { ALERT_ONCE_EVER_WINDOW_MS, claimAlertCooldown } from "@/lib/alert-cooldown";
 import { logAudit } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
 import {
@@ -16,7 +17,11 @@ import { readCaptureLandedAfterCancellation } from "@/lib/late-capture-landed-af
 import { lateCaptureAuditKind, queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
 import { findClosedLateCaptureRecords } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
-import { buildLateCaptureRefundMetadata, LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON } from "@/lib/payment-recovery-keys";
+import {
+  buildLateCaptureRefundMetadata,
+  buildLateCaptureRefundStripeKeyPrefix,
+  LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON,
+} from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { readRecordedRefundCentsByIntent } from "@/lib/refund-note-eligible-cash";
@@ -64,6 +69,9 @@ import { isStripeResourceAbsentHere } from "@/lib/stripe-errors";
  *    (`lateCaptureDoubleRefundAlertKey`) - the claim, not the entry, is the gate;
  *  - a refund the repair tool made carries its own late-capture metadata
  *    (`LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON`) and is a door refund too;
+ *    when every refund found is the repair tool's, its lost record is written
+ *    as the repair tool writes it - record, recovered entry and note, with no
+ *    `refunded_after_cancellation` entry and no "refunded automatically" alert;
  *  - the nightly self-heal runs the same check (`recoverLostLateCaptureRecordsForPayment`)
  *    over its OWN list (`findPaymentsWithUnrecordedLateCaptures`,
  *    `late-capture-unrecorded-refunds.ts`), which does
@@ -291,7 +299,10 @@ export async function recoverLostLateCaptureRecord(
   if (closed === "hand-completed" && (await isDoubleRefundEscalationHeld(paymentIntentId))) return false;
   const sent = await listDoorRefunds(bookingId, paymentIntentId, options.stripeTimeoutMs ?? REDELIVERY_STRIPE_TIMEOUT_MS);
   const [first] = sent;
-  if (!first) return false;
+  if (!first) {
+    if (closed === "hand-completed") await markHandCompletedCaptureChecked(paymentIntentId);
+    return false;
+  }
   const capture = describeLateCaptureFromBooking(booking, identity);
   if (closed === "hand-completed") {
     await escalateHandCompletedDoorRefund(capture, options.format);
@@ -311,7 +322,11 @@ export async function recoverLostLateCaptureRecord(
   }
 
   const refundedCents = sent.reduce((sum, refund) => sum + refund.amount, 0);
-  const alertSent = refundTimeReport !== "reported";
+  // The repair tool's own refund (#1491) is reported by the repair run, never
+  // as "refunded automatically": its record, entry and note only (as
+  // `recordAndNoteRepairedLateCaptureRefunds` writes them).
+  const repairRefundOnly = sent.every((refund) => refund.metadata?.reason === LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON);
+  const alertSent = !repairRefundOnly && refundTimeReport !== "reported";
   logAudit({
     action: "booking.payment.auto_refund_record_recovered",
     category: "payment",
@@ -326,9 +341,12 @@ export async function recoverLostLateCaptureRecord(
       kind: lateCaptureAuditKind(capture.captureKind),
       refundTimeReport,
       alertSent,
+      ...(repairRefundOnly ? { repairRefund: true } : {}),
     }),
   });
-  if (refundTimeReport === "none") {
+  if (repairRefundOnly) {
+    // Nothing more: the repair run reported the refund to the operator who made it.
+  } else if (refundTimeReport === "none") {
     // The delivery that refunded died before its entry and alert: neither went out, so both go now.
     reportAutomaticLateCaptureRefund({
       capture,
@@ -347,6 +365,23 @@ export async function recoverLostLateCaptureRecord(
   );
   await queueLateCaptureRefundCreditNote({ paymentId: capture.paymentId, paymentIntentId });
   return true;
+}
+
+/**
+ * A hand-COMPLETED capture whose door-refund check found none: #2774's fence
+ * withholds the automatic refund while a hand-back is COMPLETED, so no door
+ * refund will appear for it, and the nightly list stops asking Stripe about it
+ * (`lateCaptureHandCompletedCheckedKey`). Stated limit: a treasurer approval of
+ * the same capture, on a separate approval-marked row, refunding AFTER this
+ * check, is not escalated by the nightly list.
+ */
+async function markHandCompletedCaptureChecked(paymentIntentId: string): Promise<void> {
+  await claimAlertCooldown({ key: lateCaptureHandCompletedCheckedKey(paymentIntentId), windowMs: ALERT_ONCE_EVER_WINDOW_MS });
+}
+
+/** The marker a hand-completed capture's door-refund check found nothing (#4149). */
+export function lateCaptureHandCompletedCheckedKey(paymentIntentId: string): string {
+  return `late-capture-hand-completed-checked:${paymentIntentId}`;
 }
 
 async function isDoubleRefundEscalationHeld(paymentIntentId: string): Promise<boolean> {
@@ -483,7 +518,9 @@ export async function recoverLostLateCaptureRecordsForPayment(
     if (intents.length === 0) return result;
     const closed = await findClosedLateCaptureRecords(intents);
     // #4173: a superseded-payment refund can never be proved a late-capture door's.
-    const superseded = await findSupersededRefundOnlyIntents(centsByIntent);
+    const superseded = await findSupersededRefundOnlyIntents(
+      new Map([...centsByIntent].map(([intent, refundedCents]) => [intent, { refundedCents, bookingId: payment.bookingId }])),
+    );
     let format: ClubFormat | null = null;
     for (const paymentIntentId of intents.filter((intent) => closed.get(intent) !== "record" && !superseded.has(intent))) {
       try {
@@ -526,23 +563,61 @@ export async function recoverLostLateCaptureRecordsForPayment(
 
 /**
  * #4173: the intents among these whose recorded refunds the superseded-payment
- * refund made - a `REFUND_SUPERSEDED_PAYMENT` recovery for the intent whose
- * amounts cover every recorded cent. That door writes no late-capture record and
- * sends no late-capture metadata, so the lost-record recovery can never prove
- * one for it; and its cancel claim already keeps its refund out of the
- * note-eligible cash on a cancelled booking (`late-capture-landed-after.ts`).
+ * refund made - a `REFUND_SUPERSEDED_PAYMENT` recovery for the intent that
+ * SUCCEEDED, whose amounts cover every recorded cent, on a capture with no
+ * late-capture door refund known (`findIntentsWithKnownDoorRefund`). That door
+ * writes no late-capture record and sends no late-capture metadata, so the
+ * lost-record recovery can never prove one for it; and its cancel claim already
+ * keeps its refund out of the note-eligible cash on a cancelled booking
+ * (`late-capture-landed-after.ts`).
  */
-export async function findSupersededRefundOnlyIntents(refundedCentsByIntent: Map<string, number>): Promise<Set<string>> {
-  if (refundedCentsByIntent.size === 0) return new Set();
+export async function findSupersededRefundOnlyIntents(
+  captures: Map<string, { refundedCents: number; bookingId: string }>,
+): Promise<Set<string>> {
+  if (captures.size === 0) return new Set();
   const operations = await prisma.paymentRecoveryOperation.findMany({
-    where: { type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, paymentIntentId: { in: [...refundedCentsByIntent.keys()] } },
+    where: {
+      type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+      status: PaymentRecoveryOperationStatus.SUCCEEDED,
+      paymentIntentId: { in: [...captures.keys()] },
+    },
     select: { paymentIntentId: true, amountCents: true },
   });
   const coveredCents = new Map<string, number>();
   for (const operation of operations) {
     coveredCents.set(operation.paymentIntentId, (coveredCents.get(operation.paymentIntentId) ?? 0) + operation.amountCents);
   }
-  return new Set(
-    [...refundedCentsByIntent].filter(([intent, cents]) => cents <= (coveredCents.get(intent) ?? 0)).map(([intent]) => intent),
-  );
+  const covered = [...captures].filter(([intent, { refundedCents }]) => refundedCents <= (coveredCents.get(intent) ?? 0));
+  if (covered.length === 0) return new Set();
+  const door = await findIntentsWithKnownDoorRefund(new Map(covered.map(([intent, { bookingId }]) => [intent, bookingId])));
+  return new Set(covered.map(([intent]) => intent).filter((intent) => !door.has(intent)));
+}
+
+/**
+ * The intents among these with a late-capture door refund the app already knows
+ * of, without asking Stripe: its refund-time `refunded_after_cancellation` entry
+ * (written even when its record was lost), or a recovery row replaying the door's
+ * refund under its Stripe key (`buildLateCaptureRefundStripeKeyPrefix`).
+ */
+export async function findIntentsWithKnownDoorRefund(bookingIdByIntent: Map<string, string>): Promise<Set<string>> {
+  const known = new Set<string>();
+  if (bookingIdByIntent.size === 0) return known;
+  const entries = await prisma.auditLog.findMany({
+    where: { action: "booking.payment.refunded_after_cancellation", entityId: { in: [...new Set(bookingIdByIntent.values())] } },
+    select: { entityId: true, details: true },
+  });
+  for (const entry of entries ?? []) {
+    const intent = parseAuditDetails(entry.details)?.paymentIntentId;
+    if (typeof intent === "string" && bookingIdByIntent.get(intent) === entry.entityId) known.add(intent);
+  }
+  const prefixes = new Map([...bookingIdByIntent].map(([intent, bookingId]) => [buildLateCaptureRefundStripeKeyPrefix(bookingId, intent), intent]));
+  const replays = await prisma.paymentRecoveryOperation.findMany({
+    where: { stripeKeyPrefix: { in: [...prefixes.keys()] } },
+    select: { stripeKeyPrefix: true },
+  });
+  for (const replay of replays ?? []) {
+    const intent = replay.stripeKeyPrefix ? prefixes.get(replay.stripeKeyPrefix) : undefined;
+    if (intent) known.add(intent);
+  }
+  return known;
 }

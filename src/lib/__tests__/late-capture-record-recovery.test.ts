@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => ({
   paymentTransactionFindUnique: vi.fn(),
   held: vi.fn(),
   supersededOps: vi.fn(),
+  doorReplays: vi.fn(),
+  claim: vi.fn(),
 }));
 
 vi.mock("@/lib/cancelled-booking-late-capture", () => ({
@@ -40,6 +42,10 @@ vi.mock("@/lib/late-capture-landed-after", () => ({
 }));
 vi.mock("@/lib/admin-alert-once", () => ({
   findHeldOnceEverAlertKeys: (...args: unknown[]) => mocks.held(...args),
+}));
+vi.mock("@/lib/alert-cooldown", () => ({
+  ALERT_ONCE_EVER_WINDOW_MS: 36_500 * 86_400_000,
+  claimAlertCooldown: (...args: unknown[]) => mocks.claim(...args),
 }));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   queueLateCaptureRefundCreditNote: (...args: unknown[]) => mocks.queueNote(...args),
@@ -62,7 +68,11 @@ vi.mock("@/lib/prisma", () => ({
     auditLog: { findMany: (...args: unknown[]) => mocks.auditLogFindMany(...args) },
     payment: { findUnique: (...args: unknown[]) => mocks.paymentFindUnique(...args) },
     paymentTransaction: { findUnique: (...args: unknown[]) => mocks.paymentTransactionFindUnique(...args) },
-    paymentRecoveryOperation: { findMany: (...args: unknown[]) => mocks.supersededOps(...args) },
+    paymentRecoveryOperation: {
+      // The superseded-payment refund's rows, or the door's refund replays by Stripe key.
+      findMany: (args: { where: { type?: string } }) =>
+        args.where.type === "REFUND_SUPERSEDED_PAYMENT" ? mocks.supersededOps(args) : mocks.doorReplays(args),
+    },
   },
 }));
 
@@ -71,6 +81,7 @@ import {
   finishAutomaticLateCaptureRefund,
   recoverLostLateCaptureRecord,
   recoverLostLateCaptureRecordsForPayment,
+  findSupersededRefundOnlyIntents,
   type LateCaptureIdentity,
   type LateCaptureRecordBooking,
 } from "@/lib/late-capture-record-recovery";
@@ -146,6 +157,8 @@ beforeEach(() => {
   // No once-ever claim is held, and no superseded-payment refund made any refund.
   mocks.held.mockResolvedValue(new Set());
   mocks.supersededOps.mockResolvedValue([]);
+  mocks.doorReplays.mockResolvedValue([]);
+  mocks.claim.mockResolvedValue(true);
   // By default the delivery that refunded wrote its entry, marked: its record write was lost.
   mocks.auditLogFindMany.mockResolvedValue([refundTimeEntry({ recordLost: true })]);
 });
@@ -315,22 +328,40 @@ describe("recoverLostLateCaptureRecord — a redelivery's check", () => {
       expect(mocks.announce).toHaveBeenCalledTimes(1);
     });
 
-    it("does not escalate a hand-COMPLETED row when Stripe holds no door refund", async () => {
+    it("does not escalate a hand-COMPLETED row when Stripe holds no door refund, and marks it checked so the nightly list stops asking", async () => {
       mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "hand-completed"]]));
       mocks.listRefunds.mockResolvedValueOnce([stripeRefund({ metadata: {} })]);
 
       await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
       expect(mocks.announce).not.toHaveBeenCalled();
+      expect(mocks.claim).toHaveBeenCalledWith(expect.objectContaining({ key: `late-capture-hand-completed-checked:${INTENT}` }));
     });
   });
 
-  it("recovers a lost record of the repair tool's own refund: its metadata is a late-capture door's too", async () => {
+  it("recovers a lost record of the repair tool's own refund as the repair tool would: record, recovered entry and note, no refund entry or alert", async () => {
+    mocks.auditLogFindMany.mockResolvedValueOnce([]);
     mocks.listRefunds.mockResolvedValueOnce([
       stripeRefund({ metadata: { bookingId: "booking-1", reason: LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON } }),
     ]);
 
     await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(true);
     expect(mocks.record).toHaveBeenCalledTimes(1);
+    expect(recoveredEntries()).toEqual([expect.objectContaining({ repairRefund: true, alertSent: false })]);
+    expect(refundEntries()).toHaveLength(0);
+    expect(mocks.announce).not.toHaveBeenCalled();
+    expect(mocks.queueNote).toHaveBeenCalledWith({ paymentId: "payment-1", paymentIntentId: INTENT });
+  });
+
+  it("still reports a door refund beside a repair refund as the automatic one it is", async () => {
+    mocks.auditLogFindMany.mockResolvedValueOnce([]);
+    mocks.listRefunds.mockResolvedValueOnce([
+      stripeRefund(),
+      stripeRefund({ id: "re_repair", metadata: { bookingId: "booking-1", reason: LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON } }),
+    ]);
+
+    await recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST });
+    expect(refundEntries()).toHaveLength(1);
+    expect(mocks.announce).toHaveBeenCalledTimes(1);
   });
 
   it("names an unknown member rather than failing when the booking's owner cannot be read", async () => {
@@ -472,5 +503,37 @@ describe("recoverLostLateCaptureRecordsForPayment — the nightly self-heal's ch
   it("says it could not check when its own reads fail, and never throws", async () => {
     mocks.paymentFindUnique.mockRejectedValueOnce(new Error("database is down"));
     await expect(recoverLostLateCaptureRecordsForPayment("payment-1")).resolves.toEqual({ recovered: [], unresolved: true });
+  });
+});
+
+describe("findSupersededRefundOnlyIntents — #4173's skip", () => {
+  const capture = (refundedCents = 2500) => new Map([[INTENT, { refundedCents, bookingId: "booking-1" }]]);
+
+  it("skips a capture whose refunds a SUCCEEDED superseded-payment refund covers in full, with no door refund known", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 2500 }]);
+    mocks.auditLogFindMany.mockResolvedValueOnce([]);
+
+    await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set([INTENT]));
+    expect(mocks.supersededOps).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ type: "REFUND_SUPERSEDED_PAYMENT", status: "SUCCEEDED" }) }),
+    );
+  });
+
+  it("does not skip one whose refunds the superseded refund covers only in part", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 1000 }]);
+    await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
+  });
+
+  it("does not skip one with a door refund known beside the superseded refund: its refund-time entry", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 5000 }]);
+    mocks.auditLogFindMany.mockResolvedValueOnce([{ entityId: "booking-1", details: JSON.stringify({ paymentIntentId: INTENT }) }]);
+    await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
+  });
+
+  it("does not skip one with a door refund known beside the superseded refund: a replay of the door's refund", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 5000 }]);
+    mocks.auditLogFindMany.mockResolvedValueOnce([]);
+    mocks.doorReplays.mockResolvedValueOnce([{ stripeKeyPrefix: `late_cancel_refund_booking-1_${INTENT}` }]);
+    await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
   });
 });
