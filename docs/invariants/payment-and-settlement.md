@@ -1447,17 +1447,18 @@ short).
     close records none; the page prefers an open or paid-another-way row to it.
   - **Stated limits, history only.** While both colours serve, an old cancel
     can write its up-front event after a new close recorded one, and an old
-    runner can close a new cancel's row with none. The event's dated part
-    keeps what the close found, even a refund failing later; the undated part
-    follows the refunds as recorded now.
+    runner can close a new cancel's row with none.
+  - **A refund failing later is told by the row owing it** (#4166), off
+    the dated part first.
   - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
     never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,
     `card-refund-paid-another-way.test.ts`,
     `booking-narrative-own-card-refund.test.ts`,
     `booking-narrative-card-shortfall.test.ts`,
-    `capacity-race-refund-event.realdb.test.ts` and
-    `cancel-card-refund-event.realdb.test.ts`.
+    `capacity-race-refund-event.realdb.test.ts`,
+    `cancel-card-refund-event.realdb.test.ts` and
+    `cancel-card-refund-failed-later.realdb.test.ts`.
 
 ## INV-PAY-135
 
