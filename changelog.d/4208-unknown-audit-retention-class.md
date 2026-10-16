@@ -5,6 +5,7 @@
   deleted at its expiry date unless its severity is critical (seven years), with
   incident evidence keeping its ten-year floor and entries with no expiry date
   still kept. The first nightly run after the upgrade deletes, once and
-  permanently (no archive copy), any such entries already past their date; the app's own writers only use the four known
-  classes, so most clubs have none. `docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` has
-  a read-only query to list them on a copy first.
+  permanently (no archive copy), any such entries already past their date. The
+  app's own writers only use the four known classes, so most clubs have none.
+  `docs/UPGRADING.md` and `docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` have a
+  read-only query to count them on a copy first.
