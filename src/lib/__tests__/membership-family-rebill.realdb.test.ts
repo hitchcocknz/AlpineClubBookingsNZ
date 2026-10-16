@@ -491,6 +491,42 @@ let createdMapping = false;
       expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
     });
 
+    it("a tier-exempt child who stays exempt gets no exception and the family stays billed (review round 4 F-A)", async () => {
+      // A BASED_ON_AGE_TIER type with a PER_FAMILY fee: the CHILD tier is not
+      // subscription-liable (the club's default tiers), but the per-family fee
+      // keeps the child in the family path, so they reach the closed-charge rule.
+      const { getAgeTierSettings, invalidateAgeTierCache } = await import("@/lib/age-tier");
+      const { requiresPaidSubscriptionForAgeTier } = await import("@/lib/member-subscription-eligibility");
+      invalidateAgeTierCache();
+      expect(requiresPaidSubscriptionForAgeTier("CHILD", await getAgeTierSettings())).toBe(false);
+      await prisma.membershipType.update({ where: { id: TYPE_ID }, data: { subscriptionBehavior: "BASED_ON_AGE_TIER" } });
+      await prisma.member.update({ where: { id: CHILD_ID }, data: { ageTier: "CHILD", dateOfBirth: null } });
+      await prisma.memberSubscription.updateMany({
+        where: { memberId: CHILD_ID, seasonYear: SEASON_YEAR },
+        data: { status: "NOT_REQUIRED", manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+      });
+      await expect(
+        closeAlreadyPaidSubscriptionCharge({ chargeId: OLD_CHARGE_ID, reason: "Paid in cash", actorMemberId: OFFICER_ID }),
+      ).resolves.toMatchObject({ closed: true });
+
+      const preview = await billing.buildSubscriptionBillingPreview({
+        seasonYear: SEASON_YEAR,
+        decisionDate: DECISION_DATE,
+        memberIds: [...MEMBER_IDS],
+        yearEndMonth: YEAR_END_MONTH,
+      });
+      // Still settled (NOT_REQUIRED): nothing to decide, and Mark as paid would
+      // refuse the row, so no exception that could never close.
+      expect(preview.entries).toEqual([]);
+      expect(preview.exceptions).toEqual([]);
+
+      // A billing run records nothing for the child and re-bills nobody.
+      const { confirmed } = await previewAndConfirm();
+      expect(confirmed).toEqual({ chargeIds: [], exceptionCount: 0 });
+      expect(await prisma.membershipBillingException.count({ where: { memberId: CHILD_ID } })).toBe(0);
+      expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
+    });
+
     it("still refuses a second LIVE charge for one family, type and season", async () => {
       const second = prisma.membershipSubscriptionCharge.create({
         data: {

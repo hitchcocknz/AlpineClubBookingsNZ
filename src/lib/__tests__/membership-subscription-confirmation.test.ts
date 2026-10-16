@@ -266,6 +266,36 @@ describe("membership subscription confirmation", () => {
     expect(details).toMatchObject({ source: "NEW_MEMBER_APPROVAL", chargeCount: 0, exceptionCount: 1, acknowledgedWarnings: [], totalCents: 0 });
   });
 
+  it("membership approval withholds the family when the only standing payment is under an OLDER closed charge (review round 4 F-B)", async () => {
+    seedPartlyReversedClosedFamily();
+    const row = (memberId: string, memberName: string, status: string) => ({
+      memberName, subscriptionStatusAtClose: "PAID",
+      subscription: { memberId, status, member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: "family-1" }] } },
+    });
+    const closed = (id: string, createdAt: string, coverage: unknown[]) => ({
+      id, createdAt: new Date(createdAt), familyGroupId: "family-1", membershipTypeId: "type-1",
+      billingBasis: "PER_FAMILY", status: "NOT_REQUIRED", coverage,
+    });
+    // The parent's payment stands under the older charge; the newest covered
+    // only the kid, who was reversed. Newest decides: re-bill, with the warning.
+    mocks.chargeFindMany.mockResolvedValue([
+      closed("charge-newer", "2026-06-01T00:00:00.000Z", [row("member-1", "Kid Member", "NOT_INVOICED")]),
+      closed("charge-older", "2026-05-01T00:00:00.000Z", [row("parent-1", "Parent Member", "PAID")]),
+    ]);
+
+    const result = await queueApprovedMembershipSubscriptionCharges({
+      memberIds: ["member-1"],
+      approvedByMemberId: "approver-1",
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(mocks.chargeUpsert).not.toHaveBeenCalled();
+    expect(mocks.exceptionUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ code: "CLOSED_FAMILY_PARTLY_REVERSED", source: "NEW_MEMBER_APPROVAL" }),
+    }));
+    expect(result).toEqual({ chargeIds: [], exceptionCount: 1 });
+  });
+
   it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {
     mocks.fee.mockResolvedValue({
       id: "fee-1", amountCents: 12_000, billingBasis: "PER_MEMBER", prorationRule: "NONE",

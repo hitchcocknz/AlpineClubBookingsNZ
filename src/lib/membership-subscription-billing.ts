@@ -44,6 +44,8 @@ import {
   invoicingWarningEntryKey,
   isClosedCoveragePaymentReversed,
   isInvoicingPreviewWarning,
+  isSubscriptionSettled,
+  type ClosedFamilyDecisionReason,
   wasPaidAtClose,
   WITHHELD_ON_APPROVAL_NOTE,
 } from "@/lib/subscription-charge-already-paid";
@@ -774,13 +776,24 @@ export async function buildSubscriptionBillingPreview(input: {
   // billed, even if a payment only an older closed charge covered was
   // reversed. Charges are grouped and sorted here, so the answer never depends
   // on the order the rows arrive in.
+  //
+  // Newest decides WHETHER the family is billed again; the other closed
+  // charges still count for what the officer is told (#4110 review round 4):
+  //  - the partial-reversal warning (decision 1) counts every member billed
+  //    through the family who was paid at ANY closed charge's close and is
+  //    still settled, so a family whose newest charge covered only the
+  //    reversed member is still flagged;
+  //  - while the family stays billed, a member a closed charge covered who is
+  //    no longer settled — exempt at that close and now owing (decision 4), or
+  //    paid there and since reversed (decision 5) — gets the decision
+  //    exception, whichever closed charge covered them;
+  //  - a member a closed charge covered who is still settled (a tier-exempt
+  //    child still NOT_REQUIRED) is skipped with no exception: there is
+  //    nothing to decide, and Mark as paid would refuse their row.
   const billedFamilyTypes = new Map<string, string>();
   const partlyReversedClosedFamilies = new Map<string, { chargeId: string; reversedMemberNames: string[] }>();
-  const exemptAtCloseByFamilyKey = new Map<string, Set<string>>();
-  // #4110 decision 5: members whose payment under an OLDER closed charge was
-  // reversed while the newest closed charge still bills the family. They are
-  // not re-billed through the family; the officer sees each one to decide.
-  const reversedUnderOlderChargeByFamilyKey = new Map<string, Set<string>>();
+  const decisionReasonByFamilyKey = new Map<string, Map<string, ClosedFamilyDecisionReason>>();
+  const settledCoveredByFamilyKey = new Map<string, Set<string>>();
   const familyChargesByKey = new Map<string, Array<(typeof existingFamilyCharges)[number]>>();
   for (const charge of [...existingFamilyCharges].sort(newestChargeFirst)) {
     const key = `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`;
@@ -792,24 +805,34 @@ export async function buildSubscriptionBillingPreview(input: {
       billedFamilyTypes.set(key, live.id);
       continue;
     }
+    // Every row of every closed charge for the key, newest charge first, kept
+    // only where the member is still billed through that family.
+    const familyRows = charges.flatMap((charge) =>
+      charge.coverage.filter((row) => isBilledThroughFamily(row.subscription.member, charge.familyGroupId)));
     const newest = charges[0]!;
-    const stillInFamily = newest.coverage.filter((row) => isBilledThroughFamily(row.subscription.member, newest.familyGroupId));
-    const reversed = stillInFamily.filter(isClosedCoveragePaymentReversed);
+    const reversed = newest.coverage
+      .filter((row) => isBilledThroughFamily(row.subscription.member, newest.familyGroupId))
+      .filter(isClosedCoveragePaymentReversed);
     if (reversed.length === 0) {
       billedFamilyTypes.set(key, newest.id);
-      exemptAtCloseByFamilyKey.set(key, new Set(
-        stillInFamily.filter((row) => !wasPaidAtClose(row)).map((row) => row.subscription.memberId),
-      ));
-      reversedUnderOlderChargeByFamilyKey.set(key, new Set(
-        charges.slice(1)
-          .filter(isChargeClosedAsAlreadyPaid)
-          .flatMap((older) => older.coverage.filter((row) =>
-            isBilledThroughFamily(row.subscription.member, older.familyGroupId) && isClosedCoveragePaymentReversed(row)))
-          .map((row) => row.subscription.memberId),
-      ));
+      const decisions = new Map<string, ClosedFamilyDecisionReason>();
+      const settled = new Set<string>();
+      for (const row of familyRows) {
+        const memberId = row.subscription.memberId;
+        if (isSubscriptionSettled(row.subscription.status)) {
+          settled.add(memberId);
+        } else if (!decisions.has(memberId)) {
+          decisions.set(memberId, wasPaidAtClose(row) ? "REVERSED_UNDER_OLDER_CHARGE" : "EXEMPT_AT_CLOSE");
+        }
+      }
+      decisionReasonByFamilyKey.set(key, decisions);
+      settledCoveredByFamilyKey.set(key, settled);
       continue;
     }
-    if (reversed.length < stillInFamily.filter(wasPaidAtClose).length) {
+    const reversedIds = new Set(reversed.map((row) => row.subscription.memberId));
+    const paymentStillStands = familyRows.some((row) =>
+      wasPaidAtClose(row) && isSubscriptionSettled(row.subscription.status) && !reversedIds.has(row.subscription.memberId));
+    if (paymentStillStands) {
       partlyReversedClosedFamilies.set(key, {
         chargeId: newest.id,
         reversedMemberNames: reversed.map((row) => row.memberName).sort(compareOrdinal),
@@ -862,6 +885,9 @@ export async function buildSubscriptionBillingPreview(input: {
     return fee?.billingBasis ?? null;
   };
 
+  const familiesWithClosedCharge = new Set(
+    existingFamilyCharges.filter(isChargeClosedAsAlreadyPaid).map((charge) => charge.familyGroupId),
+  );
   // #2147 FINDING 1 + #2161 (D1): decide, per surfaced blocker, whether it
   // suppresses ITS family group's PER_FAMILY charge. Coverage trigger: an active
   // claim from a PER_FAMILY charge for THIS family group suppresses (a PER_MEMBER
@@ -890,7 +916,12 @@ export async function buildSubscriptionBillingPreview(input: {
     // released, then the group re-bills as one entry — see
     // docs/guides/subscriptions.md).
     let basisUnresolvable = false;
-    if (!suppresses && sub?.xeroInvoiceId != null) {
+    // #4110 review round 4: never in a family a charge closed as already paid
+    // still governs. A bare invoice there is Finance's hand-made difference
+    // invoice (decision 4) or a member's own, and the closed charge — not the
+    // invoice — decides whether the family owes; letting the invoice suppress
+    // the family would hide a reversal the family must be billed for.
+    if (!suppresses && sub?.xeroInvoiceId != null && !familiesWithClosedCharge.has(row.familyGroupId)) {
       const holderBasis = await resolveMemberBillingBasis(row.member);
       if (holderBasis !== "PER_MEMBER") {
         suppresses = true;
@@ -1112,19 +1143,18 @@ export async function buildSubscriptionBillingPreview(input: {
       : `${input.seasonYear}:${fee.id}:member:${member.id}`;
     const existingFamilyChargeId = billedFamilyTypes.get(groupingKey);
     if (existingFamilyChargeId) {
-      // #4110 decisions 4 and 5 (owner, 16 Oct 2026): a member the winning
-      // closed charge covered while exempt who now needs a subscription, or
-      // whose payment under an OLDER closed charge was reversed, is not billed
-      // through the family. The officer is asked to decide (mark them Paid if
-      // the family fee covers everyone, otherwise invoice the difference in
-      // Xero by hand); the exception regenerates on every preview until the
-      // member is settled or invoiced, so it stays OPEN until Finance acts.
-      // Anyone else is a late joiner, as before.
-      const exemptAtClose = exemptAtCloseByFamilyKey.get(groupingKey)?.has(member.id) ?? false;
-      const reversedUnderOlderCharge = !exemptAtClose
-        && (reversedUnderOlderChargeByFamilyKey.get(groupingKey)?.has(member.id) ?? false);
-      if (exemptAtClose || reversedUnderOlderCharge) {
-        const reason = exemptAtClose ? "EXEMPT_AT_CLOSE" : "REVERSED_UNDER_OLDER_CHARGE";
+      // #4110 decisions 4 and 5 (owner, 16 Oct 2026): a member a closed charge
+      // for this family covered who is no longer settled — exempt at that close
+      // and now owing, or paid there and since reversed under an older charge —
+      // is not billed through the family. The officer is asked to decide (mark
+      // them Paid if the family fee covers everyone, otherwise invoice the
+      // difference in Xero by hand); the exception regenerates on every preview
+      // until the member is settled or invoiced, so it stays OPEN until Finance
+      // acts. A covered member still settled has nothing to decide. Anyone else
+      // is a late joiner, as before.
+      if (settledCoveredByFamilyKey.get(groupingKey)?.has(member.id)) continue;
+      const reason = decisionReasonByFamilyKey.get(groupingKey)?.get(member.id);
+      if (reason) {
         exceptions.push(exception({
           code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
           message: closedFamilyMemberDecisionMessage({

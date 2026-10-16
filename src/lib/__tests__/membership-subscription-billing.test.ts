@@ -835,13 +835,53 @@ describe("membership subscription billing", () => {
     ]);
   });
 
-  it("two closed charges, the newest wins: a reversal under the NEWEST re-bills the family even while the older is settled (owner, 16 Oct 2026)", async () => {
+  it("two closed charges, the newest wins: a reversal under the NEWEST re-bills the family, and a payment still standing under the older one is flagged (owner decisions 1 and 5; review round 4 F-B)", async () => {
     const preview = await previewFamily([
       familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"]], OLDER),
       familyCharge("NOT_REQUIRED", [["Kid Member", "NOT_INVOICED", "PAID"]], NEWER),
     ]);
     expect(preview.entries).toHaveLength(1);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({
+        code: "CLOSED_FAMILY_PARTLY_REVERSED",
+        context: { closedChargeId: "charge-newer", reversedMemberNames: ["Kid Member"] },
+      }),
+    ]);
+  });
+
+  it("flags the partial reversal when the reversed member was re-billed and reversed again, and the other payment stands under the older charge (review round 4 F-B)", async () => {
+    // C1 covered A and B; A was reversed and re-billed on C2, which was closed;
+    // then A was reversed again. B's payment, under C1, still stands.
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["A Member", "NOT_INVOICED", "PAID"], ["B Member", "PAID", "PAID"]], OLDER),
+      familyCharge("NOT_REQUIRED", [["A Member", "NOT_INVOICED", "PAID"]], NEWER),
+    ]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
+  });
+
+  it("skips, with no exception, a covered member who is still settled — a tier-exempt child still NOT_REQUIRED (review round 4 F-A)", async () => {
+    const preview = await previewFamily(
+      [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["re-billable", "NOT_REQUIRED", "NOT_REQUIRED"]])],
+      ["re-billable"],
+    );
+    expect(preview.entries).toHaveLength(0);
     expect(preview.exceptions).toEqual([]);
+  });
+
+  it("asks the officer to decide for a member exempt at an OLDER closed charge's close who now owes (review round 4 F-D)", async () => {
+    const preview = await previewFamily([
+      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["re-billable", "NOT_INVOICED", "NOT_REQUIRED"]], OLDER),
+      familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"]], NEWER),
+    ], ["re-billable"]);
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({
+        code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
+        memberId: "re-billable",
+        context: expect.objectContaining({ existingFamilyChargeId: "charge-newer", reason: "EXEMPT_AT_CLOSE" }),
+      }),
+    ]);
   });
 
   it("decides the same whatever order the family charges arrive in: same plan, same token (#4110 review F4)", async () => {
@@ -1424,6 +1464,16 @@ describe("membership subscription billing", () => {
       ]);
       // The family-level dedup query is intentionally NOT scoped to memberIds.
       expect(mocks.familyGroupMembers.findMany).toHaveBeenCalled();
+    });
+
+    it("a bare invoice never suppresses a family a closed charge governs: Finance's difference invoice cannot hide a reversal (review round 4 F-C)", async () => {
+      // The closed charge's paid parent was reversed, and the child holds the
+      // invoice Finance raised by hand for the difference (decision 4).
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-difference", xeroInvoiceNumber: "INV-DIFF" })]);
+      const preview = await previewFamily([familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"]])]);
+      expect(preview.alreadyInvoicedFamilies).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0]).toMatchObject({ familyGroupId: "family-1" });
     });
 
     it("(a') suppresses the family even for a scoped NEW_MEMBER_APPROVAL run over only a child", async () => {

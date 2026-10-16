@@ -257,11 +257,14 @@ export function isOfficerDecisionException(code: string): boolean {
   return code === CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE;
 }
 
+/** Why a closed family's member needs the officer's decision. */
+export type ClosedFamilyDecisionReason = "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE";
+
 /** The two choices decision 4 gives the officer, worded once. */
 export function closedFamilyMemberDecisionMessage(input: {
   memberName: string;
   membershipTypeName: string;
-  reason: "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE";
+  reason: ClosedFamilyDecisionReason;
 }): string {
   const why = input.reason === "EXEMPT_AT_CLOSE"
     ? `${input.memberName} was not required to pay when the family's ${input.membershipTypeName} charge was closed as already paid, and now needs a subscription.`
