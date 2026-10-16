@@ -1573,29 +1573,29 @@ decision and would need its own owner decision.
   refund note; a reissue's key names every note whose key it could collide
   with; and on a bank transfer a void undoes the refund** (#4091, owner decisions).
   Its mirror is written inactive on any payment (`INV-ADDPAY-020`), and
-  `findCanonicalPaymentRefundCreditNote`, the pointer gate
-  `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill and
-  conflict check all leave out a note a link records VOIDED or DELETED
-  (`refundNoteIdSets`, `xero-refund-note-status.ts`), so no request, retry or
-  repair writes one back into `Payment.xeroRefundCreditNoteId`. The nightly
-  link cleanup heals a mirror left active before #4091 through
-  `upsertXeroObjectLink` (#4161).
+  `findCanonicalPaymentRefundCreditNote`, `mayRecordAsCanonicalRefundNote`
+  and the booking repair's field backfill and conflict check leave out a note a link records VOIDED or DELETED
+  (`refundNoteIdSets`), so nothing writes one back into
+  `Payment.xeroRefundCreditNoteId`. The nightly link cleanup heals a mirror
+  left active before #4091 (#4161).
+- **A refund request's own note** (`INV-PAY-118`, #4195) too: its voided
+  mirror goes inactive, never covers the request (`refundRequestOwnNotes`),
+  and the fresh note's key names it. Its void moves no refunded total, so the
+  booking repair still counts the request.
 - **The reissue's key.** `refundNoteKeyAfterVoidParts` is the one home for the
-  outbox row's correlation key and the Xero idempotency key. Once the payment
-  has a voided refund note, it appends `after-void:<sorted ids>`: every refund
-  note, live or voided, recorded at the key's watermark (v2) or amount (v1),
+  row's correlation key and the Xero key. Once the payment has a voided refund
+  note, it appends `after-void:<sorted ids>`: every refund note, live or voided, recorded at the key's watermark (v2) or amount (v1),
   or every note a "Paid another way" close's own rows raised once one is
   voided (v3). A figure the link lacks is read from its create row; none
   there counts as matching. With no void the key is byte-identical. The
-  create path also refuses a VOIDED/DELETED note or one another create row
+  create path refuses a VOIDED/DELETED note or one another create row
   raised, recording nothing.
 - **Bank transfers.** Xero is the payment rail (`INV-ADDPAY-021`), so the
   inbound sync returns the refunded amount to what the live notes say and
   nothing is re-raised automatically. A fresh note is raised only once the
-  treasurer records the refund again. A refund with no live note shows no
-  drift in the reconciliation report, by design (#4046); visibility is #4162.
-  Pinned by `xero-refund-note-void-pointer.realdb.test.ts`,
-  `xero-refund-note-crash-window.test.ts`, `xero-sync.test.ts`,
-  `xero-booking-repair.test.ts`, `xero-operation-retry.test.ts`,
-  `xero-operation-outbox.test.ts`, `xero-hardening.test.ts` and
-  `xero-refund-note-after-void-key.test.ts`.
+  treasurer records the refund again. A refund with no live note is no
+  reconciliation-report drift, by design (#4046); visibility is #4162.
+  Pinned by `xero-refund-note-void-pointer`, `xero-refund-request-note-void`,
+  `xero-refund-note-crash-window`, `xero-refund-note-after-void-key`,
+  `xero-sync`, `xero-booking-repair`, `xero-operation-retry`,
+  `xero-operation-outbox` and `xero-hardening`.
