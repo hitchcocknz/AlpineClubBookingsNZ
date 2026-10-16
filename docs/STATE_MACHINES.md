@@ -558,9 +558,9 @@ Stripe later fails, owed again on a row of its own
 another way, said with the cancel's own paid-another-way close as one total -
 and taken off the part it was in, the rest keeping its date; a retry that
 fails too is said by the row owing it (#4166). Which row made the refund is
-what the failed-later writer recorded on that row (`madeByOperationId`, by the
-metadata sent, never by amount); a row raised before #4166 is matched by
-amount. A paid-another-way close's refund is told only if Stripe made it by
+what the failed-later writer recorded on that row (`madeByOperationId`: by
+metadata, and among several failed-later rows, which all send the same, by the
+slice it fills); a row raised before #4166 is matched by amount. A paid-another-way close's refund is told only if Stripe made it by
 that close, and dated only if recorded by it. The undated part
 follows the refunds as recorded now, within what the record's paid-back and
 unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,

@@ -473,3 +473,28 @@ describe("#4166: the new row records which row made the refund, by what was sent
     expect(madeBy(tx)).toBe("b");
   });
 });
+
+// #4166 round 3: re-planning an open failed-later row - its retry failed later
+// too while the row was still open - keeps the maker its slice records.
+describe("#4166: a re-planned failed-later row keeps its recorded maker", () => {
+  const openFailedLater = (madeByOperationId: string | null) =>
+    row({
+      id: "op-fl",
+      idempotencyKey: "card_refund_failed_later_re_0",
+      stripeKeyPrefix: "card_refund_failed_later_re_0",
+      allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000, madeByOperationId }],
+    });
+
+  it.each([
+    ["a row it names", "op-cancel"],
+    ["none (null)", null],
+  ] as const)("MUTATION: the maker recorded as %s survives the re-plan", async (_label, maker) => {
+    const tx = fakeTx({ rows: [openFailedLater(maker)] });
+    const decided = await keep(tx, { ...REFUND, metadata: { bookingId: "booking-1", reason: "card_refund_failed_later" } });
+    expect(decided.debt).toMatchObject({ outcome: "re-planned", operationId: "op-fl" });
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    expect(replan(tx)?.data.allocationPlan).toEqual([
+      { paymentTransactionId: "txn-1", amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"], madeByOperationId: maker },
+    ]);
+  });
+});

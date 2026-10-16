@@ -145,7 +145,8 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
  * by a row of its own (`card_refund_failed_later_<refund>`, #4104); it is this
  * cancel's when one of the cancel's own rows made it, or a failed-later row of
  * this cancel did (its retry failed too). Which row made it is what the writer
- * recorded on the row (`madeByOperationId`: by what was sent, not by amount);
+ * recorded on the row (`madeByOperationId`: by metadata, and among several
+ * failed-later rows, which all send the same, by the slice it fills);
  * a row raised before #4166 is read by the slice the refund fills as the
  * payment stood before it failed (`cardRefundPaymentBeforeFailure`). Each is
  * told by the last row of its chain, and only where the cancel's row is closed:
