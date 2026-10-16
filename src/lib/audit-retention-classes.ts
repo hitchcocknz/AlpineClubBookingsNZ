@@ -1,7 +1,9 @@
 import type { Prisma } from "@prisma/client";
 
 // The closed set of audit retention classes. The column itself is free text, so
-// the prune reads any other stored value as unclassified (#3940).
+// the prune reads any other stored value as unclassified (#3940). The runbook's
+// read-only queries (docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md, "Rows with an
+// unrecognised retention class") spell this list out; keep them in step.
 export const AUDIT_RETENTION_CLASSES = [
   "critical",
   "sensitive_access",

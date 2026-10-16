@@ -18,7 +18,7 @@ This runbook covers the production audit-log retention job and the optional arch
 - `diagnostic_high_volume` audit logs are pruned from the main database when their `expiresAt` passes and are not moved to the archive database.
 - Archive rows older than 7 years are pruned from the archive database; an incident-preserved copy waits until it is 10 years old.
 - Unclassified rows (no `retentionClass`, from before every writer recorded a category) are pruned when their `expiresAt` passes unless their severity is `critical`, which keeps them for 7 years like the `critical` class. A row whose severity was **never set** counts as not critical and is pruned on its expiry (#3524); see "Unclassified rows with no severity" below.
-- A row whose `retentionClass` is not one of the four known classes (`critical`, `sensitive_access`, `diagnostic_high_volume`, `standard`; the column is free text) counts as unclassified and follows the rule above. It used to match no rule and was kept forever (#3940, owner decision 17 Oct 2026). It is never archived. The count query under "Unclassified rows with no severity" covers only NULL-class rows; on a restored copy, `SELECT "retentionClass", count(*) FROM "AuditLog" WHERE "retentionClass" NOT IN ('critical','sensitive_access','diagnostic_high_volume','standard') GROUP BY 1;` lists the unknown ones.
+- A row whose `retentionClass` is not one of the four known classes counts as unclassified and follows the rule above. Such a row is never archived. See "Rows with an unrecognised retention class" below (#3940).
 - A row with no `expiresAt` at all is never pruned, whatever its class or severity. That is the deliberate keep-forever escape hatch, and #3524 did not change it.
 
 ## Hard invariant: prune never outruns archival (#2506)
@@ -78,6 +78,41 @@ ROLLBACK;
 `now()` is the moment you run it. The nightly job runs at 03:30 club time, so a row whose expiry falls between your count and that run is deleted too; it would have been deleted on that night under the new rule anyway. Rows with no `expiresAt` are not in this count and are not deleted.
 
 If the number is larger than you expected, or the breakdown shows entries the club wants to keep, hold the deploy and raise it on the issue before upgrading. Do not edit the audit rows by hand to save them: the audit log is append-only evidence.
+
+## Rows with an unrecognised retention class (#3940)
+
+**What changed.** `retentionClass` is a free-text column. The four values the app writes are `critical`, `sensitive_access`, `diagnostic_high_volume` and `standard` (`AUDIT_RETENTION_CLASSES` in `src/lib/audit-retention-classes.ts`). A row holding any other value, from a typo, a hand-written database change or a restore, used to match no rule in the nightly prune, so it was never deleted. The owner decided on 17 Oct 2026 ([#3940](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3940)) that such a row is treated exactly like a row with no class: deleted at its `expiresAt` unless its severity is `critical`, which keeps it 7 years from creation. An incident-preserved row still waits for its 10-year cap, and a row with no `expiresAt` is still kept.
+
+**What the first run after deploy does.** It deletes, once, every unknown-class row that this rule now reaches and that is already past its date. The rows are not archived first, so this is permanent. The app's own writers only use the four known classes (a census test holds them to it), so most installs have none.
+
+**Optionally, count them before you deploy, on a copy.** Run this on a **restored copy** of the production database, never on production itself. It only reads:
+
+```sql
+BEGIN TRANSACTION READ ONLY;
+
+-- Unknown-class rows the first post-deploy prune will delete.
+SELECT "retentionClass", "severity", count(*) AS "willPrune"
+FROM "AuditLog"
+WHERE "retentionClass" IS NOT NULL
+  AND "retentionClass" NOT IN ('critical', 'sensitive_access', 'diagnostic_high_volume', 'standard')
+  AND "expiresAt" < timezone('UTC', now())
+  AND ("severity" IS NULL OR "severity" <> 'critical'
+       OR "createdAt" < timezone('UTC', now()) - interval '7 years')
+  AND (NOT "incidentPreserved" OR "createdAt" < timezone('UTC', now()) - interval '10 years')
+GROUP BY 1, 2
+ORDER BY 3 DESC;
+
+-- Every unknown-class row, whether or not it is due yet.
+SELECT "retentionClass", count(*)
+FROM "AuditLog"
+WHERE "retentionClass" IS NOT NULL
+  AND "retentionClass" NOT IN ('critical', 'sensitive_access', 'diagnostic_high_volume', 'standard')
+GROUP BY 1;
+
+ROLLBACK;
+```
+
+If the club wants any of those rows kept, hold the deploy and raise it on the issue. Do not edit audit rows by hand: the audit log is append-only evidence.
 
 ## Archive Database Env Vars
 
