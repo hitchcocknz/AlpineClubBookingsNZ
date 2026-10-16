@@ -317,6 +317,12 @@ import "./booking-ledger-census-capacity-race.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-3750-` fixtures.
 import "./booking-change-request-execution.realdb.test";
+// #4189 reuses it to prove a range-mode direct edit keeps an untouched gapped
+// guest's nights: through the REAL `modifyBookingBatch`, an officer's and a
+// member's edit repeating a guest's own dates leave their night rows byte for
+// byte and charge no gap, while a moved guest is re-spread. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4189-` fixtures.
+import "./booking-direct-edit-repeated-range.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's
