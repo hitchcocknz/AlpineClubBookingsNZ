@@ -62,6 +62,8 @@ const REFUND_ENTRY = "booking.payment.refunded_after_cancellation";
 const RECOVERED_ENTRY = "booking.payment.auto_refund_record_recovered";
 const REFUNDED_ON = new Date("2026-06-25T00:00:00.000Z");
 const OUTSIDE_APP_ALERT_KEY = `late-capture-refunded-outside-app:${LATE_INTENT}`;
+const SUPERSEDED_ROW_OPENED = new Date("2026-01-01T00:00:00.000Z");
+const SUPERSEDED_ROW_CLOSED = new Date("2030-01-01T00:00:00.000Z");
 const ALERT_KEYS = [OUTSIDE_APP_ALERT_KEY, `late-capture-double-refund:${LATE_INTENT}`];
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
@@ -553,6 +555,64 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(await recordRows()).toHaveLength(0);
     });
 
+    /** A SUCCEEDED superseded-payment refund row whose attempt brackets every recorded refund of the capture. */
+    async function seedSupersededRowCovering() {
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_SUPERSEDED_PAYMENT",
+          status: "SUCCEEDED",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentTransactionId: LATE_TXN,
+          paymentIntentId: LATE_INTENT,
+          amountCents: LATE_CENTS,
+          idempotencyKey: "race-4149-superseded-refund",
+          createdAt: SUPERSEDED_ROW_OPENED,
+          succeededAt: SUPERSEDED_ROW_CLOSED,
+        },
+      });
+    }
+
+    it("does not skip #4149's crash for a superseded row: the primary handler's marker is a door refund known (#4173)", async () => {
+      // The default seed: the handler marked the capture, Stripe refunded it, and the process died - no record, no entry.
+      await seedSupersededRowCovering();
+      const stripe = armStripe();
+
+      await expect(recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID)).resolves.toEqual({
+        recovered: [LATE_INTENT],
+        unresolved: false,
+      });
+      expect(stripe.listed).toBe(1);
+      expect(await recordRows()).toHaveLength(1);
+    });
+
+    it("does not skip a capture with a replay of the door's refund beside a superseded row: the replay is found by its Stripe key (#4173)", async () => {
+      await deletePaymentRows();
+      await seedAfterTheCrash({ cancelClaim: true, openTask: false });
+      await seedSupersededRowCovering();
+      // The door's own refund, replayed by the recovery runner under its Stripe key.
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION",
+          status: "SUCCEEDED",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentTransactionId: LATE_TXN,
+          paymentIntentId: LATE_INTENT,
+          amountCents: LATE_CENTS,
+          idempotencyKey: "race-4149-door-replay",
+          stripeKeyPrefix: `late_cancel_refund_${BOOKING_ID}_${LATE_INTENT}`,
+        },
+      });
+      const stripe = armStripe();
+
+      await expect(recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID)).resolves.toEqual({
+        recovered: [LATE_INTENT],
+        unresolved: false,
+      });
+      expect(stripe.listed).toBe(1);
+    });
+
     it("leaves a superseded-payment refund on a cancelled booking alone: no note, no alert, no Stripe read, no gap (#4173)", async () => {
       await deletePaymentRows();
       await seedAfterTheCrash({ cancelClaim: true, openTask: false }, false);
@@ -567,6 +627,9 @@ function lateCaptureRefund(): Stripe.Refund {
           paymentIntentId: LATE_INTENT,
           amountCents: LATE_CENTS,
           idempotencyKey: "race-4149-superseded-refund",
+          // Its attempt brackets the refund it made (recorded below, at the database's now).
+          createdAt: SUPERSEDED_ROW_OPENED,
+          succeededAt: SUPERSEDED_ROW_CLOSED,
         },
       });
       const stripe = armStripe();

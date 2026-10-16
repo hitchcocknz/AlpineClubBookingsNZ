@@ -81,10 +81,15 @@ export async function sendAdminAlertOnceEver({
  * `sendAdminAlertOnceEver` for it sends. A read, never a claim.
  */
 export async function findHeldOnceEverAlertKeys(keys: readonly string[], now: Date): Promise<Set<string>> {
-  if (keys.length === 0) return new Set();
+  return new Set((await readHeldOnceEverAlertTimes(keys, now)).keys());
+}
+
+/** The same read, with each held key's stamp (its claim's time, or a marker's), for a caller that compares it. */
+export async function readHeldOnceEverAlertTimes(keys: readonly string[], now: Date): Promise<Map<string, Date>> {
+  if (keys.length === 0) return new Map();
   const rows = await prisma.alertCooldown.findMany({
     where: { key: { in: [...keys] }, lastAlertedAt: { gte: new Date(now.getTime() - ALERT_ONCE_EVER_WINDOW_MS) } },
-    select: { key: true },
+    select: { key: true, lastAlertedAt: true },
   });
-  return new Set(rows.map((row) => row.key));
+  return new Map(rows.map((row) => [row.key, row.lastAlertedAt]));
 }

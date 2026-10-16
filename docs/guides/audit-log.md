@@ -879,7 +879,8 @@ reached the app - the app writes one
 `booking.payment.late_capture_refunded_outside_app` entry, category `payment`,
 severity `important`, with `paymentIntentId`, `refundIds`, `refundedCents` and
 `creditNoteQueued: false`, and emails everyone who can edit Finance, once for
-that payment (the email shows everything refunded on it so far), through its own alert that cannot be switched off (*Late payment
+that payment (the email shows what was refunded outside the app, never the
+app's own refunds of it), through its own alert that cannot be switched off (*Late payment
 refunded outside the app - check Xero*); if that email could not be sent, the
 nightly check sends it. No Xero credit note is raised for it, because
 Xero never received that payment; record it by hand only if it was recorded

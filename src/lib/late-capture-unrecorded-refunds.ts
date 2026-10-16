@@ -1,6 +1,6 @@
 import { BookingStatus } from "@prisma/client";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
-import { findHeldOnceEverAlertKeys, sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
+import { readHeldOnceEverAlertTimes, sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
 import { logAudit } from "@/lib/audit";
 import { lateCaptureDoubleRefundAlertKey } from "@/lib/cancelled-booking-late-capture";
 import { getClubFormat } from "@/lib/club-format-settings";
@@ -102,7 +102,11 @@ export async function readUnrecordedLateCaptureRefund(params: {
     { bookingId, paymentId, paymentIntentId, refundedCents: params.refundedCents },
     "A late capture was refunded outside the app's late-capture refund: no record or Xero note is written for it; the repair tool's case (#4170)",
   );
-  await alertLateCaptureRefundedOutsideTheApp({ bookingId, paymentIntentId });
+  await alertLateCaptureRefundedOutsideTheApp({
+    bookingId,
+    paymentIntentId,
+    current: { refundIds: params.refunds.map((refund) => refund.id ?? null), refundedCents: params.refundedCents },
+  });
   return "refunded_outside_the_app";
 }
 
@@ -115,10 +119,17 @@ export function lateCaptureRefundedOutsideAppAlertKey(paymentIntentId: string): 
  * Its alert: its own unmuteable template (`admin-late-capture-refunded-outside-app`,
  * `INV-ADDPAY-038`), once ever per capture. A send that throws gives the claim
  * back, and the nightly self-heal raises it again (`findPaymentsWithUnrecordedLateCaptures`).
- * The amount is the capture's whole refunded total, read when it is sent, so the
- * webhook's send and the nightly re-send say the same. Never throws.
+ * The amount is what was refunded OUTSIDE the app - the sum of the capture's
+ * `late_capture_refunded_outside_app` entries, read when it is sent (with the
+ * webhook's own event, whose entry may not have landed yet), never the capture's
+ * whole refunded total, which also counts door, approval and hand-back money.
+ * The webhook's send and the nightly re-send therefore say the same. Never throws.
  */
-async function alertLateCaptureRefundedOutsideTheApp(alert: { bookingId: string; paymentIntentId: string }): Promise<boolean> {
+async function alertLateCaptureRefundedOutsideTheApp(alert: {
+  bookingId: string;
+  paymentIntentId: string;
+  current?: OutsideAppRefundEvent;
+}): Promise<boolean> {
   return sendAdminAlertOnceEver({
     key: lateCaptureRefundedOutsideAppAlertKey(alert.paymentIntentId),
     label: "late capture refunded outside the app alert",
@@ -135,10 +146,7 @@ async function alertLateCaptureRefundedOutsideTheApp(alert: { bookingId: string;
           organisation: { select: { name: true, email: true } },
         },
       });
-      const capture = await prisma.paymentTransaction.findUnique({
-        where: { stripePaymentIntentId: alert.paymentIntentId },
-        select: { refundedAmountCents: true },
-      });
+      const refundedCents = await readRefundedOutsideAppCents(alert.bookingId, alert.paymentIntentId, alert.current);
       await sendAdminLateCaptureRefundedOutsideAppAlert(
         {
           memberName: readMemberName(booking),
@@ -146,7 +154,7 @@ async function alertLateCaptureRefundedOutsideTheApp(alert: { bookingId: string;
           checkOut: booking?.checkOut ?? new Date(0),
           bookingId: alert.bookingId,
           paymentIntentId: alert.paymentIntentId,
-          refundedCents: capture?.refundedAmountCents ?? 0,
+          refundedCents,
         },
         await getClubFormat(),
       );
@@ -180,7 +188,9 @@ const LOST_RECORD_LOOKBACK_DAYS = 30;
  *   Stripe could never prove one, and its refund is already outside the
  *   note-eligible cash by its cancel claim;
  * - a hand-completed capture whose #2774 escalation is claimed (held), or whose
- *   door-refund check already found none (`lateCaptureHandCompletedCheckedKey`);
+ *   door-refund check found none since its latest recorded refund
+ *   (`lateCaptureHandCompletedCheckedKey`, the check's time) - a refund recorded
+ *   after the check lists it again;
  * - a capture named refunded outside the app
  *   (`booking.payment.late_capture_refunded_outside_app`) with no door refund
  *   known (`findIntentsWithKnownDoorRefund`): its alert is raised again here if
@@ -197,9 +207,16 @@ export async function findPaymentsWithUnrecordedLateCaptures(now: Date, limit = 
       payment: { booking: { status: BookingStatus.CANCELLED } },
     },
     orderBy: { createdAt: "asc" },
-    select: { paymentId: true, stripePaymentIntentId: true, status: true, amountCents: true, payment: { select: { bookingId: true } } },
+    select: {
+      paymentId: true,
+      stripePaymentIntentId: true,
+      status: true,
+      amountCents: true,
+      createdAt: true,
+      payment: { select: { bookingId: true } },
+    },
   });
-  const byIntent = new Map<string, { paymentId: string; bookingId: string; refundedCents: number }>();
+  const byIntent = new Map<string, { paymentId: string; bookingId: string; refundedCents: number; latestRefundAt: Date }>();
   for (const refund of refunds) {
     if (!refund.stripePaymentIntentId || !isRecordedRefundStatus(refund.status)) continue;
     const seen = byIntent.get(refund.stripePaymentIntentId);
@@ -207,6 +224,7 @@ export async function findPaymentsWithUnrecordedLateCaptures(now: Date, limit = 
       paymentId: refund.paymentId,
       bookingId: refund.payment.bookingId,
       refundedCents: (seen?.refundedCents ?? 0) + Math.max(0, refund.amountCents),
+      latestRefundAt: seen && seen.latestRefundAt > refund.createdAt ? seen.latestRefundAt : refund.createdAt,
     });
   }
   if (byIntent.size === 0) return [];
@@ -220,13 +238,17 @@ export async function findPaymentsWithUnrecordedLateCaptures(now: Date, limit = 
     new Map(candidates.map((intent) => [intent, { refundedCents: byIntent.get(intent)!.refundedCents, bookingId: byIntent.get(intent)!.bookingId }])),
   );
   const handCompleted = candidates.filter((intent) => closed.get(intent) === "hand-completed");
-  const settledHandCompletions = await findHeldOnceEverAlertKeys(
+  const settledHandCompletions = await readHeldOnceEverAlertTimes(
     [...handCompleted.map(lateCaptureDoubleRefundAlertKey), ...handCompleted.map(lateCaptureHandCompletedCheckedKey)],
     now,
   );
-  const handCompletionSettled = (intent: string) =>
-    settledHandCompletions.has(lateCaptureDoubleRefundAlertKey(intent)) ||
-    settledHandCompletions.has(lateCaptureHandCompletedCheckedKey(intent));
+  // Escalated, or checked with nothing found since its latest recorded refund: a
+  // refund recorded after the check (a later approval's) lists it again.
+  const handCompletionSettled = (intent: string) => {
+    if (settledHandCompletions.has(lateCaptureDoubleRefundAlertKey(intent))) return true;
+    const checkedAt = settledHandCompletions.get(lateCaptureHandCompletedCheckedKey(intent));
+    return checkedAt !== undefined && checkedAt >= byIntent.get(intent)!.latestRefundAt;
+  };
   const namedOutsideApp = await readRefundedOutsideAppIntents([...new Set(candidates.map((intent) => byIntent.get(intent)!.bookingId))]);
   for (const intent of candidates.filter((candidate) => namedOutsideApp.has(candidate))) {
     await alertLateCaptureRefundedOutsideTheApp({ bookingId: byIntent.get(intent)!.bookingId, paymentIntentId: intent });
@@ -242,6 +264,29 @@ export async function findPaymentsWithUnrecordedLateCaptures(now: Date, limit = 
       !(closed.get(intent) === "hand-completed" && handCompletionSettled(intent)),
   );
   return [...new Set(listed.map((intent) => byIntent.get(intent)!.paymentId))].slice(0, limit);
+}
+
+type OutsideAppRefundEvent = { refundIds: (string | null)[]; refundedCents: number };
+
+/**
+ * The cents refunded outside the app for one capture: the sum of its
+ * `late_capture_refunded_outside_app` entries' `refundedCents`, one per refund
+ * notice (the same notice twice counts once, by its refund ids), plus `current`
+ * when its own entry is not readable yet.
+ */
+async function readRefundedOutsideAppCents(bookingId: string, paymentIntentId: string, current?: OutsideAppRefundEvent): Promise<number> {
+  const rows = await prisma.auditLog.findMany({
+    where: { action: REFUNDED_OUTSIDE_APP_ACTION, entityId: bookingId },
+    select: { details: true },
+  });
+  const events = new Map<string, number>();
+  for (const row of rows ?? []) {
+    const details = parseAuditDetails(row.details);
+    if (details?.paymentIntentId !== paymentIntentId || typeof details.refundedCents !== "number") continue;
+    events.set(JSON.stringify(details.refundIds ?? null), details.refundedCents);
+  }
+  if (current) events.set(JSON.stringify(current.refundIds), current.refundedCents);
+  return [...events.values()].reduce((sum, cents) => sum + Math.max(0, cents), 0);
 }
 
 /** The intents these bookings' `late_capture_refunded_outside_app` entries name (#4170). */

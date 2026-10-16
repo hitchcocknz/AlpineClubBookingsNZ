@@ -29,7 +29,9 @@ const mocks = vi.hoisted(() => ({
   held: vi.fn(),
   supersededOps: vi.fn(),
   doorReplays: vi.fn(),
-  claim: vi.fn(),
+  markerUpsert: vi.fn(),
+  refundRows: vi.fn(),
+  markedRows: vi.fn(),
 }));
 
 vi.mock("@/lib/cancelled-booking-late-capture", () => ({
@@ -42,10 +44,6 @@ vi.mock("@/lib/late-capture-landed-after", () => ({
 }));
 vi.mock("@/lib/admin-alert-once", () => ({
   findHeldOnceEverAlertKeys: (...args: unknown[]) => mocks.held(...args),
-}));
-vi.mock("@/lib/alert-cooldown", () => ({
-  ALERT_ONCE_EVER_WINDOW_MS: 36_500 * 86_400_000,
-  claimAlertCooldown: (...args: unknown[]) => mocks.claim(...args),
 }));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   queueLateCaptureRefundCreditNote: (...args: unknown[]) => mocks.queueNote(...args),
@@ -67,7 +65,13 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     auditLog: { findMany: (...args: unknown[]) => mocks.auditLogFindMany(...args) },
     payment: { findUnique: (...args: unknown[]) => mocks.paymentFindUnique(...args) },
-    paymentTransaction: { findUnique: (...args: unknown[]) => mocks.paymentTransactionFindUnique(...args) },
+    paymentTransaction: {
+      findUnique: (...args: unknown[]) => mocks.paymentTransactionFindUnique(...args),
+      // The primary handler's own marked writes, for the known-door-refund check.
+      findMany: (...args: unknown[]) => mocks.markedRows(...args),
+    },
+    paymentRefund: { findMany: (...args: unknown[]) => mocks.refundRows(...args) },
+    alertCooldown: { upsert: (...args: unknown[]) => mocks.markerUpsert(...args) },
     paymentRecoveryOperation: {
       // The superseded-payment refund's rows, or the door's refund replays by Stripe key.
       findMany: (args: { where: { type?: string } }) =>
@@ -158,7 +162,9 @@ beforeEach(() => {
   mocks.held.mockResolvedValue(new Set());
   mocks.supersededOps.mockResolvedValue([]);
   mocks.doorReplays.mockResolvedValue([]);
-  mocks.claim.mockResolvedValue(true);
+  mocks.markerUpsert.mockResolvedValue({});
+  mocks.refundRows.mockResolvedValue([]);
+  mocks.markedRows.mockResolvedValue([]);
   // By default the delivery that refunded wrote its entry, marked: its record write was lost.
   mocks.auditLogFindMany.mockResolvedValue([refundTimeEntry({ recordLost: true })]);
 });
@@ -334,7 +340,17 @@ describe("recoverLostLateCaptureRecord — a redelivery's check", () => {
 
       await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
       expect(mocks.announce).not.toHaveBeenCalled();
-      expect(mocks.claim).toHaveBeenCalledWith(expect.objectContaining({ key: `late-capture-hand-completed-checked:${INTENT}` }));
+      expect(mocks.markerUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { key: `late-capture-hand-completed-checked:${INTENT}` } }),
+      );
+    });
+
+    it("writes no checked marker when the Stripe read throws: nothing was checked", async () => {
+      mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "hand-completed"]]));
+      mocks.listRefunds.mockRejectedValueOnce(new Error("Stripe is unreachable"));
+
+      await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).rejects.toThrow("Stripe is unreachable");
+      expect(mocks.markerUpsert).not.toHaveBeenCalled();
     });
   });
 
@@ -459,7 +475,8 @@ describe("recoverLostLateCaptureRecordsForPayment — the nightly self-heal's ch
 
   it("asks Stripe nothing for a capture the superseded-payment refund refunded (#4173): no late-capture door sent it", async () => {
     armPayment("CANCELLED", "ADDITIONAL");
-    mocks.supersededOps.mockResolvedValue([{ paymentIntentId: INTENT, amountCents: 2500 }]);
+    mocks.supersededOps.mockResolvedValue([{ paymentIntentId: INTENT, createdAt: new Date("2026-06-25T00:00:00Z"), succeededAt: new Date("2026-06-25T00:10:00Z") }]);
+    mocks.refundRows.mockResolvedValue([{ stripePaymentIntentId: INTENT, amountCents: 2500, status: "succeeded", createdAt: new Date("2026-06-25T00:05:00Z") }]);
 
     await expect(recoverLostLateCaptureRecordsForPayment("payment-1")).resolves.toEqual({ recovered: [], unresolved: false });
     expect(mocks.listRefunds).not.toHaveBeenCalled();
@@ -508,9 +525,12 @@ describe("recoverLostLateCaptureRecordsForPayment — the nightly self-heal's ch
 
 describe("findSupersededRefundOnlyIntents — #4173's skip", () => {
   const capture = (refundedCents = 2500) => new Map([[INTENT, { refundedCents, bookingId: "booking-1" }]]);
+  const ROW = { paymentIntentId: INTENT, createdAt: new Date("2026-06-25T00:00:00Z"), succeededAt: new Date("2026-06-25T00:10:00Z") };
+  const refundAt = (iso: string, amountCents = 2500) => ({ stripePaymentIntentId: INTENT, amountCents, status: "succeeded", createdAt: new Date(iso) });
 
-  it("skips a capture whose refunds a SUCCEEDED superseded-payment refund covers in full, with no door refund known", async () => {
-    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 2500 }]);
+  it("skips a capture whose recorded refunds a SUCCEEDED superseded row made in full, with no door refund known", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([ROW]);
+    mocks.refundRows.mockResolvedValueOnce([refundAt("2026-06-25T00:05:00Z")]);
     mocks.auditLogFindMany.mockResolvedValueOnce([]);
 
     await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set([INTENT]));
@@ -519,21 +539,40 @@ describe("findSupersededRefundOnlyIntents — #4173's skip", () => {
     );
   });
 
-  it("does not skip one whose refunds the superseded refund covers only in part", async () => {
-    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 1000 }]);
+  it("does not skip a capture the superseded row refunded nothing of: its refund landed before the row existed", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([ROW]);
+    mocks.refundRows.mockResolvedValueOnce([refundAt("2026-06-24T00:00:00Z")]);
+    await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
+  });
+
+  it("does not skip one the superseded row refunded only in part", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([ROW]);
+    mocks.refundRows.mockResolvedValueOnce([refundAt("2026-06-25T00:05:00Z", 1000)]);
+    await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
+  });
+
+  it("does not skip one the primary late-capture handler marked: #4149's crash leaves no other sign of its door refund", async () => {
+    mocks.supersededOps.mockResolvedValueOnce([ROW]);
+    mocks.refundRows.mockResolvedValueOnce([refundAt("2026-06-25T00:05:00Z")]);
+    mocks.markedRows.mockResolvedValueOnce([{ stripePaymentIntentId: INTENT, reason: "cancelled_booking_late_capture" }]);
     await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
   });
 
   it("does not skip one with a door refund known beside the superseded refund: its refund-time entry", async () => {
-    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 5000 }]);
+    mocks.supersededOps.mockResolvedValueOnce([ROW]);
+    mocks.refundRows.mockResolvedValueOnce([refundAt("2026-06-25T00:05:00Z")]);
     mocks.auditLogFindMany.mockResolvedValueOnce([{ entityId: "booking-1", details: JSON.stringify({ paymentIntentId: INTENT }) }]);
     await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
   });
 
   it("does not skip one with a door refund known beside the superseded refund: a replay of the door's refund", async () => {
-    mocks.supersededOps.mockResolvedValueOnce([{ paymentIntentId: INTENT, amountCents: 5000 }]);
+    mocks.supersededOps.mockResolvedValueOnce([ROW]);
+    mocks.refundRows.mockResolvedValueOnce([refundAt("2026-06-25T00:05:00Z")]);
     mocks.auditLogFindMany.mockResolvedValueOnce([]);
     mocks.doorReplays.mockResolvedValueOnce([{ stripeKeyPrefix: `late_cancel_refund_booking-1_${INTENT}` }]);
     await expect(findSupersededRefundOnlyIntents(capture())).resolves.toEqual(new Set());
+    expect(mocks.doorReplays).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { stripeKeyPrefix: { in: [`late_cancel_refund_booking-1_${INTENT}`] } } }),
+    );
   });
 });

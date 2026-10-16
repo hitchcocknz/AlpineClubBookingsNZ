@@ -1,7 +1,6 @@
 import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType, PaymentTransactionKind } from "@prisma/client";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import { findHeldOnceEverAlertKeys } from "@/lib/admin-alert-once";
-import { ALERT_ONCE_EVER_WINDOW_MS, claimAlertCooldown } from "@/lib/alert-cooldown";
 import { logAudit } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
 import {
@@ -14,6 +13,8 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { getClubFormat } from "@/lib/club-format-settings";
 import { readCaptureLandedAfterCancellation } from "@/lib/late-capture-landed-after";
+import { isLateCaptureHandlerWrite } from "@/lib/cancellation-settled-money";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { lateCaptureAuditKind, queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
 import { findClosedLateCaptureRecords } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
@@ -22,7 +23,7 @@ import {
   buildLateCaptureRefundStripeKeyPrefix,
   LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON,
 } from "@/lib/payment-recovery-keys";
-import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
+import { isRecordedRefundStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { readRecordedRefundCentsByIntent } from "@/lib/refund-note-eligible-cash";
 import { listRefundsForPaymentIntent } from "@/lib/stripe";
@@ -370,13 +371,16 @@ export async function recoverLostLateCaptureRecord(
 /**
  * A hand-COMPLETED capture whose door-refund check found none: #2774's fence
  * withholds the automatic refund while a hand-back is COMPLETED, so no door
- * refund will appear for it, and the nightly list stops asking Stripe about it
- * (`lateCaptureHandCompletedCheckedKey`). Stated limit: a treasurer approval of
- * the same capture, on a separate approval-marked row, refunding AFTER this
- * check, is not escalated by the nightly list.
+ * refund is expected for it, and the nightly list stops asking Stripe about it
+ * (`lateCaptureHandCompletedCheckedKey`) - until a refund of the capture is
+ * recorded AFTER the check, which lists it again: a treasurer approval on a
+ * separate approval-marked row refunding later is checked, and escalated if it
+ * was a door's. The marker is the check's time, rewritten by each check.
  */
 async function markHandCompletedCaptureChecked(paymentIntentId: string): Promise<void> {
-  await claimAlertCooldown({ key: lateCaptureHandCompletedCheckedKey(paymentIntentId), windowMs: ALERT_ONCE_EVER_WINDOW_MS });
+  const key = lateCaptureHandCompletedCheckedKey(paymentIntentId);
+  const now = new Date();
+  await prisma.alertCooldown.upsert({ where: { key }, create: { key, lastAlertedAt: now }, update: { lastAlertedAt: now } });
 }
 
 /** The marker a hand-completed capture's door-refund check found nothing (#4149). */
@@ -563,13 +567,22 @@ export async function recoverLostLateCaptureRecordsForPayment(
 
 /**
  * #4173: the intents among these whose recorded refunds the superseded-payment
- * refund made - a `REFUND_SUPERSEDED_PAYMENT` recovery for the intent that
- * SUCCEEDED, whose amounts cover every recorded cent, on a capture with no
- * late-capture door refund known (`findIntentsWithKnownDoorRefund`). That door
- * writes no late-capture record and sends no late-capture metadata, so the
- * lost-record recovery can never prove one for it; and its cancel claim already
- * keeps its refund out of the note-eligible cash on a cancelled booking
- * (`late-capture-landed-after.ts`).
+ * refund made, on a capture with no late-capture door refund known
+ * (`findIntentsWithKnownDoorRefund`). That door writes no late-capture record and
+ * sends no late-capture metadata, so the lost-record recovery can never prove one
+ * for it; and its cancel claim already keeps its refund out of the note-eligible
+ * cash on a cancelled booking (`late-capture-landed-after.ts`).
+ *
+ * WHAT THE ROW REFUNDED IS NOT ON THE ROW. A `REFUND_SUPERSEDED_PAYMENT` row that
+ * SUCCEEDED records no refund id or amount for a clean refund (its
+ * `allocationPlan` is written only on a refusal), and it also closes SUCCEEDED
+ * having refunded NOTHING when the capture was already refunded by then. Its
+ * `amountCents` is what it would refund, not what it did. So the skip counts the
+ * capture's recorded refunds that landed between the row's creation and its
+ * completion - the only refunds it can have made - and needs them to cover every
+ * recorded cent. Stated limit: a refund another door made inside that window is
+ * counted as the row's; the record of such a door refund is then left to
+ * Stripe's redelivery and the repair tool, not the nightly list.
  */
 export async function findSupersededRefundOnlyIntents(
   captures: Map<string, { refundedCents: number; bookingId: string }>,
@@ -581,27 +594,57 @@ export async function findSupersededRefundOnlyIntents(
       status: PaymentRecoveryOperationStatus.SUCCEEDED,
       paymentIntentId: { in: [...captures.keys()] },
     },
-    select: { paymentIntentId: true, amountCents: true },
+    select: { paymentIntentId: true, createdAt: true, succeededAt: true },
   });
-  const coveredCents = new Map<string, number>();
-  for (const operation of operations) {
-    coveredCents.set(operation.paymentIntentId, (coveredCents.get(operation.paymentIntentId) ?? 0) + operation.amountCents);
+  if (operations.length === 0) return new Set();
+  const refunds = await prisma.paymentRefund.findMany({
+    where: { stripePaymentIntentId: { in: [...new Set(operations.map((operation) => operation.paymentIntentId))] } },
+    select: { stripePaymentIntentId: true, amountCents: true, status: true, createdAt: true },
+  });
+  const madeByTheRow = new Map<string, number>();
+  for (const refund of refunds ?? []) {
+    if (!refund.stripePaymentIntentId || !isRecordedRefundStatus(refund.status)) continue;
+    const made = operations.some(
+      (operation) =>
+        operation.paymentIntentId === refund.stripePaymentIntentId &&
+        operation.succeededAt !== null &&
+        refund.createdAt >= operation.createdAt &&
+        refund.createdAt <= operation.succeededAt,
+    );
+    if (made) madeByTheRow.set(refund.stripePaymentIntentId, (madeByTheRow.get(refund.stripePaymentIntentId) ?? 0) + Math.max(0, refund.amountCents));
   }
-  const covered = [...captures].filter(([intent, { refundedCents }]) => refundedCents <= (coveredCents.get(intent) ?? 0));
+  const covered = [...captures].filter(
+    ([intent, { refundedCents }]) => (madeByTheRow.get(intent) ?? 0) > 0 && refundedCents <= (madeByTheRow.get(intent) ?? 0),
+  );
   if (covered.length === 0) return new Set();
   const door = await findIntentsWithKnownDoorRefund(new Map(covered.map(([intent, { bookingId }]) => [intent, bookingId])));
   return new Set(covered.map(([intent]) => intent).filter((intent) => !door.has(intent)));
 }
 
 /**
- * The intents among these with a late-capture door refund the app already knows
- * of, without asking Stripe: its refund-time `refunded_after_cancellation` entry
- * (written even when its record was lost), or a recovery row replaying the door's
- * refund under its Stripe key (`buildLateCaptureRefundStripeKeyPrefix`).
+ * The intents among these with a late-capture door refund the app knows of, or
+ * must assume, without asking Stripe:
+ * - the primary late-capture handler's own capture write
+ *   (`isLateCaptureHandlerWrite`): it marks the capture BEFORE it refunds, and
+ *   the webhook door persists no recovery row and writes its entry only after
+ *   its record attempt, so a process that dies after Stripe refunded (#4149's
+ *   crash) leaves this marker and nothing else;
+ * - its refund-time `refunded_after_cancellation` entry (written even when its
+ *   record was lost);
+ * - a recovery row replaying a door's refund under its Stripe key
+ *   (`buildLateCaptureRefundStripeKeyPrefix`).
  */
 export async function findIntentsWithKnownDoorRefund(bookingIdByIntent: Map<string, string>): Promise<Set<string>> {
   const known = new Set<string>();
   if (bookingIdByIntent.size === 0) return known;
+  const marked = await prisma.paymentTransaction.findMany({
+    where: { stripePaymentIntentId: { in: [...bookingIdByIntent.keys()] } },
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+    select: { stripePaymentIntentId: true, reason: true },
+  });
+  for (const row of marked ?? []) {
+    if (row.stripePaymentIntentId && isLateCaptureHandlerWrite(row.reason)) known.add(row.stripePaymentIntentId);
+  }
   const entries = await prisma.auditLog.findMany({
     where: { action: "booking.payment.refunded_after_cancellation", entityId: { in: [...new Set(bookingIdByIntent.values())] } },
     select: { entityId: true, details: true },
