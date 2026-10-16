@@ -1399,11 +1399,11 @@ short).
   order, which an update of an indexed column, such as a capture, changes. A
   cuid `id` is no insertion order either.
   - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
-    sequence the column owns. The database assigns it and code never writes
-    it. Stored rows had no insertion order, so the migration numbered
-    each tie retired rows first (FAILED, withdrawn, or an ask queued for
-    cancellation), live rows last, then physical order. A stored tie can
-    change order at that release; the owner counts the ties before deploying.
+    sequence the column owns. The database, never code, assigns it. Stored
+    rows had no insertion order, so the migration numbered each tie retired
+    rows first (FAILED, withdrawn, or an ask queued for cancellation), live
+    rows last, then physical order. A stored tie can change order at that
+    release; the owner counts the ties before deploying.
   - **One home**: `LEDGER_ROWS_OLDEST_FIRST` and `LEDGER_ROWS_NEWEST_FIRST`,
     with their comparators, in `payment-ledger-order.ts`. Every money read uses
     them: the loader, the cancel's fold, the ask chain, the refund slices and
@@ -1415,12 +1415,13 @@ short).
     refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change at this release;
     check for open ones after the old colour drains.
-  - **The settling capture** the Xero second-instrument conflict names
-    (#4163) is the oldest-inserted one no duplicate-capture refund owns;
-    #1765 refund history is skipped when paid, ranked last when cancelled.
+  - **The settling capture is the oldest-inserted**: a duplicate-capture
+    refund's (#4177); the Xero conflict's (#4163) of those no such refund owns,
+    #1765 refund history skipped when paid, ranked last when cancelled.
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
-    `ledger-insertion-seq.realdb.test.ts` and the migration's fixture, and
-    the settling capture by `issue-3638-second-instrument-conflict.test.ts`.
+    `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
+    and the migration's fixture; the settling capture by
+    `issue-3638-second-instrument-conflict.test.ts`.
 
 ## INV-PAY-134
 
