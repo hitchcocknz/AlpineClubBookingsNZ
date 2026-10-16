@@ -1525,6 +1525,9 @@ describe("#2563 exactly one stay-range resolution exists, and the route calls it
       "src/lib/booking-change-request-guests.ts",
       "src/lib/booking-exception-request-service.ts",
       "src/lib/booking-modify-validation.ts",
+      // #4199: the edit's promo preview prices each guest on the nights the save
+      // will, by handing its party to this resolution as the delta it is.
+      "src/lib/promo-preview-stay-ranges.ts",
     ]);
     // ...and it is DECLARED exactly once, in the module that owns the rule.
     expect(sourceFilesNaming("export function resolveModificationStayRanges")).toEqual([
