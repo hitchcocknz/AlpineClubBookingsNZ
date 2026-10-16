@@ -870,6 +870,7 @@ than none.
 | `kind` | `primary` for the booking's own payment, `modification_additional` for a payment for a change |
 | `refundTimeReport` | What the refund left at the time: `none` (the server stopped first, so the recovery wrote the refund's entry too), `record_lost` (its entry says the row could not be saved), or `reported` (an older entry from a refund whose row did save) |
 | `alertSent` | Whether this recovery sent the email |
+| `repairRefund` | Present (`true`) when the refund was the booking repair tool's own: its record is written as the repair tool writes it, with no "refunded automatically" entry or email |
 
 **A late payment refunded some other way (#4170).** If a card payment that
 arrived after its booking was cancelled is refunded outside the app - in the
@@ -878,7 +879,7 @@ reached the app - the app writes one
 `booking.payment.late_capture_refunded_outside_app` entry, category `payment`,
 severity `important`, with `paymentIntentId`, `refundIds`, `refundedCents` and
 `creditNoteQueued: false`, and emails everyone who can edit Finance, once for
-that payment, through its own alert that cannot be switched off (*Late payment
+that payment (the email shows everything refunded on it so far), through its own alert that cannot be switched off (*Late payment
 refunded outside the app - check Xero*); if that email could not be sent, the
 nightly check sends it. No Xero credit note is raised for it, because
 Xero never received that payment; record it by hand only if it was recorded

@@ -26,7 +26,9 @@
   record was lost even when it shows no gap in Xero (looking back 30 days), and
   a treasurer-approved refund is no longer mistaken for a possible double
   payment; a possible double payment is escalated once, and again if that email
-  failed. A late refund the repair tool made is recovered the same way.
+  failed. A late refund the repair tool made is recovered the same way, without
+  a "refunded automatically" email, since the repair run already told the
+  person who ran it.
 - **A refund of a payment made in a stale tab after its booking was cancelled
   is no longer credited in Xero (#4173, closed here).** When a member paid for
   a change in an old tab after the booking was cancelled, the app refunded it
