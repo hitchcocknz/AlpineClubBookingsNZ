@@ -518,6 +518,20 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-001",
   },
   {
+    site: "reRecordBankTransferRefund#1",
+    tier: "GLOBAL",
+    reason:
+      "#4162 (owner decisions 16 and 17 Oct 2026, INV-ADDPAY-042): recording a voided bank-transfer refund again puts the payment's refundedAmountCents back and queues its refund note in one commit, and every edit, acceptance, paid cancel and refund appeal reads the refunded total separately from the hand-backs promised back to size a refund - under lock(1) the record-again cannot commit between those reads, and a double click queues behind the first. First lock of its transaction, then the Payment row (lockPaymentForRefundedTotal) BEFORE the payment is read - every refunded-total writer without lock(1) (every Stripe refund recorder, a cancellation hand-back's completion) takes that row first - then the voided note's link, its resolution and the totals re-read under both. Then the guarded resolution insert (the unique (paymentId, voidedCreditNoteId) pair is the claim), the refunded total compare-and-set on the row as read, the refund-note outbox row and the audit row. The inbound void's recount takes neither lock and loses its own compare-and-set; #4161's heal takes the link and the Payment row NOWAIT and defers. No provider call: the note's row is kicked after the commit.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "confirmBankTransferRefundCancelled#1",
+    tier: "GLOBAL",
+    reason:
+      "#4162 (owner decision 17 Oct 2026, Q2; INV-ADDPAY-042): confirming a voided bank-transfer refund cancelled takes the refund back out of the payment's transactions (unwindLocalRefundAllocation), reverses its BANK_REFUND booking-ledger line and keeps the refunded total no higher than that detail, in one commit - the same settlement money every edit, acceptance, paid cancel and refund appeal reads to size a refund, so it joins the record-again's cohort and tiers. First lock of its transaction, then the Payment row (lockPaymentForRefundedTotal) BEFORE the payment is read (the unwind re-takes the row it holds), then the voided note, its resolution and the totals re-read under both; the resolution insert is the claim, so a second answer is refused. A note replaced by hand in Xero moves nothing under the same locks. No Xero call and no member email.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:

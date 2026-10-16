@@ -377,6 +377,14 @@ import "./prisma-exact-prefix.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4165` rows.
 import "./audit-query-exact-prefix.realdb.test";
+// #4162 reuses it to prove the treasurer's two answers to a voided bank-transfer
+// refund note: record again (one note keyed on its record, sized from it, a
+// double click recording once under lock(1) and the Payment row) and confirm
+// cancelled (the allocation unwound and the BANK_REFUND line reversed), plus
+// the inbound recount inside the window, #4161's heal deferring and a draining
+// older worker. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
+// its own `race-4162-` fixtures.
+import "./bank-refund-void-resolution.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
