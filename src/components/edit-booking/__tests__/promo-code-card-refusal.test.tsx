@@ -47,13 +47,9 @@ describe("PromoCodeCard — a refused code (#4197)", () => {
         availablePromoCodes={[]}
         appliedNewPromo={null}
         prefillPromoCode={undefined}
-        checkIn="2026-08-14"
-        checkOut="2026-08-16"
+        guestStays={{ checkIn: "2026-08-14", checkOut: "2026-08-16", existing: null, added: [] }}
         remainingGuests={[]}
         addedGuests={[]}
-        perGuestDatesEnabled={false}
-        isInProgressEdit={false}
-        getExistingGuestRange={() => ({ stayStart: "2026-08-14", stayEnd: "2026-08-16" })}
         quote={quote}
         forMemberId={undefined}
         lodgeId={null}
