@@ -426,8 +426,7 @@ function addXeroItems(items: StuckStateItem[], snapshot: XeroAdminHealthSnapshot
       "payment",
     )} are older than ${snapshot.refundsMissingCreditNotes.graceHours} hours and still missing Xero refund credit notes.`,
   });
-  // #4162 (`INV-ADDPAY-042`): a voided bank-transfer refund note is never
-  // re-raised automatically; the finance panel on this page answers each.
+  // #4162 (`INV-ADDPAY-042`): never re-raised automatically; the finance panel here answers each.
   addItem(items, {
     id: "xero-bank-refund-voided-credit-notes",
     domain: "xero",

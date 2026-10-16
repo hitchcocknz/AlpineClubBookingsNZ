@@ -349,13 +349,8 @@ function cardDoublePayCents(row: BookingLedgerCensusRow): number {
   return finding?.strandExposureCents ?? 0;
 }
 
-/**
- * Hand-backs the ledger records against a completed task: −Σ matched BANK_REFUND
- * lines - the share, or a review's netted hand-back its stand-in bears out (#3835).
- * Live lines only: a hand-back the treasurer confirmed cancelled after Xero
- * voided its note is reversed (#4162, `INV-ADDPAY-042`), and so is no longer
- * part of the refunded total.
- */
+/** Hand-backs the ledger records against a completed task: −Σ matched live BANK_REFUND lines (one reversed after its
+ * note's void, #4162, records none) - the share, or a review's netted hand-back its stand-in bears out (#3835). */
 function handBackCents(row: BookingLedgerCensusRow): number {
   const netted = reviewAdjustmentEvidence(row).nettedHandBackLineIds;
   return -liveLines(row.lines)

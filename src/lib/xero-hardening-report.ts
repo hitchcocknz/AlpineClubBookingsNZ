@@ -43,7 +43,7 @@ import {
 } from "@/lib/xero-resolved-in-xero-fences";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { formatCents } from "@/lib/utils";
-import { listBankRefundVoids } from "@/lib/bank-refund-void-report";
+import { buildBankRefundVoidDigestSection } from "@/lib/bank-refund-void-report";
 import type { ClubFormat } from "@/lib/club-format";
 
 const DEFAULT_STALE_PENDING_MINUTES = 30;
@@ -804,7 +804,7 @@ export async function buildXeroReconciliationReport(
   const unsettledRefundNotes = await buildUnsettledRefundNoteSection(format, topLimit, overCoverageItem);
   // #4162 (`INV-ADDPAY-042`): voided bank-transfer refund notes waiting for the
   // treasurer. Informational: not counted as an issue, and nothing here acts.
-  const bankRefundVoids = await listBankRefundVoids({ now });
+  const bankRefundVoidSection = await buildBankRefundVoidDigestSection(format, topLimit, now);
   const unsettledRefundCreditNotes = unsettledRefundNotes.count;
 
   // #3635 (`INV-INT-025`): an operation an officer resolved in Xero is done, so
@@ -1060,43 +1060,7 @@ export async function buildXeroReconciliationReport(
           },
         ]
       : []),
-    ...(bankRefundVoids.length > 0
-      ? [
-          {
-            id: "bank-refund-voided-credit-notes",
-            title: "Bank-transfer refunds with a voided credit note",
-            severity: "info" as const,
-            count: bankRefundVoids.length,
-            whatWentWrong:
-              "Xero voided the refund credit note of a bank-transfer refund, which undoes the refund in the club's records, and the app never raises a voided note again by itself.",
-            howToFix:
-              "On Stuck States, record each refund again (one fresh credit note for the voided note's amount) or confirm it was cancelled. If you already replaced the note by hand in Xero, confirm it with that reason.",
-            items: bankRefundVoids.slice(0, topLimit).map((item) => ({
-              label: `Booking ${item.bookingReference}`,
-              localModel: "Payment",
-              localId: item.paymentId,
-              localUrl: buildLocalAdminUrl("Payment", item.paymentId),
-              xeroObjectType: "CREDIT_NOTE",
-              xeroObjectId: item.voidedCreditNoteId,
-              xeroObjectNumber: item.voidedCreditNoteNumber,
-              xeroObjectUrl: buildXeroObjectUrl("CREDIT_NOTE", item.voidedCreditNoteId),
-              operationId: null,
-              operationStatus: null,
-              operationType: null,
-              correlationKey: null,
-              detail: `${item.amountCents === null ? "Amount unknown" : formatCents(item.amountCents, format)} refund, its note voided in Xero${
-                item.flag === "note-failed"
-                  ? "; recorded again, but its fresh note did not reach Xero for the full amount"
-                  : item.flag === "voided-again"
-                    ? `; this note re-recorded ${item.reRecordOf}, and was voided too`
-                    : ""
-              }.`,
-              latestErrorMessage: null,
-              createdAt: new Date(item.voidedAt),
-            })),
-          },
-        ]
-      : []),
+    ...(bankRefundVoidSection ? [bankRefundVoidSection] : []),
     ...(recentFailureOperations.length > 0
       ? [
           {

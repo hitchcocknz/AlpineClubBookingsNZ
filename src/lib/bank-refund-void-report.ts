@@ -38,6 +38,11 @@ import type { Prisma } from "@prisma/client";
 import { reRecordNoteRowsWhere } from "@/lib/bank-refund-re-record-note";
 import type { ReRecordRefusal } from "@/lib/bank-refund-void-copy";
 import { formatBookingReference } from "@/lib/booking-reference";
+import type { ClubFormat } from "@/lib/club-format";
+import { formatCents } from "@/lib/utils";
+import type { XeroReconciliationIssueSection } from "@/lib/xero-hardening-types";
+import { buildXeroObjectUrl } from "@/lib/xero-links";
+import { buildLocalAdminUrl } from "@/lib/xero-record-links";
 import { prisma } from "@/lib/prisma";
 import { REFUND_CREDIT_NOTE_GRACE_HOURS } from "@/lib/xero-refund-note-grace";
 import { asRecord, readString } from "@/lib/xero-json";
@@ -368,4 +373,51 @@ export async function readBankRefundVoidUnderLock(
 export async function readBankRefundVoidPaymentId(db: Reader, linkId: string): Promise<string | null> {
   const link = await db.xeroObjectLink.findUnique({ where: { id: linkId }, select: { localModel: true, localId: true } });
   return link?.localModel === "Payment" ? link.localId : null;
+}
+
+/**
+ * The nightly Xero digest's informational section for these notes, or null
+ * when there are none (`buildXeroReconciliationReport`). Not counted as an
+ * issue; nothing in the digest acts on them.
+ */
+export async function buildBankRefundVoidDigestSection(
+  format: ClubFormat,
+  topLimit: number,
+  now: Date,
+): Promise<XeroReconciliationIssueSection | null> {
+  const items = await listBankRefundVoids({ now });
+  if (items.length === 0) return null;
+  return {
+    id: "bank-refund-voided-credit-notes",
+    title: "Bank-transfer refunds with a voided credit note",
+    severity: "info",
+    count: items.length,
+    whatWentWrong:
+      "Xero voided the refund credit note of a bank-transfer refund, which undoes the refund in the club's records, and the app never raises a voided note again by itself.",
+    howToFix:
+      "On Stuck States, record each refund again (one fresh credit note for the voided note's amount) or confirm it was cancelled. If you already replaced the note by hand in Xero, confirm it with that reason.",
+    items: items.slice(0, topLimit).map((item) => ({
+      label: `Booking ${item.bookingReference}`,
+      localModel: "Payment",
+      localId: item.paymentId,
+      localUrl: buildLocalAdminUrl("Payment", item.paymentId),
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: item.voidedCreditNoteId,
+      xeroObjectNumber: item.voidedCreditNoteNumber,
+      xeroObjectUrl: buildXeroObjectUrl("CREDIT_NOTE", item.voidedCreditNoteId),
+      operationId: null,
+      operationStatus: null,
+      operationType: null,
+      correlationKey: null,
+      detail: `${item.amountCents === null ? "Amount unknown" : formatCents(item.amountCents, format)} refund, its note voided in Xero${
+        item.flag === "note-failed"
+          ? "; recorded again, but its fresh note did not reach Xero for the full amount"
+          : item.flag === "voided-again"
+            ? `; this note re-recorded ${item.reRecordOf}, and was voided too`
+            : ""
+      }.`,
+      latestErrorMessage: null,
+      createdAt: new Date(item.voidedAt),
+    })),
+  };
 }

@@ -385,8 +385,10 @@ const FIGURES = {
    * panel's own view-only button. MEASURED on the composed tree after merging main at aaedc5481.
    * 376 -> 377 (#4098): the subscription charge queue's "Close: already paid".
    * MEASURED by re-running this census.
+   * 377 -> 379 (#4162): the voided bank-transfer refund panel's Record again and
+   * Confirm. MEASURED by re-running this census.
    */
-  callSites: 377,
+  callSites: 379,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -439,8 +441,9 @@ const FIGURES = {
    * guest entry's button, under the change-request panel's banner. MEASURED
    * on the composed tree.
    * 321 -> 322 (#4098): "Close: already paid", under the billing panel's banner.
+   * 322 -> 324 (#4162): Record again and Confirm, under their panel's banner.
    */
-  optOuts: 322,
+  optOuts: 324,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -526,8 +529,10 @@ const FIGURES = {
    * panel's own banner. MEASURED on the composed tree after merging main at aaedc5481.
    * 285 -> 286 (#4098): "Close: already paid" sits in the same file as the
    * subscription billing panel's own banner. MEASURED by re-running this census.
+   * 286 -> 288 (#4162): Record again and Confirm sit beside the voided
+   * bank-transfer refund panel's own banner. MEASURED by re-running this census.
    */
-  staticOptOuts: 286,
+  staticOptOuts: 288,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -614,8 +619,11 @@ const FIGURES = {
    *
    * 98 -> 99 (#3372): the stuck-states page's dead card refunds panel, gated on
    * finance inside a support page, so it states its own area's reason.
+   *
+   * 99 -> 100 (#4162): the stuck-states page's voided bank-transfer refund
+   * panel, finance-gated inside a support page like the card refund panel.
    */
-  bannerComponents: 99,
+  bannerComponents: 100,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older
