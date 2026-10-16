@@ -22,6 +22,7 @@ import {
   sameNightKeys,
 } from "@/lib/booking-guest-stay-ranges";
 import {
+  effectiveStayRangeByGuest,
   resolveModificationStayRanges,
   type LiveGuestStayRow,
   type StayRangeDeltaInput,
@@ -367,8 +368,25 @@ export function nightsKeptByRepeatedRange(
 }
 
 /**
+ * Whether a change request's guest range is one approval applies (#4030): both
+ * bounds, or a grid night set. Anything else — no dates, or one bound, which a
+ * row stored before #4030 refused them may still hold — is dropped, as it has
+ * always been. Not `entryHasStayRange`, which admits a one-bound range.
+ */
+export function isAppliedChangeRequestRange(range: {
+  stayStart?: string | null;
+  stayEnd?: string | null;
+  nights?: ReadonlyArray<string> | null;
+}): boolean {
+  return Boolean(range.stayStart && range.stayEnd) || Boolean(range.nights?.length);
+}
+
+/**
  * #4030 review M2: whether any of a request's stay ranges changes a guest's
- * nights, against the guests' stored `@db.Date` ranges.
+ * nights, against the guests' stored `@db.Date` ranges. Each guest is judged
+ * on the entry approval applies for them — the last applied one
+ * (`effectiveStayRangeByGuest`, the planner's own rule) — so an earlier entry
+ * the planner ignores cannot make a request count as a change (#4157).
  */
 export function namesStayRangeChange(
   ranges: ReadonlyArray<{
@@ -384,7 +402,7 @@ export function namesStayRangeChange(
     nights?: ReadonlyArray<{ stayDate: Date }> | null;
   }>,
 ): boolean {
-  return ranges.some((range) => {
+  return [...effectiveStayRangeByGuest(ranges.filter(isAppliedChangeRequestRange)).values()].some((range) => {
     const guest = guests.find((candidate) => candidate.id === range.guestId);
     return isEffectiveStayRangeChange(range, guest ? storedGuestNightsAsDays(guest) : undefined);
   });

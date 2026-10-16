@@ -6,6 +6,7 @@ import { addCalendarDays, calendarDateOfDateOnlyInstant, countClubNights, parseC
 import type { BatchModifyInput } from "@/lib/booking-modify";
 import {
   guestNightKeys,
+  isAppliedChangeRequestRange,
   isEffectiveStayRangeChange,
   nightsKeptByRepeatedRange,
   storedGuestNightsAsDays,
@@ -157,9 +158,7 @@ function appliedRanges(stored: StoredLockedPeriodRequest): AppliedRange[] {
   const removed = new Set(stored.requested.removeGuests.map((guest) => guest.id));
   return (
     stored.requested.guestStayRanges
-      // Not `entryHasStayRange`: that admits a one-bound range, which a row stored
-      // before #4030 refused them may still hold, and this has always dropped.
-      .filter((range) => Boolean(range.stayStart && range.stayEnd) || Boolean(range.nights?.length))
+      .filter(isAppliedChangeRequestRange)
       // A range for a guest the same request removes is moot, and the planner
       // would refuse it as naming a guest no longer on the booking.
       .filter((range) => !removed.has(range.guestId))
@@ -299,11 +298,14 @@ export function lockedPeriodRequestToBatchInput(
     stayEnd: guest.stayEnd ?? null,
     ...(guest.nights?.length ? { nights: guest.nights } : {}),
   }));
+  // The entry the planner applies for each guest: the last (#4157).
+  const effective = effectiveStayRangeByGuest(requestedRanges);
   // #4030 review M2: whether the request names nothing is judged on the ranges
   // that CHANGE something — a range repeating the guest's stored nights is not
   // a change. This test decides only that; it never filters what is applied.
-  // It reads the ranges as the member sent them, before #4157 below.
-  const namesRangeChange = requestedRanges.some((range) =>
+  // It reads each guest's applied entry as the member sent it, before #4157
+  // below, so an earlier duplicate the planner ignores is not a change.
+  const namesRangeChange = [...effective.values()].some((range) =>
     isEffectiveStayRangeChange(range, currentRanges.get(range.guestId)),
   );
   // #4157 (owner decision "Keep their nights"): a two-bound range that only
@@ -313,7 +315,6 @@ export function lockedPeriodRequestToBatchInput(
   // not switch off. A range that moves a bound is applied as written.
   // Only on the entry the planner applies for that guest — the last — so an
   // earlier repeat can never overwrite a later moved range or night set.
-  const effective = effectiveStayRangeByGuest(requestedRanges);
   const kept = keptNightsOfEffectiveRanges(effective, currentRanges, booking.guests);
   const guestStayRanges = requestedRanges.map((range) => {
     const nights = effective.get(range.guestId) === range ? kept.get(range.guestId) : undefined;

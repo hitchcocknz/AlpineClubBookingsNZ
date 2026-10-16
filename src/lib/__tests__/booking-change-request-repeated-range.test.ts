@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
  * range that moves a bound re-spreads them as before, guest by guest.
  */
 
-import { nightsKeptByRepeatedRange } from "@/lib/booking-change-request-guests";
+import { namesStayRangeChange, nightsKeptByRepeatedRange } from "@/lib/booking-change-request-guests";
 import {
   describeRequestedGuestNights,
   keptNightsByGuest,
@@ -376,5 +376,41 @@ describe("a request that names one guest more than once (#4157)", () => {
         fillsGaps: true,
       },
     ]);
+  });
+});
+
+describe("whether a request names a change, judged on each guest's applied entry (#4157)", () => {
+  // An earlier entry that moves the guest, then a last entry that only repeats
+  // their dates: the planner applies the last, so the guest's dates do not
+  // change, and the request names no change for them.
+  const moved = { guestId: "full", stayStart: "2026-06-10", stayEnd: "2026-06-12" };
+  const repeat = { guestId: "full", ...REPEATED };
+
+  it("at submit: an earlier differing entry the planner ignores is not a change", () => {
+    expect(
+      namesStayRangeChange([moved, repeat], LIVE.guests),
+      "INV-REQ-012: only the applied entry names a change",
+    ).toBe(false);
+    // The other way round the moved range is applied, and is a change.
+    expect(namesStayRangeChange([repeat, moved], LIVE.guests)).toBe(true);
+    // A last entry with no dates is not applied, so the moved one before it is.
+    expect(namesStayRangeChange([moved, { guestId: "full" }], LIVE.guests)).toBe(true);
+  });
+
+  it("on approval: the stored request names no change, and approval has nothing to apply", () => {
+    const repeatsOnly = {
+      original: {
+        checkIn: "2026-06-10",
+        checkOut: "2026-06-13",
+        guests: [snapshotGuest("full", EVERY)],
+      },
+      requested: { guestStayRanges: [moved, repeat] },
+    };
+    expect(storedRequestNamesNoChange(repeatsOnly, LIVE), "INV-REQ-012: only the applied entry names a change").toBe(
+      true,
+    );
+    expect(lockedPeriodRequestToBatchInput(storedLockedPeriodRequestSchema.parse(repeatsOnly), LIVE)).toBeNull();
+    const reversed = { ...repeatsOnly, requested: { guestStayRanges: [repeat, moved] } };
+    expect(storedRequestNamesNoChange(reversed, LIVE)).toBe(false);
   });
 });
