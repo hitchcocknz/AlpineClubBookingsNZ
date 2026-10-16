@@ -1062,8 +1062,8 @@ export async function prepareGuestPlan(
   // policy-exception workflow runs it to freeze the party an officer reviews, and
   // the modification PREVIEW (`POST /api/bookings/[id]/modify-quote`) runs it to
   // quote the price — so all four agree by construction rather than by inspection.
-  // Keep this count in step with `docs/DOMAIN_INVARIANTS.md` ("Four surfaces, one
-  // implementation"); a stale enumeration here is how the #2526 divergence sat
+  // Keep this count in step with `INV-EXCEPT-022` ("one implementation, for all
+  // four surfaces"); a stale enumeration here is how the #2526 divergence sat
   // unnoticed. Passing the resolved envelope as `requested` keeps an in-progress
   // edit (whose check-in is pinned to the stored one) resolving against the
   // envelope actually being applied.
