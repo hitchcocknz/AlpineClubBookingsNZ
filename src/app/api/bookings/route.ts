@@ -122,7 +122,7 @@ import {
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
 import {
-  BOOKING_REQUEST_GUESTS_MAX, BookingGuestStayRangeValidationError, guestRequestSchemaError, guestStayFieldsSchema,
+  GUEST_CHANGE_LIST_BOUND, BookingGuestStayRangeValidationError, guestRequestSchemaError, guestStayFieldsSchema,
   normalizeGuestStayRanges,
 } from "@/lib/booking-guest-stay-range-input";
 import { parseJsonRequestBody } from "@/lib/api-json";
@@ -167,7 +167,7 @@ const createBookingSchema = z.object({
       })
     )
     .min(1)
-    .max(BOOKING_REQUEST_GUESTS_MAX),
+    .max(...GUEST_CHANGE_LIST_BOUND),
   // #2721: the booker's answers to "this guest has the same name as your own
   // recorded dependant". One entry per dependant the collision was with, each
   // naming that dependant explicitly — see `booking-dependant-identity.ts` for

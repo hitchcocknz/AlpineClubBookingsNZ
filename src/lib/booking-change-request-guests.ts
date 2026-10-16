@@ -8,9 +8,9 @@ import {
   requireCalendarDate,
 } from "@/lib/club-time";
 import {
-  BOOKING_REQUEST_GUESTS_MAX,
+  GUEST_CHANGE_LIST_BOUND, BOOKING_PARTY_GUESTS_MAX,
   BookingGuestStayRangeValidationError,
-  GUEST_NIGHT_INVALID_MESSAGE,
+  GUEST_REQUEST_MEMBER_WORDED_MESSAGES,
   guestRequestSchemaError,
   guestStayFieldsSchema,
   normalizeGuestStayRange,
@@ -72,7 +72,7 @@ export const changeRequestGuestStayRangeSchema = z.object({
 export type ChangeRequestAddGuest = z.infer<typeof changeRequestAddGuestSchema>;
 
 /** The list form, capped as the request route always capped it. */
-export const changeRequestAddGuestsSchema = z.array(changeRequestAddGuestSchema).max(BOOKING_REQUEST_GUESTS_MAX);
+export const changeRequestAddGuestsSchema = z.array(changeRequestAddGuestSchema).max(...GUEST_CHANGE_LIST_BOUND);
 
 /**
  * The officer's entry (#4030 Part B): at least one guest, every one with its
@@ -88,7 +88,7 @@ export const officerEnteredGuestsSchema = z
     }),
   )
   .min(1)
-  .max(BOOKING_REQUEST_GUESTS_MAX);
+  .max(...GUEST_CHANGE_LIST_BOUND);
 
 export type OfficerEnteredGuest = z.infer<typeof officerEnteredGuestsSchema>[number];
 
@@ -105,22 +105,22 @@ export const CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE =
  */
 export const changeRequestGuestStayRangesSchema = z
   .array(changeRequestGuestStayRangeSchema)
-  .max(BOOKING_REQUEST_GUESTS_MAX)
+  .max(BOOKING_PARTY_GUESTS_MAX)
   .refine((ranges) => new Set(ranges.map((range) => range.guestId)).size === ranges.length, {
     message: CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
   });
 
 /** The member-worded refusals the request's schema carries. */
-const MEMBER_WORDED_SCHEMA_MESSAGES = [GUEST_NIGHT_INVALID_MESSAGE, CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE];
+const MEMBER_WORDED_SCHEMA_MESSAGES = [...GUEST_REQUEST_MEMBER_WORDED_MESSAGES, CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE];
 
 /**
  * The `error` a request the schema refuses is answered with (#4088): a bad
- * night, or a guest named twice (#4157), is said in the member's terms;
+ * night, a guest named twice (#4157) or too many changes (#4199) is said in the member's terms;
  * anything else stays "Validation failed" with the details beside it.
  */
 export function changeRequestValidationMessage(error: z.ZodError): string {
-  // Only the refines' own failures: a list too long, or `nights` that is not a
-  // list at all, is not a bad date and stays "Validation failed".
+  // Matched on the exact message: a `nights` that is not a list at all is not a
+  // bad date and stays "Validation failed"; a list of changes too long is worded.
   return guestRequestSchemaError(error, "Validation failed", MEMBER_WORDED_SCHEMA_MESSAGES);
 }
 

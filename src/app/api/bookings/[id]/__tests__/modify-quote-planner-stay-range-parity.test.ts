@@ -1513,6 +1513,8 @@ function promoPreviewParty(
   },
   guests: ReturnType<typeof liveGuest>[],
   overrides: Parameters<typeof bookingWith>[1] = {},
+  /** False runs the comparison WITHOUT the booking, i.e. without the planner: the control. */
+  withBooking = true,
 ) {
   const booking = bookingWith(guests, overrides);
   const removed = new Set(delta.removeGuestIds ?? []);
@@ -1543,7 +1545,7 @@ function promoPreviewParty(
     checkIn: delta.checkIn ? D(delta.checkIn) : booking.checkIn,
     checkOut: delta.checkOut ? D(delta.checkOut) : booking.checkOut,
     guests: party,
-    edit: {
+    edit: withBooking ? {
       booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
       storedGuests: guests.map((guest) => ({
         id: guest.id,
@@ -1552,7 +1554,7 @@ function promoPreviewParty(
         stayEnd: guest.stayEnd,
         nights: guest.nights,
       })),
-    },
+    } : null,
   });
   return partyShape(resolved.guests);
 }
@@ -1620,17 +1622,16 @@ describe("#4199 the promo preview resolves the party the quote resolves", () => 
     });
   }
 
-  it("the comparison has teeth: pricing the grid party as ranges disagrees", async () => {
-    const [, delta, guests] = PROMO_PREVIEW_CASES[0]!;
-    const route = await runRoute(delta, guests);
-    const asRanges = {
-      guestStayRanges: (delta.guestStayRanges ?? []).map((entry) => ({
-        guestId: entry.guestId,
-        stayStart: entry.nights![0],
-        stayEnd: formatDateOnly(new Date(D(entry.nights!.at(-1)!).getTime() + 86_400_000)),
-      })),
-    };
-    expect(promoPreviewParty(asRanges, guests)).not.toEqual(route.ratedParty);
+  it("the comparison has teeth: without the planner (`edit: null`) the removed-guest edit disagrees", async () => {
+    // The remaining gapped guest sent no dates of their own: the planner keeps
+    // their stored nights, as the save does; normalising the party on its own
+    // gives them the whole stay. So breaking the code is seen here.
+    const [, delta, guests, overrides] = PROMO_PREVIEW_CASES.find(([name]) => name === "a removed guest")!;
+    const route = await runRoute(delta, guests, overrides);
+    expect(promoPreviewParty(delta, guests, overrides)).toEqual(route.ratedParty);
+    const withoutPlanner = promoPreviewParty(delta, guests, overrides, false);
+    expect(withoutPlanner).not.toEqual(route.ratedParty);
+    expect(withoutPlanner[0]).not.toEqual(route.ratedParty![0]);
   });
 });
 

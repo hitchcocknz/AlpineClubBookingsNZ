@@ -70,7 +70,11 @@ import {
   PolicyExceptionDependantIdentityError,
 } from "@/lib/booking-exception-request-service";
 import { memberGuestCrossFamilyRefusal } from "@/lib/booking-guests";
-import { BOOKING_REQUEST_GUESTS_MAX, GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
+import {
+  BOOKING_REQUEST_GUESTS_MAX,
+  GUEST_CHANGE_LIST_TOO_LONG_MESSAGE,
+  GUEST_NIGHT_INVALID_MESSAGE,
+} from "@/lib/booking-guest-stay-range-input";
 import {
   DEPENDANT_IDENTITY_UNRESOLVED_EDIT_MESSAGE,
   DEPENDANT_IDENTITY_UNRESOLVED_ON_BEHALF_EDIT_MESSAGE,
@@ -277,24 +281,37 @@ describe("POST /api/bookings/[id]/exception-requests", () => {
     });
   });
 
-  // #4199: the shared night shape and guest-list bound.
+  // #4199: the shared night shape and the two guest bounds.
   it.each([
-    ["a night that is not a date", { guestStayRanges: [{ guestId: "g1", nights: ["2026-13-45"] }] }],
+    ["a night that is not a date", { guestStayRanges: [{ guestId: "g1", nights: ["2026-13-45"] }] }, GUEST_NIGHT_INVALID_MESSAGE],
     [
-      "more stay ranges than the shared bound",
-      { guestStayRanges: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => ({ guestId: `g${i}`, nights: ["2026-07-04"] })) },
-    ],
-    [
-      "more added guests than the shared bound",
+      "more added guests than the change bound",
       { addGuests: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, () => ({ firstName: "Sam", lastName: "Smith", ageTier: "ADULT", isMember: false })) },
+      GUEST_CHANGE_LIST_TOO_LONG_MESSAGE,
     ],
-    ["more removals than the shared bound", { removeGuestIds: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => `g${i}`) }],
-  ])("refuses %s at the schema (#4199)", async (_label, body) => {
+    [
+      "more removals than the change bound",
+      { removeGuestIds: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => `g${i}`) },
+      GUEST_CHANGE_LIST_TOO_LONG_MESSAGE,
+    ],
+  ])("refuses %s at the schema (#4199)", async (_label, body, error) => {
     const res = await POST(postReq({ ...body, memberMessage: "please" }), params);
     expect(res.status).toBe(400);
-    // A bad night is said in the member's words; a list too long is not a bad date.
-    expect((await res.json()).error).toBe(_label.includes("night") ? GUEST_NIGHT_INVALID_MESSAGE : "Validation failed");
+    expect((await res.json()).error).toBe(error);
     expect(mocks.createMod).not.toHaveBeenCalled();
+  });
+
+  it("takes a 210-guest booking's grid stay ranges past the schema: they carry the whole party (#4199)", async () => {
+    const res = await POST(
+      postReq({
+        guestStayRanges: Array.from({ length: 210 }, (_, i) => ({ guestId: `g${i}`, nights: ["2026-07-04"] })),
+        memberMessage: "please",
+      }),
+      params,
+    );
+    const body = await res.json();
+    expect(body.error).not.toBe("Validation failed");
+    expect(body.error).not.toBe(GUEST_CHANGE_LIST_TOO_LONG_MESSAGE);
   });
 
   it("refuses a malformed answer at the schema", async () => {

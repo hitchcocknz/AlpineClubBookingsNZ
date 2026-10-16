@@ -13,7 +13,7 @@ import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
 import {
-  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+  GUEST_CHANGE_LIST_BOUND, BOOKING_PARTY_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
 } from "@/lib/booking-guest-stay-range-input";
 import {
   dependantIdentityDeclarationSchema,
@@ -64,9 +64,9 @@ const createSchema = z.object({
         ...guestStayFieldsSchema.shape,
       }),
     )
-    .max(BOOKING_REQUEST_GUESTS_MAX)
+    .max(...GUEST_CHANGE_LIST_BOUND)
     .optional(),
-  removeGuestIds: z.array(z.string().trim().min(1)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+  removeGuestIds: z.array(z.string().trim().min(1)).max(...GUEST_CHANGE_LIST_BOUND).optional(),
   guestStayRanges: z
     .array(
       z.object({
@@ -74,7 +74,7 @@ const createSchema = z.object({
         ...guestStayFieldsSchema.shape,
       }),
     )
-    .max(BOOKING_REQUEST_GUESTS_MAX)
+    .max(BOOKING_PARTY_GUESTS_MAX)
     .optional(),
   // #3451 (`INV-GUEST-019`): the edit panel's answers about an added guest who
   // shares a name with one of the owner's dependants, re-verified by the service.

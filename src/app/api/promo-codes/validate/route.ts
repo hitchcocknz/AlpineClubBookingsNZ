@@ -35,7 +35,7 @@ import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
 import {
-  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+  BOOKING_PARTY_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
 } from "@/lib/booking-guest-stay-range-input";
 import { type PromoPreviewEdit, resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
@@ -81,9 +81,9 @@ const validateSchema = z
           bookingGuestId: z.string().min(1).max(64).optional(),
         })
       )
-      .min(1).max(BOOKING_REQUEST_GUESTS_MAX),
+      .min(1).max(BOOKING_PARTY_GUESTS_MAX),
     forMemberId: z.string().optional(),
-    promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+    promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_PARTY_GUESTS_MAX).optional(),
     // #3827: several codes, in the booker's order (D-3813-2), each with its own
     // guest choice. Combines with a working bee (D-3813-3). The response then
     // answers per code plus the booking's totals.
@@ -91,7 +91,7 @@ const validateSchema = z
       .array(
         z.object({
           code: z.string().min(1).max(50),
-          promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+          promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_PARTY_GUESTS_MAX).optional(),
         }),
       )
       .min(1)

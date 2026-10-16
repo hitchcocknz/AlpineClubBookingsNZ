@@ -17,7 +17,7 @@ import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
 import {
-  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+  GUEST_CHANGE_LIST_BOUND, guestRequestSchemaError, guestStayFieldsSchema,
 } from "@/lib/booking-guest-stay-range-input";
 import logger from "@/lib/logger";
 import {
@@ -53,7 +53,7 @@ const createSchema = z.object({
       }),
     )
     .min(1)
-    .max(BOOKING_REQUEST_GUESTS_MAX),
+    .max(...GUEST_CHANGE_LIST_BOUND),
   memberMessage: z.string().max(5000),
   /**
    * #2721: the requester's answers to "this guest has the same name as your own

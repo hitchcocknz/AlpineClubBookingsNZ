@@ -10,9 +10,11 @@
   the box still prices those dates as one continuous stay, as before.
 
   Behind the scenes, every booking request that names guests (new bookings,
-  quotes, edits, exception requests and the promo code box) now checks a
-  guest's nights the same way and accepts at most 200 guests. A booking edit and
-  its price preview now also refuse more than 200 added guests, removed guests
-  or guest date changes in one go, where before they had no limit, and a night
-  that isn't a real date is now explained in plain words rather than as
-  "Invalid input".
+  quotes, edits, exception and change requests, and the promo code box) now
+  checks a guest's nights the same way, and a night that isn't a real date is
+  explained in plain words rather than as "Invalid input". One request can add,
+  remove or rename at most 200 guests, and a new booking can have at most 200,
+  as before; a booking edit and its price preview now refuse more than that,
+  where before they had no limit, and say so in plain words. Edits, quotes and
+  promo checks of a booking that already holds more than 200 guests (possible
+  at a lodge that sleeps more) are not limited by this.

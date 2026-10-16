@@ -163,7 +163,7 @@ import {
 } from "@/lib/booking-modification-lines";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
-import { BOOKING_REQUEST_GUESTS_MAX } from "@/lib/booking-guest-stay-range-input";
+import { GUEST_CHANGE_LIST_BOUND } from "@/lib/booking-guest-stay-range-input";
 
 const addGuestsSchema = z.object({
   guests: z
@@ -176,7 +176,7 @@ const addGuestsSchema = z.object({
         memberId: z.string().min(1).optional(),
       })
     )
-    .min(1).max(BOOKING_REQUEST_GUESTS_MAX),
+    .min(1).max(...GUEST_CHANGE_LIST_BOUND),
   // #1769b (#1705 semantics): per-action member-email choice on this
   // dual-actor route. Absent = notify (default); false suppresses the
   // booking-modified email. Only an admin actor may carry it (403 gate
@@ -237,7 +237,7 @@ export async function POST(
   // No party-size check here (#3407 review): the booking, and so its lodge, is
   // not loaded yet, so the only capacity at hand would be the DEFAULT lodge's,
   // which can only refuse wrongly at another lodge. The payload is bounded by
-  // the schema's `BOOKING_REQUEST_GUESTS_MAX`; the real rule is the per-lodge check inside the
+  // the schema's `GUEST_CHANGE_LIST_BOUND`; the real rule is the per-lodge check inside the
   // transaction below, under the lodge's capacity lock.
   const { guests: newGuests } = parsed.data;
 

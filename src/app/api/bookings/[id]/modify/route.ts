@@ -3,7 +3,7 @@ import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-host
 import { z } from "zod";
 import { editPromoCodesSchema } from "@/lib/booking-modify-quote-request";
 import {
-  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+  GUEST_CHANGE_LIST_BOUND, BOOKING_PARTY_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
 } from "@/lib/booking-guest-stay-range-input";
 
 import { AdultMemberHostingRequiredError, buildAdultMemberHostingRefusalBody } from "@/lib/adult-member-hosting-refusal";
@@ -81,14 +81,14 @@ const batchModifySchema = z.object({
         ...guestStayFieldsSchema.shape,
       }),
     )
-    .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+    .max(...GUEST_CHANGE_LIST_BOUND).optional(),
   // #3451 (`INV-GUEST-019`): the answer about an added guest sharing a name with
   // one of the owner's dependants, re-verified by the guest planner.
   dependantIdentityDeclarations: z
     .array(dependantIdentityDeclarationSchema)
     .max(50)
     .optional(),
-  removeGuestIds: z.array(z.string()).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+  removeGuestIds: z.array(z.string()).max(...GUEST_CHANGE_LIST_BOUND).optional(),
   guestStayRanges: z
     .array(
       z.object({
@@ -96,7 +96,7 @@ const batchModifySchema = z.object({
         ...guestStayFieldsSchema.shape,
       }),
     )
-    .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+    .max(BOOKING_PARTY_GUESTS_MAX).optional(),
   guestUpdates: z
     .array(
       z.object({
@@ -105,7 +105,7 @@ const batchModifySchema = z.object({
         lastName: nameField(),
       }),
     )
-    .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+    .max(...GUEST_CHANGE_LIST_BOUND).optional(),
   // #2337: link a placeholder guest to a member (admin-only, member whole-lodge
   // only — enforced in the service by `resolveGuestMemberLinks` and the
   // member-origin check). Re-rates the linked row at the member rate in place.
@@ -121,13 +121,13 @@ const batchModifySchema = z.object({
   // gated in the service by `resolveOtherLodgeRateElection`; both fields are an
   // END STATE for the whole booking, never a delta.
   otherLodgeId: z.string().min(1).nullable().optional(),
-  otherLodgeMemberGuestIds: z.array(z.string().min(1)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+  otherLodgeMemberGuestIds: z.array(z.string().min(1)).max(BOOKING_PARTY_GUESTS_MAX).optional(),
   promoCode: z.string().optional(),
   // #2266 (MED-4): guest-targeted promo beneficiaries. Existing guests bind by
   // bookingGuestId (stale ids refuse loudly); positional indexes exist only
   // for TO-BE-ADDED guests within this same request, relative to addGuests.
-  promoGuestIds: z.array(z.string().min(1)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
-  promoAddedGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
+  promoGuestIds: z.array(z.string().min(1)).max(BOOKING_PARTY_GUESTS_MAX).optional(),
+  promoAddedGuestIndexes: z.array(z.number().int().min(0)).max(...GUEST_CHANGE_LIST_BOUND).optional(),
   removePromoCode: z.boolean().optional(),
   // #3827: the complete list of codes after the edit, in the booker's order.
   promoCodes: editPromoCodesSchema,
