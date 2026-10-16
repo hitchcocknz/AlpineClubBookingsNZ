@@ -4,7 +4,7 @@ import { auth } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
-import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { formatDateOnly } from "@/lib/date-only";
 import {
   calendarDateOfDateOnlyInstant,
 } from "@/lib/club-time";
@@ -26,41 +26,23 @@ import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
 import {
   addedGuestFirstNights,
-  addedGuestNightsRefusal,
   buildChangeRequestSummary,
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
-  changeRequestAddGuestsSchema,
   changeRequestValidationMessage,
-  changeRequestGuestStayRangesSchema,
   isAppliedChangeRequestRange,
   namesStayRangeChange,
   storedGuestNightsAsDays,
-  guestStayRangesRefusal,
-  requestedDatesIgnoredByNightsRefusal,
   CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
 } from "@/lib/booking-change-request-guests";
+import { changeRequestDeltaSchema, validateChangeRequestDatesAndNights } from "@/lib/booking-change-request-input";
 import {
   checkOwnDependantIdentityForParty,
   claimedMemberPathIds,
 } from "@/lib/booking-dependant-identity";
 
-const createChangeRequestSchema = z.object({
-  checkIn: z.string().optional(),
-  checkOut: z.string().optional(),
-  // #4030: the one add-guest shape, shared with the officer's entry.
-  addGuests: changeRequestAddGuestsSchema.optional(),
-  removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
-  // #4088: each guest's bounds, or the editor grid's night set; #4157: each guest once.
-  guestStayRanges: changeRequestGuestStayRangesSchema.optional(),
-  requestedEffectiveDate: z.string().optional(),
+const createChangeRequestSchema = changeRequestDeltaSchema.extend({
   reason: z.string().max(2000).optional(),
 });
-
-function normalizeOptionalDateOnly(value: string | undefined) {
-  if (!value) return null;
-  const parsed = parseDateOnly(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
 
 function normalizeReason(value: string | undefined) {
   const trimmed = value?.trim();
@@ -248,42 +230,11 @@ export async function POST(
     );
   }
 
-  const requestedCheckIn = normalizeOptionalDateOnly(checkIn);
-  const requestedCheckOut = normalizeOptionalDateOnly(checkOut);
-  const effectiveDate = normalizeOptionalDateOnly(requestedEffectiveDate);
-  if (
-    (checkIn && !requestedCheckIn) ||
-    (checkOut && !requestedCheckOut) ||
-    (requestedEffectiveDate && !effectiveDate)
-  ) {
-    return NextResponse.json({ error: "Invalid booking date" }, { status: 400 });
+  const validated = validateChangeRequestDatesAndNights(booking, parsed.data);
+  if (validated.error !== undefined) {
+    return NextResponse.json({ error: validated.error }, { status: 400 });
   }
-
-  const nextCheckIn = requestedCheckIn ?? storedDateOnly(booking.checkIn);
-  const nextCheckOut = requestedCheckOut ?? storedDateOnly(booking.checkOut);
-  if (nextCheckOut <= nextCheckIn) {
-    return NextResponse.json(
-      { error: "Check-out must be after check-in" },
-      { status: 400 }
-    );
-  }
-
-  // #4030: every added guest's nights inside the stay the request proposes, and
-  // the existing guests' ranges, by the one canonical range rule.
-  const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
-  const nightsRefusal =
-    addedGuestNightsRefusal(addGuests ?? [], stay) ??
-    guestStayRangesRefusal(sentGuestStayRanges ?? [], stay, booking.guests) ??
-    requestedDatesIgnoredByNightsRefusal({
-      booking,
-      guests: booking.guests,
-      input: { checkIn: requestedCheckIn, checkOut: requestedCheckOut, addGuests, removeGuestIds, guestStayRanges },
-      movesCheckIn: Boolean(changedDate(checkIn, booking.checkIn)),
-      movesCheckOut: Boolean(changedDate(checkOut, booking.checkOut)),
-    });
-  if (nightsRefusal) {
-    return NextResponse.json({ error: nightsRefusal }, { status: 400 });
-  }
+  const { requestedCheckIn, requestedCheckOut, effectiveDate, nextCheckIn, nextCheckOut } = validated;
   // #4030 review M4 (`INV-GUEST-019`): the one dependant-identity rule.
   if (addGuests?.length) {
     const dependantRefusal = await checkOwnDependantIdentityForParty(prisma, {

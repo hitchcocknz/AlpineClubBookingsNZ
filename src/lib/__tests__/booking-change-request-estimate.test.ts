@@ -46,6 +46,7 @@ vi.mock("@/lib/membership-type-policy", () => ({
 }));
 
 import { estimateChangeRequestAddedGuests } from "@/lib/booking-change-request-estimate";
+import { CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE } from "@/lib/booking-change-request-guests";
 import { POST } from "@/app/api/bookings/[id]/change-requests/quote/route";
 
 const day = (value: string) => new Date(`${value}T00:00:00.000Z`);
@@ -69,7 +70,10 @@ function booking(guestCount = 1) {
     checkIn: day("2026-06-30"),
     checkOut: day("2026-07-03"),
     lodgeId: "lodge-1",
-    guests: Array.from({ length: guestCount }, () => ({
+    guests: Array.from({ length: guestCount }, (_, index) => ({
+      id: `guest-${index}`,
+      firstName: "Existing",
+      lastName: "Guest",
       stayStart: day("2026-06-30"),
       stayEnd: day("2026-07-03"),
       ageTier: "ADULT" as const,
@@ -231,6 +235,66 @@ describe("POST /api/bookings/[id]/change-requests/quote (#4030)", () => {
     expect((await response.json()).estimate).toMatchObject({ outcome: "priced", totalCents: 4000 });
     const outside = await post({ addGuests: [child("Ari", { nights: ["2026-07-03"] })] });
     expect(outside.status).toBe(400);
+  });
+
+  it("INV-REQ-011: refuses a moved date the merged guest nights do not reach before pricing (#4090)", async () => {
+    const response = await post({
+      editorChanges: { checkOut: "2026-07-04" },
+      addGuests: [child("Ari", { stayStart: "2026-07-01", stayEnd: "2026-07-03" })],
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE });
+    expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
+    expect(mocks.resolveGuestRateMembershipTypes).not.toHaveBeenCalled();
+  });
+
+  it("accepts a moved date reached by the editor night set while pricing only card guests", async () => {
+    const response = await post({
+      editorChanges: {
+        checkOut: "2026-07-04",
+        guestStayRanges: [{ guestId: "guest-0", nights: ["2026-06-30", "2026-07-03"] }],
+        addGuests: [child("Editor", { stayStart: "2026-06-30", stayEnd: "2026-07-04" })],
+      },
+      addGuests: [child("Ari", { nights: ["2026-07-01"] })],
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).estimate).toMatchObject({ outcome: "priced", totalCents: 2000, guests: [{ nights: 1 }] });
+    expect(mocks.resolveGuestRateMembershipTypes.mock.calls[0][1].guests).toHaveLength(1);
+  });
+
+  it("includes editor removals when checking the proposed envelope", async () => {
+    const input = {
+      editorChanges: { checkOut: "2026-07-02", removeGuestIds: ["guest-0"] },
+      addGuests: [child("Ari", { nights: ["2026-07-01"] })],
+    };
+    expect((await post(input)).status).toBe(200);
+    mocks.loadActiveSeasonRates.mockClear();
+    const response = await post({ ...input, editorChanges: { checkOut: "2026-07-02" } });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE });
+    expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ checkOut: "2026-02-30" }, "Invalid booking date"],
+    [{ checkOut: "2026-06-29" }, "Check-out must be after check-in"],
+    [{ guestStayRanges: [{ guestId: "guest-0", stayStart: "bad", stayEnd: "2026-07-03" }] }, "yyyy-mm-dd"],
+    [{ guestStayRanges: [{ guestId: "guest-0", nights: ["2026-02-30"] }] }, "night"],
+    [{ guestStayRanges: [{ guestId: "guest-0", stayStart: "2026-07-01" }] }, "both"],
+  ])("uses canonical date/night validation for editor input %j", async (editorChanges, message) => {
+    const response = await post({ editorChanges, addGuests: [child("Ari")] });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.toLowerCase()).toContain(message.toLowerCase());
+    expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
+  });
+
+  it("applies submission's guest cap to the merged additions", async () => {
+    const response = await post({
+      editorChanges: { addGuests: Array.from({ length: 200 }, () => child("Editor")) },
+      addGuests: [child("Ari")],
+    });
+    expect(response.status).toBe(400);
+    expect(mocks.loadActiveSeasonRates).not.toHaveBeenCalled();
   });
 
   it("throttles the estimate per member with the booking-query limiter (review S1)", async () => {

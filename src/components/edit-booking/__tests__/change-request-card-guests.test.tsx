@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@/lib/__tests__/support/club-time-render";
+import { act, fireEvent, render, screen, waitFor } from "@/lib/__tests__/support/club-time-render";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE } from "@/lib/booking-change-request-guests";
 import { ChangeRequestCard } from "@/components/edit-booking/change-request-card";
 
 /**
@@ -32,6 +33,7 @@ function renderCard(overrides: Partial<Parameters<typeof ChangeRequestCard>[0]> 
     error: "",
     success: "",
     hasEditorChanges: false,
+    editorChanges: {},
     guestContext: {
       booking: {
         id: "bk-1",
@@ -51,8 +53,8 @@ function renderCard(overrides: Partial<Parameters<typeof ChangeRequestCard>[0]> 
     onSubmit,
     ...overrides,
   };
-  render(<ChangeRequestCard {...props} />);
-  return { onSubmit };
+  const view = render(<ChangeRequestCard {...props} />);
+  return { onSubmit, rerender: (changes: Partial<typeof props>) => view.rerender(<ChangeRequestCard {...props} {...changes} />) };
 }
 
 function addNonMember(firstName: string, lastName: string) {
@@ -128,8 +130,51 @@ describe("ChangeRequestCard — structured guests (#4030)", () => {
     const [url, init] = vi.mocked(fetch).mock.calls[0];
     expect(url).toBe("/api/bookings/bk-1/change-requests/quote");
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      editorChanges: {},
       addGuests: [expect.objectContaining({ firstName: "Ari", stayStart: "2026-06-30", stayEnd: "2026-07-03" })],
     });
+  });
+
+  it("retires an estimate and refusal when only the editor proposal changes (#4090)", async () => {
+    const { rerender } = renderCard();
+    addNonMember("Ari", "Example");
+    await screen.findByText(/Estimated price for these guests/);
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE }, 400));
+    rerender({ editorChanges: { checkOut: "2026-07-04" } });
+    expect(screen.queryByText(/Estimated price for these guests/)).not.toBeInTheDocument();
+    expect(screen.getByText("Working out the price...")).toBeInTheDocument();
+    expect(await screen.findByText(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE)).toBeInTheDocument();
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body))).toMatchObject({
+      editorChanges: { checkOut: "2026-07-04" },
+      addGuests: [expect.objectContaining({ firstName: "Ari" })],
+    });
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ estimate: {
+      outcome: "priced", guests: [{ priceCents: 2000, nights: 1 }], totalCents: 2000, excludesMemberGuests: false,
+    } }));
+    rerender({ editorChanges: { checkOut: "2026-07-04", guestStayRanges: [{ guestId: "existing", nights: ["2026-07-03"] }] } });
+    expect(screen.queryByText(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE)).not.toBeInTheDocument();
+    expect(await screen.findByText(/Estimated price for these guests: \$20\.00/)).toBeInTheDocument();
+  });
+
+  it("ignores a slow quote for an abandoned editor proposal", async () => {
+    let finishOldQuote!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => { finishOldQuote = resolve; }));
+    const { rerender } = renderCard();
+    addNonMember("Ari", "Example");
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE }, 400));
+    rerender({ editorChanges: { checkOut: "2026-07-04" } });
+    await screen.findByText(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE);
+    await act(async () => {
+      finishOldQuote(jsonResponse({ estimate: {
+        outcome: "priced", guests: [{ priceCents: 6000, nights: 3 }], totalCents: 6000, excludesMemberGuests: false,
+      } }));
+    });
+    // The abandoned response cannot replace the current refusal with a stale
+    // price or leave the card waiting for an answer it already received.
+    await waitFor(() => expect(screen.getByText(CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE)).toBeInTheDocument());
+    expect(screen.queryByText("Working out the price...")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Estimated price for these guests/)).not.toBeInTheDocument();
   });
 
   it("lets a request carrying the editor's own change through with no card guests", () => {
@@ -168,6 +213,7 @@ describe("ChangeRequestCard — structured guests (#4030)", () => {
         error=""
         success=""
         hasEditorChanges
+        editorChanges={{}}
         guestContext={{
           booking: {
             id: "bk-1",

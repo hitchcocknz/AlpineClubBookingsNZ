@@ -6,12 +6,11 @@ import { bookingOwner } from "@/lib/booking-owner";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
-import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import {
-  addedGuestNightsRefusal,
-  changeRequestAddGuestSchema,
+  changeRequestAddGuestsSchema,
   changeRequestValidationMessage,
 } from "@/lib/booking-change-request-guests";
+import { changeRequestDeltaSchema, mergeChangeRequestGuests, validateChangeRequestDatesAndNights } from "@/lib/booking-change-request-input";
 import { estimateChangeRequestAddedGuests } from "@/lib/booking-change-request-estimate";
 import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
 
@@ -26,7 +25,9 @@ import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
  * gap.
  */
 const estimateSchema = z.object({
-  addGuests: z.array(changeRequestAddGuestSchema).min(1).max(200),
+  // Only the card guests are priced; the full proposal is validated below.
+  addGuests: changeRequestAddGuestsSchema.nonempty(),
+  editorChanges: changeRequestDeltaSchema.optional(),
 });
 
 export async function POST(
@@ -52,6 +53,9 @@ export async function POST(
       lodgeId: true,
       guests: {
         select: {
+          id: true,
+          firstName: true,
+          lastName: true,
           stayStart: true,
           stayEnd: true,
           ageTier: true,
@@ -101,12 +105,20 @@ export async function POST(
     );
   }
 
-  const refusal = addedGuestNightsRefusal(parsed.data.addGuests, {
-    checkIn: calendarDateOfDateOnlyInstant(booking.checkIn),
-    checkOut: calendarDateOfDateOnlyInstant(booking.checkOut),
-  });
-  if (refusal) {
-    return NextResponse.json({ error: refusal }, { status: 400 });
+  // INV-REQ-011: judge the same merged date/night proposal submission receives,
+  // including editor guests which affect range mode, but never price them here.
+  const proposal = changeRequestDeltaSchema.safeParse(
+    mergeChangeRequestGuests(parsed.data.editorChanges ?? {}, parsed.data.addGuests),
+  );
+  if (!proposal.success) {
+    return NextResponse.json(
+      { error: changeRequestValidationMessage(proposal.error), details: proposal.error.flatten() },
+      { status: 400 },
+    );
+  }
+  const validated = validateChangeRequestDatesAndNights(booking, proposal.data);
+  if (validated.error !== undefined) {
+    return NextResponse.json({ error: validated.error }, { status: 400 });
   }
 
   const estimate = await estimateChangeRequestAddedGuests(booking, parsed.data.addGuests);

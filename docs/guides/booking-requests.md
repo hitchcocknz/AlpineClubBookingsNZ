@@ -70,8 +70,14 @@ are listed on the booking for you to relay.
 
    ![Booking Requests, Changes tab showing a locked-period change request with separate member explanation and internal note fields](../images/admin/admin-booking-requests-changes.png)
 
-2. Read the request summary and reason. What approving does depends on whether
-   the stay has finished:
+2. Read the request summary and reason. Before sending, the member's added-guest
+   estimate checks the dates and guest nights from the whole proposed change.
+   If those nights would discard a requested check-in or check-out change, the
+   card shows the same explanation as submission instead of a price. Editing
+   the proposal refreshes that check. The estimate still prices only the guests
+   added in that card; member guests are priced when the officer approves.
+
+   What approving does depends on whether the stay has finished:
    - **The stay is still running** (or not yet started): approving only
      *acknowledges* the review. Use **Open booking** to make the actual edit on
      the booking page.
