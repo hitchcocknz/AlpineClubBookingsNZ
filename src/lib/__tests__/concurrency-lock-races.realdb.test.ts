@@ -347,6 +347,12 @@ import "./xero-refund-note-void-pointer.realdb.test";
 // subscription row rolls the close back whole. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4098-` fixtures.
 import "./membership-subscription-charge-close.realdb.test";
+// #4110 reuses it to prove a family whose per-family charge was closed as
+// already paid or voided is billed again end to end (close or void -> reverse
+// -> preview -> confirm -> a new charge), under the partial family/type/season
+// index that still refuses a second LIVE family charge. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4110-` fixtures.
+import "./membership-family-rebill.realdb.test";
 // #4131 reuses it to prove the booking's own payment captured after its booking
 // was cancelled is refunded from its own charge through the real webhook
 // processor: never a fee the cancel kept on another charge, and only what a part

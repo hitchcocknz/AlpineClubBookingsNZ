@@ -61,6 +61,17 @@ describe("enqueueMembershipSubscriptionChargeOperation ignores VOIDED charges (#
     expect(enqueueMocks.chargeUpdate).not.toHaveBeenCalled();
   });
 
+  it("reports no work, not \"queued\", when a close won the race to its status write (#4098 review)", async () => {
+    enqueueMocks.chargeFindUnique.mockResolvedValue({
+      id: "charge-conflict", status: "CONFLICT", billingBasis: "PER_MEMBER", xeroInvoiceId: null, emailSentAt: null,
+    });
+    enqueueMocks.chargeUpdate.mockResolvedValue({ count: 0 });
+    await expect(enqueueMembershipSubscriptionChargeOperation("charge-conflict")).resolves.toEqual({
+      queueOperationId: null,
+      message: "No subscription invoice work is required.",
+    });
+  });
+
   it("guards its status write, so a close landing after the read keeps the charge closed (#4098)", async () => {
     enqueueMocks.chargeFindUnique.mockResolvedValue({
       id: "charge-conflict", status: "CONFLICT", billingBasis: "PER_MEMBER", xeroInvoiceId: null, emailSentAt: null,
