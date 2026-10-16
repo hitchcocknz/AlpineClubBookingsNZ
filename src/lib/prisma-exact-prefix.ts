@@ -24,10 +24,14 @@ export function exactPrefix(prefix: string): { startsWith: string } {
 /**
  * #4165: the same for `contains`, which Prisma sends as `LIKE '%' || value ||
  * '%'`, equally unescaped. `audit-query.ts` uses it for its legacy action-name
- * fragments, one of which (`DATA_EXPORT`) holds a `_`.
+ * fragments, one of which (`DATA_EXPORT`) holds a `_`. #4190: person-entered
+ * searches pass `"insensitive"` to preserve their case-insensitive matching;
+ * URL/path reference checks omit it to retain case-sensitive matching.
  */
-export function exactContains(value: string): { contains: string } {
-  return { contains: escapeLike(value) };
+export function exactContains(value: string): { contains: string };
+export function exactContains(value: string, mode: "insensitive"): { contains: string; mode: "insensitive" };
+export function exactContains(value: string, mode?: "insensitive"): { contains: string; mode?: "insensitive" } {
+  return { contains: escapeLike(value), ...(mode ? { mode } : {}) };
 }
 
 /** PostgreSQL's three `LIKE` metacharacters, each preceded by its default escape. */

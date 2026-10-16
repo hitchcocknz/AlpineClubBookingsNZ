@@ -540,32 +540,30 @@ that module's docblock.
   has already drifted (`INV-SSOT-004`).
 
 ## INV-SSOT-006
-Every Prisma `startsWith` whose prefix carries an id, or text a person typed,
-is written `field: exactPrefix(prefix)` (`src/lib/prisma-exact-prefix.ts`),
-never `{ startsWith: prefix }`. #4146.
+Every Prisma `startsWith` or `contains` whose operand carries an id or text a
+person typed uses `exactPrefix(prefix)` or `exactContains(value)` from
+`src/lib/prisma-exact-prefix.ts`, never a bare filter. Case-insensitive searches
+use `exactContains(value, "insensitive")`. URL/path reference checks use the
+case-sensitive default. #4146, #4165, #4190.
 
-- **Why one helper.** Prisma sends `startsWith` as SQL `LIKE prefix || '%'`
-  without escaping the prefix, so `_` matches any one character and `%` any
-  run. A recovery key prefix such as `duplicate_capture_<booking>_` could take
-  another booking's row, and a member typing `%%` in the guest search matched
-  every name. The helper escapes `\`, `%` and `_`; one spelling means one
-  place to change if Prisma's behaviour does.
-- **The premise is pinned.** `prisma-exact-prefix.realdb.test.ts` fails if
-  Prisma ever starts escaping on its own, which would double-escape the helper's
-  prefixes and make them match nothing.
+- **Why one helper.** Prisma sends these filters as SQL `LIKE`/`ILIKE` without
+  escaping their operands: `_` matches one character, `%` any run, and `\`
+  escapes the next character. A recovery-key prefix could take another
+  booking's row; a search for `john_smith` could find `johnXsmith`; a URL could
+  falsely appear referenced. Both helpers share one escape function.
+- **The premise is pinned.** `prisma-exact-prefix.realdb.test.ts` checks literal
+  matches and decoys, including case-insensitive searches and all three
+  metacharacters. Contrast cases fail if Prisma starts escaping on its own,
+  which would double-escape these helpers.
 - **A census keeps it one.** `prisma-exact-prefix-census.test.ts` reads `src/`
-  and fails on a bare `startsWith:` whose value is anything but a string literal
-  or an UPPER_SNAKE constant, unless an allow-list entry says why that value
-  carries no id. A literal `_` still matches any one character; a bare literal
-  passes only because no sibling prefix differs from it at an underscore. The
-  census judges spelling, not value: a computed string bound to an UPPER_SNAKE
-  name passes, and a reviewer catches that. It reads `startsWith` only, not
-  `contains`.
-- **Fixed prefixes that decide visibility use it too.** The audit category
-  filters (`audit-query.ts`) do since #4165, with `exactContains` for their
-  `contains` fragments: a bare `xero_` also took every `xero.` action, now named
-  instead. `audit-legacy-filter-exact-prefix.test.ts`
-  replays every known action to show no row changed category or member timeline.
+  and rejects dynamic bare `startsWith:` and `contains:` operands unless an
+  allow-list entry explains why the value carries no id or input. It rejects
+  shorthand and computed properties and checks for stale exceptions. Bare
+  string literals and UPPER_SNAKE constants pass: the census judges spelling,
+  not value, so reviewers must check they need no escaping.
+- **Visibility uses it too.** Audit category filters use exact helpers even
+  for fixed fragments. `audit-legacy-filter-exact-prefix.test.ts` replays known
+  actions to prove category and member-timeline compatibility.
 - **Scope the query as well where an indexed column allows.** An exact prefix
-  still matches a longer id that begins with the same id and delimiter, so the
-  duplicate-capture lookup is also scoped by `bookingId`.
+  still matches a longer id beginning with the same id and delimiter; the
+  duplicate-capture lookup also scopes by `bookingId`.
