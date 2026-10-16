@@ -166,6 +166,9 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     // #4154 review: one order on every hand-back - mark first, then pay straight after the app accepts.
     expect(intro.textContent).toMatch(/mark it paid back\s+first/);
     expect(intro.textContent).toMatch(/then pay it by bank\s+transfer straight after the app accepts/);
+    // #4159 review round 2 (F4): a Xero note only where the booking has an invoice to credit.
+    expect(intro.textContent).toMatch(/where the booking has a Xero invoice, raises its refund credit note/);
+    expect(intro.textContent).not.toMatch(/which also raises its Xero refund credit note/);
     expect(intro.textContent).not.toMatch(/pay it by bank\s+transfer, then mark/);
     expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
     expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();

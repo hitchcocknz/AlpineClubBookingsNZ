@@ -161,7 +161,7 @@ describe("#4097: the officers' alert names a card refund shortfall", () => {
   });
 
   it("#4154 review: tells officers to mark each part paid back first and pay straight after the app accepts, never pay then mark", () => {
-    expect(CARD_REFUND_SHORTFALL_ALERT_BODY).toContain("refunded by bank transfer: mark it paid back first, which also raises its Xero refund credit note, then pay it straight after the app accepts.");
+    expect(CARD_REFUND_SHORTFALL_ALERT_BODY).toContain("refunded by bank transfer: mark it paid back first, which records it and, where the booking has a Xero invoice, raises its refund credit note, then pay it straight after the app accepts.");
     expect(CARD_REFUND_SHORTFALL_ALERT_BODY).toContain("if it really is owed, mark it paid back first, after the bank-transfer part, then pay it by bank transfer straight after the app accepts.");
     expect(CARD_REFUND_SHORTFALL_ALERT_BODY).not.toMatch(/pay it(?: by bank transfer)?,? (?:then|and) mark/);
   });

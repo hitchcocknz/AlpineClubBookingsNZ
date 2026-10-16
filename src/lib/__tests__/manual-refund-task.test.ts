@@ -2732,7 +2732,7 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
 
     // #4154 review (M1): Stripe is asked before the transaction, and a late or unread one stops the completion before any write.
     it.each([
-      ["unread", { readable: false }, /^The app could not reach Stripe/],
+      ["unread", { readable: false }, /^The app could not read this card charge's refunds from Stripe.*If it keeps refusing, check the charge in Stripe: if the member is owed, refund it by bank transfer and dismiss this task with a note/],
       ["ahead of the refund rows", { readable: true, refundedCents: 1 }, /^Stripe shows \$0\.01 of this card charge refunded, but the app has recorded only \$0\.00/],
     ] as const)("MUTATION: a race whose charge Stripe reads %s is refused (409) before its claim, still OPEN", async (_label, stripe, message) => {
       shortfallTask("race");

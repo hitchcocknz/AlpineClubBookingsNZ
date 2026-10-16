@@ -150,8 +150,9 @@ export function capacityRaceCorrectionRefusal(blocked: CapacityRaceCorrectionBlo
 /** Stripe's own refunded figure for the race's charge, read before the completion's transaction (review M1). */
 export type CapacityRaceStripeRefunded = { readable: true; refundedCents: number } | { readable: false };
 
+/** #4159 review round 2 (F3): Stripe may stay unreadable (a charge it no longer returns), so the refusal names the way out. */
 export const CAPACITY_RACE_STRIPE_UNREADABLE_MESSAGE =
-  "The app could not reach Stripe to check this card charge's refunds, so it cannot record this yet. Try again in a few minutes, and do not pay it until the app accepts.";
+  "The app could not read this card charge's refunds from Stripe, so it cannot record this yet. Try again in a few minutes, and do not pay it until the app accepts. If it keeps refusing, check the charge in Stripe: if the member is owed, refund it by bank transfer and dismiss this task with a note saying when and how much.";
 
 export function capacityRaceStripeAheadMessage(stripeCents: number, recordedCents: number, format: ClubFormat): string {
   return `Stripe shows ${formatCents(stripeCents, format)} of this card charge refunded, but the app has recorded only ${formatCents(recordedCents, format)}: a refund made in Stripe may not have reached the app yet. Try again in a few minutes, and do not pay it until the app accepts. If the member was refunded in Stripe, dismiss this task with a note saying how.`;

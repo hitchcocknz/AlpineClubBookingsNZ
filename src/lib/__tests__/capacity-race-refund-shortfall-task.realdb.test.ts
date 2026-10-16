@@ -525,7 +525,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await nothingMoved();
 
       stripeShowsRefunded("unreachable");
-      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^The app could not reach Stripe/) });
+      await expect(resolve("completed", task.id)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^The app could not read this card charge's refunds from Stripe/) });
       await nothingMoved();
 
       // The late webhook arrives: its refund is recorded, and Stripe and the app now agree. The charge corrected to its

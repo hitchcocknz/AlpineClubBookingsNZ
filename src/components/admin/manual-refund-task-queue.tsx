@@ -1603,10 +1603,10 @@ export function ManualRefundTaskQueue() {
                 not carry all of the refund due; each is the part the
                 payment&apos;s other (non-card) charges hold. The member is told
                 (on their booking page, and by email unless emails were turned
-                off) that the club will refund it by bank transfer: mark it paid back
-                first, which also raises its Xero refund credit note, then pay it by bank
-                transfer straight after the app accepts. None can be marked until the card
-                refund itself has gone through.
+                off) that the club will refund it by bank transfer: mark it paid back first, which
+                records it and, where the booking has a Xero invoice, raises its refund credit note,
+                then pay it by bank transfer straight after the app accepts. None can be marked
+                until the card refund itself has gone through.
               </p>
             ) : null}
             {hasCardShortfallCheckRows ? (

@@ -326,7 +326,9 @@ that card charge:
 - It asks Stripe what the charge has refunded. If Stripe shows more than the
   app has recorded (a refund made in the Stripe dashboard that has not reached
   the app yet), or Stripe cannot be reached, it refuses for now: try again in a
-  few minutes, and do not pay until it accepts.
+  few minutes, and do not pay until it accepts. If it keeps refusing, check the
+  charge in Stripe; if the member is owed, refund them by bank transfer and
+  dismiss the task with a note saying when and how much.
 - Where the charge's records read more refunded than its card refunds on
   record, it corrects them itself first, and logs the correction in the audit
   log, but only for a charge made since the app has kept a record of each card
