@@ -18,6 +18,7 @@ This runbook covers the production audit-log retention job and the optional arch
 - `diagnostic_high_volume` audit logs are pruned from the main database when their `expiresAt` passes and are not moved to the archive database.
 - Archive rows older than 7 years are pruned from the archive database; an incident-preserved copy waits until it is 10 years old.
 - Unclassified rows (no `retentionClass`, from before every writer recorded a category) are pruned when their `expiresAt` passes unless their severity is `critical`, which keeps them for 7 years like the `critical` class. A row whose severity was **never set** counts as not critical and is pruned on its expiry (#3524); see "Unclassified rows with no severity" below.
+- A row whose `retentionClass` is not one of the four known classes (`critical`, `sensitive_access`, `diagnostic_high_volume`, `standard`; the column is free text) counts as unclassified and follows the rule above. It used to match no rule and was kept forever (#3940, owner decision 17 Oct 2026). It is never archived. The count query under "Unclassified rows with no severity" covers only NULL-class rows; on a restored copy, `SELECT "retentionClass", count(*) FROM "AuditLog" WHERE "retentionClass" NOT IN ('critical','sensitive_access','diagnostic_high_volume','standard') GROUP BY 1;` lists the unknown ones.
 - A row with no `expiresAt` at all is never pruned, whatever its class or severity. That is the deliberate keep-forever escape hatch, and #3524 did not change it.
 
 ## Hard invariant: prune never outruns archival (#2506)

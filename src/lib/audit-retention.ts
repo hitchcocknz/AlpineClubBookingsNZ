@@ -9,6 +9,7 @@ import {
   sanitizeAuditMetadata,
 } from "@/lib/audit";
 import { isAuditCategory } from "@/lib/audit-categories";
+import { isAuditRetentionClass, UNCLASSIFIED_RETENTION } from "@/lib/audit-retention-classes";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -363,7 +364,8 @@ export function isAuditLogRetentionCritical(input: {
   severity?: string | null;
   retentionClass?: string | null;
 }): boolean {
-  if (input.retentionClass) {
+  // An unknown stored class reads as no class, as the prune reads it (#3940).
+  if (isAuditRetentionClass(input.retentionClass)) {
     return input.retentionClass === "critical";
   }
   if (input.severity === "critical") {
@@ -684,22 +686,13 @@ export async function pruneExpiredAuditLogs(
           retentionClass: "diagnostic_high_volume",
           expiresAt: { lt: now },
         },
-        {
-          retentionClass: null,
-          expiresAt: { lt: now },
-          OR: [{ severity: null }, { severity: { not: "critical" } }],
-        },
+        { AND: [UNCLASSIFIED_RETENTION, { expiresAt: { lt: now } }, { OR: [{ severity: null }, { severity: { not: "critical" } }] }] },
         {
           retentionClass: "critical",
           createdAt: { lt: cutoff },
           expiresAt: { lt: now },
         },
-        {
-          retentionClass: null,
-          severity: "critical",
-          createdAt: { lt: cutoff },
-          expiresAt: { lt: now },
-        },
+        { AND: [UNCLASSIFIED_RETENTION, { severity: "critical", createdAt: { lt: cutoff }, expiresAt: { lt: now } }] },
       ],
     },
   });
