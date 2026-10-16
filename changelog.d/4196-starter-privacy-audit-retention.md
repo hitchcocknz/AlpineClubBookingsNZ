@@ -9,5 +9,6 @@
   New clubs get the corrected text. A club whose privacy page still has the
   exact starter text is updated automatically on upgrade, and its header date
   moves only if the header is also the starter one. **If your club has edited
-  its privacy policy, review your section 7**; edited pages are not changed.
+  its privacy policy text, review your section 7**; a page whose text was
+  edited is not changed.
   `docs/UPGRADING.md` has the post-upgrade check.

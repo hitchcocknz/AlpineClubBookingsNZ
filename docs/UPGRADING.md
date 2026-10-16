@@ -136,8 +136,10 @@ date to 17 October 2026, but only where the header is still the starter one.
 
 **What you will notice.** If your privacy page was never edited, section 7 now
 lists the schedule kind by kind, and the header reads "Last updated 17 October
-2026". If an admin has edited the page at all, nothing changes. **Read your
-section 7 and correct it yourself**: **Admin → Setup & Configuration → Site
+2026". If an admin has edited the page body, nothing in the body changes. If
+only the header was edited, section 7 is still corrected and the header is
+kept as written. If the body was edited, **read your section 7 and correct it
+yourself**: **Admin → Setup & Configuration → Site
 Appearance & Content → Page Content → Privacy Policy** (`/admin/page-content`).
 
 **Post-upgrade action: load `/privacy` and read section 7.** The migration runs

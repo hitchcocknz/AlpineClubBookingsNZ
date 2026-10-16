@@ -17,7 +17,7 @@ import type { DataMigrationVerification } from "./types";
  * itself produces.
  */
 const OLD_LINE = "<li><strong>System audit logs:</strong> Retained for 90 days, then automatically pruned.</li>";
-const NEW_MARKER = "An entry kept as evidence of an incident is kept, with its IP address and browser details, for at least 10 years.";
+const NEW_MARKER = "an entry kept as evidence of an incident is kept, with its IP address and browser details, for at least 10 years.";
 const CLUB_NOTE = "<p>Our club also keeps paper sign-in sheets for one season.</p>";
 const OLD_DATE = "Last updated 1 April 2026";
 const NEW_DATE = "Last updated 17 October 2026";
