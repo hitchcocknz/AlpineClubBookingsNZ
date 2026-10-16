@@ -1576,3 +1576,124 @@ describe("#2563 the preview stays a preview", () => {
     expect(h.transaction).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4189: a range-mode direct edit keeps an untouched gapped guest's nights
+// ---------------------------------------------------------------------------
+
+/**
+ * Ann holds the 1st and 3rd only (a #713 gap on the 2nd); Bob and Cal hold all
+ * three nights. The editor's range mode (per-guest dates on, night grid off)
+ * sends every remaining guest's Date In and Date Out and cannot carry a gap, so
+ * before #4189 Ann's own dates sent back unchanged put her on the 2nd and
+ * quoted and charged it. The goldens are hand-checked: a held night keeps its
+ * stored `BOOKED_NIGHT_CENTS`, a new one costs `NIGHT_CENTS`.
+ */
+const GAPPED_GUESTS = [
+  liveGuest("g1", "Ann", "2026-09-01", "2026-09-04", ["2026-09-01", "2026-09-03"]),
+  liveGuest("g2", "Bob", "2026-09-01", "2026-09-04"),
+  liveGuest("g3", "Cal", "2026-09-01", "2026-09-04"),
+];
+const OWN_DATES = { stayStart: "2026-09-01", stayEnd: "2026-09-04" };
+const EVERY_NIGHT = ["2026-09-01", "2026-09-02", "2026-09-03"];
+
+const GAPPED_MATRIX: Array<[string, Record<string, unknown>, Golden]> = [
+  [
+    "range mode sends every guest's own dates back: nothing changes, nothing is charged",
+    {
+      guestStayRanges: [
+        { guestId: "g1", ...OWN_DATES },
+        { guestId: "g2", ...OWN_DATES },
+        { guestId: "g3", ...OWN_DATES },
+      ],
+    },
+    {
+      envelope: ["2026-09-01", "2026-09-04"],
+      nights: {
+        "Ann Guest": ["2026-09-01", "2026-09-03"],
+        "Bob Guest": EVERY_NIGHT,
+        "Cal Guest": EVERY_NIGHT,
+      },
+      // 2 + 3 + 3 held nights at 4,200: the booking's own total, unchanged.
+      cents: 33_600,
+    },
+  ],
+  [
+    "a mixed party: Ann repeated keeps her gap while Bob really moves",
+    {
+      guestStayRanges: [
+        { guestId: "g1", ...OWN_DATES },
+        { guestId: "g2", stayStart: "2026-09-02", stayEnd: "2026-09-06" },
+        { guestId: "g3", ...OWN_DATES },
+      ],
+    },
+    {
+      envelope: ["2026-09-01", "2026-09-06"],
+      nights: {
+        "Ann Guest": ["2026-09-01", "2026-09-03"],
+        "Bob Guest": ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+        "Cal Guest": EVERY_NIGHT,
+      },
+      // Ann 8,400; Bob 4,200 + 4,200 + 5,000 + 5,000; Cal 12,600.
+      cents: 39_400,
+    },
+  ],
+  [
+    "a really moved bound re-spreads the gapped guest over a continuous stay",
+    {
+      guestStayRanges: [
+        { guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-05" },
+        { guestId: "g2", ...OWN_DATES },
+        { guestId: "g3", ...OWN_DATES },
+      ],
+    },
+    {
+      envelope: ["2026-09-01", "2026-09-05"],
+      nights: {
+        "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"],
+        "Bob Guest": EVERY_NIGHT,
+        "Cal Guest": EVERY_NIGHT,
+      },
+      // Ann 4,200 + 5,000 + 4,200 + 5,000; Bob and Cal 12,600 each.
+      cents: 43_600,
+    },
+  ],
+  [
+    "grid mode is unaffected: a night set that fills the gap is charged for it",
+    {
+      guestStayRanges: [
+        { guestId: "g1", nights: EVERY_NIGHT },
+        { guestId: "g2", nights: EVERY_NIGHT },
+        { guestId: "g3", nights: EVERY_NIGHT },
+      ],
+    },
+    {
+      envelope: ["2026-09-01", "2026-09-04"],
+      nights: { "Ann Guest": EVERY_NIGHT, "Bob Guest": EVERY_NIGHT, "Cal Guest": EVERY_NIGHT },
+      // Ann 4,200 + 5,000 + 4,200; Bob and Cal 12,600 each.
+      cents: 38_600,
+    },
+  ],
+];
+
+describe("#4189 the preview, the save and the freeze keep a repeated gapped guest's nights (INV-MOD-062)", () => {
+  for (const [name, delta, golden] of GAPPED_MATRIX) {
+    it(name, async () => {
+      const planner = await runPlanner(delta, GAPPED_GUESTS);
+      const freeze = runFreeze(delta, GAPPED_GUESTS);
+      const route = await runRoute(delta, GAPPED_GUESTS);
+
+      expect(route.status, JSON.stringify(route.body)).toBe(200);
+      expect(route.envelope).toEqual(planner.envelope);
+      expect(route.party).toEqual(planner.party);
+      expect(freeze.envelope).toEqual(planner.envelope);
+      expect(freeze.nightsByName).toEqual(planner.nightsByName);
+      // The quote and the save agree to the cent...
+      expect(route.body.newTotalPriceCents).toBe(priceParty(planner.pricedParty).totalPriceCents);
+      // ...and both on the hand-checked answer.
+      expect(planner.envelope).toEqual(golden.envelope);
+      expect(planner.nightsByName, "INV-MOD-062: a repeated range keeps the nights held").toEqual(golden.nights);
+      expect(route.body.newTotalPriceCents).toBe(golden.cents);
+    });
+  }
+});

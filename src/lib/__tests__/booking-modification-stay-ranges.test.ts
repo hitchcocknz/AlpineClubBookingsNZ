@@ -306,3 +306,105 @@ describe("removals and additions", () => {
     expect(resolved.checkOut.toISOString().slice(0, 10)).toBe("2026-08-03");
   });
 });
+
+describe("#4189 a range that only repeats a gapped guest's own dates keeps their nights (INV-MOD-062)", () => {
+  // The direct editor's range mode (per-guest dates on, night grid off) sends
+  // EVERY remaining guest's Date In and Date Out, and cannot carry a gap. Before
+  // #4189 the resolver normalised that entry from its bounds alone, so an
+  // untouched guest holding the 1st and 3rd was put on the 2nd as well, and
+  // charged for it. #4157's rule (`nightsKeptByRepeatedRange`) now decides it.
+  const STAY = { checkIn: parseDateOnly("2026-08-01"), checkOut: parseDateOnly("2026-08-04") };
+  const GAPPED = ["2026-08-01", "2026-08-03"];
+  const REPEAT = { stayStart: "2026-08-01", stayEnd: "2026-08-04" };
+
+  function resolve(
+    guests: ReturnType<typeof guest>[],
+    input: Parameters<typeof resolveModificationStayRanges>[0]["input"],
+  ) {
+    const resolved = resolveModificationStayRanges({ booking: STAY, guests, input });
+    const nights = Object.fromEntries(
+      resolved.remaining.map((entry) => [
+        entry.guest.id,
+        entry.nights ? entry.nights.map((night) => night.toISOString().slice(0, 10)).sort() : null,
+      ]),
+    );
+    const { proposed } = buildModificationProposalParties({
+      bookingCheckIn: STAY.checkIn,
+      bookingCheckOut: STAY.checkOut,
+      liveGuests: guests,
+      delta: input as Parameters<typeof buildModificationProposalParties>[0]["delta"],
+    });
+    const frozen = Object.fromEntries(proposed.guests.map((g) => [g.firstName.toLowerCase(), g.nights]));
+    return { resolved, nights, frozen };
+  }
+
+  it("an untouched gapped guest keeps their gap, and the frozen proposal agrees", () => {
+    const { resolved, nights, frozen } = resolve([guest("a", "2026-08-01", "2026-08-04", GAPPED)], {
+      guestStayRanges: [{ guestId: "a", ...REPEAT }],
+    });
+    expect(nights.a, "INV-MOD-062: a repeated range keeps the nights held").toEqual(GAPPED);
+    expect(frozen.a).toEqual(GAPPED);
+    expect(resolved.datesChanged).toBe(false);
+    expect([resolved.checkIn, resolved.checkOut]).toEqual([STAY.checkIn, STAY.checkOut]);
+  });
+
+  it("a stored delta replayed with Date bounds keeps them too", () => {
+    const { nights } = resolve([guest("a", "2026-08-01", "2026-08-04", GAPPED)], {
+      guestStayRanges: [{ guestId: "a", stayStart: STAY.checkIn, stayEnd: STAY.checkOut }],
+    });
+    expect(nights.a).toEqual(GAPPED);
+  });
+
+  it("a really moved bound re-spreads the guest over a continuous stay", () => {
+    const { nights, frozen } = resolve([guest("a", "2026-08-01", "2026-08-04", GAPPED)], {
+      guestStayRanges: [{ guestId: "a", stayStart: "2026-08-01", stayEnd: "2026-08-05" }],
+    });
+    expect(nights.a).toBeNull();
+    expect(frozen.a).toEqual(["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"]);
+  });
+
+  it("a mixed party: the repeated gapped guest keeps, the moved one re-spreads, the full one is unchanged", () => {
+    const { resolved, nights, frozen } = resolve(
+      [
+        guest("a", "2026-08-01", "2026-08-04", GAPPED),
+        guest("b", "2026-08-01", "2026-08-04", GAPPED),
+        guest("c", "2026-08-01", "2026-08-04", ["2026-08-01", "2026-08-02", "2026-08-03"]),
+      ],
+      {
+        guestStayRanges: [
+          { guestId: "a", ...REPEAT },
+          { guestId: "b", stayStart: "2026-08-02", stayEnd: "2026-08-05" },
+          { guestId: "c", ...REPEAT },
+        ],
+      },
+    );
+    expect(nights).toEqual({ a: GAPPED, b: null, c: null });
+    expect(frozen).toEqual({
+      a: GAPPED,
+      b: ["2026-08-02", "2026-08-03", "2026-08-04"],
+      c: ["2026-08-01", "2026-08-02", "2026-08-03"],
+    });
+    expect(resolved.checkOut).toEqual(parseDateOnly("2026-08-05"));
+  });
+
+  it("a grid night set is applied exactly as chosen, gap filled or not", () => {
+    const filled = resolve([guest("a", "2026-08-01", "2026-08-04", GAPPED)], {
+      guestStayRanges: [{ guestId: "a", nights: ["2026-08-01", "2026-08-02", "2026-08-03"] }],
+    });
+    expect(filled.nights.a).toEqual(["2026-08-01", "2026-08-02", "2026-08-03"]);
+    const kept = resolve([guest("a", "2026-08-01", "2026-08-04", GAPPED)], {
+      guestStayRanges: [{ guestId: "a", nights: ["2026-08-03"] }],
+    });
+    expect(kept.nights.a).toEqual(["2026-08-03"]);
+  });
+
+  it("still refuses a malformed entry before the rule is read", () => {
+    expect(() =>
+      resolveModificationStayRanges({
+        booking: STAY,
+        guests: [guest("a", "2026-08-01", "2026-08-04", GAPPED)],
+        input: { guestStayRanges: [{ guestId: "a", stayStart: "2026-08-01" }] },
+      }),
+    ).toThrow(/Date In and Date Out are both required/);
+  });
+});
