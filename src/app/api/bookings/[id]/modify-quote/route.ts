@@ -162,6 +162,7 @@ import {
 } from "@/lib/booking-edit-guest-ranges";
 import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import { getCapacityFullNights } from "@/lib/capacity-full-nights";
+import { getGuestBedNightKeys, sameNightKeys } from "@/lib/booking-guest-stay-ranges";
 import { overCapacityNights } from "@/lib/over-capacity-confirmation";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
@@ -2041,20 +2042,30 @@ export async function POST(
   const oldNights = getStayNights(booking.checkIn, booking.checkOut).length;
   const newNights = getStayNights(newCheckIn, newCheckOut).length;
   const datesChanged = targetDatesChanged;
-  const guestRangesChanged = proposedRemainingGuests.some((entry) => {
-    const currentStayStart = storedDateOnly(
-      entry.guest.stayStart ?? booking.checkIn
-    );
-    const currentStayEnd = storedDateOnly(
-      entry.guest.stayEnd ?? booking.checkOut
-    );
-    return (
-      currentStayStart.getTime() !== entry.stayStart.getTime() ||
-      currentStayEnd.getTime() !== entry.stayEnd.getTime()
-    );
-  });
+  /**
+   * #4197: every party line below is read off `priceBreakdown`, the ONE pricing
+   * pass that produced `newTotalPriceCents`, over the nights and locked sold
+   * prices the shared resolver gave each guest (`INV-EXCEPT-022`, `INV-SSOT`).
+   * The old side is each guest's stored price, the figures
+   * `booking.totalPriceCents` sums, as the removed-guest line already reads.
+   * These lines re-priced both sides as continuous ranges at today's rates,
+   * which ignored a #713 night set and every locked price, so they stopped
+   * adding up to the total the member is shown.
+   */
+  const pricedGuestAt = (index: number) => {
+    const priced = priceBreakdown?.guests[index];
+    if (!priced) {
+      throw new Error(`The modify quote has no priced guest at position ${index}.`);
+    }
+    return priced;
+  };
+  // The guests a link or other-lodge line above already itemised, whole.
+  const rerateItemisedGuestIds = new Set<string>([
+    ...guestMemberLinks.map((link) => link.guestId),
+    ...otherLodgeElection.repriceGuestIds,
+  ]);
 
-  // 1. Date change cost: price remaining guests at new dates vs old dates
+  // 1. Date change cost: the remaining guests' new prices against their stored ones
   if (inProgressPlan) {
     if (inProgressPlan.futureExistingDeltaCents !== 0) {
       itemizedChanges.push({
@@ -2065,57 +2076,33 @@ export async function POST(
         amountCents: inProgressPlan.futureExistingDeltaCents,
       });
     }
-  } else if ((datesChanged || guestRangesChanged) && remainingGuests.length > 0) {
-    const oldRemainingForPricing = remainingGuests.map((g) => ({
-      ageTier: g.ageTier as AgeTier,
-      isMember: g.isMember,
-      memberId: g.memberId ?? null,
-      stayStart: storedDateOnly(g.stayStart ?? booking.checkIn),
-      stayEnd: storedDateOnly(g.stayEnd ?? booking.checkOut),
-    }));
-    const newRemainingForPricing = proposedRemainingGuests.map((entry) => ({
-      ageTier: entry.guest.ageTier as AgeTier,
-      isMember: entry.guest.isMember,
-      memberId: entry.guest.memberId ?? null,
-      stayStart: entry.stayStart,
-      stayEnd: entry.stayEnd,
-    }));
-
-    try {
-      const oldPriceForRemaining = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
-        ownerMemberId: bookingOwner(booking).memberId,
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-        guests: oldRemainingForPricing,
-        seasons: seasonRateData,
-        groupDiscount,
-        subscriptionLockoutMode,
-      });
-      const newPriceForRemaining = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
-        ownerMemberId: bookingOwner(booking).memberId,
-        checkIn: newCheckIn,
-        checkOut: newCheckOut,
-        guests: newRemainingForPricing,
-        seasons: seasonRateData,
-        groupDiscount,
-        seasonYear,
-        subscriptionLockoutMode,
-      });
-      const dateChangeCost =
-        newPriceForRemaining.totalPriceCents -
-        oldPriceForRemaining.totalPriceCents;
-
-      if (dateChangeCost !== 0) {
-        const nightLabel =
+  } else if (priceBreakdown) {
+    let stayChangeCents = 0;
+    let guestNightsChanged = false;
+    proposedRemainingGuests.forEach((entry, index) => {
+      if (rerateItemisedGuestIds.has(entry.guest.id)) return;
+      const priced = pricedGuestAt(index);
+      stayChangeCents += priced.priceCents - entry.guest.priceCents;
+      guestNightsChanged ||= !sameNightKeys(
+        getGuestBedNightKeys(entry.guest, booking),
+        getGuestBedNightKeys(
+          { stayStart: entry.stayStart, stayEnd: entry.stayEnd, nights: priced.nightDates },
+          booking,
+        ),
+      );
+    });
+    if (stayChangeCents !== 0) {
+      itemizedChanges.push({
+        label:
           oldNights !== newNights
             ? `Date change: ${oldNights} night${oldNights !== 1 ? "s" : ""} → ${newNights} night${newNights !== 1 ? "s" : ""}`
-            : guestRangesChanged
+            : guestNightsChanged
               ? "Guest stay range change"
-            : "Date change (rate difference)";
-        itemizedChanges.push({ label: nightLabel, amountCents: dateChangeCost });
-      }
-    } catch {
-      // If pricing fails for old dates (unlikely), skip itemization
+              : datesChanged
+                ? "Date change (rate difference)"
+                : "Price recalculated (rate difference)",
+        amountCents: stayChangeCents,
+      });
     }
   }
 
@@ -2163,37 +2150,16 @@ export async function POST(
         amountCents: entry.priceCents,
       });
     }
-  } else if (normalizedAddGuestsWithRanges && normalizedAddGuestsWithRanges.length > 0) {
-    for (const guest of normalizedAddGuestsWithRanges) {
-      try {
-        const guestPrice = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
-          ownerMemberId: bookingOwner(booking).memberId,
-          checkIn: newCheckIn,
-          checkOut: newCheckOut,
-          guests: [
-            {
-              ageTier: guest.ageTier,
-              isMember: guest.isMember,
-              memberId: guest.memberId ?? null,
-              stayStart: guest.stayStart,
-              stayEnd: guest.stayEnd,
-            },
-          ],
-          seasons: seasonRateData,
-          groupDiscount,
-          seasonYear,
-          subscriptionLockoutMode,
-        });
-        const tierLabel = guest.ageTier.charAt(0) + guest.ageTier.slice(1).toLowerCase();
-        const memberLabel = guest.isMember ? "Member" : "Non-member";
-        itemizedChanges.push({
-          label: `Added: ${guest.firstName} ${guest.lastName} (${tierLabel}, ${memberLabel})`,
-          amountCents: guestPrice.totalPriceCents,
-        });
-      } catch {
-        // skip itemization if pricing fails
-      }
-    }
+  } else if (normalizedAddGuestsWithRanges && priceBreakdown) {
+    // #4197: each added guest's price in the party pass, on their own nights.
+    normalizedAddGuestsWithRanges.forEach((guest, index) => {
+      const tierLabel = guest.ageTier.charAt(0) + guest.ageTier.slice(1).toLowerCase();
+      const memberLabel = guest.isMember ? "Member" : "Non-member";
+      itemizedChanges.push({
+        label: `Added: ${guest.firstName} ${guest.lastName} (${tierLabel}, ${memberLabel})`,
+        amountCents: pricedGuestAt(proposedRemainingGuests.length + index).priceCents,
+      });
+    });
   }
 
   // 4. Per-removed-guest credits (use their stored priceCents)

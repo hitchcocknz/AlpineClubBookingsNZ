@@ -1209,6 +1209,145 @@ describe("#2563 the preview, the save and the freeze resolve one party", () => {
   });
 });
 
+/*
+  #4197 — THE BREAKDOWN ADDS UP TO THE TOTAL.
+
+  The quote's total comes from the one pricing pass over the resolved party. Its
+  "Guest stay range change" / "Date change" line used to price the old and new
+  remaining guests again as continuous ranges at today's rates, so it ignored a
+  #713 night set and every locked sold price, and stopped adding up to the total
+  the member is shown. The lines are now read off that same pass. With no change
+  fee and no promotion in this fixture, the lines must sum exactly to the change
+  in the booking's total.
+*/
+type QuoteLine = { label: string; amountCents: number };
+
+function sumOfLines(body: Record<string, unknown>): number {
+  return (body.itemizedChanges as QuoteLine[]).reduce(
+    (sum, line) => sum + line.amountCents,
+    0,
+  );
+}
+
+/** Ann holds 1 and 3 September, with the 2nd a gap (#713); Bob and Cal hold all three. */
+const GAPPED_GUESTS = [
+  liveGuest("g1", "Ann", "2026-09-01", "2026-09-04", ["2026-09-01", "2026-09-03"]),
+  liveGuest("g2", "Bob", "2026-09-01", "2026-09-04"),
+  liveGuest("g3", "Cal", "2026-09-01", "2026-09-04"),
+];
+/** 2 + 3 + 3 booked nights, each locked at `BOOKED_NIGHT_CENTS`. */
+const GAPPED_STORED_TOTAL = 8 * BOOKED_NIGHT_CENTS;
+
+describe("#4197 the quote's breakdown adds up to its total", () => {
+  for (const [name, delta] of MATRIX) {
+    it(`sums to the change in the total: ${name}`, async () => {
+      const route = await runRoute(delta);
+      expect(route.status).toBe(200);
+      const storedTotal = bookingWith(DEFAULT_GUESTS).totalPriceCents;
+      expect(route.body.priceDiffCents).toBe(
+        (route.body.newTotalPriceCents as number) - storedTotal,
+      );
+      expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+    });
+  }
+
+  it("grid mode: a gapped guest who moves is charged for the night bought, not a re-priced range", async () => {
+    // Ann gives up the 1st (locked 4,200) and takes the 2nd (new, 5,000); the 3rd
+    // keeps its locked 4,200: +800. Re-pricing her bounds as continuous ranges at
+    // today's rate showed 2 x 5,000 - 3 x 5,000 = -5,000.
+    const route = await runRoute(
+      { guestStayRanges: [{ guestId: "g1", nights: ["2026-09-02", "2026-09-03"] }] },
+      GAPPED_GUESTS,
+    );
+    expect(route.status).toBe(200);
+    expect(route.body.newTotalPriceCents).toBe(GAPPED_STORED_TOTAL + 800);
+    expect(route.body.itemizedChanges).toEqual([
+      { label: "Guest stay range change", amountCents: NIGHT_CENTS - BOOKED_NIGHT_CENTS },
+    ]);
+    expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+  });
+
+  it("grid mode: a gapped guest whose nights are only repeated adds no line", async () => {
+    const route = await runRoute(
+      { guestStayRanges: [{ guestId: "g1", nights: ["2026-09-01", "2026-09-03"] }] },
+      GAPPED_GUESTS,
+    );
+    expect(route.status).toBe(200);
+    expect(route.body.priceDiffCents).toBe(0);
+    expect(route.body.itemizedChanges).toEqual([]);
+  });
+
+  it("grid mode: a gapped guest whose nights are repeated beside another guest's change moves nothing of hers", async () => {
+    // Bob drops the 3rd: one locked night, -4,200. Ann's repeated nights cost
+    // what she paid. The old line priced Bob's ranges at today's rate (-5,000).
+    const route = await runRoute(
+      {
+        guestStayRanges: [
+          { guestId: "g1", nights: ["2026-09-01", "2026-09-03"] },
+          { guestId: "g2", stayStart: "2026-09-01", stayEnd: "2026-09-03" },
+        ],
+      },
+      GAPPED_GUESTS,
+    );
+    expect(route.status).toBe(200);
+    expect(route.body.newTotalPriceCents).toBe(GAPPED_STORED_TOTAL - BOOKED_NIGHT_CENTS);
+    expect(route.body.itemizedChanges).toEqual([
+      { label: "Guest stay range change", amountCents: -BOOKED_NIGHT_CENTS },
+    ]);
+    expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+  });
+
+  it("range mode: bounds that fill a gapped guest's gap are itemised as the night it buys (#4189)", async () => {
+    // The owner's #4189 decision: unticking "Multiple date ranges" fills the gap,
+    // so the save charges the 2nd at today's rate. Her bounds did not move, so the
+    // old line, gated on bounds, showed nothing at all beside a +5,000 total.
+    const route = await runRoute(
+      { guestStayRanges: [{ guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-04" }] },
+      GAPPED_GUESTS,
+    );
+    expect(route.status).toBe(200);
+    expect(route.body.newTotalPriceCents).toBe(GAPPED_STORED_TOTAL + NIGHT_CENTS);
+    expect(route.body.itemizedChanges).toEqual([
+      { label: "Guest stay range change", amountCents: NIGHT_CENTS },
+    ]);
+    expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+  });
+
+  it("a booking-wide date change itemises only the nights bought; a gapped guest beside it keeps her locks", async () => {
+    // Extend to the 6th in range mode: Ann keeps her night set and Cal his stored
+    // range, so only Bob's two new nights move money.
+    const route = await runRoute(
+      {
+        checkOut: "2026-09-06",
+        guestStayRanges: [{ guestId: "g2", stayStart: "2026-09-01", stayEnd: "2026-09-06" }],
+      },
+      GAPPED_GUESTS,
+    );
+    expect(route.status).toBe(200);
+    expect(route.body.newTotalPriceCents).toBe(GAPPED_STORED_TOTAL + 2 * NIGHT_CENTS);
+    expect(route.body.itemizedChanges).toEqual([
+      { label: "Date change: 3 nights → 5 nights", amountCents: 2 * NIGHT_CENTS },
+    ]);
+    expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+  });
+
+  it("an added gapped guest is itemised on her own nights, at her price in the party", async () => {
+    const route = await runRoute(
+      {
+        checkOut: "2026-09-06",
+        addGuests: [{ ...ADD_ADULT, nights: ["2026-09-01", "2026-09-05"] }],
+      },
+      GAPPED_GUESTS,
+    );
+    expect(route.status).toBe(200);
+    expect(route.body.itemizedChanges).toContainEqual({
+      label: "Added: Dee Newcomer (Adult, Non-member)",
+      amountCents: 2 * NIGHT_CENTS,
+    });
+    expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+  });
+});
+
 describe("#2563 a refused delta is refused identically, with the same guest number", () => {
   const REFUSALS: Array<[string, Record<string, unknown>, string]> = [
     [
