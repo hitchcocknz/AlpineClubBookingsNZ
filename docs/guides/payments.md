@@ -356,12 +356,13 @@ one. Dismiss it with a note instead, as the app says.
 One gap the app cannot close: a refund made in the Stripe dashboard in the
 moments between **Mark paid back** and your bank transfer. When that refund
 reaches the app, the charge already reads fully refunded, so officers are
-emailed that a card refund took the charge past what was charged. Where a
-hand-back was marked paid back (or a card refund closed as Paid another way) on
-the payment, the email says the member may have been paid twice: check Stripe
-and the bank, and recover any overpayment. Otherwise it says the charge's
-records already read fully refunded (record drift, or account credit given
-back): check the charge in Stripe against the booking's payment records.
+emailed that a card refund took the charge past what was charged. Where the
+member has already had money back another way on that payment - any hand-back
+marked paid back, a card refund closed as Paid another way, or account credit
+given back - the email says they may have been paid twice: check Stripe, the
+bank and their account credit, and recover any overpayment. Otherwise it says
+the charge's records drifted: check the charge in Stripe against the booking's
+payment records.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price

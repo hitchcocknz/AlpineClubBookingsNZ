@@ -4,9 +4,10 @@ import type { Prisma } from "@prisma/client";
 
 import { compareOrdinal } from "@/lib/ordinal-order";
 import logger from "@/lib/logger";
-import { NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
+import { NON_CANCELLATION_HAND_BACK_WHERE, NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
+import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -18,9 +19,9 @@ import { formatCents } from "@/lib/utils";
  * way - most often a hand-back or "Paid another way" close recorded by hand on
  * the same charge, then a card refund made for the same money (a capacity
  * race's hand-back whose charge Stripe refunded after the completion read it).
- * The member may have been paid back twice - or (round 3) the charge's
- * records already read fully refunded with no hand-back behind it: record
- * drift, or account credit given back. The alert says which. The cap keeps
+ * The member may have been paid back twice - where money already went back
+ * another way on the payment (`memberPaidAnotherWay`) - or the charge's records
+ * simply drifted. The alert says which. The cap keeps
  * the ledger whole, so nothing else would ever show it: the officers are told,
  * once per charge and set of counted refunds (a replay of the same refunds
  * alerts nothing new, any new refund does),
@@ -62,12 +63,33 @@ export async function readCardRefundCapOverflow(
   return { ...overflow, countedRefundIds: counted.map((row) => row.stripeRefundId) };
 }
 
-/** Round 3 (3): "paid twice" only where money went back by hand on the payment; otherwise the records drifted. */
-export function cardRefundCapOverflowMessage(discarded: string, handBack: boolean): string {
+/**
+ * Round 3 (3), round 4 (F1): "paid twice" wherever the member already has money back another way - a hand-back marked
+ * paid back (a cancellation's, an edit's or a refund request's), a card refund closed as Paid another way, or account
+ * credit given back from the booking; otherwise the records drifted.
+ */
+export function cardRefundCapOverflowMessage(discarded: string, paidAnotherWay: boolean): string {
   const lead = `A card refund took this booking's card charge past what was charged: ${discarded} of refunds could not be recorded against it.`;
-  return handBack
-    ? `${lead} The charge already reads refunded by a hand-back marked paid back or a card refund closed as Paid another way, so the member may have been paid back twice - by card and by hand. Check the charge in Stripe and the bank transfers, and recover any overpayment from the member.`
-    : `${lead} The charge's records already read it fully refunded, with no hand-back behind it (record drift, or account credit given back). Check the charge in Stripe against the booking's payment records.`;
+  return paidAnotherWay
+    ? `${lead} The member has already had money back another way on this payment - a hand-back marked paid back, a card refund closed as Paid another way, or account credit given back - so they may have been paid back twice. Check the charge in Stripe, the bank transfers and the member's account credit, and recover any overpayment from the member.`
+    : `${lead} The charge's records already read it fully refunded with nothing on record behind it (record drift). Check the charge in Stripe against the booking's payment records.`;
+}
+
+/**
+ * Round 4 (F1): has the member already had money back another way on this payment or booking? Every completed hand-back
+ * - a cancellation's (with `INV-PAY-117`'s exclusion, its census's one spelling), and an edit's, a refund request's or a
+ * Paid-another-way close (`NON_CANCELLATION_HAND_BACK_WHERE`) - or account credit given back from the booking. A
+ * wording-only read: it picks the email's sentence, never a figure.
+ */
+async function memberPaidAnotherWay(paymentId: string, bookingId: string): Promise<boolean> {
+  const handBacks = await prisma.manualRefundTask.count({
+    where: {
+      paymentId,
+      status: "COMPLETED",
+      OR: [{ kind: "CANCELLED_BOOKING_HAND_BACK", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE }, NON_CANCELLATION_HAND_BACK_WHERE],
+    },
+  });
+  return handBacks > 0 || (await accountCreditDispositionCents(prisma, bookingId)) > 0;
 }
 
 /** Tell the officers, once per charge and set of counted refunds. After the commit; never throws. */
@@ -78,17 +100,12 @@ export async function alertCardRefundCapOverflow(overflow: CardRefundCapOverflow
       where: { id: overflow.paymentTransactionId },
       select: { stripePaymentIntentId: true, payment: { select: { bookingId: true } } },
     });
-    // A cancellation's hand-back or "Paid another way" close completed on the payment: bank money already in the total
-    // for the same refund. Not an edit's refund hand-back or an approved refund request's (`INV-PAY-117`): their money
-    // answers a different refund, so an overflow beside one reads as the records', and the email still says to check.
-    const handBacks = await prisma.manualRefundTask.count({
-      where: { paymentId: overflow.paymentId, kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE },
-    });
     const bookingId = row?.payment?.bookingId ?? null;
     if (!bookingId) {
       logger.error(context, "A card refund's discarded cents have no booking to alert the officers about (#4159)");
       return false;
     }
+    const paidAnotherWay = await memberPaidAnotherWay(overflow.paymentId, bookingId);
     // Loaded here, not at the top: the payment ledger imports this module, and the alert's own imports reach back to it.
     const [{ clubFormatValues }, { alertPaymentRecoveryOfficers, NOBODY_ALERTED }, { sendAdminAlertOnceEver }] = await Promise.all([
       import("@/lib/club-format-server"),
@@ -106,7 +123,7 @@ export async function alertCardRefundCapOverflow(overflow: CardRefundCapOverflow
             bookingId,
             amountCents: overflow.discardedCents,
             paymentIntentId: row?.stripePaymentIntentId ?? "",
-            errorMessage: cardRefundCapOverflowMessage(formatCents(overflow.discardedCents, format), handBacks > 0),
+            errorMessage: cardRefundCapOverflowMessage(formatCents(overflow.discardedCents, format), paidAnotherWay),
           },
           format,
         )) ?? NOBODY_ALERTED,

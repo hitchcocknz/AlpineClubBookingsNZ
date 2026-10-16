@@ -5,9 +5,30 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * total could not hold reaches the officers, once per charge and refund-row
  * total, through the payment recovery alert - never only the error log.
  */
+type Task = { paymentId: string; kind: string; status: string; occurrenceKey: string | null };
+
+/**
+ * Round 4 (F1): a Prisma `where` evaluated against rows - equality, `startsWith`, null, NOT, AND and OR - so the
+ * test reads which tasks the alert's read actually counts by their occurrence keys, never only the clause's shape.
+ */
+function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, condition]) => {
+    if (key === "OR") return (condition as Record<string, unknown>[]).some((each) => matches(row, each));
+    if (key === "AND") return (condition as Record<string, unknown>[]).every((each) => matches(row, each));
+    if (key === "NOT") return !matches(row, condition as Record<string, unknown>);
+    const value = row[key];
+    if (condition === null) return value === null;
+    if (typeof condition === "object" && condition && "startsWith" in condition) {
+      return typeof value === "string" && value.startsWith((condition as { startsWith: string }).startsWith);
+    }
+    return value === condition;
+  });
+}
+
 const doubles = vi.hoisted(() => ({
   findUnique: vi.fn(),
-  handBacks: vi.fn(async () => 0),
+  tasks: [] as Task[],
+  accountCredit: vi.fn(async () => 0),
   onceEver: vi.fn(async (args: { send: () => Promise<unknown> }) => {
     await args.send();
     return true;
@@ -15,45 +36,70 @@ const doubles = vi.hoisted(() => ({
   alertOfficers: vi.fn(async () => ({ sent: 1 })),
   error: vi.fn(),
 }));
-vi.mock("@/lib/prisma", () => ({ prisma: { paymentTransaction: { findUnique: doubles.findUnique }, manualRefundTask: { count: doubles.handBacks } } }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    paymentTransaction: { findUnique: doubles.findUnique },
+    manualRefundTask: { count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => doubles.tasks.filter((task) => matches(task, where)).length) },
+  },
+}));
+vi.mock("@/lib/stripe-cash-refund-evidence", () => ({ accountCreditDispositionCents: doubles.accountCredit }));
 vi.mock("@/lib/admin-alert-once", () => ({ sendAdminAlertOnceEver: doubles.onceEver }));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: doubles.alertOfficers, NOBODY_ALERTED: { sent: 0 } }));
 vi.mock("@/lib/club-format-server", async () => ({ clubFormatValues: async () => (await import("./support/club-format-fixture")).CLUB_FORMAT_TEST }));
 vi.mock("@/lib/logger", () => ({ default: { error: doubles.error, warn: vi.fn(), info: vi.fn() } }));
 
 import { alertCardRefundCapOverflow, cardRefundCapOverflowAlertKey } from "@/lib/card-refund-cap-overflow";
-import { NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
+import {
+  CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX,
+  EDIT_REFUND_HAND_BACK_KEY_PREFIX,
+  REFUND_REQUEST_HAND_BACK_KEY_PREFIX,
+} from "@/lib/manual-refund-task-settlement-rules";
 
 const OVERFLOW = { paymentId: "payment-1", paymentTransactionId: "txn-race", discardedCents: 5_000, recordedRefundCents: 5_000, countedRefundIds: ["re_b", "re_a"] };
 
 describe("a card refund past its charge alerts the officers (#4159 F2, round 3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    doubles.tasks = [];
     doubles.findUnique.mockResolvedValue({ stripePaymentIntentId: "pi_race", payment: { bookingId: "booking-1" } });
   });
 
-  it("MUTATION (round 3, 3): with a hand-back completed on the payment, says the member may have been paid twice", async () => {
-    doubles.handBacks.mockResolvedValueOnce(1);
+  const task = (occurrenceKey: string | null, over: Partial<Task> = {}): Task => ({ paymentId: "payment-1", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", occurrenceKey, ...over });
+  const messageSent = () => (doubles.alertOfficers.mock.calls[0] as unknown as [{ errorMessage: string }])[0].errorMessage;
+
+  it.each([
+    ["a cancellation's hand-back", task(null)],
+    ["a card cancellation's shortfall part", task("cancel-card-shortfall:booking-1")],
+    ["a card refund closed as Paid another way", task(`${CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX}op-1`)],
+    ["an edit's refund hand-back", task(`${EDIT_REFUND_HAND_BACK_KEY_PREFIX}mod-1`)],
+    ["an approved refund request's hand-back", task(`${REFUND_REQUEST_HAND_BACK_KEY_PREFIX}req-1`)],
+  ])("MUTATION (round 4, F1): %s completed on the payment - says the member may have been paid twice", async (_label, row) => {
+    doubles.tasks = [row];
     await expect(alertCardRefundCapOverflow(OVERFLOW)).resolves.toBe(true);
-    // INV-PAY-117: an edit's refund hand-back, or an approved refund request's, is not a cancellation's.
-    expect(doubles.handBacks).toHaveBeenCalledWith({ where: { paymentId: "payment-1", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE } });
     expect(doubles.onceEver).toHaveBeenCalledWith(expect.objectContaining({ key: cardRefundCapOverflowAlertKey(OVERFLOW) }));
     expect(doubles.alertOfficers).toHaveBeenCalledWith(
-      expect.objectContaining({
-        bookingId: "booking-1",
-        amountCents: 5_000,
-        paymentIntentId: "pi_race",
-        errorMessage: expect.stringMatching(/^A card refund took this booking's card charge past what was charged: \$50\.00 of refunds.*paid back twice/),
-      }),
+      expect.objectContaining({ bookingId: "booking-1", amountCents: 5_000, paymentIntentId: "pi_race" }),
       expect.anything(),
     );
+    expect(messageSent()).toMatch(/^A card refund took this booking's card charge past what was charged: \$50\.00 of refunds.*may have been paid back twice.*recover any overpayment/);
   });
 
-  it("MUTATION (round 3, 3): with none, names record drift or account credit and never paid twice", async () => {
+  it("MUTATION (round 4, F1): account credit given back from the booking says the same", async () => {
+    doubles.accountCredit.mockResolvedValueOnce(1_000);
     await alertCardRefundCapOverflow(OVERFLOW);
-    const [[{ errorMessage }]] = doubles.alertOfficers.mock.calls as unknown as [[{ errorMessage: string }]];
-    expect(errorMessage).toContain("The charge's records already read it fully refunded, with no hand-back behind it (record drift, or account credit given back). Check the charge in Stripe");
-    expect(errorMessage).not.toMatch(/twice/);
+    expect(messageSent()).toMatch(/may have been paid back twice/);
+  });
+
+  it.each([
+    ["no task at all", []],
+    ["a hand-back still OPEN", [task(null, { status: "OPEN" })]],
+    ["a completed hand-back on another payment", [task(null, { paymentId: "payment-2" })]],
+    ["a completed review, which is no hand-back", [task(null, { kind: "EDIT_FINANCIAL_REVIEW" })]],
+  ])("CONTROL (round 4, F1): with %s and no credit, says the records drifted and never paid twice", async (_label, rows) => {
+    doubles.tasks = rows as Task[];
+    await alertCardRefundCapOverflow(OVERFLOW);
+    expect(messageSent()).toContain("The charge's records already read it fully refunded with nothing on record behind it (record drift). Check the charge in Stripe");
+    expect(messageSent()).not.toMatch(/twice/);
   });
 
   it("MUTATION (round 3, 4): keyed on the refunds the charge counts - the same set in any order is one alert; a new refund, even at the same total, is another", () => {
