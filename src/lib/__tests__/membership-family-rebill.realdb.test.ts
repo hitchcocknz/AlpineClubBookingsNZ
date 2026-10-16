@@ -527,6 +527,37 @@ let createdMapping = false;
       expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
     });
 
+    it("never mints a second family invoice while the parent's own family invoice is live after a reversal (review round 5 item 1)", async () => {
+      // K (the child) is exempt; H (the parent) is paid. C1 closes.
+      await prisma.memberSubscription.updateMany({
+        where: { memberId: CHILD_ID, seasonYear: SEASON_YEAR },
+        data: { status: "NOT_REQUIRED", manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+      });
+      await expect(
+        closeAlreadyPaidSubscriptionCharge({ chargeId: OLD_CHARGE_ID, reason: "Paid by the hand-raised family invoice", actorMemberId: OFFICER_ID }),
+      ).resolves.toMatchObject({ closed: true });
+      // The bank reverses H's payment of the family invoice the treasurer raised
+      // by hand: H is UNPAID, and that family invoice is still live in Xero.
+      await prisma.memberSubscription.updateMany({
+        where: { memberId: PARENT_ID, seasonYear: SEASON_YEAR },
+        data: {
+          status: "UNPAID", xeroInvoiceId: "race-4110-hand-family-invoice", xeroInvoiceNumber: "INV-RACE-4110",
+          manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null,
+        },
+      });
+
+      const { preview, confirmed } = await previewAndConfirm();
+
+      // H's own live family invoice keeps the family held back (#2161): no
+      // second full family invoice is minted off K.
+      expect(preview.entries).toEqual([]);
+      expect(preview.alreadyInvoicedFamilies).toEqual([
+        expect.objectContaining({ familyGroupId: FAMILY_ID, holderMemberId: PARENT_ID, xeroInvoiceNumber: "INV-RACE-4110" }),
+      ]);
+      expect(confirmed.chargeIds).toEqual([]);
+      expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
+    });
+
     it("still refuses a second LIVE charge for one family, type and season", async () => {
       const second = prisma.membershipSubscriptionCharge.create({
         data: {

@@ -214,9 +214,19 @@ export function isChargeClosedAsAlreadyPaid(charge: {
  */
 export const CLOSED_FAMILY_PARTLY_REVERSED_CODE = "CLOSED_FAMILY_PARTLY_REVERSED";
 
+/**
+ * #4110 review round 5: the preview's warning that a family whose charge was
+ * closed as already paid is billed again for the full fee while a member that
+ * charge covered already holds a Xero invoice for the season (typically the
+ * difference Finance invoiced by hand, decision 4), so confirming may overbill.
+ * A warning like CLOSED_FAMILY_PARTLY_REVERSED: an officer confirms through it,
+ * an approval withholds the family for Finance.
+ */
+export const CLOSED_FAMILY_REBILL_BESIDE_INVOICE_CODE = "CLOSED_FAMILY_REBILL_BESIDE_INVOICE";
+
 /** True for a preview exception that warns about a charge confirming still invoices. */
 export function isInvoicingPreviewWarning(code: string): boolean {
-  return code === CLOSED_FAMILY_PARTLY_REVERSED_CODE;
+  return code === CLOSED_FAMILY_PARTLY_REVERSED_CODE || code === CLOSED_FAMILY_REBILL_BESIDE_INVOICE_CODE;
 }
 
 /**

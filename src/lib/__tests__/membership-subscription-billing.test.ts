@@ -1466,14 +1466,62 @@ describe("membership subscription billing", () => {
       expect(mocks.familyGroupMembers.findMany).toHaveBeenCalled();
     });
 
-    it("a bare invoice never suppresses a family a closed charge governs: Finance's difference invoice cannot hide a reversal (review round 4 F-C)", async () => {
-      // The closed charge's paid parent was reversed, and the child holds the
-      // invoice Finance raised by hand for the difference (decision 4).
+    /** Give a closed charge's covered row the Xero invoice its subscription now holds. */
+    function holdingInvoice(charge: ReturnType<typeof familyCharge>, index: number, invoiceId: string, invoiceNumber: string) {
+      Object.assign(charge.coverage[index]!.subscription, { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber });
+      return charge;
+    }
+
+    it("Finance's difference invoice does not hide a reversal: the family is billed again, and the officer is warned about the invoice (review rounds 4 F-C and 5 item 2)", async () => {
+      // The parent's payment at the close was reversed; the child, exempt at
+      // the close, holds the invoice Finance raised by hand for the difference.
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-difference", xeroInvoiceNumber: "INV-DIFF" })]);
-      const preview = await previewFamily([familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"]])]);
+      const charge = holdingInvoice(
+        familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]),
+        1, "xi-difference", "INV-DIFF",
+      );
+      const preview = await previewFamily([charge]);
       expect(preview.alreadyInvoicedFamilies).toEqual([]);
       expect(preview.entries).toHaveLength(1);
       expect(preview.entries[0]).toMatchObject({ familyGroupId: "family-1" });
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({
+          code: "CLOSED_FAMILY_REBILL_BESIDE_INVOICE",
+          familyGroupId: "family-1",
+          message: expect.stringContaining("already holds a Xero invoice for this season: cub-1 (INV-DIFF)"),
+          context: { invoiceHolders: [{ memberName: "cub-1", invoice: "INV-DIFF" }] },
+        }),
+      ]);
+    });
+
+    it("a parent paid at the close who holds their own family invoice still suppresses the family: no second family invoice (review round 5 item 1)", async () => {
+      // H raised the family fee by hand and paid it; C1 was closed with H PAID
+      // and K exempt; the bank then reversed H's payment, leaving H UNPAID with
+      // the family invoice still live. A second full family invoice must not
+      // be minted off K.
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", { xeroInvoiceId: "xi-family", xeroInvoiceNumber: "INV-FAM", status: "UNPAID" })]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
+      const charge = holdingInvoice(
+        familyCharge("NOT_REQUIRED", [["H", "UNPAID", "PAID"], ["re-billable", "NOT_REQUIRED", "NOT_REQUIRED"]]),
+        0, "xi-family", "INV-FAM",
+      );
+      const preview = await previewFamily([charge]);
+      expect(preview.entries).toEqual([]);
+      expect(preview.alreadyInvoicedFamilies).toEqual([expect.objectContaining({ familyGroupId: "family-1", holderMemberId: "H", xeroInvoiceNumber: "INV-FAM" })]);
+    });
+
+    it("the difference-invoice exemption is keyed by family AND membership type (review round 5 item 1)", async () => {
+      // The child was exempt at the close of a DIFFERENT type's closed charge;
+      // their invoice is not that charge's difference for this type, so it
+      // keeps suppressing this type's family fee as #2161 requires.
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-other", xeroInvoiceNumber: "INV-OTHER" })]);
+      const otherType = holdingInvoice(
+        familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]], { membershipTypeId: "type-2" }),
+        1, "xi-other", "INV-OTHER",
+      );
+      const preview = await previewFamily([otherType]);
+      expect(preview.entries).toEqual([]);
+      expect(preview.alreadyInvoicedFamilies.map((family) => family.holderMemberId)).toEqual(["cub-1"]);
     });
 
     it("(a') suppresses the family even for a scoped NEW_MEMBER_APPROVAL run over only a child", async () => {

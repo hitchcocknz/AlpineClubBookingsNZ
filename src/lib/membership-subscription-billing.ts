@@ -38,6 +38,7 @@ import { buildXeroIdempotencyKey, startXeroSyncOperation } from "@/lib/xero-sync
 import {
   CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
   CLOSED_FAMILY_PARTLY_REVERSED_CODE,
+  CLOSED_FAMILY_REBILL_BESIDE_INVOICE_CODE,
   closedFamilyMemberDecisionMessage,
   isChargeClosedAsAlreadyPaid,
   confirmWithholdsInvoicingWarnings,
@@ -73,7 +74,10 @@ export type SubscriptionBillingExceptionCode =
   | typeof CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE
   // #4110: a WARNING, not a block — the family entry it names is still
   // confirmed and invoiced (an officer's confirm; an approval withholds it).
-  | typeof CLOSED_FAMILY_PARTLY_REVERSED_CODE;
+  | typeof CLOSED_FAMILY_PARTLY_REVERSED_CODE
+  // #4110 review round 5: a warning too — the re-bill sits beside a member's
+  // own live Xero invoice.
+  | typeof CLOSED_FAMILY_REBILL_BESIDE_INVOICE_CODE;
 
 // One resolved invoice line of an annual fee (#1932, E6). `xeroAccountCode` /
 // `xeroItemCode` carry the per-component override if set, otherwise null until the
@@ -498,6 +502,10 @@ export async function buildSubscriptionBillingPreview(input: {
               select: {
                 memberId: true,
                 status: true,
+                // #4110 review round 5: a member's own live invoice beside a
+                // re-bill (warning), and who a bare invoice may belong to.
+                xeroInvoiceId: true,
+                xeroInvoiceNumber: true,
                 member: {
                   select: {
                     billingFamilyGroupId: true,
@@ -794,6 +802,16 @@ export async function buildSubscriptionBillingPreview(input: {
   const partlyReversedClosedFamilies = new Map<string, { chargeId: string; reversedMemberNames: string[] }>();
   const decisionReasonByFamilyKey = new Map<string, Map<string, ClosedFamilyDecisionReason>>();
   const settledCoveredByFamilyKey = new Map<string, Set<string>>();
+  // #4110 review round 5: per closed family/type, the members whose own bare
+  // Xero invoice may be Finance's difference invoice (decision 4, choice 2) —
+  // exempt at a close, or reversed under an OLDER charge and not paid at the
+  // newest close. Only their invoice is let past the #2161 suppression; a
+  // member paid at the newest close holds their own family invoice, which
+  // keeps suppressing, or a second full family invoice would be minted.
+  const differenceInvoiceHoldersByFamilyKey = new Map<string, Set<string>>();
+  // ...and, for a family billed again, the covered members already holding a
+  // Xero invoice for the season, so the officer is warned before confirming.
+  const invoiceHoldersByFamilyKey = new Map<string, Array<{ memberName: string; invoice: string }>>();
   const familyChargesByKey = new Map<string, Array<(typeof existingFamilyCharges)[number]>>();
   for (const charge of [...existingFamilyCharges].sort(newestChargeFirst)) {
     const key = `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`;
@@ -810,9 +828,13 @@ export async function buildSubscriptionBillingPreview(input: {
     const familyRows = charges.flatMap((charge) =>
       charge.coverage.filter((row) => isBilledThroughFamily(row.subscription.member, charge.familyGroupId)));
     const newest = charges[0]!;
-    const reversed = newest.coverage
-      .filter((row) => isBilledThroughFamily(row.subscription.member, newest.familyGroupId))
-      .filter(isClosedCoveragePaymentReversed);
+    const newestRows = newest.coverage.filter((row) => isBilledThroughFamily(row.subscription.member, newest.familyGroupId));
+    const reversed = newestRows.filter(isClosedCoveragePaymentReversed);
+    const paidAtNewestClose = new Set(newestRows.filter(wasPaidAtClose).map((row) => row.subscription.memberId));
+    differenceInvoiceHoldersByFamilyKey.set(key, new Set(familyRows
+      .filter((row) => !paidAtNewestClose.has(row.subscription.memberId)
+        && (!wasPaidAtClose(row) || isClosedCoveragePaymentReversed(row)))
+      .map((row) => row.subscription.memberId)));
     if (reversed.length === 0) {
       billedFamilyTypes.set(key, newest.id);
       const decisions = new Map<string, ClosedFamilyDecisionReason>();
@@ -829,9 +851,22 @@ export async function buildSubscriptionBillingPreview(input: {
       settledCoveredByFamilyKey.set(key, settled);
       continue;
     }
-    const reversedIds = new Set(reversed.map((row) => row.subscription.memberId));
+    // A member's subscription has ONE status, so a reversed member (no longer
+    // settled) can never match here: no need to exclude them by id.
     const paymentStillStands = familyRows.some((row) =>
-      wasPaidAtClose(row) && isSubscriptionSettled(row.subscription.status) && !reversedIds.has(row.subscription.memberId));
+      wasPaidAtClose(row) && isSubscriptionSettled(row.subscription.status));
+    const holders = new Map<string, { memberName: string; invoice: string }>();
+    for (const row of familyRows) {
+      if (row.subscription.xeroInvoiceId == null || holders.has(row.subscription.memberId)) continue;
+      holders.set(row.subscription.memberId, {
+        memberName: row.memberName,
+        invoice: row.subscription.xeroInvoiceNumber ?? row.subscription.xeroInvoiceId,
+      });
+    }
+    if (holders.size > 0) {
+      invoiceHoldersByFamilyKey.set(key, [...holders.values()].sort((left, right) =>
+        compareOrdinal(left.memberName, right.memberName) || compareOrdinal(left.invoice, right.invoice)));
+    }
     if (paymentStillStands) {
       partlyReversedClosedFamilies.set(key, {
         chargeId: newest.id,
@@ -866,11 +901,15 @@ export async function buildSubscriptionBillingPreview(input: {
   // the family fee; it must work for holders OUTSIDE the scoped member set, which
   // it does because the blocker query fetched the same resolution inputs and the
   // fallback types cover holder roles too.
+  // The holder's effective membership type: the season's assignment, else
+  // their role's default type — the main loop's own fallback.
+  const resolveMemberMembershipType = (holder: (typeof familyInvoiceBlockers)[number]["member"]) =>
+    holder.seasonalMembershipAssignments[0]?.membershipType
+      ?? fallbackTypeByKey.get(defaultMembershipTypeKeyForRole(holder.role));
   const resolveMemberBillingBasis = async (
     holder: (typeof familyInvoiceBlockers)[number]["member"],
   ): Promise<MembershipFeeBillingBasis | null> => {
-    const membershipType = holder.seasonalMembershipAssignments[0]?.membershipType
-      ?? fallbackTypeByKey.get(defaultMembershipTypeKeyForRole(holder.role));
+    const membershipType = resolveMemberMembershipType(holder);
     if (!membershipType || membershipType.subscriptionBehavior === "NOT_REQUIRED") return null;
     let feeTier: AgeTier | null;
     if (membershipType.subscriptionBehavior === "BASED_ON_AGE_TIER") {
@@ -885,9 +924,6 @@ export async function buildSubscriptionBillingPreview(input: {
     return fee?.billingBasis ?? null;
   };
 
-  const familiesWithClosedCharge = new Set(
-    existingFamilyCharges.filter(isChargeClosedAsAlreadyPaid).map((charge) => charge.familyGroupId),
-  );
   // #2147 FINDING 1 + #2161 (D1): decide, per surfaced blocker, whether it
   // suppresses ITS family group's PER_FAMILY charge. Coverage trigger: an active
   // claim from a PER_FAMILY charge for THIS family group suppresses (a PER_MEMBER
@@ -916,12 +952,17 @@ export async function buildSubscriptionBillingPreview(input: {
     // released, then the group re-bills as one entry — see
     // docs/guides/subscriptions.md).
     let basisUnresolvable = false;
-    // #4110 review round 4: never in a family a charge closed as already paid
-    // still governs. A bare invoice there is Finance's hand-made difference
-    // invoice (decision 4) or a member's own, and the closed charge — not the
-    // invoice — decides whether the family owes; letting the invoice suppress
-    // the family would hide a reversal the family must be billed for.
-    if (!suppresses && sub?.xeroInvoiceId != null && !familiesWithClosedCharge.has(row.familyGroupId)) {
+    // #4110 review rounds 4 and 5: a bare invoice held by a member a closed
+    // charge for this family and type covered without a standing payment —
+    // exempt at a close, or reversed under an older charge — is Finance's
+    // difference invoice (decision 4), and the closed charge decides whether
+    // the family owes, so it does not suppress. Any other bare invoice,
+    // including one held by a member paid at the newest close (their own
+    // family invoice), keeps suppressing as #2161 requires.
+    const holderType = resolveMemberMembershipType(row.member);
+    const differenceInvoice = holderType != null && (differenceInvoiceHoldersByFamilyKey
+      .get(`${input.seasonYear}:${holderType.id}:family:${row.familyGroupId}`)?.has(row.memberId) ?? false);
+    if (!suppresses && sub?.xeroInvoiceId != null && !differenceInvoice) {
       const holderBasis = await resolveMemberBillingBasis(row.member);
       if (holderBasis !== "PER_MEMBER") {
         suppresses = true;
@@ -1301,6 +1342,23 @@ export async function buildSubscriptionBillingPreview(input: {
       familyGroupId: entry.familyGroupId,
       membershipTypeId: entry.membershipTypeId,
       context: { closedChargeId: partly.chargeId, reversedMemberNames: partly.reversedMemberNames },
+    }));
+  }
+  // #4110 review round 5: the re-bill sits beside a covered member's own live
+  // Xero invoice (usually Finance's hand-made difference invoice), so the
+  // full family fee may overbill. Warned like a partial reversal.
+  for (const entry of entries) {
+    const holders = invoiceHoldersByFamilyKey.get(entry.key);
+    if (!holders) continue;
+    const named = holders.map((holder) => `${holder.memberName} (${holder.invoice})`).join(", ");
+    exceptions.push(exception({
+      code: CLOSED_FAMILY_REBILL_BESIDE_INVOICE_CODE,
+      message: `This family's ${entry.membershipTypeName} charge was closed as already paid and is now billed again for the full family fee, but ${holders.length === 1 ? "a member it covered already holds a Xero invoice" : "members it covered already hold Xero invoices"} for this season: ${named}. Confirming invoices the full family fee to ${entry.recipient.name} as well; check ${holders.length === 1 ? "that invoice" : "those invoices"} in Xero first.`,
+      seasonYear: input.seasonYear,
+      memberId: null,
+      familyGroupId: entry.familyGroupId,
+      membershipTypeId: entry.membershipTypeId,
+      context: { invoiceHolders: holders },
     }));
   }
 

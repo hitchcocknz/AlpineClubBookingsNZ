@@ -296,6 +296,32 @@ describe("membership subscription confirmation", () => {
     expect(result).toEqual({ chargeIds: [], exceptionCount: 1 });
   });
 
+  it("membership approval withholds a re-bill that sits beside a member's own Xero invoice (review round 5 item 2)", async () => {
+    seedPartlyReversedClosedFamily();
+    mocks.chargeFindMany.mockResolvedValue([{
+      id: "charge-closed", createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      familyGroupId: "family-1", membershipTypeId: "type-1", billingBasis: "PER_FAMILY", status: "NOT_REQUIRED",
+      coverage: [
+        // The parent's payment at the close was reversed: the family is billed again.
+        { memberName: "Parent Member", subscriptionStatusAtClose: "PAID", subscription: { memberId: "parent-1", status: "NOT_INVOICED", xeroInvoiceId: null, xeroInvoiceNumber: null, member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
+        // The kid, exempt at the close, holds Finance's difference invoice.
+        { memberName: "Kid Member", subscriptionStatusAtClose: "NOT_REQUIRED", subscription: { memberId: "member-1", status: "UNPAID", xeroInvoiceId: "xi-diff", xeroInvoiceNumber: "INV-DIFF", member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
+      ],
+    }]);
+
+    const result = await queueApprovedMembershipSubscriptionCharges({
+      memberIds: ["member-1"],
+      approvedByMemberId: "approver-1",
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(mocks.chargeUpsert).not.toHaveBeenCalled();
+    expect(mocks.exceptionUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ code: "CLOSED_FAMILY_REBILL_BESIDE_INVOICE", source: "NEW_MEMBER_APPROVAL" }),
+    }));
+    expect(result).toEqual({ chargeIds: [], exceptionCount: 1 });
+  });
+
   it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {
     mocks.fee.mockResolvedValue({
       id: "fee-1", amountCents: 12_000, billingBasis: "PER_MEMBER", prorationRule: "NONE",
