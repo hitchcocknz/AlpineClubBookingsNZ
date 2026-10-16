@@ -11,10 +11,8 @@ import {
 } from "@/lib/xero-admin-health";
 import { findOrphanedAppliedCredits } from "@/lib/orphaned-applied-credit-backfill";
 import { queueWaitingPaidAnotherWayNotesForPayment } from "@/lib/paid-another-way-receipt-note";
-import {
-  findPaymentsWithUnrecordedLateCaptures,
-  recoverLostLateCaptureRecordsForPayment,
-} from "@/lib/late-capture-record-recovery";
+import { recoverLostLateCaptureRecordsForPayment } from "@/lib/late-capture-record-recovery";
+import { findPaymentsWithUnrecordedLateCaptures } from "@/lib/late-capture-unrecorded-refunds";
 import {
   enqueueXeroRefundCreditNoteOperation,
   kickQueuedXeroOutboxOperationsIfConnected,

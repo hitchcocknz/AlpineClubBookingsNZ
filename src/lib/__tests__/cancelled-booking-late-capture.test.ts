@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   recordAutomaticCancelledBookingRefundTask: vi.fn(),
   sendAdminLateCaptureAutoRefundAlert: vi.fn(),
   sendAdminLateCaptureHandBackConflictAlert: vi.fn(),
+  onceEverKeys: [] as string[],
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -57,6 +58,15 @@ vi.mock("@/lib/email", () => ({
     mocks.sendAdminLateCaptureAutoRefundAlert(...args),
   sendAdminLateCaptureHandBackConflictAlert: (...args: unknown[]) =>
     mocks.sendAdminLateCaptureHandBackConflictAlert(...args),
+}));
+
+// #4149: the double-payment arm is claimed once ever; here the claim is won and its send runs.
+vi.mock("@/lib/admin-alert-once", () => ({
+  sendAdminAlertOnceEver: async ({ key, send }: { key: string; send: () => Promise<unknown> }) => {
+    mocks.onceEverKeys.push(key);
+    await send();
+    return true;
+  },
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -582,6 +592,8 @@ describe("announceAutomaticLateCaptureRefund (#2773 / #2774 — one notification
       handCompletedAfterRefund: true,
     }, CLUB_FORMAT_TEST);
 
+    // Claimed once ever per capture, whichever path finds it (#4149).
+    expect(mocks.onceEverKeys).toContain("late-capture-double-refund:pi_late");
     expect(mocks.logAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "booking.payment.late_capture_double_refund_suspected",

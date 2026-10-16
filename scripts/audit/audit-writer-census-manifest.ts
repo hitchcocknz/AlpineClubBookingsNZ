@@ -1491,7 +1491,7 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/lib/late-capture-record-recovery.ts::recoverLostLateCaptureRecord#0": "payment",
   // #4170: a marked late capture refunded outside the app, named rather than
   // noted. A booking id in `targetId` and no member column, as above.
-  "src/lib/late-capture-record-recovery.ts::readUnrecordedLateCaptureRefund#0": "payment",
+  "src/lib/late-capture-unrecorded-refunds.ts::readUnrecordedLateCaptureRefund#0": "payment",
   /*
     #2773 / #2774 — the three write sites of the shared late-capture epilogue,
     pinned on arrival rather than left unlisted.

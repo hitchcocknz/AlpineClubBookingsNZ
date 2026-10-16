@@ -10,6 +10,7 @@ import {
   type AdminAlertSendResult,
 } from "@/lib/email/admin-alert-send-result";
 import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
 
 /**
  * Send an admin alert at most once ever for `key` (#3672, #3663): the one rule
@@ -70,4 +71,20 @@ export async function sendAdminAlertOnceEver({
     );
   }
   return false;
+}
+
+/**
+ * #4149: which of these once-ever keys are held now - claimed and kept, or
+ * deferred for a day because nobody could receive the alert - so a sweep can
+ * leave a subject whose alert is settled off its list. A key never claimed, or
+ * given back after a send that threw, is not held, and the next
+ * `sendAdminAlertOnceEver` for it sends. A read, never a claim.
+ */
+export async function findHeldOnceEverAlertKeys(keys: readonly string[], now: Date): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const rows = await prisma.alertCooldown.findMany({
+    where: { key: { in: [...keys] }, lastAlertedAt: { gte: new Date(now.getTime() - ALERT_ONCE_EVER_WINDOW_MS) } },
+    select: { key: true },
+  });
+  return new Set(rows.map((row) => row.key));
 }

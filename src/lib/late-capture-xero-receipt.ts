@@ -219,21 +219,23 @@ export async function findLateCapturePaymentIntents(
  * `"hand-completed"` is a `COMPLETED` automatic-reason row that carries NO
  * approval marker: the record writer never completes a row, so an operator
  * handed the capture back by hand - beside a refund the late-capture door sent,
- * #2774's residual double payment. A row WITH the approval marker is #3639's
+ * #2774's residual double payment. The approval-marked row itself is #3639's
  * treasurer task (`holdLateCaptureForTreasurerIfRequired` puts the marker on the
- * confirm route's own `OPEN` row), which the approval itself completes, so it is
- * always `"record"`, and an approval marker on any row of the capture wins.
+ * confirm route's own `OPEN` row, which the approval completes), so it is
+ * `"record"` whatever its status; a SEPARATE unmarked hand-`COMPLETED` row on
+ * the same capture still makes it `"hand-completed"`, because the treasurer's
+ * refund and an operator's hand-back are then two payments.
  */
 export async function findClosedLateCaptureRecords(
   paymentIntentIds: readonly string[],
 ): Promise<Map<string, "record" | "hand-completed">> {
   const found = new Map<string, "record" | "hand-completed">();
-  const rows = await findLateCaptureTaskRows(paymentIntentIds, prisma);
-  const approved = new Set(rows.map((task) => task.approvalIntentId).filter((id): id is string => id !== null));
-  for (const intent of approved) found.set(intent, "record");
-  for (const task of rows) {
-    if (task.approvalIntentId || !task.reasonIntentId || approved.has(task.reasonIntentId)) continue;
-    if (task.status === ManualRefundTaskStatus.OPEN) continue;
+  for (const task of await findLateCaptureTaskRows(paymentIntentIds, prisma)) {
+    if (task.approvalIntentId) {
+      if (!found.has(task.approvalIntentId)) found.set(task.approvalIntentId, "record");
+      continue;
+    }
+    if (!task.reasonIntentId || task.status === ManualRefundTaskStatus.OPEN) continue;
     if (task.status === ManualRefundTaskStatus.COMPLETED) found.set(task.reasonIntentId, "hand-completed");
     else if (!found.has(task.reasonIntentId)) found.set(task.reasonIntentId, "record");
   }

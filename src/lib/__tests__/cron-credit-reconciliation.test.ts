@@ -57,6 +57,8 @@ vi.mock("@/lib/paid-another-way-receipt-note", () => ({
 // #4149: a late capture's lost record is checked for before any card note.
 vi.mock("@/lib/late-capture-record-recovery", () => ({
   recoverLostLateCaptureRecordsForPayment: mocks.recoverLostLateCaptureRecordsForPayment,
+}));
+vi.mock("@/lib/late-capture-unrecorded-refunds", () => ({
   findPaymentsWithUnrecordedLateCaptures: mocks.findPaymentsWithUnrecordedLateCaptures,
 }));
 

@@ -222,6 +222,20 @@ describe("findClosedLateCaptureRecords (#4149)", () => {
     expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "record" });
   });
 
+  it("still reads a SEPARATE unmarked hand-COMPLETED #2700 row on an approved capture as a hand completion: two payments", async () => {
+    mocks.taskFindMany.mockResolvedValue([
+      { lateCaptureApprovalIntentId: "pi_held", reason: null, status: "DISMISSED" },
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_held"), status: "COMPLETED" },
+    ]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "hand-completed" });
+    // In either order.
+    mocks.taskFindMany.mockResolvedValue([
+      { lateCaptureApprovalIntentId: null, reason: cancelledBookingModificationRefundReason("pi_held"), status: "COMPLETED" },
+      { lateCaptureApprovalIntentId: "pi_held", reason: null, status: "DISMISSED" },
+    ]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "hand-completed" });
+  });
+
 
   it("counts an approval task in any status and a closed automatic-refund row, not an OPEN #2700 row the refund never closed, and tells a hand completion apart", async () => {
     mocks.taskFindMany.mockResolvedValue([

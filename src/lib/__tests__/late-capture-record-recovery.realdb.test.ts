@@ -61,6 +61,8 @@ const LATE_CENTS = 24_000;
 const REFUND_ENTRY = "booking.payment.refunded_after_cancellation";
 const RECOVERED_ENTRY = "booking.payment.auto_refund_record_recovered";
 const REFUNDED_ON = new Date("2026-06-25T00:00:00.000Z");
+const OUTSIDE_APP_ALERT_KEY = `late-capture-refunded-outside-app:${LATE_INTENT}`;
+const ALERT_KEYS = [OUTSIDE_APP_ALERT_KEY, `late-capture-double-refund:${LATE_INTENT}`];
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let webhook: typeof import("@/lib/stripe-webhook-service");
@@ -91,6 +93,7 @@ function lateCaptureRefund(): Stripe.Refund {
   () => {
     async function deletePaymentRows() {
       await prisma.auditLog.deleteMany({ where: { targetId: BOOKING_ID } });
+      await prisma.alertCooldown.deleteMany({ where: { key: { in: ALERT_KEYS } } });
       await prisma.processedWebhookEvent.deleteMany({ where: { eventId: { startsWith: "evt_race_4149_" } } });
       await prisma.webhookLog.deleteMany({ where: { eventId: { startsWith: "evt_race_4149_" } } });
       await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -482,29 +485,106 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(await refundEntries(2)).toHaveLength(1);
     });
 
-    describe("charge.refunded arriving before the late capture's record (#4170)", () => {
-      /** Stripe's `charge.refunded` for the late capture's charge - the real webhook processor. */
-      async function chargeRefunded(refund: Stripe.Refund) {
-        eventSequence += 1;
-        stripeRaceHooks.listChargeRefunds = async () => [refund];
-        const event = {
-          id: `evt_race_4149_${eventSequence}`,
-          object: "event",
-          type: "charge.refunded",
-          request: null,
-          data: {
-            object: {
-              id: `ch_${LATE_INTENT}`,
-              object: "charge",
-              payment_intent: LATE_INTENT,
-              amount: LATE_CENTS,
-              amount_refunded: LATE_CENTS,
-              refunds: { data: [refund] },
-            },
+    /** Stripe's `charge.refunded` for the late capture's charge - the real webhook processor. */
+    async function chargeRefunded(refund: Stripe.Refund) {
+      eventSequence += 1;
+      stripeRaceHooks.listChargeRefunds = async () => [refund];
+      const event = {
+        id: `evt_race_4149_${eventSequence}`,
+        object: "event",
+        type: "charge.refunded",
+        request: null,
+        data: {
+          object: {
+            id: `ch_${LATE_INTENT}`,
+            object: "charge",
+            payment_intent: LATE_INTENT,
+            amount: LATE_CENTS,
+            amount_refunded: LATE_CENTS,
+            refunds: { data: [refund] },
           },
-        } as unknown as Stripe.Event;
-        return webhook.processStripeWebhookEvent(event);
-      }
+        },
+      } as unknown as Stripe.Event;
+      return webhook.processStripeWebhookEvent(event);
+    }
+
+    it("recovers the lost record of the repair tool's own refund: its metadata is a late-capture door's too", async () => {
+      const stripe = armStripe();
+      stripeRaceHooks.listRefunds = async () => {
+        stripe.listed += 1;
+        return [{ ...lateCaptureRefund(), metadata: { bookingId: BOOKING_ID, reason: "cancelled_booking_late_capture_repair" } }];
+      };
+
+      await expect(recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID)).resolves.toEqual({
+        recovered: [LATE_INTENT],
+        unresolved: false,
+      });
+      expect(await recordRows()).toHaveLength(1);
+    });
+
+    it("re-raises a refunded-outside-the-app alert whose claim is not held, from the nightly self-heal (#4170)", async () => {
+      await deletePaymentRows();
+      await seedAfterTheCrash({ cancelClaim: true, openTask: false });
+      const stripe = armStripe();
+      // Named at the time, but its alert's send threw and gave the claim back.
+      await prisma.auditLog.create({
+        data: {
+          action: "booking.payment.late_capture_refunded_outside_app",
+          category: "payment",
+          entityType: "Booking",
+          entityId: BOOKING_ID,
+          targetId: BOOKING_ID,
+          details: JSON.stringify({ paymentIntentId: LATE_INTENT, refundIds: ["re_dashboard"], refundedCents: LATE_CENTS }),
+        },
+      });
+      expect(await prisma.alertCooldown.count({ where: { key: OUTSIDE_APP_ALERT_KEY } })).toBe(0);
+
+      const { reconcileCreditBalances } = await import("@/lib/cron-credit-reconciliation");
+      await reconcileCreditBalances();
+
+      // The claim is taken and kept: the alert went to the unmuteable sender.
+      expect(await prisma.alertCooldown.count({ where: { key: OUTSIDE_APP_ALERT_KEY } })).toBe(1);
+      // No door refund can ever appear for it, so Stripe is not asked.
+      expect(stripe.listed).toBe(0);
+      expect(await recordRows()).toHaveLength(0);
+    });
+
+    it("leaves a superseded-payment refund on a cancelled booking alone: no note, no alert, no Stripe read, no gap (#4173)", async () => {
+      await deletePaymentRows();
+      await seedAfterTheCrash({ cancelClaim: true, openTask: false }, false);
+      // The superseded-payment refund took the capture back.
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_SUPERSEDED_PAYMENT",
+          status: "SUCCEEDED",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentTransactionId: LATE_TXN,
+          paymentIntentId: LATE_INTENT,
+          amountCents: LATE_CENTS,
+          idempotencyKey: "race-4149-superseded-refund",
+        },
+      });
+      const stripe = armStripe();
+      const superseded = {
+        ...lateCaptureRefund(),
+        id: "re_race_4149_superseded",
+        metadata: { bookingId: BOOKING_ID, reason: "zero_dollar_batch_modification_superseded" },
+      } as unknown as Stripe.Refund;
+
+      expect((await chargeRefunded(superseded)).init?.status ?? 200).toBe(200);
+      const { reconcileCreditBalances } = await import("@/lib/cron-credit-reconciliation");
+      await reconcileCreditBalances();
+
+      expect(await prisma.paymentRefund.count({ where: { stripeRefundId: "re_race_4149_superseded" } })).toBe(1);
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } })).toBe(0);
+      expect(await prisma.auditLog.count({ where: { targetId: BOOKING_ID, action: "booking.payment.late_capture_refunded_outside_app" } })).toBe(0);
+      expect(await prisma.alertCooldown.count({ where: { key: { in: ALERT_KEYS } } })).toBe(0);
+      expect(stripe.listed).toBe(0);
+      expect(await uncoveredCents()).toBe(0);
+    });
+
+    describe("charge.refunded arriving before the late capture's record (#4170)", () => {
       const queuedNotes = () => prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } });
 
       it("queues no generic note for a late-capture door refund, and the self-heal's record leaves no gap", async () => {

@@ -335,6 +335,8 @@ vi.mock("@/lib/webhook-log", () => ({
 }));
 
 // #4104: a refund Stripe accepted and failed later.
+// #4170: the outside-the-app refund alert's own unmuteable sender.
+const mockSendAdminLateCaptureRefundedOutsideAppAlert = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
 const mockRecordRefusedCardRefund = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>(async () => "recorded"));
 vi.mock("@/lib/card-refund-status-sync", () => ({
   recordRefusedCardRefund: (...args: unknown[]) => mockRecordRefusedCardRefund(...args),
@@ -382,6 +384,7 @@ vi.mock("@/lib/xero-error-alert", () => ({
 vi.mock("@/lib/email", () => ({
   sendBookingConfirmedEmail: (...args: unknown[]) => mockSendBookingConfirmedEmail(...args),
   sendAdminPaymentFailureAlert: (...args: unknown[]) => mockSendAdminPaymentFailureAlert(...args),
+  sendAdminLateCaptureRefundedOutsideAppAlert: (...args: unknown[]) => mockSendAdminLateCaptureRefundedOutsideAppAlert(...args),
   // #2761: the late-capture path's own unmuteable alert.
   sendAdminLateCaptureAutoRefundAlert: (...args: unknown[]) =>
     mockSendAdminLateCaptureAutoRefundAlert(...args),
@@ -1002,12 +1005,13 @@ describe("Stripe webhook Xero alerting", () => {
       expect(mockLogAudit).toHaveBeenCalledWith(
         expect.objectContaining({ action: "booking.payment.late_capture_refunded_outside_app", severity: "important", entityId: "booking-3" }),
       );
-      // The officers are told, once ever for the capture, through the payment-recovery alert.
+      // Finance is told, once ever for the capture, through its own unmuteable alert - never "Payment Failed".
       expect(mockClaimAlertCooldown).toHaveBeenCalledWith(expect.objectContaining({ key: "late-capture-refunded-outside-app:pi_late" }));
-      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentIntentId: "pi_late", amountCents: 3800, errorMessage: expect.stringContaining("refunded outside the app") }),
+      expect(mockSendAdminLateCaptureRefundedOutsideAppAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_late", refundedCents: 3800, bookingId: "booking-3" }),
         expect.anything(),
       );
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
     it("counts a cancel claim on the intent as landed after the cancel: a dashboard refund before the late success notice", async () => {
@@ -1035,6 +1039,7 @@ describe("Stripe webhook Xero alerting", () => {
         expect.objectContaining({ action: "booking.payment.late_capture_refunded_outside_app" }),
       );
       expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+      expect(mockSendAdminLateCaptureRefundedOutsideAppAlert).not.toHaveBeenCalled();
     });
 
     it("still queues the generic note for an ordinary refund on the same cancelled booking", async () => {
@@ -2928,6 +2933,7 @@ describe("Stripe webhook Xero alerting", () => {
       ).toHaveBeenCalledWith("pi_additional_late");
       expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
       expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+      expect(mockSendAdminLateCaptureRefundedOutsideAppAlert).not.toHaveBeenCalled();
     });
 
     /*

@@ -35,10 +35,10 @@ import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-cred
 import {
   describeLateCaptureFromBooking,
   finishAutomaticLateCaptureRefund,
-  readUnrecordedLateCaptureRefund,
   recoverLostLateCaptureRecord,
   type LateCaptureIdentity,
 } from "@/lib/late-capture-record-recovery";
+import { readUnrecordedLateCaptureRefund } from "@/lib/late-capture-unrecorded-refunds";
 import { lateCaptureOwnChargeSlice, refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
