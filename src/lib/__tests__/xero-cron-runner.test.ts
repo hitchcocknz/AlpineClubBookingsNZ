@@ -185,7 +185,12 @@ describe("xero cron runner", () => {
     expect((error as XeroCronRunnerError).payload.linkCleanup).toEqual(cleanup);
     expect((error as XeroCronRunnerError).message).toContain("link_a");
     expect(recordCronRun).toHaveBeenCalledWith(
-      expect.objectContaining({ jobName: "xero-link-cleanup", status: "FAILURE", resultSummary: cleanup })
+      expect.objectContaining({
+        jobName: "xero-link-cleanup",
+        status: "FAILURE",
+        resultSummary: cleanup,
+        error: expect.stringContaining("link_a"),
+      })
     );
   });
 
@@ -201,6 +206,6 @@ describe("xero cron runner", () => {
       },
     });
 
-    expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobName: "xero-link-cleanup", status: "SUCCESS" }));
+    expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobName: "xero-link-cleanup", status: "SUCCESS", error: null }));
   });
 });

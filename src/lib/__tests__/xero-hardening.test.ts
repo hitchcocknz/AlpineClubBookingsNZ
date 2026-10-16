@@ -1683,9 +1683,14 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       { store: expect.any(Object) }
     );
     expect(mocks.upsertXeroObjectLink.mock.calls[0]?.[0]).not.toHaveProperty("active");
-    // On the heal's own transaction, after the link row lock.
+    // On the heal's own transaction, after the link row lock and then the
+    // payment row, taken NOWAIT.
     expect(mocks.upsertXeroObjectLink.mock.calls[0]?.[1]).toEqual({ store: expect.any(Object) });
-    expect(mocks.healExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.healExecuteRaw).toHaveBeenCalledTimes(2);
+    expect(mocks.healExecuteRaw.mock.calls.map((call) => (call[0] as string[]).join("?"))).toEqual([
+      'SELECT 1 FROM "XeroObjectLink" WHERE "id" = ? FOR UPDATE',
+      'SELECT 1 FROM "Payment" WHERE "id" = ? FOR NO KEY UPDATE NOWAIT',
+    ]);
   });
 
   it("keeps single-canonical enforcement for non-Stripe refund notes and malformed or foreign links (#2901)", async () => {
@@ -1918,6 +1923,35 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       expect(result.healedCancelledRefundCreditNoteMirrors).toBe(0);
       expect(result.deactivatedLinks).toBe(0);
       expect(result.deactivatedLinkIds).toEqual([]);
+    });
+
+    it("defers, with no write and no wait, when a payment-first writer holds the payment row (55P03 from NOWAIT)", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_a" }]
+      );
+      mocks.linkFindMany.mockResolvedValue([link("link_a", "cn_a", { status: "VOIDED" })]);
+      // The link lock succeeds; the payment lock is refused at once.
+      mocks.healExecuteRaw.mockResolvedValueOnce(1).mockRejectedValueOnce({ code: "P2010", meta: { code: "55P03" } });
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+      expect(result.deferredRefundNoteHealLinkIds).toEqual(["link_a"]);
+      expect(result.failedRefundNoteHealLinkIds).toEqual([]);
+      expect(result.deactivatedLinks).toBe(0);
+    });
+
+    it("counts any other database error as a failed heal, not a deferral", async () => {
+      mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE" ? [] : [{ id: "pay_ib", xeroInvoiceId: "inv_ib", xeroRefundCreditNoteId: "cn_a" }]
+      );
+      mocks.linkFindMany.mockResolvedValue([link("link_a", "cn_a", { status: "VOIDED" })]);
+      mocks.healExecuteRaw.mockResolvedValueOnce(1).mockRejectedValueOnce({ code: "P2010", meta: { code: "40P01" } });
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(result.failedRefundNoteHealLinkIds).toEqual(["link_a"]);
+      expect(result.deferredRefundNoteHealLinkIds).toEqual([]);
     });
 
     it("defers, with no write, a payment with a credit-note operation that could still mint (the create records payment-then-link)", async () => {

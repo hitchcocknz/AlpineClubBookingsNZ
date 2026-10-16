@@ -350,7 +350,7 @@ describe("Xero admin bulk routes", () => {
     };
   }
 
-  it("audits and reports a link maintenance run whose refund-note heals partly failed (#4161)", async () => {
+  it("audits and reports a link maintenance run whose refund-note heals partly failed, as a warning (#4161)", async () => {
     mocks.cleanupStaleCanonicalXeroObjectLinks.mockResolvedValue(
       cleanupResult({ failedRefundNoteHealLinkIds: ["link_a"], deferredRefundNoteHealLinkIds: ["link_b"] })
     );
@@ -360,11 +360,13 @@ describe("Xero admin bulk routes", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.ok).toBe(false);
-    expect(body.message).toContain("healed 2 refund-note mirrors of VOIDED/DELETED Xero credit notes (1 failed, 1 deferred)");
+    expect(body.message).toContain(", deferred 1 heal behind a refund note still being created");
+    expect(body.warning).toBe("1 refund-note heal failed (link_a); the next nightly link cleanup retries it.");
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.logAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "XERO_LINK_LEDGER_MAINTENANCE",
-        details: expect.stringContaining("healed 2 refund-note mirrors of VOIDED/DELETED Xero credit notes (1 failed, 1 deferred)"),
+        details: expect.stringContaining("; 1 refund-note heal failed (link_a)"),
       })
     );
   });
@@ -375,6 +377,7 @@ describe("Xero admin bulk routes", () => {
     const response = await runLinkMaintenance();
 
     expect(response.status).toBe(500);
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.logAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "XERO_LINK_LEDGER_MAINTENANCE", details: expect.stringContaining("failed before it finished") })
     );
@@ -386,11 +389,14 @@ describe("Xero admin bulk routes", () => {
     expect(response.status).toBe(200);
     expect(mocks.backfillHistoricalXeroObjectLinks).toHaveBeenCalled();
     expect(mocks.cleanupStaleCanonicalXeroObjectLinks).toHaveBeenCalled();
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+    // The healed mirrors are part of the deactivated count, never added to it.
     expect(mocks.logAudit).toHaveBeenCalledWith({
       action: "XERO_LINK_LEDGER_MAINTENANCE",
       category: "xero",
       memberId: "admin-1",
-      details: "Backfilled 1 canonical Xero links, deactivated 2 stale canonical links and healed 2 refund-note mirrors of VOIDED/DELETED Xero credit notes (0 failed, 0 deferred)",
+      details:
+        "Backfilled 1 canonical Xero links, deactivated 2 stale canonical links (including 1 mirror of VOIDED/DELETED Xero refund notes), released 1 refund-note pointer left on an inactive voided note",
     });
     await expect(response.json()).resolves.toEqual({
       ok: true,
@@ -401,7 +407,7 @@ describe("Xero admin bulk routes", () => {
       },
       cleanup: cleanupResult(),
       message:
-        "Backfilled 1 missing canonical Xero link, deactivated 2 stale canonical links, healed 2 refund-note mirrors of VOIDED/DELETED Xero credit notes (0 failed, 0 deferred), and preserved 3 live per-refund note links (#2901, #3880, #4161).",
+        "Backfilled 1 missing canonical Xero link, deactivated 2 stale canonical links (including 1 mirror of VOIDED/DELETED Xero refund notes), released 1 refund-note pointer left on an inactive voided note, and preserved 3 live per-refund note links (#2901, #3880, #4161).",
     });
   });
 

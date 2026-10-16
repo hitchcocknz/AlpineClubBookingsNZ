@@ -18,18 +18,25 @@ export async function POST() {
   try {
     const backfill = await backfillHistoricalXeroObjectLinks();
     const cleanup = await cleanupStaleCanonicalXeroObjectLinks();
-    const healed = cleanup.healedCancelledRefundCreditNoteMirrors + cleanup.releasedInactiveRefundNotePointers;
+    const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
     const failed = cleanup.failedRefundNoteHealLinkIds.length;
-    const healSummary = `healed ${healed} refund-note mirror${healed === 1 ? "" : "s"} of VOIDED/DELETED Xero credit notes (${failed} failed, ${cleanup.deferredRefundNoteHealLinkIds.length} deferred)`;
-    auditDetails = `Backfilled ${backfill.totals.createdLinks} canonical Xero links, deactivated ${cleanup.deactivatedLinks} stale canonical links and ${healSummary}`;
+    const deferred = cleanup.deferredRefundNoteHealLinkIds.length;
+    // `deactivatedLinks` already includes the healed mirrors, so they are named as part of it.
+    const cleanupSummary = `deactivated ${plural(cleanup.deactivatedLinks, "stale canonical link")} (including ${plural(cleanup.healedCancelledRefundCreditNoteMirrors, "mirror")} of VOIDED/DELETED Xero refund notes), released ${plural(cleanup.releasedInactiveRefundNotePointers, "refund-note pointer")} left on an inactive voided note${deferred > 0 ? `, deferred ${plural(deferred, "heal")} behind a refund note still being created` : ""}`;
+    const warning =
+      failed > 0
+        ? `${plural(failed, "refund-note heal")} failed (${cleanup.failedRefundNoteHealLinkIds.join(", ")}); the next nightly link cleanup retries ${failed === 1 ? "it" : "them"}.`
+        : undefined;
+    auditDetails = `Backfilled ${backfill.totals.createdLinks} canonical Xero links, ${cleanupSummary}${warning ? `; ${warning}` : ""}`;
 
-    // A completed run answers 200 so the panel shows the message, failures
-    // included; `ok` says whether every heal landed.
+    // A completed run answers 200 so the panel can show what it did; a partial
+    // heal failure comes back as `warning`, which the panel styles as one.
     return NextResponse.json({
       ok: failed === 0,
       backfill,
       cleanup,
-      message: `Backfilled ${backfill.totals.createdLinks} missing canonical Xero link${backfill.totals.createdLinks === 1 ? "" : "s"}, deactivated ${cleanup.deactivatedLinks} stale canonical link${cleanup.deactivatedLinks === 1 ? "" : "s"}, ${healSummary}, and preserved ${cleanup.preservedStripeRefundCreditNoteLinks} live per-refund note link${cleanup.preservedStripeRefundCreditNoteLinks === 1 ? "" : "s"} (#2901, #3880, #4161).`,
+      message: `Backfilled ${plural(backfill.totals.createdLinks, "missing canonical Xero link")}, ${cleanupSummary}, and preserved ${plural(cleanup.preservedStripeRefundCreditNoteLinks, "live per-refund note link")} (#2901, #3880, #4161).`,
+      ...(warning ? { warning } : {}),
     });
   } catch (error) {
     logger.error({ err: error, adminMemberId: session.user.id }, "Failed to run Xero link ledger maintenance");

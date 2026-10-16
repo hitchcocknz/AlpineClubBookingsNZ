@@ -31,6 +31,7 @@ import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { asRecord } from "@/lib/xero-json";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
+import { isPostgresLockNotAvailable } from "@/lib/prisma-errors";
 import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 import {
   isPerDeltaRefundNoteLink,
@@ -125,55 +126,78 @@ const HEAL_LINK_SELECT = {
   metadata: true,
 } as const;
 
-/** Why the heal wrote nothing for a link: its state moved, or a create is in flight. */
+/** What one heal did: wrote, found its state moved, or was deferred to the next run. */
 type HealOutcome = "healed" | "skipped" | "deferred";
 
 /**
  * #4161 / #4192: heal one refund-note link through the link write. `expect`
  * names what the scan saw: an ACTIVE cancelled mirror (#4161), or an INACTIVE
  * cancelled mirror its own payment's pointer still names (#4192, left by the
- * old cleanup's direct flip). Under the link's row lock it re-reads the link
- * and writes nothing ("skipped") unless that still holds; it writes nothing
- * ("deferred") while any credit-note operation that could still mint on the
- * payment exists, the #2901 repair's refusal
- * (`findBlockingRefundCreditNoteOperationId`), because that create records
- * payment-then-link, the reverse of this order. Otherwise it re-asserts only
- * the recorded status (merged, so no other metadata key moves) with the
- * recorded number and URL, so `normalizePaymentRefundLinkWithClient` writes it
- * inactive and the write releases a pointer naming it (#4046). Order: link,
- * then payment, as the repair apply and the inbound void write. Local rows
- * only, no provider call. Idempotent: a healed link matches neither shape.
+ * old cleanup's direct flip).
+ *
+ * Order: the link row, then the Payment row - the #2901 repair apply's order
+ * and the funnel's own pointer release (#4046). Two writers take them the other
+ * way round inside their own transactions: the refund-note create's record and
+ * the outbox enqueue's existing-note branch (a group cancel or an edit review).
+ * So the Payment row is taken `NOWAIT`: a busy payment defers the heal with no
+ * write instead of waiting while it holds the link, and the heal can never be
+ * one side of a deadlock. Under both locks it re-reads the link (and, for
+ * #4192, the pointer) and writes nothing ("skipped") unless the scan's shape
+ * still holds. It also defers while the payment has a credit-note operation
+ * that could still mint (the #2901 repair's refusal,
+ * `findBlockingRefundCreditNoteOperationId`), since that create's record comes
+ * later. Otherwise it re-asserts only the recorded status (merged, so no other
+ * metadata key moves) with the recorded number and URL, so
+ * `normalizePaymentRefundLinkWithClient` writes it inactive and the write
+ * releases a pointer naming it. Local rows only, no provider call. Idempotent:
+ * a healed link matches neither shape.
  */
 async function healRefundNoteLink(linkId: string, expect: "active" | "pointedInactive"): Promise<HealOutcome> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT 1 FROM "XeroObjectLink" WHERE "id" = ${linkId} FOR UPDATE`;
-    const link = await tx.xeroObjectLink.findUnique({ where: { id: linkId }, select: HEAL_LINK_SELECT });
-    if (!link || !isCancelledRefundCreditNoteMirror(link) || link.active !== (expect === "active")) {
-      return "skipped";
+  const deferred = (paymentId: string | null, reason: string, blockingOperationId: string | null = null): HealOutcome => {
+    logger.warn({ linkId, paymentId, blockingOperationId, reason }, "Deferred a Xero refund-note link heal to the next run (#4161)");
+    return "deferred";
+  };
+  let paymentId: string | null = null;
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "XeroObjectLink" WHERE "id" = ${linkId} FOR UPDATE`;
+      const link = await tx.xeroObjectLink.findUnique({ where: { id: linkId }, select: HEAL_LINK_SELECT });
+      if (!link || !isCancelledRefundCreditNoteMirror(link) || link.active !== (expect === "active")) {
+        return "skipped";
+      }
+      paymentId = link.localId;
+      // Raises 55P03 at once if a payment-first writer holds the row (caught below).
+      await tx.$executeRaw`SELECT 1 FROM "Payment" WHERE "id" = ${link.localId} FOR NO KEY UPDATE NOWAIT`;
+      if (expect === "pointedInactive") {
+        const payment = await tx.payment.findUnique({ where: { id: link.localId }, select: { xeroRefundCreditNoteId: true } });
+        if (payment?.xeroRefundCreditNoteId !== link.xeroObjectId) return "skipped";
+      }
+      const blockingOperationId = await findBlockingRefundCreditNoteOperationId(link.localId, tx);
+      if (blockingOperationId) {
+        return deferred(link.localId, "a credit-note operation could still mint on this payment", blockingOperationId);
+      }
+      await upsertXeroObjectLink(
+        {
+          localModel: "Payment",
+          localId: link.localId,
+          xeroObjectType: "CREDIT_NOTE",
+          xeroObjectId: link.xeroObjectId,
+          xeroObjectNumber: link.xeroObjectNumber,
+          xeroObjectUrl: link.xeroObjectUrl,
+          role: "REFUND_CREDIT_NOTE",
+          metadata: { status: asRecord(link.metadata)?.status },
+          mergeMetadata: true,
+        },
+        { store: tx }
+      );
+      return "healed";
+    });
+  } catch (error) {
+    if (isPostgresLockNotAvailable(error)) {
+      return deferred(paymentId, "another writer holds the payment row");
     }
-    if (expect === "pointedInactive") {
-      const payment = await tx.payment.findUnique({ where: { id: link.localId }, select: { xeroRefundCreditNoteId: true } });
-      if (payment?.xeroRefundCreditNoteId !== link.xeroObjectId) return "skipped";
-    }
-    if (await findBlockingRefundCreditNoteOperationId(link.localId, tx)) {
-      return "deferred";
-    }
-    await upsertXeroObjectLink(
-      {
-        localModel: "Payment",
-        localId: link.localId,
-        xeroObjectType: "CREDIT_NOTE",
-        xeroObjectId: link.xeroObjectId,
-        xeroObjectNumber: link.xeroObjectNumber,
-        xeroObjectUrl: link.xeroObjectUrl,
-        role: "REFUND_CREDIT_NOTE",
-        metadata: { status: asRecord(link.metadata)?.status },
-        mergeMetadata: true,
-      },
-      { store: tx }
-    );
-    return "healed";
-  });
+    throw error;
+  }
 }
 
 /**
@@ -297,20 +321,10 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
           },
         ],
       },
-      select: {
-        id: true,
-        localModel: true,
-        localId: true,
-        xeroObjectType: true,
-        xeroObjectId: true,
-        // #4161: the heal re-writes the link through the funnel, which sets both.
-        xeroObjectNumber: true,
-        xeroObjectUrl: true,
-        role: true,
-        // #2901 fix round: the merged inbound status decides whether a Stripe
-        // per-delta link still mirrors a LIVE note (see the filter below).
-        metadata: true,
-      },
+      // The heal's own shape. #2901 fix round: the merged inbound status in
+      // `metadata` decides whether a Stripe per-delta link still mirrors a
+      // LIVE note (see the filter below).
+      select: HEAL_LINK_SELECT,
     }),
   ]);
 

@@ -166,17 +166,20 @@ async function runRecordedXeroTask<T>({
   work,
   recordCronRun,
   statusFor = cronStatusForResult,
+  errorFor,
 }: {
   task: XeroCronTask;
   work: () => Promise<T> | T;
   recordCronRun: (input: RecordCronJobRunInput) => Promise<void> | void;
   statusFor?: (result: T) => CronJobRunStatus;
+  errorFor?: (result: T) => string | null;
 }): Promise<T> {
   const outcome = await runRecordedCronTask({
     jobName: XERO_CRON_JOB_NAMES[task],
     work,
     recordCronRun,
     statusFor,
+    errorFor,
     summaryFor: resultSummaryFor,
   });
   if (!outcome.ok) throw outcome.error;
@@ -329,6 +332,8 @@ export async function runXeroCronTaskList(
             taskDependencies.cleanupStaleCanonicalXeroObjectLinks ??
             cleanupStaleCanonicalXeroObjectLinks,
           statusFor: (result) => (canonicalLinkCleanupFailureMessage(result) ? "FAILURE" : "SUCCESS"),
+          // The health page's cron error reads this column.
+          errorFor: canonicalLinkCleanupFailureMessage,
         });
         payload.linkCleanup = linkCleanup;
         const healFailure = canonicalLinkCleanupFailureMessage(linkCleanup);
