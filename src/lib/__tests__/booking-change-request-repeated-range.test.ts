@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { nightsKeptByRepeatedRange } from "@/lib/booking-change-request-guests";
 import {
+  describeRequestedGuestNights,
   lockedPeriodRequestToBatchInput,
   storedLockedPeriodRequestSchema,
   storedRequestNamesNoChange,
@@ -224,5 +225,54 @@ describe("approving a range-mode request keeps a gapped guest's nights (#4157)",
     expect(
       lockedPeriodRequestToBatchInput(storedLockedPeriodRequestSchema.parse(olderRow), LIVE),
     ).toBeNull();
+  });
+});
+
+describe("the officer's card reads a decided request without the live rows (#4157)", () => {
+  // Snapshot: Gap held 10 and 12 June. Since the decision the guest's live
+  // rows hold every night (a later edit, or an approval before this release
+  // that filled the gap): reading them for a decided row would call the
+  // range unchanged with no gap.
+  const request = {
+    original: {
+      checkIn: "2026-06-10",
+      checkOut: "2026-06-13",
+      guests: [{ ...snapshotGuest("gap", GAPPED), firstName: "Gap", lastName: "Guest" }],
+    },
+    requested: { guestStayRanges: [{ guestId: "gap", ...REPEATED }] },
+  };
+  const live = [liveGuest("gap", EVERY)];
+  const card = (status: string, requestedChanges: unknown = request) =>
+    describeRequestedGuestNights(requestedChanges, { status, guests: live })[0];
+  const KEPT = {
+    runs: [
+      { firstNight: "2026-06-10", lastNight: "2026-06-10" },
+      { firstNight: "2026-06-12", lastNight: "2026-06-12" },
+    ],
+    nightCount: 2,
+    unchanged: true,
+    fillsGaps: false,
+  };
+
+  it("reads a pending request against the live rows it is given", () => {
+    // Every night held now: the range is applied by its bounds, no change.
+    expect(card("REQUESTED")).toMatchObject({ nightCount: 3, unchanged: true });
+  });
+
+  it("reads a declined request against its snapshot, never the live rows", () => {
+    expect(card("REJECTED"), "INV-REQ-012: a declined row reads its snapshot").toMatchObject(KEPT);
+  });
+
+  it("reads an approval without a record as asked, never the live rows", () => {
+    expect(card("APPROVED"), "INV-REQ-012: an unrecorded approval is not reread").toMatchObject({
+      nightCount: 3,
+      unchanged: false,
+      fillsGaps: false,
+    });
+  });
+
+  it("reads an approval with a record exactly as recorded", () => {
+    const recorded = { ...request, keptNights: [{ guestId: "gap", nights: GAPPED }] };
+    expect(card("APPROVED", recorded), "INV-REQ-012: a recorded approval kept them").toMatchObject(KEPT);
   });
 });
