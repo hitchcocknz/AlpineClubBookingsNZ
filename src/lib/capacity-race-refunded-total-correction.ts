@@ -8,6 +8,7 @@ import { capacityRaceShortfallIntentId } from "@/lib/capacity-race-shortfall-tas
 import { READ_BACK_TIMEOUT_MS } from "@/lib/card-refund-status-sync";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { CAPTURED_TRANSACTION_STATUS_LIST, predatesRefundLedger } from "@/lib/payment-transaction-status";
 import {
@@ -210,6 +211,8 @@ export async function capacityRaceChargeForHandBack(
   await lockPaymentForRefundedTotal(store, task.paymentId);
   const charges = await store.paymentTransaction.findMany({
     where: { paymentId: task.paymentId, stripePaymentIntentId: raceIntentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+    // Exactly one is taken, or none: ordered only so the ledger's order census (`INV-PAY-133`) reads every capture read alike.
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: { id: true, amountCents: true, refundedAmountCents: true, createdAt: true },
   });
   if (charges.length !== 1) throw refuse("no-charge");
