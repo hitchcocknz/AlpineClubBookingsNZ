@@ -24,6 +24,7 @@ import addSchoolTeacherHutLeaderPolicy from "./20261101010000_add_school_teacher
 import addPendingSchoolAdultCapacity from "./20261101020000_add_pending_school_adult_capacity";
 import addLodgeSchoolHutLeaderKinds from "./20261114020000_add_lodge_school_hut_leader_kinds";
 import addPaymentTransactionInsertionSeq from "./20261117010000_add_payment_transaction_insertion_seq";
+import correctStarterPrivacyAuditRetention from "./20261118010000_correct_starter_privacy_audit_retention";
 import type { DataMigrationVerification } from "./types";
 
 /**
@@ -70,4 +71,5 @@ export const DATA_MIGRATION_VERIFICATIONS: DataMigrationVerification[] = [
   addPendingSchoolAdultCapacity,
   addLodgeSchoolHutLeaderKinds,
   addPaymentTransactionInsertionSeq,
+  correctStarterPrivacyAuditRetention,
 ];
