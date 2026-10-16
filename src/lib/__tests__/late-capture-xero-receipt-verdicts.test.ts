@@ -61,7 +61,8 @@ vi.mock("@/lib/prisma", () => ({
         deletedAt: null,
       }),
     },
-    paymentTransaction: { findFirst: async () => ({ kind: "PRIMARY" }) },
+    // #4170: the note-eligible cash also asks which captures the handler marked; none here.
+    paymentTransaction: { findFirst: async () => ({ kind: "PRIMARY" }), findMany: async () => [] },
   },
 }));
 vi.mock("@/lib/stripe-cash-refund-evidence", () => ({

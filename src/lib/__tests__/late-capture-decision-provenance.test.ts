@@ -115,6 +115,8 @@ const PROVENANCE_SCANNED_FILES = [
   "src/lib/late-capture-xero-receipt.ts",
   // #4149: the shared epilogue cites #2761/#2773 for the alert it sends.
   "src/lib/late-capture-record-recovery.ts",
+  // #4149 round 2: its tests cite #2774's escalation, which the recovery raises late.
+  "src/lib/__tests__/late-capture-record-recovery.test.ts",
   // The test files matter as much as the sources. A test docblock is what the next
   // implementor reads before touching this money path, and four of them carried the
   // fabricated "the owner chose to keep it" sentence.
