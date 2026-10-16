@@ -26,8 +26,6 @@ const HELPER = "src/lib/prisma-exact-prefix.ts";
 
 /** `file|value` -> why that value never carries an id or user input. */
 const ALLOWED: Record<string, string> = {
-  "src/lib/audit-query.ts|prefix":
-    "module-private, called only with literal action-name prefixes; a literal `_` there still wildcards, and escaping it changes which rows the member timeline shows (INV-OPS-012), so that is its own issue",
   "src/lib/manual-refund-task-settlement-rules.ts|prefix":
     "iterates NON_CANCELLATION_HAND_BACK_KEY_PREFIXES, a list of three constants",
   "src/lib/edit-financial-review-cancel-netting.ts|buildEditFinancialReviewRefundRecoveryIdempotencyKey(\"\")":
