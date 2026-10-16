@@ -48,6 +48,7 @@ import {
 } from "../../../scripts/audit/audit-writer-census-manifest";
 import { matchesWhere } from "./support/prisma-where";
 import {
+  LEGACY_FILTER_OPERANDS_WITHOUT_A_DECOY,
   LEGACY_FILTER_PREFIX_WITNESSES,
   LEGACY_FILTER_WILDCARD_DECOYS,
   XERO_DOT_ACTIONS_THE_CENSUS_CANNOT_NAME,
@@ -183,6 +184,42 @@ describe("the audit category filters match their action prefixes literally (#416
     const suite = readFileSync(join(process.cwd(), "src/lib/__tests__/audit-query-exact-prefix.realdb.test.ts"), "utf8");
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("is answered by the shared matchesWhere exactly as PostgreSQL answers it");
+  });
+
+  it("has a decoy for every legacy operand whose text holds a LIKE wildcard", () => {
+    // Every `startsWith` / `contains` operand in the category filters, as the
+    // literal (escaped) and old (unescaped) spellings, found by walking the
+    // built where objects so a new prefix is seen without being listed here.
+    const operands: { operator: "startsWith" | "contains"; literal: string }[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (typeof node !== "object" || node === null) return;
+      for (const [key, value] of Object.entries(node)) {
+        if ((key === "startsWith" || key === "contains") && typeof value === "string") {
+          operands.push({ operator: key, literal: value });
+        } else walk(value);
+      }
+    };
+    for (const category of AUDIT_CATEGORIES) walk(buildAuditCategoryWhere(category));
+    // The text a person reads: the escaped operand with its escapes removed.
+    const text = (literal: string) => literal.replace(/\\(.)/gs, "$1");
+    const withWildcard = operands.filter(({ literal }) => /[_%]/.test(text(literal)));
+    expect(withWildcard.length, "found no operand with a `_` (the walk is broken)").toBeGreaterThan(5);
+    const uncovered = withWildcard
+      .filter(({ literal }) => !LEGACY_FILTER_OPERANDS_WITHOUT_A_DECOY.includes(text(literal)))
+      .filter(({ operator, literal }) => {
+        const old = { action: { [operator]: text(literal) } };
+        const now = { action: { [operator]: literal } };
+        return !LEGACY_FILTER_WILDCARD_DECOYS.some(
+          ({ action }) => matchesWhere(rowOf(action), old) && !matchesWhere(rowOf(action), now),
+        );
+      })
+      .map(({ operator, literal }) => `${operator}: ${text(literal)}`);
+    expect(
+      uncovered,
+      "#4165: each legacy audit operand holding a `_` or `%` needs a decoy in LEGACY_FILTER_WILDCARD_DECOYS " +
+        "(support/audit-legacy-filter-like.ts) that only its wildcard matches, or the escaping is unproven for it.",
+    ).toEqual([]);
   });
 
   it("no longer files a wildcard decoy anywhere (non-vacuity)", () => {

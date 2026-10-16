@@ -191,26 +191,34 @@ function nullUnderNegation(label: string, operator: string, at: string): never {
  * `prisma-exact-prefix.realdb.test.ts` and `audit-query-exact-prefix.realdb.test.ts`
  * pin the PostgreSQL side of this.
  */
-function likePattern(operand: string, operator: string, at: string, label: string): RegExp {
+function likePattern(operand: string, operator: string): RegExp {
+  // The whole pattern Prisma sends, so an operand's trailing backslash escapes
+  // Prisma's own `%` as PostgreSQL reads it: `startsWith: "a\\"` is `LIKE 'a\%'`,
+  // which matches exactly `a%`.
+  const pattern = operator === "startsWith" ? `${operand}%` : `%${operand}%`;
+  // By character, not UTF-16 unit: PostgreSQL's `_` is one character, so the
+  // regex runs with `u` and the pattern is split the same way.
+  const chars = Array.from(pattern);
   let body = "";
-  for (let index = 0; index < operand.length; index += 1) {
-    const char = operand[index];
-    if (char === "\\") {
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
+    if (char === "\\" && index + 1 < chars.length) {
       index += 1;
-      if (index === operand.length) {
-        // PostgreSQL: "LIKE pattern must not end with escape character".
-        unsupported(label, `\`${operator}\` operand ending in a lone backslash on ${at}`);
-      }
-      body += operand[index].replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
+      body += escapeRegExp(chars[index]);
     } else if (char === "_") {
       body += ".";
     } else if (char === "%") {
       body += ".*";
     } else {
-      body += char.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
+      body += escapeRegExp(char);
     }
   }
-  return new RegExp(operator === "startsWith" ? `^${body}` : body, "s");
+  return new RegExp(`^${body}$`, "su");
+}
+
+/** A literal character in a `u`-flag regex, where `-` and `/` must not be escaped. */
+function escapeRegExp(char: string): string {
+  return char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -291,7 +299,7 @@ function matchesScalar(
           return false;
         }
         if (typeof actual !== "string") return false;
-        if (!likePattern(operand as string, operator, at, label).test(actual)) return false;
+        if (!likePattern(operand as string, operator).test(actual)) return false;
         break;
       }
       default:

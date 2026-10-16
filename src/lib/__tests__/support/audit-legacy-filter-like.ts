@@ -35,12 +35,19 @@ export function unescapeLikeOperands<T>(where: T): T {
  * `XERO`, which the same category matches anyway, so no decoy can separate
  * the two there.
  */
+/**
+ * The one legacy operand with a `_` that no decoy can separate (see above).
+ * `audit-legacy-filter-exact-prefix.test.ts` requires a decoy for every other.
+ */
+export const LEGACY_FILTER_OPERANDS_WITHOUT_A_DECOY: readonly string[] = ["XERO_"];
+
 export const LEGACY_FILTER_WILDCARD_DECOYS: readonly {
   action: string;
   oldCategories: readonly AuditCategory[];
 }[] = [
   { action: "xeroXfoo", oldCategories: ["xero"] },
   { action: "MEMBERSHIPXAPPLICATIONXAPPROVED", oldCategories: ["account"] },
+  { action: "membershipXcancellation.foo", oldCategories: ["account"] },
   { action: "EMAILSfoo", oldCategories: ["account"] },
   { action: "EMAILXCHANGED", oldCategories: ["account", "security"] },
   { action: "BOOKINGXfoo", oldCategories: ["booking"] },

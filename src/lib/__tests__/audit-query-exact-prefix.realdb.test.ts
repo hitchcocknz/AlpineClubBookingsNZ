@@ -43,6 +43,8 @@ const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
 const REQUEST_ID = "race-4165";
+/** The rows of the LIKE-edge case, kept out of the category population. */
+const LIKE_EDGE_REQUEST_ID = "race-4165-like-edge";
 const MEMBER = "race-4165-member";
 /** Filed under `privacy` by `actionContains("DATA_EXPORT")` literally, old filter and new. */
 const CONTAINS_LITERAL_WITNESS = "race4165.DATA_EXPORT.witness";
@@ -76,7 +78,7 @@ let audit: typeof import("@/lib/audit-query");
 let seeded: SeededRow[] = [];
 
 async function clean(): Promise<void> {
-  await prisma.auditLog.deleteMany({ where: { requestId: REQUEST_ID } });
+  await prisma.auditLog.deleteMany({ where: { requestId: { in: [REQUEST_ID, LIKE_EDGE_REQUEST_ID] } } });
 }
 
 /** The seeded actions PostgreSQL selects for `where`, sorted. */
@@ -180,6 +182,34 @@ function withoutDecoys(actions: string[]): string[] {
       expect(await selected(unescapeLikeOperands(privacy))).toContain("DATAXEXPORTfoo");
       expect(await selected(privacy)).not.toContain("DATAXEXPORTfoo");
       expect(await selected(privacy)).toContain(CONTAINS_LITERAL_WITNESS);
+    });
+
+    it("reads a trailing backslash and a non-BMP character the way the shared matchesWhere does", async () => {
+      // Prisma appends `%` to the operand, so its trailing backslash escapes
+      // that `%`; and PostgreSQL's `_` is one character, even outside the BMP.
+      const actions = ["race4165bs.a%", "race4165bs.a%x", "race4165bs.a\\", "xrace4165bs.a%", "race4165\u{1F600}x"];
+      await prisma.auditLog.createMany({
+        data: actions.map((action) => ({ action, requestId: LIKE_EDGE_REQUEST_ID })),
+      });
+      const rows = await prisma.auditLog.findMany({ where: { requestId: LIKE_EDGE_REQUEST_ID }, select: rowSelect });
+      const cases: [Prisma.AuditLogWhereInput, string[]][] = [
+        [{ action: { startsWith: "race4165bs.a\\" } }, ["race4165bs.a%"]],
+        [{ action: { contains: "race4165bs.a\\" } }, ["race4165bs.a%", "xrace4165bs.a%"]],
+        [{ action: { startsWith: "race4165_x" } }, ["race4165\u{1F600}x"]],
+        [{ action: { startsWith: "race4165__x" } }, []],
+      ];
+      for (const [where, expected] of cases) {
+        const fromDb = (
+          await prisma.auditLog.findMany({ where: { AND: [{ requestId: LIKE_EDGE_REQUEST_ID }, where] }, select: { action: true } })
+        )
+          .map((row) => row.action)
+          .sort();
+        expect(fromDb, JSON.stringify(where)).toEqual([...expected].sort());
+        expect(
+          rows.filter((row) => matchesWhere(row, where as Record<string, unknown>)).map((row) => row.action).sort(),
+          `matchesWhere: ${JSON.stringify(where)}`,
+        ).toEqual(fromDb);
+      }
     });
   },
 );

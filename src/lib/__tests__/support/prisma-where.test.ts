@@ -105,8 +105,19 @@ describe("matchesWhere — scalar conditions", () => {
     expect(matchesWhere(action("50%Xoff\\x"), { notes: { startsWith: "50\\%\\_off\\\\" } })).toBe(false);
     // Case-sensitive, as LIKE is.
     expect(matchesWhere(action("XERO_PUSH"), { notes: { startsWith: "xero\\_" } })).toBe(false);
-    // PostgreSQL refuses a pattern ending in its escape character; so does this.
-    expect(() => matchesWhere(action("a\\"), { notes: { startsWith: "a\\" } })).toThrow(/lone backslash/);
+    // Prisma appends `%`, so a trailing backslash escapes it: `startsWith: "a\\"`
+    // is `LIKE 'a\%'` (exactly `a%`) and `contains: "a\\"` is `LIKE '%a\%'`
+    // (ends with `a%`), as PostgreSQL reads them.
+    expect(matchesWhere(action("a%"), { notes: { startsWith: "a\\" } })).toBe(true);
+    expect(matchesWhere(action("a%x"), { notes: { startsWith: "a\\" } })).toBe(false);
+    expect(matchesWhere(action("a\\"), { notes: { startsWith: "a\\" } })).toBe(false);
+    expect(matchesWhere(action("xa%"), { notes: { contains: "a\\" } })).toBe(true);
+    expect(matchesWhere(action("xa%y"), { notes: { contains: "a\\" } })).toBe(false);
+    // `_` is one CHARACTER, as in a UTF-8 PostgreSQL database, not one UTF-16 unit.
+    expect(matchesWhere(action("\u{1F600}x"), { notes: { startsWith: "_x" } })).toBe(true);
+    expect(matchesWhere(action("\u{1F600}x"), { notes: { startsWith: "__x" } })).toBe(false);
+    expect(matchesWhere(action("a\u{1F600}b"), { notes: { contains: "a_b" } })).toBe(true);
+    expect(matchesWhere(action("a-b/c"), { notes: { startsWith: "a-b/" } })).toBe(true);
   });
 
   it("drops a condition of undefined, as Prisma does", () => {
