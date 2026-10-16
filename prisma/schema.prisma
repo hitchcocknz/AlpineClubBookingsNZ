@@ -2968,6 +2968,7 @@ model Payment {
   recoveryOperations   PaymentRecoveryOperation[]
   manuallyMarkedPaidBy Member?                    @relation("PaymentManualPaidBy", fields: [manuallyMarkedPaidByMemberId], references: [id], onDelete: SetNull)
   manualRefundTasks    ManualRefundTask[]
+  bankRefundVoidResolutions BankRefundVoidResolution[]
 
   @@index([bookingId])
   @@index([source, status, createdAt])
@@ -2976,6 +2977,44 @@ model Payment {
   @@index([additionalPaymentIntentId])
   @@index([status, createdAt])
   @@index([manuallyMarkedPaidByMemberId])
+}
+
+/// #4162 (owner decisions 16 and 17 Oct 2026, `INV-ADDPAY-042`): how the
+/// treasurer answered ONE voided refund credit note on a bank-transfer payment.
+/// Xero voided the note, which on a bank transfer undoes the refund
+/// (`INV-ADDPAY-041`), and nothing re-raises it automatically. The treasurer
+/// either records the refund again (`RE_RECORDED`: one fresh note, keyed on
+/// this row) or confirms it was cancelled (`CONFIRMED_CANCELLED`). The unique
+/// pair is the claim: a voided note has at most one answer, so a double click
+/// or a second treasurer writes nothing. A table rather than an audit row,
+/// because audit rows are archived after a year and the item would come back.
+model BankRefundVoidResolution {
+  id                 String                @id @default(cuid())
+  paymentId          String
+  /// The Xero credit note Xero voided (`XeroObjectLink.xeroObjectId`, role REFUND_CREDIT_NOTE).
+  voidedCreditNoteId String
+  outcome            BankRefundVoidOutcome
+  /// The voided note's recorded amount, in cents: what a record-again re-raises,
+  /// or what a cancellation took back out of the payment's detail.
+  amountCents        Int
+  /// The treasurer's reason. Required.
+  note               String
+  /// FK-less, like every actor column on a settlement record: history of who answered it.
+  resolvedByMemberId String
+  resolvedAt         DateTime
+  /// A record-again's refund-note outbox row; null for a cancellation.
+  noteOperationId    String?
+  createdAt          DateTime              @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, voidedCreditNoteId])
+}
+
+/// #4162: the two answers to a voided bank-transfer refund note.
+enum BankRefundVoidOutcome {
+  RE_RECORDED
+  CONFIRMED_CANCELLED
 }
 
 // B5 (#2262): a cash / off-Xero settlement that has to be handed back by hand.

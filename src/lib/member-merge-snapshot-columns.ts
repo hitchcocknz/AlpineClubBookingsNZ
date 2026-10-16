@@ -83,6 +83,9 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "AuditLog.actorMemberId",
   "AuditLog.subjectMemberId",
   "AuditLog.memberId",
+  // #4162: the treasurer who answered a voided bank-transfer refund note. A
+  // bare scalar, kept as the immutable answer to "who resolved this".
+  "BankRefundVoidResolution.resolvedByMemberId",
   // MP1 (#189): FK-less member-id audit snapshots. MediaImage.uploadedByMemberId
   // carries no @relation (so a loser-uploaded image is never cascaded/moved);
   // any loser MEMBER_PHOTO blob is instead cleaned up by

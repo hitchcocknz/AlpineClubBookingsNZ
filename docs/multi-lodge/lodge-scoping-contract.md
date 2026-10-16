@@ -550,8 +550,8 @@ new ADR:
 
 - Membership: `Member`, `MemberAccessRole`, `MembershipType`, family
   groups, applications, subscriptions, lifecycle requests.
-- Payments: `Payment`, `PaymentTransaction`, `PaymentRefund`, Stripe
-  references. Payments attach to bookings; the booking carries the lodge.
+- Payments: `Payment`, `PaymentTransaction`, `PaymentRefund`,
+  `BankRefundVoidResolution` (#4162), Stripe references. Payments attach to bookings; the booking carries the lodge.
 - Xero and finance: all `Xero*` models, `FinanceSnapshot`,
   `FinanceReportCategory*`, item/account mappings. One club-wide ledger and
   one operational Xero connection, consistent with
