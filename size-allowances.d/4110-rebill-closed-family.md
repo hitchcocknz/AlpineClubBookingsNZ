@@ -9,7 +9,7 @@ reason: the panel's read of the charge queue now carries each covered
   payload the panel reads in one place.
 
 file: src/lib/membership-subscription-billing.ts
-lines: 1891
+lines: 1897
 reason: the preview decides which family charges still bill their family
   (owner decisions on #4110: a closed charge does until a covered member's
   payment is reversed; the newest closed charge decides; a member exempt at
