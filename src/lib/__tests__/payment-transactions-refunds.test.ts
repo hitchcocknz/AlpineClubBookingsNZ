@@ -32,7 +32,10 @@ const failedLater = vi.hoisted(() => ({
 }));
 // #4159 review round 2 (F2): the officers' alert for refund money a charge's total cannot hold, observed here.
 const capOverflow = vi.hoisted(() => ({ alert: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true) }));
-vi.mock("@/lib/card-refund-cap-overflow", () => ({ alertCardRefundCapOverflow: capOverflow.alert }));
+vi.mock("@/lib/card-refund-cap-overflow", async (importOriginal) => ({
+  ...((await importOriginal()) as object),
+  alertCardRefundCapOverflow: capOverflow.alert,
+}));
 vi.mock("@/lib/card-refund-failed-later", () => ({
   keepFailedLaterCardRefundsOwed: failedLater.keep,
   alertFailedLaterCardRefunds: failedLater.alert,
@@ -289,6 +292,12 @@ function createRefundStore() {
         refunds.set(where.stripeRefundId, nextRefund);
         return nextRefund;
       }),
+      // #4159 round 3 (4): the counted refunds on a charge, which key a cap overflow's alert.
+      findMany: vi.fn(async ({ where }: any) =>
+        [...refunds.values()].filter(
+          (refund) => refund.paymentTransactionId === where.paymentTransactionId && !(where.status?.notIn ?? []).includes(refund.status),
+        ),
+      ),
       aggregate: vi.fn(async ({ where }: any) => {
         const excludedStatuses = new Set(where.status?.notIn ?? []);
         let amountCents = 0;
@@ -1788,9 +1797,25 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
       const root = { ...ctx.store, $connect: () => undefined, $transaction: async (fn: (tx: unknown) => Promise<unknown>) => { const out = await fn(ctx.store); committed = true; return out; } };
       capOverflow.alert.mockImplementationOnce(async () => { expect(committed).toBe(true); return true; });
       const result = await record(root);
-      const overflow = { paymentId: "payment_1", paymentTransactionId: "txn_1", discardedCents: CARD_REFUND_CENTS, recordedRefundCents: CARD_REFUND_CENTS };
+      const overflow = { paymentId: "payment_1", paymentTransactionId: "txn_1", discardedCents: CARD_REFUND_CENTS, recordedRefundCents: CARD_REFUND_CENTS, countedRefundIds: ["re_over"] };
       expect(result.capOverflow).toEqual(overflow);
       expect(capOverflow.alert).toHaveBeenCalledWith(overflow);
+    });
+
+    it("MUTATION (round 3, 6): the charge.refunded sync passes the discarded cents on to its caller", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      const synced = await syncRefundsFromStripeCharge({
+        paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: CARD_REFUND_CENTS, refunds: [cardRefund("re_over", CARD_REFUND_CENTS)], store: ctx.store as never,
+      });
+      expect(synced?.capOverflow).toMatchObject({ paymentTransactionId: "txn_1", discardedCents: CARD_REFUND_CENTS, countedRefundIds: ["re_over"] });
+    });
+
+    it("CONTROL (round 3, 6): an inline card refund within the charge passes on no overflow", async () => {
+      const ctx = paidStore();
+      mocks.processRefund.mockResolvedValueOnce(cardRefund("re_1", CARD_REFUND_CENTS));
+      const result = await refundPaymentTransactions({ format: CLUB_FORMAT_TEST, paymentId: "payment_1", amountCents: CARD_REFUND_CENTS, idempotencyKeyPrefix: "refund_request_rq1", store: ctx.store as never });
+      expect(result.capOverflows).toEqual([]);
     });
 
     it("joined to a caller's transaction, it alerts nothing itself and returns the discarded cents for the caller", async () => {

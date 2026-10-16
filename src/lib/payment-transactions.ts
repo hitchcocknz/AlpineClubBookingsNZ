@@ -19,7 +19,7 @@ import {
   type FailedLaterKind,
 } from "@/lib/card-refund-failed-later";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
-import { alertCardRefundCapOverflow, type CardRefundCapOverflow } from "@/lib/card-refund-cap-overflow";
+import { alertCardRefundCapOverflow, readCardRefundCapOverflow, type CardRefundCapOverflow } from "@/lib/card-refund-cap-overflow";
 import logger from "@/lib/logger";
 import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
@@ -850,9 +850,7 @@ export async function recordStripeRefundsAgainstTransaction({
       },
       { writeStatus: true }
     );
-    // #4154 review (M1, round 2 F2): cents above the charge are refund money the total cannot hold - perhaps also paid back by hand. Logged, and the officers alerted after the commit.
-    if (discardedCents > 0) logger.error({ paymentId, paymentTransactionId, discardedCents, previousCents, nextCents }, "A card refund took this charge's refunded total past the charge; the excess was discarded - check whether the member was also paid back another way (#4154)");
-    const capOverflow: CardRefundCapOverflow | null = discardedCents > 0 ? { paymentId, paymentTransactionId, discardedCents, recordedRefundCents: ledgerRefundedAmountCents } : null;
+    const capOverflow = await readCardRefundCapOverflow(db, { paymentId, paymentTransactionId, discardedCents, recordedRefundCents: ledgerRefundedAmountCents, previousCents, nextCents }); // #4154 M1, F2: logged; the officers alerted after the commit
 
     const payment = await reconcilePaymentAggregates({ paymentId, store: db });
 
@@ -1171,6 +1169,7 @@ export async function syncRefundsFromStripeCharge({
     ledgerRefundedAmountCents: recorded.ledgerRefundedAmountCents,
     /** #4104: alerted already unless `store` was the caller's transaction. */
     failedLaterDebts: recorded.failedLaterDebts,
+    capOverflow: recorded.capOverflow, // #4159 round 3 (6): alerted already unless `store` was the caller's transaction
   };
 }
 
@@ -1424,6 +1423,7 @@ export async function refundPaymentTransactions({
   const refusedSlices: RefundAllocationSlice[] = [];
   let completedRefundCents = 0;
   const failedLaterDebts: FailedLaterCardRefundDebt[] = [];
+  const capOverflows: CardRefundCapOverflow[] = [];
 
   for (const { transaction, amountCents: refundAmountForTransaction, stripeKeySuffix } of slices) {
     const slice: RefundAllocationSlice = { paymentTransactionId: transaction.id, amountCents: refundAmountForTransaction, ...(stripeKeySuffix ? { stripeKeySuffix } : {}) };
@@ -1459,6 +1459,7 @@ export async function refundPaymentTransactions({
         store,
       });
       failedLaterDebts.push(...recorded.failedLaterDebts);
+      if (recorded.capOverflow) capOverflows.push(recorded.capOverflow);
       readAsRefused = recorded.readAsRefused.includes(refund.id);
     } catch (err) {
       // #3924 round 4 (C2): Stripe refunded this slice but it could not be
@@ -1498,6 +1499,7 @@ export async function refundPaymentTransactions({
     totalRefundedAmountCents: amountCents,
     /** #4104: decided as this call recorded its refunds; alerted already unless `store` was the caller's transaction. */
     failedLaterDebts,
+    capOverflows, // #4159 round 3 (6): the same, for refund money a charge's total could not hold
   };
 }
 
