@@ -12,13 +12,16 @@ import {
   buildBookingCancellationRefundIdempotencyKey,
   bookingCancelCardRefundRecoveryWhere,
   buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking,
+  CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
+  cardRefundFailedLaterRefundId,
   isBookingCancelCardRefundRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
-import type { PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
+import type { FailedLaterCardRefund, PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
 import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
-import { cardRefundMadeForOperation, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { cardRefundMadeForOperation, cardRefundSliceFilledBy, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 
 type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
 /** A "Paid another way" close's record: what it paid back, and what the row still owed. */
@@ -38,6 +41,8 @@ export interface CancelledCardRefund {
    * (before #4125). Absent on a member's cancel.
    */
   cardRefundPlanCents?: number;
+  /** #4166: its refunds an event recorded that Stripe failed later, each by the row that owes it again. Absent when none. */
+  cardRefundFailedLater?: FailedLaterCardRefund[];
 }
 
 /**
@@ -110,7 +115,8 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
   const own = rows.filter((row) => isBookingCancelCardRefundRecoveryKey(bookingId, row.idempotencyKey));
   const standings = await Promise.all(own.map(async (row) => ({ row, ...(await cardRefundRowState(row)) })));
   const cardRefundState = FURTHEST_FROM_DONE_FIRST.find((state) => standings.some((each) => each.state === state));
-  const planned = capacityRacePlanCents(bookingId, own);
+  const failedLater = await readFailedLaterCardRefunds(bookingId, standings);
+  const planned = { ...capacityRacePlanCents(bookingId, own), ...(failedLater.parts.length > 0 ? { cardRefundFailedLater: failedLater.parts } : {}) };
   if (cardRefundState !== "paid-another-way") return { cardRefundState, ...planned };
   const closed = standings.flatMap(({ row, record }) => (record ? [{ row, record }] : []));
   const payments = await prisma.payment.findMany({
@@ -127,9 +133,83 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
     cardRefundClose: {
       paidBackCents: closed.reduce((sum, { record }) => sum + (record.amountCents ?? 0), 0),
       unpaidCents: closed.reduce((sum, { record }) => sum + paidAnotherWayUnpaidCents(record), 0),
-      madeCents: closed.reduce((sum, { row }) => sum + made(row), 0),
+      // #4166: a part that failed later counts as the close found it; the narrative says it by its own row.
+      madeCents: closed.reduce((sum, { row }) => sum + made(row) + (failedLater.madeByRow.get(row.id) ?? 0), 0),
     },
   };
+}
+
+/**
+ * #4166 (`INV-PAY-134`): THE CANCEL'S CARD REFUNDS THAT FAILED AFTER A CLOSE
+ * RECORDED THEM. A refund Stripe failed later on a row already closed is owed
+ * by a row of its own (`card_refund_failed_later_<refund>`, #4104); it is this
+ * cancel's when one of the cancel's own rows made it - the slice marked with it
+ * (`madeRefundId`), or the slice it fills as the payment stood before it failed
+ * (`cardRefundSliceFilledBy`, the rule the failed-later writer used) - or when
+ * a failed-later row of this cancel made it (its retry failed too). Each is
+ * told by the last row of that chain. Read only where one of the cancel's rows
+ * closed; one query of the booking's failed-later rows otherwise finds none.
+ * `madeByRow`: what each cancel row's failed refunds were, for its close's
+ * made figure, which no longer counts them.
+ */
+async function readFailedLaterCardRefunds(
+  bookingId: string,
+  standings: ReadonlyArray<{ row: { id: string }; state: CardRefundState }>,
+): Promise<{ parts: FailedLaterCardRefund[]; madeByRow: Map<string, number> }> {
+  const none = { parts: [], madeByRow: new Map<string, number>() };
+  if (!standings.some(({ state }) => state === "settled" || state === "paid-another-way")) return none;
+  const rows = await prisma.paymentRecoveryOperation.findMany({
+    // On `@@index([bookingId])`; exact, and the key's own rule decides (#4146).
+    where: { bookingId, idempotencyKey: exactPrefix(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) },
+    select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, status: true, attempts: true, nextRetryAt: true, succeededAt: true },
+  });
+  const failed = (rows ?? []).flatMap((row) => {
+    const refundId = cardRefundFailedLaterRefundId(row.idempotencyKey);
+    return refundId ? [{ row, refundId }] : [];
+  });
+  if (failed.length === 0) return none;
+  const payments = await prisma.payment.findMany({
+    where: { id: { in: [...new Set(failed.map(({ row }) => row.paymentId))] } },
+    select: { id: true, status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+  });
+  const madeBy = new Map(
+    failed.map(({ row, refundId }) => {
+      const payment = payments.find((each) => each.id === row.paymentId);
+      if (!payment) return [row.id, null] as const;
+      const marked = payment.recoveryOperations.find((op) => parseRefundAllocationPlan(op.allocationPlan)?.some((slice) => slice.madeRefundId === refundId));
+      // As the payment stood before the failure: the refund still counted, as the failed-later writer read it.
+      const before = { ...payment, refunds: payment.refunds.map((each) => (each.stripeRefundId === refundId ? { ...each, status: "pending" } : each)) };
+      return [row.id, marked?.id ?? cardRefundSliceFilledBy(before, refundId)?.operation.id ?? null] as const;
+    }),
+  );
+  const roots = new Map(standings.map(({ row }) => [row.id, row.id]));
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [id, maker] of madeBy) {
+      const root = maker === null ? undefined : roots.get(maker);
+      if (root !== undefined && !roots.has(id)) {
+        roots.set(id, root);
+        grew = true;
+      }
+    }
+  }
+  const ours = failed.filter(({ row }) => roots.has(row.id));
+  // A row whose own retry failed later too is told by the row that owes that retry.
+  const last = ours.filter(({ row }) => !ours.some((each) => madeBy.get(each.row.id) === row.id));
+  const parts: FailedLaterCardRefund[] = [];
+  const madeByRow = new Map<string, number>();
+  for (const { row } of last) {
+    const { state, record } = await cardRefundRowState(row);
+    const root = roots.get(row.id) as string;
+    madeByRow.set(root, (madeByRow.get(root) ?? 0) + row.amountCents);
+    parts.push({
+      amountCents: row.amountCents,
+      state,
+      ...(state === "settled" ? { madeAt: row.succeededAt } : {}),
+      ...(record ? { paidBackCents: record.amountCents ?? row.amountCents, unpaidCents: paidAnotherWayUnpaidCents(record) } : {}),
+    });
+  }
+  return { parts, madeByRow };
 }
 
 const FURTHEST_FROM_DONE_FIRST: readonly CardRefundState[] = ["stalled", "on-its-way", "paid-another-way", "settled"];
