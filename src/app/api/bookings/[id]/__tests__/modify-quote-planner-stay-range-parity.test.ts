@@ -1392,6 +1392,28 @@ describe("#4197 re-rates, fees and rate recalculations add up too", () => {
     expect(body.error).toMatch(/negotiated booking-request price/);
   });
 
+  it("guests moving by different amounts read as a guest-range change, not a date change", async () => {
+    // The stay moves a night later at the same length, but Ann moves with it,
+    // Bob only loses his last night and Cal arrives a night late: no single
+    // shift, so this is not the booking's dates changing.
+    const route = await runRoute({
+      checkIn: "2026-09-02",
+      checkOut: "2026-09-05",
+      guestStayRanges: [
+        { guestId: "g1", stayStart: "2026-09-02", stayEnd: "2026-09-05" },
+        { guestId: "g2", stayStart: "2026-09-02", stayEnd: "2026-09-04" },
+        { guestId: "g3", stayStart: "2026-09-03", stayEnd: "2026-09-05" },
+      ],
+    });
+    expect(route.status).toBe(200);
+    // Ann +800 (the 4th bought), Bob -4,200 (the 1st given back), Cal -3,400
+    // (the 1st and 2nd given back, the 4th bought).
+    expect(route.body.itemizedChanges).toEqual([
+      { label: "Guest stay range change", amountCents: 800 - BOOKED_NIGHT_CENTS - 3_400 },
+    ]);
+    expect(sumOfLines(route.body)).toBe(route.body.priceDiffCents);
+  });
+
   it("with a change fee, the lines add up to the net charge", async () => {
     h.calculateChangeFee.mockReturnValue({ feeCents: 1_500 });
     const route = await runRoute({ checkIn: "2026-09-02", checkOut: "2026-09-05" });

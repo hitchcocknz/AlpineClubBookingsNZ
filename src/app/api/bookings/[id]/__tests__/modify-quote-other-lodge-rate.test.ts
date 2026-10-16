@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
   isXeroConnected: vi.fn(),
   getXeroLockDates: vi.fn(),
   isQuotePricedBooking: vi.fn(),
+  isMemberWholeLodgeBooking: vi.fn(),
   // #2978 review: hoisted so the tests can assert what the ROUTE passes it. It
   // was previously an inline stub, which meant nothing checked that the route
   // handed it the booking's guests or the booking's season — the two inputs that
@@ -122,7 +123,7 @@ vi.mock("@/lib/booking-modify", async (importOriginal) => {
   return {
     ...actual,
     isQuotePricedBooking: h.isQuotePricedBooking,
-    isMemberWholeLodgeBooking: vi.fn().mockResolvedValue(false),
+    isMemberWholeLodgeBooking: h.isMemberWholeLodgeBooking,
     calculateModificationSettlementOptions: vi.fn().mockResolvedValue(null),
   };
 });
@@ -181,6 +182,7 @@ import { POST } from "@/app/api/bookings/[id]/modify-quote/route";
 import {
   OTHER_LODGE_RATE_AMOUNT_UNDER_REVIEW_MESSAGE,
   OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE,
+  OTHER_LODGE_RATE_LINKED_GUEST_MESSAGE,
 } from "@/lib/booking-other-lodge-rate";
 
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
@@ -288,6 +290,7 @@ beforeEach(() => {
   h.groupDiscountFindUnique.mockResolvedValue(null);
   h.bookingRequestFindFirst.mockResolvedValue(null);
   h.isQuotePricedBooking.mockResolvedValue(false);
+  h.isMemberWholeLodgeBooking.mockResolvedValue(false);
   h.resolveOtherLodgeRateEligible.mockImplementation(
     (_db: unknown, { guests }: { guests: Array<{ id: string }> }) =>
       Promise.resolve(new Set(guests.map((guest) => guest.id))),
@@ -409,6 +412,27 @@ describe("modify-quote — other-lodge member rate", () => {
       },
       { label: "Date change: 2 nights → 3 nights", amountCents: 1000 + 2400 },
     ]);
+  });
+
+  it("refuses linking a guest and changing their other-lodge rate in one change (#4197)", async () => {
+    // Both would re-rate the same guest, and each has its own breakdown line, so
+    // the quote would count the change twice. The same resolver refuses it on
+    // the save. (On a real booking the negotiated-price block, which a link plus
+    // an election does not escape, refuses first; this pins the rule itself.)
+    h.isMemberWholeLodgeBooking.mockResolvedValue(true);
+    h.bookingFindUnique.mockResolvedValue(booking({ wholeLodgeHold: true }));
+    const res = await POST(
+      req({
+        linkGuestToMember: [{ guestId: "g-visitor", memberId: "member-9" }],
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: OTHER_LODGE_RATE_LINKED_GUEST_MESSAGE });
+    expect(h.priceGuests).not.toHaveBeenCalled();
   });
 
   it("an untouched guest priced differently with no date change reads as a recalculation (#4197)", async () => {

@@ -33,12 +33,31 @@ describe("promoBreakdownLines (#4197)", () => {
     expect(promoBreakdownLines({ ...base, newAdjustmentCents: -2_500 })).toEqual([]);
   });
 
-  it("an adjustment that goes to nothing is a removal, removed or lapsed", () => {
-    for (const appliedCodes of [null, "SPRING10"]) {
-      expect(
-        promoBreakdownLines({ ...base, appliedCodes, newAdjustmentCents: 0 }),
-      ).toEqual([{ label: "Removed promo 'SPRING10'", amountCents: 2_500 }]);
-    }
+  it("an adjustment that goes to nothing with the code gone is a removal, removed or lapsed", () => {
+    expect(
+      promoBreakdownLines({ ...base, appliedCodes: null, newAdjustmentCents: 0 }),
+    ).toEqual([{ label: "Removed promo 'SPRING10'", amountCents: 2_500 }]);
+  });
+
+  it("a kept code that now discounts nothing is re-priced, not removed", () => {
+    expect(promoBreakdownLines({ ...base, newAdjustmentCents: 0 })).toEqual([
+      { label: "Promo 'SPRING10' (re-priced)", amountCents: 2_500 },
+    ]);
+  });
+
+  it("one code lapsing beside a kept one: the kept code's line and the old pair reversed", () => {
+    const lines = promoBreakdownLines({
+      ...base,
+      storedCodes: "SPRING10, GUESTFREE",
+      storedAdjustmentCents: -3_000,
+      appliedCodes: "SPRING10",
+      newAdjustmentCents: -1_000,
+    });
+    expect(lines).toEqual([
+      { label: "Promo 'SPRING10'", amountCents: -1_000 },
+      { label: "Previous promo 'SPRING10, GUESTFREE' reversed", amountCents: 3_000 },
+    ]);
+    expect(sum(lines)).toBe(2_000);
   });
 
   it("a replaced code is the new line and the previous one reversed", () => {
@@ -74,9 +93,9 @@ describe("promoBreakdownLines (#4197)", () => {
     ]);
   });
 
-  it("a refused code shows no reversal of the stored one", () => {
+  it("a refused code keeps the stored adjustment, so it has no line", () => {
     expect(
-      promoBreakdownLines({ ...base, refused: true, appliedCodes: null, newAdjustmentCents: 0 }),
+      promoBreakdownLines({ ...base, refused: true, appliedCodes: null, newAdjustmentCents: -2_500 }),
     ).toEqual([]);
   });
 

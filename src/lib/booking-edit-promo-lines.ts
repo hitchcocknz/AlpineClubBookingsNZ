@@ -9,20 +9,25 @@
  * adjustment the preview's promotion pass produced.
  *
  * - An in-progress edit carries the stored adjustment over unchanged: no lines.
+ * - A refused code refuses the save, which leaves the stored adjustment where
+ *   it is, so the preview keeps it too and shows no line; the promo card shows
+ *   the refusal instead.
  * - A code set that is kept unchanged is one net line, omitted when it nets to
- *   nothing.
- * - An adjustment that goes to nothing is a removal, whether the member removed
- *   the code or it lapsed.
- * - A replaced code is two lines: the new one, and the previous one reversed.
- * - A refused code refuses the save, so its preview shows no reversal; the
- *   promo card shows the refusal instead.
+ *   nothing, even when a kept code now discounts nothing.
+ * - Otherwise an adjustment that goes to nothing is a removal, whether the
+ *   member removed the code or it lapsed.
+ * - Otherwise it is two lines: the new codes' adjustment, and the previous one
+ *   reversed.
  */
 export type BreakdownLine = { label: string; amountCents: number };
 
 export function promoBreakdownLines(input: {
   /** An in-progress edit, which re-runs no promotion. */
   carriedOver: boolean;
-  /** The preview refused the requested code (`promoValidation.valid === false`). */
+  /**
+   * The preview refused the requested code (`promoValidation.valid === false`),
+   * so it kept the stored adjustment as the new one.
+   */
   refused: boolean;
   /** The stored codes, joined for display; null when no redemption row names one. */
   storedCodes: string | null;
@@ -31,19 +36,19 @@ export function promoBreakdownLines(input: {
   appliedCodes: string | null;
   newAdjustmentCents: number;
 }): BreakdownLine[] {
-  if (input.carriedOver) return [];
+  if (input.carriedOver || input.refused) return [];
   const stored = input.storedCodes ? `promo '${input.storedCodes}'` : "promo adjustment";
   const hadAdjustment = input.storedAdjustmentCents !== 0;
-
-  if (!input.refused && hadAdjustment && input.newAdjustmentCents === 0) {
-    return [{ label: `Removed ${stored}`, amountCents: -input.storedAdjustmentCents }];
-  }
 
   if (input.storedCodes !== null && input.appliedCodes === input.storedCodes) {
     const netCents = input.newAdjustmentCents - input.storedAdjustmentCents;
     return netCents === 0
       ? []
       : [{ label: `Promo '${input.storedCodes}' (re-priced)`, amountCents: netCents }];
+  }
+
+  if (hadAdjustment && input.newAdjustmentCents === 0) {
+    return [{ label: `Removed ${stored}`, amountCents: -input.storedAdjustmentCents }];
   }
 
   const lines: BreakdownLine[] = [];
@@ -53,7 +58,7 @@ export function promoBreakdownLines(input: {
       amountCents: input.newAdjustmentCents,
     });
   }
-  if (!input.refused && hadAdjustment) {
+  if (hadAdjustment) {
     lines.push({
       label: `Previous ${stored} reversed`,
       amountCents: -input.storedAdjustmentCents,

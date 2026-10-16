@@ -892,6 +892,7 @@ export async function prepareGuestPlan(
     input,
     role,
     eligibleGuestIds: otherLodgeEligibleGuestIds,
+    linkedGuestIds: new Set(guestMemberLinks.map((link) => link.guestId)),
   });
   // Only when this edit named a lodge: an inert election's stored id was already
   // validated when it was set, so re-reading it on every unrelated modification
@@ -1063,10 +1064,9 @@ export async function prepareGuestPlan(
   // the modification PREVIEW (`POST /api/bookings/[id]/modify-quote`) runs it to
   // quote the price, and the change-request route (#4030) runs it to refuse a date
   // move its nights ignore — so they all agree by construction. Keep this list in
-  // step with `INV-EXCEPT-022`'s surfaces; a stale enumeration here is how the
-  // #2526 divergence sat unnoticed. Passing the resolved envelope as `requested`
-  // keeps an in-progress edit (whose check-in is pinned to the stored one)
-  // resolving against the envelope actually being applied.
+  // step with `INV-EXCEPT-022`'s surfaces (a stale one hid the #2526 divergence).
+  // Passing the resolved envelope as `requested` keeps an in-progress edit (its
+  // check-in pinned to the stored one) resolving against the envelope applied.
   const resolvedRanges = resolveStayRangesOrApiError({
     booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
     guests: remainingGuests,

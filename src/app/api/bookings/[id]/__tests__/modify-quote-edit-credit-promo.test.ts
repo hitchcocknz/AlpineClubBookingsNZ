@@ -662,18 +662,44 @@ describe("POST /api/bookings/[id]/modify-quote — the breakdown sums with promo
     ]);
   });
 
-  it("a refused code shows its refusal, not a reversal of the stored code", async () => {
-    // The save refuses the whole edit, so there is nothing to itemise for the
-    // promotion; the promo card shows `promoValidation.error`.
+  it("a refused code keeps the stored promotion in the totals, with no promo line", async () => {
+    // The save refuses the whole edit, which leaves SPRING10 where it is, so the
+    // preview keeps it too; the promo card shows `promoValidation.error`.
     h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
     h.promoCodeFindUnique.mockResolvedValue(null);
     pricesTheStoredStay();
 
-    const res = await POST(req({ promoCode: "NOPE" }), { params });
-    const body = await res.json();
+    const body = await quote({ promoCode: "NOPE" });
 
-    expect(res.status).toBe(200);
     expect(body.promoValidation).toEqual({ valid: false, error: "Promo code not found" });
+    expect(body.newPromoAdjustmentCents).toBe(-2_500);
+    expect(body.newDiscountCents).toBe(2_500);
+    expect(body.priceDiffCents).toBe(0);
     expect(body.itemizedChanges).toEqual([]);
+  });
+
+  it("a refused code beside a date change: the date line alone, the stored promotion kept", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    h.promoCodeFindUnique.mockResolvedValue(null);
+
+    const body = await quote({ promoCode: "NOPE", checkOut: "2026-08-17" });
+
+    expect(body.priceDiffCents).toBe(10_000);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Date change: 2 nights → 3 nights", amountCents: 10_000 },
+    ]);
+  });
+
+  it("a kept code that now discounts nothing is re-priced, not removed", async () => {
+    h.bookingFindUnique.mockResolvedValue(oneCodeDraft());
+    pricesTheStoredStay();
+    engineAdjusts(0);
+
+    const body = await quote({ checkOut: "2026-08-16" });
+
+    expect(body.priceDiffCents).toBe(2_500);
+    expect(body.itemizedChanges).toEqual([
+      { label: "Promo 'SPRING10' (re-priced)", amountCents: 2_500 },
+    ]);
   });
 });

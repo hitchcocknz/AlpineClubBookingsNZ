@@ -160,7 +160,7 @@ import {
   type InProgressGuestRangePlanResult,
   type BookingEditGuestRangePlan,
 } from "@/lib/booking-edit-guest-ranges";
-import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { addDaysDateOnly, countNightsDateOnly, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import { getCapacityFullNights } from "@/lib/capacity-full-nights";
 import { getGuestBedNightKeys, sameNightKeys } from "@/lib/booking-guest-stay-ranges";
 import { promoBreakdownLines } from "@/lib/booking-edit-promo-lines";
@@ -768,6 +768,7 @@ export async function POST(
       input: otherLodgeInput,
       role: actorRole,
       eligibleGuestIds: otherLodgeEligibleGuestIds,
+      linkedGuestIds: new Set(linkByGuestId.keys()),
     });
     await assertOtherLodgeExists(prisma, otherLodgeElection.otherLodgeId);
   } catch (error) {
@@ -2000,19 +2001,21 @@ export async function POST(
     }
     return priced;
   };
-  /** Whether the remaining guest at `index` holds different nights after the edit. */
-  const guestNightsMovedAt = (index: number) => {
+  /** The remaining guest at `index`'s nights before and after the edit, as keys. */
+  const guestNightKeysAt = (index: number) => {
     const entry = proposedRemainingGuests[index];
-    return (
-      entry !== undefined &&
-      !sameNightKeys(
-        getGuestBedNightKeys(entry.guest, booking),
-        getGuestBedNightKeys(
-          { stayStart: entry.stayStart, stayEnd: entry.stayEnd, nights: pricedGuestAt(index).nightDates },
-          booking,
-        ),
-      )
-    );
+    if (!entry) throw new Error(`The modify quote has no remaining guest at position ${index}.`);
+    return {
+      before: getGuestBedNightKeys(entry.guest, booking),
+      after: getGuestBedNightKeys(
+        { stayStart: entry.stayStart, stayEnd: entry.stayEnd, nights: pricedGuestAt(index).nightDates },
+        booking,
+      ),
+    };
+  };
+  const guestNightsMovedAt = (index: number) => {
+    const { before, after } = guestNightKeysAt(index);
+    return !sameNightKeys(before, after);
   };
   // A re-rate line carries the guest's whole change. Splitting out a date part
   // would need a second pricing pass at their old rate, so the label says so.
@@ -2108,17 +2111,25 @@ export async function POST(
   } else if (priceBreakdown) {
     let stayChangeCents = 0;
     let guestNightsChanged = false;
+    // Whether every guest moved with the booking, night for night, so the line
+    // can call it a date change rather than a guest-range change.
+    const shiftDays = countNightsDateOnly(storedDateOnly(booking.checkIn), newCheckIn);
+    const shifted = (key: string) =>
+      formatDateOnly(addDaysDateOnly(parseDateOnly(key), shiftDays));
+    let everyGuestMovedWithBooking = true;
     proposedRemainingGuests.forEach((entry, index) => {
       if (rerateGuestIds.has(entry.guest.id)) return;
       stayChangeCents += pricedGuestAt(index).priceCents - entry.guest.priceCents;
-      guestNightsChanged ||= guestNightsMovedAt(index);
+      const { before, after } = guestNightKeysAt(index);
+      guestNightsChanged ||= !sameNightKeys(before, after);
+      everyGuestMovedWithBooking &&= sameNightKeys(after, before.map(shifted));
     });
     if (stayChangeCents !== 0) {
       itemizedChanges.push({
         label:
           oldNights !== newNights
             ? `Date change: ${oldNights} night${oldNights !== 1 ? "s" : ""} → ${newNights} night${newNights !== 1 ? "s" : ""}`
-            : datesChanged
+            : datesChanged && everyGuestMovedWithBooking
               ? "Date change (rate difference)"
               : guestNightsChanged
                 ? "Guest stay range change"
@@ -2407,10 +2418,14 @@ export async function POST(
     }
 
     if (requested && refusal) {
-      // Invalid new code — the save refuses the whole edit, so the discount
-      // stays 0 here; don't fall back to the old codes. Checked before the
-      // removal below: a one-code removal on a several-code booking is
-      // refused too (#3828), not previewed as removing every code.
+      // Invalid new code — the save refuses the whole edit, which leaves the
+      // stored promotion where it is, so the preview keeps it too (#4197): the
+      // totals then show what the save would leave, with no promo line to
+      // explain. Checked before the removal below: a one-code removal on a
+      // several-code booking is refused too (#3828), not previewed as removing
+      // every code.
+      newDiscountCents = booking.discountCents;
+      newPromoAdjustmentCents = booking.promoAdjustmentCents;
       promoValidation = { valid: false, error: refusal };
     } else if (requested && requested.length === 0) {
       // User wants to remove every code (for reuse later).
