@@ -20,7 +20,9 @@
   by hand for the difference doesn't stop the family being billed again after
   a later reversal, but the preview warns first that the member already holds
   it (an approval leaves that family for Finance); a parent's own family
-  invoice still holds the family back. A member who has moved to another family doesn't
+  invoice still holds the family back when they were paid at the newest close,
+  and a member whose payment is reversed while that invoice holds the family is
+  listed under **Needs your decision**, naming the invoice. A member who has moved to another family doesn't
   count either. If only some
   of the members who had paid are no longer paid, the preview shows a **Check
   before confirming** warning that confirming invoices the full family fee.

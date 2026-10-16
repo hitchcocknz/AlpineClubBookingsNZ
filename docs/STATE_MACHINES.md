@@ -2445,7 +2445,9 @@ bare live Xero invoice held by a member a closed charge for that family AND type
   (exempt at a close, or reversed under an older charge and not paid at the newest close: Finance's difference
   invoice) -> does not suppress the family, so a later reversal still re-bills it; any other bare invoice, including
   a parent's own family invoice when they were paid at the newest close, suppresses as #2161 requires
-re-bill of a closed family while a member a closed charge covered holds a Xero invoice for the season ->
+member reversed under the newest closed charge while the family is held (#2161 bare invoice or operator marker) ->
+  CLOSED_FAMILY_MEMBER_NEEDS_DECISION naming what holds the family (never a re-bill; an approval bills nothing)
+re-bill of a closed family while a member's difference invoice passed the hold (same type, basis not per-member) ->
   CLOSED_FAMILY_REBILL_BESIDE_INVOICE warning naming the member and invoice (an officer confirms through it; an
   approval withholds the family for Finance)
 stated limit: a member PAID through a Xero invoice at the close, moved to an exempt type (the sync's NOT_REQUIRED
