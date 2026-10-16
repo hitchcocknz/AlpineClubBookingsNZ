@@ -8,6 +8,8 @@ import { getFailedXeroOperationOverview } from "@/lib/xero-admin-failures";
 import { getTodaysXeroUsageSummary } from "@/lib/xero-api-usage";
 import { readBookingInvoiceEvidenceForPayments } from "@/lib/xero-booking-invoice-evidence";
 import { getXeroContactLinkMismatchSnapshot } from "@/lib/xero-contact-link-mismatches";
+import { REFUND_CREDIT_NOTE_GRACE_HOURS } from "@/lib/xero-refund-note-grace";
+import { countBankRefundVoids } from "@/lib/bank-refund-void-report";
 import {
   findResolvedBookingInvoiceCreate,
   readResolvedRefundCreditNoteCoverage,
@@ -40,12 +42,9 @@ export interface MissingXeroInvoicesSnapshot {
   bookings: MissingXeroInvoiceBooking[];
 }
 
-// Issue #818: a Stripe refund moves money immediately, but the matching Xero
-// refund credit note is created best-effort after the fact. Once an invoiced,
-// refunded payment has gone this long without xeroRefundCreditNoteId being set,
-// the accounting follow-up has almost certainly failed/been dropped rather than
-// still being in flight, so it should be surfaced as a local↔Xero divergence.
-export const REFUND_CREDIT_NOTE_GRACE_HOURS = 24;
+// Issue #818: the grace window before a refund with no credit note is listed.
+// One home (`xero-refund-note-grace.ts`), shared with #4162's bank-transfer list.
+export { REFUND_CREDIT_NOTE_GRACE_HOURS };
 
 interface RefundMissingCreditNote {
   paymentId: string;
@@ -105,6 +104,16 @@ export interface XeroAdminHealthSnapshot {
     count: number;
   };
   refundsMissingCreditNotes: {
+    count: number;
+    graceHours: number;
+  };
+  /**
+   * #4162 (`INV-ADDPAY-042`): bank-transfer refunds whose credit note Xero
+   * voided, past the grace window, that the treasurer has not answered
+   * (`listBankRefundVoids`). Never raised automatically: the Stuck States
+   * finance panel is where each is recorded again or confirmed cancelled.
+   */
+  bankRefundsMissingCreditNotes: {
     count: number;
     graceHours: number;
   };
@@ -421,6 +430,7 @@ export async function getXeroAdminHealthSnapshot(): Promise<XeroAdminHealthSnaps
     latestMembershipCron,
     missingInvoices,
     refundsMissingCreditNotes,
+    bankRefundsMissingCreditNotes,
     contactGroupMismatches,
     contactLinkMismatches,
     usageSummaryResult,
@@ -459,6 +469,7 @@ export async function getXeroAdminHealthSnapshot(): Promise<XeroAdminHealthSnaps
     }),
     getMissingXeroInvoiceBookings({ limit: 1 }),
     getRefundsMissingXeroCreditNotes({ limit: 1 }),
+    countBankRefundVoids(),
     getXeroMemberGroupingSnapshot({ limit: 1 }),
     getXeroContactLinkMismatchSnapshot({ limit: 1 }),
     getTodaysXeroUsageSummary()
@@ -506,6 +517,10 @@ export async function getXeroAdminHealthSnapshot(): Promise<XeroAdminHealthSnaps
     },
     refundsMissingCreditNotes: {
       count: refundsMissingCreditNotes.count,
+      graceHours: REFUND_CREDIT_NOTE_GRACE_HOURS,
+    },
+    bankRefundsMissingCreditNotes: {
+      count: bankRefundsMissingCreditNotes,
       graceHours: REFUND_CREDIT_NOTE_GRACE_HOURS,
     },
     contactGroupMismatches: {

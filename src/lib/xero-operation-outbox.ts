@@ -10,6 +10,7 @@ import {
   paidAnotherWayCloseNoteRowsWhere,
   readPaidAnotherWayCloseShare,
 } from "@/lib/card-refund-paid-another-way-cash";
+import { readReRecordShare, reRecordKeyParts, reRecordNoteRowsWhere } from "@/lib/bank-refund-re-record-note";
 import { claimXeroSyncOperationToRunning } from "@/lib/xero-operation-claim";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { clubSeasonYear } from "@/lib/financial-year";
@@ -846,6 +847,14 @@ export async function enqueueXeroRefundCreditNoteOperation(
      * (`sumLateCaptureNotedCents`), and would mask a later Stripe refund of it.
      */
     creditsInvoiceId?: string;
+    /**
+     * #4162 (`INV-ADDPAY-042`): the record-again (`BankRefundVoidResolution`,
+     * RE_RECORDED) this note answers. Keyed on it (`re-record:<id>`), so it is a
+     * row of its own that can never reuse the voided note's key, and sized by its
+     * record alone - the voided note's amount less what its own notes cover
+     * (`readReRecordShare`) - never by the payment-wide gap.
+     */
+    reRecordId?: string;
   }
 ) {
   // Optional transaction client (#1357) so callers (e.g. the Internet Banking
@@ -915,7 +924,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
   const stepped =
     payment.source === PaymentSource.STRIPE ||
     Boolean(options?.reviewTaskId) ||
-    Boolean(options?.paidAnotherWayTaskId);
+    Boolean(options?.paidAnotherWayTaskId) ||
+    Boolean(options?.reRecordId);
   if (stepped) {
     // Stripe payments can be refunded in several steps, and each step needs
     // its own credit note for the still-uncovered delta. The cumulative total
@@ -948,6 +958,17 @@ export async function enqueueXeroRefundCreditNoteOperation(
       // of a refund Stripe failed later asks only for what the card refund
       // note already in Xero does not answer (`queuePaidAnotherWayXero`).
       noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
+    } else if (options?.reRecordId) {
+      // #4162 (`INV-ADDPAY-042`): a record-again's note is sized by its record -
+      // the voided note's amount less what its OWN notes cover - never by the
+      // payment-wide gap, as a close's is.
+      const share = await readReRecordShare(db, paymentId, options.reRecordId);
+      if (!share) {
+        throw new Error(
+          `Refusing to queue a record-again Xero refund note for payment ${paymentId}: its record ${options.reRecordId} is not on this payment`
+        );
+      }
+      noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
     } else {
       // #3635 round-3 R1: the cash a note may answer, which leaves out refunds of
       // late captures the app never recorded in Xero (`INV-PAY-110`).
@@ -969,6 +990,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
         queueOperationId: null,
         message: options?.paidAnotherWayTaskId
           ? "This paid-another-way close's own refund credit notes already cover what it paid back."
+          : options?.reRecordId
+          ? "This record-again's own refund credit notes already cover the refund."
           : "No provider-backed Stripe cash refund remains uncovered by refund credit notes for this payment.",
       };
     }
@@ -1002,6 +1025,14 @@ export async function enqueueXeroRefundCreditNoteOperation(
     };
   }
 
+  // #3924 round 8, #4162: a note sized from its own record (a close's, a
+  // record-again's) is found by its record's rows, whatever its watermark.
+  const ownRecordRowsWhere = options?.paidAnotherWayTaskId
+    ? paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId)
+    : options?.reRecordId
+    ? reRecordNoteRowsWhere(paymentId, options.reRecordId)
+    : null;
+
   // The cumulative watermark distinguishes equal-amount Stripe deltas so each one
   // gets its own note, while replays of the same state produce the same key and
   // collide into the PENDING/RUNNING dedupe just below.
@@ -1009,8 +1040,9 @@ export async function enqueueXeroRefundCreditNoteOperation(
     "payment", paymentId, "refund-credit-note", stepped ? watermarkCents : noteAmountCents, stepped ? "v2" : "v1",
     ...reviewTaskKeyParts(options?.reviewTaskId),
     ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : []),
-    ...(await refundNoteKeyAfterVoidParts(paymentId, options?.paidAnotherWayTaskId // `INV-ADDPAY-041`, the executor's rule
-      ? { closeRowsWhere: paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId) } : stepped ? { watermarkCents } : { amountCents: noteAmountCents }, db))
+    ...(options?.reRecordId ? reRecordKeyParts(options.reRecordId) : []),
+    ...(await refundNoteKeyAfterVoidParts(paymentId, ownRecordRowsWhere // `INV-ADDPAY-041`, the executor's rule
+      ? { closeRowsWhere: ownRecordRowsWhere } : stepped ? { watermarkCents } : { amountCents: noteAmountCents }, db))
   );
 
 
@@ -1034,8 +1066,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
   // the payment's coverage gave it - found the one way a close's rows are.
   const existingQueuedOperation = await db.xeroSyncOperation.findFirst({
     where: {
-      ...(options?.paidAnotherWayTaskId
-        ? paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId)
+      ...(ownRecordRowsWhere
+        ? ownRecordRowsWhere
         : {
             correlationKey,
             direction: "OUTBOUND",
@@ -1082,6 +1114,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
       ...(options?.reviewTaskId ? { reviewTaskId: options.reviewTaskId } : {}),
       ...(options?.paidAnotherWayTaskId ? { paidAnotherWayTaskId: options.paidAnotherWayTaskId } : {}),
       ...(options?.creditsInvoiceId ? { creditsInvoiceId: options.creditsInvoiceId } : {}),
+      ...(options?.reRecordId ? { reRecordId: options.reRecordId } : {}),
     },
     createdByMemberId: options?.createdByMemberId ?? null,
     store: db,
@@ -3042,6 +3075,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
             ...(payload.documentDate ? { documentDate: payload.documentDate } : {}),
             ...(payload.paidAnotherWayTaskId ? { paidAnotherWayTaskId: payload.paidAnotherWayTaskId } : {}),
             ...(payload.creditsInvoiceId ? { creditsInvoiceId: payload.creditsInvoiceId } : {}),
+            // #4162: a record-again's note, sized and keyed on its record.
+            ...(payload.reRecordId ? { reRecordId: payload.reRecordId } : {}),
             // #3827 (D-3813-8): a refund request's own note (`refund-request-credit-note.ts`).
             ...(readRefundRequestIdFromPayload(queuedOperation.requestPayload)
               ? { refundRequestId: readRefundRequestIdFromPayload(queuedOperation.requestPayload)! }

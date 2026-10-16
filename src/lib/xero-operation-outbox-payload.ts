@@ -106,6 +106,7 @@ interface QueuedRefundCreditNoteOutboxPayload {
   paymentIntentId?: string;
   documentDate?: string;
   paidAnotherWayTaskId?: string; creditsInvoiceId?: string; // #3924 r7: the close it answers, the invoice it names
+  reRecordId?: string; // #4162: the record-again (`BankRefundVoidResolution`) it answers
 }
 
 interface QueuedAccountCreditNoteOutboxPayload {
@@ -350,6 +351,7 @@ export function readQueuedOutboxPayload(
       documentDate: readString(payload.documentDate) ?? undefined,
       paidAnotherWayTaskId: readString(payload.paidAnotherWayTaskId) ?? undefined,
       creditsInvoiceId: readString(payload.creditsInvoiceId) ?? undefined,
+      reRecordId: readString(payload.reRecordId) ?? undefined,
     };
   }
 

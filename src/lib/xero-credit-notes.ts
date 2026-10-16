@@ -38,6 +38,7 @@ import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { paidAnotherWayCloseNoteRowsWhere, readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
+import { readReRecordShare, reRecordKeyParts } from "@/lib/bank-refund-re-record-note";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -140,6 +141,14 @@ export interface CreateXeroRefundCreditNoteOptions
    * payment's one refund-note pointer.
    */
   refundRequestId?: string;
+  /**
+   * #4162 (`INV-ADDPAY-042`): the record-again (`BankRefundVoidResolution`) this
+   * note answers - sized by its record (`readReRecordShare`), keyed on it
+   * (`re-record:<id>`), and per-refund exactly when the voided note it replaces
+   * was. Its method, wording and credited invoice are the voided note's, which
+   * the record-again queued with it (`INV-PAY-101`).
+   */
+  reRecordId?: string;
 }
 
 /**
@@ -253,10 +262,18 @@ export async function createXeroCreditNote(
     typeof watermarkCents === "number" && Number.isFinite(watermarkCents);
   // #3880: a review's non-Stripe delta note is one of several (`isPerDeltaRefundNoteLink`).
   // #3924 round 7: so is a paid-another-way close's note (`paidAnotherWayTaskId`).
+  // #4162: a record-again's note is sized from its record, read once here.
+  const reRecordShare =
+    isDeltaMode && options?.reRecordId ? await readReRecordShare(prisma, paymentId, options.reRecordId) : null;
+  if (isDeltaMode && options?.reRecordId && !reRecordShare) {
+    throw new Error(
+      `Refusing to create a record-again Xero refund credit note for payment ${paymentId}: its record ${options.reRecordId} is not on this payment`
+    );
+  }
   const perRefundNote =
     isDeltaMode &&
     payment.source !== PaymentSource.STRIPE &&
-    (Boolean(options?.reviewTaskId) || Boolean(options?.paidAnotherWayTaskId));
+    (Boolean(options?.reviewTaskId) || Boolean(options?.paidAnotherWayTaskId) || reRecordShare?.perDelta === true);
   const { refundMethod, refundMethodRecorded } = resolveRefundNoteMethod(
     options?.refundMethod,
     payment.source,
@@ -329,6 +346,8 @@ export async function createXeroCreditNote(
   let effectiveWatermarkCents: number | null = null;
   // #3924 round 9: what a close's OWN notes already cover, which keys its note.
   let closeCoveredCents: number | null = null;
+  // #4162: the same for a record-again's own notes.
+  let reRecordCoveredCents: number | null = null;
 
   if (isDeltaMode) {
     // #3880: no other run on this payment between its coverage read and its record.
@@ -381,6 +400,13 @@ export async function createXeroCreditNote(
       uncoveredCents = share.uncoveredCents;
       closeCoveredCents = share.coveredCents;
       evidenceLog = { paidAnotherWayTaskId, closeAmountCents: share.amountCents, closeCoveredCents: share.coveredCents };
+    } else if (reRecordShare) {
+      // #4162 (`INV-ADDPAY-042`): a record-again's note is sized by its record -
+      // the voided note's amount less what its OWN notes cover, the figure the
+      // enqueue used - never by the payment-wide gap.
+      uncoveredCents = reRecordShare.uncoveredCents;
+      reRecordCoveredCents = reRecordShare.coveredCents;
+      evidenceLog = { reRecordId: options?.reRecordId, reRecordAmountCents: reRecordShare.amountCents, reRecordCoveredCents };
     } else {
       // #3635 round-3 R1: the cash a note may answer, the figure the enqueue
       // capped against, never refunds of late captures Xero never received.
@@ -423,7 +449,7 @@ export async function createXeroCreditNote(
       // own notes only, and another note's link is not one of them; its row
       // completes as covered, raising nothing.
       const coveringLink =
-        paidAnotherWayTaskId !== null
+        paidAnotherWayTaskId !== null || reRecordShare !== null
           ? null
           : (activeLinks.find((link) => {
               const linkWatermark = readLinkWatermarkCents(link.metadata);
@@ -503,6 +529,8 @@ export async function createXeroCreditNote(
   const keyScope: RefundNoteKeyScope | null = refundRequestId !== null ? null
     : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null
     ? { closeRowsWhere: paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId) }
+    : isDeltaMode && reRecordShare && reRecordCoveredCents !== null
+    ? { closeRowsWhere: reRecordShare.rowsWhere }
     : isDeltaMode ? { watermarkCents: effectiveWatermarkCents ?? watermarkCents ?? 0 } : { amountCents: refundAmountCents };
   const afterVoid = keyScope ? await refundNoteKeyAfterVoidParts(paymentId, keyScope, prisma) : [];
   const creditNoteIdempotencyKey = refundRequestId !== null
@@ -523,6 +551,20 @@ export async function createXeroCreditNote(
         "v3",
         ...afterVoid
       )
+    : isDeltaMode && options?.reRecordId && reRecordCoveredCents !== null
+    ? // #4162 (`INV-ADDPAY-042`): a record-again's note is its own document in
+      // Xero, keyed on its record and what ITS OWN notes already cover, so it
+      // can never be the voided note's key, and a retry after a crash replays
+      // its own key whatever other note landed meanwhile.
+      buildXeroIdempotencyKey(
+        "payment",
+        paymentId,
+        "refund-credit-note",
+        ...reRecordKeyParts(options.reRecordId),
+        reRecordCoveredCents,
+        "v3",
+        ...afterVoid
+      )
     : isDeltaMode
     ? buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", effectiveWatermarkCents ?? watermarkCents, "v2", ...afterVoid)
     : buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", refundAmountCents, "v1", ...afterVoid);
@@ -540,6 +582,8 @@ export async function createXeroCreditNote(
     // retry credits the same document and the close's note stays findable.
     ...(options?.paidAnotherWayTaskId ? { paidAnotherWayTaskId: options.paidAnotherWayTaskId } : {}),
     ...(options?.creditsInvoiceId ? { creditsInvoiceId: options.creditsInvoiceId } : {}),
+    // #4162: the record-again rides the row, so a retry sizes and keys it the same.
+    ...(options?.reRecordId ? { reRecordId: options.reRecordId } : {}),
     // #3935: the officer's cash answer rides the row, so a retry says the same.
     ...(noteWording ? { noteWording } : {}),
     // #3880 F2: a delta run's watermark rides its row, so an operator retry of

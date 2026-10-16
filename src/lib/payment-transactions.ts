@@ -1616,3 +1616,76 @@ export async function applyLocalRefundAllocation({
     await reconcilePaymentAggregates({ paymentId, store: db });
   });
 }
+
+/**
+ * Raised when an unwind asks to take back more than the payment's
+ * transactions record as refunded, before anything is written (#4162).
+ */
+export class RefundUnwindExceedsAllocatedError extends Error {
+  constructor() {
+    super("Refund unwind exceeds what the payment's transactions record as refunded");
+    this.name = "RefundUnwindExceedsAllocatedError";
+  }
+}
+
+/**
+ * #4162 (owner decision 17 Oct 2026, Q2; `INV-ADDPAY-042`): take a refund the
+ * club recorded by hand BACK OUT of the payment's ledger detail, because the
+ * treasurer confirmed it was cancelled - its Xero note was voided and the
+ * member was never paid. The inverse of `applyLocalRefundAllocation`: the
+ * Payment row first (`lockPaymentForRefundedTotal`), then each transaction that
+ * records a refund, newest first, each lowered through the shared
+ * compare-and-set and never below nothing, its refund status re-derived.
+ *
+ * It does NOT re-derive the payment's refunded total
+ * (`reconcilePaymentAggregates`): on a bank transfer the inbound sync already
+ * recounted that total from Xero's live notes when the note was voided, and a
+ * reconcile here would also put back any OTHER refund the recount took out.
+ * The caller sets the total itself, never above what this leaves.
+ *
+ * Refuses before writing anything when the transactions do not record that
+ * much refunded (`RefundUnwindExceedsAllocatedError`), and loudly
+ * (`RefundAllocationRacedError`) when a concurrent writer took what it needed.
+ */
+export async function unwindLocalRefundAllocation({
+  paymentId,
+  amountCents,
+  store = prisma,
+}: {
+  paymentId: string;
+  amountCents: number;
+  store?: PaymentStore;
+}): Promise<void> {
+  await withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    const payment = await ensurePaymentTransactionsBackfilled(db, paymentId);
+    if (!payment) {
+      throw new Error("Payment not found");
+    }
+    const refundedTransactions = [...payment.transactions]
+      .filter((transaction) => transaction.refundedAmountCents > 0)
+      .sort(compareLedgerRowsNewestFirst);
+    const allocatedCents = refundedTransactions.reduce((sum, transaction) => sum + transaction.refundedAmountCents, 0);
+    if (amountCents > allocatedCents) {
+      throw new RefundUnwindExceedsAllocatedError();
+    }
+
+    let remainingAmountCents = amountCents;
+    for (const transaction of refundedTransactions) {
+      if (remainingAmountCents <= 0) {
+        break;
+      }
+      const take = remainingAmountCents;
+      const { previousCents, nextCents } = await compareAndSetRefundedAmount(
+        db,
+        transaction.id,
+        (row) => row.refundedAmountCents - Math.min(Math.max(row.refundedAmountCents, 0), take),
+        { writeStatus: true }
+      );
+      remainingAmountCents -= previousCents - nextCents;
+    }
+    if (remainingAmountCents > 0) {
+      throw new RefundAllocationRacedError();
+    }
+  });
+}

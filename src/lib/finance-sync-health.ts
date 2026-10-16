@@ -238,6 +238,9 @@ function classifyReconciliation(
   };
 }
 
+/** #4162: where a voided bank-transfer refund note is answered. */
+const STUCK_STATES_HREF = "/admin/stuck-states";
+
 function classifyXeroOperations(
   input: FinanceSyncHealthSourceData
 ): FinanceSyncHealthSignal[] {
@@ -294,6 +297,17 @@ function classifyXeroOperations(
       detail: `After a ${health.refundsMissingCreditNotes.graceHours}h grace window.`,
       tone: health.refundsMissingCreditNotes.count > 0 ? "amber" : "green",
       ...link,
+    },
+    {
+      // #4162 (`INV-ADDPAY-042`): voided bank-transfer refund notes waiting
+      // for the treasurer, answered on the Stuck States finance panel.
+      id: "bank-refunds-missing-credit-notes",
+      label: "Bank-transfer refunds with a voided credit note",
+      value: String(health.bankRefundsMissingCreditNotes.count),
+      detail: `After a ${health.bankRefundsMissingCreditNotes.graceHours}h grace window. Record each again or confirm it was cancelled.`,
+      tone: health.bankRefundsMissingCreditNotes.count > 0 ? "amber" : "green",
+      href: STUCK_STATES_HREF,
+      linkLabel: "Open Stuck States",
     },
   ];
 }

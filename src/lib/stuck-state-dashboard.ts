@@ -426,6 +426,21 @@ function addXeroItems(items: StuckStateItem[], snapshot: XeroAdminHealthSnapshot
       "payment",
     )} are older than ${snapshot.refundsMissingCreditNotes.graceHours} hours and still missing Xero refund credit notes.`,
   });
+  // #4162 (`INV-ADDPAY-042`): a voided bank-transfer refund note is never
+  // re-raised automatically; the finance panel on this page answers each.
+  addItem(items, {
+    id: "xero-bank-refund-voided-credit-notes",
+    domain: "xero",
+    title: "Bank-transfer refunds with a voided Xero credit note",
+    severity: "warning",
+    owner: "Finance",
+    count: snapshot.bankRefundsMissingCreditNotes.count,
+    href: "/admin/stuck-states#bank-refund-voids",
+    summary: `${snapshot.bankRefundsMissingCreditNotes.count} bank-transfer ${plural(
+      snapshot.bankRefundsMissingCreditNotes.count,
+      "refund",
+    )} had ${snapshot.bankRefundsMissingCreditNotes.count === 1 ? "its" : "their"} Xero credit note voided more than ${snapshot.bankRefundsMissingCreditNotes.graceHours} hours ago. Record each again or confirm it was cancelled.`,
+  });
   addItem(items, {
     id: "xero-contact-link-mismatches",
     domain: "xero",

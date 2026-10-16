@@ -149,6 +149,20 @@ async function recordedRefundNoteFigure(
 }
 
 /**
+ * #4162 (`INV-ADDPAY-042`): a refund note's recorded amount in cents - its
+ * link's, else its create row's - or null when neither records one. What a
+ * voided bank-transfer refund note re-raises when the treasurer records it
+ * again; null refuses that, never a guess.
+ */
+export function recordedRefundNoteAmountCents(
+  paymentId: string,
+  link: { xeroObjectId: string; metadata: unknown },
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+): Promise<number | null> {
+  return recordedRefundNoteFigure(paymentId, link, "amountCents", db);
+}
+
+/**
  * `INV-ADDPAY-041`: the parts a refund note's key gains once the payment has a
  * voided refund note, `after-void:<sorted ids>`, so a reissue never sends a key
  * Xero has answered before. A void moves coverage, so a reissue's base can equal

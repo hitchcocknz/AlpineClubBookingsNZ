@@ -23,6 +23,7 @@ import { inFlightGroupPlanRefundCents } from "@/lib/booking-ledger-projection-ce
 import { captureKey, creditKey, handBackKey, refundKey } from "@/lib/booking-ledger-posting-keys";
 import { reviewAdjustmentEvidence } from "@/lib/booking-ledger-projection-census-review-adjustments";
 import { settlementChainWalker } from "@/lib/booking-ledger-settlement-posting";
+import { liveLines } from "@/lib/booking-ledger-modification-posting";
 import { isCapturedPaymentStatus } from "@/lib/booking-payment-state";
 import { isPaidLikeBookingStatus } from "@/lib/booking-status";
 import { deriveCardAppliedCreditDoublePayFinding } from "@/lib/card-applied-credit-double-pay";
@@ -351,10 +352,13 @@ function cardDoublePayCents(row: BookingLedgerCensusRow): number {
 /**
  * Hand-backs the ledger records against a completed task: −Σ matched BANK_REFUND
  * lines - the share, or a review's netted hand-back its stand-in bears out (#3835).
+ * Live lines only: a hand-back the treasurer confirmed cancelled after Xero
+ * voided its note is reversed (#4162, `INV-ADDPAY-042`), and so is no longer
+ * part of the refunded total.
  */
 function handBackCents(row: BookingLedgerCensusRow): number {
   const netted = reviewAdjustmentEvidence(row).nettedHandBackLineIds;
-  return -row.lines
+  return -liveLines(row.lines)
     .filter(
       (line) =>
         line.kind === "BANK_REFUND" &&
