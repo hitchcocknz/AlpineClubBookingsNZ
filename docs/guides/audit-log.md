@@ -871,13 +871,16 @@ than none.
 | `refundTimeReport` | What the refund left at the time: `none` (the server stopped first, so the recovery wrote the refund's entry too), `record_lost` (its entry says the row could not be saved), or `reported` (an older entry from a refund whose row did save) |
 | `alertSent` | Whether this recovery sent the email |
 
-**A late payment refunded some other way (#4170).** If a late card payment the
-app marked as its own is refunded outside the app - in the Stripe dashboard, say
-- the app writes one `booking.payment.late_capture_refunded_outside_app` entry,
-category `payment`, severity `important`, with `paymentIntentId`, `refundIds`,
-`refundedCents` and `creditNoteQueued: false`. No Xero credit note is raised for
-it, because Xero never received that payment; record it by hand if it needs
-one.
+**A late payment refunded some other way (#4170).** If a card payment that
+arrived after its booking was cancelled is refunded outside the app - in the
+Stripe dashboard, say, even before Stripe's own "payment succeeded" notice
+reached the app - the app writes one
+`booking.payment.late_capture_refunded_outside_app` entry, category `payment`,
+severity `important`, with `paymentIntentId`, `refundIds`, `refundedCents` and
+`creditNoteQueued: false`, and emails the people who handle failed card
+payments, once for that payment. No Xero credit note is raised for it, because
+Xero never received that payment; record it by hand only if it was recorded
+there. A refund the app's own repair tool made is not one of these.
 
 ### Issue-report screenshot entries (#2703)
 

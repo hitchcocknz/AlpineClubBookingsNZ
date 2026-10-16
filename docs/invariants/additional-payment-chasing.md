@@ -1197,16 +1197,16 @@ second.** `handleCancelledBookingAdditionalPaymentSucceeded` has always mailed t
 club at the moment it happens, naming the member, the stay, the amount, the payment
 intent, and the fact that the capture was auto-refunded and the supplementary Xero
 invoice was not released; since #2773 the primary handler sends the same mail in
-place of the generic muteable one it used to send. **"One" is per EVENT, and there
-are three mutually exclusive kinds of it, never two at once:** the ordinary
-auto-refund alert, the withheld-refund alert when `INV-ADDPAY-039`'s fence fires,
-and the possible-double-payment alert when a hand-completion is found after the
-refund. The shared epilogue picks exactly one and the fenced path returns before the
-ordinary one can be reached. What was missing was somewhere to look afterwards, which
-is what this rule adds. Anyone tempted to "add an alert" here should read
-`INV-ADDPAY-038` first: that mail was rewritten by #2761 rather than joined by
-another, because a second notification for one event is noise, and noise is how the
-first one stops being read. No pending count anywhere reaches these rows either —
+place of the generic muteable one it used to send. **"One" is per EVENT, of three
+kinds:** the ordinary auto-refund alert, the withheld-refund alert when
+`INV-ADDPAY-039`'s fence fires, and the possible-double-payment alert when a
+hand-completion is found after the refund. The epilogue picks one, and the fenced
+path returns before the ordinary one. Two deliberate exceptions (#4149): a lost
+record re-sends the ordinary alert (#2761: a duplicate, never a silence), and a
+hand-completion found only later raises the double-payment alert after it, once.
+What was missing was somewhere to look afterwards, which is what this rule adds.
+Read `INV-ADDPAY-038` before adding an alert: #2761 rewrote that mail rather than
+joining it, because a second notification is noise. No pending count anywhere reaches these rows either —
 every one of them counts `status: "OPEN"`, and #2761's owner decision explicitly
 left badges and the digest alone.
 

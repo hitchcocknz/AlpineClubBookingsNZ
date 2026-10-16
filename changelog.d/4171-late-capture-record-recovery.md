@@ -18,5 +18,9 @@
   arrived before the app had recorded a late payment's automatic refund, the app
   queued a credit note for the whole payment against the booking's original
   invoice. It now leaves that refund to the late payment's own record. A late
-  payment refunded some other way (the Stripe dashboard) is named in the audit
-  log for the finance team and never noted in Xero as ordinary cash.
+  payment refunded some other way (the Stripe dashboard), even before Stripe's
+  "payment succeeded" notice arrived, is named in the audit log, emailed once
+  to the people who handle failed card payments, and never noted in Xero as
+  ordinary cash. The nightly check now also finds a late payment whose record
+  was lost even when it shows no gap in Xero, and a treasurer-approved refund is
+  no longer mistaken for a possible double payment.
