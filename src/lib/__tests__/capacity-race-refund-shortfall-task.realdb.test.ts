@@ -252,7 +252,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     /** The member's booking page, from what is stored: its events and the live reads it makes. */
     async function memberPage(): Promise<string> {
       const { resolveBookingNarrative } = await import("@/lib/booking-narrative");
-      const { readCancelledCardRefundState, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status");
+      const { readCancelledCardRefund, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status");
       const { bindClubTime, requireClubTimeZone } = await import("@/lib/club-time");
       const events = await prisma.bookingEvent.findMany({ where: { bookingId: BOOKING_ID }, select: { type: true, occurredAt: true, amountCents: true, reason: true, snapshot: true } });
       return resolveBookingNarrative(
@@ -261,7 +261,8 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           booking: { status: "CANCELLED", finalPriceCents: CHARGE_CENTS, amountOwed: { owedCents: 0, dueCents: 0, appliedCreditCents: 0 }, checkIn: D1, checkOut: CHECK_OUT, firstName: "Shortfall", adminReviewStatus: null, adminReviewNotes: null, adminReviewReason: null },
           events,
           cardShortfallStatuses: await readCardShortfallTaskStatuses(BOOKING_ID),
-          cardRefundState: await readCancelledCardRefundState(BOOKING_ID),
+          // #4145 (merged from main): the page reads the card refund's state and any close's record together.
+          ...(await readCancelledCardRefund(BOOKING_ID)),
         },
         CLUB_FORMAT_TEST,
       ).message;

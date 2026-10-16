@@ -22,6 +22,7 @@ vi.mock("@/lib/club-format-server", async () => ({ clubFormatValues: async () =>
 vi.mock("@/lib/logger", () => ({ default: { error: doubles.error, warn: vi.fn(), info: vi.fn() } }));
 
 import { alertCardRefundCapOverflow, cardRefundCapOverflowAlertKey } from "@/lib/card-refund-cap-overflow";
+import { NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 
 const OVERFLOW = { paymentId: "payment-1", paymentTransactionId: "txn-race", discardedCents: 5_000, recordedRefundCents: 5_000, countedRefundIds: ["re_b", "re_a"] };
 
@@ -34,7 +35,8 @@ describe("a card refund past its charge alerts the officers (#4159 F2, round 3)"
   it("MUTATION (round 3, 3): with a hand-back completed on the payment, says the member may have been paid twice", async () => {
     doubles.handBacks.mockResolvedValueOnce(1);
     await expect(alertCardRefundCapOverflow(OVERFLOW)).resolves.toBe(true);
-    expect(doubles.handBacks).toHaveBeenCalledWith({ where: { paymentId: "payment-1", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED" } });
+    // INV-PAY-117: an edit's refund hand-back, or an approved refund request's, is not a cancellation's.
+    expect(doubles.handBacks).toHaveBeenCalledWith({ where: { paymentId: "payment-1", kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE } });
     expect(doubles.onceEver).toHaveBeenCalledWith(expect.objectContaining({ key: cardRefundCapOverflowAlertKey(OVERFLOW) }));
     expect(doubles.alertOfficers).toHaveBeenCalledWith(
       expect.objectContaining({

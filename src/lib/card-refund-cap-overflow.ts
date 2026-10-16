@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 
 import { compareOrdinal } from "@/lib/ordinal-order";
 import logger from "@/lib/logger";
+import { NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
@@ -77,8 +78,12 @@ export async function alertCardRefundCapOverflow(overflow: CardRefundCapOverflow
       where: { id: overflow.paymentTransactionId },
       select: { stripePaymentIntentId: true, payment: { select: { bookingId: true } } },
     });
-    // A hand-back or "Paid another way" close completed on the payment: bank money already in the total.
-    const handBacks = await prisma.manualRefundTask.count({ where: { paymentId: overflow.paymentId, kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED" } });
+    // A cancellation's hand-back or "Paid another way" close completed on the payment: bank money already in the total
+    // for the same refund. Not an edit's refund hand-back or an approved refund request's (`INV-PAY-117`): their money
+    // answers a different refund, so an overflow beside one reads as the records', and the email still says to check.
+    const handBacks = await prisma.manualRefundTask.count({
+      where: { paymentId: overflow.paymentId, kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", ...NOT_NON_CANCELLATION_HAND_BACK_WHERE },
+    });
     const bookingId = row?.payment?.bookingId ?? null;
     if (!bookingId) {
       logger.error(context, "A card refund's discarded cents have no booking to alert the officers about (#4159)");
