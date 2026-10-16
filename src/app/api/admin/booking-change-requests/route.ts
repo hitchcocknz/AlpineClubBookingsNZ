@@ -95,6 +95,36 @@ export async function GET(req: NextRequest) {
     prisma.bookingChangeRequest.count({ where }),
   ]);
 
+  // #4157 (`INV-REQ-012`): a pending request's card reads a repeated range
+  // against the nights approval keeps — the booking's live guest rows. Loaded
+  // only for the pending rows' bookings: a decided request never reads them,
+  // so the approved and declined views load no night rows at all. Kept on the
+  // server; nothing about these guests reaches the screen.
+  const pendingBookingIds = [
+    ...new Set(requests.filter((request) => request.status === "REQUESTED").map((request) => request.booking.id)),
+  ];
+  const liveGuestsByBooking = new Map<
+    string,
+    Array<{ id: string; stayStart: Date; stayEnd: Date; nights: Array<{ stayDate: Date }> }>
+  >();
+  if (pendingBookingIds.length > 0) {
+    const liveGuests = await prisma.bookingGuest.findMany({
+      where: { bookingId: { in: pendingBookingIds } },
+      select: {
+        id: true,
+        bookingId: true,
+        stayStart: true,
+        stayEnd: true,
+        nights: { select: { stayDate: true } },
+      },
+    });
+    for (const { bookingId, ...guest } of liveGuests) {
+      const list = liveGuestsByBooking.get(bookingId) ?? [];
+      list.push(guest);
+      liveGuestsByBooking.set(bookingId, list);
+    }
+  }
+
   // #3750: whether approving a request EXECUTES it — its booking's stay has
   // finished — answered here from the same `isFinishedStay` the decision route
   // asks, so the panel's wording and the route's behaviour cannot disagree.
@@ -116,8 +146,12 @@ export async function GET(req: NextRequest) {
       booking: acceptsOfficerGuests ? { ...booking, guests } : booking,
       executesOnApproval,
       acceptsOfficerGuests,
-      // #4088: each guest's requested nights, as runs, for the card.
-      requestedGuestNights: describeRequestedGuestNights(request.requestedChanges),
+      // #4088: each guest's requested nights, as runs, for the card; #4157:
+      // a pending request read against the live rows approval reads.
+      requestedGuestNights: describeRequestedGuestNights(request.requestedChanges, {
+        status: request.status,
+        guests: liveGuestsByBooking.get(booking.id),
+      }),
     };
   });
 

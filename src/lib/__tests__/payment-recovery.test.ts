@@ -4,6 +4,7 @@ import {
   PaymentRecoveryOperationStatus,
   PaymentRecoveryOperationType,
   PaymentStatus,
+  Prisma,
 } from "@prisma/client";
 
 const {
@@ -38,6 +39,7 @@ const {
   mockExecuteGroupSettlementRefundPlan,
   mockRecordDuplicateCaptureRefundEvent,
   mockBookingEventCreate,
+  mockBookingEventFindMany,
   mockReportSupersededPaymentRefund,
   mockSyncEditFinancialReviewChargeRequest,
   mockBookingModificationFindUnique,
@@ -98,6 +100,8 @@ const {
     .mockResolvedValue({ outcome: "refunded", mirroredChildren: 1 }),
   mockRecordDuplicateCaptureRefundEvent: vi.fn().mockResolvedValue(undefined),
   mockBookingEventCreate: vi.fn().mockResolvedValue({}),
+  // #4145: the member cancel's CANCELLED snapshot, read for its REFUNDED reason.
+  mockBookingEventFindMany: vi.fn().mockResolvedValue([]),
   // #3340: the supersede-refund epilogue - one audit row, one booking event, one
   // member email, one admin alert. Mocked so a REPLAY can be asked whether it
   // spoke a second time.
@@ -164,7 +168,10 @@ vi.mock("@/lib/prisma", () => {
       findUnique: (...args: unknown[]) =>
         mockBookingModificationFindUnique(...args),
     },
-    bookingEvent: { create: (...args: unknown[]) => mockBookingEventCreate(...args) },
+    bookingEvent: {
+      create: (...args: unknown[]) => mockBookingEventCreate(...args),
+      findMany: (...args: unknown[]) => mockBookingEventFindMany(...args),
+    },
   };
   // #3954 review round 4: the additional-intent replay writes its row under a
   // claim hold, in one transaction, on these same mocks.
@@ -3989,6 +3996,143 @@ describe("payment recovery worker", () => {
 
     it("records nothing when the replay's refund throws - the row is not closed", async () => {
       queue(makeCapacityOp());
+      mockRefundPaymentTransactions.mockRejectedValueOnce(new Error("Stripe is unavailable (503)"));
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  // #4145: a member cancel's card refund the runner makes is recorded the same
+  // way - one REFUNDED event, dated by the close that moved the row, for what
+  // the frozen plan refunded, with the cancel's own reason.
+  describe("member-cancel refund recovery replay records the refund (#4145)", () => {
+    function makeCancelOp(overrides: Record<string, unknown> = {}) {
+      return makeOperation({
+        id: "recovery-cancel",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        amountCents: 3000,
+        idempotencyKey: "booking_cancel_refund_recovery_booking-1",
+        allocationPlan: [
+          { paymentTransactionId: "txn-1", amountCents: 2000 },
+          { paymentTransactionId: "txn-2", amountCents: 1000 },
+        ],
+        paymentTransactionId: null,
+        ...overrides,
+      });
+    }
+    function queue(op: ReturnType<typeof makeCancelOp>) {
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [op]),
+      );
+      mockPaymentRecoveryFindUnique.mockResolvedValue(op);
+    }
+    const cancelledSnapshot = (extra: Record<string, unknown> = {}) => ({
+      type: "CANCELLED",
+      reason: null,
+      snapshot: { refundMethod: "card", refundPercentage: 50, paidAmountCents: 6000, settledAmountCents: 3000, retainedAmountCents: 3000, ...extra },
+    });
+
+    it("records REFUNDED once, for the plan's total, with the cancel's reason and no actor", async () => {
+      queue(makeCancelOp());
+      mockBookingEventFindMany.mockResolvedValueOnce([cancelledSnapshot()]);
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockBookingEventFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { bookingId: "booking-1", type: { in: ["CANCELLED", "REFUNDED"] } } }));
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
+      expect(mockBookingEventCreate).toHaveBeenCalledWith({
+        data: { bookingId: "booking-1", type: "REFUNDED", amountCents: 3000, actorMemberId: null, reason: "50% refunded to the original payment method.", snapshot: Prisma.JsonNull },
+      });
+    });
+
+    it("says the card's part on a card refund shortfall, as the inline cancel would", async () => {
+      queue(makeCancelOp());
+      mockBookingEventFindMany.mockResolvedValueOnce([cancelledSnapshot({ settledAmountCents: 5000, cardShortfall: { cardCents: 3000, bankCents: 2000, checkCents: 0 } })]);
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockBookingEventCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({ amountCents: 3000, reason: "$30.00 of the 50% refund ($50.00) refunded to the original payment method." }),
+      });
+    });
+
+    it("names the amount when the cancel left no card snapshot, skipping a marker CANCELLED event", async () => {
+      queue(makeCancelOp());
+      mockBookingEventFindMany.mockResolvedValueOnce([
+        { type: "CANCELLED", reason: null, snapshot: { kind: "manual_settlement_reversal" } },
+        { type: "CANCELLED", reason: null, snapshot: null },
+      ]);
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockBookingEventCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({ amountCents: 3000, reason: "$30.00 refunded to the original payment method." }),
+      });
+    });
+
+    it("counts a slice the inline attempt made (a partial) in the amount, without sending it again", async () => {
+      queue(makeCancelOp({ allocationPlan: [
+        { paymentTransactionId: "txn-1", amountCents: 2000, madeRefundId: "re_inline" },
+        { paymentTransactionId: "txn-2", amountCents: 1000 },
+      ] }));
+      mockBookingEventFindMany.mockResolvedValueOnce([cancelledSnapshot()]);
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 1000, allocation: [{ paymentTransactionId: "txn-2", amountCents: 1000 }] }));
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
+      expect(mockBookingEventCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ amountCents: 3000 }) });
+    });
+
+    it("records nothing when the row was already closed - the inline close recorded it (count 0), and that is no warning", async () => {
+      queue(makeCancelOp());
+      mockPaymentRecoveryUpdateMany.mockImplementation((args: { where?: { status?: unknown; id?: string } }) => {
+        const status = args.where?.status;
+        if (status && typeof status === "object" && "not" in status) return Promise.resolve({ count: 0 });
+        return Promise.resolve({ count: args.where?.id ? 1 : 0 });
+      });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
+      const lostClose = ([, message]: unknown[]) => typeof message === "string" && message.includes("completion matched no live operation");
+      expect(vi.mocked(logger.warn).mock.calls.filter(lostClose)).toHaveLength(0);
+    });
+
+    // #4145 review: a cancel made before #4145 wrote its event up front; the
+    // runner closes its row after the deploy and records no second one.
+    it("closes the row but records nothing when the cancel already has its card refund event (the deploy boundary)", async () => {
+      queue(makeCancelOp());
+      mockBookingEventFindMany.mockResolvedValueOnce([
+        { type: "REFUNDED", reason: "50% refunded to the original payment method.", snapshot: null },
+        cancelledSnapshot(),
+      ]);
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCEEDED" }) }));
+      expect(mockBookingEventCreate).not.toHaveBeenCalled();
+    });
+
+    it("an event insert that fails fails the attempt, so the row is retried rather than closed unrecorded", async () => {
+      queue(makeCancelOp());
+      mockBookingEventCreate.mockRejectedValueOnce(new Error("insert failed"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(0);
+      expect(mockBookingEventCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("records nothing when the replay's refund throws - the row is not closed", async () => {
+      queue(makeCancelOp());
       mockRefundPaymentTransactions.mockRejectedValueOnce(new Error("Stripe is unavailable (503)"));
 
       await processPaymentRecoveryOperations({ limit: 1 });

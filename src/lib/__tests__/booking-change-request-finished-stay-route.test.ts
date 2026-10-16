@@ -40,6 +40,8 @@ vi.mock("@/lib/prisma", () => ({
       updateMany: (...args: unknown[]) => mocks.requestUpdateMany(...args),
     },
     bookingModification: { findUnique: vi.fn() },
+    // #4157: an acknowledging approval reads the guests' nights for its record.
+    bookingGuest: { findMany: async () => [] },
   },
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: (...args: unknown[]) => mocks.logAudit(...args) }));

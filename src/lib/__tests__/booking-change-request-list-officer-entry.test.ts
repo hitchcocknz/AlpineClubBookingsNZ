@@ -9,6 +9,7 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   findMany: vi.fn(),
+  guestFindMany: vi.fn(),
   gate: vi.fn(),
   user: { id: "officer-1" } as Record<string, unknown>,
 }));
@@ -22,6 +23,7 @@ vi.mock("@/lib/prisma", () => ({
       findMany: (...args: unknown[]) => mocks.findMany(...args),
       count: async () => 3,
     },
+    bookingGuest: { findMany: (...args: unknown[]) => mocks.guestFindMany(...args) },
   },
 }));
 vi.mock("@/lib/club-time/server", () => ({
@@ -56,6 +58,19 @@ const finished = {
 };
 const running = { ...finished, checkOut: new Date("2026-07-02T00:00:00.000Z"), status: "PAID" };
 
+const at = (night: string) => new Date(`${night}T00:00:00.000Z`);
+
+/** A booking guest as the route's second query reads it: range and night rows. */
+function liveGuest(id: string, nights: string[], bookingId = "booking-1") {
+  return {
+    id,
+    bookingId,
+    stayStart: at("2026-06-10"),
+    stayEnd: at("2026-06-14"),
+    nights: nights.map((night) => ({ stayDate: at(night) })),
+  };
+}
+
 function row(id: string, requestedChanges: unknown, booking: unknown, status = "REQUESTED") {
   return { id, status, requestedChanges, booking };
 }
@@ -69,6 +84,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.user = { id: "officer-1" };
   mocks.gate.mockResolvedValue({ ok: true, settings: {} });
+  mocks.guestFindMany.mockResolvedValue([]);
 });
 
 describe("GET /api/admin/booking-change-requests — acceptsOfficerGuests (#4030)", () => {
@@ -164,5 +180,116 @@ describe("GET /api/admin/booking-change-requests — requestedGuestNights (#4088
       ],
       [],
     ]);
+  });
+});
+
+describe("GET /api/admin/booking-change-requests — a repeated range on a gapped guest (#4157)", () => {
+  // Sent in date-range mode before #4088 stored night rows: the snapshot has
+  // the guest's own dates and no nights. The request repeats their 10-14 June.
+  const repeated = {
+    original: {
+      ...original,
+      guests: [{ id: "g1", firstName: "Jo", lastName: "Bloggs", stayStart: "2026-06-10", stayEnd: "2026-06-14" }],
+    },
+    requested: {
+      addGuests: [{ firstName: "A", lastName: "B", ageTier: "ADULT", isMember: false }],
+      guestStayRanges: [{ guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" }],
+    },
+  };
+  // Sent since #4088: the snapshot records the guest's 10, 11 and 13 June.
+  const snapshotted = {
+    ...repeated,
+    original: {
+      ...repeated.original,
+      guests: [{ ...repeated.original.guests[0], nights: ["2026-06-10", "2026-06-11", "2026-06-13"] }],
+    },
+  };
+  const booking = { ...finished, id: "booking-1" };
+  const GAPPED_RUNS = [
+    { firstNight: "2026-06-10", lastNight: "2026-06-11" },
+    { firstNight: "2026-06-13", lastNight: "2026-06-13" },
+  ];
+  const keptCard = {
+    name: "Jo Bloggs",
+    runs: GAPPED_RUNS,
+    nightCount: 3,
+    added: false,
+    unchanged: true,
+    fillsGaps: false,
+  };
+  const asAskedCard = {
+    name: "Jo Bloggs",
+    runs: [{ firstNight: "2026-06-10", lastNight: "2026-06-13" }],
+    nightCount: 4,
+    added: false,
+    unchanged: false,
+    fillsGaps: false,
+  };
+  const nightsOf = async (status: string, requestedChanges: unknown, live: string[]) => {
+    mocks.guestFindMany.mockResolvedValue([liveGuest("g1", live)]);
+    mocks.findMany.mockResolvedValue([row("repeated", requestedChanges, booking, status)]);
+    return (await list()).data[0].requestedGuestNights[0];
+  };
+
+  it("reads a pending request against the guest's live nights, the source approval keeps", async () => {
+    // The guest really holds 10, 11 and 13 June; the snapshot recorded none.
+    expect(
+      await nightsOf("REQUESTED", repeated, ["2026-06-10", "2026-06-11", "2026-06-13"]),
+      "INV-REQ-012: the card must show the nights approval keeps",
+    ).toEqual(keptCard);
+    // Loaded for the pending row's booking only.
+    expect(mocks.guestFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { bookingId: { in: ["booking-1"] } } }),
+    );
+  });
+
+  it("loads no guest night rows for a list of decided requests", async () => {
+    await nightsOf("APPROVED", snapshotted, ["2026-06-10"]);
+    await nightsOf("REJECTED", snapshotted, ["2026-06-10"]);
+    expect(mocks.guestFindMany).not.toHaveBeenCalled();
+  });
+
+  // The decided cases below are given live rows that DIFFER from the snapshot
+  // (every night, 10-13 June): a decided row read against them would show the
+  // range as unchanged with no gap, and fail.
+  const EVERY_NIGHT = ["2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13"];
+
+  it("describes an approval that recorded the kept nights exactly as recorded", async () => {
+    const recorded = {
+      ...snapshotted,
+      keptNights: [{ guestId: "g1", nights: ["2026-06-10", "2026-06-11", "2026-06-13"] }],
+    };
+    expect(await nightsOf("APPROVED", recorded, EVERY_NIGHT), "INV-REQ-012: a recorded approval kept them").toEqual(
+      keptCard,
+    );
+    // Even where the snapshot recorded no nights: the record is what was kept.
+    expect(await nightsOf("APPROVED", { ...repeated, keptNights: recorded.keptNights }, EVERY_NIGHT)).toEqual(
+      keptCard,
+    );
+  });
+
+  it("describes an approval from before this release as asked, claiming neither outcome", async () => {
+    // No record: it may have filled the gap (an approval before this release)
+    // or applied nothing, so the card says only what was asked.
+    expect(
+      await nightsOf("APPROVED", snapshotted, EVERY_NIGHT),
+      "INV-REQ-012: an unrecorded approval is not reread",
+    ).toEqual(asAskedCard);
+    // And "no change" only where the snapshot holds the guest's night rows:
+    // with none, the card cannot know the guest had no gaps.
+    expect(await nightsOf("APPROVED", repeated, EVERY_NIGHT)).toMatchObject({ unchanged: false, fillsGaps: false });
+    const fullSnapshot = {
+      ...repeated,
+      original: { ...repeated.original, guests: [{ ...repeated.original.guests[0], nights: EVERY_NIGHT }] },
+    };
+    expect(await nightsOf("APPROVED", fullSnapshot, EVERY_NIGHT)).toMatchObject({ unchanged: true, nightCount: 4 });
+  });
+
+  it("describes a declined request as a pending one reads, against the snapshot", async () => {
+    // Nothing was applied: the kept nights the snapshot records, never the live rows.
+    expect(
+      await nightsOf("REJECTED", snapshotted, EVERY_NIGHT),
+      "INV-REQ-012: a declined row reads its snapshot",
+    ).toEqual(keptCard);
   });
 });

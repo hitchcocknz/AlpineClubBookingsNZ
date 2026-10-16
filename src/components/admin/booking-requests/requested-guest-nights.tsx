@@ -26,7 +26,9 @@ function describeRuns(
  * a grid request's gaps before approving applies them. Nights are listed as
  * runs of consecutive nights (first and last night, not the departure
  * morning); an existing guest whose nights the request repeats is marked, and
- * so is one whose Date In and Date Out would fill the gaps in their stay.
+ * so is one whose moved Date In and Date Out would fill the gaps in their stay.
+ * A gapped guest whose request only repeats their own dates keeps their nights
+ * (#4157) and is listed with those nights, marked as no change.
  */
 export function RequestedGuestNights({
   guests,

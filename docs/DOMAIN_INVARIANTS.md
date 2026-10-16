@@ -339,6 +339,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-131` | The cancel preview quotes the card only what its plan carries |
 | `INV-PAY-132` | No intent ledger-row write lowers a captured status |
 | `INV-PAY-133` | Ledger rows order by createdAt, then insertionSeq |
+| `INV-PAY-134` | A cancel's card refund is recorded once, by the close making it |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -542,6 +543,7 @@ File:
 | `INV-REQ-009` | A corrected school name is stored only against the confirmed record |
 | `INV-REQ-010` | A corrected request never keeps beds held for its old shape |
 | `INV-REQ-011` | A request names a structured change; officers enter guests atomically |
+| `INV-REQ-012` | A range repeating a guest's own dates keeps their nights |
 
 ### Subscription-lockout pricing, admin date overrides and member-facing email
 

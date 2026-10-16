@@ -277,7 +277,7 @@ A `LOCKED_PERIOD` change request names the change it asks for. `POST
 guest added or removed and no guest's nights (400, `STRUCTURED_CHANGE_REQUIRED`);
 the note and `requestedEffectiveDate` are context, never a change, and a guest's
 two-bound range or grid night set counts only when it changes their nights;
-approval applies every one. All
+approval passes every one through (`INV-REQ-012`). All
 guest nights are read by `normalizeGuestStayRange`, a moved date the named
 nights do not reach is refused, and a typed guest named like
 one of the owner's dependants is refused at submit and in the officer's entry by
@@ -288,16 +288,48 @@ nights inside the stay, and shows an estimate that prices only non-member guests
 
 A free-text request from before this rule is decided on a finished stay by the
 officer entering the guests the member described. The entry is accepted only
-when approving applies the request, and only for a request that names no change;
+when approving applies the request, and only for one that names no change;
 it is written into `requestedChanges.requested` (`addGuests`, a summary saying it
 was entered on the member's behalf, and `officerEntry` naming the officer and
 keeping the member's own summary) by the approval's guarded claim, in the
 executor's transaction. A refusal after the claim rolls the entry back with it,
 so no request holds officer-entered guests without the approval that applied
 them. An applying approval carries the figures its check showed; if the edit
-produces different ones under the locks it is refused and rolled back. It then runs through #3750's path unchanged (`INV-MOD-019`), and the
+produces others under the locks it is refused and rolled back. It then runs through #3750's path unchanged (`INV-MOD-019`), and the
 approval's audit row lists the guests entered. Guarded by
 `booking-change-request-structured.test.ts`,
 `booking-change-request-grid-nights.test.ts`,
 `booking-change-request-officer-entry.test.ts` and the realdb cases in
 `booking-change-request-execution.realdb.test.ts`.
+
+### INV-REQ-012
+
+A two-bound guest range in a `LOCKED_PERIOD` change request that only repeats
+the guest's own Date In and Date Out keeps the nights the guest holds (#4157,
+owner decision "Keep their nights"). Range mode cannot express gaps (#713), so
+the member's form sends a gapped guest's own dates back unchanged; applied as
+written, that range put the guest on every night inside it and charged for the
+gaps. `lockedPeriodRequestToBatchInput` passes such a guest as their night
+set, so range mode stays on, even beside an officer's entry.
+Only a moved bound re-spreads the guest; a guest who already holds every night
+is passed by the two bounds. Each guest is judged on the entry approval
+applies: the last with both dates or a night set (`effectiveStayRangeByGuest`);
+a new request naming a guest twice is refused. Whether a request names any
+change is judged on that entry as sent, before the kept nights replace it.
+
+`keptNightsByGuest` decides this from one source, for the executor and for the
+officer's card: the booking's live guest rows (under the executor's locks;
+loaded by the admin list for pending requests only), else the request's
+snapshot. An approval's guarded claim, applying or only acknowledging,
+records the kept nights as
+`requestedChanges.keptNights`, empty when none, a key the older schema strips.
+The card reads a pending request against that source and a declined one
+against its snapshot, listing the kept nights as unchanged; an approval with
+the record exactly as recorded. An approval without it (one before this
+release) is listed as asked with neither mark, and is unchanged only where its snapshot holds night rows. Guarded by
+`booking-change-request-repeated-range.test.ts`,
+`booking-change-request-execution.test.ts`,
+`booking-change-request-officer-entry.test.ts`,
+`booking-change-request-list-officer-entry.test.ts`,
+`booking-change-request-grid-nights.test.ts`, `requested-guest-nights.test.tsx`
+and the realdb cases in `booking-change-request-execution.realdb.test.ts`.
