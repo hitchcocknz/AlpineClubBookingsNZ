@@ -12,7 +12,7 @@ import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
-import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import { BOOKING_REQUEST_GUESTS_MAX, guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
 import {
   dependantIdentityDeclarationSchema,
 } from "@/lib/booking-dependant-identity";
@@ -65,9 +65,9 @@ const createSchema = z.object({
         nights: nightList.optional(),
       }),
     )
-    .max(200)
+    .max(BOOKING_REQUEST_GUESTS_MAX)
     .optional(),
-  removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
+  removeGuestIds: z.array(z.string().trim().min(1)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
   guestStayRanges: z
     .array(
       z.object({
@@ -77,7 +77,7 @@ const createSchema = z.object({
         nights: nightList.optional(),
       }),
     )
-    .max(200)
+    .max(BOOKING_REQUEST_GUESTS_MAX)
     .optional(),
   // #3451 (`INV-GUEST-019`): the edit panel's answers about an added guest who
   // shares a name with one of the owner's dependants, re-verified by the service.

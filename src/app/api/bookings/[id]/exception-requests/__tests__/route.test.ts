@@ -70,6 +70,7 @@ import {
   PolicyExceptionDependantIdentityError,
 } from "@/lib/booking-exception-request-service";
 import { memberGuestCrossFamilyRefusal } from "@/lib/booking-guests";
+import { BOOKING_REQUEST_GUESTS_MAX } from "@/lib/booking-guest-stay-range-input";
 import {
   DEPENDANT_IDENTITY_UNRESOLVED_EDIT_MESSAGE,
   DEPENDANT_IDENTITY_UNRESOLVED_ON_BEHALF_EDIT_MESSAGE,
@@ -274,6 +275,21 @@ describe("POST /api/bookings/[id]/exception-requests", () => {
       code: "DEPENDANT_IDENTITY_UNRESOLVED",
       error: message,
     });
+  });
+
+  // #4199: the shared night shape and guest-list bound.
+  it.each([
+    ["a night that is not a date", { guestStayRanges: [{ guestId: "g1", nights: ["2026-13-45"] }] }],
+    [
+      "more stay ranges than the shared bound",
+      { guestStayRanges: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => ({ guestId: `g${i}`, nights: ["2026-07-04"] })) },
+    ],
+    ["more removals than the shared bound", { removeGuestIds: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, i) => `g${i}`) }],
+  ])("refuses %s at the schema (#4199)", async (_label, body) => {
+    const res = await POST(postReq({ ...body, memberMessage: "please" }), params);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Validation failed");
+    expect(mocks.createMod).not.toHaveBeenCalled();
   });
 
   it("refuses a malformed answer at the schema", async () => {
