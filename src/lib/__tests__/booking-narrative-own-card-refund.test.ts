@@ -163,6 +163,34 @@ describe("#4145: a member's card cancel is settled by its own card refund event"
     expect(message).not.toContain("refunded to your card");
   });
 
+  it("MUTATION: a record's paid-back figure comes before the undated card part - $60.00 to the card and $30.00 paid back, never $70.00 and $20.00", () => {
+    // $90.00 due, no event dates the card part; the slices' refunds took $70.00 (a refund recorded after the close
+    // among them) and the close paid back $30.00.
+    expect(narrate([cancelled()], "paid-another-way", {}, closed(3000, { made: 7000 }))).toBe(
+      `${LEAD}$60.00 was refunded to your card, $30.00 could not go back to your card and was paid back to you another way and $30.00 was retained${END}`,
+    );
+  });
+
+  describe("MUTATION: a capacity race from before #4125, its snapshot the full $120.00 charge, its rows' plans $90.00 and no event", () => {
+    const raced = event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
+      amountCents: 12000,
+      snapshot: { cancelledBecause: "capacity_race", refundMethod: "card", paidAmountCents: 12000, settledAmountCents: 12000, retainedAmountCents: 0, changeFeeCents: 0 },
+    });
+    const told = (cardRefundState: CardRefundState) =>
+      resolveBookingNarrative({ club: CLUB, booking: BOOKING, events: [raced], cardRefundState, cardRefundPlanCents: 9000 }, CLUB_FORMAT_TEST).message;
+
+    it.each([
+      ["settled by the old runner, which wrote no event", "settled", "$90.00 was refunded to your card; the club will be in touch about the remaining $30.00."],
+      ["stalled", "stalled", "$90.00 is being refunded to you; the club will be in touch about the card refund and the remaining $30.00."],
+      ["still being sent", "on-its-way", "$90.00 is on its way to your original payment method; the club will be in touch about the remaining $30.00."],
+    ] as const)("%s: tells the plan's $90.00, never the charge's $120.00, and follows up the rest", (_label, state, expected) => {
+      const message = told(state);
+      expect(message).toContain(expected);
+      expect(message).not.toContain("$120.00 was refunded");
+      expect(message).not.toContain("$120.00 is");
+    });
+  });
+
   it("MUTATION F2: a capacity race's row the runner made beside one paid another way is told too, dated by its own event", () => {
     const raced = event(BookingEventType.CANCELLED, "2026-05-05T00:00:00.000Z", {
       amountCents: 12000,

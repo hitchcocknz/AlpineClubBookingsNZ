@@ -11,13 +11,14 @@ import {
 import {
   buildBookingCancellationRefundIdempotencyKey,
   bookingCancelCardRefundRecoveryWhere,
+  buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking,
   isBookingCancelCardRefundRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { isPaymentRecoveryOperationInFlight } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 import type { PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
 import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
-import { cardRefundMadeForOperation } from "@/lib/open-card-refund-owed";
+import { cardRefundMadeForOperation, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 
 type CardRefundRow = { id: string; status: PaymentRecoveryOperationStatus; attempts: number; nextRetryAt: Date | null };
 /** A "Paid another way" close's record: what it paid back, and what the row still owed. */
@@ -31,6 +32,12 @@ type CloseRecord = { amountCents: number | null; raisedAmountCents: number | nul
 export interface CancelledCardRefund {
   cardRefundState?: CardRefundState;
   cardRefundClose?: PaidAnotherWayClose;
+  /**
+   * #4145: what a capacity race's rows planned to refund, together - the most its
+   * card refund can be, where its CANCELLED snapshot froze the full charge
+   * (before #4125). Absent on a member's cancel.
+   */
+  cardRefundPlanCents?: number;
 }
 
 /**
@@ -96,14 +103,15 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
   const rows = await prisma.paymentRecoveryOperation.findMany({
     // On `@@index([bookingId])`, so the prefix match never scans the table.
     where: bookingCancelCardRefundRecoveryWhere(bookingId),
-    select: { id: true, idempotencyKey: true, paymentId: true, status: true, attempts: true, nextRetryAt: true },
+    select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, allocationPlan: true, status: true, attempts: true, nextRetryAt: true },
   });
   // `startsWith` is SQL LIKE, where `_` matches any one character, so the query alone
   // would let booking `ab`'s read take booking `abc`'s rows: the exact rule decides (#4147).
   const own = rows.filter((row) => isBookingCancelCardRefundRecoveryKey(bookingId, row.idempotencyKey));
   const standings = await Promise.all(own.map(async (row) => ({ row, ...(await cardRefundRowState(row)) })));
   const cardRefundState = FURTHEST_FROM_DONE_FIRST.find((state) => standings.some((each) => each.state === state));
-  if (cardRefundState !== "paid-another-way") return { cardRefundState };
+  const planned = capacityRacePlanCents(bookingId, own);
+  if (cardRefundState !== "paid-another-way") return { cardRefundState, ...planned };
   const closed = standings.flatMap(({ row, record }) => (record ? [{ row, record }] : []));
   const payments = await prisma.payment.findMany({
     where: { id: { in: [...new Set(closed.map(({ row }) => row.paymentId))] } },
@@ -115,6 +123,7 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
   };
   return {
     cardRefundState,
+    ...planned,
     cardRefundClose: {
       paidBackCents: closed.reduce((sum, { record }) => sum + (record.amountCents ?? 0), 0),
       unpaidCents: closed.reduce((sum, { record }) => sum + paidAnotherWayUnpaidCents(record), 0),
@@ -124,3 +133,14 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
 }
 
 const FURTHEST_FROM_DONE_FIRST: readonly CardRefundState[] = ["stalled", "on-its-way", "paid-another-way", "settled"];
+
+/** #4145: a capacity race's rows' frozen plans together (each row's amount where it has none), or nothing for a member's cancel. */
+function capacityRacePlanCents(
+  bookingId: string,
+  rows: ReadonlyArray<{ idempotencyKey: string; amountCents: number; allocationPlan: unknown }>,
+): { cardRefundPlanCents?: number } {
+  const planned = rows
+    .filter((row) => row.idempotencyKey.startsWith(buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking(bookingId)))
+    .map((row) => parseRefundAllocationPlan(row.allocationPlan)?.reduce((sum, slice) => sum + slice.amountCents, 0) ?? row.amountCents);
+  return planned.length > 0 && planned.every((cents) => typeof cents === "number") ? { cardRefundPlanCents: planned.reduce((sum, cents) => sum + cents, 0) } : {};
+}

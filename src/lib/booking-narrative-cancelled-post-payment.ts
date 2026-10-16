@@ -200,6 +200,7 @@ export function buildCancelledPostPaymentNarrative(
   cardShortfallStatuses: CardShortfallTaskStatuses = {},
   cardRefundState?: CardRefundState,
   cardRefundClose?: PaidAnotherWayClose,
+  cardRefundPlanCents?: number,
 ): BookingNarrative {
   const snapshot = asCancellationSnapshot(cancelEvent?.snapshot);
   // #4125: no policy decided a capacity-race refund, and the club may pay part
@@ -263,7 +264,9 @@ export function buildCancelledPostPaymentNarrative(
     // (`buildCancelledNarrative`'s `paidEvent`) sends it to the pre-payment
     // narrative. `booking-narrative.test.ts` pins that.
     const state = cardRefundState ?? "on-its-way";
-    const dueCents = ownCard || state === "paid-another-way" ? snapshot.settledAmountCents : settledAmountCents;
+    const snapshotDueCents = ownCard || state === "paid-another-way" ? snapshot.settledAmountCents : settledAmountCents;
+    // #4145: a capacity race's snapshot froze the full charge before #4125; its rows' plans are its most.
+    const dueCents = capacityRace && cardRefundPlanCents !== undefined ? Math.min(snapshotDueCents, cardRefundPlanCents) : snapshotDueCents;
     const { clauses, saidCents } = ownCardRefundClauses(dueCents, state, { cardEvent: ownCard ? settlementEvent : undefined, ...paidAnotherWay }, { club, format });
     // #4145: a capacity race follows up what the clauses do not say - the snapshot's
     // due was the full charge before #4125, and a capped close leaves a part unsaid.

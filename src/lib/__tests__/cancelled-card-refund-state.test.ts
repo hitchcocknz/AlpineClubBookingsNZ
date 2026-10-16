@@ -153,6 +153,19 @@ describe("readCancelledCardRefund (#4125)", () => {
     expect(await readCancelledCardRefund("booking-1")).toEqual({ cardRefundState: "settled" });
   });
 
+  it("MUTATION #4145: a capacity race's rows read with their frozen plans together, in every state; a member's cancel carries none", async () => {
+    const raced = (id: string, extra: Record<string, unknown>) => ({ ...row({ id, idempotencyKey: `capacity_claim_failed_refund_recovery_booking-1_pi_${id}` }), ...extra });
+    db.findMany.mockResolvedValue([
+      raced("a", { amountCents: 9_000, allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 6_000 }, { paymentTransactionId: "txn-2", amountCents: 3_000 }] }),
+      // A row with no plan reads at its amount.
+      raced("b", { amountCents: 2_000, allocationPlan: null }),
+    ]);
+    expect(await readCancelledCardRefund("booking-1")).toEqual({ cardRefundState: "on-its-way", cardRefundPlanCents: 11_000 });
+
+    db.findMany.mockResolvedValue([{ ...row({ idempotencyKey: "booking_cancel_refund_recovery_booking-1" }), amountCents: 9_000, allocationPlan: null }]);
+    expect(await readCancelledCardRefund("booking-1")).toEqual({ cardRefundState: "on-its-way" });
+  });
+
   // SQL LIKE reads `_` as any one character, so the database can hand back a
   // row of booking `booking-1x`'s for booking-1's prefix; it is not this booking's.
   it("ignores a row the LIKE wildcard matched that is not this booking's, and reads the member's cancel row", async () => {
