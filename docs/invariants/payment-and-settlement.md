@@ -787,9 +787,10 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   when any of it was already refunded (`captureRefundState`, which reads the
   refunded total). "Landed after" is the primary handler's own
   `cancelled_booking_late_capture` write or a `CANCEL_PAYMENT_INTENT` recovery
-  for the intent. Each writes `booking.payment.late_notice_acknowledged`. A
-  replay after a refund skips the epilogue, so a hard kill mid-epilogue is left
-  to the repair tool. The paid-path `CANCELLED` event commits inside the claim.
+  for the intent. Each writes `booking.payment.late_notice_acknowledged`, unless
+  a late-capture refund lost its record (by Stripe's metadata): the replay or
+  self-heal writes it instead (#4149).
+  The paid-path `CANCELLED` event commits inside the claim.
 - **A genuine late capture follows the club's setting** (owner decision 26 Sep
   2026, [#3639](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3639#issuecomment-5845224249)),
   including a change payment the superseded-intent hand-off catches: refunded
@@ -805,7 +806,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   account-credit note, or such an operation queued or failed.
 - Pinned by `cancellation-settled-money.test.ts`, `stripe-webhook-alerts.test.ts`,
   `payment-recovery.test.ts`, `manual-refund-task.test.ts`,
-  `xero-booking-repair.test.ts` and `late-capture-own-charge-refund.realdb.test.ts`.
+  `xero-booking-repair.test.ts`, `late-capture-own-charge-refund.realdb.test.ts`
+  and `late-capture-record-recovery.realdb.test.ts`.
 
 ## INV-PAY-110
 

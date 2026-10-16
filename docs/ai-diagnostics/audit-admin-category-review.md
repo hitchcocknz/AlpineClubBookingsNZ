@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  504
+row-producing sites:  505
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 57,
+category values: admin 108, booking 108, xero 39, family 35, payment 58,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -823,7 +823,20 @@ an officer closing a subscription charge whose members had already paid, filed
 a card refund Stripe failed later that the app did not make for the booking,
 filed `payment` beside the paid-another-way close the same people read.
 
-#4154 then added one more (`payment` 56 -> 57, 503 -> 504, MEASURED with
+#4149 left the totals where they were (`payment` 56, 503, MEASURED with
+`pnpm run audit:census`) by moving two writers and adding one: the two
+late-capture handlers' `booking.payment.refunded_after_cancellation` writers
+became one shared writer (`reportAutomaticLateCaptureRefund`), and the
+lost-record recovery adds `booking.payment.auto_refund_record_recovered`, also
+`payment`, read by the same people who reconcile the refund.
+
+#4170, folded into the same change, then added one (`payment` 56 -> 57, 503 ->
+504, MEASURED with `pnpm run audit:census`):
+`booking.payment.late_capture_refunded_outside_app`, a late capture the
+late-capture handler marked as its own but refunded some other way, named for
+the same people instead of being noted in Xero.
+
+#4154 then added one more (`payment` 57 -> 58, 504 -> 505, MEASURED with
 `pnpm run audit:census`): `booking-payment.capacity-race.refunded-total-corrected`,
 a capacity race's card charge corrected to its refund rows before its hand-back
 (the owner's guarded recalculation), filed `payment` beside the close it enables.

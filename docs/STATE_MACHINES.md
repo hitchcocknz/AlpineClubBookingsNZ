@@ -2298,10 +2298,16 @@ assume them away.** An operator who resolves the `OPEN` task by hand before the
 refund lands leaves a row that matches neither the close nor the card's filter, so
 that refund reaches no card and is named only at WARN — the carve-out #2774 D1 keeps,
 an orchestrator decision the owner has not ruled on (authority line under
-`INV-ADDPAY-039`). And if the record write itself fails the handler still
-answers 200, so the row is lost for good; the `critical`
-`booking.payment.auto_refund_record_failed` audit entry is the only place it
-surfaces.
+`INV-ADDPAY-039`). And if the record write itself fails, the `critical`
+`booking.payment.auto_refund_record_failed` audit entry names it and, since #4149,
+the handler still writes the refund entry (marked `recordLost`) and sends the
+alert, then answers 500: Stripe's redelivery (or the nightly self-heal, before it
+raises any card note) writes the missing row once - closing a still-`OPEN` #2700
+task - with a `booking.payment.auto_refund_record_recovered` entry, and sends
+the alert again, because the first read its recipients from the database that
+had just failed: a duplicate, never a silence (#2761;
+`late-capture-record-recovery.ts`). A `charge.refunded` arriving before that row
+queues no generic card note (#4170).
 
 **AND SINCE #2774 ONE THING CAN STOP THE REFUND ITSELF (`INV-ADDPAY-039`).** If a
 `ManualRefundTask` for the capture is already `COMPLETED`, an operator has paid the

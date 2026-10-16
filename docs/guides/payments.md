@@ -736,12 +736,18 @@ the money went back and the stay, and it covers the last 30 days.
    `booking.payment.refunded_after_cancellation` entry. **Both kinds of payment are
    listed** — a booking's own payment and a payment for a change to it. Until
    recently only the second kind appeared, and each row's reason line says which it
-   was.
+   was. If the app could not save a row at the moment of the refund (the server
+   stopped, or the database was busy), the row appears a little later — when Stripe
+   sends the payment notice again, or overnight at the latest — still dated the day
+   the money went back.
 3. **You are also emailed at the time.** The subject says what happened — *Payment
    refunded automatically — booking already deleted*, or *… already cancelled* — and
    it cannot be switched off in [Notification Recipients](notification-recipients.md)
    or [Delivery Rules](notification-rules.md), because money moved without anybody
-   deciding it. It goes to everyone whose role can edit Finance.
+   deciding it. It goes to everyone whose role can edit Finance. It is sent when the
+   money goes back. If the card's row could not be saved then, the email is sent
+   again when the row is saved, because the first may not have gone - so you may
+   get it twice, but never not at all.
 4. **If it says it could not be loaded, reload.** A line in place of the card means
    the page could not read the record — not that there is nothing to see. The
    hand-back queue above it is unaffected.

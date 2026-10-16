@@ -359,6 +359,12 @@ import "./membership-family-rebill.realdb.test";
 // refunded capture still holds. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it
 // owns and cleans its own `race-4131-` fixtures.
 import "./late-capture-own-charge-refund.realdb.test";
+// #4149 reuses it to prove a late capture whose automatic refund went out while
+// its record did not is recorded exactly once - by the nightly self-heal's check
+// or a webhook redelivery, racing each other - and that the self-heal's gap no
+// longer counts its refund. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns
+// and cleans its own `race-4149-` fixtures.
+import "./late-capture-record-recovery.realdb.test";
 // #4132 reuses it to prove a payment's ledger rows written in one transaction
 // keep insertion order (`createdAt`, then `insertionSeq`) after CLUSTER
 // deliberately changes heap order, through the loader, mirror, reduction's ask and
