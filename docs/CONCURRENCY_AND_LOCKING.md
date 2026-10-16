@@ -5146,7 +5146,7 @@ cohort and takes no advisory key, so `INV-LOCK-003`'s Tier-2 registry has no
 entry for it; its row lock is in the advisory-lock guard's row-lock inventory.
 
 Each heal is its own short transaction. It locks the link row
-(`SELECT 1 … FOR UPDATE`), then the Payment row
+(`SELECT 1 … FOR UPDATE NOWAIT`), then the Payment row
 (`SELECT 1 … FOR NO KEY UPDATE NOWAIT`, the strength the pointer's own UPDATE
 takes), and re-reads both under the locks. It writes nothing unless the link
 is still the mirror the scan saw and, for the inactive shape, the pointer still
@@ -5168,9 +5168,11 @@ same two rows Payment first, inside their own transactions:
 The heal never waits on Payment while it holds the link: `NOWAIT` turns a held
 Payment row into SQLSTATE 55P03 at once (`isPostgresLockNotAvailable`), the
 transaction rolls back having written nothing, and the heal is reported as
-deferred for the next nightly run. The only lock it waits for is the link row,
-taken first while it holds nothing, so it can never be one side of a deadlock
-cycle and never rolls back the other writer. A real-PostgreSQL proof
+deferred for the next nightly run. The link row is taken `NOWAIT` as well, so
+a writer holding it (an enqueue inside a long group cancel) defers the heal
+rather than expiring its transaction. The heal waits on no lock at all, so it
+can never be one side of a deadlock cycle and never rolls back the other
+writer. A real-PostgreSQL proof
 (`xero-refund-note-void-pointer.realdb.test.ts`) holds the Payment row on
 another connection and shows the heal deferring at once and healing on the
 next run. Separately, the heal also defers while the payment has a

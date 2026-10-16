@@ -139,7 +139,8 @@ type HealOutcome = "healed" | "skipped" | "deferred";
  * and the funnel's own pointer release (#4046). Two writers take them the other
  * way round inside their own transactions: the refund-note create's record and
  * the outbox enqueue's existing-note branch (a group cancel or an edit review).
- * So the Payment row is taken `NOWAIT`: a busy payment defers the heal with no
+ * So the Payment row is taken `NOWAIT`, and so is the link row, so a heal never
+ * waits out its transaction timeout behind a long writer: a busy row defers the heal with no
  * write instead of waiting while it holds the link, and the heal can never be
  * one side of a deadlock. Under both locks it re-reads the link (and, for
  * #4192, the pointer) and writes nothing ("skipped") unless the scan's shape
@@ -160,7 +161,9 @@ async function healRefundNoteLink(linkId: string, expect: "active" | "pointedIna
   let paymentId: string | null = null;
   try {
     return await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT 1 FROM "XeroObjectLink" WHERE "id" = ${linkId} FOR UPDATE`;
+      // NOWAIT here too: a writer holding the link (an enqueue inside a long
+      // group cancel) defers the heal rather than expiring its transaction.
+      await tx.$executeRaw`SELECT 1 FROM "XeroObjectLink" WHERE "id" = ${linkId} FOR UPDATE NOWAIT`;
       const link = await tx.xeroObjectLink.findUnique({ where: { id: linkId }, select: HEAL_LINK_SELECT });
       if (!link || !isCancelledRefundCreditNoteMirror(link) || link.active !== (expect === "active")) {
         return "skipped";
@@ -194,7 +197,7 @@ async function healRefundNoteLink(linkId: string, expect: "active" | "pointedIna
     });
   } catch (error) {
     if (isPostgresLockNotAvailable(error)) {
-      return deferred(paymentId, "another writer holds the payment row");
+      return deferred(paymentId, "another writer holds the link or payment row");
     }
     throw error;
   }

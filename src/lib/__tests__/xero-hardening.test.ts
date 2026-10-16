@@ -1688,7 +1688,7 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
     expect(mocks.upsertXeroObjectLink.mock.calls[0]?.[1]).toEqual({ store: expect.any(Object) });
     expect(mocks.healExecuteRaw).toHaveBeenCalledTimes(2);
     expect(mocks.healExecuteRaw.mock.calls.map((call) => (call[0] as string[]).join("?"))).toEqual([
-      'SELECT 1 FROM "XeroObjectLink" WHERE "id" = ? FOR UPDATE',
+      'SELECT 1 FROM "XeroObjectLink" WHERE "id" = ? FOR UPDATE NOWAIT',
       'SELECT 1 FROM "Payment" WHERE "id" = ? FOR NO KEY UPDATE NOWAIT',
     ]);
   });
