@@ -25,9 +25,16 @@ export function isIncludedRefundCreditNoteStatus(status: unknown) {
     return true;
   }
 
-  const normalized = status.trim().toUpperCase();
-  return normalized !== "VOIDED" && normalized !== "DELETED";
+  return !(CANCELLED_CREDIT_NOTE_STATUSES as readonly string[]).includes(status.trim().toUpperCase());
 }
+
+/**
+ * The two Xero statuses that cancel a credit note, as Xero spells them. A query
+ * that filters links by their recorded status in SQL (#4162's voided
+ * bank-transfer list) reads them from here, then re-checks each row with
+ * `isRefundCreditNoteLinkCancelledInXero`.
+ */
+export const CANCELLED_CREDIT_NOTE_STATUSES = ["VOIDED", "DELETED"] as const;
 
 /** The link's recorded Xero status (uppercased), or null when never recorded. */
 export function readRefundCreditNoteLinkStatus(metadata: unknown): string | null {

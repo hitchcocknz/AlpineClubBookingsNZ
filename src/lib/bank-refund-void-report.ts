@@ -48,6 +48,7 @@ import { REFUND_CREDIT_NOTE_GRACE_HOURS } from "@/lib/xero-refund-note-grace";
 import { asRecord, readString } from "@/lib/xero-json";
 import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 import {
+  CANCELLED_CREDIT_NOTE_STATUSES,
   isRefundCreditNoteLinkCancelledInXero,
   recordedRefundNoteAmountCents,
 } from "@/lib/xero-refund-note-status";
@@ -55,8 +56,6 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
 
 type Reader = Prisma.TransactionClient;
 
-/** The statuses Xero's two cancelled states are recorded under on a link. */
-const CANCELLED_STATUSES = ["VOIDED", "DELETED"] as const;
 
 /** The refund-note links this list is made of, before the payment's source is known. */
 function voidedRefundNoteLinkWhere(voidedBefore: Date) {
@@ -66,7 +65,7 @@ function voidedRefundNoteLinkWhere(voidedBefore: Date) {
     role: "REFUND_CREDIT_NOTE",
     active: false,
     updatedAt: { lt: voidedBefore },
-    OR: CANCELLED_STATUSES.map((status) => ({ metadata: { path: ["status"], equals: status } })),
+    OR: CANCELLED_CREDIT_NOTE_STATUSES.map((status) => ({ metadata: { path: ["status"], equals: status } })),
   } satisfies Prisma.XeroObjectLinkWhereInput;
 }
 
@@ -203,7 +202,7 @@ async function reRecordNoteState(
         xeroObjectType: "CREDIT_NOTE",
         role: "REFUND_CREDIT_NOTE",
         xeroObjectId: { in: ownNoteIds },
-        OR: CANCELLED_STATUSES.map((status) => ({ metadata: { path: ["status"], equals: status } })),
+        OR: CANCELLED_CREDIT_NOTE_STATUSES.map((status) => ({ metadata: { path: ["status"], equals: status } })),
       },
       select: { id: true },
     });
