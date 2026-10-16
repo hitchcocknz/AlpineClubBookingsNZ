@@ -143,8 +143,8 @@ export async function readCancelledCardRefund(bookingId: string): Promise<Cancel
  * #4166 (`INV-PAY-134`): THE CANCEL'S CARD REFUNDS THAT FAILED AFTER A CLOSE
  * RECORDED THEM. A refund Stripe failed later on a row already closed is owed
  * by a row of its own (`card_refund_failed_later_<refund>`, #4104); it is this
- * cancel's when one of the cancel's own rows made it - the slice marked with it
- * (`madeRefundId`), or the slice it fills as the payment stood before it failed
+ * cancel's when one of the cancel's own rows made it - the slice it fills, marked
+ * with it (`madeRefundId`) or not, as the payment stood before it failed
  * (`cardRefundSliceFilledBy`, the rule the failed-later writer used) - or when
  * a failed-later row of this cancel made it (its retry failed too). Each is
  * told by the last row of that chain. Read only where one of the cancel's rows
@@ -176,15 +176,15 @@ async function readFailedLaterCardRefunds(
     failed.map(({ row, refundId }) => {
       const payment = payments.find((each) => each.id === row.paymentId);
       if (!payment) return [row.id, null] as const;
-      const marked = payment.recoveryOperations.find((op) => parseRefundAllocationPlan(op.allocationPlan)?.some((slice) => slice.madeRefundId === refundId));
       // As the payment stood before the failure, as the failed-later writer read it: the refund
-      // still counted, and the row that owes it again not yet raised (in Stripe's same second, it would take it).
+      // still counted, and the row that owes it again not yet raised - so a slice marked with
+      // it is filled by it, and that row, raised in Stripe's same second, does not take it.
       const before = {
         ...payment,
         recoveryOperations: payment.recoveryOperations.filter((op) => op.id !== row.id),
         refunds: payment.refunds.map((each) => (each.stripeRefundId === refundId ? { ...each, status: "pending" } : each)),
       };
-      return [row.id, marked?.id ?? cardRefundSliceFilledBy(before, refundId)?.operation.id ?? null] as const;
+      return [row.id, cardRefundSliceFilledBy(before, refundId)?.operation.id ?? null] as const;
     }),
   );
   const roots = new Map(standings.map(({ row }) => [row.id, row.id]));
