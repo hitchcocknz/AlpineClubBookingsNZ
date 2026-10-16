@@ -10,13 +10,17 @@
  *
  * - Two settled captures, the first inserted before the second. CLUSTER on the
  *   primary key, whose ids are named so the LATER capture sorts first, puts the
- *   later one first in the heap, verified through `ctid`. With the two tied on
- *   `createdAt`, the same read with no order meets the later one first: the
- *   premise an unordered read gets wrong.
- * - The arriving third capture is refunded alone, and the admin-only history
- *   event the refund records names the FIRST capture as the settlement: with
- *   distinct `createdAt`, and with both captures tied on one `createdAt`, where
- *   only `insertionSeq` tells them apart.
+ *   later one first in the heap, verified through `ctid`.
+ * - **The proof: both captures tied on one `createdAt`**, where only
+ *   `insertionSeq` tells them apart. The production read repeated with no
+ *   order meets the later capture first, under any plan (a btree keeps equal
+ *   keys in heap order): the premise an unordered read gets wrong. The
+ *   arriving third capture is refunded alone, and the admin-only history event
+ *   the refund records names the FIRST capture as the settlement.
+ * - **A regression pin, not a proof: captures created apart.** An index on
+ *   `createdAt` can return the first capture without any `orderBy`, so this
+ *   case cannot show the order is needed; it pins that the earlier-created
+ *   capture is the one named.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -27,6 +31,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
 
 /** The one shared double: the LAST file to register a factory wins, so every realdb file registers this same one. */
@@ -54,30 +59,6 @@ const NIGHT = new Date("2026-08-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
 const EARLIER = new Date("2026-06-14T00:00:00.000Z");
 const TIED_AT = new Date("2026-06-15T00:00:00.000Z");
-
-/** Standalone fail-closed copy: importing this file must not register another suite. */
-function assertSafeRaceDbUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Settled-capture order proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
-  }
-  const port = Number.parseInt(parsed.port, 10);
-  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
-    throw new Error(
-      `Refusing to run settled-capture order proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
-    );
-  }
-  const host = parsed.hostname.toLowerCase();
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
-    throw new Error("Settled-capture order proof DB must be loopback-only.");
-  }
-  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  if (!databaseName.includes("concurrency_race_1881")) {
-    throw new Error("Settled-capture order proof DB name must contain 'concurrency_race_1881'.");
-  }
-}
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
@@ -149,20 +130,36 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(seq[FIRST]! < seq[LATER]!, "premise: the first capture was inserted first").toBe(true);
       if (createdAt.first.getTime() !== createdAt.later.getTime()) return;
       // On a tie every plan returns heap order (a btree keeps equal keys in heap
-      // order), so the guard's own filter with no order meets the later capture
-      // first: the answer the unordered read gave. Apart, an index on
-      // `createdAt` may return the first, so the premise is asserted only here.
+      // order), so the duplicate-capture guard's own read, repeated exactly as
+      // `settleBookingPaymentInTransaction` sends it but without its `orderBy`,
+      // meets the later capture first: the answer the unordered read gave.
+      // Apart, an index on `createdAt` may return the first, so the premise is
+      // asserted only here.
+      const { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } = await import("@/lib/payment-transaction-status");
+      const { listLiveSupersededIntentIds } = await import("@/lib/superseded-intent-ownership");
+      const liveSupersededIntentIds = await listLiveSupersededIntentIds(prisma, PAYMENT_ID);
       const unordered = await prisma.paymentTransaction.findFirst({
         where: {
           paymentId: PAYMENT_ID,
           kind: "PRIMARY",
-          status: { in: ["SUCCEEDED", "PARTIALLY_REFUNDED"] },
-          source: "STRIPE",
-          stripePaymentIntentId: { not: ARRIVING_PI },
+          status: {
+            in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST],
+          },
+          OR: [
+            {
+              source: "STRIPE",
+              stripePaymentIntentId: {
+                not: ARRIVING_PI,
+                notIn: liveSupersededIntentIds,
+              },
+              NOT: { stripePaymentIntentId: null },
+            },
+            { source: { not: "STRIPE" } },
+          ],
         },
-        select: { id: true },
+        select: { id: true, stripePaymentIntentId: true },
       });
-      expect(unordered?.id, "premise: an unordered read meets the later capture first").toBe(LATER);
+      expect(unordered?.id, "premise: the unordered production read meets the later capture first").toBe(LATER);
     }
 
     /** Stripe makes the refund it is asked for, recording the intents asked. */
@@ -210,7 +207,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     }
 
     beforeAll(async () => {
-      assertSafeRaceDbUrl(RACE_DB_URL);
+      assertSafeRaceDbUrl(RACE_DB_URL, "Settled-capture order proof");
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       await deleteFixtures();
@@ -264,7 +261,9 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await deleteFixtures();
     });
 
-    it("captures created apart, the later one first in the heap: the refund names the first as the settlement", async () => {
+    // A regression pin, not a proof: apart, an index on `createdAt` may return the
+    // first capture with no `orderBy` at all (see the file header).
+    it("regression pin: captures created apart, the later one first in the heap: the refund names the first as the settlement", async () => {
       await writeCapturesLaterFirstInHeap({ first: EARLIER, later: TIED_AT });
       const asked = stripeMakesRefunds();
 
@@ -275,7 +274,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await settledIntentTheHistoryNames()).toBe(FIRST_PI);
     });
 
-    it("captures tied on createdAt, the later one first in the heap: insertionSeq decides, and the refund names the first", async () => {
+    it("proof: captures tied on createdAt, the later one first in the heap: insertionSeq decides, and the refund names the first", async () => {
       await writeCapturesLaterFirstInHeap({ first: TIED_AT, later: TIED_AT });
       const asked = stripeMakesRefunds();
 
