@@ -523,8 +523,9 @@ let cleanupStaleCanonicalXeroObjectLinks: (typeof import("@/lib/xero-hardening-c
       // Only the pointer moved: money, the live sibling and the voided mirror's fields are as they were.
       expect(healed.payment.refundedAmountCents).toBe(before.payment.refundedAmountCents);
       // The funnel fills a URL the old row never recorded, as on any link write.
-      expect(healed.links.map(({ updatedAt: _updatedAt, ...link }) => link)).toEqual(
-        before.links.map(({ updatedAt: _updatedAt, ...link }) =>
+      const withoutWriteTime = (links: typeof healed.links) => links.map((link) => ({ ...link, updatedAt: null }));
+      expect(withoutWriteTime(healed.links)).toEqual(
+        withoutWriteTime(before.links).map((link) =>
           link.xeroObjectId === "cn_latest" ? { ...link, xeroObjectUrl: "https://go.xero.com/AccountsReceivable/ViewCreditNote.aspx?creditNoteID=cn_latest" } : link,
         ),
       );
