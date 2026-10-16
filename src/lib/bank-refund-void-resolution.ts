@@ -8,8 +8,13 @@ import {
   readBankRefundVoidUnderLock,
   readVoidedNoteCreateRow,
   type BankRefundVoidUnderLock,
-  type ReRecordRefusal,
 } from "@/lib/bank-refund-void-report";
+import {
+  BANK_REFUND_VOID_CONFIRM_BASES,
+  CONFIRM_BASIS_LABEL,
+  RE_RECORD_REFUSAL_MESSAGES,
+  type BankRefundVoidConfirmBasis,
+} from "@/lib/bank-refund-void-copy";
 import { liveLines } from "@/lib/booking-ledger-modification-posting";
 import { handBackKey } from "@/lib/booking-ledger-posting-keys";
 import { settlementLineReversal, type PostedSettlementLine } from "@/lib/booking-ledger-settlement-posting";
@@ -88,25 +93,6 @@ export class BankRefundVoidResolutionError extends Error {
   }
 }
 
-/** The reasons a confirm may give: the refund was cancelled, or its note was replaced by hand in Xero. */
-export const BANK_REFUND_VOID_CONFIRM_BASES = ["cancelled", "replaced-in-xero"] as const;
-export type BankRefundVoidConfirmBasis = (typeof BANK_REFUND_VOID_CONFIRM_BASES)[number];
-
-/** How each basis is written at the head of the stored reason, so the row says which it was. */
-const CONFIRM_BASIS_LABEL: Record<BankRefundVoidConfirmBasis, string> = {
-  cancelled: "Refund cancelled",
-  "replaced-in-xero": "Replaced by hand in Xero",
-};
-
-/** What the panel says when a record-again is refused for one of the list's reasons. */
-export const RE_RECORD_REFUSAL_MESSAGES: Record<ReRecordRefusal, string> = {
-  "amount-unknown":
-    "The voided note's amount cannot be read, so it cannot be recorded again or confirmed here. Ask a developer to reconcile it.",
-  "note-in-flight":
-    "Another refund credit note on this payment is still on its way to Xero. Wait for it to finish, then try again.",
-  "resolved-in-xero":
-    "This note was marked resolved by hand in Xero, so recording it again could credit the member twice. Raise any further note in Xero by hand, then confirm it here.",
-};
 
 interface CommonInput {
   /** The voided note's link id (`BankRefundVoidItem.linkId`). */
@@ -223,7 +209,7 @@ async function insertResolution(
   }
 }
 
-export interface ReRecordBankTransferRefundInput extends CommonInput {}
+export type ReRecordBankTransferRefundInput = CommonInput;
 
 export interface ReRecordBankTransferRefundResult {
   resolutionId: string;

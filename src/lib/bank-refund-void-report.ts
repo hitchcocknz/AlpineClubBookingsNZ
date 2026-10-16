@@ -36,6 +36,7 @@
 import type { Prisma } from "@prisma/client";
 
 import { reRecordNoteRowsWhere } from "@/lib/bank-refund-re-record-note";
+import type { ReRecordRefusal } from "@/lib/bank-refund-void-copy";
 import { formatBookingReference } from "@/lib/booking-reference";
 import { prisma } from "@/lib/prisma";
 import { REFUND_CREDIT_NOTE_GRACE_HOURS } from "@/lib/xero-refund-note-grace";
@@ -69,8 +70,6 @@ export function bankRefundVoidGraceThreshold(now: Date): Date {
   return new Date(now.getTime() - REFUND_CREDIT_NOTE_GRACE_HOURS * 60 * 60 * 1000);
 }
 
-/** Why a record-again would be refused now; null when it is allowed. */
-export type ReRecordRefusal = "amount-unknown" | "note-in-flight" | "resolved-in-xero";
 
 /** Why an item is back after a record-again; null for an unanswered note. */
 export type BankRefundVoidFlag = "note-failed" | "voided-again";

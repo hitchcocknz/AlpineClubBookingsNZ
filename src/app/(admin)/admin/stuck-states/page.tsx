@@ -46,6 +46,8 @@ import { listDeadCardRefunds } from "@/lib/card-refund-paid-another-way";
 import { listCardRefundsPaidTwice } from "@/lib/card-refund-paid-twice";
 import { CardRefundsPaidTwiceList, DeadCardRefundsPanel } from "@/components/admin/dead-card-refunds-panel";
 import { describeRefundMethod } from "@/lib/xero-refund-method";
+import { listBankRefundVoids } from "@/lib/bank-refund-void-report";
+import { BankRefundVoidsPanel } from "@/components/admin/bank-refund-voids-panel";
 
 const domainIcons: Record<StuckStateDomain, typeof CreditCard> = {
   payment: CreditCard,
@@ -199,10 +201,14 @@ export default async function AdminStuckStatesPage() {
     : false;
   // #3924 round 5 (concurrency F2): and the closes Stripe paid as well - the
   // member was paid back twice - under the same finance:view gate.
-  const [dashboard, deadCardRefunds, cardRefundsPaidTwice] = await Promise.all([
+  // #4162 (owner, 17 Oct 2026, Q5): bank-transfer refunds whose Xero credit
+  // note was voided, each recorded again or confirmed here - finance:view to
+  // list (they name bookings and money), finance:edit to answer.
+  const [dashboard, deadCardRefunds, cardRefundsPaidTwice, bankRefundVoids] = await Promise.all([
     getStuckStateDashboard({ viewerCanViewMembership }),
     viewerCanViewFinance ? listDeadCardRefunds() : Promise.resolve([]),
     viewerCanViewFinance ? listCardRefundsPaidTwice() : Promise.resolve([]),
+    viewerCanViewFinance ? listBankRefundVoids() : Promise.resolve([]),
   ]);
   const clubTime = await resolveClubTime();
 
@@ -282,6 +288,13 @@ export default async function AdminStuckStatesPage() {
       ) : null}
 
       {viewerCanViewFinance ? <CardRefundsPaidTwiceList rows={cardRefundsPaidTwice} /> : null}
+
+      {viewerCanViewFinance ? (
+        <BankRefundVoidsPanel
+          rows={bankRefundVoids}
+          bankNoteWording={describeRefundMethod("internet-banking")}
+        />
+      ) : null}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3">
