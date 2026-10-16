@@ -10,6 +10,9 @@
  * #4091: the same holds for the one canonical note of a bank-transfer payment,
  * whose mirror the funnel used to keep active after the void.
  *
+ * #4161: a mirror voided before #4091 (still active, status recorded, named by
+ * the pointer) is healed by the nightly link cleanup through the same write.
+ *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
  * imports this file so CI reaches it; it owns and cleans its own `race-4046-`
@@ -17,6 +20,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -53,6 +57,7 @@ export function assertSafeVoidPointerRaceDbUrl(url: string): void {
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let upsertXeroObjectLink: (typeof import("@/lib/xero-sync"))["upsertXeroObjectLink"];
 let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["reconcileXeroCreditNote"];
+let cleanupStaleCanonicalXeroObjectLinks: (typeof import("@/lib/xero-hardening-canonical-links"))["cleanupStaleCanonicalXeroObjectLinks"];
 
 (RUN ? describe : describe.skip)(
   "a voided refund credit note moves the payment's pointer in the same write - real PostgreSQL (#4046)",
@@ -123,6 +128,7 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
       ({ prisma } = await import("@/lib/prisma"));
       ({ upsertXeroObjectLink } = await import("@/lib/xero-sync"));
       ({ reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note"));
+      ({ cleanupStaleCanonicalXeroObjectLinks } = await import("@/lib/xero-hardening-canonical-links"));
 
       await deleteFixtures();
       await prisma.member.create({
@@ -266,7 +272,7 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
     async function reportedRefundNoteState() {
       const { buildXeroReconciliationReport } = await import("@/lib/xero-hardening-report");
       const { sumCoveredRefundCreditNoteCents } = await import("@/lib/xero-sync");
-      const drift = (await buildXeroReconciliationReport(CLUB_FORMAT_TEST)).issueSections
+      const drift = (await buildXeroReconciliationReport(CLUB_FORMAT_TEST, { topLimit: 10_000 })).issueSections
         .filter((section) => section.id === "canonical-link-drift")
         .flatMap((section) => section.items)
         .filter((item) => item.localId === PAYMENT_ID && item.xeroObjectType === "CREDIT_NOTE")
@@ -424,6 +430,206 @@ let reconcileXeroCreditNote: (typeof import("@/lib/xero-inbound/credit-note"))["
       expect(after).toEqual({ pointer: null, active: ["cn_per_refund"] });
       expectNoMissingLink(after);
       expect(await reportedRefundNoteState()).toEqual({ drift: [], coveredCents: 5_000 });
+    });
+
+    /** This payment's money, pointer and every refund-note row as stored, to prove a run moved nothing. */
+    async function storedRows() {
+      const payment = await prisma.payment.findUniqueOrThrow({
+        where: { id: PAYMENT_ID }, select: { xeroRefundCreditNoteId: true, refundedAmountCents: true, updatedAt: true },
+      });
+      const links = await prisma.xeroObjectLink.findMany({
+        where: { localId: PAYMENT_ID, role: "REFUND_CREDIT_NOTE" },
+        select: { id: true, xeroObjectId: true, xeroObjectNumber: true, xeroObjectUrl: true, active: true, metadata: true, updatedAt: true },
+        orderBy: { xeroObjectId: "asc" },
+      });
+      return { payment, links };
+    }
+
+    it("#4161: a bank-transfer canonical mirror voided before #4091 is healed by the nightly cleanup, and a second run changes nothing", async () => {
+      // The pre-#4091 shape: Xero's VOIDED status merged onto the link, which
+      // stayed active, and the pointer still names it.
+      await paymentWithNotes("INTERNET_BANKING", "cn_voided", [
+        { id: "cn_voided", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, status: "VOIDED", total: 200 } },
+      ]);
+      const recordedUrl = "https://go.xero.com/AccountsReceivable/ViewCreditNote.aspx?creditNoteID=cn_voided";
+      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID }, data: { xeroObjectNumber: "CN-4161", xeroObjectUrl: recordedUrl } });
+      const { id: linkId } = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID }, select: { id: true } });
+      // The report now lists it (read-only), and it covers nothing.
+      expect(await reportedRefundNoteState()).toEqual({ drift: ["cn_voided"], coveredCents: 0 });
+
+      const first = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(first.cancelledRefundCreditNoteMirrors).toBeGreaterThanOrEqual(1);
+      expect(first.healedCancelledRefundCreditNoteMirrors).toBeGreaterThanOrEqual(1);
+      expect(first.deactivatedLinkIds).toContain(linkId);
+      expect(first.failedRefundNoteHealLinkIds).not.toContain(linkId);
+      const after = await state();
+      expect(after).toEqual({ pointer: null, active: [] });
+      expectNoMissingLink(after);
+      expect(await reportedRefundNoteState()).toEqual({ drift: [], coveredCents: 0 });
+      const healed = await storedRows();
+      // Only the link and the pointer moved: no money, and every recorded field kept.
+      expect(healed.payment.refundedAmountCents).toBe(20_000);
+      expect(healed.links).toEqual([
+        expect.objectContaining({
+          xeroObjectId: "cn_voided", xeroObjectNumber: "CN-4161", xeroObjectUrl: recordedUrl, active: false,
+          metadata: { amountCents: 20_000, status: "VOIDED", total: 200 },
+        }),
+      ]);
+
+      const second = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(second.deactivatedLinkIds).not.toContain(linkId);
+      expect(await storedRows()).toEqual(healed);
+    });
+
+    it("#4161: a payment with a refund-note create that could still mint is deferred, with no write, and healed on a later run", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_voided", [
+        { id: "cn_voided", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, status: "VOIDED" } },
+      ]);
+      const { id: linkId } = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID }, select: { id: true } });
+      const running = await prisma.xeroSyncOperation.create({
+        data: { direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID, status: "RUNNING" },
+      });
+      const before = await storedRows();
+
+      const deferred = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(deferred.deferredRefundNoteHealLinkIds).toContain(linkId);
+      expect(deferred.deactivatedLinkIds).not.toContain(linkId);
+      expect(await storedRows()).toEqual(before);
+
+      await prisma.xeroSyncOperation.update({ where: { id: running.id }, data: { status: "SUCCEEDED" } });
+      await cleanupStaleCanonicalXeroObjectLinks();
+      expect(await state()).toEqual({ pointer: null, active: [] });
+    });
+
+    it("#4161: a heal never waits on a Payment row another writer holds: it defers at once with no write, and the next run heals", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_voided", [
+        { id: "cn_voided", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, status: "VOIDED" } },
+      ]);
+      const { id: linkId } = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID }, select: { id: true } });
+      const before = await storedRows();
+
+      // A payment-first writer (the create's record, or the enqueue's
+      // existing-note branch in a group cancel) holding the Payment row, on
+      // its own connection.
+      let releaseHolder!: () => void;
+      const holderMayCommit = new Promise<void>((resolve) => (releaseHolder = resolve));
+      let markHeld!: () => void;
+      const paymentHeld = new Promise<void>((resolve) => (markHeld = resolve));
+      const holder = prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT 1 FROM "Payment" WHERE "id" = ${PAYMENT_ID} FOR UPDATE`;
+          markHeld();
+          await holderMayCommit;
+        },
+        { timeout: 60_000, maxWait: 10_000 },
+      );
+      await paymentHeld;
+      // Without NOWAIT the heal would wait on the holder; this backstop lets
+      // the holder go after 10s so such a run fails on the assertions below
+      // instead of hanging.
+      const backstop = setTimeout(releaseHolder, 10_000);
+      const startedNs = process.hrtime.bigint();
+      let busy: Awaited<ReturnType<typeof cleanupStaleCanonicalXeroObjectLinks>>;
+      try {
+        busy = await cleanupStaleCanonicalXeroObjectLinks();
+      } finally {
+        clearTimeout(backstop);
+        releaseHolder();
+        await holder;
+      }
+
+      expect(realElapsedMs(startedNs)).toBeLessThan(5_000);
+      expect(busy.deferredRefundNoteHealLinkIds).toContain(linkId);
+      expect(busy.failedRefundNoteHealLinkIds).not.toContain(linkId);
+      expect(busy.deactivatedLinkIds).not.toContain(linkId);
+      expect(await storedRows()).toEqual(before);
+
+      await cleanupStaleCanonicalXeroObjectLinks();
+      expect(await state()).toEqual({ pointer: null, active: [] });
+    });
+
+    it("#4192: a card pointer naming its own inactive voided mirror (the old direct flip) moves to the newest live note, once", async () => {
+      await paymentWithNotes("STRIPE", "cn_latest", [
+        { id: "cn_first", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 15_000, status: "AUTHORISED" } },
+        { id: "cn_latest", createdAt: "2026-06-02T00:00:00.000Z", metadata: { amountCents: 5_000, status: "VOIDED" } },
+      ]);
+      // What the pre-#4161 cleanup left: the mirror flipped directly, the pointer not moved.
+      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID, xeroObjectId: "cn_latest" }, data: { active: false } });
+      const before = await storedRows();
+
+      const first = await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(first.pointedInactiveCancelledRefundNoteMirrors).toBeGreaterThanOrEqual(1);
+      expect(first.releasedInactiveRefundNotePointers).toBeGreaterThanOrEqual(1);
+      const after = await state();
+      expect(after).toEqual({ pointer: "cn_first", active: ["cn_first"] });
+      expectNoMissingLink(after);
+      const healed = await storedRows();
+      // Only the pointer moved: money, the live sibling and the voided mirror's fields are as they were.
+      expect(healed.payment.refundedAmountCents).toBe(before.payment.refundedAmountCents);
+      // The funnel fills a URL the old row never recorded, as on any link write.
+      const withoutWriteTime = (links: typeof healed.links) => links.map((link) => ({ ...link, updatedAt: null }));
+      expect(withoutWriteTime(healed.links)).toEqual(
+        withoutWriteTime(before.links).map((link) =>
+          link.xeroObjectId === "cn_latest" ? { ...link, xeroObjectUrl: "https://go.xero.com/AccountsReceivable/ViewCreditNote.aspx?creditNoteID=cn_latest" } : link,
+        ),
+      );
+      expect(healed.links.find((link) => link.xeroObjectId === "cn_first")?.updatedAt).toEqual(before.links.find((link) => link.xeroObjectId === "cn_first")?.updatedAt);
+
+      await cleanupStaleCanonicalXeroObjectLinks();
+      expect(await storedRows()).toEqual(healed);
+    });
+
+    it("#4192: with no live note left the pointer is cleared; an inactive note whose status is unknown is never touched", async () => {
+      await paymentWithNotes("STRIPE", "cn_only", [
+        { id: "cn_only", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000, status: "DELETED" } },
+      ]);
+      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID }, data: { active: false } });
+
+      await cleanupStaleCanonicalXeroObjectLinks();
+      expect(await state()).toEqual({ pointer: null, active: [] });
+
+      await clearRun();
+      await paymentWithNotes("STRIPE", "cn_unknown", [
+        { id: "cn_unknown", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 20_000 } },
+      ]);
+      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID }, data: { active: false } });
+      const before = await storedRows();
+
+      await cleanupStaleCanonicalXeroObjectLinks();
+
+      expect(await storedRows()).toEqual(before);
+    });
+
+    it("#4161 control: the cleanup leaves a live canonical note and a live per-refund note untouched", async () => {
+      await paymentWithNotes("INTERNET_BANKING", "cn_live", [
+        { id: "cn_live", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 15_000, status: "AUTHORISED" } },
+        { id: "cn_per_refund", createdAt: "2026-06-02T00:00:00.000Z", metadata: { amountCents: 5_000, perDelta: true } },
+      ]);
+      const before = await storedRows();
+
+      const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+      for (const link of before.links) expect(result.deactivatedLinkIds).not.toContain(link.id);
+      expect(await storedRows()).toEqual(before);
+      expect(await reportedRefundNoteState()).toEqual({ drift: [], coveredCents: 20_000 });
+    });
+
+    it("#4161: a card payment's still-active voided latest note is healed the same way, its pointer moved to the newest live note", async () => {
+      await paymentWithNotes("STRIPE", "cn_latest", [
+        { id: "cn_first", createdAt: "2026-06-01T00:00:00.000Z", metadata: { amountCents: 15_000, status: "AUTHORISED" } },
+        { id: "cn_latest", createdAt: "2026-06-02T00:00:00.000Z", metadata: { amountCents: 5_000, status: "VOIDED" } },
+      ]);
+
+      await cleanupStaleCanonicalXeroObjectLinks();
+
+      const after = await state();
+      expect(after).toEqual({ pointer: "cn_first", active: ["cn_first"] });
+      expectNoMissingLink(after);
+      expect(await reportedRefundNoteState()).toEqual({ drift: [], coveredCents: 15_000 });
     });
 
     it("the pointer move commits or rolls back with the mirror write", async () => {
