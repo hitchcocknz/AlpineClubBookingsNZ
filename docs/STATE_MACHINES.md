@@ -2256,8 +2256,11 @@ an orchestrator decision the owner has not ruled on (authority line under
 the handler still writes the refund entry (marked `recordLost`) and sends the
 alert, then answers 500: Stripe's redelivery (or the nightly self-heal, before it
 raises any card note) writes the missing row once - closing a still-`OPEN` #2700
-task - with a `booking.payment.auto_refund_record_recovered` entry and no second
-alert (`late-capture-record-recovery.ts`).
+task - with a `booking.payment.auto_refund_record_recovered` entry, and sends
+the alert again, because the first read its recipients from the database that
+had just failed: a duplicate, never a silence (#2761;
+`late-capture-record-recovery.ts`). A `charge.refunded` arriving before that row
+queues no generic card note (#4170).
 
 **AND SINCE #2774 ONE THING CAN STOP THE REFUND ITSELF (`INV-ADDPAY-039`).** If a
 `ManualRefundTask` for the capture is already `COMPLETED`, an operator has paid the

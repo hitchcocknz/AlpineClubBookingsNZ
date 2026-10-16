@@ -3262,8 +3262,11 @@ never inside it. The writer's row is the claim that makes the recovery
 exactly-once: two deliveries, a delivery racing the self-heal, or a retried lost
 write serialise on `lock(1)`, the later finds the row (`alreadyRecorded`), and
 only the recovery that closed or created it writes its
-`booking.payment.auto_refund_record_recovered` entry (and, when the refunding
-delivery died before them, the refund entry and the alert). Proved on real
+`booking.payment.auto_refund_record_recovered` entry and re-sends the alert
+(and, when the refunding delivery died before its entry, writes that too). A
+hand-`COMPLETED` #2700 row beside a door refund is escalated instead, once, as
+the writer's own #2774 detection would have (no lock: the escalation's entry is
+the guard, read first). Proved on real
 PostgreSQL by `late-capture-record-recovery.realdb.test.ts`.
 
 **AND ONE READ THAT IS DELIBERATELY OUTSIDE EVERY LOCK (#2774,

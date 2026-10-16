@@ -683,9 +683,10 @@ the money went back and the stay, and it covers the last 30 days.
    refunded automatically — booking already deleted*, or *… already cancelled* — and
    it cannot be switched off in [Notification Recipients](notification-recipients.md)
    or [Delivery Rules](notification-rules.md), because money moved without anybody
-   deciding it. It goes to everyone whose role can edit Finance. It is sent once, when
-   the money goes back, even if the card's row is saved later; only if the server
-   stopped before sending it does it arrive later, with the row.
+   deciding it. It goes to everyone whose role can edit Finance. It is sent when the
+   money goes back. If the card's row could not be saved then, the email is sent
+   again when the row is saved, because the first may not have gone - so you may
+   get it twice, but never not at all.
 4. **If it says it could not be loaded, reload.** A line in place of the card means
    the page could not read the record — not that there is nothing to see. The
    hand-back queue above it is unaffected.

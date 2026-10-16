@@ -11,5 +11,12 @@
   raises any credit note; a payment it cannot check that night gets no credit
   note until it can. A hand-back task still open for that payment is closed
   rather than left asking someone to repay money Stripe already returned. The
-  late entry is dated the day the money went back, and it sends no second
-  alert - unless the server stopped before the first one went out.
+  late entry is dated the day the money went back, and the alert is sent again
+  with it, since the first may have failed alongside the entry.
+- **Stripe's refund notice no longer credits Xero for a late payment it never
+  received (#4170, closed here).** When Stripe's "charge refunded" notice
+  arrived before the app had recorded a late payment's automatic refund, the app
+  queued a credit note for the whole payment against the booking's original
+  invoice. It now leaves that refund to the late payment's own record. A late
+  payment refunded some other way (the Stripe dashboard) is named in the audit
+  log for the finance team and never noted in Xero as ordinary cash.

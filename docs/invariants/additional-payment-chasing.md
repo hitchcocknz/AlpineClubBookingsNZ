@@ -1131,7 +1131,7 @@ is worse than the partial claim it replaced:
   `refunded_after_cancellation` entry (`recordLost`) and the alert, then answers
   500; a replay never refunds again, so the redelivery or the nightly self-heal
   writes the missing row once, with a `booking.payment.auto_refund_record_recovered`
-  entry and no second alert (`late-capture-record-recovery.ts`). Meanwhile the
+  entry and the alert again (`late-capture-record-recovery.ts`). Meanwhile the
   writer adds
   `booking.payment.auto_refund_record_failed` (`severity: "critical"`,
   `outcome: "failure"`, `category: "payment"`, carrying the booking and the

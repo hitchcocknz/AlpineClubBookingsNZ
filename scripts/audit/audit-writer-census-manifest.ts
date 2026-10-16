@@ -662,7 +662,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // writer (`reportAutomaticLateCaptureRefund`, -1), and the lost-record
   // recovery adds `booking.payment.auto_refund_record_recovered` (+1).
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 503,
+  // 503 -> 504 (#4170, folded into #4149): a `charge.refunded` on a marked late
+  // capture refunded outside the app writes
+  // `booking.payment.late_capture_refunded_outside_app`. RE-MEASURED.
+  writeSites: 504,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -764,7 +767,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // because it is written after the approval has committed.
     // 273 -> 273 (#4149): the two handlers' refund entries, one shared writer,
     // and the lost-record recovery's own entry.
-    logAudit: { total: 273, uncategorised: 0 },
+    // 273 -> 274 (#4170): the refunded-outside-the-app entry.
+    logAudit: { total: 274, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -1063,7 +1067,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // app did not make for the booking - read by the people who reconcile it.
     // 56 -> 56 (#4149): the two handlers' refund entries, one shared writer,
     // and the lost-record recovery's own entry, read by the same people.
-    payment: 56,
+    // 56 -> 57 (#4170): the refunded-outside-the-app entry, read by the same people.
+    payment: 57,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -1484,6 +1489,9 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   // #4149: the recovery's own `booking.payment.auto_refund_record_recovered`
   // entry, beside it. A booking id in `targetId` and no member column, as above.
   "src/lib/late-capture-record-recovery.ts::recoverLostLateCaptureRecord#0": "payment",
+  // #4170: a marked late capture refunded outside the app, named rather than
+  // noted. A booking id in `targetId` and no member column, as above.
+  "src/lib/late-capture-record-recovery.ts::readUnrecordedLateCaptureRefund#0": "payment",
   /*
     #2773 / #2774 — the three write sites of the shared late-capture epilogue,
     pinned on arrival rather than left unlisted.

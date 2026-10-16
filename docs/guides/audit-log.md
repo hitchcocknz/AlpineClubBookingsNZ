@@ -505,7 +505,7 @@ and the data download rather than every page that happens to quote an entry.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-503 now record a category, measured on every build rather than estimated.
+504 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
 now refused three separate ways. Giving the 82 places a category and stopping the
@@ -527,7 +527,7 @@ that order and both landing in this release; this is the second:
    maintenance script outside the normal path.
 
 The practical effect for you: an entry recorded the ordinary way — through the
-platform’s own recording step, which is how every one of the 503 places does it —
+platform’s own recording step, which is how every one of the 504 places does it —
 cannot be born without a category any more. **It is not a mathematical
 guarantee**, and it is worth saying so rather than overclaiming: someone writing
 directly to the database table in a migration, or building a query by hand, is
@@ -858,7 +858,9 @@ when that is present.
 could not be saved at the moment of the refund, the app saves it when Stripe
 sends the payment notice again, or overnight at the latest, and writes one
 `booking.payment.auto_refund_record_recovered` entry, category `payment`. It
-sends no second email.
+sends the email again unless the refund's own entry shows the row was saved
+then: the first email may have failed with the row, and a second copy is better
+than none.
 
 | Field | What it means |
 | --- | --- |
@@ -866,7 +868,16 @@ sends no second email.
 | `amountCents` | The whole late payment |
 | `refundedCents` | What Stripe shows went back, across the refunds the app sent for it |
 | `kind` | `primary` for the booking's own payment, `modification_additional` for a payment for a change |
-| `reportedAtRefund` | `true` when the refund's own entry and email went out at the time; `false` when the recovery wrote them too |
+| `refundTimeReport` | What the refund left at the time: `none` (the server stopped first, so the recovery wrote the refund's entry too), `record_lost` (its entry says the row could not be saved), or `reported` (an older entry from a refund whose row did save) |
+| `alertSent` | Whether this recovery sent the email |
+
+**A late payment refunded some other way (#4170).** If a late card payment the
+app marked as its own is refunded outside the app - in the Stripe dashboard, say
+- the app writes one `booking.payment.late_capture_refunded_outside_app` entry,
+category `payment`, severity `important`, with `paymentIntentId`, `refundIds`,
+`refundedCents` and `creditNoteQueued: false`. No Xero credit note is raised for
+it, because Xero never received that payment; record it by hand if it needs
+one.
 
 ### Issue-report screenshot entries (#2703)
 
