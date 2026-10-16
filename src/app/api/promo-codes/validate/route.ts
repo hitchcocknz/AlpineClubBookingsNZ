@@ -34,15 +34,8 @@ import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
-import {
-  BookingGuestStayRangeValidationError,
-  guestNightListSchema,
-  type NormalizedBookingGuestStayRange,
-} from "@/lib/booking-guest-stay-range-input";
-import {
-  resolvePromoPreviewStays,
-  type PromoPreviewStoredGuest,
-} from "@/lib/promo-preview-stay-ranges";
+import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import { type PromoPreviewEdit, resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { workPartyWindowOverlapsStay } from "@/lib/work-party";
 import { bookingFinalPriceCents } from "@/lib/booking-final-price";
@@ -50,7 +43,7 @@ import { normalizePromoCodeInput } from "@/lib/promo-code-list-rules";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy, planMemberGuestConsentWrites } from "@/lib/member-guest-add-policy";
 import { guestConsentStatus } from "@/lib/member-guest-consent";
-import { bookingForPromoLookup } from "@/lib/promo-guest-codes";
+import { bookingForPromoLookup, promoPreviewBookingRows } from "@/lib/promo-guest-codes";
 import type { MemberGuestConsentStatus } from "@prisma/client";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
@@ -191,7 +184,7 @@ export async function POST(req: NextRequest) {
   let storedGuestById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }> | null =
     null;
   // #4199: the edited booking and the rows the request names, for the planner.
-  let editStays: Parameters<typeof resolvePromoPreviewStays>[0]["edit"] = null;
+  let editStays: PromoPreviewEdit | null = null;
   if (parsed.data.bookingId) {
     const booking = await bookingForPromoLookup({
       bookingId: parsed.data.bookingId,
@@ -201,57 +194,15 @@ export async function POST(req: NextRequest) {
     if (!booking) {
       return NextResponse.json({ error: "Booking not found" }, { status: 404 });
     }
-    const bookingGuestIds = parsed.data.guests.flatMap((guest) =>
-      guest.bookingGuestId ? [guest.bookingGuestId] : [],
-    );
-    const storedRows = bookingGuestIds.length
-      ? await prisma.bookingGuest.findMany({
-          where: { bookingId: booking.id, id: { in: bookingGuestIds } },
-          select: {
-            id: true,
-            memberId: true,
-            consentStatus: true,
-            stayStart: true,
-            stayEnd: true,
-            nights: { select: { stayDate: true } },
-          },
-        })
-      : [];
-    storedGuestById = new Map(
-      storedRows.map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }]),
-    );
-    editStays = {
-      booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
-      storedGuests: storedRows.map(
-        (row): PromoPreviewStoredGuest => ({
-          id: row.id,
-          memberId: row.memberId,
-          stayStart: row.stayStart,
-          stayEnd: row.stayEnd,
-          nights: row.nights,
-        }),
-      ),
-    };
+    ({ consentById: storedGuestById, edit: editStays } = await promoPreviewBookingRows(
+      booking,
+      parsed.data.guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : [])),
+    ));
   }
-  // #4199: each guest's nights, resolved as the save resolves them — on an edit
-  // through the modification planner (`INV-EXCEPT-022`), so a grid guest's gap
-  // is not priced, and the envelope is the one the save would write.
-  let checkIn: Date;
-  let checkOut: Date;
-  let guests: Array<(typeof parsed.data.guests)[number] & NormalizedBookingGuestStayRange>;
-  try {
-    ({ checkIn, checkOut, guests } = resolvePromoPreviewStays({
-      checkIn: parsed.data.checkIn,
-      checkOut: parsed.data.checkOut,
-      guests: parsed.data.guests,
-      edit: editStays,
-    }));
-  } catch (error) {
-    if (error instanceof BookingGuestStayRangeValidationError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
-  }
+  // #4199: each guest's nights as the save resolves them (`INV-EXCEPT-022`).
+  const stays = resolvePromoPreviewStaysOrRefusal({ ...parsed.data, edit: editStays });
+  if ("refusal" in stays) return NextResponse.json({ error: stays.refusal }, { status: 400 });
+  const { checkIn, checkOut, guests } = stays;
   /** The stored row for this guest, only when it is this guest's own member's row. */
   const storedRowFor = (guest: { bookingGuestId?: string; memberId?: string }) => {
     const row = guest.bookingGuestId ? storedGuestById?.get(guest.bookingGuestId) : undefined;

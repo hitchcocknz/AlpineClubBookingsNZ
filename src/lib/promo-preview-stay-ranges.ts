@@ -1,4 +1,5 @@
 import {
+  BookingGuestStayRangeValidationError,
   normalizeGuestStayRanges,
   type NormalizedBookingGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
@@ -45,20 +46,43 @@ export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
 /** A row of the booking being edited, as much of it as stay resolution needs. */
 export type PromoPreviewStoredGuest = LiveGuestStayRow & { memberId: string | null };
 
-export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(args: {
-  checkIn: Date;
-  checkOut: Date;
-  guests: ReadonlyArray<Guest>;
-  /** The booking an edit preview is for, with its rows the request names. */
-  edit: {
-    booking: { checkIn: Date; checkOut: Date };
-    storedGuests: ReadonlyArray<PromoPreviewStoredGuest>;
-  } | null;
-}): {
+/** The booking an edit preview is for, with its rows the request names. */
+export type PromoPreviewEdit = {
+  booking: { checkIn: Date; checkOut: Date };
+  storedGuests: ReadonlyArray<PromoPreviewStoredGuest>;
+};
+
+export type PromoPreviewStays<Guest> = {
   checkIn: Date;
   checkOut: Date;
   guests: Array<Guest & NormalizedBookingGuestStayRange>;
-} {
+};
+
+type PromoPreviewStayArgs<Guest> = {
+  checkIn: Date;
+  checkOut: Date;
+  guests: ReadonlyArray<Guest>;
+  edit: PromoPreviewEdit | null;
+};
+
+/**
+ * The route's door: a range the planner refuses comes back as its own wording
+ * (`refusal`) for a 400, so the preview and the save refuse it identically.
+ */
+export function resolvePromoPreviewStaysOrRefusal<Guest extends PromoPreviewStayGuest>(
+  args: PromoPreviewStayArgs<Guest>,
+): PromoPreviewStays<Guest> | { refusal: string } {
+  try {
+    return resolvePromoPreviewStays(args);
+  } catch (error) {
+    if (error instanceof BookingGuestStayRangeValidationError) return { refusal: error.message };
+    throw error;
+  }
+}
+
+export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
+  args: PromoPreviewStayArgs<Guest>,
+): PromoPreviewStays<Guest> {
   if (!args.edit) {
     return {
       checkIn: args.checkIn,

@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { MemberGuestConsentStatus, Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { createStructuredAuditLog, getAuditRequestContext } from "@/lib/audit";
@@ -9,6 +9,7 @@ import { resolveMemberFamily } from "@/lib/resolve-member-family";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { bookingOwner } from "@/lib/booking-owner";
 import { assignmentRequiresAssignedBooker } from "@/lib/promo-guest-scope";
+import type { PromoPreviewEdit } from "@/lib/promo-preview-stay-ranges";
 
 /**
  * Guest-code chips (#3492, epic #3813 C4): which of a booking's guest members'
@@ -81,6 +82,47 @@ export async function bookingForPromoLookup(params: {
     ownerMemberId,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
+  };
+}
+
+/**
+ * The rows of the booking an edit preview is for (#3492, #4199), read only for
+ * the guests the request names by row id: each row's stored consent, which the
+ * preview judges that guest by, and its stay, which the modification planner
+ * keeps for a guest the edit sends no dates for.
+ */
+export async function promoPreviewBookingRows(
+  booking: { id: string; checkIn: Date; checkOut: Date },
+  bookingGuestIds: string[],
+): Promise<{
+  consentById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }>;
+  edit: PromoPreviewEdit;
+}> {
+  const rows = bookingGuestIds.length
+    ? await prisma.bookingGuest.findMany({
+        where: { bookingId: booking.id, id: { in: bookingGuestIds } },
+        select: {
+          id: true,
+          memberId: true,
+          consentStatus: true,
+          stayStart: true,
+          stayEnd: true,
+          nights: { select: { stayDate: true } },
+        },
+      })
+    : [];
+  return {
+    consentById: new Map(rows.map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }])),
+    edit: {
+      booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+      storedGuests: rows.map(({ id, memberId, stayStart, stayEnd, nights }) => ({
+        id,
+        memberId,
+        stayStart,
+        stayEnd,
+        nights,
+      })),
+    },
   };
 }
 
