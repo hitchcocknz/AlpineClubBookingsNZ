@@ -1427,8 +1427,7 @@ refunded total it corrects).
 
 - **What a capacity race's card refund plan does not carry is a task to
   check** (#4154): ONE `CANCELLED_BOOKING_HAND_BACK`, `INV-PAY-129`'s `check`
-  part, raised in the void's claim, keyed on the booking and race intent; a
-  held key is logged, never thrown.
+  part, raised in the void's claim, keyed on the booking and race intent.
   - **Marked paid back** (marked first, paid after), it lands only on the race
     intent's captured charge, refused while the race's card refund is
     unsettled, or while Stripe, read before the transaction, shows more of
@@ -1439,14 +1438,15 @@ refunded total it corrects).
     audited. Only when the charge and its refund rows postdate the refund
     ledger, the booking gave back no account credit, the booking and payment
     have no other refund task, and the corrected charge holds the task. Xero
-    note coverage beyond the refund rows is the self-heal's card note: up to
-    the task's amount it is kept on the task as covering it, so its own note
-    bills the rest; beyond it, refused. Refused, it names the blocker.
+    note coverage beyond the payment's refund rows is taken as the self-heal's
+    card note only while every other charge postdates the ledger: up to the
+    task's amount it is kept on the task, so its own note bills the rest;
+    otherwise refused. A refusal names the blocker, and never asks for a note
+    by hand where one may cover the money.
   - **The remaining window**: a refund made in Stripe after that read and
     recorded after the commit can still pay twice. The refund sync's cap then
     alerts the officers, after its own commit.
-  - **The member's page follows it**: OPEN, the club will be in touch; paid
-    back, refunded; dismissed, checked and closed.
+  - **The member's page follows it**: open, paid back or dismissed.
   - Proven by `capacity-race-refund-shortfall.test.ts`,
     `capacity-race-refunded-total-correction.test.ts`,
     `card-refund-cap-overflow.test.ts`, `manual-refund-task.test.ts`,

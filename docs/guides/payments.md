@@ -332,13 +332,16 @@ that card charge:
 - Where the charge's records read more refunded than its card refunds on
   record, it corrects them itself first, and logs the correction in the audit
   log, but only for a charge made since the app has kept a record of each card
-  refund, on a booking with no account credit given back, no other refund task,
-  and no Xero refund credit note beyond its card refunds.
+  refund, on a booking with no account credit given back and no other refund
+  task.
 
 If it accepts, pay the member by bank transfer straight away; it records the
 refund, queues its Xero refund credit note, and the member's page says the
 whole payment was refunded. If the nightly Xero check already raised a card
-refund note for that money, the app counts it and raises no second note. A booking with no Xero invoice to credit gets no
+refund note for that money, the app counts it and its own note covers only the
+rest. If the app cannot tell that note apart from one for another charge on the
+payment, it refuses and says so, and its message then never asks for a note by
+hand. A booking with no Xero invoice to credit gets no
 note - usual here, since a payment that lost the race is rarely invoiced. If it
 refuses, it says why: pay the member anyway if they are owed, and dismiss the
 task with a note saying when and how much. Raise the refund credit note in Xero
@@ -353,9 +356,12 @@ one. Dismiss it with a note instead, as the app says.
 One gap the app cannot close: a refund made in the Stripe dashboard in the
 moments between **Mark paid back** and your bank transfer. When that refund
 reaches the app, the charge already reads fully refunded, so officers are
-emailed that a card refund took the charge past what was charged. The member
-may have been paid twice: check Stripe and the bank, and recover any
-overpayment.
+emailed that a card refund took the charge past what was charged. Where a
+hand-back was marked paid back (or a card refund closed as Paid another way) on
+the payment, the email says the member may have been paid twice: check Stripe
+and the bank, and recover any overpayment. Otherwise it says the charge's
+records already read fully refunded (record drift, or account credit given
+back): check the charge in Stripe against the booking's payment records.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price

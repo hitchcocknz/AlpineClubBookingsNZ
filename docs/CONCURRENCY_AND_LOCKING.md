@@ -3247,8 +3247,8 @@ in Stripe after the completion's Stripe read but recorded only after its commit
 can still pay the member twice, since the read is outside the transaction and
 no lock reaches Stripe. Its recording then meets the charge's cap, and
 `recordStripeRefundsAgainstTransaction` alerts the officers after its own commit
-(`alertCardRefundCapOverflow`, once per charge and refund-row total), never
-inside the transaction.
+(`alertCardRefundCapOverflow`, once per charge and set of counted refunds),
+never inside the transaction.
 
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
