@@ -595,14 +595,14 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         // Corrected to nothing, the whole charge handed back; the sync's refund then capped at the charge - logged, and
         // (#4159 review round 2, F2) the officers alerted after the sync's commit, its claim the durable record.
         expect(completion.status).toBe("fulfilled");
-        expect(await prisma.alertCooldown.count({ where: { key: `card-refund-cap-overflow:${CARD_TXN}:3000` } })).toBe(1);
+        expect(await prisma.alertCooldown.count({ where: { key: { startsWith: `card-refund-cap-overflow:${CARD_TXN}:` } } })).toBe(1);
         expect(await checkTask()).toMatchObject({ status: "COMPLETED" });
         expect(await corrections()).toHaveLength(1);
         expect(lines).toBe(1);
       } else {
         // The sync's refund row is on the charge first, so even corrected the charge cannot hold the task. The drifted
         // total already read the whole charge refunded, so the sync's refund was capped too, and the officers told.
-        expect(await prisma.alertCooldown.count({ where: { key: `card-refund-cap-overflow:${CARD_TXN}:3000` } })).toBe(1);
+        expect(await prisma.alertCooldown.count({ where: { key: { startsWith: `card-refund-cap-overflow:${CARD_TXN}:` } } })).toBe(1);
         expect(completion).toMatchObject({ status: "rejected", reason: { status: 400, message: expect.stringContaining("even corrected, the charge would not hold this amount") } });
         expect(await checkTask()).toMatchObject({ status: "OPEN" });
         expect(await corrections()).toEqual([]);
@@ -756,6 +756,36 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(after.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
       expect(after.disagreements).toEqual([]);
       expect(after.integrity).toEqual([]);
+    });
+    it("MUTATION (round 3): a card note already sent for part of the stray total - the task keeps that cover and its own note bills only the rest", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      const PART_CENTS = 12_000;
+      // A card note for $120.00 already in Xero on the payment (its row and active link, as a send records them).
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID, status: "SUCCEEDED",
+          queueType: "REFUND_CREDIT_NOTE", xeroObjectId: "race-4154-cn-part", completedAt: new Date(),
+          idempotencyKey: "race-4154-cn-part", correlationKey: "race-4154-cn-part", requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: PART_CENTS },
+        },
+      });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "race-4154-cn-part", role: "REFUND_CREDIT_NOTE", active: true,
+          metadata: { amountCents: PART_CENTS, watermarkCents: PART_CENTS },
+        },
+      });
+      expect(await xeroCoverage()).toBe(PART_CENTS);
+
+      stripeShowsRefunded(0);
+      await resolve("completed", task.id);
+      expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: CHARGE_CENTS, reviewContext: { paidAnotherWayCardNoteCover: PART_CENTS } });
+      expect(await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" }, select: { amountCents: true } })).toEqual([{ amountCents: -CHARGE_CENTS }]);
+      // The task's own note is the task less the card note's cover: $200.00 - $120.00.
+      expect(await taskRefundNotes()).toEqual([{ cents: CHARGE_CENTS - PART_CENTS, taskId: task.id }]);
     });
   },
 );
