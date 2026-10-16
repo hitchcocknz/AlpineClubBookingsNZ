@@ -447,7 +447,7 @@ async function runRoute(
   const priceCall = h.priceGuests.mock.calls.find((call) => {
     const arg = call[1] as { guests?: Array<{ bookingGuestId?: string | null }> };
     // The MAIN pricing pass is the one over the whole proposed party (it carries
-    // `bookingGuestId`); the itemisation passes price sub-slices without it.
+    // `bookingGuestId`). Since #4197 the breakdown reads it too, with no pass of its own.
     return arg?.guests?.some((g) => g.bookingGuestId !== undefined) ?? false;
   });
   const capacityCall = h.checkCapacityForGuestRanges.mock.calls[0];

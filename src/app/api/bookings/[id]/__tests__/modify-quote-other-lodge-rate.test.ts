@@ -261,10 +261,9 @@ function booking(overrides: Record<string, unknown> = {}) {
 /**
  * The guest rows the route handed to the pricing engine, keyed by guest id.
  *
- * The FIRST call, which is the one that produces the new price. A date change
- * makes several further passes to itemise what each part of the edit cost, and
- * those price the OLD dates from differently-shaped rows — reading the last call
- * would quietly assert against a comparison pass instead of the real quote.
+ * The FIRST call, which is the one that produces the new price. The breakdown
+ * reads that same pass since #4197; before then a date change made further
+ * comparison passes, which is why this names the first call rather than the last.
  */
 function pricedGuestsById() {
   const call = h.priceGuests.mock.calls[0]?.[1] as {

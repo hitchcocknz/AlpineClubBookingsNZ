@@ -1551,8 +1551,8 @@ export async function POST(
   const policyAdjustedGuestsForPricing = await resolveGuestRateMembershipTypes(prisma, {
     seasonYear,
     guests: guestsForPricing,
-    // #2543: this route performs SEVEN or more pricing passes in one request and
-    // differences two of them into the member's settlement delta, so every pass
+    // #2543: this route performed SEVEN or more pricing passes in one request and
+    // differenced two of them into the member's settlement delta, so every pass
     // is handed the one mode resolved above. Left to peek independently, an admin
     // save landing between two passes made the delta wrong by the entire
     // member/non-member spread on every remaining guest.
