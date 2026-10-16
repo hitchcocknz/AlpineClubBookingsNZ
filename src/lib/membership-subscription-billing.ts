@@ -502,10 +502,6 @@ export async function buildSubscriptionBillingPreview(input: {
               select: {
                 memberId: true,
                 status: true,
-                // #4110 review round 5: a member's own live invoice beside a
-                // re-bill (warning), and who a bare invoice may belong to.
-                xeroInvoiceId: true,
-                xeroInvoiceNumber: true,
                 member: {
                   select: {
                     billingFamilyGroupId: true,
@@ -809,9 +805,16 @@ export async function buildSubscriptionBillingPreview(input: {
   // member paid at the newest close holds their own family invoice, which
   // keeps suppressing, or a second full family invoice would be minted.
   const differenceInvoiceHoldersByFamilyKey = new Map<string, Set<string>>();
-  // ...and, for a family billed again, the covered members already holding a
-  // Xero invoice for the season, so the officer is warned before confirming.
+  // ...and, for a family billed again, the holders whose invoice WOULD have
+  // held the family (same type, basis not per-member) but passed as a
+  // difference invoice, so the officer is warned before confirming (round 5;
+  // narrowed in round 6, F3). Filled in the #2161 loop, which has the basis.
   const invoiceHoldersByFamilyKey = new Map<string, Array<{ memberName: string; invoice: string }>>();
+  // #4110 review round 6, F1: the members whose payment under the newest
+  // closed charge was reversed. If the family then ends up held back (#2161
+  // or an operator marker), each gets a decision exception instead of being
+  // silently folded into the hold.
+  const reversedByFamilyKey = new Map<string, Set<string>>();
   const familyChargesByKey = new Map<string, Array<(typeof existingFamilyCharges)[number]>>();
   for (const charge of [...existingFamilyCharges].sort(newestChargeFirst)) {
     const key = `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`;
@@ -855,18 +858,7 @@ export async function buildSubscriptionBillingPreview(input: {
     // settled) can never match here: no need to exclude them by id.
     const paymentStillStands = familyRows.some((row) =>
       wasPaidAtClose(row) && isSubscriptionSettled(row.subscription.status));
-    const holders = new Map<string, { memberName: string; invoice: string }>();
-    for (const row of familyRows) {
-      if (row.subscription.xeroInvoiceId == null || holders.has(row.subscription.memberId)) continue;
-      holders.set(row.subscription.memberId, {
-        memberName: row.memberName,
-        invoice: row.subscription.xeroInvoiceNumber ?? row.subscription.xeroInvoiceId,
-      });
-    }
-    if (holders.size > 0) {
-      invoiceHoldersByFamilyKey.set(key, [...holders.values()].sort((left, right) =>
-        compareOrdinal(left.memberName, right.memberName) || compareOrdinal(left.invoice, right.invoice)));
-    }
+    reversedByFamilyKey.set(key, new Set(reversed.map((row) => row.subscription.memberId)));
     if (paymentStillStands) {
       partlyReversedClosedFamilies.set(key, {
         chargeId: newest.id,
@@ -960,13 +952,23 @@ export async function buildSubscriptionBillingPreview(input: {
     // including one held by a member paid at the newest close (their own
     // family invoice), keeps suppressing as #2161 requires.
     const holderType = resolveMemberMembershipType(row.member);
-    const differenceInvoice = holderType != null && (differenceInvoiceHoldersByFamilyKey
-      .get(`${input.seasonYear}:${holderType.id}:family:${row.familyGroupId}`)?.has(row.memberId) ?? false);
-    if (!suppresses && sub?.xeroInvoiceId != null && !differenceInvoice) {
+    const holderKey = holderType ? `${input.seasonYear}:${holderType.id}:family:${row.familyGroupId}` : null;
+    const differenceInvoice = holderKey != null
+      && (differenceInvoiceHoldersByFamilyKey.get(holderKey)?.has(row.memberId) ?? false);
+    if (!suppresses && sub?.xeroInvoiceId != null) {
       const holderBasis = await resolveMemberBillingBasis(row.member);
       if (holderBasis !== "PER_MEMBER") {
-        suppresses = true;
-        basisUnresolvable = holderBasis == null;
+        if (differenceInvoice && holderKey) {
+          // It would have held the family: if the family is billed again,
+          // the officer is told this member already holds it.
+          invoiceHoldersByFamilyKey.set(holderKey, [...(invoiceHoldersByFamilyKey.get(holderKey) ?? []), {
+            memberName: `${row.member.firstName} ${row.member.lastName}`.trim(),
+            invoice: sub.xeroInvoiceNumber ?? sub.xeroInvoiceId,
+          }].sort((left, right) => compareOrdinal(left.memberName, right.memberName) || compareOrdinal(left.invoice, right.invoice)));
+        } else {
+          suppresses = true;
+          basisUnresolvable = holderBasis == null;
+        }
       }
     }
     if (!suppresses) continue;
@@ -1260,6 +1262,27 @@ export async function buildSubscriptionBillingPreview(input: {
           markedByName: marker?.markedByName ?? null,
           markedAt: marker?.markedAt ?? null,
         });
+      }
+      // #4110 review round 6, F1: a member whose payment under the newest
+      // closed charge was reversed would be billed again with the family, but
+      // the family is held. The hold stands (#2161, never a second family
+      // invoice); the officer is asked to decide for this member instead.
+      if (reversedByFamilyKey.get(groupingKey)?.has(member.id)) {
+        const info = familySuppressionInfo.get(familyGroupId);
+        const heldBy = info?.holderName
+          ? `${info.holderName}'s Xero invoice${info.xeroInvoiceNumber ? ` ${info.xeroInvoiceNumber}` : ""}`
+          : "an operator's already-invoiced marker";
+        exceptions.push(exception({
+          code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
+          message: closedFamilyMemberDecisionMessage({
+            memberName, membershipTypeName: membershipType.name, reason: "HELD_BY_FAMILY_INVOICE", heldBy,
+          }),
+          seasonYear: input.seasonYear,
+          memberId: member.id,
+          familyGroupId,
+          membershipTypeId: membershipType.id,
+          context: { memberName, membershipAnnualFeeId: fee.id, reason: "HELD_BY_FAMILY_INVOICE", heldBy },
+        }));
       }
       continue;
     }

@@ -268,17 +268,21 @@ export function isOfficerDecisionException(code: string): boolean {
 }
 
 /** Why a closed family's member needs the officer's decision. */
-export type ClosedFamilyDecisionReason = "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE";
+export type ClosedFamilyDecisionReason = "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE" | "HELD_BY_FAMILY_INVOICE";
 
 /** The two choices decision 4 gives the officer, worded once. */
 export function closedFamilyMemberDecisionMessage(input: {
   memberName: string;
   membershipTypeName: string;
   reason: ClosedFamilyDecisionReason;
+  /** For HELD_BY_FAMILY_INVOICE: what holds the family back. */
+  heldBy?: string;
 }): string {
   const why = input.reason === "EXEMPT_AT_CLOSE"
     ? `${input.memberName} was not required to pay when the family's ${input.membershipTypeName} charge was closed as already paid, and now needs a subscription.`
-    : `${input.memberName}'s payment under an earlier closed ${input.membershipTypeName} family charge was reversed, but the family's newer charge, closed as already paid, still stands.`;
+    : input.reason === "REVERSED_UNDER_OLDER_CHARGE"
+      ? `${input.memberName}'s payment under an earlier closed ${input.membershipTypeName} family charge was reversed, but the family's newer charge, closed as already paid, still stands.`
+      : `${input.memberName}'s payment under the family's closed ${input.membershipTypeName} charge was reversed, but the family is held back by ${input.heldBy ?? "an existing invoice"}.`;
   return (
     `${why} The family is not billed again. Decide how to bill ${input.memberName}: ` +
     "if the family fee already covers everyone in the family, mark them Paid; " +

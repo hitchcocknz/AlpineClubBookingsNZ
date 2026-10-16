@@ -558,6 +558,40 @@ let createdMapping = false;
       expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
     });
 
+    it("a reversal the parent's own family invoice holds back asks Finance to decide, and no run bills it (review round 6 F1)", async () => {
+      // H raised the family fee by hand (INV-FAM) and paid it; K paid too.
+      await prisma.memberSubscription.updateMany({
+        where: { memberId: PARENT_ID, seasonYear: SEASON_YEAR },
+        data: { xeroInvoiceId: "race-4110-hand-family-invoice", xeroInvoiceNumber: "INV-FAM-4110", manuallyMarkedPaidAt: null, manuallyMarkedPaidByMemberId: null },
+      });
+      await expect(
+        closeAlreadyPaidSubscriptionCharge({ chargeId: OLD_CHARGE_ID, reason: "Paid", actorMemberId: OFFICER_ID }),
+      ).resolves.toMatchObject({ closed: true });
+      await reverseChildPayment();
+
+      const { preview, confirmed } = await previewAndConfirm();
+      expect(preview.entries).toEqual([]);
+      expect(preview.alreadyInvoicedFamilies).toEqual([
+        expect.objectContaining({ familyGroupId: FAMILY_ID, holderMemberId: PARENT_ID, xeroInvoiceNumber: "INV-FAM-4110" }),
+      ]);
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({
+          code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
+          memberId: CHILD_ID,
+          context: expect.objectContaining({ reason: "HELD_BY_FAMILY_INVOICE", heldBy: "Rebill parent's Xero invoice INV-FAM-4110" }),
+        }),
+      ]);
+      // Finance's run records it OPEN and bills nobody; an approval bills nobody either.
+      expect(confirmed).toEqual({ chargeIds: [], exceptionCount: 1 });
+      expect(await prisma.membershipBillingException.findFirstOrThrow({
+        where: { memberId: CHILD_ID, code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION" },
+      })).toMatchObject({ status: "OPEN" });
+      await expect(billing.queueApprovedMembershipSubscriptionCharges({
+        memberIds: [CHILD_ID], approvedByMemberId: OFFICER_ID, decisionDate: DECISION_DATE,
+      })).resolves.toEqual({ chargeIds: [], exceptionCount: 1 });
+      expect(await familyChargeIds()).toEqual([OLD_CHARGE_ID]);
+    });
+
     it("still refuses a second LIVE charge for one family, type and season", async () => {
       const second = prisma.membershipSubscriptionCharge.create({
         data: {

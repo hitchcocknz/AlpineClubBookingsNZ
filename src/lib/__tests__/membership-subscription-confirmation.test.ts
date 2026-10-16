@@ -308,6 +308,16 @@ describe("membership subscription confirmation", () => {
         { memberName: "Kid Member", subscriptionStatusAtClose: "NOT_REQUIRED", subscription: { memberId: "member-1", status: "UNPAID", xeroInvoiceId: "xi-diff", xeroInvoiceNumber: "INV-DIFF", member: { billingFamilyGroupId: null, familyGroupMemberships: [{ familyGroupId: "family-1" }] } } },
       ],
     }]);
+    // The kid's invoice is a bare live invoice the #2161 hold reads; as their
+    // difference invoice it passes, and the re-bill is flagged beside it.
+    mocks.familyGroupMemberFindMany.mockResolvedValue([{
+      familyGroupId: "family-1", memberId: "member-1",
+      member: {
+        firstName: "Kid", lastName: "Member", role: "USER", dateOfBirth: null, ageTier: "ADULT",
+        seasonalMembershipAssignments: [{ membershipType: { id: "type-1", key: "FAMILY", name: "Family", subscriptionBehavior: "REQUIRED" } }],
+        subscriptions: [{ xeroInvoiceId: "xi-diff", xeroInvoiceNumber: "INV-DIFF", status: "UNPAID", chargeCoverage: [] }],
+      },
+    }]);
 
     const result = await queueApprovedMembershipSubscriptionCharges({
       memberIds: ["member-1"],
