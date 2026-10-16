@@ -9,8 +9,7 @@ import {
   requestedDatesIgnoredByNightsRefusal,
   type ChangeRequestAddGuest,
 } from "@/lib/booking-change-request-guests";
-import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
-import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { calendarDateOfDateOnlyInstant, dateOnlyInstantOf, parseCalendarDate } from "@/lib/club-time";
 import type { LiveGuestStayRow } from "@/lib/booking-modification-stay-ranges";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
 
@@ -38,8 +37,8 @@ export function mergeChangeRequestGuests(
 
 function normalizeOptionalDateOnly(value: string | undefined) {
   if (!value) return null;
-  const parsed = parseDateOnly(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  const parsed = parseCalendarDate(value);
+  return parsed === null ? null : dateOnlyInstantOf(parsed);
 }
 
 /** Submission's date and night checks, in their original order, shared with quote. */
@@ -59,7 +58,7 @@ export function validateChangeRequestDatesAndNights(
   const nextCheckOut = requestedCheckOut ?? storedDateOnly(booking.checkOut);
   if (nextCheckOut <= nextCheckIn) return { error: "Check-out must be after check-in" };
 
-  const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
+  const stay = { checkIn: calendarDateOfDateOnlyInstant(nextCheckIn), checkOut: calendarDateOfDateOnlyInstant(nextCheckOut) };
   const refusal =
     addedGuestNightsRefusal(addGuests ?? [], stay) ??
     guestStayRangesRefusal(sentGuestStayRanges ?? [], stay, booking.guests) ??
