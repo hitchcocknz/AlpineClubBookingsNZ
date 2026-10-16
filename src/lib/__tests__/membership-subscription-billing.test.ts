@@ -722,12 +722,13 @@ describe("membership subscription billing", () => {
   async function previewFamily(
     charges: Array<ReturnType<typeof familyCharge>>,
     memberIds?: string[],
-    // Per-type fee, for a holder on another type (#4110 review round 6).
-    feeForType?: (membershipTypeId: string) => unknown,
+    // Per-type (and per-tier) fee, for a holder on another type or tier (#4110 review round 6).
+    feeForType?: (membershipTypeId: string, ageTier: string | null) => unknown,
   ) {
     const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
     if (feeForType) {
-      mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) => feeForType(membershipTypeId) ?? annual);
+      mocks.effectiveFee.mockImplementation(async ({ membershipTypeId, ageTier }: { membershipTypeId: string; ageTier: string | null }) =>
+        feeForType(membershipTypeId, ageTier) ?? annual);
     } else {
       mocks.effectiveFee.mockResolvedValue(annual);
     }
@@ -1581,6 +1582,22 @@ describe("membership subscription billing", () => {
       );
       const preview = await previewFamily([charge], undefined, (typeId) =>
         typeId === "type-2" ? fee({ id: "fee-solo", billingBasis: "PER_MEMBER", prorationRule: "NONE" }) : undefined);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.exceptions).toEqual([]);
+    });
+
+    it("does not name, beside a re-bill, a same-type holder whose own basis is per-member (review round 6 F3)", async () => {
+      // Same type, but the holder's age tier resolves a PER_MEMBER fee: their
+      // invoice is their own and would never have held the family.
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-own", xeroInvoiceNumber: "INV-OWN" }, {
+        firstName: "Cub", lastName: "One", ageTier: "YOUTH",
+      })]);
+      const charge = holdingInvoice(
+        familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]),
+        1, "xi-own", "INV-OWN",
+      );
+      const preview = await previewFamily([charge], undefined, (_typeId, ageTier) =>
+        ageTier === "YOUTH" ? fee({ id: "fee-youth", billingBasis: "PER_MEMBER", prorationRule: "NONE" }) : undefined);
       expect(preview.entries).toHaveLength(1);
       expect(preview.exceptions).toEqual([]);
     });
