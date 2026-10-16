@@ -5,11 +5,12 @@
  *
  * What a mock can only imitate, run here against the database:
  *
- * - Three rows A, B, C written in ONE transaction share a `createdAt`. An UPDATE
- *   of A's `status` (an indexed column, so not a HOT update) writes A's new
- *   tuple later in the heap: PostgreSQL's own physical order becomes
- *   B, C, A - which is the order a `createdAt`-only read used to meet the tie
- *   in. Every reader still returns A, B, C:
+ * - Three rows A, B, C written in ONE transaction share a `createdAt`. After
+ *   updating A's `status`, CLUSTER on the existing primary-key index deliberately
+ *   establishes physical order B, C, A, verified through `ctid`. An UPDATE alone
+ *   cannot guarantee that order because PostgreSQL may reuse free space. The
+ *   fixture makes heap and id order differ from insertion order; every reader
+ *   still returns A, B, C:
  *   - the capture ledger's loader (`loadPaymentWithTransactions`), which the
  *     mirror projection, the refund planners and the cancel preview read;
  *   - `latestTransactionOfKind` returns C, in any input order;
@@ -46,8 +47,8 @@ const MEMBER_ID = "race-4132-member";
 const LODGE_ID = "race-4132-lodge";
 const BOOKING_ID = "race-4132-booking";
 const PAYMENT_ID = "race-4132-payment";
-// Named so `id` order is B, C, A - the heap order after A's update, and not the
-// insertion order - so neither a cuid-style `id` tiebreak nor the heap can pass
+// Named so `id` order is B, C, A - the heap order established by CLUSTER, and
+// not the insertion order - so neither a cuid-style `id` tiebreak nor the heap can pass
 // for the insertion order (#4129's reverted tiebreak).
 const A = "race-4132-txn-z";
 const B = "race-4132-txn-x";
@@ -112,7 +113,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
     type RowSpec = { id: string; kind: "PRIMARY" | "ADDITIONAL"; amountCents: number; status: "PENDING" | "PROCESSING" | "SUCCEEDED" };
 
-    /** A, B, C in ONE transaction, in that order, all stamped `TIED_AT`; then A's status moves, which moves A's tuple. */
+    /** Insert A, B, C with generated sequences and `TIED_AT`, update A, then establish heap order B, C, A. */
     async function writeTiedRowsThenUpdateA(rows: [RowSpec, RowSpec, RowSpec], aBecomes: "FAILED" | "SUCCEEDED") {
       await prisma.$transaction(async (tx) => {
         for (const row of rows) {
@@ -131,9 +132,12 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         }
       });
       await prisma.paymentTransaction.update({ where: { id: A }, data: { status: aBecomes } });
+      // Whole-table rewrite, only in the already guarded disposable database,
+      // using its existing primary-key index; row values and sequences stay intact.
+      await prisma.$executeRaw`CLUSTER "PaymentTransaction" USING "PaymentTransaction_pkey"`;
     }
 
-    /** The premise: PostgreSQL's physical order is now B, C, A - what a `createdAt`-only read met the tie in. */
+    /** Read the physical order to verify CLUSTER established the adversarial B, C, A premise. */
     async function heapOrder(): Promise<string[]> {
       const rows = await prisma.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "PaymentTransaction" WHERE "paymentId" = ${PAYMENT_ID} ORDER BY ctid`;
@@ -210,7 +214,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         ],
         "FAILED",
       );
-      expect(await heapOrder(), "premise: the UPDATE moved A later in the heap").toEqual([B, C, A]);
+      expect(await heapOrder(), "premise: CLUSTER established physical order B, C, A").toEqual([B, C, A]);
 
       const stored = await prisma.paymentTransaction.findMany({
         where: { paymentId: PAYMENT_ID },
@@ -250,7 +254,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
     it("three captures written together: the card refund plan slices newest first by insertion, not by heap order", async () => {
       // A is captured after B and C are written (PROCESSING -> SUCCEEDED), the
-      // everyday status write that moves its tuple.
+      // real status write retained before deliberately establishing the heap order.
       await writeTiedRowsThenUpdateA(
         [
           { id: A, kind: "PRIMARY", amountCents: 3_000, status: "PROCESSING" },
@@ -259,7 +263,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         ],
         "SUCCEEDED",
       );
-      expect(await heapOrder(), "premise: the capture moved A later in the heap").toEqual([B, C, A]);
+      expect(await heapOrder(), "premise: CLUSTER established physical order B, C, A").toEqual([B, C, A]);
       expect(await loadedOrder()).toEqual([A, B, C]);
 
       const { planStripeRefundAllocation } = await import("@/lib/payment-transactions");
@@ -280,7 +284,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         ],
         "SUCCEEDED",
       );
-      expect(await heapOrder(), "premise: the capture moved A later in the heap").toEqual([B, C, A]);
+      expect(await heapOrder(), "premise: CLUSTER established physical order B, C, A").toEqual([B, C, A]);
       const { planStripeRefundAllocation } = await import("@/lib/payment-transactions");
       return (await planStripeRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 6_000, store: prisma })).slices;
     }
