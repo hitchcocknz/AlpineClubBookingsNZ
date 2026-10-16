@@ -139,6 +139,33 @@ routes recognise the constraint errors via
 `isBookingEnvelopeInvariantViolation` and return a clean 500 instead of
 leaking raw trigger text to the client.
 
+## INV-MOD-062
+
+A modification's guest stay range that only repeats a gapped guest's own Date
+In and Date Out keeps the nights the guest holds (#4189; the owner's #4157
+decision "Keep their nights", `INV-REQ-012`). The booking editor's range mode
+(per-guest dates on, night grid off) sends every remaining guest's two dates
+and cannot carry a gap (#713), so applied as written it put an untouched guest
+holding the 10th and 12th on the 11th as well, and charged for it. Only a
+moved bound re-spreads a guest over every night of their new range. A guest
+who already holds every night is applied by the two bounds, and a grid night
+set exactly as chosen, both as before.
+
+The rule lives in the shared resolver, `resolveModificationStayRanges`, which
+reads `nightsKeptByRepeatedRange` against the guest's live night rows after
+validating the entry. Every surface that resolves a modification's ranges
+therefore agrees by construction: the save (`resolveTargetDates`,
+`prepareGuestPlan`), the quote (`modify-quote`), a frozen policy-exception
+proposal (`buildModificationProposalParties`) and a change request's approval,
+which already passes such a guest as their night set. A policy-exception
+proposal frozen before this release with such a range froze the filled party,
+so its approval now replays as drift and is refused, never executed; the
+member sends the change again.
+
+Guarded by `booking-modification-stay-ranges.test.ts`,
+`modify-quote-planner-stay-range-parity.test.ts` and
+`booking-direct-edit-repeated-range.realdb.test.ts`.
+
 ## INV-MOD-005
 
 Nightly prices lock at booking time: every edit path — batch modify, date

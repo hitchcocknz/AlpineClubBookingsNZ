@@ -308,9 +308,9 @@ A two-bound guest range in a `LOCKED_PERIOD` change request that only repeats
 the guest's own Date In and Date Out keeps the nights the guest holds (#4157,
 owner decision "Keep their nights"). Range mode cannot express gaps (#713), so
 the member's form sends a gapped guest's own dates back unchanged; applied as
-written, that range put the guest on every night inside it and charged for the
-gaps. `lockedPeriodRequestToBatchInput` passes such a guest as their night
-set, so range mode stays on, even beside an officer's entry.
+written, it filled and charged the gaps. `lockedPeriodRequestToBatchInput`
+passes such a guest as their night set, so range mode stays on, even beside an
+officer's entry. Direct edits keep them by the same rule (`INV-MOD-062`).
 Only a moved bound re-spreads the guest; a guest who already holds every night
 is passed by the two bounds. Each guest is judged on the entry approval
 applies: the last with both dates or a night set (`effectiveStayRangeByGuest`);
