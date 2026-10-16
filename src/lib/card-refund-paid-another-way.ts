@@ -607,7 +607,7 @@ export async function closeCardRefundPaidAnotherWay(
       amountCents: input.amountCents,
       officerMemberId: input.actingMemberId,
     });
-    // #4145 (`INV-PAY-133`): a cancel's slices made before this close went back to the card.
+    // #4145 (`INV-PAY-134`): a cancel's slices made before this close went back to the card.
     await recordCardRefundMadeBeforePaidAnotherWay(tx, operation, { payment, format });
 
     // M3 / round 5 / round 6: the note now, or the late charge's receipt first.

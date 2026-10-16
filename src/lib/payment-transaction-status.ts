@@ -13,10 +13,13 @@
  * only rises and is moved by writers with no refund row (review of #3604), so
  * C4 classifies that difference rather than asserting it away.
  *
- * A leaf with no imports of its own beyond the enum, so both can depend on it
- * without `payment-transactions.ts` and the ledger sync importing each other.
+ * A leaf with no imports of its own beyond the enum and the ledger's order
+ * (`payment-ledger-order.ts`, itself a leaf), so both can depend on it without
+ * `payment-transactions.ts` and the ledger sync importing each other.
  */
 import { PaymentStatus, type PaymentTransactionKind } from "@prisma/client";
+
+import { compareLedgerRowsOldestFirst, type LedgerOrderedRow } from "@/lib/payment-ledger-order";
 
 /**
  * Money was taken. A refunded transaction stays captured — its capture
@@ -91,17 +94,22 @@ export function deriveAggregatePaymentStatus(
 }
 
 /**
- * The newest transaction of one kind on a payment, by `createdAt` (the first
- * of a tie wins) — the row the `Payment` mirror's summary columns are derived
- * from (`reconcilePaymentAggregates`). One home, so the booking-ledger census
- * (#3583) reads "the latest PRIMARY" and "the live ask" exactly as the mirror
- * it checks was written (`INV-SSOT`).
+ * The newest transaction of one kind on a payment: the latest `createdAt`, and
+ * on a tie the row inserted LAST, the highest `insertionSeq` (#4132,
+ * `INV-PAY-133`, owner decision 15 Oct 2026). The row the `Payment` mirror's
+ * summary columns are derived from (`reconcilePaymentAggregates`). One home,
+ * so the booking-ledger census (#3583) reads "the latest PRIMARY" and "the
+ * live ask" exactly as the mirror it checks was written (`INV-SSOT`), and the
+ * answer never depends on the order the rows were read in.
+ *
+ * Before #4132 a tie went to the first row of the input, which over the
+ * oldest-first ledger read was the EARLIEST of the tie, while the ask chain
+ * (`readUnpaidPriceAsk`) took its last row as the live ask.
  */
 export function latestTransactionOfKind<
   T extends {
     kind: PaymentTransactionKind;
-    createdAt: Date;
-  },
+  } & LedgerOrderedRow,
 >(transactions: readonly T[], kind: PaymentTransactionKind): T | null {
   let latest: T | null = null;
 
@@ -110,7 +118,7 @@ export function latestTransactionOfKind<
       continue;
     }
 
-    if (!latest || transaction.createdAt.getTime() > latest.createdAt.getTime()) {
+    if (!latest || compareLedgerRowsOldestFirst(transaction, latest) > 0) {
       latest = transaction;
     }
   }

@@ -541,7 +541,7 @@ the inline call) is replayed by Stripe, never repeated and never rejected as an
 `SUCCEEDED` - the inline refund's, or the cron's when the inline refund threw,
 was refused or made only some slices - in the close's own transaction, dated by
 it and for the frozen plan's total, so it is written once and never for a
-refund still owed (#4145, `INV-PAY-133`). A "Paid another way" close records
+refund still owed (#4145, `INV-PAY-134`). A "Paid another way" close records
 only what the row's slices took from the refunds recorded on the payment, as
 that event dated by the latest of them as Stripe made it and marked as that
 close's (none made, none written); the page splits its sentence only by that

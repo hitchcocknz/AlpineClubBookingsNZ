@@ -67,7 +67,7 @@ function madeBeforePaidAnotherWay(settlementEvents: readonly NarrativeEvent[]): 
 }
 
 /**
- * #4145 (`INV-PAY-133`): a cancel's card refund by where its row stands, dated
+ * #4145 (`INV-PAY-134`): a cancel's card refund by where its row stands, dated
  * by its own event. A row closed "Paid another way" is said in its parts: what
  * reached the card first (only by the event that close marked - an up-front
  * event a cancel wrote before #4145 was written whatever became of the refund),

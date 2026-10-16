@@ -52,7 +52,7 @@ export function isCancelCardRefundEvent(event: { type: BookingEventType; reason:
 }
 
 /**
- * #4145 (`INV-PAY-133`): the snapshot a "Paid another way" close leaves on the
+ * #4145 (`INV-PAY-134`): the snapshot a "Paid another way" close leaves on the
  * REFUNDED event it writes for the slices Stripe had already made - a member
  * cancel's or a capacity race's. The narrative splits a paid-another-way
  * refund only by an event carrying it: an up-front event a cancel wrote before

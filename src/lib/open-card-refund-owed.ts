@@ -426,7 +426,7 @@ export function cardRefundSliceFilledBy(
 }
 
 /**
- * #4145 (`INV-PAY-133`): what the recorded refunds made of one operation's
+ * #4145 (`INV-PAY-134`): what the recorded refunds made of one operation's
  * slices - marked or matched, by the attribution the owed figure runs - and
  * when Stripe made the latest of them (`stripeMadeAt`). A slice whose refund
  * failed later and was handed to a row of its own counts nothing: no recorded

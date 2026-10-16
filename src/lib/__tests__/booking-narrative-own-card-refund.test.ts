@@ -9,7 +9,7 @@ import { bindClubTime, requireClubTimeZone } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 /**
- * #4145 (`INV-PAY-133`): the booking page's narrative for a member's card
+ * #4145 (`INV-PAY-134`): the booking page's narrative for a member's card
  * cancel, whose REFUNDED event is written only by the close that made the
  * refund. The cancel's settlement is its OWN card refund event
  * (`isCancelCardRefundEvent`) - never another event that landed after the

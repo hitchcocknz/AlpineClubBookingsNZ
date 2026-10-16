@@ -2117,7 +2117,7 @@ describe("cancelBooking credit refunds", () => {
           paymentId: "payment_1",
           stripePaymentIntentId: "pi_additional_1",
         },
-        orderBy: { createdAt: "desc" },
+        // #4132: no order - the intent id is unique, so at most one row matches.
         select: { id: true, amountCents: true },
       });
       expect(mocks.enqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith({

@@ -8,6 +8,7 @@ import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { buildBookingCancellationRefundIdempotencyKey, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } from "@/lib/payment-recovery-keys";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { isStripeTransaction, lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * #4097 (`INV-PAY-129`, coordinator decisions on PR #4122): HOW A CANCEL'S CARD
@@ -67,7 +68,7 @@ export async function nonCardCapturedCharges(
 ): Promise<Array<{ id: string; headroomCents: number }>> {
   const rows = await db.paymentTransaction.findMany({
     where: { paymentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
-    orderBy: { createdAt: "desc" },
+    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
     select: { id: true, source: true, stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
   });
   return nonCardChargeHeadroom(rows ?? []);
