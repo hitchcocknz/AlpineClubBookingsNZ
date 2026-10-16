@@ -1171,7 +1171,7 @@ value**:
 
 The mode is also passed for a second, non-pool reason: two independent reads in
 one request can disagree if an admin saves the panel between them, which on
-`modify-quote` (seven or more pricing passes, two of them differenced into the
+`modify-quote` (at #2543, seven or more pricing passes, two differenced into the
 member's settlement delta) is a money error rather than a nuisance. See the
 `INV-LOCKOUT` rules in `docs/invariants/subscription-lockout-pricing.md`.
 
