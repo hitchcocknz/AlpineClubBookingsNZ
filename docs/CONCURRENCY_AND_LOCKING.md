@@ -3242,7 +3242,13 @@ payment's aggregate is re-derived in the same transaction
 (`reconcilePaymentAggregates`). No `lock(1)`: a cancellation's hand-back
 completion never takes it, and the correction moves no booking status or
 capacity. A refusal anywhere later in the completion rolls the correction back
-with it.
+with it. **One window remains, and is stated rather than closed:** a refund made
+in Stripe after the completion's Stripe read but recorded only after its commit
+can still pay the member twice, since the read is outside the transaction and
+no lock reaches Stripe. Its recording then meets the charge's cap, and
+`recordStripeRefundsAgainstTransaction` alerts the officers after its own commit
+(`alertCardRefundCapOverflow`, once per charge and refund-row total), never
+inside the transaction.
 
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path

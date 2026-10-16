@@ -30,3 +30,11 @@
   accepts, so a refusal never comes after the money has gone. Where the
   records show nothing left to refund, the refusal now also says what to do if
   the member really is owed.
+- **Officers are told when a card refund lands on a charge already refunded
+  (#4154).** If a card refund reaches the app for a charge whose records
+  already read fully refunded - for example one made in Stripe after a
+  hand-back was marked paid back - officers are now emailed, once, that the
+  member may have been paid twice, instead of the extra being dropped silently.
+  And a capacity race's part to check can now be marked paid back after the
+  nightly Xero check has already raised a card refund note for the same money:
+  that note is counted, so no second one is raised.

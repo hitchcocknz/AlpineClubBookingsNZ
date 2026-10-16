@@ -1427,31 +1427,32 @@ refunded total it corrects).
 
 - **What a capacity race's card refund plan does not carry is a task to
   check** (#4154): ONE `CANCELLED_BOOKING_HAND_BACK`, `INV-PAY-129`'s `check`
-  part, raised in the void's claim, keyed on the booking and race intent,
-  inserted on no conflict; a held key is logged, never thrown.
+  part, raised in the void's claim, keyed on the booking and race intent; a
+  held key is logged, never thrown.
   - **Marked paid back** (marked first, paid after), it lands only on the race
-    intent's captured charge (`onlyTransactionIds`), refused while the race's
-    card refund is unsettled, or while Stripe, read before the transaction,
-    shows more of that charge refunded than its refund rows, or cannot be
-    read. Then it completes as `INV-PAY-129`'s part does.
+    intent's captured charge, refused while the race's card refund is
+    unsettled, or while Stripe, read before the transaction, shows more of
+    that charge refunded than its refund rows, or cannot be read.
   - **Where that charge holds too little, it is first corrected** (owner,
     15 Oct 2026, "Guarded recalculation"): under the `Payment` row lock, its
-    refunded total is LOWERED to its recorded, non-refused refund rows - never
-    raised (`compareAndSetRefundedAmount`, taking the smaller) - and audited
-    before and after. Only when the charge and every refund row on it postdate
-    the refund ledger, the booking gave back no account credit, the booking
-    and payment have no other refund task, no Xero refund note covers more
-    than the payment's refund rows, and the corrected charge then holds the
-    task. Otherwise it is refused, naming the blocker: dismiss it with a note,
-    and raise a Xero note by hand only where the booking is invoiced and none
-    covers it.
+    refunded total is LOWERED to its recorded refund rows, never raised, and
+    audited. Only when the charge and its refund rows postdate the refund
+    ledger, the booking gave back no account credit, the booking and payment
+    have no other refund task, and the corrected charge holds the task. Xero
+    note coverage beyond the refund rows is the self-heal's card note: up to
+    the task's amount it is kept on the task as covering it, so its own note
+    bills the rest; beyond it, refused. Refused, it names the blocker.
+  - **The remaining window**: a refund made in Stripe after that read and
+    recorded after the commit can still pay twice. The refund sync's cap then
+    alerts the officers, after its own commit.
   - **The member's page follows it**: OPEN, the club will be in touch; paid
     back, refunded; dismissed, checked and closed.
   - Proven by `capacity-race-refund-shortfall.test.ts`,
     `capacity-race-refunded-total-correction.test.ts`,
-    `manual-refund-task.test.ts`, `payment-transactions-refunds.test.ts`,
-    `booking-narrative.test.ts`, `booking-ledger-projection-census.test.ts`
-    and `capacity-race-refund-shortfall-task.realdb.test.ts`.
+    `card-refund-cap-overflow.test.ts`, `manual-refund-task.test.ts`,
+    `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts`,
+    `booking-ledger-projection-census.test.ts` and
+    `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
 ## INV-PAY-031
 
