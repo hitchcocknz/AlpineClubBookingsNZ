@@ -5,17 +5,19 @@ import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { addCalendarDays, calendarDateOfDateOnlyInstant, countClubNights, parseCalendarDate } from "@/lib/club-time";
 import type { BatchModifyInput } from "@/lib/booking-modify";
 import {
-  guestNightKeys,
   isAppliedChangeRequestRange,
   isEffectiveStayRangeChange,
-  nightsKeptByRepeatedRange,
   storedGuestNightsAsDays,
-  type GuestNightsAsDays,
 } from "@/lib/booking-change-request-guests";
 import { guestName } from "@/lib/bed-allocation-display-names";
 import { collapseNightRuns } from "@/lib/bed-allocation-board-window";
 import { guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
-import { effectiveStayRangeByGuest } from "@/lib/booking-modification-stay-ranges";
+import {
+  effectiveStayRangeByGuest,
+  guestNightKeys,
+  nightsKeptByRepeatedRange,
+  type GuestNightsAsDays,
+} from "@/lib/booking-modification-stay-ranges";
 
 /**
  * A LOCKED_PERIOD change request's stored `requestedChanges`, read back, and

@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
  * range that moves a bound re-spreads them as before, guest by guest.
  */
 
-import { namesStayRangeChange, nightsKeptByRepeatedRange } from "@/lib/booking-change-request-guests";
+import { namesStayRangeChange } from "@/lib/booking-change-request-guests";
+import { nightsKeptByRepeatedRange } from "@/lib/booking-modification-stay-ranges";
 import {
   describeRequestedGuestNights,
   keptNightsByGuest,

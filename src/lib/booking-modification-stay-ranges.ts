@@ -1,5 +1,11 @@
+import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import { parseDateOnly } from "@/lib/date-only";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
+import {
+  getExplicitGuestBedNightKeys,
+  getGuestBedNightKeys,
+  sameNightKeys,
+} from "@/lib/booking-guest-stay-ranges";
 import {
   normalizeGuestStayRange,
   type NormalizedBookingGuestStayRange,
@@ -35,7 +41,10 @@ import {
  *    guest's gaps — issue #713).
  *  - With range inputs, a remaining guest uses their OWN range entry when they
  *    have one, and otherwise keeps their stored range and night set — the
- *    dates-moved reset never runs.
+ *    dates-moved reset never runs. An entry that only repeats a gapped guest's
+ *    own Date In and Date Out keeps their night set too (#4189, the #4157 rule
+ *    `nightsKeptByRepeatedRange`, `INV-MOD-062`): range mode cannot express a
+ *    gap, so it is no change to their dates. Only a moved bound re-spreads them.
  *  - Added guests always normalise against the final envelope.
  *  - The final booking envelope expands (never shrinks) to cover every resolved
  *    range, but only in range-input mode, exactly as `resolveTargetDates` does.
@@ -135,6 +144,55 @@ export function effectiveStayRangeByGuest<Entry extends { guestId: string }>(
   return new Map((entries ?? []).map((entry) => [entry.guestId, entry]));
 }
 
+/** A guest's range and, when it has one, its explicit night set, as calendar days. */
+export interface GuestNightsAsDays {
+  stayStart: string;
+  stayEnd: string;
+  nights?: ReadonlyArray<string> | null;
+}
+
+/**
+ * A guest's nights as sorted, distinct `yyyy-mm-dd` keys (#4088): the canonical
+ * `getGuestBedNightKeys` (INV-DATE-020) over calendar days. Read only from
+ * STORED values (the booking's own rows, or the request's snapshot of them).
+ */
+export function guestNightKeys(guest: GuestNightsAsDays): string[] {
+  const stayStart = parseDateOnly(guest.stayStart);
+  const stayEnd = parseDateOnly(guest.stayEnd);
+  return getGuestBedNightKeys({ stayStart, stayEnd, nights: guest.nights }, { checkIn: stayStart, checkOut: stayEnd });
+}
+
+/**
+ * The nights a guest keeps when their requested range only repeats their own
+ * Date In and Date Out (#4157, owner decision "Keep their nights"), as sorted
+ * `yyyy-mm-dd` keys, or `null` when the range is applied as it is written.
+ *
+ * A two-bound range carries no night set, so applied as written it puts the
+ * guest on every night inside it and fills (and charges) the gaps in a stay
+ * like nights {10, 12}. Range mode cannot express gaps, so the member's form
+ * sends a gapped guest's own bounds back unchanged; that is no change to their
+ * dates, and their nights stand. Only a moved bound re-spreads them.
+ *
+ * One rule for both doors: a change request's approval (`keptNightsByGuest`)
+ * and every direct edit, quote and frozen proposal, through the resolver below
+ * (#4189, `INV-MOD-062`).
+ *
+ * `null` for a grid night set, a one-bound range, a moved bound, an unknown
+ * guest, a guest with no night rows, and a guest who already holds every night
+ * of the range (applied by its two bounds, exactly as before).
+ */
+export function nightsKeptByRepeatedRange(
+  range: { stayStart?: string | null; stayEnd?: string | null; nights?: ReadonlyArray<string> | null },
+  current: GuestNightsAsDays | undefined,
+): string[] | null {
+  if (range.nights?.length || !range.stayStart || !range.stayEnd || !current) return null;
+  if (range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd) return null;
+  const held = getExplicitGuestBedNightKeys({ nights: current.nights });
+  if (!held) return null;
+  const everyNight = guestNightKeys({ stayStart: current.stayStart, stayEnd: current.stayEnd });
+  return sameNightKeys(held, everyNight) ? null : held;
+}
+
 function toDate(value: Date | string | null | undefined, fallback: Date): Date {
   if (value instanceof Date) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -195,6 +253,38 @@ function storedRange(
   };
 }
 
+/** A resolved range as calendar days, the shape `nightsKeptByRepeatedRange` reads. */
+function rangeAsDays(range: NormalizedBookingGuestStayRange): GuestNightsAsDays {
+  return {
+    stayStart: calendarDateOfDateOnlyInstant(range.stayStart),
+    stayEnd: calendarDateOfDateOnlyInstant(range.stayEnd),
+    nights: range.nights?.map((night) => calendarDateOfDateOnlyInstant(night)) ?? null,
+  };
+}
+
+/**
+ * A remaining guest's range in range-input mode: their stored range and night
+ * set when they have no entry of their own, else their entry, normalised. An
+ * entry that only repeats a gapped guest's own Date In and Date Out keeps the
+ * nights they hold (#4189, `INV-MOD-062`): the direct editor's range mode sends
+ * every guest's bounds and cannot carry a gap, so applied as written it filled
+ * and charged an untouched guest's gaps. The rule is #4157's, read through
+ * `nightsKeptByRepeatedRange` (`INV-REQ-012`); the entry is still normalised
+ * first, so a malformed one is refused exactly as before.
+ */
+function remainingGuestRange(
+  guest: LiveGuestStayRow,
+  entry: StayRangeDeltaEntry | undefined,
+  booking: { checkIn: Date; checkOut: Date },
+  envelope: { checkIn: Date; checkOut: Date },
+  index: number,
+): NormalizedBookingGuestStayRange {
+  const stored = storedRange(guest, booking);
+  if (!entry || !entryHasStayRange(entry)) return stored;
+  const requested = normalizeGuestStayRange(entry, envelope, index);
+  return nightsKeptByRepeatedRange(rangeAsDays(requested), rangeAsDays(stored)) ? stored : requested;
+}
+
 function minDate(values: Date[]): Date {
   return values.reduce((earliest, value) => (value < earliest ? value : earliest));
 }
@@ -252,11 +342,14 @@ export function resolveModificationStayRanges<Guest extends LiveGuestStayRow>(ar
     };
     const proposedRanges: NormalizedBookingGuestStayRange[] = [];
     for (const guest of remainingGuests) {
-      const entry = rangeByGuestId.get(guest.id);
       proposedRanges.push(
-        entry && entryHasStayRange(entry)
-          ? normalizeGuestStayRange(entry, unionEnvelope, proposedRanges.length)
-          : storedRange(guest, booking),
+        remainingGuestRange(
+          guest,
+          rangeByGuestId.get(guest.id),
+          booking,
+          unionEnvelope,
+          proposedRanges.length,
+        ),
       );
     }
     for (const addGuest of addGuests) {
@@ -290,11 +383,13 @@ export function resolveModificationStayRanges<Guest extends LiveGuestStayRow>(ar
           : storedRange(guest, booking)),
       };
     }
-    const entry = rangeByGuestId.get(guest.id);
-    const resolved =
-      entry && entryHasStayRange(entry)
-        ? normalizeGuestStayRange(entry, finalEnvelope, index)
-        : storedRange(guest, booking);
+    const resolved = remainingGuestRange(
+      guest,
+      rangeByGuestId.get(guest.id),
+      booking,
+      finalEnvelope,
+      index,
+    );
     index += 1;
     return { guest, ...resolved };
   });

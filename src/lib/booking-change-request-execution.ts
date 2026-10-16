@@ -27,9 +27,9 @@ import {
   claimedMemberPathIds,
 } from "@/lib/booking-dependant-identity";
 import { sameNightKeys } from "@/lib/booking-guest-stay-ranges";
+import { guestNightKeys } from "@/lib/booking-modification-stay-ranges";
 import {
   addedGuestNightsRefusal,
-  guestNightKeys,
   storedGuestNightsAsDays,
   OFFICER_ENTRY_DEPENDANT_TYPED_MESSAGE,
   withOfficerEnteredGuests,

@@ -15,15 +15,12 @@ import {
   type BookingGuestStayRangeInput,
   type NormalizedBookingGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
-import { parseDateOnly } from "@/lib/date-only";
-import {
-  getExplicitGuestBedNightKeys,
-  getGuestBedNightKeys,
-  sameNightKeys,
-} from "@/lib/booking-guest-stay-ranges";
+import { getExplicitGuestBedNightKeys, sameNightKeys } from "@/lib/booking-guest-stay-ranges";
 import {
   effectiveStayRangeByGuest,
+  guestNightKeys,
   resolveModificationStayRanges,
+  type GuestNightsAsDays,
   type LiveGuestStayRow,
   type StayRangeDeltaInput,
 } from "@/lib/booking-modification-stay-ranges";
@@ -304,24 +301,6 @@ export function requestedDatesIgnoredByNightsRefusal(args: {
   return ignored ? CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE : null;
 }
 
-/** A guest's range and, when it has one, its explicit night set, as calendar days. */
-export interface GuestNightsAsDays {
-  stayStart: string;
-  stayEnd: string;
-  nights?: ReadonlyArray<string> | null;
-}
-
-/**
- * A guest's nights as sorted, distinct `yyyy-mm-dd` keys (#4088): the canonical
- * `getGuestBedNightKeys` (INV-DATE-020) over calendar days. Read only from
- * STORED values (the booking's own rows, or the request's snapshot of them).
- */
-export function guestNightKeys(guest: GuestNightsAsDays): string[] {
-  const stayStart = parseDateOnly(guest.stayStart);
-  const stayEnd = parseDateOnly(guest.stayEnd);
-  return getGuestBedNightKeys({ stayStart, stayEnd, nights: guest.nights }, { checkIn: stayStart, checkOut: stayEnd });
-}
-
 /** A live guest's stored range and night rows, as {@link GuestNightsAsDays}. */
 export function storedGuestNightsAsDays(guest: {
   stayStart: Date;
@@ -358,33 +337,6 @@ export function isEffectiveStayRangeChange(
   if (!range.stayStart || !range.stayEnd) return false;
   if (!current) return true;
   return range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd;
-}
-
-/**
- * The nights a guest keeps when their requested range only repeats their own
- * Date In and Date Out (#4157, owner decision "Keep their nights"), as sorted
- * `yyyy-mm-dd` keys, or `null` when the range is applied as it is written.
- *
- * A two-bound range carries no night set, so applied as written it puts the
- * guest on every night inside it and fills (and charges) the gaps in a stay
- * like nights {10, 12}. Range mode cannot express gaps, so the member's form
- * sends a gapped guest's own bounds back unchanged; that is no change to their
- * dates, and their nights stand. Only a moved bound re-spreads them.
- *
- * `null` for a grid night set, a one-bound range, a moved bound, an unknown
- * guest, a guest with no night rows, and a guest who already holds every night
- * of the range (applied by its two bounds, exactly as before).
- */
-export function nightsKeptByRepeatedRange(
-  range: { stayStart?: string | null; stayEnd?: string | null; nights?: ReadonlyArray<string> | null },
-  current: GuestNightsAsDays | undefined,
-): string[] | null {
-  if (range.nights?.length || !range.stayStart || !range.stayEnd || !current) return null;
-  if (range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd) return null;
-  const held = getExplicitGuestBedNightKeys({ nights: current.nights });
-  if (!held) return null;
-  const everyNight = guestNightKeys({ stayStart: current.stayStart, stayEnd: current.stayEnd });
-  return sameNightKeys(held, everyNight) ? null : held;
 }
 
 /**
