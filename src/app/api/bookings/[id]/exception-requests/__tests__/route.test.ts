@@ -70,7 +70,7 @@ import {
   PolicyExceptionDependantIdentityError,
 } from "@/lib/booking-exception-request-service";
 import { memberGuestCrossFamilyRefusal } from "@/lib/booking-guests";
-import { BOOKING_REQUEST_GUESTS_MAX } from "@/lib/booking-guest-stay-range-input";
+import { BOOKING_REQUEST_GUESTS_MAX, GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
 import {
   DEPENDANT_IDENTITY_UNRESOLVED_EDIT_MESSAGE,
   DEPENDANT_IDENTITY_UNRESOLVED_ON_BEHALF_EDIT_MESSAGE,
@@ -292,7 +292,8 @@ describe("POST /api/bookings/[id]/exception-requests", () => {
   ])("refuses %s at the schema (#4199)", async (_label, body) => {
     const res = await POST(postReq({ ...body, memberMessage: "please" }), params);
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Validation failed");
+    // A bad night is said in the member's words; a list too long is not a bad date.
+    expect((await res.json()).error).toBe(_label.includes("night") ? GUEST_NIGHT_INVALID_MESSAGE : "Validation failed");
     expect(mocks.createMod).not.toHaveBeenCalled();
   });
 

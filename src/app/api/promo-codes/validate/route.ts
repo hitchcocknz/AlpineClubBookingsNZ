@@ -34,7 +34,9 @@ import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
-import { BOOKING_REQUEST_GUESTS_MAX, guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import {
+  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+} from "@/lib/booking-guest-stay-range-input";
 import { type PromoPreviewEdit, resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { workPartyWindowOverlapsStay } from "@/lib/work-party";
@@ -65,13 +67,9 @@ const validateSchema = z
           ageTier: bookableAgeTierEnum,
           isMember: z.boolean(),
           memberId: z.string().min(1).optional(),
-          stayStart: z.string().optional(),
-          stayEnd: z.string().optional(),
-          // #4199: the guest's own night set from the booking editor's grid
-          // (#713), so the preview prices the nights the quote and the save
-          // price instead of the range around them. The one request shape for
-          // `nights` (`guestNightListSchema`); without it zod strips the key.
-          nights: guestNightListSchema.optional(),
+          // #4199: Date In and Date Out, or the grid's night set (#713), so the
+          // preview prices the nights the quote and the save price.
+          ...guestStayFieldsSchema.shape,
           // #3827 (D-3813-4): optional, and it can only make a guest MORE
           // pending. Whether a guest awaits acceptance is decided server-side
           // below, the way the create decides it; no client sends this today.
@@ -85,7 +83,7 @@ const validateSchema = z
       )
       .min(1).max(BOOKING_REQUEST_GUESTS_MAX),
     forMemberId: z.string().optional(),
-    promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
+    promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
     // #3827: several codes, in the booker's order (D-3813-2), each with its own
     // guest choice. Combines with a working bee (D-3813-3). The response then
     // answers per code plus the booking's totals.
@@ -93,7 +91,7 @@ const validateSchema = z
       .array(
         z.object({
           code: z.string().min(1).max(50),
-          promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
+          promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_REQUEST_GUESTS_MAX).optional(),
         }),
       )
       .min(1)
@@ -158,7 +156,7 @@ export async function POST(req: NextRequest) {
 
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid input", details: parsed.error.flatten() },
+      { error: guestRequestSchemaError(parsed.error, "Invalid input"), details: parsed.error.flatten() },
       { status: 400 }
     );
   }

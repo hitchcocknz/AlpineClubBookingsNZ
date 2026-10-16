@@ -26,14 +26,46 @@ export const guestNightListSchema = z
   .max(370);
 
 /**
- * The most guests one booking request may name (#4199): the bound the create
- * route already set (the booking-request doors spell the same 200 for their own
- * guest lists), shared by the doors that price a party — create, quote and the
- * promo preview — so a
- * hostile payload cannot turn a per-guest loop (pricing, consent, stay
- * resolution) into an unbounded one. Far above any real party.
+ * One guest's stay as a request carries it (#4199): Date In and Date Out, or the
+ * grid's night set, which wins. THE one declaration, spread into every door
+ * that names guests (`...guestStayFieldsSchema.shape`), so no door can declare
+ * the bounds and forget `nights` — the silent "whole stay" this file's
+ * `guestNightListSchema` exists to stop. What the fields MEAN is decided only
+ * by `normalizeGuestStayRange`.
+ */
+export const guestStayFieldsSchema = z.object({
+  stayStart: z.string().optional(),
+  stayEnd: z.string().optional(),
+  nights: guestNightListSchema.optional(),
+});
+
+/**
+ * The most guests one booking request may name (#4199), and the bound on every
+ * list in a request that is counted in guests (added, removed, stay ranges,
+ * guest ids and indexes): shared by every door that names guests, so a hostile
+ * payload cannot turn a per-guest loop (pricing, consent, stay resolution) into
+ * an unbounded one. 200 is the bound the create route always had; far above any
+ * real party.
  */
 export const BOOKING_REQUEST_GUESTS_MAX = 200;
+
+/**
+ * The `error` a door answers when its request schema refuses (#4088, #4199): a
+ * refusal written for the member (a night that is not a real day, by default)
+ * is said in their terms; anything else keeps the door's own `fallback`, with
+ * the details beside it. Only a refine's own failure counts, so a list too long
+ * or a `nights` that is not a list at all is not reported as a bad date.
+ */
+export function guestRequestSchemaError(
+  error: z.ZodError,
+  fallback: string,
+  memberWorded: readonly string[] = [GUEST_NIGHT_INVALID_MESSAGE],
+): string {
+  const worded = memberWorded.find((message) =>
+    error.issues.some((issue) => issue.code === "custom" && issue.message === message),
+  );
+  return worded ?? fallback;
+}
 
 export type BookingGuestStayRangeInput = {
   stayStart?: Date | string | null;

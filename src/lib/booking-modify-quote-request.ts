@@ -4,7 +4,7 @@ import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { dependantIdentityDeclarationSchema } from "@/lib/booking-dependant-identity";
 import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
 import { nameField } from "@/lib/zod-helpers";
-import { BOOKING_REQUEST_GUESTS_MAX, guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import { BOOKING_REQUEST_GUESTS_MAX, guestStayFieldsSchema } from "@/lib/booking-guest-stay-range-input";
 
 // The request contract for `POST /api/bookings/[id]/modify-quote`, split
 // verbatim out of that route (#3128) because none of it depends on a request:
@@ -48,9 +48,7 @@ export const modifyQuoteSchema = z.object({
         ageTier: bookableAgeTierEnum,
         isMember: z.boolean(),
         memberId: z.string().min(1).optional(),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-        nights: guestNightListSchema.optional(),
+        ...guestStayFieldsSchema.shape,
       })
     )
     .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
@@ -68,9 +66,7 @@ export const modifyQuoteSchema = z.object({
     .array(
       z.object({
         guestId: z.string().min(1),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-        nights: guestNightListSchema.optional(),
+        ...guestStayFieldsSchema.shape,
       })
     )
     .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
@@ -82,7 +78,7 @@ export const modifyQuoteSchema = z.object({
         lastName: nameField(),
       })
     )
-    .optional(),
+    .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
   // #2337: mirror of the apply route's placeholder→member link so the preview
   // shows the same re-rate delta the save will settle. Gated identically.
   linkGuestToMember: z

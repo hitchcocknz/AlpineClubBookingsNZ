@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import { editPromoCodesSchema } from "@/lib/booking-modify-quote-request";
-import { BOOKING_REQUEST_GUESTS_MAX, guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import {
+  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+} from "@/lib/booking-guest-stay-range-input";
 
 import { AdultMemberHostingRequiredError, buildAdultMemberHostingRefusalBody } from "@/lib/adult-member-hosting-refusal";
 import {
@@ -76,9 +78,7 @@ const batchModifySchema = z.object({
         ageTier: bookableAgeTierEnum,
         isMember: z.boolean(),
         memberId: z.string().min(1).optional(),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-        nights: guestNightListSchema.optional(),
+        ...guestStayFieldsSchema.shape,
       }),
     )
     .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
@@ -93,9 +93,7 @@ const batchModifySchema = z.object({
     .array(
       z.object({
         guestId: z.string().min(1),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-        nights: guestNightListSchema.optional(),
+        ...guestStayFieldsSchema.shape,
       }),
     )
     .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
@@ -107,7 +105,7 @@ const batchModifySchema = z.object({
         lastName: nameField(),
       }),
     )
-    .optional(),
+    .max(BOOKING_REQUEST_GUESTS_MAX).optional(),
   // #2337: link a placeholder guest to a member (admin-only, member whole-lodge
   // only — enforced in the service by `resolveGuestMemberLinks` and the
   // member-origin check). Re-rates the linked row at the member rate in place.
@@ -232,7 +230,7 @@ export async function PUT(
   const parsed = batchModifySchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid input", details: parsed.error.flatten() },
+      { error: guestRequestSchemaError(parsed.error, "Invalid input"), details: parsed.error.flatten() },
       { status: 400 },
     );
   }

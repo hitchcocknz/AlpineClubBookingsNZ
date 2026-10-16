@@ -11,4 +11,8 @@
 
   Behind the scenes, every booking request that names guests (new bookings,
   quotes, edits, exception requests and the promo code box) now checks a
-  guest's nights the same way and accepts at most 200 guests.
+  guest's nights the same way and accepts at most 200 guests. A booking edit and
+  its price preview now also refuse more than 200 added guests, removed guests
+  or guest date changes in one go, where before they had no limit, and a night
+  that isn't a real date is now explained in plain words rather than as
+  "Invalid input".

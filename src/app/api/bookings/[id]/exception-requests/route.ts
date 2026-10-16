@@ -12,7 +12,9 @@ import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
-import { BOOKING_REQUEST_GUESTS_MAX, guestNightListSchema } from "@/lib/booking-guest-stay-range-input";
+import {
+  BOOKING_REQUEST_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
+} from "@/lib/booking-guest-stay-range-input";
 import {
   dependantIdentityDeclarationSchema,
 } from "@/lib/booking-dependant-identity";
@@ -36,8 +38,8 @@ import {
 } from "@/lib/member-guest-probe-guard";
 import { BookingGuestValidationError } from "@/lib/booking-guests";
 
-/**
- * A guest's explicit night set (#713), mirroring `/modify`'s own field.
+/*
+ * A guest's explicit night set (#713) rides in `guestStayFieldsSchema`, as on `/modify`.
  *
  * REQUIRED here, not a nicety (#2562 review). The edit panel's grid mode sends
  * `guestStayRanges: [{ guestId, nights }]` and `addGuests: [{ ..., nights }]`, and
@@ -47,7 +49,6 @@ import { BookingGuestValidationError } from "@/lib/booking-guests";
  * moved) or byte-identical to the live booking (when they did not). Both are
  * proposals the member never made.
  */
-const nightList = guestNightListSchema;
 
 const createSchema = z.object({
   checkIn: z.string().optional(),
@@ -60,9 +61,7 @@ const createSchema = z.object({
         ageTier: bookableAgeTierEnum,
         isMember: z.boolean(),
         memberId: z.string().trim().min(1).optional(),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-        nights: nightList.optional(),
+        ...guestStayFieldsSchema.shape,
       }),
     )
     .max(BOOKING_REQUEST_GUESTS_MAX)
@@ -72,9 +71,7 @@ const createSchema = z.object({
     .array(
       z.object({
         guestId: z.string().trim().min(1),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-        nights: nightList.optional(),
+        ...guestStayFieldsSchema.shape,
       }),
     )
     .max(BOOKING_REQUEST_GUESTS_MAX)
@@ -168,7 +165,7 @@ export async function POST(
   const parsed = createSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
+      { error: guestRequestSchemaError(parsed.error, "Validation failed"), details: parsed.error.flatten() },
       { status: 400 },
     );
   }

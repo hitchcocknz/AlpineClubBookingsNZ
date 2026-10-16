@@ -8,9 +8,11 @@ import {
   requireCalendarDate,
 } from "@/lib/club-time";
 import {
+  BOOKING_REQUEST_GUESTS_MAX,
   BookingGuestStayRangeValidationError,
   GUEST_NIGHT_INVALID_MESSAGE,
-  guestNightListSchema,
+  guestRequestSchemaError,
+  guestStayFieldsSchema,
   normalizeGuestStayRange,
   type BookingGuestStayRangeInput,
   type NormalizedBookingGuestStayRange,
@@ -54,9 +56,7 @@ export const changeRequestAddGuestSchema = z.object({
   ageTier: bookableAgeTierEnum,
   isMember: z.boolean(),
   memberId: z.string().trim().min(1).optional(),
-  stayStart: z.string().optional(),
-  stayEnd: z.string().optional(),
-  nights: guestNightListSchema.optional(),
+  ...guestStayFieldsSchema.shape,
 });
 
 /**
@@ -66,15 +66,13 @@ export const changeRequestAddGuestSchema = z.object({
  */
 export const changeRequestGuestStayRangeSchema = z.object({
   guestId: z.string().trim().min(1),
-  stayStart: z.string().optional(),
-  stayEnd: z.string().optional(),
-  nights: guestNightListSchema.optional(),
+  ...guestStayFieldsSchema.shape,
 });
 
 export type ChangeRequestAddGuest = z.infer<typeof changeRequestAddGuestSchema>;
 
 /** The list form, capped as the request route always capped it. */
-export const changeRequestAddGuestsSchema = z.array(changeRequestAddGuestSchema).max(200);
+export const changeRequestAddGuestsSchema = z.array(changeRequestAddGuestSchema).max(BOOKING_REQUEST_GUESTS_MAX);
 
 /**
  * The officer's entry (#4030 Part B): at least one guest, every one with its
@@ -90,7 +88,7 @@ export const officerEnteredGuestsSchema = z
     }),
   )
   .min(1)
-  .max(200);
+  .max(BOOKING_REQUEST_GUESTS_MAX);
 
 export type OfficerEnteredGuest = z.infer<typeof officerEnteredGuestsSchema>[number];
 
@@ -107,7 +105,7 @@ export const CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE =
  */
 export const changeRequestGuestStayRangesSchema = z
   .array(changeRequestGuestStayRangeSchema)
-  .max(200)
+  .max(BOOKING_REQUEST_GUESTS_MAX)
   .refine((ranges) => new Set(ranges.map((range) => range.guestId)).size === ranges.length, {
     message: CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
   });
@@ -123,10 +121,7 @@ const MEMBER_WORDED_SCHEMA_MESSAGES = [GUEST_NIGHT_INVALID_MESSAGE, CHANGE_REQUE
 export function changeRequestValidationMessage(error: z.ZodError): string {
   // Only the refines' own failures: a list too long, or `nights` that is not a
   // list at all, is not a bad date and stays "Validation failed".
-  const worded = MEMBER_WORDED_SCHEMA_MESSAGES.find((message) =>
-    error.issues.some((issue) => issue.code === "custom" && issue.message === message),
-  );
-  return worded ?? "Validation failed";
+  return guestRequestSchemaError(error, "Validation failed", MEMBER_WORDED_SCHEMA_MESSAGES);
 }
 
 /**

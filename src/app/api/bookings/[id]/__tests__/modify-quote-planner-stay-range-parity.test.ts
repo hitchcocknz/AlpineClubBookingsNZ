@@ -1313,7 +1313,8 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
     const delta = { guestStayRanges: [{ guestId: "g3", nights: ["not-a-date"] }] };
     const route = await runRoute(delta);
     expect(route.status).toBe(400);
-    expect(route.body.error).toBe("Invalid input");
+    // In the member's words (#4199 review), as the change-request door says it.
+    expect(route.body.error).toBe(GUEST_NIGHT_INVALID_MESSAGE);
     expect(JSON.stringify(route.body.details)).toContain(GUEST_NIGHT_INVALID_MESSAGE);
     expect(h.priceGuests).not.toHaveBeenCalled();
 

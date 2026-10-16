@@ -13,6 +13,7 @@ import {
   changeRequestValidationMessage,
 } from "@/lib/booking-change-request-guests";
 import { estimateChangeRequestAddedGuests } from "@/lib/booking-change-request-estimate";
+import { BOOKING_REQUEST_GUESTS_MAX } from "@/lib/booking-guest-stay-range-input";
 import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
 
 /**
@@ -26,7 +27,7 @@ import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
  * gap.
  */
 const estimateSchema = z.object({
-  addGuests: z.array(changeRequestAddGuestSchema).min(1).max(200),
+  addGuests: z.array(changeRequestAddGuestSchema).min(1).max(BOOKING_REQUEST_GUESTS_MAX),
 });
 
 export async function POST(

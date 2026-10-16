@@ -15,7 +15,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { BOOKING_REQUEST_GUESTS_MAX } from "@/lib/booking-guest-stay-range-input";
+import { BOOKING_REQUEST_GUESTS_MAX, GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: new Proxy(
@@ -62,10 +62,11 @@ async function send(door: (typeof doors)[number], guests: unknown[]) {
 }
 
 describe.each(doors)("$name refuses a malformed guest list at the schema (#4199)", (door) => {
-  it("refuses a night that is not a date", async () => {
+  it("refuses a night that is not a date, in the member's words", async () => {
     const { status, body } = await send(door, [{ ...guest, nights: ["2026-08-10", "2026-13-45"] }]);
     expect(status).toBe(400);
-    expect(body.error).toBe("Invalid input");
+    expect(body.error).toBe(GUEST_NIGHT_INVALID_MESSAGE);
+    expect(body.details).toBeDefined();
   });
 
   it(`refuses more than ${BOOKING_REQUEST_GUESTS_MAX} guests`, async () => {
@@ -79,15 +80,28 @@ describe.each(doors)("$name refuses a malformed guest list at the schema (#4199)
 /** An edit's guest lists: what the modify route and its quote both take. */
 const tooMany = <T,>(make: (index: number) => T) =>
   Array.from({ length: BOOKING_REQUEST_GUESTS_MAX + 1 }, (_, index) => make(index));
-const editCases: Array<[string, Record<string, unknown>]> = [
-  ["a night that is not a date", { guestStayRanges: [{ guestId: "g1", nights: ["2026-08-10", "2026-13-45"] }] }],
-  ["an added guest's night that is not a date", { addGuests: [{ ...guest, nights: ["not-a-night"] }] }],
-  ["too many added guests", { addGuests: tooMany(() => guest) }],
-  ["too many removed guests", { removeGuestIds: tooMany((index) => `g${index}`) }],
-  ["too many stay ranges", { guestStayRanges: tooMany((index) => ({ guestId: `g${index}`, nights: ["2026-08-10"] })) }],
+const editCases: Array<[string, Record<string, unknown>, string]> = [
+  [
+    "a night that is not a date",
+    { guestStayRanges: [{ guestId: "g1", nights: ["2026-08-10", "2026-13-45"] }] },
+    GUEST_NIGHT_INVALID_MESSAGE,
+  ],
+  ["an added guest's night that is not a date", { addGuests: [{ ...guest, nights: ["not-a-night"] }] }, GUEST_NIGHT_INVALID_MESSAGE],
+  ["too many added guests", { addGuests: tooMany(() => guest) }, "Invalid input"],
+  ["too many removed guests", { removeGuestIds: tooMany((index) => `g${index}`) }, "Invalid input"],
+  [
+    "too many stay ranges",
+    { guestStayRanges: tooMany((index) => ({ guestId: `g${index}`, nights: ["2026-08-10"] })) },
+    "Invalid input",
+  ],
+  [
+    "too many name corrections",
+    { guestUpdates: tooMany((index) => ({ guestId: `g${index}`, firstName: "Sam", lastName: "Guest" })) },
+    "Invalid input",
+  ],
 ];
 
-describe.each(editCases)("an edit refuses %s at the schema (#4199)", (_label, body) => {
+describe.each(editCases)("an edit refuses %s at the schema (#4199)", (_label, body, error) => {
   it("the modify route", async () => {
     const res = await modifyPUT(
       new NextRequest("http://localhost/api/bookings/booking-1/modify", {
@@ -98,7 +112,7 @@ describe.each(editCases)("an edit refuses %s at the schema (#4199)", (_label, bo
       { params: Promise.resolve({ id: "booking-1" }) },
     );
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Invalid input");
+    expect((await res.json()).error).toBe(error);
   });
 
   it("the modify quote", () => {
@@ -110,6 +124,23 @@ describe("an edit at the bound is accepted by the schema", () => {
   it("takes exactly the maximum", () => {
     const atBound = { removeGuestIds: Array.from({ length: BOOKING_REQUEST_GUESTS_MAX }, (_, index) => `g${index}`) };
     expect(modifyQuoteSchema.safeParse(atBound).success).toBe(true);
+  });
+});
+
+describe("the promo preview bounds its guest indexes too", () => {
+  it.each([
+    ["the one-code guest choice", { promoGuestIndexes: tooMany((index) => index) }],
+    ["a listed code's guest choice", { code: undefined, codes: [{ code: "SAVE", promoGuestIndexes: tooMany((index) => index) }] }],
+  ])("refuses more than the bound in %s", async (_label, extra) => {
+    const res = await validatePOST(
+      new NextRequest("http://localhost/api/promo-codes/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "SAVE", checkIn: "2026-08-10", checkOut: "2026-08-13", guests: [guest], ...extra }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Invalid input");
   });
 });
 
