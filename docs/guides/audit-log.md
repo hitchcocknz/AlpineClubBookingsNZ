@@ -48,6 +48,9 @@ explains the rule and has a read-only query to count them.
    **Member** (and set **Member Scope** to *Involves*, *Actor*, or *Subject*),
    set a **date range**, or filter by **Outcome**, **Severity**, or **Entity**.
    The free-text **Search** matches the action, summary, request ID, or entity.
+   Like the other admin text searches, it ignores letter case and treats `\`,
+   `_` and `%` as ordinary characters. Searching for `john_smith` finds that
+   text, rather than also finding `johnXsmith`.
 3. Click a row to expand it for the **Details**, **Metadata**, request ID, IP,
    user agent, retention class, and every drill-down target. Use **Reset** to
    restore search, filters, and page while keeping unrelated URL context.
