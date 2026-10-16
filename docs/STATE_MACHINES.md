@@ -809,8 +809,10 @@ LOCKED_PERIOD request, stay finished -> officer approves
        nights where the request stored them, night rows included (#4030, #4088)   (else stays REQUESTED)
   -> request names no change: the officer's entered guests (#4030), else stays REQUESTED
        entry on a request that names a change, or nights outside the stay -> stays REQUESTED
-  -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry)
+  -> CAS claim REQUESTED -> APPROVED, version + 1   (the same statement writes any officer entry,
+       and the nights each guest kept, requestedChanges.keptNights (#4157))
   -> modifyBookingBatch(finishedStayCorrection) on the same transaction
+       a guest's range that only repeats their own dates keeps the nights they hold (#4157)
        figures differ from the officer's check -> refused, rolled back (#4030)
        over-capacity past night -> refused until the officer confirms (whole-lodge hold: always refused)
        no active season / member-night clash / a guest who cannot be booked -> refused

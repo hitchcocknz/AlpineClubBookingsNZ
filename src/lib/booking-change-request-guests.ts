@@ -22,6 +22,7 @@ import {
   sameNightKeys,
 } from "@/lib/booking-guest-stay-ranges";
 import {
+  effectiveStayRangeByGuest,
   resolveModificationStayRanges,
   type LiveGuestStayRow,
   type StayRangeDeltaInput,
@@ -93,19 +94,39 @@ export const officerEnteredGuestsSchema = z
 
 export type OfficerEnteredGuest = z.infer<typeof officerEnteredGuestsSchema>[number];
 
+/** What a member is told when one request names the same guest's nights twice (#4157). */
+export const CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE =
+  "Each guest's dates can only be given once in a request. Please check the guests' dates and send it again.";
+
+/**
+ * The existing guests' requested nights, each guest at most once (#4157).
+ * Approval applies one entry per guest — the last — so a request naming a
+ * guest twice says two things and applies one. New requests are refused; a
+ * row stored before this rule is still read by its last applied entry
+ * (`effectiveStayRangeByGuest` after `isAppliedChangeRequestRange`).
+ */
+export const changeRequestGuestStayRangesSchema = z
+  .array(changeRequestGuestStayRangeSchema)
+  .max(200)
+  .refine((ranges) => new Set(ranges.map((range) => range.guestId)).size === ranges.length, {
+    message: CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
+  });
+
+/** The member-worded refusals the request's schema carries. */
+const MEMBER_WORDED_SCHEMA_MESSAGES = [GUEST_NIGHT_INVALID_MESSAGE, CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE];
+
 /**
  * The `error` a request the schema refuses is answered with (#4088): a bad
- * night is said in the member's terms, anything else stays "Validation failed"
- * with the details beside it.
+ * night, or a guest named twice (#4157), is said in the member's terms;
+ * anything else stays "Validation failed" with the details beside it.
  */
 export function changeRequestValidationMessage(error: z.ZodError): string {
-  // Only the night refine's own failure: a list too long, or `nights` that is
-  // not a list at all, is not a bad date and stays "Validation failed".
-  return error.issues.some(
-    (issue) => issue.code === "custom" && issue.message === GUEST_NIGHT_INVALID_MESSAGE,
-  )
-    ? GUEST_NIGHT_INVALID_MESSAGE
-    : "Validation failed";
+  // Only the refines' own failures: a list too long, or `nights` that is not a
+  // list at all, is not a bad date and stays "Validation failed".
+  const worded = MEMBER_WORDED_SCHEMA_MESSAGES.find((message) =>
+    error.issues.some((issue) => issue.code === "custom" && issue.message === message),
+  );
+  return worded ?? "Validation failed";
 }
 
 /**
@@ -340,8 +361,52 @@ export function isEffectiveStayRangeChange(
 }
 
 /**
+ * The nights a guest keeps when their requested range only repeats their own
+ * Date In and Date Out (#4157, owner decision "Keep their nights"), as sorted
+ * `yyyy-mm-dd` keys, or `null` when the range is applied as it is written.
+ *
+ * A two-bound range carries no night set, so applied as written it puts the
+ * guest on every night inside it and fills (and charges) the gaps in a stay
+ * like nights {10, 12}. Range mode cannot express gaps, so the member's form
+ * sends a gapped guest's own bounds back unchanged; that is no change to their
+ * dates, and their nights stand. Only a moved bound re-spreads them.
+ *
+ * `null` for a grid night set, a one-bound range, a moved bound, an unknown
+ * guest, a guest with no night rows, and a guest who already holds every night
+ * of the range (applied by its two bounds, exactly as before).
+ */
+export function nightsKeptByRepeatedRange(
+  range: { stayStart?: string | null; stayEnd?: string | null; nights?: ReadonlyArray<string> | null },
+  current: GuestNightsAsDays | undefined,
+): string[] | null {
+  if (range.nights?.length || !range.stayStart || !range.stayEnd || !current) return null;
+  if (range.stayStart !== current.stayStart || range.stayEnd !== current.stayEnd) return null;
+  const held = getExplicitGuestBedNightKeys({ nights: current.nights });
+  if (!held) return null;
+  const everyNight = guestNightKeys({ stayStart: current.stayStart, stayEnd: current.stayEnd });
+  return sameNightKeys(held, everyNight) ? null : held;
+}
+
+/**
+ * Whether a change request's guest range is one approval applies (#4030): both
+ * bounds, or a grid night set. Anything else — no dates, or one bound, which a
+ * row stored before #4030 refused them may still hold — is dropped, as it has
+ * always been. Not `entryHasStayRange`, which admits a one-bound range.
+ */
+export function isAppliedChangeRequestRange(range: {
+  stayStart?: string | null;
+  stayEnd?: string | null;
+  nights?: ReadonlyArray<string> | null;
+}): boolean {
+  return Boolean(range.stayStart && range.stayEnd) || Boolean(range.nights?.length);
+}
+
+/**
  * #4030 review M2: whether any of a request's stay ranges changes a guest's
- * nights, against the guests' stored `@db.Date` ranges.
+ * nights, against the guests' stored `@db.Date` ranges. Each guest is judged
+ * on the entry approval applies for them: the last one left by
+ * `isAppliedChangeRequestRange` (`effectiveStayRangeByGuest`), so an earlier
+ * entry approval ignores cannot make a request count as a change (#4157).
  */
 export function namesStayRangeChange(
   ranges: ReadonlyArray<{
@@ -357,7 +422,7 @@ export function namesStayRangeChange(
     nights?: ReadonlyArray<{ stayDate: Date }> | null;
   }>,
 ): boolean {
-  return ranges.some((range) => {
+  return [...effectiveStayRangeByGuest(ranges.filter(isAppliedChangeRequestRange)).values()].some((range) => {
     const guest = guests.find((candidate) => candidate.id === range.guestId);
     return isEffectiveStayRangeChange(range, guest ? storedGuestNightsAsDays(guest) : undefined);
   });
