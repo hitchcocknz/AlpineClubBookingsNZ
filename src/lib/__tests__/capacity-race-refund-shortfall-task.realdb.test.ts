@@ -121,6 +121,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await prisma.auditLog.deleteMany({ where: { targetId: BOOKING_ID } });
       await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
+      await prisma.alertCooldown.deleteMany({ where: { key: { startsWith: `card-refund-cap-overflow:${CARD_TXN}:` } } });
       await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
       await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -591,13 +592,17 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await prisma.paymentRefund.count({ where: { paymentTransactionId: CARD_TXN, stripeRefundId: "re_race_4154_concurrent" } })).toBe(1);
       const lines = await prisma.bookingLedgerLine.count({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" } });
       if (firstOnLock === "completion") {
-        // Corrected to nothing, the whole charge handed back; the sync's refund then capped at the charge (and logged).
+        // Corrected to nothing, the whole charge handed back; the sync's refund then capped at the charge - logged, and
+        // (#4159 review round 2, F2) the officers alerted after the sync's commit, its claim the durable record.
         expect(completion.status).toBe("fulfilled");
+        expect(await prisma.alertCooldown.count({ where: { key: `card-refund-cap-overflow:${CARD_TXN}:3000` } })).toBe(1);
         expect(await checkTask()).toMatchObject({ status: "COMPLETED" });
         expect(await corrections()).toHaveLength(1);
         expect(lines).toBe(1);
       } else {
-        // The sync's refund row is on the charge first, so even corrected the charge cannot hold the task.
+        // The sync's refund row is on the charge first, so even corrected the charge cannot hold the task. The drifted
+        // total already read the whole charge refunded, so the sync's refund was capped too, and the officers told.
+        expect(await prisma.alertCooldown.count({ where: { key: `card-refund-cap-overflow:${CARD_TXN}:3000` } })).toBe(1);
         expect(completion).toMatchObject({ status: "rejected", reason: { status: 400, message: expect.stringContaining("even corrected, the charge would not hold this amount") } });
         expect(await checkTask()).toMatchObject({ status: "OPEN" });
         expect(await corrections()).toEqual([]);
@@ -715,6 +720,42 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await outboxSends(cardNoteId)).toMatchObject({ status: "SUCCEEDED" });
       expect(await prisma.xeroObjectLink.count({ where: { localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", active: true } })).toBe(1);
       expect(await xeroCoverage()).toBe(CHARGE_CENTS);
+    });
+    it("MUTATION (round 2 F1): the self-heal's card note already SENT for the stray total before the task is marked paid back - the completion goes ahead, posts its line, raises no second note, Xero holds X, and the census agrees", async () => {
+      await seed({ refundedCents: CHARGE_CENTS });
+      stripeRefunds("make");
+      await capacityRace();
+      await invoice();
+      const task = await checkTask();
+      const cardNoteId = await selfHealQueuesCardNote();
+      // The card note raised in Xero, recorded as its send records one: its row names the note, its active link covers it.
+      await prisma.xeroSyncOperation.update({ where: { id: cardNoteId }, data: { status: "SUCCEEDED", xeroObjectId: "race-4154-cn-card", completedAt: new Date() } });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "race-4154-cn-card", role: "REFUND_CREDIT_NOTE", active: true,
+          metadata: { amountCents: CHARGE_CENTS, watermarkCents: CHARGE_CENTS },
+        },
+      });
+      expect(await xeroCoverage()).toBe(CHARGE_CENTS);
+
+      stripeShowsRefunded(0);
+      await resolve("completed", task.id);
+      expect(await checkTask()).toMatchObject({ status: "COMPLETED", amountCents: CHARGE_CENTS, reviewContext: { paidAnotherWayCardNoteCover: CHARGE_CENTS } });
+      expect(await corrections()).toEqual([{ category: "payment", entityId: CARD_TXN, metadata: expect.objectContaining({ refundedAfterCents: 0, cardNoteCoversCents: CHARGE_CENTS }) }]);
+      expect(await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND" }, select: { amountCents: true } })).toEqual([{ amountCents: -CHARGE_CENTS }]);
+      // The card note answers the hand-back's money: the task queues no note of its own, and Xero holds X, never 2X.
+      expect(await taskRefundNotes()).toEqual([]);
+      expect(await xeroCoverage()).toBe(CHARGE_CENTS);
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, entityType: "CREDIT_NOTE", status: "PENDING" } })).toBe(0);
+      // The self-heal, run again, finds nothing uncovered.
+      await prisma.$executeRaw`UPDATE "Payment" SET "updatedAt" = '2020-01-01T00:00:00Z' WHERE "id" = ${PAYMENT_ID}`;
+      const { reconcileCreditBalances } = await import("@/lib/cron-credit-reconciliation");
+      await reconcileCreditBalances();
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, entityType: "CREDIT_NOTE", status: "PENDING" } })).toBe(0);
+      const after = await census("apply");
+      expect(after.price).toMatchObject({ status: "AGREE", deltaCents: 0 });
+      expect(after.disagreements).toEqual([]);
+      expect(after.integrity).toEqual([]);
     });
   },
 );

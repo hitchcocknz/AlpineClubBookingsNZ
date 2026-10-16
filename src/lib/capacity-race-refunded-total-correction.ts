@@ -21,6 +21,7 @@ import {
 } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { getPaymentIntent } from "@/lib/stripe";
+import { paidAnotherWayCardNoteCoverContext } from "@/lib/card-refund-paid-another-way-cash";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import { formatCents } from "@/lib/utils";
 import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -65,10 +66,15 @@ import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents 
  * 3. **No other refund task on the booking or its payment**, whatever its
  *    state: a completed hand-back or "Paid another way" close is in the total
  *    with no refund row, and an open one may yet be.
- * 4. **No Xero refund note beyond the card refunds** (review M2, `noted`): the
- *    nightly self-heal notes a refunded total with no refund rows as a card
- *    refund, so a note covering more of the payment than its recorded refund
- *    rows (`sumRefundCreditNoteCoverageCents`) may already be this money's.
+ * 4. **No Xero refund note beyond the card refunds and this hand-back**
+ *    (review M2, `noted`): the nightly self-heal notes a refunded total with no
+ *    refund rows as a card refund, so coverage beyond the payment's recorded
+ *    refund rows (`sumRefundCreditNoteCoverageCents`) is that note, answering
+ *    this hand-back's money - condition 3 leaves no other task or close whose
+ *    note it could be. Up to the task's amount it is recorded on the task as
+ *    covered by a card note (`paidAnotherWayCardNoteCoverContext`, #4104's
+ *    mechanism), so the task's own note bills only the rest
+ *    (`readPaidAnotherWayCloseShare`); beyond it, refused (round 2, F1).
  *    A self-heal note queued but not yet sent is not counted, and need not
  *    be: the completed task is a noted bank-cash record
  *    (`readPaidAnotherWayUncoveredCents`), so that note's send-time cap
@@ -111,7 +117,7 @@ export const CAPACITY_RACE_CORRECTION_BLOCKED_REASON: Record<CapacityRaceCorrect
   "charge-before-ledger": "the charge was made before the app kept a record of each card refund",
   "account-credit": "account credit was given back from this booking",
   "other-task": "the booking or its payment has another refund task",
-  noted: "a Xero refund credit note already covers more of this payment than its card refunds on record, so one may already have been raised for this money",
+  noted: "Xero refund credit notes already cover more of this payment than its card refunds on record and this hand-back together, or one resolved by hand has no readable amount",
   "pre-ledger-refund": "a refund on the charge predates the app's record of each card refund",
   "nothing-to-lower": "the charge's card refunds on record already account for all it reads refunded",
   "still-short": "even corrected, the charge would not hold this amount",
@@ -232,13 +238,15 @@ export async function capacityRaceChargeForHandBack(
     where: { id: { not: task.id }, OR: [{ bookingId: task.bookingId }, { paymentId: task.paymentId }] },
   });
   if (otherTasks > 0) throw refuse("other-task");
+  // Round 2 (F1): coverage beyond the payment's refund rows is a card note for the stray total (the self-heal's), which
+  // answers this hand-back's money: recorded on the task, its own note bills the rest. More than the task: refused.
   const resolvedNotes = await readResolvedRefundCreditNoteCoverage(task.paymentId, store);
-  if (
-    resolvedNotes.unreadableOperationIds.length > 0 ||
-    (await sumRefundCreditNoteCoverageCents(task.paymentId, resolvedNotes, store)) > (await sumRecordedRefundsForPayment(store, task.paymentId))
-  ) {
-    throw refuse("noted");
-  }
+  if (resolvedNotes.unreadableOperationIds.length > 0) throw refuse("noted");
+  const cardNoteCoversCents = Math.max(
+    0,
+    (await sumRefundCreditNoteCoverageCents(task.paymentId, resolvedNotes, store)) - (await sumRecordedRefundsForPayment(store, task.paymentId)),
+  );
+  if (cardNoteCoversCents > amountCents) throw refuse("noted");
   const refunds = await store.paymentRefund.findMany({ where: { paymentTransactionId: charge.id }, select: { stripeCreatedAt: true } });
   if (refunds.some((refund) => predatesRefundLedger(refund.stripeCreatedAt && toSeconds(refund.stripeCreatedAt), ledgerStart, "pre-ledger"))) {
     throw refuse("pre-ledger-refund");
@@ -254,6 +262,8 @@ export async function capacityRaceChargeForHandBack(
     { writeStatus: true },
   );
   await reconcilePaymentAggregates({ paymentId: task.paymentId, store });
+  const cardNoteCover = paidAnotherWayCardNoteCoverContext(cardNoteCoversCents);
+  if (cardNoteCover) await store.manualRefundTask.update({ where: { id: task.id }, data: { reviewContext: cardNoteCover } });
   await createAuditLog(
     {
       action: "booking-payment.capacity-race.refunded-total-corrected",
@@ -276,6 +286,7 @@ export async function capacityRaceChargeForHandBack(
         refundedBeforeCents: previousCents,
         refundedAfterCents: nextCents,
         recordedCardRefundCents: recordedCents,
+        cardNoteCoversCents,
       },
     },
     store,

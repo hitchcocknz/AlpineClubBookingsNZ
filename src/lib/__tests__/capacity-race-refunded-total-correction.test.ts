@@ -78,7 +78,7 @@ function world(over: { charges?: Charge[]; refunds?: Refund[]; otherTasks?: numb
   const refunds = (over.refunds ?? [{ amountCents: 14_000, status: "succeeded", stripeCreatedAt: at(3_000) }]).map((refund) => ({ paymentTransactionId: "txn-race", ...refund }));
   return {
     paymentTransaction: { findMany: vi.fn(async () => charges) },
-    manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0) },
+    manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0), update: vi.fn(async () => ({})) },
     paymentRefund: {
       findMany: vi.fn(async () => refunds.filter((refund) => refund.paymentTransactionId === "txn-race")),
       // What a Prisma aggregate answers: the rows on the charge (or the whole payment), less the statuses it is told to leave out.
@@ -230,12 +230,23 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
       await expectBlocked(world({ refunds: [{ amountCents: 16_000, status: "succeeded", stripeCreatedAt: at(3_000) }] }), "still-short");
     });
   });
-  describe("review M2: no Xero refund note beyond the card refunds on record", () => {
-    it("MUTATION: a refund note covering more of the payment than its recorded refund rows - the self-heal's note for the stray total - blocks it, naming no note to raise", async () => {
-      doubles.noteCoverage.mockResolvedValue(14_001);
-      await expectBlocked(world(), "noted");
-      await expect(run(world())).rejects.toMatchObject({ message: expect.not.stringContaining("raise its refund credit note in Xero by hand") });
+  describe("review M2 and round 2 F1: Xero refund notes beyond the card refunds on record", () => {
+    // The baseline task is $60.00, on a charge with $140.00 of card refunds on record.
+    it("MUTATION (F1): a card note beyond the refund rows that the task's amount explains - the self-heal's note for the stray total - is recorded on the task as covering it, and the completion goes ahead", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 6_000);
+      const store = world();
+      await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+      expect(store.manualRefundTask.update).toHaveBeenCalledWith({ where: { id: "task-race" }, data: { reviewContext: { paidAnotherWayCardNoteCover: 6_000 } } });
+      expect(doubles.audit).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ cardNoteCoversCents: 6_000 }) }), store);
       expect(doubles.noteCoverage).toHaveBeenCalledWith("payment-1", expect.objectContaining({ coveredCents: 0 }), expect.anything());
+    });
+
+    it("MUTATION (F1): one cent more than the task explains is refused, naming no note to raise, and nothing is written", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 6_001);
+      const store = world();
+      await expectBlocked(store, "noted");
+      await expect(run(store)).rejects.toMatchObject({ message: expect.not.stringContaining("raise its refund credit note in Xero by hand") });
+      expect(store.manualRefundTask.update).not.toHaveBeenCalled();
     });
 
     it("MUTATION: a note resolved by hand whose amount cannot be read blocks it too", async () => {
@@ -243,9 +254,11 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
       await expectBlocked(world(), "noted");
     });
 
-    it("CONTROL: notes covering exactly the card refunds on record do not", async () => {
+    it("CONTROL: notes covering exactly the card refunds on record record nothing on the task", async () => {
       doubles.noteCoverage.mockResolvedValue(14_000);
-      await expect(run(world())).resolves.toEqual({ chargeId: "txn-race" });
+      const store = world();
+      await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+      expect(store.manualRefundTask.update).not.toHaveBeenCalled();
     });
   });
 
