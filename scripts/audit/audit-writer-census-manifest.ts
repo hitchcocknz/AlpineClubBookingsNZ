@@ -665,11 +665,14 @@ export const AUDIT_CENSUS_TOTALS = {
   // 503 -> 504 (#4170, folded into #4149): a `charge.refunded` on a marked late
   // capture refunded outside the app writes
   // `booking.payment.late_capture_refunded_outside_app`. RE-MEASURED.
-  // 504 -> 506 (#4162): a voided bank-transfer refund recorded again
+  // 504 -> 505 (#4154, owner decision on #4154): `booking-payment.capacity-race.refunded-total-corrected`,
+  // the guarded recalculation of a capacity race's card charge before its hand-back, awaited on the
+  // completion's own transaction under `payment`. RE-MEASURED with `pnpm run audit:census`.
+  // 505 -> 507 (#4162): a voided bank-transfer refund recorded again
   // (`booking-payment.bank-refund.re-recorded`) and confirmed cancelled or
   // replaced in Xero (`booking-payment.bank-refund.void-confirmed`), each
   // `payment`, awaited on its writer's transaction. RE-MEASURED.
-  writeSites: 506,
+  writeSites: 507,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -872,9 +875,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the close's transaction so the row commits with the status.
     // 143 -> 144 (#4104 review, CL3): a failed-later card refund not re-sent,
     // awaited on the ledger writer's transaction so the row commits with it.
-    // 144 -> 146 (#4162): the record-again and the void confirm, awaited on
+    // 144 -> 145 (#4154): a capacity race's charge corrected before its hand-back,
+    // awaited on the completion's transaction so the row commits with the correction.
+    // 145 -> 147 (#4162): the record-again and the void confirm, awaited on
     // their transactions so each row commits with its answer.
-    createAuditLog: { total: 146, uncategorised: 0 },
+    createAuditLog: { total: 147, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1074,10 +1079,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // 56 -> 56 (#4149): the two handlers' refund entries, one shared writer,
     // and the lost-record recovery's own entry, read by the same people.
     // 56 -> 57 (#4170): the refunded-outside-the-app entry, read by the same people.
-    // 57 -> 59 (#4162): a voided bank-transfer refund recorded again, and one
+    // 57 -> 58 (#4154): a capacity race's card charge corrected to its refund
+    // rows before its hand-back - the payment's figures, read by the same people.
+    // 58 -> 60 (#4162): a voided bank-transfer refund recorded again, and one
     // confirmed cancelled or replaced in Xero - the treasurer's answers, read by
     // the people who reconcile that refund.
-    payment: 59,
+    payment: 60,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

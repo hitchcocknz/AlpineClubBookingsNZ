@@ -1758,9 +1758,11 @@ ledger showed less refundable than the charge (or nothing - an empty plan,
 which never reads "no refund was due"), the rest is neither refunded nor
 retained, and the narrative says the club will be in touch about it. That
 promise is backed by a once-ever officers' alert on the booking naming the
-rest (`alertCapacityRaceRefundShortfall`). The narrative counts every
-settlement event of a capacity race, so a later refund of the rest removes
-the follow-up line.
+rest (`alertCapacityRaceRefundShortfall`) and (#4154, `INV-PAY-135`) by a
+hand-back task to check for it, raised OPEN in the void's claim. The
+narrative counts every settlement event of a capacity race, so the task
+marked paid back (its REFUNDED event) removes the follow-up line; dismissed,
+the line says the club checked the rest and closed it.
 
 ### Saved card (SetupIntent) on a PENDING non-member-guest booking (#3266)
 
@@ -2212,6 +2214,15 @@ post, and queues one Xero refund note of its own, keyed on the task. Where the
 payment's ledger has nothing left to allocate, COMPLETED is refused with a
 message naming DISMISSED, which the treasurer then uses. See
 [`INV-PAY-129`](invariants/payment-and-settlement.md#inv-pay-129).
+A capacity race whose card refund plan is short of the charge raises the
+part to check alone, OPEN inside the void's claim and keyed on the race's
+intent (#4154); its COMPLETED is refused while any of the race's own card
+refund rows is not SUCCEEDED, and settles only on that intent's own charge.
+Where that charge holds too little, the completion first lowers its refunded
+total to its refund rows when every guard holds (the owner's guarded
+recalculation), else is refused naming the guard (DISMISSED and a Xero note by
+hand). See
+[`INV-PAY-135`](invariants/payment-and-settlement.md#inv-pay-135).
 
 **#3498: and one of the two terminal states is no longer terminal.** A DISMISSED
 row can be put back OPEN by an officer, which is the arm above; a COMPLETED row

@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  506
+row-producing sites:  507
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 59,
+category values: admin 108, booking 108, xero 39, family 35, payment 60,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -836,7 +836,12 @@ lost-record recovery adds `booking.payment.auto_refund_record_recovered`, also
 late-capture handler marked as its own but refunded some other way, named for
 the same people instead of being noted in Xero.
 
-#4162 then added two (`payment` 57 -> 59, 504 -> 506, MEASURED with
+#4154 then added one more (`payment` 57 -> 58, 504 -> 505, MEASURED with
+`pnpm run audit:census`): `booking-payment.capacity-race.refunded-total-corrected`,
+a capacity race's card charge corrected to its refund rows before its hand-back
+(the owner's guarded recalculation), filed `payment` beside the close it enables.
+
+#4162 then added two (`payment` 58 -> 60, 505 -> 507, MEASURED with
 `pnpm run audit:census`): `booking-payment.bank-refund.re-recorded` and
 `booking-payment.bank-refund.void-confirmed`, the treasurer's answers to a
 bank-transfer refund whose Xero credit note was voided, read by the people who
