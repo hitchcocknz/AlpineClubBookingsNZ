@@ -148,6 +148,7 @@ vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
     mocks.applyLocalRefundAllocation(...a),
   lockPaymentForRefundedTotal: (...a: unknown[]) => mocks.lockPaymentForRefundedTotal(...a),
   sumRecordedRefundsForTransaction: (...a: unknown[]) => mocks.recordedRefundsForTransaction(...(a as [])),
+  sumRecordedRefundsForPayment: async () => 0,
   planStripeRefundAllocation: (...a: unknown[]) =>
     mocks.planStripeRefundAllocation(...a),
   refundPaymentTransactions: (...a: unknown[]) =>
@@ -157,6 +158,12 @@ vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
   RefundAllocationRacedError: class RefundAllocationRacedError extends Error {},
   isCapturedTransactionStatus: (status: string) =>
     ["SUCCEEDED", "PARTIALLY_REFUNDED", "REFUNDED"].includes(status),
+}));
+// #4159 round 3: a race's completion reads the payment's Xero note coverage first - none here; the correction suite owns it.
+vi.mock("@/lib/xero-resolved-in-xero-fences", async (importOriginal) => ({
+  ...((await importOriginal()) as object),
+  readResolvedRefundCreditNoteCoverage: async () => ({ coveredCents: 0, correlationKeys: [], operationIds: [], unreadableOperationIds: [] }),
+  sumRefundCreditNoteCoverageCents: async () => 0,
 }));
 vi.mock("@/lib/capacity-race-refunded-total-correction", async (importOriginal) => ({
   ...((await importOriginal()) as object),

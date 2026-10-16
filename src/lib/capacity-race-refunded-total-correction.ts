@@ -71,7 +71,11 @@ import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents 
  *    refund rows as a card refund, so coverage beyond the payment's recorded
  *    refund rows (`sumRefundCreditNoteCoverageCents`) is that note, answering
  *    this hand-back's money - condition 3 leaves no other task or close whose
- *    note it could be. Up to the task's amount it is recorded on the task as
+ *    note it could be. Notes are kept per payment, not per charge, so that is
+ *    so only while every other captured charge on the payment postdates the
+ *    refund ledger; otherwise refused (round 3). Read before condition 1, so
+ *    any refusal where a card note may already cover this money says so,
+ *    never "raise it by hand". Up to the task's amount it is recorded on the task as
  *    covered by a card note (`paidAnotherWayCardNoteCoverContext`, #4104's
  *    mechanism), so the task's own note bills only the rest
  *    (`readPaidAnotherWayCloseShare`); beyond it, refused (round 2, F1).
@@ -117,7 +121,7 @@ export const CAPACITY_RACE_CORRECTION_BLOCKED_REASON: Record<CapacityRaceCorrect
   "charge-before-ledger": "the charge was made before the app kept a record of each card refund",
   "account-credit": "account credit was given back from this booking",
   "other-task": "the booking or its payment has another refund task",
-  noted: "Xero refund credit notes already cover more of this payment than its card refunds on record and this hand-back together, or one resolved by hand has no readable amount",
+  noted: "Xero refund credit notes already cover more of this payment than its card refunds on record and this hand-back together, or than the app can tell apart from another charge's, or one resolved by hand has no readable amount",
   "pre-ledger-refund": "a refund on the charge predates the app's record of each card refund",
   "nothing-to-lower": "the charge's card refunds on record already account for all it reads refunded",
   "still-short": "even corrected, the charge would not hold this amount",
@@ -148,8 +152,12 @@ export function capacityRaceNothingToAllocateMessage(xero: CapacityRaceXero): st
   return `${CAPACITY_RACE_SHORTFALL_NOTHING_TO_ALLOCATE_MESSAGE} ${CAPACITY_RACE_XERO_SENTENCE[xero]}`;
 }
 
-export function capacityRaceCorrectionRefusal(blocked: CapacityRaceCorrectionBlocked, invoiced: boolean): string {
-  const xero: CapacityRaceXero = blocked === "noted" ? "noted" : invoiced ? "invoiced" : "no-invoice";
+/**
+ * Round 3 (1): `noteMayCover` - a card note already answers part of this money, or a note's amount cannot be read -
+ * makes every refusal say so, never "raise it by hand": a hand note beside the card note would credit it twice.
+ */
+export function capacityRaceCorrectionRefusal(blocked: CapacityRaceCorrectionBlocked, invoiced: boolean, noteMayCover = false): string {
+  const xero: CapacityRaceXero = blocked === "noted" || noteMayCover ? "noted" : invoiced ? "invoiced" : "no-invoice";
   return `${capacityRaceNothingToAllocateMessage(xero)} (The app could not correct the charge's records itself: ${CAPACITY_RACE_CORRECTION_BLOCKED_REASON[blocked]}.)`;
 }
 
@@ -210,12 +218,23 @@ export async function capacityRaceChargeForHandBack(
     /** The club's format, for the audit's and the refusal's sentences. */
     format: ClubFormat;
   },
-): Promise<{ chargeId: string }> {
+): Promise<{ chargeId: string; xero: CapacityRaceXero }> {
   const { task, raceIntentId, amountCents } = params;
-  const refuse = (blocked: CapacityRaceCorrectionBlocked) =>
-    new ManualBookingPaymentError(capacityRaceCorrectionRefusal(blocked, params.invoiced), 400);
 
   await lockPaymentForRefundedTotal(store, task.paymentId);
+  // Round 2 (F1), round 3 (1, 5): the notes first, so every refusal after knows whether one already answers this money.
+  // Coverage beyond the payment's refund rows is a card note for the stray total (the self-heal's): recorded on the task,
+  // its own note bills the rest. Notes are kept per payment, never per charge, so that excess is the race charge's only
+  // while every other captured charge postdates the refund ledger (each of its refunds then has a row that explains
+  // its note); otherwise, as beyond the task's amount, it is refused.
+  const resolvedNotes = await readResolvedRefundCreditNoteCoverage(task.paymentId, store);
+  const cardNoteCoversCents = Math.max(
+    0,
+    (await sumRefundCreditNoteCoverageCents(task.paymentId, resolvedNotes, store)) - (await sumRecordedRefundsForPayment(store, task.paymentId)),
+  );
+  const noteMayCover = cardNoteCoversCents > 0 || resolvedNotes.unreadableOperationIds.length > 0;
+  const refuse = (blocked: CapacityRaceCorrectionBlocked) =>
+    new ManualBookingPaymentError(capacityRaceCorrectionRefusal(blocked, params.invoiced, noteMayCover), 400);
   const charges = await store.paymentTransaction.findMany({
     where: { paymentId: task.paymentId, stripePaymentIntentId: raceIntentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
     // Exactly one is taken, or none: ordered only so the ledger's order census (`INV-PAY-133`) reads every capture read alike.
@@ -229,7 +248,8 @@ export async function capacityRaceChargeForHandBack(
   if (params.stripe.refundedCents > recordedCents) {
     throw new ManualBookingPaymentError(capacityRaceStripeAheadMessage(params.stripe.refundedCents, recordedCents, params.format), 409);
   }
-  if (charge.amountCents - charge.refundedAmountCents >= amountCents) return { chargeId: charge.id };
+  const xero = (): CapacityRaceXero => (noteMayCover ? "noted" : params.invoiced ? "invoiced" : "no-invoice");
+  if (charge.amountCents - charge.refundedAmountCents >= amountCents) return { chargeId: charge.id, xero: xero() };
 
   const ledgerStart = await refundLedgerStartSeconds(store);
   if (predatesRefundLedger(toSeconds(charge.createdAt), ledgerStart, "pre-ledger")) throw refuse("charge-before-ledger");
@@ -238,15 +258,15 @@ export async function capacityRaceChargeForHandBack(
     where: { id: { not: task.id }, OR: [{ bookingId: task.bookingId }, { paymentId: task.paymentId }] },
   });
   if (otherTasks > 0) throw refuse("other-task");
-  // Round 2 (F1): coverage beyond the payment's refund rows is a card note for the stray total (the self-heal's), which
-  // answers this hand-back's money: recorded on the task, its own note bills the rest. More than the task: refused.
-  const resolvedNotes = await readResolvedRefundCreditNoteCoverage(task.paymentId, store);
-  if (resolvedNotes.unreadableOperationIds.length > 0) throw refuse("noted");
-  const cardNoteCoversCents = Math.max(
-    0,
-    (await sumRefundCreditNoteCoverageCents(task.paymentId, resolvedNotes, store)) - (await sumRecordedRefundsForPayment(store, task.paymentId)),
-  );
-  if (cardNoteCoversCents > amountCents) throw refuse("noted");
+  if (resolvedNotes.unreadableOperationIds.length > 0 || cardNoteCoversCents > amountCents) throw refuse("noted");
+  if (cardNoteCoversCents > 0) {
+    const otherCharges = await store.paymentTransaction.findMany({
+      where: { paymentId: task.paymentId, id: { not: charge.id }, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+      orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+      select: { createdAt: true },
+    });
+    if (otherCharges.some((other) => predatesRefundLedger(toSeconds(other.createdAt), ledgerStart, "pre-ledger"))) throw refuse("noted");
+  }
   const refunds = await store.paymentRefund.findMany({ where: { paymentTransactionId: charge.id }, select: { stripeCreatedAt: true } });
   if (refunds.some((refund) => predatesRefundLedger(refund.stripeCreatedAt && toSeconds(refund.stripeCreatedAt), ledgerStart, "pre-ledger"))) {
     throw refuse("pre-ledger-refund");
@@ -293,6 +313,6 @@ export async function capacityRaceChargeForHandBack(
   );
   // Re-checked on what was written: the task is placed on this charge alone.
   if (charge.amountCents - nextCents < amountCents) throw refuse("still-short");
-  return { chargeId: charge.id };
+  return { chargeId: charge.id, xero: xero() };
 }
 

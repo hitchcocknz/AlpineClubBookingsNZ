@@ -178,7 +178,7 @@ export async function cardShortfallSettlement(
   // refuses (`onlyTransactionIds`) with the race's own way out.
   // Where that charge holds too little, the owner's guarded recalculation (#4154) corrects it first, or names what blocked it.
   if (raceIntentId !== null) {
-    const { chargeId } = await capacityRaceChargeForHandBack(store, {
+    const { chargeId, xero } = await capacityRaceChargeForHandBack(store, {
       task: { id: task.id, bookingId: task.bookingId, paymentId: task.paymentId, booking: task.booking },
       raceIntentId,
       amountCents: completion.amountCents,
@@ -187,7 +187,8 @@ export async function cardShortfallSettlement(
       actingMemberId: completion.actingMemberId,
       format: completion.format,
     });
-    return { preferTransactionIds: [chargeId], onlyTransactionIds: [chargeId], nothingToAllocateMessage: capacityRaceNothingToAllocateMessage(raceXero) };
+    // Round 3 (1): the allocator's backstop refusal says what the correction found about Xero notes, too.
+    return { preferTransactionIds: [chargeId], onlyTransactionIds: [chargeId], nothingToAllocateMessage: capacityRaceNothingToAllocateMessage(xero) };
   }
   // A part to check settles only on what the bank-transfer part leaves (coordinator, PR #4122).
   if (part === "check") {

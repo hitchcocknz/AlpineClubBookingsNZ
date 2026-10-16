@@ -58,6 +58,7 @@ vi.mock("@/lib/payment-reconciliation", () => ({
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import {
   CAPACITY_RACE_CORRECTION_BLOCKED_REASON,
+  CAPACITY_RACE_XERO_SENTENCE,
   CAPACITY_RACE_STRIPE_UNREADABLE_MESSAGE,
   capacityRaceChargeForHandBack,
   capacityRaceNothingToAllocateMessage,
@@ -73,11 +74,13 @@ type Charge = { id: string; amountCents: number; refundedAmountCents: number; cr
 type Refund = { amountCents: number; status: string; stripeCreatedAt: Date | null; paymentTransactionId?: string };
 
 /** The baseline: a $200 charge made after the ledger started, reading all of it refunded, with $140 of card refund on record. */
-function world(over: { charges?: Charge[]; refunds?: Refund[]; otherTasks?: number } = {}) {
+function world(over: { charges?: Charge[]; otherCharges?: Charge[]; refunds?: Refund[]; otherTasks?: number } = {}) {
   const charges = over.charges ?? [{ id: "txn-race", amountCents: 20_000, refundedAmountCents: 20_000, createdAt: at(2_000) }];
+  const otherCharges = over.otherCharges ?? [];
   const refunds = (over.refunds ?? [{ amountCents: 14_000, status: "succeeded", stripeCreatedAt: at(3_000) }]).map((refund) => ({ paymentTransactionId: "txn-race", ...refund }));
   return {
-    paymentTransaction: { findMany: vi.fn(async () => charges) },
+    // The race intent's charges, or (round 3) the payment's other captured charges, as the query asks.
+    paymentTransaction: { findMany: vi.fn(async ({ where }: { where: { id?: { not: string } } }) => (where.id ? otherCharges : charges)) },
     manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0), update: vi.fn(async () => ({})) },
     paymentRefund: {
       findMany: vi.fn(async () => refunds.filter((refund) => refund.paymentTransactionId === "txn-race")),
@@ -136,7 +139,7 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
   it("CONTROL: every condition holding, lowers the charge to its refund rows, re-derives the payment, audits before and after, and hands back the charge", async () => {
     const store = world();
 
-    await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+    await expect(run(store)).resolves.toMatchObject({ chargeId: "txn-race" });
 
     expect(store.paymentTransaction.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ paymentId: "payment-1", stripePaymentIntentId: "pi_race" }) }));
     expect(doubles.compareAndSet).toHaveBeenCalledWith(store, "txn-race", expect.any(Function), { writeStatus: true });
@@ -165,7 +168,7 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
 
   it("a charge that already holds the task is not touched", async () => {
     const store = world({ charges: [{ id: "txn-race", amountCents: 20_000, refundedAmountCents: 14_000, createdAt: at(2_000) }] });
-    await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+    await expect(run(store)).resolves.toMatchObject({ chargeId: "txn-race" });
     expect(doubles.ledgerStart).not.toHaveBeenCalled();
     expect(doubles.compareAndSet).not.toHaveBeenCalled();
   });
@@ -184,13 +187,13 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
 
   it("a refused or cancelled refund row is not a refund on record", async () => {
     const store = world({ refunds: [{ amountCents: 14_000, status: "succeeded", stripeCreatedAt: at(3_000) }, { amountCents: 6_000, status: "failed", stripeCreatedAt: at(3_100) }] });
-    await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+    await expect(run(store)).resolves.toMatchObject({ chargeId: "txn-race" });
     expect(doubles.audit).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ recordedCardRefundCents: 14_000 }) }), store);
   });
 
   it("an install with no migration history never ran pre-ledger code: the date conditions hold", async () => {
     doubles.ledgerStart.mockResolvedValue(null);
-    await expect(run(world())).resolves.toEqual({ chargeId: "txn-race" });
+    await expect(run(world())).resolves.toMatchObject({ chargeId: "txn-race" });
   });
 
   describe("each condition blocks alone", () => {
@@ -235,7 +238,7 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
     it("MUTATION (F1): a card note beyond the refund rows that the task's amount explains - the self-heal's note for the stray total - is recorded on the task as covering it, and the completion goes ahead", async () => {
       doubles.noteCoverage.mockResolvedValue(14_000 + 6_000);
       const store = world();
-      await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+      await expect(run(store)).resolves.toMatchObject({ chargeId: "txn-race" });
       expect(store.manualRefundTask.update).toHaveBeenCalledWith({ where: { id: "task-race" }, data: { reviewContext: { paidAnotherWayCardNoteCover: 6_000 } } });
       expect(doubles.audit).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ cardNoteCoversCents: 6_000 }) }), store);
       expect(doubles.noteCoverage).toHaveBeenCalledWith("payment-1", expect.objectContaining({ coveredCents: 0 }), expect.anything());
@@ -254,10 +257,50 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
       await expectBlocked(world(), "noted");
     });
 
+    // Round 3 (1): a refusal where a card note already answers part of this money never says "raise it by hand".
+    it("MUTATION (round 3, 1): still short with a card note's cover - refused naming the note already in Xero, never a note by hand", async () => {
+      // $160.00 of card refunds on record, $190.00 of notes: a $30.00 card note's cover, and the charge still too short.
+      doubles.noteCoverage.mockResolvedValue(19_000);
+      const store = world({ refunds: [{ amountCents: 16_000, status: "succeeded", stripeCreatedAt: at(3_000) }] });
+      await expect(run(store, { stripe: { readable: true, refundedCents: 16_000 } })).rejects.toMatchObject({
+        status: 400,
+        message: `${capacityRaceNothingToAllocateMessage("noted")} (The app could not correct the charge's records itself: ${CAPACITY_RACE_CORRECTION_BLOCKED_REASON["still-short"]}.)`,
+      });
+      await expect(run(store, { stripe: { readable: true, refundedCents: 16_000 } })).rejects.toMatchObject({ message: expect.not.stringContaining("raise its refund credit note in Xero by hand") });
+      expect(store.manualRefundTask.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["account credit given back", () => doubles.credit.mockResolvedValue(1)],
+      ["the charge made before the ledger", () => undefined],
+    ])("MUTATION (round 3, 1): an earlier condition (%s) with a card note's cover says the same", async (label, arrange) => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 1_000);
+      arrange();
+      const store = label.startsWith("the charge")
+        ? world({ charges: [{ id: "txn-race", amountCents: 20_000, refundedAmountCents: 20_000, createdAt: at(LEDGER_START - 1) }] })
+        : world();
+      await expect(run(store)).rejects.toMatchObject({ message: expect.stringContaining(CAPACITY_RACE_XERO_SENTENCE.noted) });
+    });
+
+    // Round 3 (5): notes are kept per payment; the excess is the race charge's only while every other charge postdates the ledger.
+    it("MUTATION (round 3, 5): a card note's cover on a payment with another charge made before the refund ledger is refused, nothing written", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 6_000);
+      const store = world({ otherCharges: [{ id: "txn-old", amountCents: 5_000, refundedAmountCents: 5_000, createdAt: at(LEDGER_START - 1) }] });
+      await expectBlocked(store, "noted");
+      expect(store.manualRefundTask.update).not.toHaveBeenCalled();
+    });
+
+    it("CONTROL (round 3, 5): another charge made since the ledger leaves the cover the race's", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 6_000);
+      const store = world({ otherCharges: [{ id: "txn-late", amountCents: 5_000, refundedAmountCents: 0, createdAt: at(2_500) }] });
+      await expect(run(store)).resolves.toEqual({ chargeId: "txn-race", xero: "noted" });
+      expect(store.manualRefundTask.update).toHaveBeenCalledWith({ where: { id: "task-race" }, data: { reviewContext: { paidAnotherWayCardNoteCover: 6_000 } } });
+    });
+
     it("CONTROL: notes covering exactly the card refunds on record record nothing on the task", async () => {
       doubles.noteCoverage.mockResolvedValue(14_000);
       const store = world();
-      await expect(run(store)).resolves.toEqual({ chargeId: "txn-race" });
+      await expect(run(store)).resolves.toMatchObject({ chargeId: "txn-race" });
       expect(store.manualRefundTask.update).not.toHaveBeenCalled();
     });
   });
@@ -285,7 +328,7 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
 
     it("a refused refund row is not one Stripe counts either: Stripe at the counted rows passes", async () => {
       const store = world({ refunds: [{ amountCents: 14_000, status: "succeeded", stripeCreatedAt: at(3_000) }, { amountCents: 6_000, status: "failed", stripeCreatedAt: at(3_100) }] });
-      await expect(run(store, { stripe: { readable: true, refundedCents: 14_000 } })).resolves.toEqual({ chargeId: "txn-race" });
+      await expect(run(store, { stripe: { readable: true, refundedCents: 14_000 } })).resolves.toMatchObject({ chargeId: "txn-race" });
     });
   });
 
