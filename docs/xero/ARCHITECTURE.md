@@ -1300,7 +1300,8 @@ Scheduled hardening (cron tasks, all idempotent):
   #4091, whose active mirror matched its pointer. Local rows only, no provider
   call, no money column. Each heal is its own transaction: it locks and
   re-reads the link and writes nothing if it changed, and it is deferred while
-  the payment has a credit-note operation that could still mint
+  another writer holds the payment row (taken `NOWAIT`) or the payment has a
+  credit-note operation that could still mint
   ([CONCURRENCY_AND_LOCKING.md](../CONCURRENCY_AND_LOCKING.md#refund-note-link-heal-4161)).
   A healed link matches neither shape, so a second run changes nothing. A heal
   that fails is returned in `failedRefundNoteHealLinkIds`, after the rest are

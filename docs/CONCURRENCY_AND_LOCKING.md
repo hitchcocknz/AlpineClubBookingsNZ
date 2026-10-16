@@ -5146,26 +5146,41 @@ cohort and takes no advisory key, so `INV-LOCK-003`'s Tier-2 registry has no
 entry for it; its row lock is in the advisory-lock guard's row-lock inventory.
 
 Each heal is its own short transaction. It locks the link row
-(`SELECT 1 … FOR UPDATE`), re-reads it under the lock, and writes nothing
-unless it is still the mirror the scan saw, and, for the inactive shape, the
-pointer still names it. It then calls `upsertXeroObjectLink` with that client,
-which writes the link and then the payment: link, then Payment, the order of
-the #2901 repair apply and of the funnel's own pointer release (#4046). The
-guarded pointer `updateMany` leaves a pointer a concurrent writer moved alone.
+(`SELECT 1 … FOR UPDATE`), then the Payment row
+(`SELECT 1 … FOR NO KEY UPDATE NOWAIT`, the strength the pointer's own UPDATE
+takes), and re-reads both under the locks. It writes nothing unless the link
+is still the mirror the scan saw and, for the inactive shape, the pointer still
+names it. It then calls `upsertXeroObjectLink` with that client, which writes
+the link and then the payment it already holds: link, then Payment, the order
+of the #2901 repair apply and of the funnel's own pointer release (#4046).
 
-**The accepted inversion.** The refund-note create records its note
-payment-then-link (`createXeroCreditNote`: the pointer, then the link write,
-whose single-canonical rule updates the payment's other active links). A heal
-and that record on one payment could deadlock. The heal therefore defers, and
-writes nothing, while the payment has any credit-note operation that could
-still mint: the #2901 repair's refusal, `findBlockingRefundCreditNoteOperationId`.
-A create holds such a row from before its provider call until it records, so
-a heal can overlap a record only if the row commits after the heal's check.
-The create's provider call then still has to finish inside a heal transaction
-of a few statements. The inversion is kept rather than reordering the create,
-whose one-transaction record is `INV-PAY-111`'s. An inbound void racing a
-create's record on one payment can take the same two rows in the opposite
-order and predates #4161; it is not changed here.
+**The accepted inversion, and why it cannot deadlock.** Two writers take the
+same two rows Payment first, inside their own transactions:
+
+- the refund-note create's record (`createXeroCreditNote`): the pointer, then
+  the link write, whose single-canonical rule updates the payment's other
+  active links;
+- the outbox enqueue's existing-note branch
+  (`enqueueXeroRefundCreditNoteOperation`, "already linked"): the pointer,
+  then the link write, inside the caller's transaction (a group cancel or an
+  edit review's refund leg).
+
+The heal never waits on Payment while it holds the link: `NOWAIT` turns a held
+Payment row into SQLSTATE 55P03 at once (`isPostgresLockNotAvailable`), the
+transaction rolls back having written nothing, and the heal is reported as
+deferred for the next nightly run. The only lock it waits for is the link row,
+taken first while it holds nothing, so it can never be one side of a deadlock
+cycle and never rolls back the other writer. A real-PostgreSQL proof
+(`xero-refund-note-void-pointer.realdb.test.ts`) holds the Payment row on
+another connection and shows the heal deferring at once and healing on the
+next run. Separately, the heal also defers while the payment has a
+credit-note operation that could still mint (the #2901 repair's refusal,
+`findBlockingRefundCreditNoteOperationId`), so a create's later record never
+finds the mirror half-healed. The writers' order is kept rather than
+reordered: the create's one-transaction record is `INV-PAY-111`'s, and the
+enqueue joins its caller's transaction. An inbound void racing a create's
+record on one payment can take the same two rows in the opposite order; that
+predates #4161 and is not changed here.
 
 ## One Xero contact, one local home: the contact-home key (#3367)
 
