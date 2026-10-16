@@ -91,14 +91,13 @@ function migrationAuditInsertClasses(sql: string): Array<string | null> {
       const match = statement.match(/'([^']*)'\s*,\s*\n\s*timezone\('UTC',\s*statement_timestamp\(\)\)\s*\+\s*interval/);
       return match ? match[1] : null;
     });
+  const setClauseOf = (statement: string) =>
+    statement.match(/\bSET\b([\s\S]*?)(?:\bWHERE\b|\bFROM\b|$)/i)?.[1] ?? "";
+  // Only a statement whose SET assigns the class is checked, and only a plain
+  // literal there is readable; a CASE or other expression reads as null and fails.
   const updates = statements
-    .filter((statement) => /UPDATE\s+"AuditLog"[\s\S]*\bSET\b[\s\S]*"retentionClass"\s*=/i.test(statement))
-    // Only a plain literal assignment inside SET is readable; a CASE, an
-    // expression, or a match only in WHERE reads as null and fails.
-    .map((statement) => {
-      const setClause = statement.match(/\bSET\b([\s\S]*?)(?:\bWHERE\b|\bFROM\b|$)/i)?.[1] ?? "";
-      return setClause.match(/"retentionClass"\s*=\s*'([^']*)'\s*(?:,|$)/)?.[1] ?? null;
-    });
+    .filter((statement) => /UPDATE\s+"AuditLog"/i.test(statement) && /"retentionClass"\s*=/.test(setClauseOf(statement)))
+    .map((statement) => setClauseOf(statement).match(/"retentionClass"\s*=\s*'([^']*)'\s*(?:,|$)/)?.[1] ?? null);
   return [...inserts, ...updates];
 }
 
@@ -149,5 +148,8 @@ describe("audit retention class writers stay on the known set (#3940)", () => {
         `UPDATE "AuditLog" SET "retentionClass" = CASE WHEN true THEN 'standrad' END WHERE "retentionClass" = 'critical';`
       )
     ).toEqual([null]);
+    expect(
+      migrationAuditInsertClasses(`UPDATE "AuditLog" SET "category" = 'admin' WHERE "retentionClass" = 'standrad';`)
+    ).toEqual([]);
   });
 });
