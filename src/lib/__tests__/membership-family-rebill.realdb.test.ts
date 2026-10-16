@@ -578,7 +578,7 @@ let createdMapping = false;
         expect.objectContaining({
           code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
           memberId: CHILD_ID,
-          context: expect.objectContaining({ reason: "HELD_BY_FAMILY_INVOICE", heldBy: "Rebill parent's Xero invoice INV-FAM-4110" }),
+          context: expect.objectContaining({ reason: "REVERSED_UNDER_NEWEST_CHARGE", heldBy: "Rebill parent's Xero invoice INV-FAM-4110" }),
         }),
       ]);
       // Finance's run records it OPEN and bills nobody; an approval bills nobody either.

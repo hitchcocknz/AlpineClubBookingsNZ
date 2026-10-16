@@ -1540,7 +1540,7 @@ describe("membership subscription billing", () => {
           code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION",
           memberId: "re-billable",
           message: expect.stringContaining("the family is held back by Hana Parent's Xero invoice INV-FAM. The family is not billed again. Decide how to bill"),
-          context: expect.objectContaining({ reason: "HELD_BY_FAMILY_INVOICE", heldBy: "Hana Parent's Xero invoice INV-FAM" }),
+          context: expect.objectContaining({ reason: "REVERSED_UNDER_NEWEST_CHARGE", heldBy: "Hana Parent's Xero invoice INV-FAM" }),
         }),
       ]);
     });
@@ -1557,7 +1557,7 @@ describe("membership subscription billing", () => {
       expect(preview.exceptions.map((item) => [item.memberId, item.code, item.context.reason, item.context.heldBy])
         .sort((left, right) => (String(left[0]) < String(right[0]) ? -1 : 1))).toEqual([
         ["E", "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", "EXEMPT_AT_CLOSE", "Hana Parent's Xero invoice INV-FAM"],
-        ["K", "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", "HELD_BY_FAMILY_INVOICE", "Hana Parent's Xero invoice INV-FAM"],
+        ["K", "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", "REVERSED_UNDER_NEWEST_CHARGE", "Hana Parent's Xero invoice INV-FAM"],
       ]);
       expect(preview.exceptions.find((item) => item.memberId === "E")!.message).toContain(
         "was not required to pay when the family's Full charge was closed as already paid, and now needs a subscription, and the family is held back by Hana Parent's Xero invoice INV-FAM.",
@@ -1578,6 +1578,22 @@ describe("membership subscription billing", () => {
           context: expect.objectContaining({ reason: "REVERSED_UNDER_OLDER_CHARGE" }),
         }),
       ]);
+    });
+
+    it("a family NOT held is billed again once for every covered member who owes, with no decision exception (final round, item 1)", async () => {
+      // No hold: H's payment stands, K's was reversed under the newest charge,
+      // E was exempt at that close and now owes, O was reversed under an older
+      // charge. The re-bill covers K, E and O; nobody needs a decision.
+      const preview = await previewFamily([
+        familyCharge("NOT_REQUIRED", [["O", "NOT_INVOICED", "PAID"]], OLDER_CHARGE),
+        familyCharge("NOT_REQUIRED", [["H", "PAID", "PAID"], ["K", "NOT_INVOICED", "PAID"], ["E", "NOT_INVOICED", "NOT_REQUIRED"]], NEWER_CHARGE),
+      ], ["K", "E", "O"], undefined, ["K", "E", "O"]);
+      expect(preview.alreadyInvoicedFamilies).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0]!.coveredMembers.map((covered) => covered.id).sort()).toEqual(["E", "K", "O"]);
+      expect(preview.exceptions.map((item) => item.code)).not.toContain("CLOSED_FAMILY_MEMBER_NEEDS_DECISION");
+      // H's payment still stands, so the officer is warned before confirming.
+      expect(preview.exceptions.map((item) => item.code)).toEqual(["CLOSED_FAMILY_PARTLY_REVERSED"]);
     });
 
     it("a new joiner with no invoice in a held, reversed family is not asked about (review round 7 item 2)", async () => {

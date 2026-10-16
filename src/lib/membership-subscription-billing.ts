@@ -791,6 +791,10 @@ export async function buildSubscriptionBillingPreview(input: {
   //    no longer settled — exempt at that close and now owing (decision 4), or
   //    paid there and since reversed (decision 5) — gets the decision
   //    exception, whichever closed charge covered them;
+  //  - while a reversal under the newest charge would re-bill the family but a
+  //    hold keeps it back (#2161 invoice or family charge, or an operator's
+  //    marker; rounds 6 and 7), every such member gets it too, the newest
+  //    charge's reversed ones included, naming the hold; a new joiner does not;
   //  - a member a closed charge covered who is still settled (a tier-exempt
   //    child still NOT_REQUIRED) is skipped with no exception: there is
   //    nothing to decide, and Mark as paid would refuse their row.
@@ -848,7 +852,7 @@ export async function buildSubscriptionBillingPreview(input: {
         settled.add(memberId);
       } else if (!decisions.has(memberId)) {
         decisions.set(memberId, reversedAtNewest.has(memberId)
-          ? "HELD_BY_FAMILY_INVOICE"
+          ? "REVERSED_UNDER_NEWEST_CHARGE"
           : wasPaidAtClose(row) ? "REVERSED_UNDER_OLDER_CHARGE" : "EXEMPT_AT_CLOSE");
       }
     }
@@ -1200,7 +1204,9 @@ export async function buildSubscriptionBillingPreview(input: {
       // is a late joiner, as before.
       if (settledCoveredByFamilyKey.get(groupingKey)?.has(member.id)) continue;
       const reason = decisionReasonByFamilyKey.get(groupingKey)?.get(member.id);
-      if (reason) {
+      // A reversal under the NEWEST charge never reaches here: it is this
+      // branch's precondition that the newest charge has none.
+      if (reason && reason !== "REVERSED_UNDER_NEWEST_CHARGE") {
         exceptions.push(exception({
           code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
           message: closedFamilyMemberDecisionMessage({

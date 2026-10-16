@@ -252,12 +252,17 @@ export function invoicingWarningEntryKey(item: { familyGroupId: string | null; m
 }
 
 /**
- * #4110 decisions 4 and 5 (owner, 16 Oct 2026): a member of a family that a
- * closed charge still bills, whom the officer must decide how to bill — one
- * who was exempt at the close and now needs a subscription, or one whose
- * payment under an OLDER closed charge was reversed while the newest closed
- * charge still stands. The family is never billed again for them. The
- * exception withholds, regenerates on every preview until the member is
+ * #4110 decisions 4 and 5 (owner, 16 Oct 2026): a member a closed family
+ * charge covered whom the officer must decide how to bill, because the family
+ * is not billed again for them:
+ *  - while the newest closed charge still bills the family: one exempt at a
+ *    close who now needs a subscription, or one whose payment under an OLDER
+ *    closed charge was reversed;
+ *  - while a reversal under the newest charge would re-bill the family but a
+ *    hold keeps it back (#2161: another member's own invoice or family
+ *    charge, or an operator's marker; review rounds 6 and 7): every covered
+ *    member no longer settled, whichever reason, naming the hold.
+ * The exception withholds, regenerates on every preview until the member is
  * settled or holds a Xero invoice, and so stays OPEN until Finance acts.
  */
 export const CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE = "CLOSED_FAMILY_MEMBER_NEEDS_DECISION";
@@ -267,17 +272,22 @@ export function isOfficerDecisionException(code: string): boolean {
   return code === CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE;
 }
 
-/** Why a closed family's member needs the officer's decision. */
-export type ClosedFamilyDecisionReason = "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE" | "HELD_BY_FAMILY_INVOICE";
+/**
+ * Why a closed family's member needs the officer's decision. A reversal under
+ * the NEWEST charge needs a decision only when a hold keeps the family's
+ * re-bill back; what holds it travels in the message's `heldBy`.
+ */
+export type ClosedFamilyDecisionReason = "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE" | "REVERSED_UNDER_NEWEST_CHARGE";
 
 /** The two choices decision 4 gives the officer, worded once. */
 export function closedFamilyMemberDecisionMessage(input: {
   memberName: string;
   membershipTypeName: string;
-  reason: ClosedFamilyDecisionReason;
-  /** What holds the family back, when a hold keeps a re-bill back (#4110 review rounds 6 and 7). */
-  heldBy?: string;
-}): string {
+} & (
+  | { reason: "EXEMPT_AT_CLOSE" | "REVERSED_UNDER_OLDER_CHARGE"; heldBy?: string }
+  // Only ever raised for a held family, so what holds it is required.
+  | { reason: "REVERSED_UNDER_NEWEST_CHARGE"; heldBy: string }
+)): string {
   const held = input.heldBy ? `, and the family is held back by ${input.heldBy}` : "";
   const why = input.reason === "EXEMPT_AT_CLOSE"
     ? `${input.memberName} was not required to pay when the family's ${input.membershipTypeName} charge was closed as already paid, and now needs a subscription${held}.`
@@ -285,7 +295,7 @@ export function closedFamilyMemberDecisionMessage(input: {
       ? input.heldBy
         ? `${input.memberName}'s payment under an earlier closed ${input.membershipTypeName} family charge was reversed${held}.`
         : `${input.memberName}'s payment under an earlier closed ${input.membershipTypeName} family charge was reversed, but the family's newer charge, closed as already paid, still stands.`
-      : `${input.memberName}'s payment under the family's closed ${input.membershipTypeName} charge was reversed${held || ", but the family is held back by an existing invoice"}.`;
+      : `${input.memberName}'s payment under the family's closed ${input.membershipTypeName} charge was reversed${held}.`;
   return (
     `${why} The family is not billed again. Decide how to bill ${input.memberName}: ` +
     "if the family fee already covers everyone in the family, mark them Paid; " +
