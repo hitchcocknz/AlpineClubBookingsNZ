@@ -226,15 +226,12 @@ const LATE_CAPTURE_REFUND_KEY_PREFIX = "late_cancel_refund_";
 // PaymentTransaction.reason marker) despite the same spelling: this is Stripe
 // refund metadata, replayed byte for byte, and neither may be derived from the other.
 export const LATE_CAPTURE_REFUND_METADATA_REASON = "cancelled_booking_late_capture";
-export function buildLateCaptureRefundStripeKeyPrefix(
-  bookingId: string,
-  paymentIntentId: string,
-) {
+export function buildLateCaptureRefundStripeKeyPrefix(bookingId: string, paymentIntentId: string) {
   return `${LATE_CAPTURE_REFUND_KEY_PREFIX}${bookingId}_${paymentIntentId}`;
 }
-export function buildLateCaptureRefundMetadata(
-  bookingId: string,
-): Record<string, string> {
+/** #1491: the `reason` the repair tool's late-capture refund carries (`xero-booking-repair-passes.ts`). */
+export const LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON = "cancelled_booking_late_capture_repair";
+export function buildLateCaptureRefundMetadata(bookingId: string): Record<string, string> {
   return { bookingId, reason: LATE_CAPTURE_REFUND_METADATA_REASON };
 }
 // #3639: the recovery row of a treasurer-approved late-capture refund. One per

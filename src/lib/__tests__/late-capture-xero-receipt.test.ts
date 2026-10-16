@@ -214,6 +214,15 @@ describe("findLateCapturePaymentIntents (round-3 R1)", () => {
 });
 
 describe("findClosedLateCaptureRecords (#4149)", () => {
+  it("never reads a treasurer-approved row as a hand completion: the approval marker on the confirm route's own #2700 row wins", async () => {
+    mocks.taskFindMany.mockResolvedValue([
+      // #3639: the hold put the marker on the confirm route's OPEN row, and the approval completed it.
+      { lateCaptureApprovalIntentId: "pi_held", reason: cancelledBookingModificationRefundReason("pi_held"), status: "COMPLETED" },
+    ]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(["pi_held"]))).toEqual({ pi_held: "record" });
+  });
+
+
   it("counts an approval task in any status and a closed automatic-refund row, not an OPEN #2700 row the refund never closed, and tells a hand completion apart", async () => {
     mocks.taskFindMany.mockResolvedValue([
       { lateCaptureApprovalIntentId: "pi_owned", reason: null, status: "OPEN" },

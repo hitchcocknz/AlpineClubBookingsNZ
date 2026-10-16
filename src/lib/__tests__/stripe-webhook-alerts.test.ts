@@ -1002,6 +1002,39 @@ describe("Stripe webhook Xero alerting", () => {
       expect(mockLogAudit).toHaveBeenCalledWith(
         expect.objectContaining({ action: "booking.payment.late_capture_refunded_outside_app", severity: "important", entityId: "booking-3" }),
       );
+      // The officers are told, once ever for the capture, through the payment-recovery alert.
+      expect(mockClaimAlertCooldown).toHaveBeenCalledWith(expect.objectContaining({ key: "late-capture-refunded-outside-app:pi_late" }));
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_late", amountCents: 3800, errorMessage: expect.stringContaining("refunded outside the app") }),
+        expect.anything(),
+      );
+    });
+
+    it("counts a cancel claim on the intent as landed after the cancel: a dashboard refund before the late success notice", async () => {
+      refundEvent([{ id: "re_dashboard", amount: 3800, status: "succeeded", metadata: {} }]);
+      mockPaymentRecoveryOperationFindFirst.mockResolvedValue({ id: "recovery-cancel-3" });
+
+      expect((await POST(makeRequest())).status).toBe(200);
+
+      expect(mockEnqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+      expect(mockLogAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "booking.payment.late_capture_refunded_outside_app", entityId: "booking-3" }),
+      );
+    });
+
+    it("waits for the record, naming nothing, for the repair tool's own late-capture refund", async () => {
+      refundEvent(
+        [{ id: "re_repair", amount: 3800, status: "succeeded", metadata: { bookingId: "booking-3", reason: "cancelled_booking_late_capture_repair" } }],
+        "cancelled_booking_late_capture",
+      );
+
+      expect((await POST(makeRequest())).status).toBe(200);
+
+      expect(mockEnqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+      expect(mockLogAudit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "booking.payment.late_capture_refunded_outside_app" }),
+      );
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     });
 
     it("still queues the generic note for an ordinary refund on the same cancelled booking", async () => {

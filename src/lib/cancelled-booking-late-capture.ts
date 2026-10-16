@@ -1,6 +1,5 @@
 import {
   ManualRefundTaskStatus,
-  PaymentRecoveryOperationType,
   PaymentStatus,
 } from "@prisma/client";
 import { logAudit } from "@/lib/audit";
@@ -17,12 +16,12 @@ import { prisma } from "@/lib/prisma";
 import type { ClubFormat } from "@/lib/club-format";
 import {
   classifyCaptureOnCancelledBooking,
-  isLateCaptureHandlerWrite,
   type CancellationRefundDecisionEvidence,
   type CancelledBookingCaptureVerdict,
 } from "@/lib/cancellation-settled-money";
 import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
+import { readCaptureLandedAfterCancellation } from "@/lib/late-capture-landed-after";
 import {
   captureRefundState,
   isCapturedTransactionStatus,
@@ -148,29 +147,6 @@ async function classifyNoticeOnCancelledBooking(params: {
     heldCents: captureRefundState(captureRow).heldCents,
     anyRefunded: captureRefundState(captureRow).anyRefunded,
   };
-}
-
-/**
- * The durable evidence that a capture on a cancelled booking landed AFTER the
- * cancel (`CapturedRowOnCancelledBooking.capturedAfterCancellation`): the primary
- * handler's own `CANCELLED_BOOKING_LATE_CAPTURE_REASON` write, or a
- * `CANCEL_PAYMENT_INTENT` recovery for the intent. One read for the notice's
- * verdict and the self-heal's lost-record check (#4149,
- * `late-capture-record-recovery.ts`). Nothing caught, as the verdict's reads.
- */
-export async function readCaptureLandedAfterCancellation(capture: {
-  paymentIntentId: string;
-  reason: string | null;
-}): Promise<boolean> {
-  if (isLateCaptureHandlerWrite(capture.reason)) return true;
-  const cancelIntentOperation = await prisma.paymentRecoveryOperation.findFirst({
-    where: {
-      type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-      paymentIntentId: capture.paymentIntentId,
-    },
-    select: { id: true },
-  });
-  return cancelIntentOperation !== null;
 }
 
 /**

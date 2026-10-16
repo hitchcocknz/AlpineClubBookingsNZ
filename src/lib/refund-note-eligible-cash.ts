@@ -22,16 +22,16 @@
  *
  * Refund rows are matched to their capture by `PaymentRefund.stripePaymentIntentId`;
  * which intents are late captures is `findLateCapturePaymentIntents`, plus
- * (#4170) any capture the primary late-capture handler marked as its own write
- * (`CANCELLED_BOOKING_LATE_CAPTURE_REASON`) while it has no record row yet. A
+ * (#4170), on a cancelled booking, any capture that landed after the cancel
+ * (`findCapturesLandedAfterCancellation`) while it has no record row yet. A
  * pre-ledger payment (no `PaymentRefund` rows) predates late-capture holds and
  * is left to the evidence's legacy rule.
  */
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
-import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
-import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
+import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
+import { findCapturesLandedAfterCancellation } from "@/lib/late-capture-landed-after";
 import {
   resolveStripeCashRefundEvidence,
   type StripeCashRefundEvidence,
@@ -61,9 +61,12 @@ export async function resolveRefundNoteEligibleCash(
   const centsByIntent = await readRecordedRefundCentsByIntent(payment.id, db);
   const intents = [...centsByIntent.keys()];
   const lateIntents = await findLateCapturePaymentIntents(intents, db);
-  // #4170: a capture the late-capture handler marked as its own is a late
-  // capture before its record row exists too (lost, or refunded outside the app).
-  for (const intent of await findMarkedLateCaptureIntents(intents, db)) lateIntents.add(intent);
+  // #4170: on a cancelled booking, a capture that landed after the cancel is a
+  // late capture before its record row exists too (lost, or refunded outside
+  // the app) - `readCaptureLandedAfterCancellation`'s rule, for many at once.
+  for (const intent of await findUnrecordedLateCaptureIntents(payment.id, intents.filter((i) => !lateIntents.has(i)), db)) {
+    lateIntents.add(intent);
+  }
   let lateCaptureExcludedCents = 0;
   for (const intent of lateIntents) {
     if (!(await hasXeroReceiptForLateCapture(intent, db))) {
@@ -101,17 +104,22 @@ export async function readRecordedRefundCentsByIntent(
   return centsByIntent;
 }
 
-/** The intents among these whose capture the primary late-capture handler wrote itself (#3639's marker). */
-async function findMarkedLateCaptureIntents(
+/**
+ * The intents among these, on a payment whose booking is cancelled, whose
+ * capture landed after the cancel (`findCapturesLandedAfterCancellation`). None
+ * on a booking that is not cancelled: a superseded intent's cancel claim there
+ * says nothing about a late capture.
+ */
+async function findUnrecordedLateCaptureIntents(
+  paymentId: string,
   paymentIntentIds: readonly string[],
-  db: Pick<Prisma.TransactionClient, "paymentTransaction">,
-): Promise<string[]> {
-  if (paymentIntentIds.length === 0) return [];
-  const rows = await db.paymentTransaction.findMany({
-    where: { stripePaymentIntentId: { in: [...paymentIntentIds] }, reason: CANCELLED_BOOKING_LATE_CAPTURE_REASON },
-    // The ledger's order (#4132, INV-PAY-133), though only membership is read.
-    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
-    select: { stripePaymentIntentId: true },
+  db: Prisma.TransactionClient,
+): Promise<Set<string>> {
+  if (paymentIntentIds.length === 0) return new Set();
+  const payment = await db.payment.findUnique({
+    where: { id: paymentId },
+    select: { booking: { select: { status: true } } },
   });
-  return (rows ?? []).map((row) => row.stripePaymentIntentId).filter((intent): intent is string => Boolean(intent));
+  if (!isLateCaptureRefundedBookingStatus(payment?.booking?.status)) return new Set();
+  return findCapturesLandedAfterCancellation(paymentIntentIds, db);
 }

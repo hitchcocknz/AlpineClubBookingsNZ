@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   findOrphanedAppliedCredits: vi.fn(),
   queueWaitingPaidAnotherWayNotesForPayment: vi.fn(),
   recoverLostLateCaptureRecordsForPayment: vi.fn(),
+  findPaymentsWithUnrecordedLateCaptures: vi.fn(),
   readRefundCreditNoteGap: vi.fn(),
   logger: {
     info: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock("@/lib/paid-another-way-receipt-note", () => ({
 // #4149: a late capture's lost record is checked for before any card note.
 vi.mock("@/lib/late-capture-record-recovery", () => ({
   recoverLostLateCaptureRecordsForPayment: mocks.recoverLostLateCaptureRecordsForPayment,
+  findPaymentsWithUnrecordedLateCaptures: mocks.findPaymentsWithUnrecordedLateCaptures,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -83,6 +85,7 @@ beforeEach(() => {
   });
   mocks.queueWaitingPaidAnotherWayNotesForPayment.mockResolvedValue(0);
   mocks.recoverLostLateCaptureRecordsForPayment.mockResolvedValue({ recovered: [], unresolved: false });
+  mocks.findPaymentsWithUnrecordedLateCaptures.mockResolvedValue([]);
   mocks.enqueueXeroRefundCreditNoteOperation.mockResolvedValue({
     queueOperationId: "op_heal_1",
     message: "queued",
@@ -330,6 +333,34 @@ describe("reconcileCreditBalances", () => {
       // The record comes first, so the gap re-read and the enqueue's own
       // re-cap against the note-eligible cash no longer count its refund.
       expect(order).toEqual(["recover:pay_late", "gap:pay_late", "enqueue:pay_late"]);
+    });
+
+    it("checks the payments on its own list, which the gap never shows, before reading the gap - and each payment once", async () => {
+      const order: string[] = [];
+      mocks.findPaymentsWithUnrecordedLateCaptures.mockResolvedValue(["pay_marked", "pay_both"]);
+      mocks.recoverLostLateCaptureRecordsForPayment.mockImplementation(async (paymentId: string) => {
+        order.push(`recover:${paymentId}`);
+        return { recovered: ["pi_late"], unresolved: paymentId === "pay_both" };
+      });
+      mocks.getRefundsMissingXeroCreditNotes.mockImplementation(async () => {
+        order.push("gap-list");
+        return { count: 1, payments: [flagged("pay_both")] };
+      });
+
+      await reconcileCreditBalances();
+
+      expect(order).toEqual(["recover:pay_marked", "recover:pay_both", "gap-list"]);
+      // Its own answer is kept: unresolved tonight, so no card note.
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
+
+    it("still reads the gap list when its own list cannot be read", async () => {
+      mocks.findPaymentsWithUnrecordedLateCaptures.mockRejectedValue(new Error("database is down"));
+      mocks.getRefundsMissingXeroCreditNotes.mockResolvedValue({ count: 1, payments: [flagged("pay_ok")] });
+
+      await reconcileCreditBalances();
+
+      expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("pay_ok", 12000);
     });
 
     it("sizes the card ask from the gap re-read after a recovery, never from the gap read before it", async () => {

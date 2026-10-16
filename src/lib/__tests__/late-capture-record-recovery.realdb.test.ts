@@ -390,9 +390,25 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(stripe.refundsAsked).toBe(0);
     });
 
-    it("a change capture with no marker reads as uncovered cash until the self-heal writes its record, and not after", async () => {
+    it("the nightly self-heal reaches the booking's own payment, which never shows a refund-note gap, and writes its record", async () => {
+      armStripe();
+      const { reconcileCreditBalances } = await import("@/lib/cron-credit-reconciliation");
+      const { getRefundsMissingXeroCreditNotes } = await import("@/lib/xero-admin-health");
+      // The marked capture is outside the note-eligible cash, so the gap list never names this payment.
+      expect(await uncoveredCents()).toBe(0);
+      expect((await getRefundsMissingXeroCreditNotes({ limit: 500 })).payments.map((p) => p.paymentId)).not.toContain(PAYMENT_ID);
+
+      await reconcileCreditBalances();
+
+      const rows = await recordRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ status: "DISMISSED", kind: "AUTOMATIC_LATE_CAPTURE_RECORD", completedAt: REFUNDED_ON });
+      expect(await refundEntries(1, RECOVERED_ENTRY)).toHaveLength(1);
+    });
+
+    it("a change capture with no landed-after evidence reads as uncovered cash until the self-heal writes its record, and not after", async () => {
       await deletePaymentRows();
-      await seedAfterTheCrash({ cancelClaim: true, openTask: false });
+      await seedAfterTheCrash({ cancelClaim: false, openTask: false });
       armStripe();
       // The defect: no record, so the capture's refund reads as uncovered cash against the pre-cancel invoice.
       expect(await uncoveredCents()).toBe(LATE_CENTS);
@@ -507,15 +523,28 @@ function lateCaptureRefund(): Stripe.Refund {
         expect(await uncoveredCents()).toBe(0);
       });
 
-      it("still queues the generic note for an ordinary refund of the same capture (the control)", async () => {
+      it("still queues the generic note for an ordinary refund of a capture with no landed-after evidence (the control)", async () => {
         await deletePaymentRows();
-        await seedAfterTheCrash({ cancelClaim: true, openTask: false }, false);
+        await seedAfterTheCrash({ cancelClaim: false, openTask: false }, false);
         armStripe();
 
         const ordinary = { ...lateCaptureRefund(), metadata: { bookingId: BOOKING_ID, reason: "booking_cancellation" } } as unknown as Stripe.Refund;
         expect((await chargeRefunded(ordinary)).init?.status ?? 200).toBe(200);
 
         expect(await queuedNotes()).toBe(1);
+      });
+
+      it("names a change capture the cancel claimed, refunded outside the app before its late notice, and leaves it out of the gap", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash({ cancelClaim: true, openTask: false }, false);
+        armStripe();
+
+        const dashboard = { ...lateCaptureRefund(), id: "re_race_4149_dashboard", metadata: {} } as unknown as Stripe.Refund;
+        expect((await chargeRefunded(dashboard)).init?.status ?? 200).toBe(200);
+
+        expect(await queuedNotes()).toBe(0);
+        expect(await refundEntries(1, "booking.payment.late_capture_refunded_outside_app")).toHaveLength(1);
+        expect(await uncoveredCents()).toBe(0);
       });
 
       it("names a marked late capture refunded outside the app, queues no note, and leaves it out of the gap", async () => {

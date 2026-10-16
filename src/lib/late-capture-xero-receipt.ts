@@ -214,18 +214,26 @@ export async function findLateCapturePaymentIntents(
  * kind. An `OPEN` row under the same `reason` is the confirm route's #2700
  * question, which the automatic refund answers by closing it: while it is still
  * `OPEN` after the refund, the record was lost, so the lost-record recovery
- * treats the capture as unrecorded and the record writer closes the row. A
- * `COMPLETED` automatic-reason row is an operator's hand-back (the writer never
- * completes one), `"hand-completed"`: beside a refund the late-capture door
- * sent, #2774's residual double payment.
+ * treats the capture as unrecorded and the record writer closes the row.
+ *
+ * `"hand-completed"` is a `COMPLETED` automatic-reason row that carries NO
+ * approval marker: the record writer never completes a row, so an operator
+ * handed the capture back by hand - beside a refund the late-capture door sent,
+ * #2774's residual double payment. A row WITH the approval marker is #3639's
+ * treasurer task (`holdLateCaptureForTreasurerIfRequired` puts the marker on the
+ * confirm route's own `OPEN` row), which the approval itself completes, so it is
+ * always `"record"`, and an approval marker on any row of the capture wins.
  */
 export async function findClosedLateCaptureRecords(
   paymentIntentIds: readonly string[],
 ): Promise<Map<string, "record" | "hand-completed">> {
   const found = new Map<string, "record" | "hand-completed">();
-  for (const task of await findLateCaptureTaskRows(paymentIntentIds, prisma)) {
-    if (task.approvalIntentId && !found.has(task.approvalIntentId)) found.set(task.approvalIntentId, "record");
-    if (!task.reasonIntentId || task.status === ManualRefundTaskStatus.OPEN) continue;
+  const rows = await findLateCaptureTaskRows(paymentIntentIds, prisma);
+  const approved = new Set(rows.map((task) => task.approvalIntentId).filter((id): id is string => id !== null));
+  for (const intent of approved) found.set(intent, "record");
+  for (const task of rows) {
+    if (task.approvalIntentId || !task.reasonIntentId || approved.has(task.reasonIntentId)) continue;
+    if (task.status === ManualRefundTaskStatus.OPEN) continue;
     if (task.status === ManualRefundTaskStatus.COMPLETED) found.set(task.reasonIntentId, "hand-completed");
     else if (!found.has(task.reasonIntentId)) found.set(task.reasonIntentId, "record");
   }
