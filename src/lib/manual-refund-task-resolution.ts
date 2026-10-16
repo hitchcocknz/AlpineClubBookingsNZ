@@ -21,6 +21,7 @@ import { requireMemberCreditRecipient } from "@/lib/member-credit";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { enqueueEditFinancialReviewRefundRecovery } from "@/lib/payment-recovery";
 import { applyLocalRefundAllocation } from "@/lib/payment-transactions";
+import { readCapacityRaceStripeRefundedForTask } from "@/lib/capacity-race-refunded-total-correction";
 // A settlement write's refusal, as the operator reads it (#3827 split it out).
 import { settlementWriteRefusal } from "@/lib/manual-refund-task-settlement-refusal";
 import { prisma } from "@/lib/prisma";
@@ -125,10 +126,8 @@ export async function resolveManualRefundTask(
       400
     );
   }
-  const confirmedAmountCents =
-    resolution === "completed" ? input.confirmedAmountCents : null;
-  const requestedDirection =
-    resolution === "completed" ? (input.direction ?? null) : null;
+  const confirmedAmountCents = resolution === "completed" ? input.confirmedAmountCents : null;
+  const requestedDirection = resolution === "completed" ? (input.direction ?? null) : null;
   if (
     confirmedAmountCents !== null &&
     !isNonNegativeIntegerCents(confirmedAmountCents)
@@ -147,6 +146,7 @@ export async function resolveManualRefundTask(
   // and (#3635) the day a kept late capture's Xero receipt is dated.
   const clubZone = await readClubTimeZoneOutsideRequest();
   const todayAtClub = clubToday(clubZone);
+  const capacityRaceStripe = resolution === "completed" ? await readCapacityRaceStripeRefundedForTask(taskId) : null; // #4154 review (M1): a provider call, so here, bounded
   const result = await prisma.$transaction(async (tx) => {
     // #3740 (concurrency F1): only the immutable `kind` is read unlocked. An
     // edit review takes lock(1) as this transaction's FIRST lock (INV-LOCK-002)
@@ -331,7 +331,7 @@ export async function resolveManualRefundTask(
           handedBackInCash:
             input.resolution === "completed" && input.handedBackInCash === true,
           club: { zone: clubZone, format },
-          store: tx,
+          store: tx, actingMemberId, capacityRace: { stripe: capacityRaceStripe, invoiced: cancelledBookingRefundInvoiceId(task) !== null }, // #4154 review M1, M4
         })
       : null;
     // #3835: what actually goes back - by card or by hand, netted against a cancellation.
@@ -408,7 +408,7 @@ export async function resolveManualRefundTask(
           await applyLocalRefundAllocation({
             paymentId: settlementRoute.paymentId,
             amountCents: settlementRoute.refundCents,
-            store: tx, preferTransactionIds: settlementRoute.cardShortfall?.preferTransactionIds, // #4097
+            store: tx, preferTransactionIds: settlementRoute.cardShortfall?.preferTransactionIds, onlyTransactionIds: settlementRoute.cardShortfall?.onlyTransactionIds, // #4097, #4154
           });
         }
         // `account-credit` is written by the closure's re-price below, once the

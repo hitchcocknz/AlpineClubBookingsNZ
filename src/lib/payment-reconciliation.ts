@@ -54,7 +54,7 @@ import {
   type ManualSettlementReversalEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
 import { closeCapacityRaceRefundRecordingEvent, recordBookingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
-import { alertCapacityRaceRefundShortfall } from "@/lib/capacity-race-refund-shortfall";
+import { alertCapacityRaceRefundShortfall, raiseCapacityRaceRefundShortfallTask } from "@/lib/capacity-race-refund-shortfall";
 import {
   sendAdminDuplicateCaptureRefundAlert,
   sendAdminPaymentFailureAlert,
@@ -1443,12 +1443,9 @@ async function settleBookingPaymentInTransaction(
       // both mint identical `capacity_claim_failed_<bookingId>_<pi>_<txn>_
       // <amount>` Stripe keys, Stripe answers repeats with the original
       // refunds, and the ledger dedupes on refund id.
-      const { slices: refundPlan, plannedAmountCents: plannedRefundCents } =
-        await planStripeRefundAllocation({
-          paymentId: payment.id,
-          amountCents,
-          store: tx,
-        });
+      const { slices: refundPlan, plannedAmountCents: plannedRefundCents } = await planStripeRefundAllocation({ paymentId: payment.id, amountCents, store: tx });
+      // #4154 (`INV-PAY-135`): what the plan does not carry is a hand-back task to check, raised with the cancel.
+      const shortfallTaskRaised = await raiseCapacityRaceRefundShortfallTask(tx, { bookingId: booking.id, paymentId: payment.id, paymentIntentId, chargedCents: amountCents, plannedRefundCents, format: settlement.format });
       if (plannedRefundCents > 0) {
         await enqueueCapacityClaimFailedRefundRecovery({
           bookingId: booking.id,
@@ -1478,7 +1475,7 @@ async function settleBookingPaymentInTransaction(
         paymentId: payment.id,
         bumpedBookingIds: [] as string[],
         refundPlan,
-        plannedRefundCents,
+        plannedRefundCents, shortfallTaskRaised,
       };
     }
 
@@ -2226,7 +2223,7 @@ export async function markBookingPaymentSucceeded({
     const { refundPlan, plannedRefundCents } = reconciliation;
     // Mirror-vs-ledger drift (same guard as booking-cancel): refund what the
     // payment ledger actually shows refundable; #4125: the officers are told the rest, once.
-    await alertCapacityRaceRefundShortfall({ bookingId, paymentIntentId, chargedCents: amountCents, plannedRefundCents }, format);
+    await alertCapacityRaceRefundShortfall({ bookingId, paymentIntentId, chargedCents: amountCents, plannedRefundCents, taskRaised: reconciliation.shortfallTaskRaised }, format);
 
     const keepRefusalOwed = (attempt: RefundAttempt) =>
       keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });

@@ -671,6 +671,7 @@ function resolutionDescription({
   if (task.groupOrganiserHandBack === true) {
     return "Only do this once the money has actually gone back to the organiser. It records that the club repaid them and who did it; the joiners' refunds are already in the ledger, so nothing more is written there or on the bookings' history.";
   }
+  if (task.cardShortfallCheck === true) return "Only do this once you have checked the member really is owed it. The app first checks it can record this; pay straight after it accepts. It writes the refund into the payment ledger and records a refund on the booking's history. If it refuses, follow what it says."; // #4154 review (M3): mark first, then pay
   return "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history.";
 }
 
@@ -1602,10 +1603,10 @@ export function ManualRefundTaskQueue() {
                 not carry all of the refund due; each is the part the
                 payment&apos;s other (non-card) charges hold. The member is told
                 (on their booking page, and by email unless emails were turned
-                off) that the club will refund it by bank transfer: pay it by bank
-                transfer, then mark it paid back, which also raises its Xero
-                refund credit note. None can be marked until the card refund
-                itself has gone through.
+                off) that the club will refund it by bank transfer: mark it paid back first, which
+                records it and, where the booking has a Xero invoice, raises its refund credit note,
+                then pay it by bank transfer straight after the app accepts. None can be marked
+                until the card refund itself has gone through.
               </p>
             ) : null}
             {hasCardShortfallCheckRows ? (
@@ -1613,15 +1614,14 @@ export function ManualRefundTaskQueue() {
                 className="text-sm text-muted-foreground"
                 data-testid="manual-refund-task-card-shortfall-check-intro"
               >
-                Some of these are the rest of a card cancellation&apos;s refund
-                that the payment&apos;s records show already refunded, or that
-                nothing holds. The member is told (on their booking page, and by
-                email unless emails were turned off) only that the club will be
-                in touch. Check Stripe and the bank before paying anything, then
-                contact the member with what you found. If they were refunded,
-                dismiss it with a note saying how; if it really is owed, pay it
-                by bank transfer and mark it paid back, once the bank-transfer
-                part and the card refund are done.
+                Some of these are the rest of a card refund that the payment&apos;s records show already
+                refunded, or that nothing holds: from a card cancellation, or from a booking cancelled because
+                its dates filled up during the card payment. The member is told only that the club will be in
+                touch: on their booking page, and for a cancellation by email unless emails were turned off.
+                Check Stripe and the bank before paying anything, then contact the member with what you found.
+                If they were refunded, dismiss it with a note saying how. If it really is owed, mark it paid
+                back first, once any bank-transfer part and the card refund are done, and pay it by bank
+                transfer straight after the app accepts; if it refuses, follow what it says.
               </p>
             ) : null}
             {hasGroupOrganiserRows ? (

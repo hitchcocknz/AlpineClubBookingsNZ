@@ -408,8 +408,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   its card refunds still counted (a refund the old formula never added, failing
   later, takes nothing). Rows, mirror and aggregate commit in one transaction.
 - **Every later write of that column is one compare-and-set**, re-read and
-  retried: the writer above, #1491's fold and `applyLocalRefundAllocation`, which
-  refuses only when headroom is gone. All take the `Payment` row first
+  retried: the writer above, #1491's fold, `applyLocalRefundAllocation`, which
+  refuses only when headroom is gone, and a capacity race's guarded correction,
+  which only lowers a total to its refund rows (`INV-PAY-135`). All take the `Payment` row first
   (`lockPaymentForRefundedTotal`), then refund rows, then transaction rows.
 - Two writers set an organiser-settled child's mirror directly, because the
   child has no transaction rows: the pre-#3653 group-settlement path
@@ -1457,6 +1458,40 @@ short).
     `booking-narrative-card-shortfall.test.ts`,
     `capacity-race-refund-event.realdb.test.ts` and
     `cancel-card-refund-event.realdb.test.ts`.
+
+## INV-PAY-135
+
+**Related: `INV-PAY-129`** (the task it reuses) and **`INV-PAY-103`** (the
+refunded total it corrects).
+
+- **What a capacity race's card refund plan does not carry is a task to
+  check** (#4154): ONE `CANCELLED_BOOKING_HAND_BACK`, `INV-PAY-129`'s `check`
+  part, raised in the void's claim, keyed on the booking and race intent.
+  - **Marked paid back** (marked first, paid after), it lands only on the race
+    intent's captured charge, refused while the race's card refund is
+    unsettled, or while Stripe, read before the transaction, shows more of
+    that charge refunded than its refund rows, or cannot be read.
+  - **Where that charge holds too little, it is first corrected** (owner,
+    15 Oct 2026, "Guarded recalculation"): under the `Payment` row lock, its
+    refunded total is LOWERED to its recorded refund rows, never raised, and
+    audited. Only when the charge and its refund rows postdate the refund
+    ledger, the booking gave back no account credit, the booking and payment
+    have no other refund task, and the corrected charge holds the task. Xero
+    note coverage beyond the payment's refund rows is taken as the self-heal's
+    card note only while every other charge postdates the ledger: up to the
+    task's amount it is kept on the task, so its own note bills the rest;
+    otherwise refused. A refusal names the blocker, and never asks for a note
+    by hand where one may cover the money.
+  - **The remaining window**: a refund made in Stripe after that read and
+    recorded after the commit can still pay twice. The refund sync's cap then
+    alerts the officers, after its own commit.
+  - **The member's page follows it**: open, paid back or dismissed.
+  - Proven by `capacity-race-refund-shortfall.test.ts`,
+    `capacity-race-refunded-total-correction.test.ts`,
+    `card-refund-cap-overflow.test.ts`, `manual-refund-task.test.ts`,
+    `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts`,
+    `booking-ledger-projection-census.test.ts` and
+    `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
 ## INV-PAY-031
 
