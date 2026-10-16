@@ -74,14 +74,18 @@ type Charge = { id: string; amountCents: number; refundedAmountCents: number; cr
 type Refund = { amountCents: number; status: string; stripeCreatedAt: Date | null; paymentTransactionId?: string };
 
 /** The baseline: a $200 charge made after the ledger started, reading all of it refunded, with $140 of card refund on record. */
-function world(over: { charges?: Charge[]; otherCharges?: Charge[]; refunds?: Refund[]; otherTasks?: number } = {}) {
+/** A completed task on the payment whose bank cash the note pipeline reads (`readPaidAnotherWayCash`), noted by `noteRows`. */
+type BankCashRecord = { id: string; kind: string; occurrenceKey: string; amountCents: number; reviewContext: unknown; noteRows: number };
+
+function world(over: { charges?: Charge[]; otherCharges?: Charge[]; refunds?: Refund[]; otherTasks?: number; bankCash?: BankCashRecord[] } = {}) {
   const charges = over.charges ?? [{ id: "txn-race", amountCents: 20_000, refundedAmountCents: 20_000, createdAt: at(2_000) }];
   const otherCharges = over.otherCharges ?? [];
   const refunds = (over.refunds ?? [{ amountCents: 14_000, status: "succeeded", stripeCreatedAt: at(3_000) }]).map((refund) => ({ paymentTransactionId: "txn-race", ...refund }));
   return {
     // The race intent's charges, or (round 3) the payment's other captured charges, as the query asks.
     paymentTransaction: { findMany: vi.fn(async ({ where }: { where: { id?: { not: string } } }) => (where.id ? otherCharges : charges)) },
-    manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0), update: vi.fn(async () => ({})) },
+    manualRefundTask: { count: vi.fn(async () => over.otherTasks ?? 0), update: vi.fn(async () => ({})), findMany: vi.fn(async () => over.bankCash ?? []) },
+    xeroSyncOperation: { count: vi.fn(async ({ where }: { where: { requestPayload: { equals: string } } }) => over.bankCash?.find((task) => task.id === where.requestPayload.equals)?.noteRows ?? 0) },
     paymentRefund: {
       findMany: vi.fn(async () => refunds.filter((refund) => refund.paymentTransactionId === "txn-race")),
       // What a Prisma aggregate answers: the rows on the charge (or the whole payment), less the statuses it is told to leave out.
@@ -295,6 +299,42 @@ describe("a capacity race's charge corrected for its hand-back (#4154, INV-PAY-1
       const store = world({ otherCharges: [{ id: "txn-late", amountCents: 5_000, refundedAmountCents: 0, createdAt: at(2_500) }] });
       await expect(run(store)).resolves.toEqual({ chargeId: "txn-race", xero: "noted" });
       expect(store.manualRefundTask.update).toHaveBeenCalledWith({ where: { id: "task-race" }, data: { reviewContext: { paidAnotherWayCardNoteCover: 6_000 } } });
+    });
+
+    // Round 4 (F3): a note for another refund's bank cash on the payment is that refund's, not a cover for this money.
+    it("MUTATION (round 4, F3): a note answering a completed hand-back's noted bank cash leaves the refusal asking for this money's own note", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 5_000);
+      const store = world({
+        otherTasks: 1,
+        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 5_000, reviewContext: null, noteRows: 1 }],
+      });
+      await expect(run(store)).rejects.toMatchObject({
+        message: `${capacityRaceNothingToAllocateMessage("invoiced")} (The app could not correct the charge's records itself: ${CAPACITY_RACE_CORRECTION_BLOCKED_REASON["other-task"]}.)`,
+      });
+    });
+
+    it("CONTROL (round 4, F3): coverage beyond that hand-back's noted cash still reads as a note that may cover this money", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000 + 5_000 + 1);
+      const store = world({
+        otherTasks: 1,
+        bankCash: [{ id: "task-bank", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", amountCents: 5_000, reviewContext: null, noteRows: 1 }],
+      });
+      await expect(run(store)).rejects.toMatchObject({ message: expect.stringContaining(CAPACITY_RACE_XERO_SENTENCE.noted) });
+    });
+
+    // Round 4 (F4): the gaps the lens named.
+    it("MUTATION (round 4, F4): a payment with another charge made before the ledger and NO card note's cover completes normally", async () => {
+      doubles.noteCoverage.mockResolvedValue(14_000);
+      const store = world({ otherCharges: [{ id: "txn-old", amountCents: 5_000, refundedAmountCents: 5_000, createdAt: at(LEDGER_START - 1) }] });
+      await expect(run(store)).resolves.toEqual({ chargeId: "txn-race", xero: "invoiced" });
+      expect(doubles.compareAndSet).toHaveBeenCalled();
+    });
+
+    it("MUTATION (round 4, F4): an unreadable hand-resolved note makes an earlier refusal (other task) say to check the note there too", async () => {
+      doubles.resolvedNotes.mockResolvedValueOnce({ coveredCents: 0, correlationKeys: [], operationIds: ["op-1"], unreadableOperationIds: ["op-1"] });
+      await expect(run(world({ otherTasks: 1 }))).rejects.toMatchObject({
+        message: `${capacityRaceNothingToAllocateMessage("noted")} (The app could not correct the charge's records itself: ${CAPACITY_RACE_CORRECTION_BLOCKED_REASON["other-task"]}.)`,
+      });
     });
 
     it("CONTROL: notes covering exactly the card refunds on record record nothing on the task", async () => {

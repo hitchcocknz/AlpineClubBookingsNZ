@@ -21,7 +21,7 @@ import {
 } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { getPaymentIntent } from "@/lib/stripe";
-import { paidAnotherWayCardNoteCoverContext } from "@/lib/card-refund-paid-another-way-cash";
+import { paidAnotherWayCardNoteCoverContext, readPaidAnotherWayCash } from "@/lib/card-refund-paid-another-way-cash";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import { formatCents } from "@/lib/utils";
 import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -137,7 +137,8 @@ export type CapacityRaceXero = "invoiced" | "no-invoice" | "noted";
 export const CAPACITY_RACE_XERO_SENTENCE: Record<CapacityRaceXero, string> = {
   invoiced: "Then raise its refund credit note in Xero by hand: the app will not raise one.",
   "no-invoice": "The booking has no Xero invoice to credit, so no refund credit note is needed.",
-  noted: "A Xero refund credit note on this payment may already cover it: check before raising another.",
+  // Round 4 (F3): never discourages a note the money needs - another refund's note on the payment may be the one there.
+  noted: "A Xero refund credit note already on this payment may cover this money: check it, and raise one for this amount unless that note already covers it.",
 };
 
 /**
@@ -196,6 +197,26 @@ export async function readCapacityRaceStripeRefundedForTask(taskId: string): Pro
   return { readable: false };
 }
 
+/**
+ * Round 3 (1), round 4 (F2, F3): THE PAYMENT'S XERO NOTE COVERAGE ITS RECORDS DO NOT EXPLAIN - what a capacity race's
+ * every refusal reads before it says anything about Xero. Coverage (`sumRefundCreditNoteCoverageCents`) less what the
+ * payment's recorded card refunds and the bank cash its closes and hand-backs noted (`readPaidAnotherWayCash`) explain:
+ * what is left is a card note for money with no record behind it (the self-heal's, for a race's stray total). A note
+ * resolved by hand whose amount cannot be read may cover anything. Either way (`mayCover`), a refusal never asks for a
+ * note by hand without saying to check the one there.
+ */
+export async function noteMayCover(
+  store: Prisma.TransactionClient,
+  paymentId: string,
+): Promise<{ cardNoteCoversCents: number; unreadable: boolean; mayCover: boolean }> {
+  const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, store);
+  const unreadable = resolved.unreadableOperationIds.length > 0;
+  const beyondRows = (await sumRefundCreditNoteCoverageCents(paymentId, resolved, store)) - (await sumRecordedRefundsForPayment(store, paymentId));
+  // The noted bank cash is read only when there is coverage left for it to explain.
+  const cardNoteCoversCents = beyondRows > 0 ? Math.max(0, beyondRows - (await readPaidAnotherWayCash(store, paymentId)).notedCents) : 0;
+  return { cardNoteCoversCents, unreadable, mayCover: cardNoteCoversCents > 0 || unreadable };
+}
+
 const toSeconds = (at: Date) => Math.floor(at.getTime() / 1000);
 
 /**
@@ -227,14 +248,9 @@ export async function capacityRaceChargeForHandBack(
   // its own note bills the rest. Notes are kept per payment, never per charge, so that excess is the race charge's only
   // while every other captured charge postdates the refund ledger (each of its refunds then has a row that explains
   // its note); otherwise, as beyond the task's amount, it is refused.
-  const resolvedNotes = await readResolvedRefundCreditNoteCoverage(task.paymentId, store);
-  const cardNoteCoversCents = Math.max(
-    0,
-    (await sumRefundCreditNoteCoverageCents(task.paymentId, resolvedNotes, store)) - (await sumRecordedRefundsForPayment(store, task.paymentId)),
-  );
-  const noteMayCover = cardNoteCoversCents > 0 || resolvedNotes.unreadableOperationIds.length > 0;
+  const { cardNoteCoversCents, unreadable, mayCover } = await noteMayCover(store, task.paymentId);
   const refuse = (blocked: CapacityRaceCorrectionBlocked) =>
-    new ManualBookingPaymentError(capacityRaceCorrectionRefusal(blocked, params.invoiced, noteMayCover), 400);
+    new ManualBookingPaymentError(capacityRaceCorrectionRefusal(blocked, params.invoiced, mayCover), 400);
   const charges = await store.paymentTransaction.findMany({
     where: { paymentId: task.paymentId, stripePaymentIntentId: raceIntentId, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
     // Exactly one is taken, or none: ordered only so the ledger's order census (`INV-PAY-133`) reads every capture read alike.
@@ -248,7 +264,7 @@ export async function capacityRaceChargeForHandBack(
   if (params.stripe.refundedCents > recordedCents) {
     throw new ManualBookingPaymentError(capacityRaceStripeAheadMessage(params.stripe.refundedCents, recordedCents, params.format), 409);
   }
-  const xero = (): CapacityRaceXero => (noteMayCover ? "noted" : params.invoiced ? "invoiced" : "no-invoice");
+  const xero = (): CapacityRaceXero => (mayCover ? "noted" : params.invoiced ? "invoiced" : "no-invoice");
   if (charge.amountCents - charge.refundedAmountCents >= amountCents) return { chargeId: charge.id, xero: xero() };
 
   const ledgerStart = await refundLedgerStartSeconds(store);
@@ -258,7 +274,7 @@ export async function capacityRaceChargeForHandBack(
     where: { id: { not: task.id }, OR: [{ bookingId: task.bookingId }, { paymentId: task.paymentId }] },
   });
   if (otherTasks > 0) throw refuse("other-task");
-  if (resolvedNotes.unreadableOperationIds.length > 0 || cardNoteCoversCents > amountCents) throw refuse("noted");
+  if (unreadable || cardNoteCoversCents > amountCents) throw refuse("noted");
   if (cardNoteCoversCents > 0) {
     const otherCharges = await store.paymentTransaction.findMany({
       where: { paymentId: task.paymentId, id: { not: charge.id }, status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },

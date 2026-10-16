@@ -84,6 +84,8 @@ const mocks = vi.hoisted(() => ({
   // #4154 review (M1): what Stripe says a race's charge refunded, read before the transaction; and the charge's refund rows.
   capacityRaceStripeRead: vi.fn(async (): Promise<unknown> => null),
   recordedRefundsForTransaction: vi.fn(async () => 0),
+  // #4159 round 4: the payment's Xero refund-note coverage, none unless a case says so.
+  noteCoverage: vi.fn(async () => 0),
   paymentFindUnique: vi.fn(),
   // #3827 (`INV-PAY-117`): the by-hand review route's pre-claim cap reads the
   // payment and the open hand-backs on the completion's own transaction.
@@ -163,7 +165,7 @@ vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
 vi.mock("@/lib/xero-resolved-in-xero-fences", async (importOriginal) => ({
   ...((await importOriginal()) as object),
   readResolvedRefundCreditNoteCoverage: async () => ({ coveredCents: 0, correlationKeys: [], operationIds: [], unreadableOperationIds: [] }),
-  sumRefundCreditNoteCoverageCents: async () => 0,
+  sumRefundCreditNoteCoverageCents: async () => mocks.noteCoverage(),
 }));
 vi.mock("@/lib/capacity-race-refunded-total-correction", async (importOriginal) => ({
   ...((await importOriginal()) as object),
@@ -520,6 +522,7 @@ beforeEach(() => {
   mocks.manualRefundTaskAggregate.mockResolvedValue({ _sum: { amountCents: null } });
   mocks.bookingEventFindFirst.mockResolvedValue(null);
   mocks.manualRefundTaskFindMany.mockResolvedValue([]);
+  mocks.noteCoverage.mockResolvedValue(0);
   mocks.paymentRecoveryOperationAggregate.mockResolvedValue({ _sum: { amountCents: null } });
   mocks.planKeptLateCaptureXeroRecord.mockResolvedValue({ kind: "none" });
   mocks.finishKeptLateCaptureXeroRecord.mockResolvedValue(undefined);
@@ -2735,6 +2738,35 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
       mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
 
       await expect(complete()).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/^The payment's records show too little of this card charge left to refund.*The booking has no Xero invoice to credit, so no refund credit note is needed\.$/) });
+    });
+
+    // #4159 round 4 (F2): a race's stopped card refund reads the payment's Xero notes first, so it never asks for a hand
+    // note where a card note may already cover the money.
+    it("MUTATION (round 4, F2): a race's stopped card refund, with a card note on the payment, says to check that note - never a note by hand", async () => {
+      shortfallTask("race");
+      raceChargeRows();
+      mocks.noteCoverage.mockResolvedValue(5_000);
+      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([{ status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }]);
+
+      await expect(complete()).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringMatching(/has stopped retrying.*A Xero refund credit note already on this payment may cover this money: check it, and raise one for this amount unless that note already covers it\.$/),
+      });
+      mocks.capacityRaceRecoveryRows.mockReturnValueOnce([{ status: "FAILED", attempts: 5, nextRetryAt: null, lastError: "Stripe refused" }]);
+      await expect(complete()).rejects.toMatchObject({ message: expect.not.stringContaining("raise its refund credit note in Xero by hand") });
+    });
+
+    // #4159 round 4 (F4): the allocator's backstop refusal takes the correction's answer about Xero notes.
+    it("MUTATION (round 4, F4): the allocator's backstop on a race whose payment carries a card note says to check that note", async () => {
+      shortfallTask("race");
+      raceChargeRows();
+      mocks.noteCoverage.mockResolvedValue(5_000);
+      mocks.applyLocalRefundAllocation.mockRejectedValueOnce(new Error("Refund amount exceeds captured payments"));
+
+      await expect(complete()).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/^The payment's records show too little of this card charge left to refund.*A Xero refund credit note already on this payment may cover this money/),
+      });
     });
 
     // #4154 review (M1): Stripe is asked before the transaction, and a late or unread one stops the completion before any write.

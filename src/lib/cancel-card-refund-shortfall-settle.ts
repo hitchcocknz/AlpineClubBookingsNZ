@@ -6,6 +6,7 @@ import {
   CAPACITY_RACE_XERO_SENTENCE,
   capacityRaceChargeForHandBack,
   capacityRaceNothingToAllocateMessage,
+  noteMayCover,
   type CapacityRaceStripeRefunded,
   type CapacityRaceXero,
 } from "@/lib/capacity-race-refunded-total-correction";
@@ -148,7 +149,9 @@ export async function cardShortfallSettlement(
   await lockPaymentForRefundedTotal(store, task.paymentId);
   const raceIntentId = capacityRaceShortfallIntentId(task);
   const race = { stripe: completion.capacityRace?.stripe ?? null, invoiced: completion.capacityRace?.invoiced ?? true };
-  const raceXero: CapacityRaceXero = race.invoiced ? "invoiced" : "no-invoice";
+  // Round 4 (F2): a race's refusals read the payment's Xero notes first (`noteMayCover`), the stopped one included.
+  const raceXero: CapacityRaceXero | null =
+    raceIntentId === null ? null : (await noteMayCover(store, task.paymentId)).mayCover ? "noted" : race.invoiced ? "invoiced" : "no-invoice";
   // #4104 review (MM3): the cancel's own recovery row, and any card refund on
   // this payment Stripe failed later and that is owed again by a row of its own
   // (`card_refund_failed_later_<refund>`) - card money still moving either way.
@@ -169,7 +172,7 @@ export async function cardShortfallSettlement(
   const says: CardRefundRefusals =
     raceIntentId === null
       ? CANCEL_CARD_REFUND_REFUSALS
-      : { ...CANCEL_CARD_REFUND_REFUSALS, awaitingRetry: CAPACITY_RACE_CARD_AWAITING_RETRY_MESSAGE, stopped: capacityRaceCardStoppedMessage(raceXero) };
+      : { ...CANCEL_CARD_REFUND_REFUSALS, awaitingRetry: CAPACITY_RACE_CARD_AWAITING_RETRY_MESSAGE, stopped: capacityRaceCardStoppedMessage(raceXero ?? "invoiced") };
   const refusal = ownOrFailedLater.map((row) => cardRefundRefusal(row, says)).find((message) => message !== null);
   if (refusal) throw new ManualBookingPaymentError(refusal, 409);
   // #4154 (`INV-PAY-135`, PR #4159 review F2/F4): a capacity race's settles on
