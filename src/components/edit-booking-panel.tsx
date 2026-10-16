@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { bookingOwner } from "@/lib/booking-owner";
+import { mergeChangeRequestGuests } from "@/lib/booking-change-request-input";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 // The create wizard's own prediction + column translation, imported rather than
 // re-implemented (MG4 #2309). The first cut of this panel wrote its own copy of
@@ -1573,11 +1574,7 @@ export function EditBookingPanel({
     setRequestSubmitting(true);
 
     try {
-      const body = buildModificationPayload();
-      // #4030: the card's guests join the editor's; a note alone is refused.
-      if (cardAddGuests.length > 0) {
-        body.addGuests = [...((body.addGuests as unknown[] | undefined) ?? []), ...cardAddGuests];
-      }
+      const body = mergeChangeRequestGuests(buildModificationPayload(), cardAddGuests);
 
       const res = await fetch(`/api/bookings/${booking.id}/change-requests`, {
         method: "POST",
@@ -1879,6 +1876,7 @@ export function EditBookingPanel({
           error={requestError}
           success={requestSuccess}
           hasEditorChanges={hasChanges}
+          editorChanges={buildModificationPayload()}
           guestContext={{ booking, ageTierOptions, familyMembers }}
           onReasonChange={setRequestReason}
           onSubmit={handleSubmitChangeRequest}
