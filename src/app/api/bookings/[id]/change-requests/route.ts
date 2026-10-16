@@ -31,7 +31,8 @@ import {
   CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
   changeRequestAddGuestsSchema,
   changeRequestValidationMessage,
-  changeRequestGuestStayRangeSchema,
+  changeRequestGuestStayRangesSchema,
+  isAppliedChangeRequestRange,
   namesStayRangeChange,
   storedGuestNightsAsDays,
   guestStayRangesRefusal,
@@ -49,8 +50,9 @@ const createChangeRequestSchema = z.object({
   // #4030: the one add-guest shape, shared with the officer's entry.
   addGuests: changeRequestAddGuestsSchema.optional(),
   removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
-  // #4088: each guest's bounds, or the editor grid's night set (`nights`).
-  guestStayRanges: z.array(changeRequestGuestStayRangeSchema).max(200).optional(),
+  // #4088: each guest's bounds, or the editor grid's night set (`nights`);
+  // #4157: each guest at most once.
+  guestStayRanges: changeRequestGuestStayRangesSchema.optional(),
   requestedEffectiveDate: z.string().optional(),
   reason: z.string().max(2000).optional(),
 });
@@ -221,10 +223,16 @@ export async function POST(
     checkOut,
     addGuests,
     removeGuestIds,
-    guestStayRanges,
+    guestStayRanges: sentGuestStayRanges,
     requestedEffectiveDate,
     reason,
   } = parsed.data;
+  // #4157: the ranges approval applies — both dates, or a night set — and so
+  // the list every check below judges, the summary names and the request
+  // stores. A dateless entry asks for nothing and is dropped here, as approval
+  // has always dropped it; a one-bound entry is refused below, by the
+  // per-entry rule over what was sent.
+  const guestStayRanges = sentGuestStayRanges?.filter(isAppliedChangeRequestRange);
   // #4030 (owner decision: "a structured delta is required"). A request must
   // name the change it asks for: new dates, guests added or removed, or a
   // guest's nights. `requestedEffectiveDate` and the note are context for the
@@ -270,7 +278,7 @@ export async function POST(
   const stay = { checkIn: formatDateOnly(nextCheckIn), checkOut: formatDateOnly(nextCheckOut) };
   const nightsRefusal =
     addedGuestNightsRefusal(addGuests ?? [], stay) ??
-    guestStayRangesRefusal(guestStayRanges ?? [], stay, booking.guests) ??
+    guestStayRangesRefusal(sentGuestStayRanges ?? [], stay, booking.guests) ??
     requestedDatesIgnoredByNightsRefusal({
       booking,
       guests: booking.guests,
@@ -385,7 +393,7 @@ export async function POST(
     );
   }
 
-  const invalidRangeGuestIds = (guestStayRanges ?? [])
+  const invalidRangeGuestIds = (sentGuestStayRanges ?? [])
     .map((range) => range.guestId)
     .filter((guestId) => !booking.guests.some((guest) => guest.id === guestId));
   if (invalidRangeGuestIds.length > 0) {

@@ -20,3 +20,7 @@
   approved before this release lists such a guest with the dates as asked and
   neither mark, because approving it then filled the gaps (or, on a stay
   still running, only acknowledged it).
+
+  A change request that gives the same guest's dates more than once is now
+  refused with a plain message asking the member to check the dates and send
+  it again, since approving can apply only one set of dates per guest.

@@ -52,7 +52,10 @@ vi.mock("@/lib/club-time/server", () => ({
 }));
 
 import { POST } from "@/app/api/bookings/[id]/change-requests/route";
-import { CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE } from "@/lib/booking-change-request-guests";
+import {
+  CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE,
+  CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
+} from "@/lib/booking-change-request-guests";
 import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
 import {
   describeRequestedGuestNights,
@@ -268,6 +271,45 @@ describe("POST /api/bookings/[id]/change-requests keeps a grid request's night s
     });
     expect(added.status).toBe(400);
     expect((await added.json()).error).toBe("Ari Example: Date Out must be after Date In.");
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/bookings/[id]/change-requests judges the ranges approval applies (#4157)", () => {
+  it("refuses a request that names one guest's dates twice, in the member's words", async () => {
+    // Crafted: the guest's own dates, then the same guest with no dates, and
+    // a later check-out. Approval applies one entry per guest, so this says
+    // two things; it is refused before anything is stored.
+    const response = await post({
+      checkOut: "2026-07-04",
+      guestStayRanges: [
+        { guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-04" },
+        { guestId: "guest-1" },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error, "INV-REQ-012: a guest named twice is refused").toBe(
+      CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
+    );
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+  });
+
+  it("stores only the entries approval applies: a dateless entry asks for nothing", async () => {
+    const response = await post({
+      addGuests: [grandchild],
+      guestStayRanges: [{ guestId: "guest-1" }],
+    });
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
+    const stored = storedChanges() as { requested: { guestStayRanges: unknown } };
+    expect(stored.requested.guestStayRanges, "INV-REQ-012: only applied entries are stored").toEqual([]);
+  });
+
+  it("still refuses a one-bound entry, rather than dropping it", async () => {
+    const response = await post({
+      addGuests: [grandchild],
+      guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30" }],
+    });
+    expect(response.status).toBe(400);
     expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
   });
 });

@@ -119,11 +119,15 @@ export function deltaHasStayRangeInputs(input: StayRangeDeltaInput): boolean {
 /**
  * Which of a delta's `guestStayRanges` entries applies to each guest: THE rule,
  * shared by the planner below and every surface that predicts it (#4157). A
- * request may name one guest more than once, and the LAST entry for a guest is
- * the one applied; an earlier one is ignored. A caller that judges an entry by
- * itself (the change request's kept nights, the officer's card) must judge the
- * one this returns, or it describes and alters an entry the planner never
- * reads.
+ * delta may name one guest more than once, and the LAST entry for a guest is
+ * the one applied; an earlier one is ignored.
+ *
+ * The planner applies it to the list it is given. A change request hands the
+ * planner only its applied entries — both dates, or a night set
+ * (`isAppliedChangeRequestRange`) — so every change-request surface (the submit
+ * checks, the kept nights, the officer's card) takes the last entry AFTER that
+ * filter, which is the entry approval applies. Judging any other entry
+ * describes or alters one approval never reads.
  */
 export function effectiveStayRangeByGuest<Entry extends { guestId: string }>(
   entries: ReadonlyArray<Entry> | null | undefined,

@@ -309,25 +309,24 @@ the guest's own Date In and Date Out keeps the nights the guest holds (#4157,
 owner decision "Keep their nights"). Range mode cannot express gaps (#713), so
 the member's form sends a gapped guest's own dates back unchanged; applied as
 written, that range put the guest on every night inside it and charged for the
-gaps. `lockedPeriodRequestToBatchInput` passes such a guest to the planner as
-their night set, so range mode stays on, including beside an officer's entry.
-A guest named more than once is judged on the entry the planner applies, the
-last (`effectiveStayRangeByGuest`); an earlier repeat keeps nothing.
+gaps. `lockedPeriodRequestToBatchInput` passes such a guest as their night
+set, so range mode stays on, even beside an officer's entry.
 Only a moved bound re-spreads the guest; a guest who already holds every night
-is passed by the two bounds. Whether a request names any change is still
-judged on the ranges as sent.
+is passed by the two bounds. Each guest is judged on the entry approval
+applies: the last with both dates or a night set (`effectiveStayRangeByGuest`);
+a new request naming a guest twice is refused. Whether a request names any
+change is judged on that entry as sent, before the kept nights replace it.
 
 `keptNightsByGuest` decides this from one source, for the executor and for the
 officer's card: the booking's live guest rows (under the executor's locks;
 loaded by the admin list for pending requests only), else the request's
-snapshot. An approval's guarded claim, whether it applies the request or only
-acknowledges it on a running stay, records the kept nights as
+snapshot. An approval's guarded claim, applying or only acknowledging,
+records the kept nights as
 `requestedChanges.keptNights`, empty when none, a key the older schema strips.
 The card reads a pending request against that source and a declined one
 against its snapshot, listing the kept nights as unchanged; an approval with
 the record exactly as recorded. An approval without it (one before this
-release) is listed as asked with neither mark,
-and is unchanged only where its snapshot holds night rows. Guarded by
+release) is listed as asked with neither mark, and is unchanged only where its snapshot holds night rows. Guarded by
 `booking-change-request-repeated-range.test.ts`,
 `booking-change-request-execution.test.ts`,
 `booking-change-request-officer-entry.test.ts`,
