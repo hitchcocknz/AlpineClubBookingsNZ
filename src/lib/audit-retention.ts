@@ -364,7 +364,8 @@ export function isAuditLogRetentionCritical(input: {
   severity?: string | null;
   retentionClass?: string | null;
 }): boolean {
-  // An unknown stored class reads as no class, as the prune reads it (#3940).
+  // An unknown stored class reads as no class (#3940). This answers the
+  // writer's question, not the prune's: see the runbook's #3524 asymmetry.
   if (isAuditRetentionClass(input.retentionClass)) {
     return input.retentionClass === "critical";
   }
