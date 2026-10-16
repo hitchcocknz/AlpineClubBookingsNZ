@@ -657,7 +657,7 @@ Prefix `INV-EXCEPT`.
 | `INV-EXCEPT-020` | A kept-pending capacity conflict is always recorded, on either store |
 | `INV-EXCEPT-021` | Live proposals are verified by replaying the frozen delta, never trusted |
 | `INV-EXCEPT-035` | A refusal names only what was established, never an unseen cause |
-| `INV-EXCEPT-022` | One implementation computes what the delta produces, for all five surfaces |
+| `INV-EXCEPT-022` | One implementation computes what the delta produces, on every surface |
 | `INV-EXCEPT-023` | Only reviewed rules are overridden; ADMIN never borrowed for guest authorisation |
 | `INV-EXCEPT-024` | An approved hosting exception is recorded as decided in the same transaction |
 | `INV-EXCEPT-025` | Adult-supervision review is never decided by proxy; opens PENDING and BLOCKED |

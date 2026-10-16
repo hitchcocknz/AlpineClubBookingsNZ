@@ -1062,11 +1062,11 @@ export async function prepareGuestPlan(
   // policy-exception workflow runs it to freeze the party an officer reviews, and
   // the modification PREVIEW (`POST /api/bookings/[id]/modify-quote`) runs it to
   // quote the price, and the change-request route (#4030) runs it to refuse a date
-  // move its nights ignore — so all five agree by construction. Keep this count in
-  // step with `INV-EXCEPT-022` ("Five surfaces, one implementation"); a stale
-  // enumeration here is how the #2526 divergence sat unnoticed. Passing the resolved envelope as `requested` keeps an in-progress
-  // edit (whose check-in is pinned to the stored one) resolving against the
-  // envelope actually being applied.
+  // move its nights ignore — so they all agree by construction. Keep this list in
+  // step with `INV-EXCEPT-022`'s surfaces; a stale enumeration here is how the
+  // #2526 divergence sat unnoticed. Passing the resolved envelope as `requested`
+  // keeps an in-progress edit (whose check-in is pinned to the stored one)
+  // resolving against the envelope actually being applied.
   const resolvedRanges = resolveStayRangesOrApiError({
     booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
     guests: remainingGuests,
