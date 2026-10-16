@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   listRefunds: vi.fn(),
   logAudit: vi.fn(),
   getClubFormat: vi.fn(),
-  auditLogFindFirst: vi.fn(),
+  auditLogFindMany: vi.fn(),
   paymentFindUnique: vi.fn(),
   refundCentsByIntent: vi.fn(),
   paymentTransactionFindUnique: vi.fn(),
@@ -38,7 +38,7 @@ vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   lateCaptureAuditKind: (kind: string | null) => (kind === null ? null : kind === "primary" ? "primary" : "modification_additional"),
 }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
-  findClosedLateCaptureRecordIntents: (...args: unknown[]) => mocks.findClosed(...args),
+  findClosedLateCaptureRecords: (...args: unknown[]) => mocks.findClosed(...args),
 }));
 vi.mock("@/lib/refund-note-eligible-cash", () => ({
   readRecordedRefundCentsByIntent: (...args: unknown[]) => mocks.refundCentsByIntent(...args),
@@ -51,7 +51,7 @@ vi.mock("@/lib/club-format-settings", () => ({ getClubFormat: () => mocks.getClu
 vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    auditLog: { findFirst: (...args: unknown[]) => mocks.auditLogFindFirst(...args) },
+    auditLog: { findMany: (...args: unknown[]) => mocks.auditLogFindMany(...args) },
     payment: { findUnique: (...args: unknown[]) => mocks.paymentFindUnique(...args) },
     paymentTransaction: { findUnique: (...args: unknown[]) => mocks.paymentTransactionFindUnique(...args) },
   },
@@ -61,6 +61,7 @@ import {
   LateCaptureRecordLostError,
   finishAutomaticLateCaptureRefund,
   recoverLostLateCaptureRecord,
+  readUnrecordedLateCaptureRefund,
   recoverLostLateCaptureRecordsForPayment,
   type LateCaptureIdentity,
   type LateCaptureRecordBooking,
@@ -119,6 +120,10 @@ const entriesOf = (action: string) =>
     .filter((entry) => entry.action === action)
     .map((entry) => JSON.parse(entry.details) as Record<string, unknown>);
 const refundEntries = () => entriesOf("booking.payment.refunded_after_cancellation");
+/** A stored audit row naming the capture, as `findMany` returns it. */
+const refundTimeEntry = (extra: Record<string, unknown> = {}, paymentIntentId = INTENT) => ({
+  details: JSON.stringify({ paymentIntentId, refundId: "re_late_1", amountCents: 2500, kind: "primary", ...extra }),
+});
 const recoveredEntries = () => entriesOf("booking.payment.auto_refund_record_recovered");
 
 beforeEach(() => {
@@ -126,12 +131,12 @@ beforeEach(() => {
   mocks.record.mockResolvedValue(RECORDED);
   mocks.announce.mockResolvedValue(undefined);
   mocks.queueNote.mockResolvedValue(undefined);
-  mocks.findClosed.mockResolvedValue(new Set());
+  mocks.findClosed.mockResolvedValue(new Map());
   mocks.listRefunds.mockResolvedValue([stripeRefund()]);
   mocks.landedAfter.mockResolvedValue(true);
   mocks.getClubFormat.mockResolvedValue(CLUB_FORMAT_TEST);
-  // By default the delivery that refunded wrote its entry (and sent its alert).
-  mocks.auditLogFindFirst.mockResolvedValue({ id: "audit-refund-time" });
+  // By default the delivery that refunded wrote its entry, marked: its record write was lost.
+  mocks.auditLogFindMany.mockResolvedValue([refundTimeEntry({ recordLost: true })]);
 });
 
 describe("finishAutomaticLateCaptureRefund — the one epilogue", () => {
@@ -189,7 +194,7 @@ describe("finishAutomaticLateCaptureRefund — the one epilogue", () => {
 });
 
 describe("recoverLostLateCaptureRecord — a redelivery's check", () => {
-  it("writes only the missing row and its own entry when the refunding delivery already reported the refund: no second alert", async () => {
+  it("writes the missing row and its own entry, and sends the alert again, when the refund-time entry says the record write was lost", async () => {
     mocks.listRefunds.mockResolvedValueOnce([
       stripeRefund({ id: "re_late_2", amount: 500, created: Math.floor(REFUNDED_ON.getTime() / 1000) + 60 }),
       stripeRefund(),
@@ -199,34 +204,100 @@ describe("recoverLostLateCaptureRecord — a redelivery's check", () => {
 
     // Bounded and never retried on the webhook path.
     expect(mocks.listRefunds).toHaveBeenCalledWith(INTENT, { timeoutMs: 5_000 });
-    expect(mocks.auditLogFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { action: "booking.payment.refunded_after_cancellation", entityId: "booking-1", details: { contains: INTENT } },
-      }),
-    );
+    // Fetched by action and booking and matched in code: no LIKE on the stored text (#4146).
+    expect(mocks.auditLogFindMany).toHaveBeenCalledWith({
+      where: { action: "booking.payment.refunded_after_cancellation", entityId: "booking-1" },
+      select: { details: true },
+    });
     // Dated the refund's day, from the earliest refund the door sent.
     expect(mocks.record).toHaveBeenCalledWith(
       expect.objectContaining({ paymentIntentId: INTENT, memberName: "Alice Example", captureKind: "primary" }),
       { completedAt: REFUNDED_ON },
     );
     expect(recoveredEntries()).toEqual([
-      { paymentIntentId: INTENT, refundId: "re_late_1", amountCents: 2500, refundedCents: 3000, kind: "primary", reportedAtRefund: true },
+      {
+        paymentIntentId: INTENT,
+        refundId: "re_late_1",
+        amountCents: 2500,
+        refundedCents: 3000,
+        kind: "primary",
+        refundTimeReport: "record_lost",
+        alertSent: true,
+      },
     ]);
+    // The permanent refund entry is not written twice; the alert, which may have failed with the database, is.
     expect(refundEntries()).toHaveLength(0);
-    expect(mocks.announce).not.toHaveBeenCalled();
+    expect(mocks.announce).toHaveBeenCalledTimes(1);
     expect(mocks.queueNote).toHaveBeenCalledWith({ paymentId: "payment-1", paymentIntentId: INTENT });
   });
 
-  it("also writes the refund entry and sends the alert when the delivery that refunded died before either", async () => {
-    mocks.auditLogFindFirst.mockResolvedValueOnce(null);
+  it("sends no second alert when the refund-time entry is one whose record write did not fail", async () => {
+    mocks.auditLogFindMany.mockResolvedValueOnce([refundTimeEntry()]);
 
     await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(true);
 
-    expect(recoveredEntries()).toEqual([expect.objectContaining({ reportedAtRefund: false })]);
+    expect(recoveredEntries()).toEqual([expect.objectContaining({ refundTimeReport: "reported", alertSent: false })]);
+    expect(mocks.announce).not.toHaveBeenCalled();
+  });
+
+  it("also writes the refund entry and sends the alert when the delivery that refunded died before either", async () => {
+    // Entries for another capture of the booking, and an unreadable one, are not this capture's.
+    mocks.auditLogFindMany.mockResolvedValueOnce([refundTimeEntry({}, "pi_other"), { details: "{not json" }, { details: null }]);
+
+    await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(true);
+
+    expect(recoveredEntries()).toEqual([expect.objectContaining({ refundTimeReport: "none", alertSent: true })]);
     expect(refundEntries()).toEqual([
       { paymentIntentId: INTENT, refundId: "re_late_1", amountCents: 2500, kind: "primary", refundedCents: 2500, recoveredLostRecord: true },
     ]);
     expect(mocks.announce).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an intent Stripe no longer knows as holding no door refund, so it neither throws nor records", async () => {
+    mocks.listRefunds.mockRejectedValueOnce(Object.assign(new Error("No such payment_intent"), { code: "resource_missing" }));
+
+    await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
+    expect(mocks.record).not.toHaveBeenCalled();
+  });
+
+  describe("#2774's residual double payment, hidden by the lost record", () => {
+    it("escalates a hand-COMPLETED #2700 row beside a door refund, once, as the record writer would have", async () => {
+      mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "hand-completed"]]));
+      mocks.auditLogFindMany.mockResolvedValueOnce([]);
+
+      await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
+
+      expect(mocks.auditLogFindMany).toHaveBeenCalledWith({
+        where: { action: "booking.payment.late_capture_double_refund_suspected", entityId: "booking-1" },
+        select: { details: true },
+      });
+      expect(mocks.announce).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: INTENT }),
+        expect.objectContaining({ handCompletedAfterRefund: true }),
+        CLUB_FORMAT_TEST,
+      );
+      // The operator's row is the record: none is written beside it.
+      expect(mocks.record).not.toHaveBeenCalled();
+      expect(recoveredEntries()).toHaveLength(0);
+    });
+
+    it("does not escalate again, or ask Stripe, once the escalation's entry is there", async () => {
+      mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "hand-completed"]]));
+      mocks.auditLogFindMany.mockResolvedValueOnce([refundTimeEntry({ refundSent: true })]);
+
+      await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
+      expect(mocks.listRefunds).not.toHaveBeenCalled();
+      expect(mocks.announce).not.toHaveBeenCalled();
+    });
+
+    it("does not escalate a hand-COMPLETED row when Stripe holds no door refund", async () => {
+      mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "hand-completed"]]));
+      mocks.auditLogFindMany.mockResolvedValueOnce([]);
+      mocks.listRefunds.mockResolvedValueOnce([stripeRefund({ metadata: {} })]);
+
+      await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
+      expect(mocks.announce).not.toHaveBeenCalled();
+    });
   });
 
   it("names an unknown member rather than failing when the booking's owner cannot be read", async () => {
@@ -235,7 +306,7 @@ describe("recoverLostLateCaptureRecord — a redelivery's check", () => {
   });
 
   it("asks Stripe nothing when the capture already has a closed record", async () => {
-    mocks.findClosed.mockResolvedValueOnce(new Set([INTENT]));
+    mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "record"]]));
 
     await expect(recoverLostLateCaptureRecord(BOOKING, IDENTITY, { format: CLUB_FORMAT_TEST })).resolves.toBe(false);
     expect(mocks.findClosed).toHaveBeenCalledWith([INTENT]);
@@ -331,7 +402,7 @@ describe("recoverLostLateCaptureRecordsForPayment — the nightly self-heal's ch
 
   it("skips a capture that already has its closed record", async () => {
     armPayment();
-    mocks.findClosed.mockResolvedValueOnce(new Set([INTENT]));
+    mocks.findClosed.mockResolvedValueOnce(new Map([[INTENT, "record"]]));
     await expect(recoverLostLateCaptureRecordsForPayment("payment-1")).resolves.toEqual({ recovered: [], unresolved: false });
     expect(mocks.listRefunds).not.toHaveBeenCalled();
   });
@@ -351,8 +422,48 @@ describe("recoverLostLateCaptureRecordsForPayment — the nightly self-heal's ch
     await expect(recoverLostLateCaptureRecordsForPayment("payment-1")).resolves.toEqual({ recovered: [], unresolved: true });
   });
 
+  it("does not hold the payment's note back every night for an intent Stripe no longer knows", async () => {
+    armPayment();
+    mocks.listRefunds.mockRejectedValueOnce(Object.assign(new Error("No such payment_intent"), { code: "resource_missing" }));
+    await expect(recoverLostLateCaptureRecordsForPayment("payment-1")).resolves.toEqual({ recovered: [], unresolved: false });
+  });
+
   it("says it could not check when its own reads fail, and never throws", async () => {
     mocks.paymentFindUnique.mockRejectedValueOnce(new Error("database is down"));
     await expect(recoverLostLateCaptureRecordsForPayment("payment-1")).resolves.toEqual({ recovered: [], unresolved: true });
+  });
+});
+
+describe("readUnrecordedLateCaptureRefund — charge.refunded before the record (#4170)", () => {
+  const ask = (refunds: { id?: string; metadata?: Record<string, string> | null }[]) =>
+    readUnrecordedLateCaptureRefund({ paymentId: "payment-1", paymentIntentId: INTENT, refundedCents: 2500, refunds });
+
+  beforeEach(() => {
+    mocks.paymentFindUnique.mockResolvedValue({ bookingId: "booking-1", booking: { status: "CANCELLED" } });
+    mocks.paymentTransactionFindUnique.mockResolvedValue({ paymentId: "payment-1", reason: null });
+  });
+
+  it("waits for the record when a refund in the charge is the late-capture door's for this booking", async () => {
+    await expect(ask([{ id: "re_late_1", metadata: buildLateCaptureRefundMetadata("booking-1") }])).resolves.toBe("awaiting_record");
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("names a refund outside the app of a capture the primary handler marked as its own, and notes nothing", async () => {
+    mocks.paymentTransactionFindUnique.mockResolvedValueOnce({ paymentId: "payment-1", reason: "cancelled_booking_late_capture" });
+
+    await expect(ask([{ id: "re_dashboard", metadata: {} }])).resolves.toBe("refunded_outside_the_app");
+    expect(entriesOf("booking.payment.late_capture_refunded_outside_app")).toEqual([
+      { paymentIntentId: INTENT, refundIds: ["re_dashboard"], refundedCents: 2500, creditNoteQueued: false },
+    ]);
+  });
+
+  it.each([
+    ["an ordinary refund of an unmarked capture", "CANCELLED", { metadata: {} }],
+    ["another booking's door refund", "CANCELLED", { metadata: buildLateCaptureRefundMetadata("booking-2") }],
+    ["a door refund on a booking that is not cancelled", "CONFIRMED", { metadata: buildLateCaptureRefundMetadata("booking-1") }],
+  ])("leaves %s to the generic note", async (_label, status, refund) => {
+    mocks.paymentFindUnique.mockResolvedValueOnce({ bookingId: "booking-1", booking: { status } });
+    await expect(ask([refund])).resolves.toBe("none");
+    expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 });

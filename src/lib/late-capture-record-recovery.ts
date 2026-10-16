@@ -11,14 +11,16 @@ import {
 } from "@/lib/cancelled-booking-late-capture";
 import type { ClubFormat } from "@/lib/club-format";
 import { getClubFormat } from "@/lib/club-format-settings";
+import { isLateCaptureHandlerWrite } from "@/lib/cancellation-settled-money";
 import { lateCaptureAuditKind, queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-credit-note";
-import { findClosedLateCaptureRecordIntents } from "@/lib/late-capture-xero-receipt";
+import { findClosedLateCaptureRecords } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
 import { buildLateCaptureRefundMetadata } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { readRecordedRefundCentsByIntent } from "@/lib/refund-note-eligible-cash";
 import { listRefundsForPaymentIntent } from "@/lib/stripe";
+import { isStripeResourceMissingError } from "@/lib/stripe-errors";
 
 /**
  * #4149 (`INV-PAY-106`, `INV-ADDPAY-037`): THE RECORD OF AN AUTOMATIC
@@ -44,19 +46,29 @@ import { listRefundsForPaymentIntent } from "@/lib/stripe";
  *    then answers 500 (`LateCaptureRecordLostError`), so Stripe redelivers. Since
  *    #3639 a replay after a refund never refunds again;
  *  - a redelivery that finds the capture refunded with no closed record row
- *    (`findClosedLateCaptureRecordIntents`: an `OPEN` #2700 row the refund never
+ *    (`findClosedLateCaptureRecords`: an `OPEN` #2700 row the refund never
  *    closed does not count) asks Stripe whether the late-capture refund door
  *    sent that refund (its own metadata, `buildLateCaptureRefundMetadata`) and,
  *    if it did, writes the missing row and its own
  *    `booking.payment.auto_refund_record_recovered` entry
- *    (`recoverLostLateCaptureRecord`). It sends no second alert: the refund-time
- *    entry says the alert went out. Only when there is no such entry - the
- *    process died before it - does the recovery write it and send the alert,
- *    because the event must never get neither;
+ *    (`recoverLostLateCaptureRecord`). The alert is sent again unless the
+ *    refund-time entry is one whose record write did NOT fail: an entry marked
+ *    `recordLost` sat beside an alert that read its recipients from the database
+ *    that had just failed, so it may never have gone, and #2761 prefers a
+ *    duplicate to a silence. With no entry at all (the process died first) the
+ *    recovery writes the entry as well;
+ *  - a hand-COMPLETED #2700 row beside a door refund is #2774's residual double
+ *    payment that the lost record hid: escalated once, as the record writer
+ *    would have (`escalateHandCompletedDoorRefund`);
  *  - the nightly self-heal runs the same check before it raises any card note
  *    (`recoverLostLateCaptureRecordsForPayment`), so a capture whose
  *    redeliveries never arrive is recorded there and its refund leaves the
- *    note-eligible cash; one it cannot check is not noted that night.
+ *    note-eligible cash; one it cannot check is not noted that night, and an
+ *    intent Stripe no longer knows holds no door refund rather than blocking
+ *    the payment's note every night;
+ *  - (#4170) a `charge.refunded` on such a capture queues no generic card note
+ *    (`readUnrecordedLateCaptureRefund`), and the note-eligible cash leaves out
+ *    a capture the primary handler marked as its own while it has no row.
  *
  * EXACTLY ONCE. The record row is the claim: `recordAutomaticCancelledBookingRefundTask`
  * closes or creates it under `pg_advisory_xact_lock(1)` and answers a later
@@ -69,10 +81,9 @@ import { listRefundsForPaymentIntent } from "@/lib/stripe";
  * Not covered, and stated: a process that dies between the row's commit and
  * the entry and alert (no awaited call sits between them); a capture whose
  * refund door left no metadata of its own (a Stripe dashboard refund), which
- * stays the repair tool's; and the refund of a superseded payment's intent
+ * stays the repair tool's - named by an entry for a primary capture, not told
+ * apart for a change payment; and the refund of a superseded payment's intent
  * (#4173), which no late-capture door sends and this module does not recover.
- * An alert whose refund-time entry could not be written is sent again by the
- * recovery: a duplicate, never a silence (#2761).
  */
 
 /** The record write was lost after the refund: the webhook answers 500 so Stripe redelivers and the record is written then. */
@@ -149,7 +160,16 @@ function reportAutomaticLateCaptureRefund(params: {
       ...params.auditDetail,
     }),
   });
-  announceAutomaticLateCaptureRefund(capture, params.recordOutcome, params.format).catch((err) =>
+  sendAutomaticLateCaptureAlert(capture, params.recordOutcome, params.format);
+}
+
+/** The one alert, fire-and-forget: webhooks stay non-blocking. */
+function sendAutomaticLateCaptureAlert(
+  capture: CancelledBookingLateCapture,
+  recordOutcome: LateCaptureRecordOutcome,
+  format: ClubFormat,
+): void {
+  announceAutomaticLateCaptureRefund(capture, recordOutcome, format).catch((err) =>
     logger.error(
       { err, bookingId: capture.bookingId, paymentIntentId: capture.paymentIntentId, captureKind: capture.captureKind },
       "Failed to send the late-capture cancellation alert",
@@ -158,21 +178,46 @@ function reportAutomaticLateCaptureRefund(params: {
 }
 
 /**
- * Whether the delivery that refunded this capture wrote its
- * `refunded_after_cancellation` entry - and so sent the alert beside it. Matched
- * on the booking and the intent the entry names; an entry written before #4149
- * counts the same, because that release sent the alert with it too.
+ * The audit entries of one action on this booking that name this capture,
+ * parsed: fetched by action and booking, and matched on the parsed
+ * `paymentIntentId` in code - never a `LIKE` on the stored text (#4146).
  */
-async function wasReportedAtRefund(bookingId: string, paymentIntentId: string): Promise<boolean> {
-  const entry = await prisma.auditLog.findFirst({
-    where: {
-      action: "booking.payment.refunded_after_cancellation",
-      entityId: bookingId,
-      details: { contains: paymentIntentId },
-    },
-    select: { id: true },
-  });
-  return entry !== null;
+async function readCaptureEntries(
+  action: string,
+  bookingId: string,
+  paymentIntentId: string,
+): Promise<Record<string, unknown>[]> {
+  const rows = await prisma.auditLog.findMany({ where: { action, entityId: bookingId }, select: { details: true } });
+  const entries: Record<string, unknown>[] = [];
+  for (const row of rows ?? []) {
+    try {
+      const details = JSON.parse(row.details ?? "null") as unknown;
+      if (details && typeof details === "object" && (details as { paymentIntentId?: unknown }).paymentIntentId === paymentIntentId) {
+        entries.push(details as Record<string, unknown>);
+      }
+    } catch {
+      // A truncated or foreign entry names no capture this can match.
+    }
+  }
+  return entries;
+}
+
+/**
+ * What the delivery that refunded this capture left in the audit log: `"none"`
+ * (it died before its entry, so before its alert too), `"record_lost"` (its
+ * entry says the record write failed - the alert was attempted, but against the
+ * same database that had just failed, so it may not have gone), or
+ * `"reported"` (an entry from a delivery whose record write did not fail; only
+ * a release before #4149 leaves one without the row). Only `"reported"` lets the
+ * recovery skip the alert: #2761 prefers a duplicate to a silence.
+ */
+async function readRefundTimeReport(
+  bookingId: string,
+  paymentIntentId: string,
+): Promise<"none" | "record_lost" | "reported"> {
+  const entries = await readCaptureEntries("booking.payment.refunded_after_cancellation", bookingId, paymentIntentId);
+  if (entries.some((entry) => entry.recordLost !== true && entry.recoveredLostRecord !== true)) return "reported";
+  return entries.length > 0 ? "record_lost" : "none";
 }
 
 /**
@@ -215,19 +260,21 @@ export async function recoverLostLateCaptureRecord(
   options: { format: ClubFormat; stripeTimeoutMs?: number },
 ): Promise<boolean> {
   const { bookingId, paymentIntentId } = identity;
-  if ((await findClosedLateCaptureRecordIntents([paymentIntentId])).has(paymentIntentId)) return false;
-  const sent = (
-    await listRefundsForPaymentIntent(paymentIntentId, {
-      timeoutMs: options.stripeTimeoutMs ?? REDELIVERY_STRIPE_TIMEOUT_MS,
-    })
-  )
-    .filter((refund) => sentByLateCaptureRefundDoor(refund.metadata, bookingId) && !isRefusedRefundStatus(refund.status))
-    .sort((a, b) => a.created - b.created);
+  const closed = (await findClosedLateCaptureRecords([paymentIntentId])).get(paymentIntentId);
+  if (closed === "record") return false;
+  if (closed === "hand-completed" && (await readCaptureEntries(DOUBLE_REFUND_ACTION, bookingId, paymentIntentId)).length > 0) {
+    return false;
+  }
+  const sent = await listDoorRefunds(bookingId, paymentIntentId, options.stripeTimeoutMs ?? REDELIVERY_STRIPE_TIMEOUT_MS);
   const [first] = sent;
   if (!first) return false;
-
-  const reportedAtRefund = await wasReportedAtRefund(bookingId, paymentIntentId);
   const capture = describeLateCaptureFromBooking(booking, identity);
+  if (closed === "hand-completed") {
+    await escalateHandCompletedDoorRefund(capture, options.format);
+    return false;
+  }
+
+  const refundTimeReport = await readRefundTimeReport(bookingId, paymentIntentId);
   // Dated the refund's day, as the card shows it (`docs/guides/payments.md`).
   const recordOutcome = await recordAutomaticLateCaptureRefund(capture, { completedAt: new Date(first.created * 1000) });
   if (!recordOutcome.recorded) throw new LateCaptureRecordLostError(capture);
@@ -240,6 +287,7 @@ export async function recoverLostLateCaptureRecord(
   }
 
   const refundedCents = sent.reduce((sum, refund) => sum + refund.amount, 0);
+  const alertSent = refundTimeReport !== "reported";
   logAudit({
     action: "booking.payment.auto_refund_record_recovered",
     category: "payment",
@@ -252,11 +300,12 @@ export async function recoverLostLateCaptureRecord(
       amountCents: capture.amountCents,
       refundedCents,
       kind: lateCaptureAuditKind(capture.captureKind),
-      reportedAtRefund,
+      refundTimeReport,
+      alertSent,
     }),
   });
-  // The delivery that refunded died before its entry and alert: neither went out, so they go now.
-  if (!reportedAtRefund) {
+  if (refundTimeReport === "none") {
+    // The delivery that refunded died before its entry and alert: neither went out, so both go now.
     reportAutomaticLateCaptureRefund({
       capture,
       format: options.format,
@@ -264,13 +313,64 @@ export async function recoverLostLateCaptureRecord(
       refundId: first.id,
       auditDetail: { refundedCents, recoveredLostRecord: true },
     });
+  } else if (alertSent) {
+    // Its entry is there, but the alert beside it may have failed with the record write: sent again (#2761).
+    sendAutomaticLateCaptureAlert(capture, recordOutcome, options.format);
   }
   logger.warn(
-    { bookingId, paymentId: capture.paymentId, paymentIntentId, reportedAtRefund },
+    { bookingId, paymentId: capture.paymentId, paymentIntentId, refundTimeReport, alertSent },
     "Wrote the lost record of an automatic late-capture refund (#4149)",
   );
   await queueLateCaptureRefundCreditNote({ paymentId: capture.paymentId, paymentIntentId });
   return true;
+}
+
+const DOUBLE_REFUND_ACTION = "booking.payment.late_capture_double_refund_suspected";
+
+/**
+ * The refunds of this capture the late-capture door sent for this booking,
+ * oldest first. An intent Stripe no longer knows (`resource_missing`: an old or
+ * test-mode intent) holds none, rather than failing every check of it for ever
+ * and so holding the payment's card note back every night.
+ */
+async function listDoorRefunds(bookingId: string, paymentIntentId: string, timeoutMs: number) {
+  let refunds: Awaited<ReturnType<typeof listRefundsForPaymentIntent>>;
+  try {
+    refunds = await listRefundsForPaymentIntent(paymentIntentId, { timeoutMs });
+  } catch (err) {
+    if (!isStripeResourceMissingError(err)) throw err;
+    logger.warn({ bookingId, paymentIntentId }, "Stripe no longer knows this late capture's intent; no refund of it is the late-capture door's (#4149)");
+    return [];
+  }
+  return refunds
+    .filter((refund) => sentByLateCaptureRefundDoor(refund.metadata, bookingId) && !isRefusedRefundStatus(refund.status))
+    .sort((a, b) => a.created - b.created);
+}
+
+/**
+ * #2774's residual double payment, found late: an operator hand-COMPLETED the
+ * #2700 task while the record of the door's refund was lost, so the record
+ * writer never saw the completion after the refund and nothing escalated. The
+ * same escalation the record writer raises - the `critical` entry and the
+ * conflict alert (`announceAutomaticLateCaptureRefund`) - once: the caller
+ * checks for its entry first.
+ */
+async function escalateHandCompletedDoorRefund(capture: CancelledBookingLateCapture, format: ClubFormat): Promise<void> {
+  await announceAutomaticLateCaptureRefund(
+    capture,
+    {
+      bookingDeleted: capture.openingDeletedAt !== null,
+      recorded: true,
+      alreadyRecorded: "hand-resolved",
+      handCompletedAfterRefund: true,
+    },
+    format,
+  ).catch((err) =>
+    logger.error(
+      { err, bookingId: capture.bookingId, paymentIntentId: capture.paymentIntentId },
+      "Failed to escalate a late capture hand-completed beside the late-capture door's refund (#4149)",
+    ),
+  );
 }
 
 /** The booking fields a late capture's record and alert name. */
@@ -354,9 +454,9 @@ export async function recoverLostLateCaptureRecordsForPayment(
     if (!payment || !booking || !isLateCaptureRefundedBookingStatus(booking.status)) return result;
     const intents = [...(await readRecordedRefundCentsByIntent(paymentId)).keys()];
     if (intents.length === 0) return result;
-    const recorded = await findClosedLateCaptureRecordIntents(intents);
+    const closed = await findClosedLateCaptureRecords(intents);
     let format: ClubFormat | null = null;
-    for (const paymentIntentId of intents.filter((intent) => !recorded.has(intent))) {
+    for (const paymentIntentId of intents.filter((intent) => closed.get(intent) !== "record")) {
       try {
         const capture = await prisma.paymentTransaction.findUnique({
           where: { stripePaymentIntentId: paymentIntentId },
@@ -393,4 +493,70 @@ export async function recoverLostLateCaptureRecordsForPayment(
     result.unresolved = true;
   }
   return result;
+}
+
+/**
+ * #4170: what a `charge.refunded` that raised a capture's refunded total, on a
+ * capture with no late-capture record, must NOT do - queue the payment's
+ * generic card note, which would credit the pre-cancel invoice for money Xero
+ * never received. Asked by the webhook before that note:
+ *
+ * - `"awaiting_record"`: a refund in the charge carries this booking's
+ *   late-capture door metadata, so the delivery that refunded (or, if it died,
+ *   Stripe's redelivery or the nightly self-heal) writes the record and asks for
+ *   the capture's own note. Nothing is noted here.
+ * - `"refunded_outside_the_app"`: no door refund, but the primary late-capture
+ *   handler marked the capture as its own - refunded some other way (the Stripe
+ *   dashboard). No record can be proved for it, so it is the repair tool's case:
+ *   an `important` entry names it, and the note-eligible cash already leaves it
+ *   out (`resolveRefundNoteEligibleCash`).
+ * - `"none"`: an ordinary refund; the generic note goes ahead.
+ *
+ * A change payment refunded outside the app carries no marker and is not told
+ * apart here: a stated limit.
+ */
+export async function readUnrecordedLateCaptureRefund(params: {
+  paymentId: string;
+  paymentIntentId: string;
+  refundedCents: number;
+  refunds: ReadonlyArray<{ id?: string; metadata?: Record<string, string> | null }>;
+}): Promise<"none" | "awaiting_record" | "refunded_outside_the_app"> {
+  const { paymentId, paymentIntentId } = params;
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { bookingId: true, booking: { select: { status: true } } },
+  });
+  if (!payment || !isLateCaptureRefundedBookingStatus(payment.booking?.status)) return "none";
+  const { bookingId } = payment;
+  if (params.refunds.some((refund) => sentByLateCaptureRefundDoor(refund.metadata, bookingId))) {
+    logger.info(
+      { bookingId, paymentId, paymentIntentId },
+      "A late-capture door refund with no record yet: its record writes the capture's own note, not this generic one (#4170)",
+    );
+    return "awaiting_record";
+  }
+  const capture = await prisma.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: paymentIntentId },
+    select: { paymentId: true, reason: true },
+  });
+  if (capture?.paymentId !== paymentId || !isLateCaptureHandlerWrite(capture.reason)) return "none";
+  logAudit({
+    action: "booking.payment.late_capture_refunded_outside_app",
+    category: "payment",
+    severity: "important",
+    entityType: "Booking",
+    entityId: bookingId,
+    targetId: bookingId,
+    details: JSON.stringify({
+      paymentIntentId,
+      refundIds: params.refunds.map((refund) => refund.id ?? null),
+      refundedCents: params.refundedCents,
+      creditNoteQueued: false,
+    }),
+  });
+  logger.error(
+    { bookingId, paymentId, paymentIntentId, refundedCents: params.refundedCents },
+    "A late capture was refunded outside the app's late-capture refund: no record or Xero note is written for it; the repair tool's case (#4170)",
+  );
+  return "refunded_outside_the_app";
 }

@@ -21,13 +21,16 @@
  * too: its refunds are recorded by hand, and the repair tool says so.
  *
  * Refund rows are matched to their capture by `PaymentRefund.stripePaymentIntentId`;
- * which intents are late captures is `findLateCapturePaymentIntents`. A
+ * which intents are late captures is `findLateCapturePaymentIntents`, plus
+ * (#4170) any capture the primary late-capture handler marked as its own write
+ * (`CANCELLED_BOOKING_LATE_CAPTURE_REASON`) while it has no record row yet. A
  * pre-ledger payment (no `PaymentRefund` rows) predates late-capture holds and
  * is left to the evidence's legacy rule.
  */
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
+import { CANCELLED_BOOKING_LATE_CAPTURE_REASON } from "@/lib/cancellation-settled-money";
 import {
   resolveStripeCashRefundEvidence,
   type StripeCashRefundEvidence,
@@ -55,7 +58,11 @@ export async function resolveRefundNoteEligibleCash(
     return { evidence, lateCaptureExcludedCents: 0, eligibleCashCents: evidence.cashRefundCents };
   }
   const centsByIntent = await readRecordedRefundCentsByIntent(payment.id, db);
-  const lateIntents = await findLateCapturePaymentIntents([...centsByIntent.keys()], db);
+  const intents = [...centsByIntent.keys()];
+  const lateIntents = await findLateCapturePaymentIntents(intents, db);
+  // #4170: a capture the late-capture handler marked as its own is a late
+  // capture before its record row exists too (lost, or refunded outside the app).
+  for (const intent of await findMarkedLateCaptureIntents(intents, db)) lateIntents.add(intent);
   let lateCaptureExcludedCents = 0;
   for (const intent of lateIntents) {
     if (!(await hasXeroReceiptForLateCapture(intent, db))) {
@@ -91,4 +98,17 @@ export async function readRecordedRefundCentsByIntent(
     );
   }
   return centsByIntent;
+}
+
+/** The intents among these whose capture the primary late-capture handler wrote itself (#3639's marker). */
+async function findMarkedLateCaptureIntents(
+  paymentIntentIds: readonly string[],
+  db: Pick<Prisma.TransactionClient, "paymentTransaction">,
+): Promise<string[]> {
+  if (paymentIntentIds.length === 0) return [];
+  const rows = await db.paymentTransaction.findMany({
+    where: { stripePaymentIntentId: { in: [...paymentIntentIds] }, reason: CANCELLED_BOOKING_LATE_CAPTURE_REASON },
+    select: { stripePaymentIntentId: true },
+  });
+  return (rows ?? []).map((row) => row.stripePaymentIntentId).filter((intent): intent is string => Boolean(intent));
 }

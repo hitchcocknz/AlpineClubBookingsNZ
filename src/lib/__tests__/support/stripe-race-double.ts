@@ -24,7 +24,9 @@ export const stripeRaceHooks: {
   refund: null | ((args: Parameters<Stripe["processRefund"]>[0]) => Promise<unknown>);
   /** #4149: the refunds Stripe lists for one intent, read to prove which door sent them. */
   listRefunds: null | ((paymentIntentId: string) => Promise<unknown>);
-} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null, refund: null, listRefunds: null };
+  /** #4170: the refunds Stripe lists for one charge, which `charge.refunded` records. */
+  listChargeRefunds: null | ((chargeId: string) => Promise<unknown>);
+} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null, refund: null, listRefunds: null, listChargeRefunds: null };
 
 export function resetStripeRaceHooks(): void {
   stripeRaceHooks.update = null;
@@ -35,6 +37,7 @@ export function resetStripeRaceHooks(): void {
   stripeRaceHooks.cancel = null;
   stripeRaceHooks.refund = null;
   stripeRaceHooks.listRefunds = null;
+  stripeRaceHooks.listChargeRefunds = null;
 }
 
 export function stripeRaceDouble(actual: Stripe): Stripe {
@@ -66,5 +69,9 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
       stripeRaceHooks.listRefunds
         ? stripeRaceHooks.listRefunds(args[0])
         : actual.listRefundsForPaymentIntent(...args)) as Stripe["listRefundsForPaymentIntent"],
+    listRefundsForCharge: ((...args: Parameters<Stripe["listRefundsForCharge"]>) =>
+      stripeRaceHooks.listChargeRefunds
+        ? stripeRaceHooks.listChargeRefunds(args[0])
+        : actual.listRefundsForCharge(...args)) as Stripe["listRefundsForCharge"],
   };
 }

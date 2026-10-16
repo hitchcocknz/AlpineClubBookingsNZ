@@ -205,30 +205,52 @@ export async function findLateCapturePaymentIntents(
   paymentIntentIds: readonly string[],
   store: Pick<Prisma.TransactionClient, "manualRefundTask"> = prisma,
 ): Promise<Set<string>> {
-  return findLateCaptureTaskIntents(paymentIntentIds, store, { closedRecordOnly: false });
+  return findLateCaptureTaskIntents(paymentIntentIds, store);
 }
 
 /**
  * #4149: the intents whose late capture already HAS its record - an approval
- * task in any status, or an automatic-refund row no longer `OPEN`. An `OPEN`
- * row under the same `reason` is the confirm route's #2700 question, which the
- * automatic refund answers by closing it: while it is still `OPEN` after the
- * refund, the record was lost, so the lost-record recovery treats the capture
- * as unrecorded and the record writer closes the row.
+ * task in any status, or an automatic-refund row no longer `OPEN` - and which
+ * kind. An `OPEN` row under the same `reason` is the confirm route's #2700
+ * question, which the automatic refund answers by closing it: while it is still
+ * `OPEN` after the refund, the record was lost, so the lost-record recovery
+ * treats the capture as unrecorded and the record writer closes the row. A
+ * `COMPLETED` automatic-reason row is an operator's hand-back (the writer never
+ * completes one), `"hand-completed"`: beside a refund the late-capture door
+ * sent, #2774's residual double payment.
  */
-export async function findClosedLateCaptureRecordIntents(
+export async function findClosedLateCaptureRecords(
   paymentIntentIds: readonly string[],
-): Promise<Set<string>> {
-  return findLateCaptureTaskIntents(paymentIntentIds, prisma, { closedRecordOnly: true });
+): Promise<Map<string, "record" | "hand-completed">> {
+  const found = new Map<string, "record" | "hand-completed">();
+  for (const task of await findLateCaptureTaskRows(paymentIntentIds, prisma)) {
+    if (task.approvalIntentId && !found.has(task.approvalIntentId)) found.set(task.approvalIntentId, "record");
+    if (!task.reasonIntentId || task.status === ManualRefundTaskStatus.OPEN) continue;
+    if (task.status === ManualRefundTaskStatus.COMPLETED) found.set(task.reasonIntentId, "hand-completed");
+    else if (!found.has(task.reasonIntentId)) found.set(task.reasonIntentId, "record");
+  }
+  return found;
 }
 
 async function findLateCaptureTaskIntents(
   paymentIntentIds: readonly string[],
   store: Pick<Prisma.TransactionClient, "manualRefundTask">,
-  options: { closedRecordOnly: boolean },
 ): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const task of await findLateCaptureTaskRows(paymentIntentIds, store)) {
+    if (task.approvalIntentId) found.add(task.approvalIntentId);
+    if (task.reasonIntentId) found.add(task.reasonIntentId);
+  }
+  return found;
+}
+
+/** Every task row naming one of these intents: by approval marker, or by an automatic-refund `reason`. */
+async function findLateCaptureTaskRows(
+  paymentIntentIds: readonly string[],
+  store: Pick<Prisma.TransactionClient, "manualRefundTask">,
+): Promise<{ approvalIntentId: string | null; reasonIntentId: string | null; status: ManualRefundTaskStatus }[]> {
   const ids = [...new Set(paymentIntentIds)];
-  if (ids.length === 0) return new Set();
+  if (ids.length === 0) return [];
   const byReason = new Map<string, string>();
   for (const id of ids) {
     for (const reason of automaticCancelledBookingRefundTaskReasons(id)) byReason.set(reason, id);
@@ -242,17 +264,14 @@ async function findLateCaptureTaskIntents(
     },
     select: { lateCaptureApprovalIntentId: true, reason: true, status: true },
   });
-  const found = new Set<string>();
-  for (const task of tasks ?? []) {
-    if (task.lateCaptureApprovalIntentId && ids.includes(task.lateCaptureApprovalIntentId)) {
-      found.add(task.lateCaptureApprovalIntentId);
-    }
-    const byTaskReason = task.reason ? byReason.get(task.reason) : undefined;
-    if (byTaskReason && !(options.closedRecordOnly && task.status === ManualRefundTaskStatus.OPEN)) {
-      found.add(byTaskReason);
-    }
-  }
-  return found;
+  return (tasks ?? []).map((task) => ({
+    approvalIntentId:
+      task.lateCaptureApprovalIntentId && ids.includes(task.lateCaptureApprovalIntentId)
+        ? task.lateCaptureApprovalIntentId
+        : null,
+    reasonIntentId: (task.reason ? byReason.get(task.reason) : undefined) ?? null,
+    status: task.status,
+  }));
 }
 
 /**

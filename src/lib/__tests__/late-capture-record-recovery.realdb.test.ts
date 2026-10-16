@@ -117,7 +117,7 @@ function lateCaptureRefund(): Stripe.Refund {
      * capture - the handler's marked write - refunded in full with that refund
      * recorded, and no record row.
      */
-    async function seedAfterTheCrash(change?: { cancelClaim: boolean; openTask: boolean }) {
+    async function seedAfterTheCrash(change?: { cancelClaim: boolean; openTask: boolean }, refundRecorded = true) {
       await prisma.booking.create({
         data: {
           id: BOOKING_ID,
@@ -137,7 +137,7 @@ function lateCaptureRefund(): Stripe.Refund {
           id: PAYMENT_ID,
           bookingId: BOOKING_ID,
           amountCents: PAID_CENTS + LATE_CENTS,
-          refundedAmountCents: PAID_CENTS - KEPT_FEE_CENTS + LATE_CENTS,
+          refundedAmountCents: PAID_CENTS - KEPT_FEE_CENTS + (refundRecorded ? LATE_CENTS : 0),
           source: "STRIPE",
           status: "PARTIALLY_REFUNDED",
           stripePaymentIntentId: PAID_INTENT,
@@ -161,8 +161,9 @@ function lateCaptureRefund(): Stripe.Refund {
                 source: "STRIPE",
                 stripePaymentIntentId: LATE_INTENT,
                 amountCents: LATE_CENTS,
-                refundedAmountCents: LATE_CENTS,
-                status: "REFUNDED",
+                // #4170: unrecorded when the process died before the ledger wrote the refund.
+                refundedAmountCents: refundRecorded ? LATE_CENTS : 0,
+                status: refundRecorded ? "REFUNDED" : "SUCCEEDED",
                 // The primary handler's own write, before its refund (#3639);
                 // the change handler stamps no marker of its own.
                 reason: change ? null : "cancelled_booking_late_capture",
@@ -184,16 +185,20 @@ function lateCaptureRefund(): Stripe.Refund {
             status: "succeeded",
             stripeCreatedAt: new Date("2026-05-20T00:00:00.000Z"),
           },
-          {
-            paymentId: PAYMENT_ID,
-            paymentTransactionId: LATE_TXN,
-            stripeRefundId: "re_race_4149_late",
-            stripePaymentIntentId: LATE_INTENT,
-            amountCents: LATE_CENTS,
-            currency: "nzd",
-            status: "succeeded",
-            stripeCreatedAt: new Date("2026-06-25T00:00:00.000Z"),
-          },
+          ...(refundRecorded
+            ? [
+                {
+                  paymentId: PAYMENT_ID,
+                  paymentTransactionId: LATE_TXN,
+                  stripeRefundId: "re_race_4149_late",
+                  stripePaymentIntentId: LATE_INTENT,
+                  amountCents: LATE_CENTS,
+                  currency: "nzd",
+                  status: "succeeded",
+                  stripeCreatedAt: new Date("2026-06-25T00:00:00.000Z"),
+                },
+              ]
+            : []),
         ],
       });
       await prisma.xeroObjectLink.create({
@@ -352,9 +357,9 @@ function lateCaptureRefund(): Stripe.Refund {
 
     it("the self-heal writes the lost record before it could raise a note, and the over-note it would have raised is gone", async () => {
       const stripe = armStripe();
-      // The defect: no record, so the capture's refund reads as uncovered cash
-      // against the pre-cancel invoice.
-      expect(await uncoveredCents()).toBe(LATE_CENTS);
+      // #4170: the primary handler's own marker keeps the capture's refund out
+      // of the note-eligible cash even before its record row exists.
+      expect(await uncoveredCents()).toBe(0);
 
       await expect(recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID)).resolves.toEqual({
         recovered: [LATE_INTENT],
@@ -377,8 +382,27 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(entries).toHaveLength(1);
       expect(JSON.parse(String(entries[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, recoveredLostRecord: true });
       const recovered = await refundEntries(1, RECOVERED_ENTRY);
-      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, reportedAtRefund: false });
+      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({
+        paymentIntentId: LATE_INTENT,
+        refundTimeReport: "none",
+        alertSent: true,
+      });
       expect(stripe.refundsAsked).toBe(0);
+    });
+
+    it("a change capture with no marker reads as uncovered cash until the self-heal writes its record, and not after", async () => {
+      await deletePaymentRows();
+      await seedAfterTheCrash({ cancelClaim: true, openTask: false });
+      armStripe();
+      // The defect: no record, so the capture's refund reads as uncovered cash against the pre-cancel invoice.
+      expect(await uncoveredCents()).toBe(LATE_CENTS);
+
+      await expect(recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID)).resolves.toEqual({
+        recovered: [LATE_INTENT],
+        unresolved: false,
+      });
+
+      expect(await uncoveredCents()).toBe(0);
     });
 
     it("two redeliveries racing the self-heal still write one record and one entry, and refund nothing again", async () => {
@@ -415,7 +439,7 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(await refundEntries(2)).toHaveLength(1);
     });
 
-    it("writes only the row and its recovered entry when the delivery that refunded already wrote its entry and sent its alert", async () => {
+    it("writes the row and its recovered entry, and no second refund entry, when the refunding delivery's entry says its record write was lost", async () => {
       armStripe();
       // The refunding delivery's entry: its record write was lost, so it is marked.
       await prisma.auditLog.create({
@@ -433,9 +457,79 @@ function lateCaptureRefund(): Stripe.Refund {
 
       expect(await recordRows()).toHaveLength(1);
       const recovered = await refundEntries(1, RECOVERED_ENTRY);
-      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, reportedAtRefund: true });
-      // No second refund entry - and so no second alert, which is sent beside it.
+      // The alert beside that entry read the database that had just failed, so it goes again (#2761).
+      expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({
+        paymentIntentId: LATE_INTENT,
+        refundTimeReport: "record_lost",
+        alertSent: true,
+      });
       expect(await refundEntries(2)).toHaveLength(1);
+    });
+
+    describe("charge.refunded arriving before the late capture's record (#4170)", () => {
+      /** Stripe's `charge.refunded` for the late capture's charge - the real webhook processor. */
+      async function chargeRefunded(refund: Stripe.Refund) {
+        eventSequence += 1;
+        stripeRaceHooks.listChargeRefunds = async () => [refund];
+        const event = {
+          id: `evt_race_4149_${eventSequence}`,
+          object: "event",
+          type: "charge.refunded",
+          request: null,
+          data: {
+            object: {
+              id: `ch_${LATE_INTENT}`,
+              object: "charge",
+              payment_intent: LATE_INTENT,
+              amount: LATE_CENTS,
+              amount_refunded: LATE_CENTS,
+              refunds: { data: [refund] },
+            },
+          },
+        } as unknown as Stripe.Event;
+        return webhook.processStripeWebhookEvent(event);
+      }
+      const queuedNotes = () => prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } });
+
+      it("queues no generic note for a late-capture door refund, and the self-heal's record leaves no gap", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash({ cancelClaim: true, openTask: false }, false);
+        armStripe();
+
+        expect((await chargeRefunded(lateCaptureRefund())).init?.status ?? 200).toBe(200);
+
+        // The refund is in the ledger, and no whole-capture card note was queued against the pre-cancel invoice.
+        expect(await prisma.paymentRefund.count({ where: { stripeRefundId: "re_race_4149_late" } })).toBe(1);
+        expect(await queuedNotes()).toBe(0);
+        // The record then arrives (here the self-heal's), and the gap is right.
+        await recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID);
+        expect(await recordRows()).toHaveLength(1);
+        expect(await uncoveredCents()).toBe(0);
+      });
+
+      it("still queues the generic note for an ordinary refund of the same capture (the control)", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash({ cancelClaim: true, openTask: false }, false);
+        armStripe();
+
+        const ordinary = { ...lateCaptureRefund(), metadata: { bookingId: BOOKING_ID, reason: "booking_cancellation" } } as unknown as Stripe.Refund;
+        expect((await chargeRefunded(ordinary)).init?.status ?? 200).toBe(200);
+
+        expect(await queuedNotes()).toBe(1);
+      });
+
+      it("names a marked late capture refunded outside the app, queues no note, and leaves it out of the gap", async () => {
+        await deletePaymentRows();
+        await seedAfterTheCrash(undefined, false);
+        armStripe();
+
+        const dashboard = { ...lateCaptureRefund(), id: "re_race_4149_dashboard", metadata: {} } as unknown as Stripe.Refund;
+        expect((await chargeRefunded(dashboard)).init?.status ?? 200).toBe(200);
+
+        expect(await queuedNotes()).toBe(0);
+        expect(await refundEntries(1, "booking.payment.late_capture_refunded_outside_app")).toHaveLength(1);
+        expect(await uncoveredCents()).toBe(0);
+      });
     });
 
     describe("a change payment, through the real modification handler", () => {

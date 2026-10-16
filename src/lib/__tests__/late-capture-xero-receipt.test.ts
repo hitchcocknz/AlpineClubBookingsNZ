@@ -31,7 +31,7 @@ vi.mock("@/lib/prisma", () => ({
 
 import {
   findKeptLateCaptureInvoiceIdForPayment,
-  findClosedLateCaptureRecordIntents,
+  findClosedLateCaptureRecords,
   findLateCapturePaymentIntents,
   hasXeroReceiptForLateCapture,
   readLateCaptureXeroReceipt,
@@ -213,8 +213,8 @@ describe("findLateCapturePaymentIntents (round-3 R1)", () => {
   });
 });
 
-describe("findClosedLateCaptureRecordIntents (#4149)", () => {
-  it("counts an approval task in any status and a closed automatic-refund row, but not an OPEN #2700 row the refund never closed", async () => {
+describe("findClosedLateCaptureRecords (#4149)", () => {
+  it("counts an approval task in any status and a closed automatic-refund row, not an OPEN #2700 row the refund never closed, and tells a hand completion apart", async () => {
     mocks.taskFindMany.mockResolvedValue([
       { lateCaptureApprovalIntentId: "pi_owned", reason: null, status: "OPEN" },
       { lateCaptureApprovalIntentId: null, reason: cancelledBookingPrimaryPaymentRefundReason("pi_recorded"), status: "DISMISSED" },
@@ -223,7 +223,11 @@ describe("findClosedLateCaptureRecordIntents (#4149)", () => {
     ]);
     const ids = ["pi_owned", "pi_recorded", "pi_by_hand", "pi_open"];
 
-    expect([...(await findClosedLateCaptureRecordIntents(ids))].sort()).toEqual(["pi_by_hand", "pi_owned", "pi_recorded"]);
+    expect(Object.fromEntries(await findClosedLateCaptureRecords(ids))).toEqual({
+      pi_owned: "record",
+      pi_recorded: "record",
+      pi_by_hand: "hand-completed",
+    });
     // The OPEN row still marks a known late capture everywhere else (the note-eligible cash).
     expect([...(await findLateCapturePaymentIntents(ids))].sort()).toEqual([...ids].sort());
   });

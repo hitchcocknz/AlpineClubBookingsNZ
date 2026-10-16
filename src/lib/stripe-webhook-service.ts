@@ -35,6 +35,7 @@ import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-cred
 import {
   describeLateCaptureFromBooking,
   finishAutomaticLateCaptureRefund,
+  readUnrecordedLateCaptureRefund,
   recoverLostLateCaptureRecord,
   type LateCaptureIdentity,
 } from "@/lib/late-capture-record-recovery";
@@ -1194,6 +1195,17 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
       paymentId: refundSync.paymentId,
       paymentIntentId: paymentIntentId!,
     });
+  } else if (
+    refundSync.refundDeltaCents > 0 &&
+    // #4170: a late capture whose record is not written yet never gets the generic note.
+    (await readUnrecordedLateCaptureRefund({
+      paymentId: refundSync.paymentId,
+      paymentIntentId,
+      refundedCents: refundSync.refundDeltaCents,
+      refunds,
+    })) !== "none"
+  ) {
+    return;
   } else if (refundSync.refundDeltaCents > 0) {
     // Queue only what this sync newly added to the refunded total (#3640); charge.amount_refunded is cumulative.
     try {

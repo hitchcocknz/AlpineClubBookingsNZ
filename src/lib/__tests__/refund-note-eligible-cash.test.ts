@@ -12,6 +12,8 @@ const state = vi.hoisted(() => ({
   keptLinks: [] as Array<{ localId: string; xeroObjectId: string }>,
   resolvedKept: [] as string[],
   supplementary: [] as Array<{ paymentIntentId: string; status: string; xeroObjectId: string | null }>,
+  /** #4170: captures the primary late-capture handler marked as its own write. */
+  markedIntents: [] as string[],
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -31,6 +33,12 @@ vi.mock("@/lib/prisma", () => ({
         state.refunds.filter((r) => r.paymentId === where.paymentId && r.stripePaymentIntentId),
     },
     memberCredit: { aggregate: async () => ({ _sum: { amountCents: 0 } }) },
+    paymentTransaction: {
+      findMany: async ({ where }: { where: { stripePaymentIntentId: { in: string[] }; reason: string } }) =>
+        where.reason === "cancelled_booking_late_capture"
+          ? state.markedIntents.filter((intent) => where.stripePaymentIntentId.in.includes(intent)).map((intent) => ({ stripePaymentIntentId: intent }))
+          : [],
+    },
     manualRefundTask: {
       // #3924 round 4: the cash evidence's paid-another-way read (on the payment, by key prefix; #4097,
       // with a paid-back card refund shortfall beside it) finds none here.
@@ -75,6 +83,7 @@ beforeEach(() => {
   state.keptLinks = [];
   state.resolvedKept = [];
   state.supplementary = [];
+  state.markedIntents = [];
 });
 
 describe("resolveRefundNoteEligibleCash", () => {
@@ -87,6 +96,14 @@ describe("resolveRefundNoteEligibleCash", () => {
 
   it("leaves out a refund of a late capture Xero never received, owned by an approval task", async () => {
     state.tasks = [{ id: "task_late", lateCaptureApprovalIntentId: "pi_late", reason: null }];
+    await expect(resolveRefundNoteEligibleCash(PAYMENT)).resolves.toMatchObject({
+      eligibleCashCents: 10000,
+      lateCaptureExcludedCents: 24000,
+    });
+  });
+
+  it("leaves out a capture the primary late-capture handler marked as its own, before any record row exists (#4170)", async () => {
+    state.markedIntents = ["pi_late"];
     await expect(resolveRefundNoteEligibleCash(PAYMENT)).resolves.toMatchObject({
       eligibleCashCents: 10000,
       lateCaptureExcludedCents: 24000,
