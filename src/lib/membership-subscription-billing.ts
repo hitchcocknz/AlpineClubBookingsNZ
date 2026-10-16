@@ -810,11 +810,7 @@ export async function buildSubscriptionBillingPreview(input: {
   // difference invoice, so the officer is warned before confirming (round 5;
   // narrowed in round 6, F3). Filled in the #2161 loop, which has the basis.
   const invoiceHoldersByFamilyKey = new Map<string, Array<{ memberName: string; invoice: string }>>();
-  // #4110 review round 6, F1: the members whose payment under the newest
-  // closed charge was reversed. If the family then ends up held back (#2161
-  // or an operator marker), each gets a decision exception instead of being
-  // silently folded into the hold.
-  const reversedByFamilyKey = new Map<string, Set<string>>();
+
   const familyChargesByKey = new Map<string, Array<(typeof existingFamilyCharges)[number]>>();
   for (const charge of [...existingFamilyCharges].sort(newestChargeFirst)) {
     const key = `${input.seasonYear}:${charge.membershipTypeId}:family:${charge.familyGroupId}`;
@@ -838,19 +834,27 @@ export async function buildSubscriptionBillingPreview(input: {
       .filter((row) => !paidAtNewestClose.has(row.subscription.memberId)
         && (!wasPaidAtClose(row) || isClosedCoveragePaymentReversed(row)))
       .map((row) => row.subscription.memberId)));
+    // Per member a closed charge covered who is no longer settled, why the
+    // officer must decide if the family is NOT billed again for them: reversed
+    // under the newest charge (only when a hold keeps the re-bill back),
+    // reversed under an older one, or exempt at a close. Rows run newest
+    // charge first, so a member's newest row gives the reason.
+    const reversedAtNewest = new Set(reversed.map((row) => row.subscription.memberId));
+    const decisions = new Map<string, ClosedFamilyDecisionReason>();
+    const settled = new Set<string>();
+    for (const row of familyRows) {
+      const memberId = row.subscription.memberId;
+      if (isSubscriptionSettled(row.subscription.status)) {
+        settled.add(memberId);
+      } else if (!decisions.has(memberId)) {
+        decisions.set(memberId, reversedAtNewest.has(memberId)
+          ? "HELD_BY_FAMILY_INVOICE"
+          : wasPaidAtClose(row) ? "REVERSED_UNDER_OLDER_CHARGE" : "EXEMPT_AT_CLOSE");
+      }
+    }
+    decisionReasonByFamilyKey.set(key, decisions);
     if (reversed.length === 0) {
       billedFamilyTypes.set(key, newest.id);
-      const decisions = new Map<string, ClosedFamilyDecisionReason>();
-      const settled = new Set<string>();
-      for (const row of familyRows) {
-        const memberId = row.subscription.memberId;
-        if (isSubscriptionSettled(row.subscription.status)) {
-          settled.add(memberId);
-        } else if (!decisions.has(memberId)) {
-          decisions.set(memberId, wasPaidAtClose(row) ? "REVERSED_UNDER_OLDER_CHARGE" : "EXEMPT_AT_CLOSE");
-        }
-      }
-      decisionReasonByFamilyKey.set(key, decisions);
       settledCoveredByFamilyKey.set(key, settled);
       continue;
     }
@@ -858,7 +862,6 @@ export async function buildSubscriptionBillingPreview(input: {
     // settled) can never match here: no need to exclude them by id.
     const paymentStillStands = familyRows.some((row) =>
       wasPaidAtClose(row) && isSubscriptionSettled(row.subscription.status));
-    reversedByFamilyKey.set(key, new Set(reversed.map((row) => row.subscription.memberId)));
     if (paymentStillStands) {
       partlyReversedClosedFamilies.set(key, {
         chargeId: newest.id,
@@ -1263,25 +1266,30 @@ export async function buildSubscriptionBillingPreview(input: {
           markedAt: marker?.markedAt ?? null,
         });
       }
-      // #4110 review round 6, F1: a member whose payment under the newest
-      // closed charge was reversed would be billed again with the family, but
-      // the family is held. The hold stands (#2161, never a second family
-      // invoice); the officer is asked to decide for this member instead.
-      if (reversedByFamilyKey.get(groupingKey)?.has(member.id)) {
+      // #4110 review rounds 6 and 7: the family would have been billed again
+      // for a reversal, but it is held. The hold stands (#2161, never a second
+      // family invoice); every member a closed charge covered who is no longer
+      // settled — reversed under the newest charge, reversed under an older
+      // one, or exempt at a close — is asked about instead, naming the hold.
+      // Anyone else (a new joiner) is not.
+      const heldReason = decisionReasonByFamilyKey.get(groupingKey)?.get(member.id);
+      if (heldReason) {
         const info = familySuppressionInfo.get(familyGroupId);
-        const heldBy = info?.holderName
-          ? `${info.holderName}'s Xero invoice${info.xeroInvoiceNumber ? ` ${info.xeroInvoiceNumber}` : ""}`
-          : "an operator's already-invoiced marker";
+        const heldBy = !info
+          ? "an operator's already-invoiced marker"
+          : info.hasLiveInvoice
+            ? `${info.holderName}'s Xero invoice${info.xeroInvoiceNumber ? ` ${info.xeroInvoiceNumber}` : ""}`
+            : `${info.holderName}'s family charge`;
         exceptions.push(exception({
           code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
           message: closedFamilyMemberDecisionMessage({
-            memberName, membershipTypeName: membershipType.name, reason: "HELD_BY_FAMILY_INVOICE", heldBy,
+            memberName, membershipTypeName: membershipType.name, reason: heldReason, heldBy,
           }),
           seasonYear: input.seasonYear,
           memberId: member.id,
           familyGroupId,
           membershipTypeId: membershipType.id,
-          context: { memberName, membershipAnnualFeeId: fee.id, reason: "HELD_BY_FAMILY_INVOICE", heldBy },
+          context: { memberName, membershipAnnualFeeId: fee.id, reason: heldReason, heldBy },
         }));
       }
       continue;

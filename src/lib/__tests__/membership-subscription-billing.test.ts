@@ -724,6 +724,8 @@ describe("membership subscription billing", () => {
     memberIds?: string[],
     // Per-type (and per-tier) fee, for a holder on another type or tier (#4110 review round 6).
     feeForType?: (membershipTypeId: string, ageTier: string | null) => unknown,
+    // The family members the preview reads (default: the one "re-billable").
+    previewedMembers?: string[],
   ) {
     const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
     if (feeForType) {
@@ -735,9 +737,8 @@ describe("membership subscription billing", () => {
     mocks.charges.findMany.mockImplementation(chargesMatchingStatusFilter(charges));
     mocks.coverage.findMany.mockResolvedValue([]); // released by the void or the close
     mocks.subscriptions.findMany.mockResolvedValue([]); // the member being billed is not settled
-    mocks.members.findMany.mockResolvedValue([
-      member("re-billable", { familyGroupMemberships: [familyMembership()] }),
-    ]);
+    mocks.members.findMany.mockResolvedValue((previewedMembers ?? ["re-billable"]).map((id) =>
+      member(id, { familyGroupMemberships: [familyMembership()] })));
     return buildSubscriptionBillingPreview({
       seasonYear: 2026,
       decisionDate: new Date("2026-08-01T00:00:00.000Z"),
@@ -1480,20 +1481,11 @@ describe("membership subscription billing", () => {
       expect(mocks.familyGroupMembers.findMany).toHaveBeenCalled();
     });
 
-    /** Give a closed charge's covered row the Xero invoice its subscription now holds. */
-    function holdingInvoice(charge: ReturnType<typeof familyCharge>, index: number, invoiceId: string, invoiceNumber: string) {
-      Object.assign(charge.coverage[index]!.subscription, { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber });
-      return charge;
-    }
-
     it("Finance's difference invoice does not hide a reversal: the family is billed again, and the officer is warned about the invoice (review rounds 4 F-C and 5 item 2)", async () => {
       // The parent's payment at the close was reversed; the child, exempt at
       // the close, holds the invoice Finance raised by hand for the difference.
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-difference", xeroInvoiceNumber: "INV-DIFF" }, { firstName: "Cub", lastName: "One" })]);
-      const charge = holdingInvoice(
-        familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]),
-        1, "xi-difference", "INV-DIFF",
-      );
+      const charge = familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]);
       const preview = await previewFamily([charge]);
       expect(preview.alreadyInvoicedFamilies).toEqual([]);
       expect(preview.entries).toHaveLength(1);
@@ -1515,10 +1507,7 @@ describe("membership subscription billing", () => {
       // be minted off K.
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", { xeroInvoiceId: "xi-family", xeroInvoiceNumber: "INV-FAM", status: "UNPAID" })]);
       mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
-      const charge = holdingInvoice(
-        familyCharge("NOT_REQUIRED", [["H", "UNPAID", "PAID"], ["re-billable", "NOT_REQUIRED", "NOT_REQUIRED"]]),
-        0, "xi-family", "INV-FAM",
-      );
+      const charge = familyCharge("NOT_REQUIRED", [["H", "UNPAID", "PAID"], ["re-billable", "NOT_REQUIRED", "NOT_REQUIRED"]]);
       const preview = await previewFamily([charge]);
       expect(preview.entries).toEqual([]);
       expect(preview.alreadyInvoicedFamilies).toEqual([expect.objectContaining({ familyGroupId: "family-1", holderMemberId: "H", xeroInvoiceNumber: "INV-FAM" })]);
@@ -1529,10 +1518,7 @@ describe("membership subscription billing", () => {
       // their invoice is not that charge's difference for this type, so it
       // keeps suppressing this type's family fee as #2161 requires.
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-other", xeroInvoiceNumber: "INV-OTHER" })]);
-      const otherType = holdingInvoice(
-        familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]], { membershipTypeId: "type-2" }),
-        1, "xi-other", "INV-OTHER",
-      );
+      const otherType = familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]], { membershipTypeId: "type-2" });
       const preview = await previewFamily([otherType]);
       expect(preview.entries).toEqual([]);
       expect(preview.alreadyInvoicedFamilies.map((family) => family.holderMemberId)).toEqual(["cub-1"]);
@@ -1544,7 +1530,7 @@ describe("membership subscription billing", () => {
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", { xeroInvoiceId: "xi-fam", xeroInvoiceNumber: "INV-FAM", status: "PAID" }, { firstName: "Hana", lastName: "Parent" })]);
       mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
       const preview = await previewFamily(
-        [holdingInvoice(familyCharge("NOT_REQUIRED", [["H", "PAID", "PAID"], ["re-billable", "NOT_INVOICED", "PAID"]]), 0, "xi-fam", "INV-FAM")],
+        [familyCharge("NOT_REQUIRED", [["H", "PAID", "PAID"], ["re-billable", "NOT_INVOICED", "PAID"]])],
         ["re-billable"],
       );
       expect(preview.entries).toEqual([]);
@@ -1556,6 +1542,84 @@ describe("membership subscription billing", () => {
           message: expect.stringContaining("the family is held back by Hana Parent's Xero invoice INV-FAM. The family is not billed again. Decide how to bill"),
           context: expect.objectContaining({ reason: "HELD_BY_FAMILY_INVOICE", heldBy: "Hana Parent's Xero invoice INV-FAM" }),
         }),
+      ]);
+    });
+
+    it("a held, reversed family asks about every covered member no longer settled, each naming the hold (review round 7 item 1)", async () => {
+      // H paid at the close and holds INV-FAM; K paid and since reversed; E was
+      // not required at the close and is now not invoiced.
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", { xeroInvoiceId: "xi-fam", xeroInvoiceNumber: "INV-FAM", status: "PAID" }, { firstName: "Hana", lastName: "Parent" })]);
+      const preview = await previewFamily(
+        [familyCharge("NOT_REQUIRED", [["H", "PAID", "PAID"], ["K", "NOT_INVOICED", "PAID"], ["E", "NOT_INVOICED", "NOT_REQUIRED"]])],
+        ["K", "E"], undefined, ["K", "E"],
+      );
+      expect(preview.entries).toEqual([]);
+      expect(preview.exceptions.map((item) => [item.memberId, item.code, item.context.reason, item.context.heldBy])
+        .sort((left, right) => (String(left[0]) < String(right[0]) ? -1 : 1))).toEqual([
+        ["E", "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", "EXEMPT_AT_CLOSE", "Hana Parent's Xero invoice INV-FAM"],
+        ["K", "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", "HELD_BY_FAMILY_INVOICE", "Hana Parent's Xero invoice INV-FAM"],
+      ]);
+      expect(preview.exceptions.find((item) => item.memberId === "E")!.message).toContain(
+        "was not required to pay when the family's Full charge was closed as already paid, and now needs a subscription, and the family is held back by Hana Parent's Xero invoice INV-FAM.",
+      );
+    });
+
+    it("a held, reversed family asks about a member reversed under an OLDER charge too (review round 7 item 1)", async () => {
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", { xeroInvoiceId: "xi-fam", xeroInvoiceNumber: "INV-FAM", status: "PAID" }, { firstName: "Hana", lastName: "Parent" })]);
+      const preview = await previewFamily([
+        familyCharge("NOT_REQUIRED", [["O", "NOT_INVOICED", "PAID"]], OLDER_CHARGE),
+        familyCharge("NOT_REQUIRED", [["H", "PAID", "PAID"], ["K", "NOT_INVOICED", "PAID"]], NEWER_CHARGE),
+      ], ["O"], undefined, ["O"]);
+      expect(preview.entries).toEqual([]);
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({
+          code: "CLOSED_FAMILY_MEMBER_NEEDS_DECISION", memberId: "O",
+          message: expect.stringContaining("'s payment under an earlier closed Full family charge was reversed, and the family is held back by Hana Parent's Xero invoice INV-FAM."),
+          context: expect.objectContaining({ reason: "REVERSED_UNDER_OLDER_CHARGE" }),
+        }),
+      ]);
+    });
+
+    it("a new joiner with no invoice in a held, reversed family is not asked about (review round 7 item 2)", async () => {
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", { xeroInvoiceId: "xi-fam", xeroInvoiceNumber: "INV-FAM", status: "PAID" })]);
+      const preview = await previewFamily(
+        [familyCharge("NOT_REQUIRED", [["H", "PAID", "PAID"], ["K", "NOT_INVOICED", "PAID"]])],
+        ["joiner"], undefined, ["joiner"],
+      );
+      expect(preview.entries).toEqual([]);
+      expect(preview.alreadyInvoicedFamilies.map((family) => family.familyGroupId)).toEqual(["family-1"]);
+      expect(preview.exceptions).toEqual([]);
+    });
+
+    it("names an operator's marker as the hold when only a marker holds the family (review round 7 item 3)", async () => {
+      mocks.familyMarkers.findMany.mockResolvedValue([
+        { familyGroupId: "family-1", note: "Billed elsewhere", markedAt: new Date("2026-05-01T00:00:00.000Z"), markedBy: { firstName: "Ada", lastName: "Admin" } },
+      ]);
+      const preview = await previewFamily(
+        [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["K", "NOT_INVOICED", "PAID"]])],
+        ["K"], undefined, ["K"],
+      );
+      expect(preview.entries).toEqual([]);
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({ memberId: "K", context: expect.objectContaining({ heldBy: "an operator's already-invoiced marker" }) }),
+      ]);
+    });
+
+    it("names a family charge, not an invoice, when an active family claim holds the family (review round 7 item 3)", async () => {
+      // An active claim on a PER_FAMILY charge for this family, and no invoice link.
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("H", {}, {
+        firstName: "Hana", lastName: "Parent",
+        subscriptions: [{
+          xeroInvoiceId: null, xeroInvoiceNumber: null, status: "NOT_INVOICED",
+          chargeCoverage: [{ charge: { billingBasis: "PER_FAMILY", familyGroupId: "family-1" } }],
+        }],
+      })]);
+      const preview = await previewFamily(
+        [familyCharge("NOT_REQUIRED", [["Bill Member", "PAID", "PAID"], ["K", "NOT_INVOICED", "PAID"]])],
+        ["K"], undefined, ["K"],
+      );
+      expect(preview.exceptions).toEqual([
+        expect.objectContaining({ memberId: "K", context: expect.objectContaining({ heldBy: "Hana Parent's family charge" }) }),
       ]);
     });
 
@@ -1576,10 +1640,7 @@ describe("membership subscription billing", () => {
         firstName: "Cub", lastName: "One",
         seasonalMembershipAssignments: [{ membershipType: { id: "type-2", key: "SOLO", name: "Solo", subscriptionBehavior: "REQUIRED" } }],
       })]);
-      const charge = holdingInvoice(
-        familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]),
-        1, "xi-own", "INV-OWN",
-      );
+      const charge = familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]);
       const preview = await previewFamily([charge], undefined, (typeId) =>
         typeId === "type-2" ? fee({ id: "fee-solo", billingBasis: "PER_MEMBER", prorationRule: "NONE" }) : undefined);
       expect(preview.entries).toHaveLength(1);
@@ -1592,10 +1653,7 @@ describe("membership subscription billing", () => {
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-own", xeroInvoiceNumber: "INV-OWN" }, {
         firstName: "Cub", lastName: "One", ageTier: "YOUTH",
       })]);
-      const charge = holdingInvoice(
-        familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]),
-        1, "xi-own", "INV-OWN",
-      );
+      const charge = familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]);
       const preview = await previewFamily([charge], undefined, (_typeId, ageTier) =>
         ageTier === "YOUTH" ? fee({ id: "fee-youth", billingBasis: "PER_MEMBER", prorationRule: "NONE" }) : undefined);
       expect(preview.entries).toHaveLength(1);
@@ -1605,7 +1663,7 @@ describe("membership subscription billing", () => {
     it("lets past the hold, and names beside the re-bill, a holder reversed under an OLDER charge (review round 6 F4)", async () => {
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("B", { xeroInvoiceId: "xi-b", xeroInvoiceNumber: "INV-B" }, { firstName: "Bea", lastName: "Older" })]);
       const preview = await previewFamily([
-        holdingInvoice(familyCharge("NOT_REQUIRED", [["B", "UNPAID", "PAID"]], OLDER_CHARGE), 0, "xi-b", "INV-B"),
+        familyCharge("NOT_REQUIRED", [["B", "UNPAID", "PAID"]], OLDER_CHARGE),
         familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"]], NEWER_CHARGE),
       ]);
       expect(preview.alreadyInvoicedFamilies).toEqual([]);
@@ -1622,10 +1680,7 @@ describe("membership subscription billing", () => {
       mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("cub-1", { xeroInvoiceId: "xi-difference", xeroInvoiceNumber: "INV-DIFF" }, {
         firstName: "Cub", lastName: "One", seasonalMembershipAssignments: [],
       })]);
-      const charge = holdingInvoice(
-        familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]),
-        1, "xi-difference", "INV-DIFF",
-      );
+      const charge = familyCharge("NOT_REQUIRED", [["Bill Member", "NOT_INVOICED", "PAID"], ["cub-1", "UNPAID", "NOT_REQUIRED"]]);
       const preview = await previewFamily([charge]);
       expect(preview.alreadyInvoicedFamilies).toEqual([]);
       expect(preview.entries).toHaveLength(1);
