@@ -371,6 +371,11 @@ import "./late-capture-record-recovery.realdb.test";
 // card refund plan. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
 // cleans its own `race-4132-` fixtures.
 import "./ledger-insertion-seq.realdb.test";
+// #4177 reuses it to prove the duplicate-capture refund names the first-inserted
+// settled capture as the settlement, not the one PostgreSQL's heap order puts
+// first. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4177-` fixtures.
+import "./settled-capture-order.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
