@@ -376,6 +376,23 @@ let report: typeof import("@/lib/bank-refund-void-report");
       expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
     });
 
+    it("MUTATION: the note is sized from its record, never the payment-wide gap", async () => {
+      await paidBankTransfer();
+      await handBackNoted("cn-race-4162-v", PAID_CENTS);
+      await voidLongAgo("cn-race-4162-v", PAID_CENTS);
+      // Account credit the booking issued, which the payment-wide cash figure
+      // takes off: that gap is $150 while the voided note was $200.
+      await prisma.memberCredit.create({
+        data: { memberId: MEMBER_ID, amountCents: 5_000, type: "CANCELLATION_REFUND", description: "race-4162", sourceBookingId: BOOKING_ID },
+      });
+      const result = await reRecord(await linkIdOf("cn-race-4162-v"));
+
+      expect((await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: result.noteOperationId } })).requestPayload).toMatchObject({
+        refundAmountCents: PAID_CENTS,
+      });
+      expect(await raiseQueuedNote(result.noteOperationId)).toEqual([expect.objectContaining({ amount: PAID_CENTS / 100 })]);
+    });
+
     it("a double click records once: one resolution, one note row, one raise of the total", async () => {
       await paidBankTransfer();
       await handBackNoted("cn-race-4162-v", PAID_CENTS);
@@ -422,6 +439,12 @@ let report: typeof import("@/lib/bank-refund-void-report");
         { id: expect.any(String), amountCents: PAID_CENTS, postingKey: `reversal:${original.id}`, reversesLineId: original.id },
       ]);
       expect(result.reversedLedgerLineId).toBe(original.id);
+      // The census reads the reversal as well formed: its key, anchor and figures.
+      const { readBookingLedgerCensusRow } = await import("@/lib/booking-ledger-projection-census-store");
+      const { evaluateBookingLedgerIdentities } = await import("@/lib/booking-ledger-projection-census");
+      const evaluation = evaluateBookingLedgerIdentities((await readBookingLedgerCensusRow(prisma, BOOKING_ID))!);
+      expect(evaluation.integrity).toEqual([]);
+      expect(evaluation.identities.find((identity) => identity.identity === "REFUNDED")).toMatchObject({ status: "AGREE", columnCents: 0 });
       // A later reconcile derives the total from the detail: it no longer puts the refund back.
       const { reconcilePaymentAggregates } = await import("@/lib/payment-transactions");
       await reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
@@ -431,6 +454,29 @@ let report: typeof import("@/lib/bank-refund-void-report");
       });
       expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, status: "PENDING" } })).toBe(0);
       expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
+    });
+
+    it("confirm cancelled one of two hand-backs: the census explains the refunded total by the live hand-back alone", async () => {
+      await paidBankTransfer();
+      await handBackNoted("cn-race-4162-live", 5_000, { perDelta: true });
+      await handBackNoted("cn-race-4162-v", 15_000);
+      await voidLongAgo("cn-race-4162-v", 15_000);
+
+      await resolution.confirmBankTransferRefundCancelled({
+        linkId: await linkIdOf("cn-race-4162-v"), basis: "cancelled", expectedAmountCents: 15_000, note: "Never sent", actingMemberId: OFFICER_ID,
+      });
+
+      expect(await money()).toMatchObject({ payment: { refundedAmountCents: 5_000 }, txn: { refundedAmountCents: 5_000 } });
+      const { readBookingLedgerCensusRow } = await import("@/lib/booking-ledger-projection-census-store");
+      const { evaluateBookingLedgerIdentities } = await import("@/lib/booking-ledger-projection-census");
+      const evaluation = evaluateBookingLedgerIdentities((await readBookingLedgerCensusRow(prisma, BOOKING_ID))!);
+      expect(evaluation.integrity).toEqual([]);
+      // MUTATION: a census that still counted the reversed hand-back would explain $200 against a $50 total.
+      expect(evaluation.identities.find((identity) => identity.identity === "REFUNDED")).toMatchObject({
+        status: "CLASSIFIED",
+        columnCents: 5_000,
+        explainedBy: [expect.objectContaining({ name: "REFUND_MIRROR_HAND_BACK", cents: 5_000 })],
+      });
     });
 
     it("confirm replaced in Xero moves nothing: the item leaves the list with the reason", async () => {
