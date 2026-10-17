@@ -45,6 +45,14 @@ import { prisma } from "@/lib/prisma";
  * one) - so a second click, or a second treasurer, writes nothing and is told.
  * No lock: nothing else writes that column of a close's record.
  *
+ * STRIPE MAY STILL FAIL IT (#4210, `INV-PAY-136`). A card refund listed here
+ * may be one Stripe accepted as pending; if Stripe fails it, it no longer counts,
+ * so the row leaves this list on its own. The failed-later writer then decides
+ * it as settled by the close (`findPaidAnotherWayCloseThatSettled`): nothing
+ * after a full close, a dead row to check after a part close, or the whole
+ * refund dead when this row was marked Resolved - the member may have returned
+ * the extra.
+ *
  * WHAT THE TREASURER SAW (#3924 round 8): the request carries the card figure
  * the dialog showed. A Stripe refund recorded since - one they never saw - makes
  * the figure differ, and the Resolved is refused with a 409. The resolution

@@ -5053,6 +5053,17 @@ and the debt's writes come last, on `PaymentRecoveryOperation`:
   re-planned, and with none a row is inserted keyed on the Stripe refund
   (`card_refund_failed_later_<refund>`, `skipDuplicates`). A refund that names
   no booking writes an audit row on the same transaction instead.
+- **Settled by a "Paid another way" close** (#4210, `INV-PAY-136`): asked
+  before the no-booking rule, the search reads the close's record
+  (`ManualRefundTask`, by `closeKeysOf`) under the same Payment row lock. A
+  close takes that lock (`lockPaymentForRefundedTotal`, after `lock(1)`) before
+  it moves the row to `SUCCEEDED` and writes the record in one transaction, so
+  the search sees the whole close or none of it. A full close's refund writes
+  no row - only its audit row, on this transaction; a part close's, or a
+  resolved paid-twice row's, inserts a dead row as above. The resolution is
+  written with no lock (`resolveCardRefundPaidTwice`'s guarded `updateMany`):
+  a refund failing as it commits is weighed by the record as read, and either
+  order leaves one decision. No new lock or key.
 - **A re-plan** is a compare-and-set on the plan, status, `attempts` and
   `nextRetryAt` it read (a claim or re-arm between moves one), never on a row
   someone may be writing: a worker mid-attempt (`PROCESSING`), or a row no

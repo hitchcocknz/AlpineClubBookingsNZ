@@ -564,7 +564,8 @@ export function CardRefundsPaidTwiceList({ rows }: { rows: CardRefundPaidTwicePa
         <p className="text-sm text-muted-foreground">
           Each of these card refunds was closed as paid another way, and then Stripe refunded the card as well,
           so the member was paid back twice. Contact the member to recover the extra money, and record what you
-          agree in Xero. Then mark it Resolved, saying how it was sorted out.
+          agree in Xero. Then mark it Resolved, saying how it was sorted out. Stripe may still fail a pending
+          card refund; if it does, the row leaves this list and the officers are emailed what to do (#4210).
         </p>
         <p
           ref={listNoticeRef}

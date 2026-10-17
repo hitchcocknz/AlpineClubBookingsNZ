@@ -6,10 +6,14 @@
   reported it failed, the app raised a new card refund for it and sent it
   automatically, paying the member a second time.
 
-  Such a failed refund is now treated as already settled by the close: no new
-  refund is raised or sent, it is not counted under Refunds owed, and it leaves
-  the paid-back-twice list. The officers are emailed once, saying not to pay the
-  member again unless they had already asked them to return the extra, and the
-  audit log records it under Payment. The member's booking page keeps saying the
-  amount was paid back another way. A failed refund the close did not settle is
-  still asked for again automatically, as before.
+  Such a failed refund is now treated as settled by the close, but only when
+  the refund was the closed row's own and the close never counted it: nothing
+  is raised or sent, and it leaves the paid-back-twice list. If the close paid
+  back only part of what was owed, up to the part it gave up is listed under
+  "Card refunds Stripe gave up on" for a treasurer to check; if the paid-twice
+  row had been marked resolved (the member may have returned the extra), the
+  whole refund is listed there. These are never sent automatically. The
+  officers get their own email for it, "Card refund failed after it was paid
+  back another way", which cannot be switched off, and the audit log records it
+  under Payment. A failed refund that another part of the app made, or that the
+  close counted as made, is still asked for again automatically, as before.

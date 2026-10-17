@@ -1246,8 +1246,8 @@ one, check the other.
     marked slice, or one it fills carrying exactly its runner's metadata;
     else one row per Stripe refund owes it. A failing retry, or a refund no
     open row owes that Stripe created before the cutoff migration, is raised
-    dead. One naming no booking, or recorded after its row closed "Paid
-    another way" (#4210), only alerts and is audited.
+    dead. One naming no booking only alerts and is audited; one a "Paid
+    another way" close settled: `INV-PAY-136`.
   - **Paid another way** notes only what a card note still in Xero does not
     cover, kept on its record (`failedLaterCardNoteCoverCents`).
   - **Officers hear once per refusal or failed-later decision**, again if
@@ -1449,8 +1449,8 @@ short).
     can write its up-front event after a new close's, and an old runner close
     a new cancel's row with none. An old worker's failed-later
     re-plan drops `madeByOperationId`; the page matches by amount.
-  - **A refund failing later is told by the row owing it** (#4166); none
-    where a "Paid another way" close settled it (#4210).
+  - **A refund failing later is told by the row owing it** (#4166), or by
+    the close that settled it (`INV-PAY-136`).
   - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
     never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,
@@ -1496,6 +1496,39 @@ refunded total it corrects).
     `payment-transactions-refunds.test.ts`, `booking-narrative.test.ts`,
     `booking-ledger-projection-census.test.ts` and
     `capacity-race-refund-shortfall-task.realdb.test.ts`.
+
+## INV-PAY-136
+
+**Related: `INV-PAY-128`** (a refund failing later is owed again) and
+**`INV-PAY-122`** (closing a dead card refund).
+
+- **A card refund a "Paid another way" close already settled is not owed again
+  when Stripe fails it later** (#4210). The failed-later writer asks first,
+  under the Payment row lock a close takes before writing its record
+  (`findPaidAnotherWayCloseThatSettled`).
+  - **The row that sent it decides** (`madeBy`): closed "Paid another way"
+    (its record, `closeKeysOf`), Stripe made the refund by that close
+    (`operationWindowTakes`), and the close never counted it - recorded after
+    it (`recordedAfterClose`, the paid-twice reading
+    `cardRefundsSentAfterPaidAnotherWay`), or filling another row's slice.
+  - **Only a refund naming no booking** of the payment, which no row sent, is
+    weighed by the row whose slice it fills, on the paid-twice reading.
+    Another door's refund for the booking never is.
+  - **A full close raises nothing.** A part close raises `min(refund, unpaid)`
+    dead (attempts spent, never sent) for an officer to check; a resolved
+    paid-twice row raises the whole refund dead, its note audited. Stated
+    limit: each refund is weighed alone against the unpaid part.
+  - **Audited** under `payment` and alerted once through its own
+    delivery-locked mail (`admin-card-refund-failed-after-paid-another-way`).
+  - **An open sender's own replay** reads the refund as refused.
+  - **Deploy window**: until the old image drains, its writer raises a live
+    row for such a refund, which either colour's runner may send; the runner
+    does not re-check the close. The owner checks failed-later rows raised
+    while both colours serve.
+  - Proven by `card-refund-failed-later-paid-another-way.test.ts`,
+    `email-sender-composed-note-binding.test.ts`,
+    `email-message-registry.test.ts` and
+    `cancel-card-refund-failed-later.realdb.test.ts`.
 
 ## INV-PAY-031
 

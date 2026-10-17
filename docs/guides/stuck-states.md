@@ -108,6 +108,14 @@ pay the member another way and close:
 A refund whose retries had already run out when it failed stays here too, with
 the failure noted on it.
 
+**One you already paid back another way is different** (#4210). If the card
+refund that failed belongs to a refund you had already closed as **Paid another
+way**, and that close paid it back - Stripe's answer was lost, so the close
+counted it as still owed - the app does not ask for it again or count it as owed.
+The officers get their own email, **Card refund failed after it was paid back
+another way**, which cannot be switched off, saying what was decided; see
+**If Stripe then fails that card refund**, under paid back twice below.
+
 When you close one of these, Xero may already hold the card refund credit note
 raised while the refund still counted. The dialog says how much of the refund
 that note covers: you pay back that much with no new note, and a note worded as
@@ -270,17 +278,31 @@ resolved, the app refuses and the list refreshes, so you only ever resolve the
 amount you saw.
 
 **If Stripe then fails that card refund** (#4210). Stripe can accept a refund
-and report it failed days later. If it fails a refund that showed here, the
-member did not get the card money after all: the bank transfer you recorded is
-the only time they were paid back. The app does **not** ask Stripe for it
-again, and does not list it under **Card refunds Stripe gave up on** or count
-it under **Refunds owed**. The row leaves this list, the officers are emailed
-once, and the [audit log](audit-log.md) records it under **Payment**. Do not
-pay the member again, unless you had already asked them to return the extra:
-then they are owed it again, so pay them back and record it in Xero. A card
-refund credit note raised in Xero while Stripe counted the refund no longer
-matches money paid back; the Xero reconciliation report lists it as refund
-coverage above the refunded total, for you to correct in Xero.
+as pending and report it failed days later. A refund listed here is one Stripe
+may still fail; if it does, the row leaves this list. The member did not get
+that card money after all, so the bank transfer you recorded was the only time
+they were paid back. The officers get an email that cannot be switched off,
+**Card refund failed after it was paid back another way**, and the
+[audit log](audit-log.md) records it under **Payment**. What happens next
+depends on the close:
+
+- **You paid it back in full and had not marked the row resolved.** Nothing
+  more is owed: the app does not ask Stripe again, and nothing is added to
+  **Card refunds Stripe gave up on** or **Refunds owed**. Do not pay the member
+  again unless they have already returned the extra; if you only asked, tell
+  them not to send it.
+- **You paid back only part of it.** The part the close gave up may now be
+  owed, so up to that much is listed under **Card refunds Stripe gave up on**,
+  never asked of Stripe. Check with the member: if they are owed it, pay them
+  and close it there; if not, ask a developer to reconcile it.
+- **You had marked the row resolved.** The member may have returned the extra,
+  so the whole refund is listed under **Card refunds Stripe gave up on**, with
+  your resolution note in the email. If they returned it, pay them and close it
+  there; if they kept it, ask a developer to reconcile it.
+
+A card refund credit note raised in Xero while Stripe counted the refund no
+longer matches money paid back; the Xero reconciliation report lists it as
+refund coverage above the refunded total, for you to correct in Xero.
 
 This action does not cover two kinds of refund:
 
