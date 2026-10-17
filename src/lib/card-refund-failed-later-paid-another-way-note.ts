@@ -8,6 +8,8 @@
  * registry imports it without loading the email layout.
  */
 
+import type { PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
+
 /** How the failed-later writer decided a refund a close had settled (`card-refund-failed-later-paid-another-way.ts`). */
 export type PaidAnotherWayFailedLaterOutcome = "settled-paid-another-way" | "raised-check-part-close" | "raised-check-resolved" | "raised-check-uncertain";
 
@@ -32,6 +34,16 @@ export type PaidAnotherWayFailedLaterNoteInput = {
   recordedAfterClose: boolean;
   /** The note the paid-twice row was marked Resolved with, if it was. */
   resolutionNote: string | null;
+};
+
+/**
+ * #4210 round 3 (UX 1, `INV-SSOT`): why a row raised for an officer to check
+ * is a check, as its row's last error and the dead card refunds panel both say it.
+ */
+export const PAID_ANOTHER_WAY_CHECK_WHY: Record<PaidAnotherWayCheckReason, string> = {
+  "part-close": "The close paid back only part of what it owed, so this may be part of what it gave up",
+  resolved: "Its paid-twice row was marked resolved, so the member may have returned the extra",
+  uncertain: "The app cannot tell whether the close paid this refund back",
 };
 
 const GAVE_UP_ON = '"Card refunds Stripe gave up on" on the Stuck states page';

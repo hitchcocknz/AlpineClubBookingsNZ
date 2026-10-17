@@ -32,6 +32,9 @@ import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
 import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { formatCents, formatCentsPlain } from "@/lib/utils";
 import { xeroQueuedMessage, xeroRefundNotePromise } from "@/components/admin/dead-card-refunds-xero-copy";
+import { CheckedNotOwedAction } from "@/components/admin/dead-card-refund-check-not-owed";
+import { PAID_ANOTHER_WAY_CHECK_WHY } from "@/lib/card-refund-failed-later-paid-another-way-note";
+import type { PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
 
 /** One dead card refund, as `listDeadCardRefunds` returns it. */
 export interface DeadCardRefundPanelRow {
@@ -54,6 +57,8 @@ export interface DeadCardRefundPanelRow {
   cardNoteCoversCents: number;
   /** Its last failure looked like a timeout or network error: Stripe may have refunded. */
   stripeMayHaveRefunded: boolean;
+  /** #4210: raised for an officer to check after a "Paid another way" close, and why; null for any other row. */
+  check: PaidAnotherWayCheckReason | null;
 }
 
 /** One card refund closed as paid another way that Stripe also refunded, as `listCardRefundsPaidTwice` (`card-refund-paid-twice.ts`) returns it. */
@@ -277,7 +282,10 @@ export function DeadCardRefundsPanel({
           could notice such failures, which the member may already have been paid back by hand. Each still
           counts in Refunds owed and comes off Net Collected. If the member was paid back another way, for
           example by bank transfer, close it here. If you refunded it in the Stripe dashboard instead, do not
-          close it here: wait for that refund to show on the payment.
+          close it here: wait for that refund to show on the payment. A row marked Check before paying was
+          raised after a refund failed on a card refund already closed as paid another way, which may have
+          paid it back: it counts as owed until you check it, then close it as paid another way if the member
+          is owed it, or as checked - not owed if they are not.
         </p>
         <p
           ref={listNoticeRef}
@@ -302,8 +310,14 @@ export function DeadCardRefundsPanel({
                     Booking {row.bookingReference}
                   </Link>
                   {" - "}
-                  {formatCents(row.owedCents, format)} still owed
+                  {formatCents(row.owedCents, format)} {row.check ? "may be owed" : "still owed"}
                 </div>
+                {row.check ? (
+                  <div className="text-xs">
+                    <span className="mr-1 rounded bg-warning-3 px-1 font-medium text-warning-11">Check before paying</span>
+                    {PAID_ANOTHER_WAY_CHECK_WHY[row.check]}.
+                  </div>
+                ) : null}
                 <div className="text-xs text-muted-foreground">
                   Refund started {clubTime.instantDate(new Date(row.raisedAt))}
                 </div>
@@ -321,6 +335,16 @@ export function DeadCardRefundsPanel({
               >
                 Paid another way
               </ViewOnlyActionButton>
+              {row.check ? (
+                <CheckedNotOwedAction
+                  canEdit={canEdit}
+                  operationId={row.operationId}
+                  bookingReference={row.bookingReference}
+                  amountCents={row.owedCents}
+                  statusRef={listNoticeRef}
+                  onClosed={setListNotice}
+                />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -565,7 +589,7 @@ export function CardRefundsPaidTwiceList({ rows }: { rows: CardRefundPaidTwicePa
           Each of these card refunds was closed as paid another way, and then Stripe refunded the card as well,
           so the member was paid back twice. Contact the member to recover the extra money, and record what you
           agree in Xero. Then mark it Resolved, saying how it was sorted out. Stripe may still fail a pending
-          card refund; if it does, the row leaves this list and the officers are emailed what to do (#4210).
+          card refund; if it does, the row leaves this list and the officers are emailed what to do.
         </p>
         <p
           ref={listNoticeRef}

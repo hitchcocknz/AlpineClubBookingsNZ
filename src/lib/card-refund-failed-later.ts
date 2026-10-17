@@ -72,7 +72,7 @@ import { createAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import { CHECK_REASON_OF, findPaidAnotherWayCloseThatSettled, type SettlingPaidAnotherWayClose } from "@/lib/card-refund-failed-later-paid-another-way";
-import { paidAnotherWayFailedLaterNote, type PaidAnotherWayFailedLaterOutcome } from "@/lib/card-refund-failed-later-paid-another-way-note";
+import { PAID_ANOTHER_WAY_CHECK_WHY, paidAnotherWayFailedLaterNote, type PaidAnotherWayFailedLaterOutcome } from "@/lib/card-refund-failed-later-paid-another-way-note";
 import {
   CARD_REFUND_OPERATION_WHERE,
   cardRefundPaymentBeforeFailure,
@@ -161,13 +161,6 @@ const AUDIT_CHECK_WHY = {
 /** Where the treasurer closes a row the app will not ask Stripe for again (#4104 review, D1). */
 const CLOSE_IT_WHERE = 'close it under "Card refunds Stripe gave up on" on the Stuck states page';
 
-/** #4210: why a check row is a check, as its row and the panel say it. */
-const CHECK_WHY = {
-  "raised-check-part-close": "That close paid back only part of what it owed, so this may be part of what it gave up",
-  "raised-check-resolved": "Its paid-twice row was marked resolved, so the member may have returned the extra",
-  "raised-check-uncertain": "The app cannot tell whether that close paid this refund back",
-} as const;
-
 /** What the row says, for a person reading it; nothing parses it. */
 function failedLaterLastError(refundId: string, outcome: FailedLaterCardRefundDebt["outcome"]): string {
   if (outcome === "raised-dead") {
@@ -178,7 +171,7 @@ function failedLaterLastError(refundId: string, outcome: FailedLaterCardRefundDe
   }
   // #4210: what a "Paid another way" close may not have covered - a person decides.
   if (outcome === "raised-check-part-close" || outcome === "raised-check-resolved" || outcome === "raised-check-uncertain") {
-    return `Stripe reported refund ${refundId} failed after its card refund was closed as paid another way. ${CHECK_WHY[outcome]}: check before paying. Not asked for again automatically: if the member is owed it, pay them another way and close it as paid another way; if not, close it as checked - not owed. Both are under "Card refunds Stripe gave up on" on the Stuck states page (#4210).`;
+    return `Stripe reported refund ${refundId} failed after its card refund was closed as paid another way. ${PAID_ANOTHER_WAY_CHECK_WHY[CHECK_REASON_OF[outcome]]}: check before paying. Not asked for again automatically: if the member is owed it, pay them another way and close it as paid another way; if not, close it as checked - not owed. Both are under "Card refunds Stripe gave up on" on the Stuck states page (#4210).`;
   }
   // #4104 review (D7): a row whose retries are already spent is never claimed again.
   if (outcome === "re-planned-dead") {

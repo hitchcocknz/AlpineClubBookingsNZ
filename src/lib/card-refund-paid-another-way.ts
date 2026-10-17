@@ -34,18 +34,14 @@ import {
   cardRefundCountedAtClose,
   cardRefundSlicesByOperation,
   isOwedCardRefundOperation,
+  paidAnotherWayCheckOf,
   unsentSliceCents,
 } from "@/lib/open-card-refund-owed";
 import { getNetCollectedCashParts } from "@/lib/payment-net-collected";
 import { prisma } from "@/lib/prisma";
 import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
-import {
-  applyLocalRefundAllocation,
-  lockPaymentForRefundedTotal,
-  RefundAllocationExceedsCapturedError,
-  RefundAllocationRacedError,
-} from "@/lib/payment-transactions";
+import { applyLocalRefundAllocation, lockPaymentForRefundedTotal, RefundAllocationExceedsCapturedError, RefundAllocationRacedError, type PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
 import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
 
 /**
@@ -248,6 +244,8 @@ export interface DeadCardRefundRow {
   cardNoteCoversCents: number;
   /** Its last failure looked like a timeout or a network error, so Stripe may have refunded after all. */
   stripeMayHaveRefunded: boolean;
+  /** #4210: raised for an officer to check after a "Paid another way" close, and why; null for any other row. */
+  check: PaidAnotherWayCheckReason | null;
 }
 
 /**
@@ -307,6 +305,7 @@ export async function listDeadCardRefunds(): Promise<DeadCardRefundRow[]> {
         xeroRefundNote: paidAnotherWayXeroPromise(xeroPlan),
         cardNoteCoversCents: xeroPlan.xeroRefundNote === "now" ? (xeroPlan.cardNoteCoversCents ?? 0) : 0,
         stripeMayHaveRefunded: lastErrorSuggestsStripeMayHaveRefunded(operation.lastError),
+        check: paidAnotherWayCheckOf(operation)?.reason ?? null,
       };
     }),
   );
