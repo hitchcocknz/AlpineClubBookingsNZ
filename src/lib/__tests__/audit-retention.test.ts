@@ -674,14 +674,92 @@ describe("audit retention lifecycle", () => {
         where: expectedPruneWhere(
           expect.arrayContaining([
             {
-              retentionClass: null,
-              expiresAt: { lt: now },
-              OR: [{ severity: null }, { severity: { not: "critical" } }],
+              AND: [
+                {
+                  OR: [
+                    { retentionClass: null },
+                    { retentionClass: { notIn: ["critical", "sensitive_access", "diagnostic_high_volume", "standard"] } },
+                  ],
+                },
+                { expiresAt: { lt: now } },
+                { OR: [{ severity: null }, { severity: { not: "critical" } }] },
+              ],
             },
           ]),
           new Date("2016-05-10T00:00:00.000Z")
         ),
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #3940 — a stored retentionClass outside the known four. The column is free
+  // text, so a value nothing classifies (a typo, raw SQL, a restore) matched no
+  // prune branch and was kept forever. Owner decision, 17 Oct 2026: read it as
+  // unclassified, exactly like a NULL class.
+  // -------------------------------------------------------------------------
+  describe("unknown retention class (#3940)", () => {
+    const now = new Date("2026-05-10T00:00:00.000Z");
+
+    function unknownClass(overrides: Partial<PruneRow> & { id: string }): PruneRow {
+      return {
+        retentionClass: "standrad",
+        severity: null,
+        createdAt: new Date("2020-01-01T00:00:00.000Z"),
+        expiresAt: new Date("2025-01-01T00:00:00.000Z"),
+        archivedAt: null,
+        ...overrides,
+      };
+    }
+
+    for (const archiveActive of [true, false]) {
+      it(`ages an unknown-class row out like a NULL-class row (archive ${
+        archiveActive ? "active" : "not configured"
+      })`, async () => {
+        const fake = makeFakeAuditDb([
+          unknownClass({ id: "unknown-expired" }),
+          unknownClass({ id: "unknown-info-expired", severity: "info" }),
+          unknownClass({
+            id: "unknown-recent",
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            expiresAt: new Date("2033-01-01T00:00:00.000Z"),
+          }),
+          // Critical severity: kept until seven years from creation, as a NULL class is.
+          unknownClass({ id: "unknown-critical-young", severity: "critical" }),
+          unknownClass({
+            id: "unknown-critical-old",
+            severity: "critical",
+            createdAt: new Date("2018-01-01T00:00:00.000Z"),
+          }),
+          // The keep-forever escape hatch still holds.
+          unknownClass({ id: "unknown-no-expiry", expiresAt: null }),
+          // The incident floor still holds: expired, past seven years, inside ten.
+          unknownClass({
+            id: "unknown-preserved",
+            createdAt: new Date("2018-01-01T00:00:00.000Z"),
+            incidentPreserved: true,
+          }),
+        ]);
+
+        const result = await pruneExpiredAuditLogs(fake.db as never, now, { archiveActive });
+
+        expect(result.deleted).toBe(3);
+        expect(fake.remainingIds()).toEqual([
+          "unknown-recent",
+          "unknown-critical-young",
+          "unknown-no-expiry",
+          "unknown-preserved",
+        ]);
+      });
+    }
+
+    it("reads an unknown stored class as no class when asking whether a row is critical", () => {
+      expect(
+        isAuditLogRetentionCritical({ action: "X", category: "system", severity: "info", retentionClass: "standrad" })
+      ).toBe(false);
+      expect(
+        isAuditLogRetentionCritical({ action: "X", category: null, severity: "critical", retentionClass: "standrad" })
+      ).toBe(true);
     });
   });
 

@@ -664,6 +664,15 @@ are unaffected and are still kept. The
 [retention runbook](../AUDIT_RETENTION_ARCHIVE_RUNBOOK.md#unclassified-rows-with-no-severity-3524)
 has the read-only query that counts them on a copy before you upgrade.
 
+**An entry with an unrecognised retention class is no longer kept forever
+(#3940).** The retention class is stored as plain text, so a value the app does
+not recognise (a typo, a hand-written database change, a restored backup) used
+to match no rule and was never deleted. Such an entry is now treated exactly
+like one with no class: deleted at its expiry date unless its severity is
+critical, which keeps it seven years; incident evidence keeps its ten-year
+floor, and an entry with no expiry date is still kept. A census keeps the app's
+own writers on the four known classes.
+
 ### Booking-policy entries
 
 From this release, a `group-discount.update`, `cancellation-policy.update`,
