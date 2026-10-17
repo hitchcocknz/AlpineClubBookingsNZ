@@ -175,6 +175,9 @@ export async function queueCancelledBookingHandBackNoteInTransaction({
     await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, {
       createdByMemberId: actingMemberId,
       refundMethod: "internet-banking",
+      // #4162 (`INV-ADDPAY-042`): the payload names the hand-back it records, so
+      // a void of this note is matched to it. Never in the key or the sizing.
+      handBackTaskId: task.id,
       store,
     });
   }

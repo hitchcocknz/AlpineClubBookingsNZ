@@ -23,6 +23,7 @@ import { inFlightGroupPlanRefundCents } from "@/lib/booking-ledger-projection-ce
 import { captureKey, creditKey, handBackKey, refundKey } from "@/lib/booking-ledger-posting-keys";
 import { reviewAdjustmentEvidence } from "@/lib/booking-ledger-projection-census-review-adjustments";
 import { settlementChainWalker } from "@/lib/booking-ledger-settlement-posting";
+import { liveLines } from "@/lib/booking-ledger-modification-posting";
 import { isCapturedPaymentStatus } from "@/lib/booking-payment-state";
 import { isPaidLikeBookingStatus } from "@/lib/booking-status";
 import { deriveCardAppliedCreditDoublePayFinding } from "@/lib/card-applied-credit-double-pay";
@@ -349,12 +350,14 @@ function cardDoublePayCents(row: BookingLedgerCensusRow): number {
 }
 
 /**
- * Hand-backs the ledger records against a completed task: −Σ matched BANK_REFUND
+ * Hand-backs the ledger records against a completed task: −Σ matched live BANK_REFUND
  * lines - the share, or a review's netted hand-back its stand-in bears out (#3835).
+ * #4162: a line the nightly undo of a voided bank-transfer note reversed records
+ * none; its open follow-up hand-back explains what is owed instead.
  */
 function handBackCents(row: BookingLedgerCensusRow): number {
   const netted = reviewAdjustmentEvidence(row).nettedHandBackLineIds;
-  return -row.lines
+  return -liveLines(row.lines)
     .filter(
       (line) =>
         line.kind === "BANK_REFUND" &&
