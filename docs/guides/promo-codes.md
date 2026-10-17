@@ -144,6 +144,11 @@ summary and the save (#4202): a night a guest already holds keeps the price it
 was sold at, and only a night the edit adds is priced at today's rates. So if
 the club's rates have changed since the booking was made, the discount the box
 shows is worked out on what the guests actually paid, and matches the summary.
+The box there also judges the code for the booking itself, as the summary does:
+against the member whose booking it is (even when an officer is editing it), at
+the booking's own lodge, with a guest recognised as another club's member kept
+at that rate, and without counting the booking's own use of the code against
+its use limits.
 
 ### What happens when a booking is edited and the code has run out
 
