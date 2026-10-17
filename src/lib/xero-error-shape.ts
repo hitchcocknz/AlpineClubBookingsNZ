@@ -1,3 +1,5 @@
+import { CREDIT_NOTE_SPENT_OUTSIDE_APP_CODE } from "@/lib/xero-credit-note-spent-outside-app";
+
 interface XeroErrorHeaders {
   [key: string]: string | number | undefined;
 }
@@ -119,7 +121,11 @@ export function getXeroErrorStatusCode(error: unknown): number | undefined {
  */
 export function xeroRefusedOperation(operation: { status: string; lastErrorCode: string | null }): boolean {
   const code = operation.lastErrorCode ?? "";
-  return ["FAILED", "PARTIAL"].includes(operation.status) && /^4\d\d$/.test(code) && code !== "408" && code !== "429";
+  if (!["FAILED", "PARTIAL"].includes(operation.status)) return false;
+  // #4218: Xero's 400 over-allocation refusal is recorded under its own name, and
+  // is still a refusal: nothing was created.
+  if (code === CREDIT_NOTE_SPENT_OUTSIDE_APP_CODE) return true;
+  return /^4\d\d$/.test(code) && code !== "408" && code !== "429";
 }
 
 export function getXeroErrorBodyMessage(error: unknown): string | undefined {

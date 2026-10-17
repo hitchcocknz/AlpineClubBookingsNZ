@@ -51,6 +51,7 @@ import {
 import {
   callXeroApi,
   getAuthenticatedXeroClient,
+  getXeroErrorSearchText,
 } from "./xero-api-client";
 import { getResolvedAccountMapping } from "./xero-mappings";
 import { retryXeroWriteWithContactRepair, type FindOrCreateXeroContactOptions } from "./xero-contacts";
@@ -62,6 +63,14 @@ import { formatDateOnly } from "@/lib/date-only";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import { buildSyntheticAllocationId } from "./xero-invoice-helpers";
+import { exactProviderAmountToCents } from "@/lib/money-provider-amount";
+import {
+  CreditNoteSpentOutsideAppError,
+  isCreditNoteOverAllocationText,
+  isCreditNoteSpentOutsideAppError,
+} from "@/lib/xero-credit-note-spent-outside-app";
+import { getClubFormat } from "@/lib/club-format-settings";
+import { formatCents } from "@/lib/utils";
 import { resolveModificationDocumentLineItems } from "@/lib/xero-modification-line-items";
 import type { CashRefundMethod } from "./xero-invoice-payments";
 import {
@@ -1215,6 +1224,57 @@ export async function createUnappliedXeroCreditNoteForModification(params: {
 }
 
 /**
+ * #4218: Xero refused the allocation as larger than the note's remaining credit.
+ * That refusal is the verdict (see `xero-credit-note-spent-outside-app.ts`); this
+ * only reads what is left, to say so in the message. Read-only, outside any
+ * transaction, and best effort: any failure (outage, cooldown, odd payload)
+ * leaves the amount out and never replaces the error being reported.
+ */
+async function describeCreditNoteSpentOutsideApp(
+  creditNoteId: string,
+  amountCents: number,
+  cause: unknown,
+): Promise<CreditNoteSpentOutsideAppError> {
+  let remainingCents: number | null = null;
+  try {
+    const { xero, tenantId } = await getAuthenticatedXeroClient();
+    const response = await callXeroApi(
+      () => xero.accountingApi.getCreditNote(tenantId, creditNoteId),
+      {
+        operation: "getCreditNote",
+        resourceType: "CREDIT_NOTE",
+        workflow: "allocateCreditNoteToInvoice",
+        context: `getCreditNote(${creditNoteId}) after an over-allocation refusal`,
+        armTransientBreaker: false,
+      },
+    );
+    remainingCents = exactProviderAmountToCents(
+      response.body.creditNotes?.[0]?.remainingCredit,
+    );
+  } catch (readError) {
+    logger.warn(
+      { err: readError, creditNoteId },
+      "Could not read the credit note after an over-allocation refusal; reporting without the amount left",
+    );
+  }
+  let left = "less than this allocation needs";
+  if (remainingCents !== null) {
+    try {
+      left = `only ${formatCents(remainingCents, await getClubFormat())}`;
+    } catch (formatError) {
+      logger.warn({ err: formatError }, "Could not format the credit-note amount left; using generic wording");
+    }
+  }
+  return new CreditNoteSpentOutsideAppError(
+    `The credit note this allocation needs has ${left} left in Xero; it was used outside the app. Retrying will not help until that credit is restored in Xero.`,
+    creditNoteId,
+    remainingCents,
+    amountCents,
+    { cause },
+  );
+}
+
+/**
  * Allocate an existing Xero credit note against an invoice.
  * Used when account credit (backed by a Xero credit note) is applied to a new booking.
  */
@@ -1338,8 +1398,17 @@ export async function allocateCreditNoteToInvoice(
       "Allocated Xero credit note against invoice"
     );
   } catch (error) {
-    await failXeroSyncOperation(operationId!, error);
-    throw error;
+    // #4218: Xero refused the allocation as more than the note has left, so the
+    // note was spent outside the app. Say so once, in plain words.
+    let failure = error;
+    if (
+      !isCreditNoteSpentOutsideAppError(error) &&
+      isCreditNoteOverAllocationText(getXeroErrorSearchText(error))
+    ) {
+      failure = await describeCreditNoteSpentOutsideApp(creditNoteId, amountCents, error);
+    }
+    await failXeroSyncOperation(operationId!, failure);
+    throw failure;
   }
 }
 
