@@ -57,7 +57,6 @@ export function CheckedNotOwedDialog({
     setOpenFor(target.operationId);
     setNote("");
     setError("");
-    closedRef.current = false;
   }
   const amount = target ? formatCents(target.owedCents, format) : "";
 
@@ -100,6 +99,7 @@ export function CheckedNotOwedDialog({
       open={target !== null}
       onOpenChange={(next) => {
         if (busy || next) return;
+        closedRef.current = false;
         setOpenFor(null);
         onDone();
       }}
@@ -141,6 +141,7 @@ export function CheckedNotOwedDialog({
             variant="outline"
             disabled={busy}
             onClick={() => {
+              closedRef.current = false;
               setOpenFor(null);
               onDone();
             }}
