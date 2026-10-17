@@ -22,9 +22,15 @@
   refund out, and passes the cancellation's amount to a person when the two
   sit side by side.
 
-  A payment that already lost a request's refund this way is corrected the
-  next time Xero sends an update about the cancellation's credit note, the
-  account-credit note, or a booking change's credit note on its invoice. An
-  update about the request's own credit note does not trigger it. If you roll
-  back to the previous release, it drops the request's refund again on the next
-  such update; rolling forward corrects it the same way.
+  A payment that already lost a request's refund this way is not corrected by
+  itself: it is recounted only when Xero sends an update about the
+  cancellation's credit note, the account-credit note, or a booking change's
+  credit note on its invoice (never the request's own credit note), and that
+  may not happen again. After deploying, and after any rollback and roll
+  forward, run the read-only check in the Xero architecture guide's #4215
+  deploy note. It lists the bank-transfer payments that read less refunded than
+  their records show. Check each one in Xero, because a cancellation credit
+  note voided in Xero is listed too. Then replay one of its stored credit-note
+  events from Xero, Inbound events. Stop the previous release's Xero inbound
+  worker before this release takes over, because while it runs it can drop the
+  request's refund again.
