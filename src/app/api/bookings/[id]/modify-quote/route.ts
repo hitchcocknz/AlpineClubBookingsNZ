@@ -127,7 +127,7 @@ import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
 } from "@/lib/subscription-lockout-enforcement";
-import { BookingGuestStayRangeValidationError } from "@/lib/booking-guest-stay-range-input";
+import { BookingGuestStayRangeValidationError, guestRequestSchemaError } from "@/lib/booking-guest-stay-range-input";
 import {
   resolveModificationStayRanges,
   type LiveGuestStayRow,
@@ -379,7 +379,7 @@ export async function POST(
   const parsed = modifyQuoteSchema.safeParse(json.body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid input", details: parsed.error.flatten() },
+      { error: guestRequestSchemaError(parsed.error, "Invalid input"), details: parsed.error.flatten() },
       { status: 400 }
     );
   }

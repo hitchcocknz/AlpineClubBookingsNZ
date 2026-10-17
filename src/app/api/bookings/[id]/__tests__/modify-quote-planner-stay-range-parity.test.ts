@@ -219,6 +219,8 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
+import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
+import { resolvePromoPreviewStays } from "@/lib/promo-preview-stay-ranges";
 
 
 const D = (s: string) => parseDateOnly(s);
@@ -1472,11 +1474,6 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
       "Guest 1 Date In must use yyyy-mm-dd format.",
     ],
     [
-      "a malformed night in an explicit night set",
-      { guestStayRanges: [{ guestId: "g3", nights: ["not-a-date"] }] },
-      "Guest 3 night 1 must use yyyy-mm-dd format.",
-    ],
-    [
       "an ADDED guest's own bad range — numbered AFTER the remaining guests",
       {
         addGuests: [{ ...ADD_ADULT, stayStart: "2026-09-02" }],
@@ -1525,6 +1522,25 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
       expect(() => runFreeze(delta)).toThrow(message);
     });
   }
+
+  // #4199: a malformed night no longer reaches the resolver from a request. The
+  // preview and the save both read `nights` through `guestNightListSchema`, so
+  // both refuse it at the schema with the same body and the shared wording; the
+  // resolver keeps its own refusal for a delta that does not come through a
+  // request schema (a stored delta replayed by approval), and the freeze too.
+  it("refuses a malformed night in an explicit night set at the request schema, and the resolver still refuses it", async () => {
+    const delta = { guestStayRanges: [{ guestId: "g3", nights: ["not-a-date"] }] };
+    const route = await runRoute(delta);
+    expect(route.status).toBe(400);
+    // In the member's words (#4199 review), as the change-request door says it.
+    expect(route.body.error).toBe(GUEST_NIGHT_INVALID_MESSAGE);
+    expect(JSON.stringify(route.body.details)).toContain(GUEST_NIGHT_INVALID_MESSAGE);
+    expect(h.priceGuests).not.toHaveBeenCalled();
+
+    const message = "Guest 3 night 1 must use yyyy-mm-dd format.";
+    await expect(runPlanner(delta)).rejects.toMatchObject({ message, status: 400 });
+    expect(() => runFreeze(delta)).toThrow(message);
+  });
 
   it("prices nothing and checks no capacity once a range is refused", async () => {
     const route = await runRoute({
@@ -1690,6 +1706,148 @@ function sourceFilesNaming(identifier: string): string[] {
   return found.sort();
 }
 
+/*
+  #4199 — THE PROMO PREVIEW RESOLVES THE PARTY THE QUOTE RESOLVES.
+
+  The booking editor's promo box sends the edit's PARTY (each remaining guest by
+  row id, then each added guest, each with their own dates or nights), not the
+  delta, and `POST /api/promo-codes/validate` hands that party back to the
+  resolver as the delta it is (`resolvePromoPreviewStays`). This table feeds the
+  SAME edit to both and requires the same guests, in the same order, on the same
+  nights. The in-progress case agrees without the preview pinning anything: an
+  in-progress edit cannot move check-in (the quote's guard refuses it, above),
+  so the dates the editor sends carry the stored check-in, which is exactly what
+  the quote's clamp pins to.
+*/
+type DeltaEntry = { guestId?: string; stayStart?: string; stayEnd?: string; nights?: string[] };
+
+function promoPreviewParty(
+  delta: {
+    checkIn?: string;
+    checkOut?: string;
+    removeGuestIds?: string[];
+    guestStayRanges?: DeltaEntry[];
+    addGuests?: Array<DeltaEntry & { ageTier: string; isMember: boolean; memberId?: string }>;
+  },
+  guests: ReturnType<typeof liveGuest>[],
+  overrides: Parameters<typeof bookingWith>[1] = {},
+  /** False runs the comparison WITHOUT the booking, i.e. without the planner: the control. */
+  withBooking = true,
+) {
+  const booking = bookingWith(guests, overrides);
+  const removed = new Set(delta.removeGuestIds ?? []);
+  const entries = new Map((delta.guestStayRanges ?? []).map((entry) => [entry.guestId, entry]));
+  const stayOf = (entry: DeltaEntry | undefined) => ({
+    stayStart: entry?.stayStart,
+    stayEnd: entry?.stayEnd,
+    nights: entry?.nights,
+  });
+  const party = [
+    ...guests
+      .filter((guest) => !removed.has(guest.id))
+      .map((guest) => ({
+        ageTier: guest.ageTier,
+        isMember: guest.isMember,
+        memberId: guest.memberId ?? undefined,
+        bookingGuestId: guest.id,
+        ...stayOf(entries.get(guest.id)),
+      })),
+    ...(delta.addGuests ?? []).map((added) => ({
+      ageTier: added.ageTier,
+      isMember: added.isMember,
+      memberId: added.memberId,
+      ...stayOf(added),
+    })),
+  ];
+  const resolved = resolvePromoPreviewStays({
+    checkIn: delta.checkIn ? D(delta.checkIn) : booking.checkIn,
+    checkOut: delta.checkOut ? D(delta.checkOut) : booking.checkOut,
+    guests: party,
+    edit: withBooking ? {
+      booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+      storedGuests: guests.map((guest) => ({
+        id: guest.id,
+        memberId: guest.memberId,
+        stayStart: guest.stayStart,
+        stayEnd: guest.stayEnd,
+        nights: guest.nights,
+      })),
+    } : null,
+  });
+  return partyShape(resolved.guests);
+}
+
+// `GAPPED_GUESTS` (above, #4197) is the booking these cases edit.
+const PROMO_PREVIEW_CASES: Array<
+  [string, Parameters<typeof promoPreviewParty>[0], ReturnType<typeof liveGuest>[], Parameters<typeof bookingWith>[1]]
+> = [
+  [
+    "grid mode with a gap",
+    {
+      guestStayRanges: [
+        { guestId: "g1", nights: ["2026-09-01", "2026-09-03"] },
+        { guestId: "g2", nights: ["2026-09-01", "2026-09-02", "2026-09-03"] },
+        { guestId: "g3", nights: ["2026-09-02"] },
+      ],
+    },
+    GAPPED_GUESTS,
+    {},
+  ],
+  [
+    "range mode: a gapped guest sent continuous dates is continuous (#4189)",
+    {
+      guestStayRanges: [
+        { guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-04" },
+        { guestId: "g2", stayStart: "2026-09-02", stayEnd: "2026-09-04" },
+        { guestId: "g3", stayStart: "2026-09-01", stayEnd: "2026-09-04" },
+      ],
+    },
+    GAPPED_GUESTS,
+    {},
+  ],
+  [
+    "an added guest, with and without nights of their own",
+    { addGuests: [{ ...ADD_ADULT, nights: ["2026-09-02", "2026-09-05"] }, ADD_CHILD] },
+    GAPPED_GUESTS,
+    {},
+  ],
+  ["a removed guest", { removeGuestIds: ["g2"] }, GAPPED_GUESTS, {}],
+  ["moved dates with no ranges", { checkIn: "2026-09-08", checkOut: "2026-09-11" }, GAPPED_GUESTS, {}],
+  [
+    "in progress: check-in pinned to the stored day",
+    {
+      checkOut: "2026-08-14",
+      guestStayRanges: [{ guestId: "g2", stayStart: "2026-08-08", stayEnd: "2026-08-14" }],
+      addGuests: [ADD_ADULT],
+    },
+    IN_PROGRESS_GUESTS,
+    IN_PROGRESS_BOOKING,
+  ],
+];
+
+describe("#4199 the promo preview resolves the party the quote resolves", () => {
+  for (const [name, delta, guests, overrides] of PROMO_PREVIEW_CASES) {
+    it(`agrees on every guest's nights: ${name}`, async () => {
+      const route = await runRoute(delta, guests, overrides);
+      expect(route.status).toBe(200);
+      expect(route.ratedParty).not.toBeNull();
+      expect(promoPreviewParty(delta, guests, overrides)).toEqual(route.ratedParty);
+    });
+  }
+
+  it("the comparison has teeth: without the planner (`edit: null`) the removed-guest edit disagrees", async () => {
+    // The remaining gapped guest sent no dates of their own: the planner keeps
+    // their stored nights, as the save does; normalising the party on its own
+    // gives them the whole stay. So breaking the code is seen here.
+    const [, delta, guests, overrides] = PROMO_PREVIEW_CASES.find(([name]) => name === "a removed guest")!;
+    const route = await runRoute(delta, guests, overrides);
+    expect(promoPreviewParty(delta, guests, overrides)).toEqual(route.ratedParty);
+    const withoutPlanner = promoPreviewParty(delta, guests, overrides, false);
+    expect(withoutPlanner).not.toEqual(route.ratedParty);
+    expect(withoutPlanner[0]).not.toEqual(route.ratedParty![0]);
+  });
+});
+
 describe("#4197 a stay under way: the breakdown adds up too", () => {
   // Today is 10 Aug, inside the 8-12 Aug stay: tonight is already under way, so
   // each guest's 11th is the one future night an edit can move or give back.
@@ -1798,6 +1956,9 @@ describe("#2563 exactly one stay-range resolution exists, and the route calls it
       "src/lib/booking-change-request-guests.ts",
       "src/lib/booking-exception-request-service.ts",
       "src/lib/booking-modify-validation.ts",
+      // #4199: the edit's promo preview prices each guest on the nights the save
+      // will, by handing its party to this resolution as the delta it is.
+      "src/lib/promo-preview-stay-ranges.ts",
     ]);
     // ...and it is DECLARED exactly once, in the module that owns the rule.
     expect(sourceFilesNaming("export function resolveModificationStayRanges")).toEqual([

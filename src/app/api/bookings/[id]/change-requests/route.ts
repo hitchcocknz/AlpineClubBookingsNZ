@@ -24,6 +24,7 @@ import {
 } from "@/lib/booking-change-request-member-view";
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
+import { GUEST_CHANGE_LIST_BOUND } from "@/lib/booking-guest-stay-range-input";
 import {
   addedGuestFirstNights,
   addedGuestNightsRefusal,
@@ -47,9 +48,8 @@ import {
 const createChangeRequestSchema = z.object({
   checkIn: z.string().optional(),
   checkOut: z.string().optional(),
-  // #4030: the one add-guest shape, shared with the officer's entry.
-  addGuests: changeRequestAddGuestsSchema.optional(),
-  removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
+  addGuests: changeRequestAddGuestsSchema.optional(), // #4030: the one add-guest shape, shared with the officer's.
+  removeGuestIds: z.array(z.string().trim().min(1)).max(...GUEST_CHANGE_LIST_BOUND).optional(),
   // #4088: each guest's bounds, or the editor grid's night set; #4157: each guest once.
   guestStayRanges: changeRequestGuestStayRangesSchema.optional(),
   requestedEffectiveDate: z.string().optional(),
