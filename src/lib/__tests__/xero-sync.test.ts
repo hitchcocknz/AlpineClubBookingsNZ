@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   txLinkUpsert: vi.fn(),
   txLinkFindUnique: vi.fn(),
   txLinkFindMany: vi.fn(),
+  txQueryRaw: vi.fn(),
   operationUpdate: vi.fn(),
   operationUpdateMany: vi.fn(),
   operationFindUniqueOrThrow: vi.fn(),
@@ -386,8 +387,10 @@ describe("upsertXeroObjectLink", () => {
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
     mocks.txLinkFindUnique.mockResolvedValue(null);
     mocks.txLinkFindMany.mockResolvedValue([]);
+    mocks.txQueryRaw.mockResolvedValue([]);
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
+        $queryRaw: mocks.txQueryRaw,
         payment: {
           findUnique: mocks.txPaymentFindUnique,
           updateMany: mocks.txPaymentUpdateMany,
@@ -564,6 +567,29 @@ describe("upsertXeroObjectLink", () => {
       expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
       expect(mocks.txPaymentFindUnique).not.toHaveBeenCalled();
       expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION (race): a write naming no status keeps a void the stored row records - inactive, its status kept", async () => {
+      // The inbound void committed while this retry's write waited on the row lock.
+      mocks.txQueryRaw.mockResolvedValue([{ status: "VOIDED" }]);
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_request", role: "REFUND_REQUEST_CREDIT_NOTE",
+        metadata: { amountCents: 5000, refundRequestId: "rr_1" },
+      });
+
+      const [call] = mocks.txLinkUpsert.mock.calls[0] as [{ create: { active: boolean }; update: { active: boolean; metadata: Record<string, unknown> } }];
+      expect(call.update.active).toBe(false);
+      expect(call.create.active).toBe(false);
+      // Replacing the metadata would drop the status the after-void key and the create check read.
+      expect(call.update.metadata).toEqual({ amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" });
+      // The stored row is read under its lock, in the write's own transaction.
+      expect(String((mocks.txQueryRaw.mock.calls[0] as [TemplateStringsArray])[0].join("?"))).toContain("FOR NO KEY UPDATE");
+    });
+
+    it("a write naming a status is judged on it, without reading the stored row", async () => {
+      await writeRequestNote("AUTHORISED");
+      expect(mocks.txQueryRaw).not.toHaveBeenCalled();
     });
   });
 

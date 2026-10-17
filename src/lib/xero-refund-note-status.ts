@@ -8,7 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import { readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 
 /**
  * True when a Xero credit-note status still contributes to refund coverage.
@@ -136,6 +136,55 @@ export async function refundRequestOwnNotes(
     live: own.find((link) => link.active && !isRefundCreditNoteLinkCancelledInXero(link.metadata)) ?? null,
     cancelledIds: own.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)).map((link) => link.xeroObjectId).sort(),
   };
+}
+
+/**
+ * #4195, #4214 (owner decision: the officer re-raises): true when a refund
+ * request raised a note that Xero has since voided and no live note of its own
+ * replaces it, read from the booking repair's rows and its ACTIVE links (an
+ * inactive request mirror is one a void wrote off). Such a request is never
+ * re-raised automatically.
+ */
+export function refundRequestNoteVoidedWithNoLive(
+  refundRequestId: string,
+  operations: ReadonlyArray<{ entityType: string; operationType: string; xeroObjectId: string | null; requestPayload: unknown; correlationKey?: string | null; idempotencyKey?: string | null }>,
+  activeLinks: ReadonlyArray<{ xeroObjectType: string; role: string; xeroObjectId: string; metadata: unknown }>,
+): boolean {
+  const noteIds = new Set(
+    operations
+      .filter((op) => op.entityType === "CREDIT_NOTE" && op.operationType === "CREATE" && op.xeroObjectId && readRefundRequestIdFromOperation(op) === refundRequestId)
+      .map((op) => op.xeroObjectId!),
+  );
+  const own = activeLinks.filter(
+    (link) =>
+      link.xeroObjectType === "CREDIT_NOTE" &&
+      link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE &&
+      (readRefundRequestIdFromPayload(link.metadata) === refundRequestId || noteIds.has(link.xeroObjectId)),
+  );
+  const raised = noteIds.size > 0 || own.length > 0;
+  return raised && !own.some((link) => !isRefundCreditNoteLinkCancelledInXero(link.metadata));
+}
+
+/**
+ * #4195 race: a request-note link write that names no Xero status (a retry's,
+ * or a completion's) never re-arms a mirror an inbound void wrote off. The
+ * stored row is read under its row lock inside the write's transaction, so a
+ * void that commits while this write waits is seen; its status is kept on the
+ * row and the link stays inactive. A write that names a status is judged on it.
+ */
+export async function keepStoredRequestNoteVoid<L extends {
+  localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean;
+}>(client: Pick<Prisma.TransactionClient, "$queryRaw">, link: L): Promise<L> {
+  if (readRefundCreditNoteLinkStatus(link.metadata) !== null) return link;
+  const rows = await client.$queryRaw<Array<{ status: string | null }>>`
+    SELECT "metadata"->>'status' AS "status" FROM "XeroObjectLink"
+    WHERE "localModel" = ${link.localModel} AND "localId" = ${link.localId} AND "xeroObjectType" = ${link.xeroObjectType}
+      AND "xeroObjectId" = ${link.xeroObjectId} AND "role" = ${link.role}
+    FOR NO KEY UPDATE`;
+  const stored = rows?.[0]?.status ?? null;
+  if (stored === null || isIncludedRefundCreditNoteStatus(stored)) return link;
+  const metadata = asRecord(link.metadata);
+  return { ...link, active: false, ...(metadata ? { metadata: { ...metadata, status: stored } } : {}) };
 }
 
 /** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */

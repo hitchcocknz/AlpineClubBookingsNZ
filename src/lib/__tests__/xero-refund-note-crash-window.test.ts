@@ -1252,7 +1252,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     const findings: MutableFinding[] = [];
     const actions = new Map<string, BookingXeroRepairAction>();
 
-    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
 
     expect(findings).toEqual([
       expect.objectContaining({ code: "REFUND_CREDIT_NOTE_UNSETTLED", safeToAutoApply: false }),
@@ -1314,7 +1314,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     const findings: MutableFinding[] = [];
     const actions = new Map<string, BookingXeroRepairAction>();
 
-    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
 
     expect(await findUnsettledRefundNoteRows()).toEqual([]);
     expect(findings).toEqual([]);
@@ -1331,7 +1331,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     state.links.push({ localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "PAYMENT", xeroObjectId: "pay_9", role: "REFUND_PAYMENT", active: false, metadata: { creditNoteId: "cn_9", amountCents: 5000 } });
     const findings: MutableFinding[] = [];
 
-    addUnsettledRefundCreditNoteFindings(findings, new Map(), "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, new Map(), "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
 
     expect(await findUnsettledRefundNoteRows()).toEqual([]);
     expect(findings).toEqual([]);
@@ -1351,7 +1351,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     expect(await findUnsettledRefundNoteRows()).toEqual([expect.objectContaining({ kind: "part-settled" })]);
     const findings: MutableFinding[] = [];
     const actions = new Map<string, BookingXeroRepairAction>();
-    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
     expect([...actions.values()]).toEqual([
       expect.objectContaining({ type: "SETTLE_REFUND_CREDIT_NOTE", safeToAutoApply: false, payload: { operationId: "op_crashed", paymentId: PAYMENT_ID, creditNoteId: "cn_1" } }),
     ]);

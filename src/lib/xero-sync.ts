@@ -6,7 +6,7 @@ import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
   isPerDeltaRefundNoteLink,
-  isRefundCreditNoteLinkCancelledInXero,
+  isRefundCreditNoteLinkCancelledInXero, keepStoredRequestNoteVoid,
   perDeltaRefundNoteIds,
   neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
@@ -613,7 +613,7 @@ async function normalizePaymentRefundLinkWithClient(
       // The pointer moves after this link row is written: link, then payment, the repair apply's order.
       return { ...link, active: false };
     }
-    if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) return link; // never the payment's one note below
+    if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) return keepStoredRequestNoteVoid(client, link); // never the one note below
 
     const payment = await client.payment.findUnique({
       where: { id: link.localId },

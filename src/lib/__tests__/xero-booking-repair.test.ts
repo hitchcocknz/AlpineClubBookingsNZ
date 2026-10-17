@@ -8047,6 +8047,59 @@ describe("a refund request's own note never answers for the payment's refund not
     expect(unknown.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
   });
 
+  // #4195 money lens F1, #4214 (owner decision: the officer re-raises): once
+  // Xero voided the request's own note and nothing live replaces it, a stale
+  // FAILED row gets no Retry, so `--apply` never raises a second live credit
+  // beside the one the treasurer may have raised by hand.
+  describe("#4214: a request whose own note Xero voided is the officer's to re-raise", () => {
+    const failedRow = requestNote({ status: "FAILED", xeroObjectId: null, xeroObjectType: null });
+    // An earlier inline retry raised cn_request on a row of its own.
+    const raisedRow = requestNote({ id: "operation_request_note_retry" });
+    const officerDecides = expect.objectContaining({
+      code: "BLOCKED_BY_XERO_OPERATION",
+      safeToAutoApply: false,
+      actions: [],
+      summary: expect.stringContaining("An officer decides whether to raise a fresh note"),
+    });
+
+    it("MUTATION: --apply raises nothing for a stale FAILED row once the request's note is voided", async () => {
+      const cancelled = cancelledInternetBanking();
+      Object.assign(cancelled.payment, { refundedAmountCents: 3000 });
+      const deps = createDependencies({
+        bookings: [cancelled],
+        // The voided mirror is inactive, so the active-only loader never reads it.
+        links: [],
+        operations: [makePrimaryInvoiceCreateOperation(), failedRow, raisedRow],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+      const booking = report.passes[0].bookings[0];
+      expect(booking.findings).toContainEqual(officerDecides);
+      expect(booking.actions.map((action) => action.key)).not.toContain("retry:operation_request_note");
+      expect(deps.enqueueXeroSyncOperationRetry).not.toHaveBeenCalled();
+    });
+
+    it("the same for a mirror left active before #4195 that records VOIDED, and for a PARTIAL row naming the voided note", async () => {
+      const voidedStillActive = { ...requestLink, metadata: { amountCents: 3000, refundRequestId: "rr_1", status: "VOIDED" } };
+      const legacy = await run({ operations: [failedRow, raisedRow], links: [voidedStillActive], payment: { refundedAmountCents: 3000 } });
+      expect(legacy.findings).toContainEqual(officerDecides);
+      const partial = await run({ operations: [requestNote({ status: "PARTIAL" })], links: [], payment: { refundedAmountCents: 3000 } });
+      expect(partial.findings).toContainEqual(officerDecides);
+    });
+
+    it("a live own note leaves the Retry as it was", async () => {
+      const booking = await run({ operations: [failedRow, raisedRow], links: [requestLink], payment: { refundedAmountCents: 3000 } });
+      expect(booking.findings).toContainEqual(
+        expect.objectContaining({
+          code: "BLOCKED_BY_XERO_OPERATION",
+          safeToAutoApply: true,
+          actions: [expect.objectContaining({ key: "retry:operation_request_note" })],
+        }),
+      );
+    });
+  });
+
   // Review F2 at a19beb492: no other arm reads a request's note, so its own
   // failed create is reported here, with its Retry and its own wording.
   it("reports a request's failed note with its Retry", async () => {
