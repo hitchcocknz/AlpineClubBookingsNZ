@@ -4,7 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { PromoResult } from "@/components/promo-code-input";
 import { bookingFinalPriceCents } from "@/lib/booking-final-price";
 import { normalizePromoCodeInput } from "@/lib/promo-code-list-rules";
-import { promoPreviewGuestBody, type PromoPreviewGuest } from "@/components/promo-preview-guest";
+import {
+  promoPreviewEditRerateBody,
+  promoPreviewGuestBody,
+  type PromoPreviewEditRerates,
+  type PromoPreviewGuest,
+} from "@/components/promo-preview-guest";
 
 /**
  * The client half of several promo codes on one booking (#3492, epic #3813 C4):
@@ -248,6 +253,8 @@ export async function validatePromoCodeList(params: {
    * is priced the way the save prices them (D-3492-4). Implies `forBookingEdit`.
    */
   bookingId?: string;
+  /** #4202: the edit's officer re-rates, as the quote is sent them (needs `bookingId`). */
+  editRerates?: PromoPreviewEditRerates;
   /**
    * A working bee the booking also takes (D-3813-3): it claims its in-window
    * nights first, and the result starts with its own entry.
@@ -276,6 +283,7 @@ export async function validatePromoCodeList(params: {
         ...(params.forMemberId ? { forMemberId: params.forMemberId } : {}),
         ...(params.lodgeId ? { lodgeId: params.lodgeId } : {}),
         ...(params.bookingId ? { forBookingEdit: true, bookingId: params.bookingId } : {}),
+        ...promoPreviewEditRerateBody(params),
         ...(params.workPartyEventId ? { workPartyEventId: params.workPartyEventId } : {}),
       }),
     });

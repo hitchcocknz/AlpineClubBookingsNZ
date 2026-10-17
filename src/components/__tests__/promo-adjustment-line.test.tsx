@@ -59,6 +59,7 @@ describe("promo adjustment line", () => {
         quote={null}
         forMemberId={undefined}
         lodgeId={null}
+        editRerates={{}}
         onRemovePromo={vi.fn()}
         onKeepPromo={vi.fn()}
         onPrefillCode={vi.fn()}
