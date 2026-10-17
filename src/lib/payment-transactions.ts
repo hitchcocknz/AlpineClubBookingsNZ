@@ -252,14 +252,10 @@ async function ensurePaymentTransactionsBackfilled(
 }
 
 /**
- * Re-derive the Payment's summary columns from its ledger rows.
- *
- * #4217 (`INV-LOCK-002`): the Payment row is locked BEFORE the rows are read,
- * joined to the caller's transaction or in a short one of its own
- * (`withStoreTransaction`). Without it a rebuild could read the rows, queue on
- * the Payment row behind a refund writer, and then write totals worked out
- * from the rows it read before that writer committed. Inside a writer that
- * already took the lock it is a re-lock PostgreSQL grants at once.
+ * Re-derive the Payment's summary columns from its ledger rows. #4217
+ * (`INV-LOCK-002`): under the Payment row lock, taken BEFORE the rows are read
+ * (a re-lock inside a writer that holds it), so no refund writer's commit can
+ * land between the read and the write.
  */
 export async function reconcilePaymentAggregates({
   paymentId,
@@ -1158,9 +1154,7 @@ export async function markPaymentIntentTransactionFailed({
       return transaction;
     }
 
-    // Status-guarded: a capture that committed after the re-read (a writer
-    // that does not take the Payment row) keeps its status, and the row as it
-    // now stands is returned, as for a captured row above.
+    // Status-guarded: a capture committed since the re-read keeps its status; the row is returned as above.
     const failed = await db.paymentTransaction.updateMany({
       where: { id: transaction.id, status: { notIn: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
       data: { status: PaymentStatus.FAILED },
@@ -1173,12 +1167,7 @@ export async function markPaymentIntentTransactionFailed({
   });
 }
 
-/**
- * #4217: the payment an intent's row belongs to, read WITHOUT writing - the row
- * itself, or the Payment pointer that names the intent - so the two `mark…`
- * writers learn which Payment row to lock before anything is written. The
- * backfill `findPaymentTransactionByIntentId` may do runs only under that lock.
- */
+/** #4217: the intent's payment, read WITHOUT writing (its row, or the Payment pointer), so the lock comes before any backfill. */
 async function findPaymentIdForIntent(store: PaymentStore, paymentIntentId: string): Promise<string | null> {
   const row = await store.paymentTransaction.findUnique({
     where: { stripePaymentIntentId: paymentIntentId },
@@ -1188,11 +1177,7 @@ async function findPaymentIdForIntent(store: PaymentStore, paymentIntentId: stri
   return (await findPaymentByIntentPointer(store, paymentIntentId))?.id ?? null;
 }
 
-/**
- * #4217: the intent's row re-read under its Payment row lock. A row that now
- * belongs to a different payment than the one locked is refused loudly rather
- * than written under the wrong lock; the caller's retry locks the right one.
- */
+/** #4217: the intent's row re-read under its Payment row lock; one that moved payment meanwhile is refused (a retry locks the right one). */
 async function findPaymentTransactionForLockedPayment(
   db: Prisma.TransactionClient,
   paymentIntentId: string,

@@ -489,14 +489,8 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       // it. #3369: no member, no key.
       const creditLedgerMemberId = bookingOwner(fresh.booking).memberId;
       if (creditLedgerMemberId) await lockMemberCreditLedger(creditLedgerMemberId, tx);
-      // #4217 (Q2): then the Payment row, before the receipt's figures are read
-      // or its rows written (`INV-LOCK-002`: lock(1) -> lodge -> member ->
-      // Payment -> transaction rows). A card refund (`charge.refunded`) takes
-      // this row and no advisory key, so without it the refunded total written
-      // below could be worked out from rows read before that refund committed.
-      // The payment's own figures are re-read under it; the rows are read under
-      // it by `decideInternetBankingReceiptFigure`. The figure logic is
-      // unchanged (#3979, `INV-PAY-126`).
+      // #4217: then the Payment row, which a card refund holds without lock(1);
+      // the figures (re-read here) and the rows are read under it (`INV-LOCK-002`).
       await lockPaymentForRefundedTotal(tx, fresh.id);
       const lockedFigures = await tx.payment.findUnique({ where: { id: fresh.id } });
       if (!lockedFigures || lockedFigures.source !== PaymentSource.INTERNET_BANKING) {
