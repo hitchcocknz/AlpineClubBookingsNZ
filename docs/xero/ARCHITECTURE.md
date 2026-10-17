@@ -1091,20 +1091,26 @@ never takes a voided note as the request's cover, even a mirror an older release
 left active: every reader judges it by its recorded status, so it needs no heal.
 When a request's note is raised again, its Xero key is
 `payment:<id>:refund-request-credit-note:<request>:v1:after-void:<ids>`, naming
-the request's own voided notes (its row keeps the plain key), and the create
-check refuses a note any request link records voided. Unlike the payment's one
+the request's own voided notes. Only a queued row keeps the plain key it was
+enqueued under; a row the builder starts itself (an inline retry, or a
+re-raise) carries the `after-void` key as its own keys too. The create check
+refuses a note any request link records voided. Unlike the payment's one
 note, the void moves no refunded total: the inbound repair reads only the
 payment's own refund-note roles. So the booking repair still counts that
 request's amount and never hands its cash to the cancellation's note.
 
 **Re-raising a voided request note is the officer's decision (#4214, owner
-decision).** Nothing re-raises one automatically, whatever its row's state. A
-SUCCEEDED row is never retried, and its enqueue finds that row and queues
-nothing. A PARTIAL row, or a FAILED row that already names its note, retries
-into the settle-finish, which refuses a voided note. A stale FAILED row from
-before the note was raised shows as Repaired on the Xero Operations panel,
-because a SUCCEEDED row shares its plain correlation key, and the booking
-repair tool reports it with no Retry and never auto-applies one
+decision).** No retry re-raises one, whatever its row's state. Every retry door
+on Xero Operations (Retry all, a row's Retry and its Requeue, through
+`enqueueXeroSyncOperationRetry`) and the queued retry's worker
+(`retryXeroSyncOperation`) refuse, with a 409 naming #4214, a request-note
+create row whose request's own note Xero voided with nothing live replacing it
+(`isRetryOfVoidedRefundRequestNote`). So do the request's PARTIAL row, a FAILED
+row that names its note, and a stale FAILED row from before the note was
+raised. A SUCCEEDED row is never retried, and its enqueue finds that row and
+queues nothing. The panel may show a stale FAILED row as Repaired when a
+SUCCEEDED row shares its plain correlation key, and the booking repair tool
+reports such a request with no Retry and never auto-applies one
 (`refundRequestNoteVoidedWithNoLive`). The officer action #4214 builds, "Raise
 a fresh credit note", is the only remedy; until it ships, raise the replacement
 by hand in Xero.
@@ -1139,6 +1145,14 @@ that record a void (read-only):
 `SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_REQUEST_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`.
 The new release reads each as voided without a heal; check each listed request
 in Xero, where the officer decides whether to raise a fresh note (#4214).
+That check cannot find a link the old colour re-armed with its status
+stripped: nothing local records the void any more. So also list every
+request-note create that completed during the switch window, and check each
+note in Xero (read-only; set the window's start and end, in UTC):
+`SELECT id, "localId", "xeroObjectId", status, "completedAt" FROM "XeroSyncOperation" WHERE "localModel" = 'Payment' AND "entityType" = 'CREDIT_NOTE' AND "operationType" = 'CREATE' AND ("requestPayload"->>'refundRequestId' IS NOT NULL OR "correlationKey" LIKE '%:refund-request-credit-note:%') AND "completedAt" BETWEEN '<window start>' AND '<window end>' ORDER BY "completedAt"`.
+A note Xero shows VOIDED there is a voided note the request still treats as
+live: record it for the officer, who decides as for any voided request note
+(#4214).
 
 Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual

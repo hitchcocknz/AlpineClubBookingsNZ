@@ -9,11 +9,12 @@
   even when a retry is writing the same note at that moment, and the booking
   system never treats a voided note as the request's note again. Nothing
   raises a replacement automatically: the officer decides, because the note
-  was voided for a reason. The booking repair tool no longer offers to retry
-  such a request, and the Xero Operations panel may show its old failed row as
-  repaired. Until the "Raise a fresh credit note" action arrives (#4214), raise
-  the replacement by hand in Xero. When a request's note is raised again, it
-  goes to Xero under a new key so that Xero cannot hand the voided note back.
+  was voided for a reason. Retry, Requeue and Retry all on Xero Operations
+  now refuse such a request's note, saying an officer decides, and the booking
+  repair tool no longer offers to retry it. Until the "Raise a fresh credit
+  note" action arrives (#4214), raise the replacement by hand in Xero. When a
+  request's note is raised again, it goes to Xero under a new key so that Xero
+  cannot hand the voided note back.
 
   The refund itself is unchanged, because voiding the request's note does not
   undo the money the treasurer paid back. The booking repair tool still counts
@@ -23,6 +24,8 @@
   Deploying: stop the previous release's Xero outbox and retry workers before
   this release takes over, and do not retry refund-request notes from the
   previous release during the switch, because it can take a voided note back.
-  Before rolling back and after rolling forward, run the read-only check in the
-  Xero architecture guide's #4195 deploy note, and check any request it lists
-  in Xero.
+  Before rolling back and after rolling forward, run the two read-only checks
+  in the Xero architecture guide's #4195 deploy note, and check in Xero each
+  request note they list. The first finds voided notes still held as live; the
+  second lists every request note completed during the switch, because one the
+  previous release took back can no longer be told apart locally.
