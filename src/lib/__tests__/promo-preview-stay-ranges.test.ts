@@ -235,6 +235,25 @@ describe("an edit preview carries each remaining guest's sold prices (#4202)", (
     expect(resolved.guests[1]!.otherLodgeMember).toBeUndefined();
   });
 
+  it("a guest the edit re-rates has no locks, and a linked placeholder prices as the member (#4202 review)", () => {
+    const resolved = resolvePromoPreviewStays({
+      checkIn: d("2026-08-10"),
+      checkOut: d("2026-08-14"),
+      guests: [{ memberId: "booker", bookingGuestId: "bg-sold" }, { bookingGuestId: "bg-odd" }],
+      edit: {
+        booking,
+        storedGuests: [
+          { ...soldGuests[0]!, repricedDeliberately: true },
+          { ...soldGuests[1]!, linkedMemberId: "m9", repricedDeliberately: true },
+        ],
+      },
+    });
+    expect(resolved.guests[0]!.lockedNightPrices).toEqual([]);
+    expect(resolved.guests[0]!.memberId).toBe("booker");
+    expect(resolved.guests[1]!.lockedNightPrices).toEqual([]);
+    expect(resolved.guests[1]!).toMatchObject({ memberId: "m9", isMember: true });
+  });
+
   it("a create preview carries no locks", () => {
     const resolved = resolvePromoPreviewStays({
       checkIn: d("2026-08-10"),
