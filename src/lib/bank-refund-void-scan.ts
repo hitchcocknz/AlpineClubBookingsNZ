@@ -312,3 +312,41 @@ export async function classifyVoidedBankRefundNote(db: Reader, linkId: string): 
   }
   return result({ kind: "undo", amountCents, taskId: line.anchorId, line }, base);
 }
+
+/** One voided note a person answers on Stuck States: the app could not tell which refund it recorded. */
+export interface BankRefundVoidForAPerson {
+  linkId: string;
+  paymentId: string;
+  bookingId: string;
+  creditNoteNumber: string | null;
+  creditNoteId: string;
+  /** The voided note's recorded amount, or null when it cannot be read. */
+  amountCents: number | null;
+  /** When the app recorded the void (the link's last write), as an ISO instant. */
+  voidedAt: string;
+  reason: BankRefundVoidUnmatchedReason;
+}
+
+/**
+ * Every voided bank-transfer refund note no follow-up can answer - the
+ * `unmatched` ones - oldest first. Read with the pooled client, as advice: the
+ * answer re-classifies under the writer's locks. Nothing here writes.
+ */
+export async function listBankRefundVoidsForAPerson(db: Reader): Promise<BankRefundVoidForAPerson[]> {
+  const items: BankRefundVoidForAPerson[] = [];
+  for (const linkId of await readVoidedBankRefundNoteLinkIds(db)) {
+    const note = await classifyVoidedBankRefundNote(db, linkId);
+    if (!note || note.classification.kind !== "unmatched" || !note.bookingId) continue;
+    items.push({
+      linkId,
+      paymentId: note.paymentId,
+      bookingId: note.bookingId,
+      creditNoteNumber: note.link.xeroObjectNumber ?? null,
+      creditNoteId: note.link.xeroObjectId,
+      amountCents: note.classification.amountCents,
+      voidedAt: note.link.updatedAt.toISOString(),
+      reason: note.classification.reason,
+    });
+  }
+  return items;
+}

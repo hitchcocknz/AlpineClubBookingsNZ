@@ -7,6 +7,7 @@ import {
 import {
   BANK_REFUND_VOID_MARKER_KEY,
   classifyVoidedBankRefundNote,
+  listBankRefundVoidsForAPerson,
   readVoidedBankRefundNoteLinkIds,
   type BankRefundVoidClassification,
   type BankRefundVoidMarker,
@@ -325,4 +326,87 @@ export function bankRefundVoidFollowUpFailureMessage(result: BankRefundVoidJobRe
   return result.counts.failed > 0
     ? `${result.counts.failed} voided bank-transfer refund note(s) could not be followed up; see the logs (#4162)`
     : null;
+}
+
+/**
+ * #4162: a person's answer to a voided note no follow-up can answer (Stuck
+ * States). It moves no money: under the same locks as the job, it re-classifies
+ * the note, refuses unless it is still `unmatched`, and writes the "answered"
+ * marker - with who answered and their note - on its link, so it leaves the
+ * list. The note says what they did (raised a note in Xero by hand, or asked a
+ * developer to correct the records).
+ */
+export async function markUnmatchedBankRefundVoidAnswered(input: {
+  linkId: string;
+  note: string;
+  actingMemberId: string;
+  now?: Date;
+}): Promise<{ paymentId: string; bookingId: string }> {
+  const now = input.now ?? new Date();
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const head = await tx.xeroObjectLink.findUnique({ where: { id: input.linkId }, select: { localModel: true, localId: true } });
+    if (!head || head.localModel !== "Payment") throw new BankRefundVoidAnswerRefusal("Voided refund note not found.", 404);
+    await lockPaymentForRefundedTotal(tx, head.localId);
+    const note = await classifyVoidedBankRefundNote(tx, input.linkId);
+    if (!note || note.classification.kind !== "unmatched" || !note.bookingId) {
+      throw new BankRefundVoidAnswerRefusal("This voided refund note no longer needs an answer here. The list has been refreshed.", 409);
+    }
+    const written = await writeBankRefundVoidMarker(tx, input.linkId, {
+      outcome: "answered",
+      at: now.toISOString(),
+      memberId: input.actingMemberId,
+      note: input.note,
+    });
+    if (!written) throw new BankRefundVoidAnswerRefusal("This voided refund note has already been answered.", 409);
+    const booking = await tx.booking.findUniqueOrThrow({ where: { id: note.bookingId }, select: { memberId: true } });
+    await createAuditLog(
+      {
+        action: "booking-payment.bank-refund.void-answered",
+        memberId: input.actingMemberId,
+        actorMemberId: input.actingMemberId,
+        subjectMemberId: bookingOwner(booking).memberId,
+        targetId: note.bookingId,
+        entityType: "XeroObjectLink",
+        entityId: input.linkId,
+        category: "payment",
+        severity: "important",
+        outcome: "success",
+        summary: `Voided refund credit note ${note.link.xeroObjectNumber ?? note.link.xeroObjectId} on booking ${formatBookingReference(note.bookingId)} answered by a person; nothing in the club's records moved`,
+        details: input.note,
+        metadata: { paymentId: note.paymentId, voidedCreditNoteId: note.link.xeroObjectId, reason: note.classification.reason },
+      },
+      tx,
+    );
+    return { paymentId: note.paymentId, bookingId: note.bookingId };
+  });
+}
+
+/** A refusal of a person's answer, with the status the route answers. Thrown inside the transaction, so nothing commits. */
+export class BankRefundVoidAnswerRefusal extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 409,
+  ) {
+    super(message);
+    this.name = "BankRefundVoidAnswerRefusal";
+  }
+}
+
+/** The Stuck States panel's rows: every unmatched voided note, read with the pooled client. */
+export async function listBankRefundVoidsToAnswerRows() {
+  const items = await listBankRefundVoidsForAPerson(prisma as unknown as Prisma.TransactionClient);
+  return items.map((item) => ({
+    linkId: item.linkId,
+    bookingId: item.bookingId,
+    bookingReference: formatBookingReference(item.bookingId),
+    creditNoteNumber: item.creditNoteNumber,
+    amountCents: item.amountCents,
+    voidedAt: item.voidedAt,
+  }));
+}
+
+/** How many voided notes wait for a person: the Stuck States dashboard's count. */
+export async function countBankRefundVoidsToAnswer(): Promise<number> {
+  return (await listBankRefundVoidsForAPerson(prisma as unknown as Prisma.TransactionClient)).length;
 }

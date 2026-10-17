@@ -1,3 +1,4 @@
+import { countBankRefundVoidsToAnswer } from "@/lib/bank-refund-void-follow-up";
 import type { FeatureFlags } from "@/config/schema";
 import { CLUB_HUT_LEADER_LABEL } from "@/config/club-identity";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -148,6 +149,8 @@ export interface StuckStateDashboardDependencies {
    * Prisma client and this module's injected `db` is a narrowed shape.
    */
   countActiveLodges: () => Promise<number>;
+  /** #4162: how many voided bank refund notes wait for a person (`countBankRefundVoidsToAnswer`). */
+  countBankRefundVoidsToAnswer: () => Promise<number>;
 }
 
 const DOMAIN_LABELS: Record<StuckStateDomain, string> = {
@@ -192,6 +195,7 @@ const defaultDependencies: StuckStateDashboardDependencies = {
   getUnassignedHutLeaderDates,
   loadHutLeaderLookaheadDays,
   countActiveLodges: () => countActiveLodges(prisma),
+  countBankRefundVoidsToAnswer,
 };
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`) {
@@ -948,6 +952,12 @@ export async function getStuckStateDashboard(input?: {
    * names rather than leaking the membership roll.
    */
   viewerCanViewMembership?: boolean;
+  /**
+   * #4162: whether the caller holds `{ area: "finance", level: "view" }`, which
+   * the voided bank refund notes' panel on this page needs. False sends that
+   * item's link to the Xero screen instead. Defaults to false (fail closed).
+   */
+  viewerCanViewFinance?: boolean;
 }): Promise<StuckStateDashboard> {
   const deps = {
     ...defaultDependencies,
@@ -1117,6 +1127,19 @@ export async function getStuckStateDashboard(input?: {
 
   if (isModuleEnabled(modules, "xeroIntegration")) {
     addXeroItems(items, await deps.getXeroAdminHealthSnapshot());
+    // #4162 (`INV-ADDPAY-042`): voided bank refund notes the nightly follow-up
+    // could not match to one refund; a person answers each on this page.
+    const bankRefundVoidsToAnswer = await deps.countBankRefundVoidsToAnswer();
+    addItem(items, {
+      id: "xero-bank-refund-voids-to-answer",
+      domain: "xero",
+      title: "Voided bank refund notes to answer",
+      severity: "warning",
+      owner: "Finance",
+      count: bankRefundVoidsToAnswer,
+      href: input?.viewerCanViewFinance ? "/admin/stuck-states#bank-refund-voids" : "/admin/xero",
+      summary: `${bankRefundVoidsToAnswer} bank ${plural(bankRefundVoidsToAnswer, "refund")} had ${bankRefundVoidsToAnswer === 1 ? "its" : "their"} Xero credit note voided, and the app could not tell which refund the note recorded. Nothing was changed; a person checks whether the money went and records the answer.`,
+    });
   }
 
   if (isModuleEnabled(modules, "waitlist")) {

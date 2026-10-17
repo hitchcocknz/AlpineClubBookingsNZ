@@ -45,6 +45,8 @@ import { cn } from "@/lib/utils";
 import { listDeadCardRefunds } from "@/lib/card-refund-paid-another-way";
 import { listCardRefundsPaidTwice } from "@/lib/card-refund-paid-twice";
 import { CardRefundsPaidTwiceList, DeadCardRefundsPanel } from "@/components/admin/dead-card-refunds-panel";
+import { BankRefundVoidsToAnswerPanel } from "@/components/admin/bank-refund-voids-to-answer-panel";
+import { listBankRefundVoidsToAnswerRows } from "@/lib/bank-refund-void-follow-up";
 import { describeRefundMethod } from "@/lib/xero-refund-method";
 
 const domainIcons: Record<StuckStateDomain, typeof CreditCard> = {
@@ -199,10 +201,14 @@ export default async function AdminStuckStatesPage() {
     : false;
   // #3924 round 5 (concurrency F2): and the closes Stripe paid as well - the
   // member was paid back twice - under the same finance:view gate.
-  const [dashboard, deadCardRefunds, cardRefundsPaidTwice] = await Promise.all([
-    getStuckStateDashboard({ viewerCanViewMembership }),
+  // #4162 (`INV-ADDPAY-042`): voided bank refund notes no follow-up could
+  // match, answered here - finance:view to list (they name bookings and
+  // money), finance:edit to answer.
+  const [dashboard, deadCardRefunds, cardRefundsPaidTwice, bankRefundVoidsToAnswer] = await Promise.all([
+    getStuckStateDashboard({ viewerCanViewMembership, viewerCanViewFinance }),
     viewerCanViewFinance ? listDeadCardRefunds() : Promise.resolve([]),
     viewerCanViewFinance ? listCardRefundsPaidTwice() : Promise.resolve([]),
+    viewerCanViewFinance ? listBankRefundVoidsToAnswerRows() : Promise.resolve([]),
   ]);
   const clubTime = await resolveClubTime();
 
@@ -282,6 +288,8 @@ export default async function AdminStuckStatesPage() {
       ) : null}
 
       {viewerCanViewFinance ? <CardRefundsPaidTwiceList rows={cardRefundsPaidTwice} /> : null}
+
+      {viewerCanViewFinance ? <BankRefundVoidsToAnswerPanel rows={bankRefundVoidsToAnswer} /> : null}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3">
