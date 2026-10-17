@@ -174,17 +174,22 @@ export function refundRequestNoteVoidedWithNoLive(
  */
 export async function keepStoredRequestNoteVoid<L extends {
   localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean;
-}>(client: Pick<Prisma.TransactionClient, "$queryRaw">, link: L): Promise<L> {
+}>(client: Pick<Prisma.TransactionClient, "$executeRaw" | "xeroObjectLink">, link: L): Promise<L> {
   if (readRefundCreditNoteLinkStatus(link.metadata) !== null) return link;
-  const rows = await client.$queryRaw<Array<{ status: string | null }>>`
-    SELECT "metadata"->>'status' AS "status" FROM "XeroObjectLink"
+  // Lock only (the #4161 heal's statement), then read through the model under it.
+  await client.$executeRaw`
+    SELECT 1 FROM "XeroObjectLink"
     WHERE "localModel" = ${link.localModel} AND "localId" = ${link.localId} AND "xeroObjectType" = ${link.xeroObjectType}
       AND "xeroObjectId" = ${link.xeroObjectId} AND "role" = ${link.role}
-    FOR NO KEY UPDATE`;
-  const stored = rows?.[0]?.status ?? null;
-  if (stored === null || isIncludedRefundCreditNoteStatus(stored)) return link;
+    FOR UPDATE`;
+  const stored = await client.xeroObjectLink.findUnique({
+    where: { localModel_localId_xeroObjectType_xeroObjectId_role: { localModel: link.localModel, localId: link.localId, xeroObjectType: link.xeroObjectType, xeroObjectId: link.xeroObjectId, role: link.role } },
+    select: { metadata: true },
+  });
+  const status = readRefundCreditNoteLinkStatus(stored?.metadata);
+  if (status === null || isIncludedRefundCreditNoteStatus(status)) return link;
   const metadata = asRecord(link.metadata);
-  return { ...link, active: false, ...(metadata ? { metadata: { ...metadata, status: stored } } : {}) };
+  return { ...link, active: false, ...(metadata ? { metadata: { ...metadata, status } } : {}) };
 }
 
 /** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */
