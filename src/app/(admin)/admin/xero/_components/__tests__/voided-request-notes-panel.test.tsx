@@ -70,6 +70,18 @@ describe("voided refund request notes panel (#4214)", () => {
     expect(onChanged).toHaveBeenCalledTimes(1)
   })
 
+  it("MUTATION: cancelling the confirmation posts nothing", async () => {
+    const fetchMock = stubFetch([voided])
+    const { onMessage } = renderPanel(true)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Raise a fresh credit note" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reraise"))).toBe(false)
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+
   it("MUTATION: a view-only finance admin sees the request but cannot raise a note", async () => {
     const fetchMock = stubFetch([voided])
     renderPanel(false)
