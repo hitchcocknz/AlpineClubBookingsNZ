@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page, type Response } from "@playwright/test";
 import { PrismaClient, type AccessRole } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
@@ -51,6 +51,26 @@ function fixtureClient() {
   return new PrismaClient({ adapter: createPrismaPgAdapter(url) });
 }
 
+
+async function expectUsableKiosk(page: Page, accessResponse: Response, weekResponse: Response) {
+  expect(accessResponse.ok(), "Kiosk access request must succeed").toBe(true);
+  expect(await accessResponse.json()).toMatchObject({
+    tier: "lodge",
+    canManageRoster: true,
+  });
+  expect(weekResponse.ok(), "Kiosk week request must succeed").toBe(true);
+  const weekData = await weekResponse.json() as { days: Array<{ accessible: boolean }> };
+  expect(weekData.days).toHaveLength(7);
+  expect(weekData.days.every((day) => day.accessible)).toBe(true);
+
+  const week = page.getByRole("region", { name: "Lodge kiosk week view", exact: true });
+  await expect(week.getByRole("heading", { name: "Week View", exact: true })).toBeVisible();
+  const days = week.getByRole("button", { name: /^Open / });
+  await expect(days).toHaveCount(7);
+  for (const day of await days.all()) await expect(day).toBeEnabled();
+  await expect(week.getByRole("button", { name: "Next week", exact: true })).toBeEnabled();
+}
+
 for (const account of accounts) {
   test(`${account.roles.join("+")} enrollment Continue and fresh-context verification render their protected destination`, async ({ page, browser }) => {
     const prisma = fixtureClient();
@@ -96,14 +116,19 @@ for (const account of accounts) {
       await expect(page).toHaveURL(/\/login\/enroll/);
 
       // This click, without a later page.goto/reload, must render the server gate.
-      await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`${account.destination}$`));
-      if (account.destination === "/dashboard") {
+      if (account.destination === "/lodge/kiosk") {
+        const [accessResponse, weekResponse] = await Promise.all([
+          page.waitForResponse((response) => new URL(response.url()).pathname === "/api/lodge/access", { timeout: 15_000 }),
+          page.waitForResponse((response) => new URL(response.url()).pathname === "/api/lodge/week", { timeout: 15_000 }),
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        ]);
+        await expectUsableKiosk(page, accessResponse, weekResponse);
+      } else {
+        await page.getByRole("button", { name: "Continue", exact: true }).click();
         await expect(page.locator(".app-brand-mark")).toBeVisible();
         await expect(page.getByRole("heading", { name: `Welcome back, ${account.firstName}`, exact: true })).toBeVisible();
-      } else {
-        await expect(page.locator(".theme-aware-kiosk")).toBeVisible();
       }
+      await expect(page).toHaveURL(new RegExp(`${account.destination}$`));
 
       // No cookies or corrective persona helper are carried into verification.
       const freshContext = await browser.newContext();
@@ -113,14 +138,19 @@ for (const account of accounts) {
         await expect(freshPage).toHaveURL(/\/login\/verify/);
         await expect(freshPage.getByText("Verify your sign-in", { exact: true })).toBeVisible();
         await freshPage.locator("#two-factor-code").fill(totpCode(secret));
-        await freshPage.getByRole("button", { name: "Verify", exact: true }).click();
-        await expect(freshPage).toHaveURL(new RegExp(`${account.destination}$`));
-        if (account.destination === "/dashboard") {
+        if (account.destination === "/lodge/kiosk") {
+          const [accessResponse, weekResponse] = await Promise.all([
+            freshPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/lodge/access", { timeout: 15_000 }),
+            freshPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/lodge/week", { timeout: 15_000 }),
+            freshPage.getByRole("button", { name: "Verify", exact: true }).click(),
+          ]);
+          await expectUsableKiosk(freshPage, accessResponse, weekResponse);
+        } else {
+          await freshPage.getByRole("button", { name: "Verify", exact: true }).click();
           await expect(freshPage.locator(".app-brand-mark")).toBeVisible();
           await expect(freshPage.getByRole("heading", { name: `Welcome back, ${account.firstName}`, exact: true })).toBeVisible();
-        } else {
-          await expect(freshPage.locator(".theme-aware-kiosk")).toBeVisible();
         }
+        await expect(freshPage).toHaveURL(new RegExp(`${account.destination}$`));
       } finally {
         await freshContext.close();
       }
