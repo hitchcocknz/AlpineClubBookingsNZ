@@ -2653,6 +2653,11 @@ export async function reverseManualBookingPayment({
     }
     const bookingLodgeId = lockTarget.lodgeId ?? (await getDefaultLodgeId(tx));
     await acquireLodgeCapacityLock(tx, bookingLodgeId);
+    // #4217 (`INV-LOCK-002`): the Payment row before the recovery rows, the
+    // booking and the ledger rows this reversal writes - the recovery runner's
+    // claim hold locks it before the cancellation rows it upserts.
+    const paymentToLock = await tx.payment.findUnique({ where: { bookingId }, select: { id: true } });
+    if (paymentToLock) await lockPaymentForRefundedTotal(tx, paymentToLock.id);
 
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },

@@ -31,6 +31,8 @@
  *  6. The cost (#4217 review): a capture queued past its transaction's 5 s
  *     limit behind a holder of the Payment row fails with P2028, rolled back
  *     whole - nothing it would have written is written.
+ *  7. A manual-payment reversal (#4217 review) racing the recovery runner's
+ *     claim hold re-queueing a stale ask's cancellation: no deadlock.
  *
  * In each the payment's refunded total must end equal to the sum of its rows.
  * The sixth race - a price reduction's retire against the capture webhook on
@@ -557,5 +559,54 @@ let ledgerStartSeconds = 0;
       await payments.markPaymentIntentTransactionSucceeded({ paymentIntentId: ADDITIONAL_INTENT, amountCents: 5_000 });
       expect((await totals()).payment.amountCents).toBe(25_000);
     }, 30_000);
+
+    it("RACE 7: a manual-payment reversal racing the recovery runner's claim hold re-queueing a stale ask's cancellation does not deadlock", async () => {
+      // A booking an officer marked paid in cash, with a stale card top-up whose
+      // cancellation is queued - the operation the reversal disarms.
+      const STALE_ID = "race-4217-stale-ask";
+      const STALE_INTENT = "pi_race_4217_stale";
+      await prisma.booking.create({
+        data: { id: BOOKING_ID, memberId: MEMBER_ID, lodgeId: LODGE_ID, checkIn: CHECK_IN, checkOut: CHECK_OUT, status: "PAID", totalPriceCents: 20_000, finalPriceCents: 20_000 },
+      });
+      await prisma.payment.create({
+        data: {
+          id: PAYMENT_ID, bookingId: BOOKING_ID, amountCents: 20_000, source: "INTERNET_BANKING", status: "SUCCEEDED",
+          manuallyMarkedPaidAt: new Date("2026-06-20T00:00:00.000Z"), manuallyMarkedPaidByMemberId: MEMBER_ID,
+          manuallyMarkedPaidPreviousStatus: "PAYMENT_PENDING",
+        },
+      });
+      await prisma.paymentTransaction.create({
+        data: { id: IB_PRIMARY_ID, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 20_000, status: "SUCCEEDED", reason: "manual_mark_paid" },
+      });
+      await prisma.paymentTransaction.create({
+        data: { id: STALE_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: STALE_INTENT, amountCents: 5_000, status: "PENDING" },
+      });
+      const { enqueuePaymentIntentCancellationRecovery } = await import("@/lib/payment-recovery");
+      const cancellation = { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentTransactionId: STALE_ID, paymentIntentId: STALE_INTENT, amountCents: 5_000 };
+      await enqueuePaymentIntentCancellationRecovery(cancellation);
+      const { reverseManualBookingPayment } = await import("@/lib/payment-reconciliation");
+
+      const race = await raceAgainstHeldPayment({
+        // The claim hold's shape: the Payment row, then the cancellation rows its
+        // supersede upserts (`queueSupersededAdditionalIntentCancellationRows`).
+        afterQueued: async (tx) => {
+          await enqueuePaymentIntentCancellationRecovery({ ...cancellation, store: tx });
+        },
+        // Before #4217's review the reversal deleted the cancellation row first
+        // and reached the Payment row only at its own write: a deadlock.
+        contender: () => reverseManualBookingPayment({ bookingId: BOOKING_ID, actingAdminMemberId: MEMBER_ID, note: null }),
+      });
+
+      expect(isDeadlock(race.holderError), `the claim hold deadlocked: ${String(race.holderError)}`).toBe(false);
+      expect(isDeadlock(race.error), `the reversal deadlocked: ${String(race.error)}`).toBe(false);
+      expect(race.holderError).toBeUndefined();
+      expect(race.error).toBeUndefined();
+      expect(race.queued, "the reversal never queued behind the claim hold's Payment row").toBeGreaterThanOrEqual(1);
+      // The reversal ran after the hold committed: it disarmed the cancellation
+      // the hold re-queued and restored the booking.
+      expect(await prisma.paymentRecoveryOperation.count({ where: { paymentId: PAYMENT_ID, type: "CANCEL_PAYMENT_INTENT" } })).toBe(0);
+      expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { status: true } })).status).toBe("PAYMENT_PENDING");
+      expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { manuallyMarkedPaidAt: true } })).manuallyMarkedPaidAt).toBeNull();
+    });
   },
 );

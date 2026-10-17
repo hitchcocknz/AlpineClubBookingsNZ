@@ -3001,6 +3001,29 @@ describe("payment recovery worker", () => {
       expect(mockCancelPaymentIntentIfCancellableWithResult).not.toHaveBeenCalled();
     });
 
+    it("#4217: an ask write refused because its intent's row is on another payment ends the recovery at once", async () => {
+      primeQueue(additionalIntentOperation({ attempts: 1 }));
+      mockBookingModificationFindUnique.mockResolvedValue({ priceDiffCents: 3000, changeFeeCents: 0, modificationType: "GUEST_ADD" });
+      const { IntentLedgerRowOnAnotherPaymentError } = await import("@/lib/payment-intent-ledger-row-write");
+      mockUpsertPaymentIntentTransaction.mockRejectedValueOnce(
+        new IntentLedgerRowOnAnotherPaymentError("pi_recovered", "payment-1", "payment-other"),
+      );
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ processed: 1, failed: 1, retried: 0, succeeded: 0 });
+      const failureWrites = mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => args.data?.status === PaymentRecoveryOperationStatus.FAILED);
+      expect(failureWrites).toHaveLength(1);
+      expect(failureWrites[0]!.data).toMatchObject({
+        status: PaymentRecoveryOperationStatus.FAILED,
+        lastError: expect.stringContaining("already filed under a different payment"),
+        nextRetryAt: null,
+        attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS,
+      });
+    });
+
     it("#4081: any other failure of the same replay still backs off and retries, silently", async () => {
       primeQueue(additionalIntentOperation({ attempts: 1 }));
       mockUpsertPaymentIntentTransaction.mockRejectedValueOnce(new Error("connection reset"));
