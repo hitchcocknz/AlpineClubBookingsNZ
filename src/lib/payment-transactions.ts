@@ -1298,6 +1298,8 @@ export interface RefundAllocationSlice {
   madeRefundId?: string;
   /** #4104: the refunds that made this slice and that Stripe failed later, each moving it to its next key; it is still owed. */
   failedRefundIds?: string[];
+  /** #4166: a failed-later row's maker of the failed refund, by its metadata (`card-refund-failed-later.ts`); null for none, absent before #4166. */
+  madeByOperationId?: string | null;
 }
 
 /**

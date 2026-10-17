@@ -18,6 +18,7 @@ import type {
   QuoteResult,
 } from "@/components/edit-booking/types";
 import { useClubFormat } from "@/components/club-format-provider";
+import type { EditGuestStays } from "@/components/edit-booking/guest-stay-payload";
 import { PromoCodeList } from "@/components/promo-code-list";
 import { PromoCodeChips } from "@/components/promo-code-chips";
 import {
@@ -62,6 +63,10 @@ function storedPromoList(
  * guest-targeted code's beneficiary indexes are positional over exactly that
  * list, and the panel converts them back to booking-guest ids when it builds the
  * payload.
+ *
+ * Each guest's stay is the one the edit sends (`guestStays`, #4199): a grid
+ * guest's night set, a range-mode guest's continuous dates, or nothing, so the
+ * preview prices the nights the quote and the save price.
  */
 export function PromoCodeCard({
   bookingId,
@@ -75,13 +80,9 @@ export function PromoCodeCard({
   availablePromoCodes,
   appliedNewPromo,
   prefillPromoCode,
-  checkIn,
-  checkOut,
+  guestStays,
   remainingGuests,
   addedGuests,
-  perGuestDatesEnabled,
-  isInProgressEdit,
-  getExistingGuestRange,
   quote,
   forMemberId,
   lodgeId,
@@ -103,13 +104,10 @@ export function PromoCodeCard({
   availablePromoCodes: AvailablePromoCode[];
   appliedNewPromo: PromoResult | null;
   prefillPromoCode: string | undefined;
-  checkIn: string;
-  checkOut: string;
+  /** The stays and booking dates this edit sends (`buildEditGuestStays`). */
+  guestStays: EditGuestStays;
   remainingGuests: Guest[];
   addedGuests: NewGuest[];
-  perGuestDatesEnabled: boolean;
-  isInProgressEdit: boolean;
-  getExistingGuestRange: (guest: Guest) => { stayStart: string; stayEnd: string };
   quote: QuoteResult | null;
   forMemberId: string | undefined;
   lodgeId: string | null | undefined;
@@ -132,6 +130,10 @@ export function PromoCodeCard({
     ownCodes: availablePromoCodes.map((pc) => pc.code),
   });
   const lookupProblem = guestPromoCodesProblem(guestCodes.status);
+  const { checkIn, checkOut } = guestStays;
+  const existingStayById = new Map(
+    (guestStays.existing ?? []).map(({ guestId, ...stay }) => [guestId, stay]),
+  );
   const partyGuests = [
     ...remainingGuests.map((g) => ({
       firstName: g.firstName,
@@ -141,17 +143,15 @@ export function PromoCodeCard({
       memberId: g.memberId ?? undefined,
       // The row this guest already is: the preview reads its stored consent.
       bookingGuestId: g.id,
-      ...(perGuestDatesEnabled && !isInProgressEdit ? getExistingGuestRange(g) : {}),
+      ...existingStayById.get(g.id),
     })),
-    ...addedGuests.map((g) => ({
+    ...addedGuests.map((g, index) => ({
       firstName: g.firstName,
       lastName: g.lastName,
       ageTier: g.ageTier as string,
       isMember: g.isMember,
       memberId: g.memberId,
-      ...(perGuestDatesEnabled && !isInProgressEdit && g.stayStart && g.stayEnd
-        ? { stayStart: g.stayStart, stayEnd: g.stayEnd }
-        : {}),
+      ...guestStays.added[index],
     })),
   ];
   const stored = storedPromoList(promo, promoLines, promoAdjustmentCents);

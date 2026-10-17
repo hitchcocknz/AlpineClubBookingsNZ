@@ -93,7 +93,10 @@ officers' alert says it failed for good, refund it in the Stripe dashboard.
 refund as pending and report it failed days later, for example when the card
 has been closed. The app then takes it back out of the refunded total and owes
 it again: it shows under **Refunds owed**, the officers are emailed once, and it
-is asked for again as a new request. Two kinds are not asked for again, and are
+is asked for again as a new request. Where it was the cancellation's own card
+refund, the member's booking page stops saying that amount was refunded and says where
+the new request stands: on its way, refunded again, waiting on the club, or
+paid back another way (#4166). Two kinds are not asked for again, and are
 listed here under **Card refunds Stripe gave up on** straight away, for you to
 pay the member another way and close:
 
