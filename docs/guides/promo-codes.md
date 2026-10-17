@@ -139,16 +139,27 @@ the discount out on those two nights, the same nights the price summary and the
 save charge (#4199). A guest given their own Date In and Date Out with the grid
 off is discounted over that whole continuous stay.
 
-On a booking's edit panel the box also uses the same prices as the price
-summary and the save (#4202): a night a guest already holds keeps the price it
-was sold at, and only a night the edit adds is priced at today's rates. So if
-the club's rates have changed since the booking was made, the discount the box
-shows is worked out on what the guests actually paid, and matches the summary.
-The box there also judges the code for the booking itself, as the summary does:
-against the member whose booking it is (even when an officer is editing it), at
-the booking's own lodge, with a guest recognised as another club's member kept
-at that rate, and without counting the booking's own use of the code against
-its use limits.
+### What the promo code box shows on a booking's edit panel
+
+On a booking's edit panel the box works the discount out on the same prices as
+the price summary and the save (#4202). A night a guest already holds keeps the
+price it was sold at, and only a night the edit adds is priced at today's
+rates. So if the club's rates have changed since the booking was made, the
+discount in the box is worked out on what the guests actually paid, and matches
+the summary.
+
+The one exception is a night whose sold price the booking does not record (an
+earlier edit an officer had to value by hand). The summary then says an officer
+will confirm the amount and shows no price, while the box still works its
+discount out with today's rate for that night, so treat the box's figure as a
+guide until the officer has settled the edit.
+
+The box also follows the changes an officer makes on the panel, as the summary
+does: ticking or unticking a guest as another club's member, or linking a
+placeholder guest to a member, re-prices that guest's whole stay in the box
+too. On a school's booking, a code that benefits the person who made the booking
+is refused in the box with the same message the summary gives, because a school
+holds no member entitlement.
 
 ### What happens when a booking is edited and the code has run out
 
