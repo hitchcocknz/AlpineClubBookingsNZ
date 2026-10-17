@@ -858,10 +858,11 @@ export async function recordCapacityClaimFailedRefundRecoveryInlineError({
  * replays with backoff. The processor replays the frozen plan under the stored
  * inline Stripe key prefix (`duplicate_capture_refund_<bookingId>_<pi>`), so a
  * refund that succeeded on Stripe but was never recorded is replayed, never
- * repeated. One operation per (booking, duplicate intent); the per-booking key
- * prefix is also the adjudication marker that keeps the refund direction
- * stable when BOTH captures' webhooks replay (see
- * findOtherDuplicateCaptureRefundOperation).
+ * repeated. One operation per (booking, duplicate intent); its key names the
+ * capture it refunds, and that is what OWNS the capture: the duplicate-capture
+ * guard reads the owned intents through `listDuplicateCaptureRefundIntentIds`
+ * (`duplicate-capture-ownership.ts`) and never counts one as the settlement,
+ * so a later replay of the settling capture keeps its money (#4211).
  */
 export async function enqueueDuplicateCaptureRefundRecovery({
   bookingId,

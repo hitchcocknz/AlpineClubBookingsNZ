@@ -21,8 +21,9 @@ import { parseDateOnly } from "@/lib/date-only";
 //     legitimate caller path (webhook redelivery, confirm-payment route,
 //     payment-link reconcile, charge-saved-method rerun, cron-confirm-pending
 //     rerun, create-payment-intent recovery, confirm-pending-guests retry);
-//   - never refund BOTH sides when the two captures' webhooks replay
-//     (adjudication marker on the recovery-operation key prefix);
+//   - never refund BOTH sides when the two captures' webhooks replay (a
+//     capture a duplicate-capture refund owns, by its operation's key, is
+//     never counted as the settlement: `listDuplicateCaptureRefundIntentIds`);
 //   - preserve the #1765 refunded-history guard, including the
 //     repay-generation case (a fully REFUNDED prior capture is history, not a
 //     settlement the repay duplicates).
@@ -176,6 +177,8 @@ import {
   buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking,
   buildDuplicateCaptureRefundStripeKeyPrefix,
   bookingModificationRefundReasonForKeyPrefix,
+  buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
+  duplicateCaptureIntentIdForRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import {
@@ -920,11 +923,11 @@ describe("#1992 duplicate-capture auto-refund", () => {
   });
 
   it("never refunds BOTH sides: once a duplicate-capture refund owns one capture, the settling capture's replay stays already_paid", async () => {
-    // The duplicate refund of DUPLICATE_PI was already adjudicated (operation
-    // row exists). Now the SETTLED intent's webhook redelivers: from the
-    // ledger it looks symmetric (a different SUCCEEDED capture exists), so
-    // without the adjudication marker this replay would refund the settlement
-    // too and leave the booking PAID at zero net cash.
+    // A duplicate-capture refund already owns DUPLICATE_PI (its operation row
+    // exists). Now the SETTLED intent's webhook redelivers: from the ledger it
+    // looks symmetric (a different SUCCEEDED capture exists), so without that
+    // ownership this replay would refund the settlement too and leave the
+    // booking PAID at zero net cash.
     primeLedger([
       ledgerRow({
         id: "txn-settled",
@@ -976,11 +979,11 @@ describe("#1992 duplicate-capture auto-refund", () => {
   // cron's cancel-lost-race handoff into markSupersededTransactionSucceeded —
   // X becomes SUCCEEDED/refunded=0 with a queued REFUND_SUPERSEDED_PAYMENT
   // operation, and X never passes through markBookingPaymentSucceeded, so no
-  // duplicate_capture adjudication marker exists. If the member then pays
+  // duplicate-capture refund owns it. If the member then pays
   // fresh intent Y (booking → PAID via the route) and Y's own first webhook
   // delivery arrives (#772 route-vs-webhook race — event dedup does not
-  // apply), the unguarded predicate would find X, see no adjudication marker,
-  // and refund Y — the REAL settlement — in full, while the cron later
+  // apply), the unguarded predicate would find X, owned by no duplicate-capture
+  // refund, and refund Y — the REAL settlement — in full, while the cron later
   // refunds X: booking PAID at zero net cash, both sides refunded.
   describe("superseded-intent handoff window: the arriving REAL settlement stays already_paid, never refunded (#1992 guards b′/c′)", () => {
     const SUPERSEDED_PI = "pi_superseded_x";
@@ -1596,7 +1599,27 @@ describe("#4103 a duplicate-capture refund Stripe refuses", () => {
 });
 
 describe("#1992 recovery key builders and replay-metadata mapping", () => {
-  it("the operation idempotency key is duplicate_capture_<bookingId>_<intentId> and shares the per-booking adjudication prefix", () => {
+  it("#4211: the duplicate intent is read back from its booking's operation key, and from nothing else", () => {
+    const key = buildDuplicateCaptureRefundRecoveryIdempotencyKey("booking-1", "pi_x");
+    expect(duplicateCaptureIntentIdForRecoveryKey("booking-1", key)).toBe("pi_x");
+    // The bare prefix names no intent.
+    expect(
+      duplicateCaptureIntentIdForRecoveryKey("booking-1", buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking("booking-1")),
+    ).toBeNull();
+    // Another booking whose id merely begins with this one's.
+    expect(
+      duplicateCaptureIntentIdForRecoveryKey("booking-1", buildDuplicateCaptureRefundRecoveryIdempotencyKey("booking-12", "pi_x")),
+    ).toBeNull();
+    // Another prefix family: the Stripe key prefix and the capacity-race refund.
+    expect(
+      duplicateCaptureIntentIdForRecoveryKey("booking-1", buildDuplicateCaptureRefundStripeKeyPrefix("booking-1", "pi_x")),
+    ).toBeNull();
+    expect(
+      duplicateCaptureIntentIdForRecoveryKey("booking-1", buildCapacityClaimFailedRefundRecoveryIdempotencyKey("booking-1", "pi_x")),
+    ).toBeNull();
+  });
+
+  it("the operation idempotency key is duplicate_capture_<bookingId>_<intentId> and shares the per-booking prefix", () => {
     expect(
       buildDuplicateCaptureRefundRecoveryIdempotencyKey("booking-1", "pi_x")
     ).toBe("duplicate_capture_booking-1_pi_x");
