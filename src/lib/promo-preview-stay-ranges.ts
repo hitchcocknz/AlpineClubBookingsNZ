@@ -58,7 +58,10 @@ import type { BookingGuestNightPriceSource } from "@prisma/client";
  * row match below is unchanged by the link. `otherLodgeMember` is the flag the
  * quote prices the guest with: the election's end state, or the stored flag
  * when the edit carries none. An added guest and a create preview carry no
- * locks and no flag.
+ * locks and no flag. The refusals of a re-rate are the quote's and are raised
+ * there too, before this module runs; what the box does NOT mirror (the
+ * parked-amount election refusal, the mid-stay refusal of any code change) is
+ * listed on `promoPreviewEditContext`.
  */
 export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
   memberId?: string | null;

@@ -58,7 +58,9 @@ import type { PromoPreviewEdit } from "@/lib/promo-preview-stay-ranges";
  * money it parks for an officer (`OtherLodgeRateAmountUnderReviewError`): that
  * needs the pre-check-in evidence of every strand the edit prices, which the
  * box does not assemble, so the box prices such an edit instead. Nor does the
- * box mirror the quote's other refusals of a whole edit (its status and date
+ * box mirror the quote's refusal of any code change on a stay already under
+ * way (the panel hides the box there; a direct caller is answered about the
+ * code), or the quote's other refusals of a whole edit (its status and date
  * windows, capacity, policy exceptions): it answers about a code, and the quote
  * beside it says why the edit itself cannot be saved.
  */
