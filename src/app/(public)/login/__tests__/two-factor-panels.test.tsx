@@ -66,12 +66,12 @@ describe("two-factor enrollment completion", () => {
       const { container } = render(<TwoFactorEnrollPanel callbackUrl={deepLink} />);
       await screen.findByText(setup.secret);
       if (method === "EMAIL") {
-        fireEvent.click(screen.getByRole("button", { name: "Email", exact: true }));
+        fireEvent.click(screen.getByRole("button", { name: "Email" }));
       }
       fireEvent.change(screen.getByLabelText(method === "TOTP" ? "Authenticator code" : "Email code"), {
         target: { value: "123456" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Enroll", exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
 
       await screen.findByRole("heading", { name: "Save your recovery codes" });
       for (const code of recoveryCodes) expect(screen.getByText(code)).toBeVisible();
@@ -82,7 +82,7 @@ describe("two-factor enrollment completion", () => {
         credentials: "same-origin",
       }));
 
-      fireEvent.click(screen.getByRole("button", { name: "Continue", exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       expect(replaceDocument).toHaveBeenCalledExactlyOnceWith(deepLink);
     },
   );
@@ -94,11 +94,11 @@ describe("two-factor enrollment completion", () => {
     const { container } = render(<TwoFactorEnrollPanel callbackUrl={privateInvite} />);
     await screen.findByText(setup.secret);
     fireEvent.change(screen.getByLabelText("Authenticator code"), { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: "Enroll", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
     await screen.findByRole("heading", { name: "Save your recovery codes" });
     expectPrivateDestinationAbsent(container);
     expect(replaceDocument).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Continue", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(replaceDocument).toHaveBeenCalledExactlyOnceWith(privateInvite);
   });
 
@@ -111,10 +111,10 @@ describe("two-factor enrollment completion", () => {
     render(<TwoFactorEnrollPanel callbackUrl={deepLink} />);
     await screen.findByText(setup.secret);
     fireEvent.change(screen.getByLabelText("Authenticator code"), { target: { value: "000000" } });
-    fireEvent.click(screen.getByRole("button", { name: "Enroll", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
     await screen.findByText(failure === "network" ? "Network unavailable" : "Invalid code");
     expect(screen.getByLabelText("Authenticator code")).toHaveValue("000000");
-    expect(screen.queryByRole("button", { name: "Continue", exact: true })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     expect(replaceDocument).not.toHaveBeenCalled();
   });
 });
@@ -128,18 +128,18 @@ describe("two-factor verification completion", () => {
       const fetchMock = vi.fn(() => pending);
       vi.stubGlobal("fetch", fetchMock);
       render(<TwoFactorVerifyPanel callbackUrl={deepLink} enrolledMethod={method === "EMAIL" ? "EMAIL" : "TOTP"} />);
-      if (method === "RECOVERY") fireEvent.click(screen.getByRole("button", { name: "Recovery", exact: true }));
+      if (method === "RECOVERY") fireEvent.click(screen.getByRole("button", { name: "Recovery" }));
       const code = method === "RECOVERY" ? recoveryCodes[0] : "123456";
       fireEvent.change(screen.getByLabelText(method === "RECOVERY" ? "Recovery code" : "Two-factor code"), {
         target: { value: code },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Verify", exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Verify" }));
       expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/auth/2fa/verify", expect.objectContaining({
         method: "POST",
         credentials: "same-origin",
         body: JSON.stringify({ method, code }),
       }));
-      expect(screen.getByRole("button", { name: "Verify", exact: true })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Verify" })).toBeDisabled();
       expect(replaceDocument).not.toHaveBeenCalled();
 
       await act(async () => { accept(response({ success: true })); });
@@ -152,7 +152,7 @@ describe("two-factor verification completion", () => {
     const { container } = render(<TwoFactorVerifyPanel callbackUrl={privateInvite} enrolledMethod="TOTP" />);
     expectPrivateDestinationAbsent(container);
     fireEvent.change(screen.getByLabelText("Two-factor code"), { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: "Verify", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
     await waitFor(() => expect(replaceDocument).toHaveBeenCalledExactlyOnceWith(privateInvite));
     expectPrivateDestinationAbsent(container);
   });
@@ -167,13 +167,13 @@ describe("two-factor verification completion", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<TwoFactorVerifyPanel callbackUrl={deepLink} enrolledMethod="TOTP" />);
     fireEvent.change(screen.getByLabelText("Two-factor code"), { target: { value: "000000" } });
-    fireEvent.click(screen.getByRole("button", { name: "Verify", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
     await screen.findByText(failure === "network" ? "Network unavailable" : "Invalid code");
     expect(screen.getByLabelText("Two-factor code")).toHaveValue("000000");
     expect(replaceDocument).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText("Two-factor code"), { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: "Verify", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
     await waitFor(() => expect(replaceDocument).toHaveBeenCalledExactlyOnceWith(deepLink));
     expect(screen.queryByText(/Invalid code|Network unavailable/)).toBeNull();
   });

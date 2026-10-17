@@ -124,8 +124,9 @@ for (const account of accounts) {
         await expectUsableKiosk(page, accessResponse, weekResponse);
       } else {
         await page.getByRole("button", { name: "Continue", exact: true }).click();
-        await expect(page.locator(".app-brand-mark")).toBeVisible();
-        await expect(page.getByRole("heading", { name: `Welcome back, ${account.firstName}`, exact: true })).toBeVisible();
+        const details = page.getByRole("dialog", { name: "Confirm member details", exact: true });
+        await expect(details).toBeVisible();
+        await expect(details.getByRole("button", { name: "Save and continue", exact: true })).toBeVisible();
       }
       await expect(page).toHaveURL(new RegExp(`${account.destination}$`));
 
@@ -146,8 +147,9 @@ for (const account of accounts) {
           await expectUsableKiosk(freshPage, accessResponse, weekResponse);
         } else {
           await freshPage.getByRole("button", { name: "Verify", exact: true }).click();
-          await expect(freshPage.locator(".app-brand-mark")).toBeVisible();
-          await expect(freshPage.getByRole("heading", { name: `Welcome back, ${account.firstName}`, exact: true })).toBeVisible();
+          const details = freshPage.getByRole("dialog", { name: "Confirm member details", exact: true });
+          await expect(details).toBeVisible();
+          await expect(details.getByRole("button", { name: "Save and continue", exact: true })).toBeVisible();
         }
         await expect(freshPage).toHaveURL(new RegExp(`${account.destination}$`));
       } finally {

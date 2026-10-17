@@ -336,7 +336,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       });
       expect(tasks[0]!.reason).toContain("Check Stripe and the bank before paying");
       // Until it is closed, the member's page says the club will be in touch about it.
-      expect(await memberPage()).toContain("$140.00 was refunded on 1 Jul 2026; the club will be in touch about the remaining $60.00.");
+      expect(await memberPage()).toContain("$140.00 was refunded to your card on 1 Jul 2026; the club will be in touch about the remaining $60.00.");
 
       // The capture's success delivered again (a fresh event for the same intent), through the real webhook door:
       // the booking is cancelled, so it is acknowledged, refunds nothing more and writes no second task.
