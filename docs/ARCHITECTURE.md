@@ -1105,6 +1105,12 @@ finance:view gate it lists the closes Stripe paid as well
 /api/admin/payments/card-refunds/[id]/paid-twice-resolved` ->
 `resolveCardRefundPaidTwice`), gated `finance:edit` in the list, under its own
 finance banner, and in the route; it moves no money and touches no Xero.
+A row raised to check after such a close (#4210, `INV-PAY-136`) is marked
+"Check before paying" in the same list and also takes a "Checked - not owed"
+close (`DeadCardRefundsPanel` -> `CheckedNotOwedDialog` -> `POST
+/api/admin/payments/card-refunds/[id]/checked-not-owed` ->
+`closeCardRefundCheckNotOwed`), gated `finance:edit` in the panel, under its
+banner, and in the route; it moves no money and touches no Xero.
 `src/lib/booking-provider-mismatches.ts` answers the same provider-divergence
 questions for a single booking (paid while the club's records hold no Xero invoice,
 Stripe refund with no Xero credit note, waitlist offer whose email needs
