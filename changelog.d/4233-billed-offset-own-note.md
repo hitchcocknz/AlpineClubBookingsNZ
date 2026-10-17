@@ -16,6 +16,10 @@
   holds the note for a person to review, and it never raises the note in the
   wrong order.
 
-  Xero Operations also clears the error code and message on an operation that
-  succeeds. Previously, a credit note that had waited and then succeeded still
-  showed "BILLED_OFFSET_AWAITING_OWN_NOTE" in red.
+  A Xero operation that succeeds, including after an operator's retry, no
+  longer keeps an earlier attempt's error code and message, and the Xero
+  Operations and record-activity panels never show an error line on a
+  succeeded operation. Previously such a row could still show an old message,
+  such as "BILLED_OFFSET_AWAITING_OWN_NOTE", in red. Operations that succeeded
+  before this release keep the old text in the database, but the panels no
+  longer display it.
