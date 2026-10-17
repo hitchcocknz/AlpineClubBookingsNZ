@@ -652,6 +652,9 @@ export async function isQuotePricedBooking(
 export const QUOTE_PRICED_EDIT_BLOCK_MESSAGE =
   "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.";
 
+/** #4202: the member-origin link fence's one wording, for the save, the quote and the promo box. */
+export const GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE =
+  "Linking a placeholder to a member is only available on member whole-lodge bookings.";
 /**
  * True when this booking was created from an authenticated member whole-lodge
  * request (#2263) — `requestedByMemberId` set and `exclusivityRequested` — as

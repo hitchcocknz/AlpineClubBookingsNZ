@@ -56,6 +56,7 @@ export function ChangeRequestCard({
   error,
   success,
   hasEditorChanges,
+  editorChanges,
   guestContext,
   onReasonChange,
   onSubmit,
@@ -66,6 +67,8 @@ export function ChangeRequestCard({
   success: string;
   /** The guest editor above carries a change the request will send. */
   hasEditorChanges: boolean;
+  /** The exact modification payload submission merges with these card guests. */
+  editorChanges: Record<string, unknown>;
   guestContext: ChangeRequestGuestContext;
   onReasonChange: (value: string) => void;
   /** Sends the request with these added guests; true when it was accepted. */
@@ -85,10 +88,10 @@ export function ChangeRequestCard({
   const bookingId = booking.id;
   const stay: ChangeRequestStay = { checkIn: booking.checkIn, checkOut: booking.checkOut };
   const payload = changeRequestGuestsPayload(guests, stay);
-  const payloadJson = payload.length > 0 ? JSON.stringify(payload) : null;
+  const payloadJson = payload.length > 0 ? JSON.stringify({ addGuests: payload, editorChanges }) : null;
 
-  // The estimate for exactly the list on screen, 400ms after it stops changing.
-  // Only a result keyed to the CURRENT list is shown, so a slow answer for an
+  // The estimate for this list AND editor proposal, 400ms after either changes.
+  // Only a result keyed to the CURRENT proposal is shown, so a slow answer for an
   // older list can never sit beside a newer one.
   useEffect(() => {
     if (!payloadJson) return;
@@ -98,10 +101,11 @@ export function ChangeRequestCard({
         const response = await fetch(`/api/bookings/${bookingId}/change-requests/quote`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ addGuests: JSON.parse(payloadJson) }),
+          body: payloadJson,
           signal: controller.signal,
         });
         const data = await response.json().catch(() => ({}));
+        if (controller.signal.aborted) return;
         setEstimateState({
           forPayload: payloadJson,
           estimate: response.ok ? (data.estimate as ChangeRequestEstimate) : null,
