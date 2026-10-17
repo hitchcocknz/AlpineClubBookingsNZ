@@ -15,6 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -208,6 +209,59 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(raised).toEqual({ status: "SUCCEEDED", idempotencyKey: `${REQUEST_KEY}:after-void:${VOIDED_NOTE}` });
       // A request's note never takes the payment's one refund-note pointer.
       expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).xeroRefundCreditNoteId).toBeNull();
+    });
+
+    /** Poll until a backend waits on a lock `blockerPid` holds. */
+    async function waitForBlockedBy(blockerPid: number) {
+      const startedAt = process.hrtime.bigint();
+      while (realElapsedMs(startedAt) < 10_000) {
+        const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+          SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+          WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
+        `;
+        if ((rows[0]?.count ?? 0) >= 1) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`Timed out waiting for the retry's link write to queue behind the void held by pid ${blockerPid}.`);
+    }
+
+    it("a retry's status-less link write that waited on an inbound void keeps the void: inactive, status kept (race)", async () => {
+      const RACE_NOTE = "cn-race-4195-race";
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: RACE_NOTE, role: "REFUND_REQUEST_CREDIT_NOTE",
+          active: true, metadata: { amountCents: 5_000, refundRequestId: REQUEST_ID },
+        },
+      });
+      const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
+      const base = { localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: RACE_NOTE, role: "REFUND_REQUEST_CREDIT_NOTE" };
+
+      // The inbound void, held open after its link write.
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      let voidWritten!: (pid: number) => void;
+      const holderPid = new Promise<number>((resolve) => (voidWritten = resolve));
+      const inboundVoid = prisma.$transaction(
+        async (tx) => {
+          await upsertXeroObjectLink({ ...base, metadata: { status: "VOIDED", total: 50 }, mergeMetadata: true }, { store: tx });
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS "pid"`;
+          voidWritten(pid);
+          await released;
+        },
+        { timeout: 15_000 },
+      );
+      const pid = await holderPid;
+
+      // A retry that read the note as live writes it as its cover, naming no status.
+      const retryWrite = upsertXeroObjectLink({ ...base, xeroObjectNumber: "CN-4195-R", metadata: { amountCents: 5_000, refundRequestId: REQUEST_ID } });
+      await waitForBlockedBy(pid);
+      release();
+      await inboundVoid;
+      await retryWrite;
+
+      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { ...base }, select: { active: true, metadata: true } });
+      expect(link.active).toBe(false);
+      expect(link.metadata).toEqual({ amountCents: 5_000, refundRequestId: REQUEST_ID, status: "VOIDED" });
     });
   },
 );
