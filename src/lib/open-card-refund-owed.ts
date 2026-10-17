@@ -77,7 +77,7 @@ export function parseRefundAllocationPlan(
   const slices: RefundAllocationSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId } = entry as Record<
       string,
       unknown
     >;
@@ -90,7 +90,8 @@ export function parseRefundAllocationPlan(
       (stripeKeySuffix !== undefined && !isRefusedRefundKeySuffix(stripeKeySuffix)) ||
       (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId)) ||
       (failedRefundIds !== undefined &&
-        (!Array.isArray(failedRefundIds) || !failedRefundIds.every((id) => typeof id === "string" && id.length > 0)))
+        (!Array.isArray(failedRefundIds) || !failedRefundIds.every((id) => typeof id === "string" && id.length > 0))) ||
+      (madeByOperationId !== undefined && madeByOperationId !== null && (typeof madeByOperationId !== "string" || !madeByOperationId))
     ) {
       return null;
     }
@@ -100,6 +101,7 @@ export function parseRefundAllocationPlan(
       ...(stripeKeySuffix === undefined ? {} : { stripeKeySuffix }),
       ...(madeRefundId === undefined ? {} : { madeRefundId }),
       ...(failedRefundIds === undefined ? {} : { failedRefundIds: [...(failedRefundIds as string[])] }),
+      ...(madeByOperationId === undefined ? {} : { madeByOperationId: madeByOperationId as string | null }),
     });
   }
   return slices;
@@ -423,6 +425,21 @@ export function cardRefundSliceFilledBy(
     if (refund.stripeRefundId === stripeRefundId && owner === null) owner = { operation, sliceIndex };
   });
   return owner;
+}
+
+/**
+ * #4104, #4166 (`INV-SSOT`): a payment as it stood before Stripe failed one of
+ * its refunds later - that refund still counted (`pending`), and the row owing
+ * it again (`card_refund_failed_later_<refund>`) not yet raised, so it cannot
+ * take its own refund. What the failed-later writer reads as it raises that
+ * row, and what the booking page reads to find which row made the refund.
+ */
+export function cardRefundPaymentBeforeFailure(payment: CardRefundOwedPaymentRow, stripeRefundId: string): CardRefundOwedPaymentRow {
+  return {
+    ...payment,
+    recoveryOperations: payment.recoveryOperations.filter((operation) => cardRefundFailedLaterRefundId(operation.idempotencyKey) !== stripeRefundId),
+    refunds: payment.refunds.map((refund) => (refund.stripeRefundId === stripeRefundId ? { ...refund, status: "pending" } : refund)),
+  };
 }
 
 /**
