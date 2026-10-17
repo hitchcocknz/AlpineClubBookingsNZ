@@ -1177,6 +1177,25 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: X.stripePaymentIntentId });
     },
   );
+
+  // #4211: the duplicate-capture refund's ownership counts on a cancelled
+  // booking too, unlike the superseded machinery's: that capture is going back
+  // to the member under its own refund, so it is never the card side.
+  it("cancelled: skips an older capture a duplicate-capture refund owns and names the next oldest", async () => {
+    primePayment(switchedPayment(BookingStatus.CANCELLED));
+    mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
+      { idempotencyKey: `duplicate_capture_booking-1_${X.stripePaymentIntentId}` },
+    ]);
+
+    const result = await sync();
+
+    expect(result.secondInstrumentSettlementConflicts).toBe(1);
+    expect(mocks.supersededOperationFindMany).not.toHaveBeenCalled();
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: S.stripePaymentIntentId });
+  });
 });
 
 describe("a replay on a completed booking (#3638)", () => {
