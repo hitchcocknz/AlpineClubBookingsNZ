@@ -123,7 +123,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   records it sent, so a crash in between re-sends it once on the retry. Not
   second instruments: an ADDITIONAL card row, a capture the #1992 refund owns
   (`INV-PAY-043`), and — on a settled booking — #1765 refund history, a card
-  row refunded before the booking moved to Internet Banking.
+  row refunded before the booking moved to Internet Banking, or a capture a
+  superseded-intent refund or in-flight cancel holds for the member (#4177).
 - **A replay on a settled booking changes nothing.** COMPLETED takes the
   already-paid arm like PAID.
 - Pinned by `switch-to-internet-banking-route.test.ts`,
@@ -1408,17 +1409,17 @@ short).
     them: loader, cancel fold, ask chain, refund slices and replay, census
     store, repair passes.
   - **"The latest" row of a kind, on a tie, is the one inserted last**
-    (`latestTransactionOfKind`). The mirror, the ask a reduction sets against
-    and the census pick the same row.
+    (`latestTransactionOfKind`). The mirror, a reduction's ask and the census
+    take it (formerly the earliest).
   - **Newest-first refund slices** take a tie's last-inserted row first. A
     refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change at this release;
     check for open ones after the old colour drains.
-  - **The settling capture is the oldest-inserted qualifying one**, never
-    superseded-owned (#4177); a duplicate-capture refund's may be non-card,
-    naming no card payment. The Xero conflict (#4163) skips duplicate-refunded captures.
-    The Xero conflict skips #1765 refund history when paid, ranks it last when
-    cancelled.
+  - **The settling capture is the oldest-inserted qualifying one** (#4177). A
+    duplicate-capture refund's is never superseded-owned; a non-card one names
+    no card payment. Xero's conflict (#4163) skips duplicate-refunded
+    captures. When paid, the Xero conflict also skips superseded-owned captures
+    and #1765 refund history (ranked last when cancelled).
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
     and the migration's fixture; the settling capture by

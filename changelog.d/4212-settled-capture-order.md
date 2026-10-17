@@ -8,8 +8,10 @@
   It now names the earliest qualifying payment wherever it names one, the same
   rule the "paid twice — card and Xero" alert follows (#4163). A card payment
   that is already being cancelled or refunded because a newer one replaced it
-  never counts, and the "paid twice" alert now skips it too, as the refund
-  always did. If the earliest is a cash or Internet Banking settlement, no card
+  never counts for the refund, and on a paid booking the "paid twice" alert now
+  skips it too, while its cancel or refund is still under way. On a cancelled
+  booking the alert still counts it, because the bank payment has nowhere else
+  to go. If the earliest is a cash or Internet Banking settlement, no card
   payment is named. A refund the background retry finishes, rather than the
   first attempt, still records no settling payment in the history.
 
