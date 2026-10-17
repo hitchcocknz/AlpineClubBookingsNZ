@@ -14,6 +14,7 @@ import {
 } from "@/lib/manual-refund-task-settlement-rules";
 import { readPaidTwiceResolution, type PaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
 import { cardRefundSentAfterPaidAnotherWay } from "@/lib/open-card-refund-owed";
+import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -43,7 +44,11 @@ import { prisma } from "@/lib/prisma";
  * ONE WRITE, STATUS-GUARDED: an `updateMany` on the record as it was read - the
  * close's own shape, and the resolution it carried then (none, or an earlier
  * one) - so a second click, or a second treasurer, writes nothing and is told.
- * No lock: nothing else writes that column of a close's record.
+ * #4210 round 3 (concurrency 3): read, checked and written in one transaction
+ * under the Payment row (`lockPaymentForRefundedTotal`), which the failed-later
+ * writer holds as it reads this record: a card refund failing later as this
+ * commits is weighed after it or before it, never against a figure this read
+ * and that one moved.
  *
  * STRIPE MAY STILL FAIL IT (#4210, `INV-PAY-136`). A card refund listed here
  * may be one Stripe accepted as pending; if Stripe fails it, it no longer counts,
@@ -176,35 +181,36 @@ export async function resolveCardRefundPaidTwice(
   if (!note) {
     throw new CardRefundPaidTwiceError("Say how it was sorted out with the member - a note is required.", 400);
   }
-  const record = await prisma.manualRefundTask.findFirst({
-    where: {
-      ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
-      occurrenceKey: { in: closeKeysOf(input.operationId) },
-    },
-    select: { ...RECORD_SELECT, booking: { select: { memberId: true } } },
-  });
-  if (!record) throw new CardRefundPaidTwiceError("Card refund not found.", 404);
-  const refundedByCardCents = refundedByCardAfterClose(record, input.operationId);
-  if (!stillPaidTwice(record, refundedByCardCents)) {
-    throw new CardRefundPaidTwiceError(
-      "This card refund is no longer on the paid-twice list. The list has been refreshed.",
-      409,
-    );
-  }
-  if (refundedByCardCents !== input.expectedRefundedByCardCents) {
-    throw new CardRefundPaidTwiceError(
-      "Stripe's refund to the card changed since you opened this. The list has been refreshed: check the amount and mark it resolved again.",
-      409,
-    );
-  }
+  const where = { ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: closeKeysOf(input.operationId) } };
+  // #4210 round 3 (concurrency 3): its payment, immutable, to take that row first.
+  const head = await prisma.manualRefundTask.findFirst({ where, select: { paymentId: true } });
+  if (!head) throw new CardRefundPaidTwiceError("Card refund not found.", 404);
+  return prisma.$transaction(async (tx) => {
+    // Under the Payment row the failed-later writer holds: a refund failing
+    // later and this Resolved are weighed in one order, each reading the other's write.
+    if (head.paymentId) await lockPaymentForRefundedTotal(tx, head.paymentId);
+    const record = await tx.manualRefundTask.findFirst({ where, select: { ...RECORD_SELECT, booking: { select: { memberId: true } } } });
+    if (!record) throw new CardRefundPaidTwiceError("Card refund not found.", 404);
+    const refundedByCardCents = refundedByCardAfterClose(record, input.operationId);
+    if (!stillPaidTwice(record, refundedByCardCents)) {
+      throw new CardRefundPaidTwiceError(
+        "This card refund is no longer on the paid-twice list. The list has been refreshed.",
+        409,
+      );
+    }
+    if (refundedByCardCents !== input.expectedRefundedByCardCents) {
+      throw new CardRefundPaidTwiceError(
+        "Stripe's refund to the card changed since you opened this. The list has been refreshed: check the amount and mark it resolved again.",
+        409,
+      );
+    }
 
-  const resolution: PaidTwiceResolution = {
-    resolvedAt: new Date().toISOString(),
-    resolvedByMemberId: input.actingMemberId,
-    note,
-    refundedByCardCents,
-  };
-  await prisma.$transaction(async (tx) => {
+    const resolution: PaidTwiceResolution = {
+      resolvedAt: new Date().toISOString(),
+      resolvedByMemberId: input.actingMemberId,
+      note,
+      refundedByCardCents,
+    };
     // Guarded on the record as read: a second click finds the resolution it
     // wrote and claims nothing.
     const claimed = await tx.manualRefundTask.updateMany({
@@ -217,7 +223,7 @@ export async function resolveCardRefundPaidTwice(
             : { equals: record.reviewContext as Prisma.InputJsonValue },
       },
       // #4104 (A-F1): beside whatever else the record keeps - a close's
-      // card-note cover stays.
+      // card-note cover, and (#4210) what it counted, stay.
       data: { reviewContext: { ...reviewContextObject(record.reviewContext), paidTwiceResolved: { ...resolution } } },
     });
     if (claimed.count === 0) {
@@ -251,6 +257,6 @@ export async function resolveCardRefundPaidTwice(
       },
       tx,
     );
+    return { operationId: input.operationId, bookingId: record.bookingId, refundedByCardCents };
   });
-  return { operationId: input.operationId, bookingId: record.bookingId, refundedByCardCents };
 }
