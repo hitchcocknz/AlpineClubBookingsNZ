@@ -399,6 +399,14 @@ import "./prisma-exact-prefix.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4165` rows.
 import "./audit-query-exact-prefix.realdb.test";
+// #4022 reuses it to prove the nightly card self-heal never fills a bank
+// hand-back's note with a card note: an edit review's (both wordings), an
+// approved refund request's and an edit's refund hand-back, each completed
+// through the REAL resolution on the internet-banking payment its writer raises
+// it on, are never read by the self-heal's list, which still lists a card
+// payment's uncovered card refund. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
+// it owns and cleans its own `race-4022-` fixtures.
+import "./self-heal-bank-hand-back-sources.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
