@@ -568,6 +568,7 @@ import {
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking,
   buildDuplicateCaptureRefundStripeKeyPrefix,
+  duplicateCaptureIntentIdForRecoveryKey,
   buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey,
   buildEditFinancialReviewAdditionalIntentStripeKey,
   buildEditFinancialReviewRefundRecoveryIdempotencyKey,
@@ -898,34 +899,34 @@ export async function enqueueDuplicateCaptureRefundRecovery({
 }
 
 /**
- * The duplicate-capture adjudication lookup (#1992): returns the existing
- * duplicate-capture refund operation for this booking that targets a DIFFERENT
- * intent, or null. Callers run this under lock(1) BEFORE enqueueing a new
- * duplicate-capture refund: if some other intent's duplicate refund was already
- * adjudicated for the booking, the arriving intent is the SETTLEMENT side of
- * that pair and must not be refunded — otherwise interleaved webhook replays of
- * the two captures would refund both sides and settle the booking at zero net
- * cash.
+ * The duplicate-capture adjudication lookup (#1992, #4211): the intent ids of
+ * this booking's captures a duplicate-capture refund already owns, whatever its
+ * operation's status. Read under lock(1) BEFORE enqueueing a new refund: a
+ * capture named here is going back to the member, so it is never the
+ * settlement an arriving capture duplicates. That stops interleaved webhook
+ * replays of a pair refunding both sides (zero net cash), and still refunds a
+ * third capture, which the old "any other adjudication, so keep the arrival"
+ * reading kept.
  */
-export async function findOtherDuplicateCaptureRefundOperation({
+export async function listDuplicateCaptureRefundIntentIds({
   bookingId,
-  paymentIntentId,
   store = prisma,
 }: {
   bookingId: string;
-  paymentIntentId: string;
   store?: PaymentRecoveryStore;
-}) {
-  return store.paymentRecoveryOperation.findFirst({
+}): Promise<string[]> {
+  const operations = await store.paymentRecoveryOperation.findMany({
     where: {
       // #4146: on the booking's index, and the prefix matched literally: Prisma's
       // `startsWith` is `LIKE`, which reads a `_` in the booking id as any character.
       bookingId,
-      idempotencyKey: {
-        ...exactPrefix(buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId)),
-        not: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
-      },
+      idempotencyKey: exactPrefix(buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId)),
     },
+    select: { idempotencyKey: true },
+  });
+  return operations.flatMap((operation) => {
+    const intentId = duplicateCaptureIntentIdForRecoveryKey(bookingId, operation.idempotencyKey);
+    return intentId ? [intentId] : [];
   });
 }
 
@@ -2169,20 +2170,21 @@ async function processBookingModificationRefundOperation(
       : closeCapacityRaceRefundRecordingEvent({ ...refunded, actorMemberId: null }, close));
     return;
   }
-  const duplicateCapturePrefix =
-    buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(operation.bookingId);
-  if (operation.idempotencyKey.startsWith(duplicateCapturePrefix)) {
+  // The duplicate intent id is the suffix of the operation's per-booking
+  // idempotency key.
+  const duplicatePaymentIntentId = duplicateCaptureIntentIdForRecoveryKey(
+    operation.bookingId,
+    operation.idempotencyKey,
+  );
+  if (duplicatePaymentIntentId !== null) {
     if (await completePaymentRecoveryOperation(operation.id, { lossExpected: true })) {
       await recordDuplicateCaptureRefundEvent({
         bookingId: operation.bookingId,
         amountCents: operation.amountCents,
-        // The duplicate intent id is the suffix of the operation's per-booking
-        // idempotency key. The settling intent is not persisted on the
-        // operation, so the replay records it as null (the inline path, which
-        // owns the common case, carries the settling intent).
-        duplicatePaymentIntentId: operation.idempotencyKey.slice(
-          duplicateCapturePrefix.length,
-        ),
+        // The settling intent is not persisted on the operation, so the replay
+        // records it as null (the inline path, which owns the common case,
+        // carries the settling intent).
+        duplicatePaymentIntentId,
         settledPaymentIntentId: null,
       });
     }

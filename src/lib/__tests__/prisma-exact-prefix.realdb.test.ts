@@ -62,7 +62,7 @@ export function assertSafeExactPrefixRaceDbUrl(url: string): void {
 let prisma: PrismaClient;
 let exactContains: typeof import("@/lib/prisma-exact-prefix")["exactContains"];
 let exactPrefix: typeof import("@/lib/prisma-exact-prefix")["exactPrefix"];
-let findOtherDuplicateCaptureRefundOperation: typeof import("@/lib/payment-recovery")["findOtherDuplicateCaptureRefundOperation"];
+let listDuplicateCaptureRefundIntentIds: typeof import("@/lib/payment-recovery")["listDuplicateCaptureRefundIntentIds"];
 let keys: typeof import("@/lib/payment-recovery-keys");
 let handBack: typeof import("@/lib/group-organiser-hand-back-rules");
 
@@ -88,7 +88,7 @@ async function clean(): Promise<void> {
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ exactPrefix, exactContains } = await import("@/lib/prisma-exact-prefix"));
-      ({ findOtherDuplicateCaptureRefundOperation } = await import("@/lib/payment-recovery"));
+      ({ listDuplicateCaptureRefundIntentIds } = await import("@/lib/payment-recovery"));
       keys = await import("@/lib/payment-recovery-keys");
       handBack = await import("@/lib/group-organiser-hand-back-rules");
 
@@ -220,15 +220,16 @@ async function clean(): Promise<void> {
       // B's row is in place from the contrast case. C's key starts with A's
       // prefix literally (C's id is A's id plus `_x`), so only the booking scope
       // rules it out. The A row below is no duplicate-capture key; it matches
-      // A's prefix only as a LIKE pattern, so only the escape rules it out.
+      // A's prefix only as a LIKE pattern, so the escape rules it out (and,
+      // since #4211, the literal parse of the key's intent id as well).
       await prisma.paymentRecoveryOperation.createMany({
         data: [
           recoveryRow(BOOKING_C, keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_C, "pi_race_4146_c")),
           recoveryRow(BOOKING_A, "duplicate-capture-race-4146-b-1-not-a-duplicate-capture-key"),
         ],
       });
-      expect(await findOtherDuplicateCaptureRefundOperation({ bookingId: BOOKING_A, paymentIntentId: "pi_race_4146_a" })).toBeNull();
-      // A's own row for a different intent is still found.
+      expect(await listDuplicateCaptureRefundIntentIds({ bookingId: BOOKING_A })).toEqual([]);
+      // A's own row is still found, and names its intent.
       await prisma.paymentRecoveryOperation.create({
         data: {
           type: "REFUND_BOOKING_MODIFICATION",
@@ -239,8 +240,7 @@ async function clean(): Promise<void> {
           idempotencyKey: keys.buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_A, "pi_race_4146_a2"),
         },
       });
-      const found = await findOtherDuplicateCaptureRefundOperation({ bookingId: BOOKING_A, paymentIntentId: "pi_race_4146_a" });
-      expect(found?.bookingId).toBe(BOOKING_A);
+      expect(await listDuplicateCaptureRefundIntentIds({ bookingId: BOOKING_A })).toEqual(["pi_race_4146_a2"]);
     });
 
     it("a group settlement's hand-back tasks exclude another settlement's supplementary task", async () => {

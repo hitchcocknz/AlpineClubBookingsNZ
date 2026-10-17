@@ -142,11 +142,13 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       // asserted only here.
       const { otherSettledCaptureWhere } = await import("@/lib/payment-reconciliation");
       const { listLiveSupersededIntentIds } = await import("@/lib/superseded-intent-ownership");
+      const { listDuplicateCaptureRefundIntentIds } = await import("@/lib/payment-recovery");
       const unordered = await prisma.paymentTransaction.findFirst({
         where: otherSettledCaptureWhere({
           paymentId: PAYMENT_ID,
           arrivingPaymentIntentId: ARRIVING_PI,
           liveSupersededIntentIds: await listLiveSupersededIntentIds(prisma, PAYMENT_ID),
+          duplicateRefundIntentIds: await listDuplicateCaptureRefundIntentIds({ bookingId: BOOKING_ID }),
         }),
         select: { id: true, stripePaymentIntentId: true },
       });
