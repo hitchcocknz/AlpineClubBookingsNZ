@@ -649,7 +649,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | --- | --- |
 | `xero-booking-invoices` | Primary booking invoice create/update (`buildInvoiceLineItems`). |
 | `xero-invoice-payments` | Recording Stripe payments against invoices and Stripe refunds as credit-note payments. |
-| `xero-credit-notes` | Refund credit notes, unapplied (account-credit) credit notes, allocation to invoices. Stripe refunds settle **per delta** (#1162): a payment refunded in several steps gets one credit note per uncovered delta, keyed on a cumulative refunded-cents watermark; non-Stripe refunds keep one note per payment, except that each refund request (appeal) paid back by bank transfer gets its own note when its task is marked paid back, for the amount paid back, keyed by the request (`payment:<id>:refund-request-credit-note:<request>:v1`) and linked under its own role `REFUND_REQUEST_CREDIT_NOTE` (#3827, owner decision D-3813-8, `INV-PAY-118`). That role is selected by none of the one-note machinery (the link normaliser in `xero-sync.ts`, `cleanupStaleCanonicalXeroObjectLinks`, the drift report), never takes `Payment.xeroRefundCreditNoteId`, and is left out of `findCanonicalPaymentRefundCreditNote`'s fallbacks, so a cancellation's note and a request's never absorb each other. The booking repair tool and the failed-operations panel leave a request's note out of everything that answers for the payment's one refund note (`isRefundRequestNoteOperation`), and the request's note is queued in the same transaction as the completion that records its refund. A cash refund note's settling payment is recorded only where the money verifiably moved (`resolveRefundSettlement`, `INV-PAY-101`): Stripe for a card refund, the configured bank-transfer refund account for a recorded bank transfer, and otherwise the note is left unsettled with `refundPaymentSkipped` on the operation. The note is recorded (payment field, covering link, the row's `xeroObjectId`) in one transaction the moment Xero returns it, so an attempt that dies before its payment leaves a FAILED row naming its note; the retry and repair legs and the repair tool finish it through one read-back-then-settle (`xero-refund-note-settlement.ts`, `INV-PAY-111`): the payment or the skip, PARTIAL if the payment fails, one note-keyed payment key, dated the note's own day, and never a second payment on a note Xero already shows paid, part-paid or allocated. Rows written before #3548 with neither are listed by the reconciliation report and the repair tool (`xero-refund-note-unsettled.ts`) and settled only by an operator. |
+| `xero-credit-notes` | Refund credit notes, unapplied (account-credit) credit notes, allocation to invoices. Stripe refunds settle **per delta** (#1162): a payment refunded in several steps gets one credit note per uncovered delta, keyed on a cumulative refunded-cents watermark; non-Stripe refunds keep one note per payment, except that each refund request (appeal) paid back by bank transfer gets its own note when its task is marked paid back, for the amount paid back, keyed by the request (`payment:<id>:refund-request-credit-note:<request>:v1`) and linked under its own role `REFUND_REQUEST_CREDIT_NOTE` (#3827, owner decision D-3813-8, `INV-PAY-118`). That role is selected by none of the one-note machinery (the link normaliser's single-note rule in `xero-sync.ts`, `cleanupStaleCanonicalXeroObjectLinks`, the drift report), never takes `Payment.xeroRefundCreditNoteId`, and is left out of `findCanonicalPaymentRefundCreditNote`'s fallbacks, so a cancellation's note and a request's never absorb each other. The booking repair tool and the failed-operations panel leave a request's note out of everything that answers for the payment's one refund note (`isRefundRequestNoteOperation`), and the request's note is queued in the same transaction as the completion that records its refund. A cash refund note's settling payment is recorded only where the money verifiably moved (`resolveRefundSettlement`, `INV-PAY-101`): Stripe for a card refund, the configured bank-transfer refund account for a recorded bank transfer, and otherwise the note is left unsettled with `refundPaymentSkipped` on the operation. The note is recorded (payment field, covering link, the row's `xeroObjectId`) in one transaction the moment Xero returns it, so an attempt that dies before its payment leaves a FAILED row naming its note; the retry and repair legs and the repair tool finish it through one read-back-then-settle (`xero-refund-note-settlement.ts`, `INV-PAY-111`): the payment or the skip, PARTIAL if the payment fails, one note-keyed payment key, dated the note's own day, and never a second payment on a note Xero already shows paid, part-paid or allocated. Rows written before #3548 with neither are listed by the reconciliation report and the repair tool (`xero-refund-note-unsettled.ts`) and settled only by an operator. |
 | `xero-refund-method` | Leaf, pure: how the money went back — `card`, `internet-banking`, `account-credit` — as the ONE home for the wording every refund or credit document carries (#3529, `INV-PAY-101`), the default a method-less legacy row falls to (Stripe → card, anything else → bank transfer), and which mapping key settles a cash refund. The method is threaded from the settlement decision through the outbox payload; the builders never infer it from `Payment.source` when the caller said. Two booking-edit wordings (#3536) — *Invoice correction — nothing refunded* (an unpaid pay-on-account invoice lowered) and *Refunded in cash* (an edit-review refund paid back by hand, when the resolving officer says it went in cash; never inferred, `INV-PAY-116`) — ride beside the method as `noteWording`, which retries and the repair tool carry forward; words only, no settlement changes. Since #3935 the cash wording also reaches a since-cancelled booking's review refund note (`readRefundNoteWording`: cash only beside the internet-banking method). |
 | `xero-supplementary-invoices` | Positive booking-modification delta invoices. Since #3530 (stage 2b) itemised from the edit's stored lines when they sum exactly to what the invoice bills; otherwise the single price-adjustment line, with the reason under `requestPayload.priceLines`. |
 | `xero-modification-credit-notes` | Negative booking-modification credit notes. Itemised the same way, every sign inverted, only when the note returns the whole reduction (#3530). |
@@ -1080,6 +1080,41 @@ live notes say, and nothing is re-raised automatically. If the refund was real,
 the treasurer records it again, and only then does a request raise the fresh
 note, under its own key.
 
+**A refund request's own note, voided (#4195).** The same void rule holds for
+a refund request's own note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). The
+inbound sync writes its voided mirror inactive; it never names the pointer, so
+nothing else moves. A request-note link write that names no Xero status (a
+retry's, or a completion's) reads the stored row under its row lock in the same
+transaction (`keepStoredRequestNoteVoid`), so a void that committed while it
+waited keeps the link inactive and its status on the row. `refundRequestOwnNotes`
+never takes a voided note as the request's cover, even a mirror an older release
+left active: every reader judges it by its recorded status, so it needs no heal.
+When a request's note is raised again, its Xero key is
+`payment:<id>:refund-request-credit-note:<request>:v1:after-void:<ids>`, naming
+the request's own voided notes. Only a queued row keeps the plain key it was
+enqueued under; a row the builder starts itself (an inline retry, or a
+re-raise) carries the `after-void` key as its own keys too. The create check
+refuses a note any request link records voided. Unlike the payment's one
+note, the void moves no refunded total: the inbound repair reads only the
+payment's own refund-note roles. So the booking repair still counts that
+request's amount and never hands its cash to the cancellation's note.
+
+**Re-raising a voided request note is the officer's decision (#4214, owner
+decision).** No retry re-raises one, whatever its row's state. Every retry door
+on Xero Operations (Retry all, a row's Retry and its Requeue, through
+`enqueueXeroSyncOperationRetry`) and the queued retry's worker
+(`retryXeroSyncOperation`) refuse, with a 409 naming #4214, a request-note
+create row whose request's own note Xero voided with nothing live replacing it
+(`isRetryOfVoidedRefundRequestNote`). So do the request's PARTIAL row, a FAILED
+row that names its note, and a stale FAILED row from before the note was
+raised. A SUCCEEDED row is never retried, and its enqueue finds that row and
+queues nothing. The panel may show a stale FAILED row as Repaired when a
+SUCCEEDED row shares its plain correlation key, and the booking repair tool
+reports such a request with no Retry and never auto-applies one
+(`refundRequestNoteVoidedWithNoLive`). The officer action #4214 builds, "Raise
+a fresh credit note", is the only remedy; until it ships, raise the replacement
+by hand in Xero.
+
 **Deploy and rollback note (#4091).** The previous release writes a voided
 canonical bank-transfer mirror active, re-adopts a voided note through its
 succeeded create, and sends the plain key, so a reissue there can get the voided
@@ -1097,6 +1132,27 @@ finish on one colour; the nightly `link-cleanup` heals a listed mirror (#4161).
 While the previous colour still runs its cleanup, it can flip a voided mirror
 inactive without moving the pointer (#4192's state); the next nightly run on
 the new release heals that too.
+
+**Deploy and rollback note (#4195).** The previous release keeps a voided
+request-note mirror active, takes it as the request's cover and sends the
+request's plain key. An old-colour retry can therefore get the voided note back
+from Xero, and its completion rewrites the link's metadata without the status,
+re-arming the link where no later reader can see the void. Stop the old
+colour's outbox and retry workers before the new release takes over, and do
+not retry request-note rows from the old colour during the switch. Before
+rolling back, and after rolling forward, list the request mirrors still active
+that record a void (read-only):
+`SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_REQUEST_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`.
+The new release reads each as voided without a heal; check each listed request
+in Xero, where the officer decides whether to raise a fresh note (#4214).
+That check cannot find a link the old colour re-armed with its status
+stripped: nothing local records the void any more. So also list every
+request-note create that completed during the switch window, and check each
+note in Xero (read-only; set the window's start and end, in UTC):
+`SELECT id, "localId", "xeroObjectId", status, "completedAt" FROM "XeroSyncOperation" WHERE "localModel" = 'Payment' AND "entityType" = 'CREDIT_NOTE' AND "operationType" = 'CREATE' AND ("requestPayload"->>'refundRequestId' IS NOT NULL OR "correlationKey" LIKE '%:refund-request-credit-note:%') AND "completedAt" BETWEEN '<window start>' AND '<window end>' ORDER BY "completedAt"`.
+A note Xero shows VOIDED there is a voided note the request still treats as
+live: record it for the officer, who decides as for any voided request note
+(#4214).
 
 Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
