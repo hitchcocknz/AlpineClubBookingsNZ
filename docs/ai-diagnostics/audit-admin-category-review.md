@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  505
+row-producing sites:  507
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 58,
+category values: admin 108, booking 108, xero 39, family 35, payment 60,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -840,6 +840,12 @@ the same people instead of being noted in Xero.
 `pnpm run audit:census`): `booking-payment.capacity-race.refunded-total-corrected`,
 a capacity race's card charge corrected to its refund rows before its hand-back
 (the owner's guarded recalculation), filed `payment` beside the close it enables.
+
+#4162 then added two (`payment` 58 -> 60, 505 -> 507, MEASURED with
+`pnpm run audit:census`): `booking-payment.bank-refund.void-undone`, the nightly
+undo of a voided bank-transfer refund note, and `.void-answered`, a person's
+answer to one the undo could not match - both the payment's figures, filed
+`payment` for the people who reconcile it.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

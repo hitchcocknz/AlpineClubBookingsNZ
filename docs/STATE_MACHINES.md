@@ -2197,6 +2197,20 @@ though the booking is cancelled, because the cancel came first and never
 counted it. See
 [`INV-PAY-118`](invariants/payment-and-settlement.md#inv-pay-118).
 
+**#4162 (owner decision 17 Oct 2026): a bank refund to re-confirm follows it
+too, raised by a void.** When Xero voids the credit note of a bank hand-back,
+the nightly follow-up (`INV-ADDPAY-042`) takes that refund back out of the
+payment's records and inserts ONE new task OPEN - never a reopen: the completed
+hand-back stays COMPLETED (#3498) and its ledger line is reversed instead. It is
+a `CANCELLED_BOOKING_HAND_BACK` keyed `bank-refund-void:<payment>:<note>` (the
+claim, so one per voided note), netted from refundable cash while OPEN like an
+edit's. OPEN -> COMPLETED needs one of two answers (raise a fresh credit note
+keyed on the task; or the hand-made note's number, checked in Xero before the
+transaction and then tracked), writes the allocation and the `BANK_REFUND` line
+as any hand-back's completion does, and writes NO `REFUNDED` event: the money
+moved once. OPEN -> DISMISSED is "the club keeps it", with a reason. The
+previous app version completes it as an ordinary hand-back.
+
 **#4042: so does a group organiser's, except that it cannot be dismissed.** An
 organiser's cancel of a group paid by Internet Banking raises the task OPEN on
 the organiser's booking, inside the first per-child claim that books a

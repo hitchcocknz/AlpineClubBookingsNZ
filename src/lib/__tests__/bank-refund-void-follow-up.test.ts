@@ -27,7 +27,7 @@ const audit = vi.fn(async () => {
 vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: audit }));
 vi.mock("@/lib/bank-refund-void-scan", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/bank-refund-void-scan")>()),
+  ...((await importOriginal()) as typeof import("@/lib/bank-refund-void-scan")),
   classifyVoidedBankRefundNote: (...args: unknown[]) => {
     calls.push("classify");
     return classify(...args);
@@ -39,9 +39,9 @@ vi.mock("@/lib/payment-transactions", () => ({
   lockPaymentForRefundedTotal: async (_tx: unknown, paymentId: string) => {
     calls.push(`lock-payment:${paymentId}`);
   },
-  unwindLocalRefundAllocation: unwind,
   reconcilePaymentAggregates: reconcile,
 }));
+vi.mock("@/lib/refund-allocation-unwind", () => ({ unwindLocalRefundAllocation: unwind }));
 
 const tx = {
   $executeRaw: vi.fn(async (strings: TemplateStringsArray) => {

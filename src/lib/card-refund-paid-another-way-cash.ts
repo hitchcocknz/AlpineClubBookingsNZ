@@ -2,12 +2,12 @@ import type { Prisma } from "@prisma/client";
 
 import { paidAnotherWayCloseReceiptRecorded } from "@/lib/late-capture-paid-another-way";
 import {
-  BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE,
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
   COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE,
   isCancelCardShortfallTask,
   paidAnotherWayCloseXeroNote,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE } from "@/lib/bank-refund-void-follow-up-key";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**

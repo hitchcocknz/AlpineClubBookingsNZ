@@ -25,6 +25,7 @@
  * fixtures, and never runs the job over notes that are not its own.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ResolvedBankRefundVoidAnswer } from "@/lib/bank-refund-void-answer";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -236,7 +237,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       );
     }
 
-    async function complete(taskId: string, answer: import("@/lib/bank-refund-void-answer").ResolvedBankRefundVoidAnswer | null) {
+    async function complete(taskId: string, answer: ResolvedBankRefundVoidAnswer | null) {
       const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
       return resolveManualRefundTask(
         { taskId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null, bankRefundVoidAnswer: answer },

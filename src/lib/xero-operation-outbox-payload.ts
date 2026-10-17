@@ -105,8 +105,7 @@ interface QueuedRefundCreditNoteOutboxPayload {
   // #3635: the late capture this note answers, and its refund's club day.
   paymentIntentId?: string;
   documentDate?: string;
-  paidAnotherWayTaskId?: string; creditsInvoiceId?: string; // #3924 r7: the close it answers, the invoice it names
-  handBackTaskId?: string; // #4162: the bank hand-back it records
+  paidAnotherWayTaskId?: string; creditsInvoiceId?: string; handBackTaskId?: string; // #3924 r7: the close it answers, the invoice it names; #4162: the hand-back it records
 }
 
 interface QueuedAccountCreditNoteOutboxPayload {

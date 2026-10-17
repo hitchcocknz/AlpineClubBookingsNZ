@@ -32,12 +32,9 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 // both read it (`INV-SSOT`).
 import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import { recordBankRefundVoidAnswerInTransaction } from "@/lib/bank-refund-void-answer";
-import { BANK_REFUND_VOID_ANSWER_NOT_ASKED_MESSAGE, BANK_REFUND_VOID_ANSWER_REQUIRED_MESSAGE } from "@/lib/bank-refund-void-follow-up-copy";
-import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
-import logger from "@/lib/logger";
+import { isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
 import {
   EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE,
-  isBankRefundVoidFollowUpTask,
   isCancelCardShortfallTask, isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
@@ -167,15 +164,9 @@ export async function resolveManualRefundTask(
     // cannot commit between the two reads, which would count the same money
     // as neither refunded nor promised. Its occurrence key, like its kind, is
     // written once at creation and never again.
-    const head = await tx.manualRefundTask.findUnique({
-      where: { id: taskId },
-      select: { kind: true, occurrenceKey: true },
-    });
+    const head = await tx.manualRefundTask.findUnique({ where: { id: taskId }, select: { kind: true, occurrenceKey: true } });
     // #4042 (`INV-PAY-124`): so does a group organiser's, which later joiners' shares grow under it.
-    if (
-      head?.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW ||
-      (head !== null && (isNonCancellationHandBackTask(head) || isGroupOrganiserHandBackTask(head)))
-    ) {
+    if (head?.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW || (head !== null && (isNonCancellationHandBackTask(head) || isGroupOrganiserHandBackTask(head)))) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     }
     const task = await tx.manualRefundTask.findUnique({
@@ -213,18 +204,6 @@ export async function resolveManualRefundTask(
       throw new ManualBookingPaymentError(EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, 409);
     }
     const groupRefusal = groupOrganiserHandBackRefusal(task, resolution, confirmedAmountCents, format); if (groupRefusal) throw new ManualBookingPaymentError(groupRefusal, 409); // #4042
-    // #4162 (`INV-ADDPAY-042`): a bank refund to re-confirm completes only on
-    // one of its two answers, and no other task takes one. Read under lock(1),
-    // which this kind takes (it is a non-cancellation hand-back).
-    const bankRefundVoidFollowUp = isBankRefundVoidFollowUpTask(task);
-    const bankRefundVoidAnswer = input.resolution === "completed" ? (input.bankRefundVoidAnswer ?? null) : null;
-    if (resolution === "completed" && bankRefundVoidFollowUp && !bankRefundVoidAnswer) {
-      throw new ManualBookingPaymentError(BANK_REFUND_VOID_ANSWER_REQUIRED_MESSAGE, 400);
-    }
-    if (bankRefundVoidAnswer && !bankRefundVoidFollowUp) {
-      throw new ManualBookingPaymentError(BANK_REFUND_VOID_ANSWER_NOT_ASKED_MESSAGE, 400);
-    }
-    let bankRefundVoidNoteOperationId: string | null = null;
 
     const isEditReview = task.kind === ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW;
 
@@ -491,12 +470,8 @@ export async function resolveManualRefundTask(
       }
       // #3880: its Xero note on a cancelled booking commits, or rolls back, with it.
       await queueCancelledBookingHandBackNoteInTransaction({ task, route: settlementRoute, actingMemberId, store: tx });
-      // #4162: a re-confirmed bank refund's own answer - its fresh note, or the hand-made note it tracks.
-      if (bankRefundVoidAnswer && settlementRoute.kind === "local-allocation" && settlementRoute.refundCents > 0) {
-        bankRefundVoidNoteOperationId = await recordBankRefundVoidAnswerInTransaction({
-          task, paymentId: settlementRoute.paymentId, refundCents: settlementRoute.refundCents, answer: bankRefundVoidAnswer, actingMemberId, store: tx,
-        });
-      }
+      // #4162: a re-confirmed bank refund's answer (refused when missing or misplaced): its fresh note, or the hand-made note it tracks.
+      await recordBankRefundVoidAnswerInTransaction({ task, route: settlementRoute, answer: input.resolution === "completed" ? (input.bankRefundVoidAnswer ?? null) : null, actingMemberId, store: tx });
     }
 
     // #3635 (`INV-PAY-110`): DISMISSED keeps the money, recorded in Xero from
@@ -579,7 +554,7 @@ export async function resolveManualRefundTask(
       settlement,
       settlementRoute,
       settlementDirection,
-      bankRefundVoidAnswer,
+      bankRefundVoidAnswer: input.resolution === "completed" ? (input.bankRefundVoidAnswer ?? null) : null,
       store: tx,
     });
 
@@ -629,7 +604,8 @@ export async function resolveManualRefundTask(
        * rather than `REFUNDED` - the member got credit, not their money back.
        */
       recordedRefund:
-        settlement && settlementRoute?.kind === "local-allocation" && settlementRoute.refundCents > 0
+        // #4162: not a re-confirmed bank refund's - its money moved once, and the member is not told again (Q3).
+        settlement && settlementRoute?.kind === "local-allocation" && settlementRoute.refundCents > 0 && !isBankRefundVoidFollowUpTask(task)
           ? { amountCents: settlementRoute.refundCents }
           : null,
       /**
@@ -672,20 +648,10 @@ export async function resolveManualRefundTask(
           ? ManualRefundTaskStatus.COMPLETED
           : ManualRefundTaskStatus.DISMISSED,
       keptLateCaptureXeroPlan,
-      /** #4162: a re-confirmed bank refund - its money moved once already, so no booking event (Q3, 17 Oct 2026). */
-      bankRefundVoidFollowUp,
-      bankRefundVoidNoteOperationId,
     };
   });
 
-  // #4162: the fresh note's row committed with the completion; only the kick is left.
-  if (result.bankRefundVoidNoteOperationId) {
-    await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((error: unknown) =>
-      logger.error({ err: error, taskId: result.taskId }, "Failed to kick the Xero outbox after a re-confirmed bank refund (#4162)"),
-    );
-  }
-
-  if (result.recordedRefund && !result.bankRefundVoidFollowUp) {
+  if (result.recordedRefund) {
     await recordBookingEvent({
       bookingId: result.bookingId,
       type: BookingEventType.REFUNDED,
@@ -727,7 +693,7 @@ export async function resolveManualRefundTask(
     });
 
   // #3635: the kept capture's Xero record, after the commit; never returned.
-  const { keptLateCaptureXeroPlan, bankRefundVoidNoteOperationId: _queued, ...closed } = result;
+  const { keptLateCaptureXeroPlan, ...closed } = result;
   await finishKeptLateCaptureXeroRecord(keptLateCaptureXeroPlan);
 
   return { ...closed, stripeRefundId, additionalPaymentIntentId };

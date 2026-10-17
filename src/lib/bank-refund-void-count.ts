@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 
+import { formatCentsPlain } from "@/lib/utils";
 import {
   classifyVoidedBankRefundNote,
   readVoidedBankRefundNoteLinkIds,
@@ -120,12 +121,12 @@ export function formatBankRefundVoidCount(count: BankRefundVoidCount, options?: 
   for (const [bucket, label] of Object.entries(BUCKET_LABELS)) {
     const entry = count.buckets[bucket as BankRefundVoidCountBucket];
     if (!entry) continue;
-    lines.push(`  ${label}: ${entry.count} (${(entry.amountCents / 100).toFixed(2)})`);
+    lines.push(`  ${label}: ${entry.count} (${formatCentsPlain(entry.amountCents)})`);
     if (options?.list) lines.push(...entry.linkIds.map((id) => `    link ${id}`));
   }
   const gap = count.totalBelowDetailWithoutVoid;
   lines.push(
-    `Bank-transfer payments whose refunded total is below their own detail, with no voided note: ${gap.count} (${(gap.gapCents / 100).toFixed(2)})`,
+    `Bank-transfer payments whose refunded total is below their own detail, with no voided note: ${gap.count} (${formatCentsPlain(gap.gapCents)})`,
   );
   if (options?.list) lines.push(...gap.paymentIds.map((id) => `    payment ${id}`));
   return lines.join("\n");

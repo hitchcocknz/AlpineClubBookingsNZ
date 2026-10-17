@@ -349,12 +349,8 @@ function cardDoublePayCents(row: BookingLedgerCensusRow): number {
   return finding?.strandExposureCents ?? 0;
 }
 
-/**
- * Hand-backs the ledger records against a completed task: −Σ matched live BANK_REFUND
- * lines - the share, or a review's netted hand-back its stand-in bears out (#3835).
- * #4162: a line the nightly undo of a voided bank-transfer note reversed records
- * none; its open follow-up hand-back explains what is owed instead.
- */
+/** Hand-backs the ledger records against a completed task: −Σ matched live BANK_REFUND lines (one reversed after its
+ * note's void, #4162, records none) - the share, or a review's netted hand-back its stand-in bears out (#3835). */
 function handBackCents(row: BookingLedgerCensusRow): number {
   const netted = reviewAdjustmentEvidence(row).nettedHandBackLineIds;
   return -liveLines(row.lines)

@@ -952,11 +952,7 @@ export async function getStuckStateDashboard(input?: {
    * names rather than leaking the membership roll.
    */
   viewerCanViewMembership?: boolean;
-  /**
-   * #4162: whether the caller holds `{ area: "finance", level: "view" }`, which
-   * the voided bank refund notes' panel on this page needs. False sends that
-   * item's link to the Xero screen instead. Defaults to false (fail closed).
-   */
+  /** #4162: the caller holds finance:view (the voided bank refund notes' panel); false links that item to /admin/xero. */
   viewerCanViewFinance?: boolean;
 }): Promise<StuckStateDashboard> {
   const deps = {

@@ -19,12 +19,12 @@ import { bookingOwner } from "@/lib/booking-owner";
 import { formatBookingReference } from "@/lib/booking-reference";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
-import { bankRefundVoidFollowUpOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
+import { bankRefundVoidFollowUpOccurrenceKey } from "@/lib/bank-refund-void-follow-up-key";
 import {
   lockPaymentForRefundedTotal,
   reconcilePaymentAggregates,
-  unwindLocalRefundAllocation,
 } from "@/lib/payment-transactions";
+import { unwindLocalRefundAllocation } from "@/lib/refund-allocation-unwind";
 import { isPostgresLockNotAvailable } from "@/lib/prisma-errors";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
@@ -122,7 +122,7 @@ function describe(classification: BankRefundVoidClassification, writes: boolean)
     case "undo":
       return `${writes ? "Undone" : "Would undo"}: the hand-back's refund taken out of the allocation, its ledger line reversed, the total recomputed, and one follow-up raised`;
     case "spare":
-      return `Spare: live notes cover ${classification.coverageCents} of ${classification.requiredCents} cents; nothing moves`;
+      return "Spare: live notes still cover every bank hand-back; nothing moves";
     case "deferred":
       return `Deferred: refund-note operation ${classification.blockingOperationId} could still mint`;
     case "unmatched":

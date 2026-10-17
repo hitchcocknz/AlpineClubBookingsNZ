@@ -10,8 +10,8 @@ import {
   isEditRefundHandBackTask,
   isPartPaymentReviewTask,
   isRefundRequestHandBackTask,
-  isBankRefundVoidFollowUpTask,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
 import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import { readBankRefundVoidFollowUpContext } from "@/lib/bank-refund-void-follow-up-copy";
 import type { QueueRepairableStrand } from "@/lib/stored-night-price-repair-queue";

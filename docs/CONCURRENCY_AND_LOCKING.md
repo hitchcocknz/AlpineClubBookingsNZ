@@ -5356,6 +5356,68 @@ enqueue joins its caller's transaction. An inbound void racing a create's
 record on one payment can take the same two rows in the opposite order; that
 predates #4161 and is not changed here.
 
+## Voided bank-transfer refund note follow-up (#4162)
+
+`followUpVoidedBankRefundNote` (`src/lib/bank-refund-void-follow-up.ts`, owner
+decision 17 Oct 2026, `INV-ADDPAY-042`) undoes a bank refund whose Xero credit
+note was voided: it takes the amount out of the payment's transactions
+(`unwindLocalRefundAllocation`), reverses the hand-back's `BANK_REFUND` line,
+recomputes the refunded total (`reconcilePaymentAggregates`) and raises one open
+follow-up hand-back, in one commit. That is settlement money and an open
+hand-back that every edit, acceptance, paid cancel and refund appeal reads
+separately to size a refund, so it is a global-cohort writer (`INV-LOCK-001`).
+Each voided note is its own short transaction, in this order (`INV-LOCK-002`):
+
+1. `lock(1)`, the transaction's first lock;
+2. the `Payment` row (`lockPaymentForRefundedTotal`) BEFORE anything about the
+   payment is read - the #4217 order: every refunded-total writer without
+   `lock(1)` (every Stripe refund recorder, a cancellation hand-back's
+   completion, the rebuild) takes that row first;
+3. the note re-classified under both (`classifyVoidedBankRefundNote`);
+4. the claim: the follow-up's unique occurrence key
+   (`bank-refund-void:<paymentId>:<creditNoteId>`, `createMany` with
+   `skipDuplicates`), inserted before any money moves. A lost claim moves
+   nothing;
+5. the unwind's `PaymentTransaction` rows (re-taking the `Payment` row it
+   holds), the reversal line, the rebuild (re-taking it again), the audit row.
+
+A spare note writes only a marker on its link. The link row is taken last,
+after the `Payment` row, with `FOR UPDATE NOWAIT`: the inbound sync's link
+write and #4161's heal take the link before the `Payment` row, so the follow-up
+never waits on a link while holding the `Payment` row - a busy link raises
+55P03, the transaction rolls back having written nothing, and the note is
+tried again the next night. No new cycle against the #4217 order (`lock(1)`,
+lodge, member, `Payment`, rows): the follow-up takes no lodge or member key,
+and every row it touches comes after the `Payment` row.
+
+Counterparts:
+
+- **#4161's heal** runs first in the same 02:25 slot. It takes the link and the
+  `Payment` row `NOWAIT`, so while a follow-up holds the `Payment` row it
+  defers; a mirror still active is left for the next night ("awaiting heal").
+- **The inbound recount** (`repairRefundedPaymentBusinessState`) takes no lock:
+  its compare-and-set on the row as read loses to the follow-up's write and
+  recounts, and its floor (`INV-ADDPAY-021`) never takes a bank-transfer total
+  below the detail the follow-up left.
+- **A refund-note create in flight** (`findBlockingRefundCreditNoteOperationId`)
+  defers the note: that create's coverage is not known yet.
+- **A second run** queues on `lock(1)` and re-classifies the note as handled;
+  without the lock, the unique key would still refuse its insert.
+- **The follow-up's completion** (`resolveManualRefundTask`) takes `lock(1)`,
+  because the follow-up is a non-cancellation hand-back, then the `Payment`
+  row through its allocation. The "already in Xero" answer reads Xero before
+  that transaction opens, so no provider call runs under either lock.
+
+`markUnmatchedBankRefundVoidAnswered` (a person's answer on Stuck States) moves
+no money but joins the same cohort and order so it never interleaves with the
+follow-up's classification of the same note: `lock(1)`, the `Payment` row,
+re-classify, then the marker on the link row `NOWAIT`. Registered as
+`followUpVoidedBankRefundNote#1` and `markUnmatchedBankRefundVoidAnswered#1`;
+the link row lock is in the row-lock inventory. Proved by
+`bank-refund-void-follow-up.realdb.test.ts` (two runs, a concurrent reconcile
+and recount, the heal deferring, a create in flight) and the order by
+`bank-refund-void-follow-up.test.ts`.
+
 ## Refund-request note link writes (#4195)
 
 A refund request's own Xero note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`)

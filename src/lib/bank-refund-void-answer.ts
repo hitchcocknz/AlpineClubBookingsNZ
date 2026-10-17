@@ -1,13 +1,17 @@
-import type { Prisma } from "@prisma/client";
+import type { ManualRefundTaskKind, Prisma } from "@prisma/client";
+import { z } from "zod";
 
 import {
+  BANK_REFUND_VOID_ANSWER_NOT_ASKED_MESSAGE,
+  BANK_REFUND_VOID_ANSWER_REQUIRED_MESSAGE,
+  bankRefundVoidCompletionMessage,
   HAND_MADE_CREDIT_NOTE_NUMBER_MAX,
   readBankRefundVoidFollowUpContext,
   type BankRefundVoidAnswer,
 } from "@/lib/bank-refund-void-follow-up-copy";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
-import { isBankRefundVoidFollowUpTask } from "@/lib/manual-refund-task-settlement-rules";
+import { isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { prisma } from "@/lib/prisma";
@@ -44,6 +48,21 @@ export interface VerifiedHandMadeRefundNote {
   amountCents: number;
   status: string;
   total: number;
+}
+
+/**
+ * The answer as the completion route receives it: raise a fresh credit note,
+ * or the number of the note the treasurer already made in Xero (checked
+ * against Xero before anything is written, `prepareBankRefundVoidAnswer`).
+ */
+export const bankRefundVoidAnswerBodySchema = z.discriminatedUnion("answer", [
+  z.object({ answer: z.literal("fresh-note") }).strict(),
+  z.object({ answer: z.literal("recorded-in-xero"), creditNoteNumber: z.string().trim().min(1).max(HAND_MADE_CREDIT_NOTE_NUMBER_MAX) }).strict(),
+]);
+
+/** What the treasurer is told once the completion took the answer. */
+export function bankRefundVoidAnswerMessage(answer: ResolvedBankRefundVoidAnswer): string {
+  return bankRefundVoidCompletionMessage(answer.answer, answer.answer === "recorded-in-xero" ? answer.note.creditNoteNumber : null);
 }
 
 /** The completion's answer to a follow-up, once a hand-made note has been checked. */
@@ -128,7 +147,7 @@ export async function verifyHandMadeRefundNote(input: {
  */
 export async function prepareBankRefundVoidAnswer(input: {
   taskId: string;
-  answer: { answer: "fresh-note" } | { answer: "recorded-in-xero"; creditNoteNumber: string };
+  answer: z.infer<typeof bankRefundVoidAnswerBodySchema>;
   format: ClubFormat;
 }): Promise<ResolvedBankRefundVoidAnswer> {
   if (input.answer.answer === "fresh-note") return { answer: "fresh-note" };
@@ -200,42 +219,43 @@ export async function recordHandMadeRefundNoteLink(
  * The completion's half of a follow-up's answer, inside its transaction after
  * the allocation and the hand-back line - so the money goes back on the
  * payment exactly as an ordinary hand-back completion records it, and the
- * answer commits or rolls back with it:
+ * answer commits or rolls back with it. Called for every completion: a
+ * follow-up with no answer, or an answer on any other task, is refused here
+ * and the whole completion rolls back. The completion also writes no
+ * `REFUNDED` booking event for a follow-up: the money moved once (Q3).
  *
  * - "fresh-note": ONE refund note queued on the outbox, keyed and sized on the
  *   follow-up itself (`paidAnotherWayTaskId`, as a card refund shortfall's
  *   is), dated today; nothing is copied from the voided note. None where the
  *   payment has no invoice to credit (a note against no invoice is a row that
- *   can never succeed). Returns the queued row, for the kick after the commit;
+ *   can never succeed). The outbox's 15-minute run sends it;
  * - "recorded-in-xero": the checked hand-made note becomes the follow-up's
  *   tracked refund-note link; nothing is queued.
  */
 export async function recordBankRefundVoidAnswerInTransaction(input: {
-  task: { id: string; booking: { payment: { xeroInvoiceId: string | null } | null } };
-  paymentId: string;
-  refundCents: number;
-  answer: ResolvedBankRefundVoidAnswer;
+  task: { id: string; kind: ManualRefundTaskKind | null; occurrenceKey: string | null; booking: { payment: { xeroInvoiceId: string | null } | null } };
+  route: { kind: string; paymentId?: string | null; refundCents?: number } | null;
+  answer: ResolvedBankRefundVoidAnswer | null;
   actingMemberId: string;
   store: Prisma.TransactionClient;
-}): Promise<string | null> {
-  if (input.answer.answer === "recorded-in-xero") {
-    await recordHandMadeRefundNoteLink(input.store, {
-      paymentId: input.paymentId,
-      taskId: input.task.id,
-      amountCents: input.refundCents,
-      note: input.answer.note,
-    });
-    return null;
+}): Promise<void> {
+  const followUp = isBankRefundVoidFollowUpTask(input.task);
+  if (followUp && !input.answer) throw new ManualBookingPaymentError(BANK_REFUND_VOID_ANSWER_REQUIRED_MESSAGE, 400);
+  if (!followUp && input.answer) throw new ManualBookingPaymentError(BANK_REFUND_VOID_ANSWER_NOT_ASKED_MESSAGE, 400);
+  const { answer, route } = input;
+  if (!answer || route?.kind !== "local-allocation" || !route.paymentId || !route.refundCents || route.refundCents <= 0) return;
+  if (answer.answer === "recorded-in-xero") {
+    await recordHandMadeRefundNoteLink(input.store, { paymentId: route.paymentId, taskId: input.task.id, amountCents: route.refundCents, note: answer.note });
+    return;
   }
-  if (!input.task.booking.payment?.xeroInvoiceId) return null;
-  const queued = await enqueueXeroRefundCreditNoteOperation(input.paymentId, input.refundCents, {
+  if (!input.task.booking.payment?.xeroInvoiceId) return;
+  const queued = await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, {
     createdByMemberId: input.actingMemberId,
     refundMethod: "internet-banking",
     paidAnotherWayTaskId: input.task.id,
     store: input.store,
   });
   if (!queued.queueOperationId) {
-    logger.warn({ taskId: input.task.id, paymentId: input.paymentId, message: queued.message }, "A re-confirmed bank refund queued no fresh credit note (#4162)");
+    logger.warn({ taskId: input.task.id, paymentId: route.paymentId, message: queued.message }, "A re-confirmed bank refund queued no fresh credit note (#4162)");
   }
-  return queued.queueOperationId;
 }

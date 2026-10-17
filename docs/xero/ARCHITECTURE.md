@@ -1040,7 +1040,8 @@ The same link write moves `Payment.xeroRefundCreditNoteId` to the newest other
 live note that may be canonical (never a per-refund note, #3880), or clears it,
 as the #2901 repair apply does, so the nightly missing-link report never sees a
 pointer to an inactive mirror (#4046). A refund left with no live note shows no
-drift in that report, by design; making it visible is #4162. A mirror voided
+drift in that report, by design; on a bank transfer the nightly follow-up
+handles it (#4162, below). A mirror voided
 before #4091 (still active, its pointer naming it) is healed by the nightly
 `link-cleanup` through this same write (#4161).
 
@@ -1074,11 +1075,12 @@ watermark between the attempt and its retry, so the retry can mint a second note
 (true on `main` before #4091 too). A void that adds a matching or unreadable
 link to the suffix does the same. Both need a void inside a lost-answer window.
 
-On a bank transfer a void undoes the refund (owner decision; Xero is its payment
-rail, `INV-ADDPAY-021`). The inbound sync returns the refunded amount to what the
-live notes say, and nothing is re-raised automatically. If the refund was real,
-the treasurer records it again, and only then does a request raise the fresh
-note, under its own key.
+On a bank transfer a void is undone, then asked once (#4162, `INV-ADDPAY-042`).
+The inbound sync no longer lowers the refunded total below the payment's own
+transaction detail (`INV-ADDPAY-021`); the nightly follow-up moves the detail,
+the hand-back's ledger line and the total together and puts the money back on
+the refund list. Nothing is re-raised automatically. See
+[Voided bank-transfer refund notes](#voided-bank-transfer-refund-notes-4162).
 
 **A refund request's own note, voided (#4195).** The same void rule holds for
 a refund request's own note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). The
@@ -1477,6 +1479,59 @@ their Stripe-bank refund payments in Xero, records statuses, and the next
 apply run deactivates the local mirrors. Modules:
 `src/lib/xero-refund-note-link-repair.ts` (planner/applier, no provider calls)
 and `src/lib/xero-refund-note-status-recorder.ts` (read-only status GETs).
+
+### Voided bank-transfer refund notes (#4162)
+
+Owner decision 17 Oct 2026 ("undo, then ask once", `INV-ADDPAY-042`). The
+treasurer's hand-back is the record that a bank refund was paid; its refund
+credit note mirrors it. A void in Xero means "this refund is no longer
+recorded", and only the treasurer knows whether the transfer went or bounced.
+
+**The nightly follow-up** (`src/lib/bank-refund-void-follow-up.ts`) runs in the
+02:25 slot right after `link-cleanup`, whose #4161 heal turns voided mirrors
+off (job `xero-bank-refund-void-follow-up`, local rows only, so it runs with
+Xero disconnected too). For each `REFUND_CREDIT_NOTE` link on an
+`INTERNET_BANKING` payment whose recorded status is VOIDED or DELETED, the
+classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
+
+| Answer | What happens |
+| --- | --- |
+| awaiting heal | The mirror is still active: the next night, after the heal. |
+| handled | Its follow-up exists (the key is the claim), or a link marker records a spare or a person's answer. Nothing more. |
+| deferred | A refund-note create on the payment could still mint. Tried again next night. |
+| spare | Live notes plus notes resolved by hand (`INV-INT-025`) still cover every bank hand-back and card refund: nothing moves; a `bankRefundVoid` marker on the link records it. |
+| undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
+| unmatched | The amount cannot be read, no single live hand-back line has it, or the detail no longer holds it: listed on Stuck States for a person; nothing moves. |
+
+A note is matched to the hand-back it recorded by the task it names - a
+cancellation's note carries `handBackTaskId` in its payload since #4162 (never
+in its key), a review's `reviewTaskId`, a follow-up's fresh note
+`paidAnotherWayTaskId`, a hand-made note's link `handBackTaskId` - and that
+task's live line for exactly the note's amount. An older note naming no task
+takes the one live hand-back line of its amount, only when no other live
+`BANK_REFUND` line on the booking has that amount.
+
+**Report-only by default.** Until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`
+the job classifies and logs, and writes nothing.
+
+**The answers** (refund list, `resolveManualRefundTask`): a fresh note is queued
+in the completion's transaction, keyed and sized on the follow-up (the
+`paidAnotherWayTaskId` path a card refund shortfall uses: Xero key
+`payment:<id>:refund-credit-note:paid-another-way:<task>:<own cover>:v3`), dated
+today. "Already in Xero" reads the hand-made note by number before the
+transaction (`getCreditNotes`, `bank-refund-void-answer.ts`), checks it is a
+live `ACCRECCREDIT` for the amount and tracked by nothing else, and the
+completion links it as a per-refund `REFUND_CREDIT_NOTE` naming the follow-up,
+so its own void is caught the same way.
+
+**Count before switching on.** `pnpm run xero:bank-refund-void-count` (read-only:
+no transaction, no lock, no write, no provider call; `--list` adds ids,
+`--json` is machine-readable) sorts every voided note with the job's own
+classifier into: awaiting heal; handled (follow-up, spare, answered); deferred;
+spare; undo with the payment's total already below its detail or still equal to
+it; unmatched by reason (amount unknown, no line, ambiguous, detail short). It
+also counts bank-transfer payments whose total is below their detail with no
+void, which the job never touches.
 
 ### Stripe refund notes cover cash evidence, never the mirror (#2902)
 
