@@ -180,7 +180,7 @@ export async function reraiseVoidedRefundRequestNote(params: {
     const operation = await startXeroSyncOperation({ ...row, store: tx });
     await createAuditLog(
       {
-        action: "XERO_REFUND_REQUEST_NOTE_RERAISED",
+        action: "xero.refund_request_note.reraised",
         category: "xero",
         memberId: actingMemberId,
         targetId: paymentId,
