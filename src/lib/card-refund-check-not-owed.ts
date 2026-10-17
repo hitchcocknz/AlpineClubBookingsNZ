@@ -6,7 +6,7 @@ import { createAuditLog } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
 import { normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
 import { CARD_REFUND_OPERATION_WHERE, paidAnotherWayCheckOf } from "@/lib/open-card-refund-owed";
-import { PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
+import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -74,13 +74,18 @@ export async function closeCardRefundCheckNotOwed(
         409,
       );
     }
+    // Dead by the one rule: a check is raised dead, and a "Paid another way" close needs it dead too.
+    if (!isPaymentRecoveryOperationExhausted(operation)) {
+      throw new CardRefundCheckNotOwedError(
+        operation.status === PaymentRecoveryOperationStatus.SUCCEEDED ? "This card refund has already been closed." : "This card refund is still being retried, so it cannot be closed yet.",
+        409,
+      );
+    }
     const claimed = await tx.paymentRecoveryOperation.updateMany({
       where: {
         id: operation.id,
         ...CARD_REFUND_OPERATION_WHERE,
-        ...PAYMENT_RECOVERY_EXHAUSTED_WHERE,
-        status: operation.status,
-        attempts: operation.attempts,
+        AND: [PAYMENT_RECOVERY_EXHAUSTED_WHERE, { status: operation.status, attempts: operation.attempts }],
         allocationPlan: { equals: operation.allocationPlan as Prisma.InputJsonValue },
       },
       data: {

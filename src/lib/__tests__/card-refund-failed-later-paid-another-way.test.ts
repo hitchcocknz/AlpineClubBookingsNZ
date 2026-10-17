@@ -357,6 +357,23 @@ describe("what a close may not have covered is raised dead, for an officer to ch
   });
 });
 
+// A check row is never sent, but a failed-later row's runner sends the same
+// metadata, so a refund of its amount can read as its own; if that one fails,
+// the check is re-planned like any open row - and stays a check.
+describe("a check row re-planned", () => {
+  it("MUTATION: keeps its check mark", async () => {
+    const CHECK = { closedOperationId: "op-cancel", reason: "part-close" };
+    const checkRow = row({ id: "op-check", status: "PENDING", succeededAt: null, createdAt: new Date("2026-06-21T00:00:00.000Z"), idempotencyKey: "card_refund_failed_later_re_0", stripeKeyPrefix: "card_refund_failed_later_re_0", amountCents: 1_500,
+      allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 1_500, madeByOperationId: "op-cancel", paidAnotherWayCheck: CHECK }] });
+    const madeAt = new Date("2026-06-22T00:00:00.000Z");
+    const Y: FailedLaterRefundInput = { id: "re_y", amount: 1_500, status: "failed", created: Math.floor(madeAt.getTime() / 1000), metadata: { bookingId: "booking-1", reason: bookingModificationRefundReasonForKeyPrefix("card_refund_failed_later_re_0") } };
+    const tx = fakeTx({ rows: [row(), checkRow], refunds: [{ stripeRefundId: "re_y", paymentTransactionId: "txn-1", amountCents: 1_500, status: "failed", createdAt: madeAt, stripeCreatedAt: madeAt }] });
+    expect(await keep(tx, Y)).toMatchObject({ debt: { outcome: "re-planned-dead", operationId: "op-check" } });
+    const replanned = (tx.paymentRecoveryOperation.updateMany.mock.calls[0]?.[0] as { data: { allocationPlan: Array<Record<string, unknown>> } }).data.allocationPlan;
+    expect(replanned[0]).toMatchObject({ failedRefundIds: ["re_y"], paidAnotherWayCheck: CHECK });
+  });
+});
+
 describe("the officers' alert: its own unmuteable mail", () => {
   const debt = (over: Partial<FailedLaterCardRefundDebt> = {}): FailedLaterCardRefundDebt => ({
     outcome: "settled-paid-another-way",

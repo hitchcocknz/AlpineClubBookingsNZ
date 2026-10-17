@@ -24,7 +24,7 @@ vi.mock("@/lib/prisma", () => {
 });
 
 import { CHECKED_NOT_OWED_MARKER, CardRefundCheckNotOwedError, closeCardRefundCheckNotOwed } from "@/lib/card-refund-check-not-owed";
-import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 
 const CHECK = { closedOperationId: "op-cancel", reason: "part-close" };
 const checkRow = (over: Record<string, unknown> = {}) => ({
@@ -56,14 +56,12 @@ describe("closing a check row as checked - not owed", () => {
     expect(mocks.claim).toHaveBeenCalledWith({
       where: expect.objectContaining({
         id: "op-check",
-        status: "PENDING",
-        attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS,
+        // Dead by the one rule, and as it was read.
+        AND: [PAYMENT_RECOVERY_EXHAUSTED_WHERE, { status: "PENDING", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS }],
         allocationPlan: { equals: checkRow().allocationPlan },
       }),
       data: expect.objectContaining({ status: "SUCCEEDED", nextRetryAt: null, lastError: CHECKED_NOT_OWED_MARKER }),
     });
-    // Dead by the one rule: attempts spent, never claimable.
-    expect(mocks.claim.mock.calls[0]?.[0]).toMatchObject({ where: { attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS } });
   });
 
   it("MUTATION: audits it under payment, with the note and why it was a check - after the write", async () => {
@@ -104,6 +102,14 @@ describe("closing a check row as checked - not owed", () => {
 
     it("MUTATION: a row the runner sends, or any dead row not raised for a check - that is for \"Paid another way\"", async () => {
       mocks.findOperation.mockResolvedValue(checkRow({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 3_000, madeByOperationId: "op-cancel" }] }));
+      await expectRefusal(close(), 409);
+      expect(mocks.claim).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: a check row not dead - still being retried, or already closed", async () => {
+      mocks.findOperation.mockResolvedValue(checkRow({ attempts: 1 }));
+      await expectRefusal(close(), 409);
+      mocks.findOperation.mockResolvedValue(checkRow({ status: "SUCCEEDED" }));
       await expectRefusal(close(), 409);
       expect(mocks.claim).not.toHaveBeenCalled();
     });
