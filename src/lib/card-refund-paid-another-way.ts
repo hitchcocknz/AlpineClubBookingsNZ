@@ -27,9 +27,11 @@ import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX, normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
 import { paidAnotherWayCardNoteCoverContext } from "@/lib/card-refund-paid-another-way-cash";
+import { paidAnotherWayCountedContext, type PaidAnotherWayCounted } from "@/lib/card-refund-paid-another-way-counted";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import {
   CARD_REFUND_OPERATION_WHERE,
+  cardRefundCountedAtClose,
   cardRefundSlicesByOperation,
   isOwedCardRefundOperation,
   unsentSliceCents,
@@ -428,10 +430,9 @@ async function postPaidAnotherWayLine(
   await writeBookingLedgerRows(tx, rows);
 }
 
-/** The record's `reviewContext` for a card-note cover, or nothing (A-F1). */
-function cardNoteCoverReviewContext(cardNoteCoversCents: number): { reviewContext?: Prisma.InputJsonObject } {
-  const reviewContext = paidAnotherWayCardNoteCoverContext(cardNoteCoversCents);
-  return reviewContext ? { reviewContext } : {};
+/** The record's `reviewContext`: a card-note cover, if any (A-F1), and (#4210 round 3, `INV-PAY-136`) what the close counted. */
+function closeReviewContext(cardNoteCoversCents: number, counted: PaidAnotherWayCounted): Prisma.InputJsonObject {
+  return { ...paidAnotherWayCardNoteCoverContext(cardNoteCoversCents), ...paidAnotherWayCountedContext(counted) } as unknown as Prisma.InputJsonObject;
 }
 
 /** Close one dead card refund as paid another way. See the module comment. */
@@ -594,9 +595,8 @@ export async function closeCardRefundPaidAnotherWay(
         completedByMemberId: input.actingMemberId,
         note,
         reason: paidAnotherWayReason(booking.id, input.paidBack),
-        // #4104 delta review (A-F1): what a card note already in Xero answers
-        // of the close, so its share counts it covered.
-        ...cardNoteCoverReviewContext(paidAnotherWayCardNoteCoversCents(xeroPlan, input.amountCents)),
+        // A-F1: what a card note already in Xero answers of the close; #4210: what it counted.
+        reviewContext: closeReviewContext(paidAnotherWayCardNoteCoversCents(xeroPlan, input.amountCents), cardRefundCountedAtClose(payment, operation.id)),
       },
       select: { id: true },
     });

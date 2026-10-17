@@ -27,7 +27,7 @@ export function adminCardRefundFailedAfterPaidAnotherWayTemplate(
 ): string {
   return layout(`
     ${heading("Card Refund Failed After It Was Paid Back Another Way")}
-    ${alertBox("Stripe failed a card refund after the treasurer had already paid it back another way. Check before paying the member anything more.", "warning")}
+    ${alertBox("Stripe failed a card refund on a booking whose card refund the treasurer had closed as paid another way. Check before paying the member anything more.", "warning")}
     ${paragraph(escapeHtml(data.note))}
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },

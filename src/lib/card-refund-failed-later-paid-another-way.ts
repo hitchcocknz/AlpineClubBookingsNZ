@@ -11,40 +11,55 @@
  * anything; a close takes that lock before it writes its record
  * (`lockPaymentForRefundedTotal`), so the record read here is all or nothing.
  *
- * WHICH CLOSE SETTLED IT. The row that made X decides, never a row it merely
- * fills by amount:
+ * WHICH CLOSE. The row that sent X (`madeBy`, by its runner's metadata), closed
+ * "Paid another way" (its record, `closeKeysOf`), with X made by Stripe by the
+ * close (`operationWindowTakes`). A refund naming no booking of this payment -
+ * made in the Stripe dashboard, which no row sent - is weighed against the row
+ * whose slice it fills, only on the paid-twice reading
+ * (`cardRefundsSentAfterPaidAnotherWay`). Another door's refund for this
+ * booking that no row sent is never settled.
  *
- * - **The row that sent it is known** (`madeBy`, by its runner's metadata):
- *   that row, closed "Paid another way" (its record, `closeKeysOf`), with X
- *   made by Stripe inside its window - by the close (`operationWindowTakes`) -
- *   and not counted by the close: either the app recorded X after the close,
- *   filling that row's slice (the paid-twice reading,
- *   `cardRefundsSentAfterPaidAnotherWay`, through `recordedAfterClose`), or X
- *   fills another row's slice or none, so that row's slice was unfilled when it
- *   closed. A refund made after the close, or one the close counted as made,
- *   is owed again as before.
- * - **No row sent it** - only a refund naming no booking of this payment (made
- *   in the Stripe dashboard, or a legacy group refund): the row whose slice it
- *   fills, by the paid-twice reading alone. A refund another door made for
- *   this booking (an approved refund request's, say) is never settled by
- *   amount: it is owed as before.
+ * DID THAT CLOSE PAY X BACK (round 3, money F1/F2). Decided from what the close
+ * counted, kept on its record (`readPaidAnotherWayCounted`), never from today's
+ * matching, which another refund failing can move:
+ *
+ * - **Kept**: X was not among the refunds it counted as made, and X fits one of
+ *   the slices it found unsent (`refundFitsSlice`: that charge, exactly that
+ *   amount, not marked as another refund's). A refund of another amount - an
+ *   edit's own refund carrying the same metadata - is owed as before.
+ * - **Not kept** (a close recorded before round 3): only a refund the app
+ *   recorded after the close and that fills that row's slice - on the
+ *   paid-twice list - is settled. One that fits a slice the row planned, but
+ *   the close may have counted, is uncertain: raised dead for an officer to
+ *   check, never settled and never re-sent.
+ * - A refund larger than what the close owed is uncertain too.
  *
  * WHAT IS LEFT FOR AN OFFICER. A full close paid back X's share: nothing is
  * raised. A part close (`paidAnotherWayUnpaidCents`) may have given up X's
- * share: up to what it gave up, `min(X, unpaid)`, is raised dead - attempts
- * spent, never sent - for the treasurer to check. A close whose paid-twice row
+ * share: up to what it gave up, less what earlier part-close checks against it
+ * already list (money F3), is raised dead - attempts spent, never sent - for
+ * an officer to check (`PaidAnotherWayCheck`). A close whose paid-twice row
  * was marked Resolved (`readPaidTwiceResolution`) most likely had the member
- * return the extra: the whole of X is raised dead. STATED LIMIT: each failed
- * refund is weighed against the close's unpaid part on its own, so two refunds
- * of one part close failing can raise more than it - dead, for a person, never
- * sent.
+ * return the extra: the whole of X is raised dead. A resolution speaks only
+ * for refunds its paid-twice row listed.
  */
 import { PaymentRecoveryOperationStatus, type PaymentRecoveryOperation, type Prisma } from "@prisma/client";
 
+import { readPaidAnotherWayCounted, type PaidAnotherWayCounted } from "@/lib/card-refund-paid-another-way-counted";
 import { readPaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
 import type { PaidAnotherWayFailedLaterOutcome } from "@/lib/card-refund-failed-later-paid-another-way-note";
 import { CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, closeKeysOf, paidAnotherWayUnpaidCents } from "@/lib/manual-refund-task-settlement-rules";
-import { cardRefundsSentAfterPaidAnotherWay, operationWindowTakes, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
+import {
+  cardRefundPlannedSlices,
+  cardRefundsSentAfterPaidAnotherWay,
+  operationWindowTakes,
+  paidAnotherWayCheckOf,
+  recordedAfterClose,
+  refundFitsSlice,
+  type CardRefundOwedPaymentRow,
+  type RecordedCardRefundRow,
+} from "@/lib/open-card-refund-owed";
+import type { PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
 
 /** The close that settled a failed refund, and what it leaves for an officer. */
 export type SettlingPaidAnotherWayClose = {
@@ -58,15 +73,44 @@ export type SettlingPaidAnotherWayClose = {
   checkCents: number;
   /** The refund was counted under "Card refunds paid back twice". */
   onPaidTwiceList: boolean;
+  /** The app recorded the refund after the close (else it counted it toward another row before it). */
+  recordedAfterClose: boolean;
   /** The note its paid-twice row was marked Resolved with, if it was. */
   resolutionNote: string | null;
 };
+
+/** #4210: the check a raised row stands for (`PaidAnotherWayCheck`), by outcome. */
+export const CHECK_REASON_OF: Record<Exclude<PaidAnotherWayFailedLaterOutcome, "settled-paid-another-way">, PaidAnotherWayCheckReason> = {
+  "raised-check-part-close": "part-close",
+  "raised-check-resolved": "resolved",
+  "raised-check-uncertain": "uncertain",
+};
+
+/**
+ * Whether the close paid this refund back: `covered`, `uncertain` (an officer
+ * checks), or null - it did not, and the refund is owed as before. See the
+ * module comment.
+ */
+function closePaidItBack(
+  row: PaymentRecoveryOperation,
+  counted: PaidAnotherWayCounted | null,
+  recorded: RecordedCardRefundRow,
+  onPaidTwiceList: boolean,
+): "covered" | "uncertain" | null {
+  if (counted) {
+    if (counted.refundIds.includes(recorded.stripeRefundId)) return null;
+    return counted.unsentSlices.some((slice) => refundFitsSlice(slice, recorded)) ? "covered" : null;
+  }
+  if (onPaidTwiceList) return "covered";
+  return cardRefundPlannedSlices(row).some((slice) => refundFitsSlice(slice, recorded)) ? "uncertain" : null;
+}
 
 /**
  * The "Paid another way" close that settled this failed refund, or null.
  * `beforeFailure` is the payment as it stood before Stripe failed the refund
  * (`cardRefundPaymentBeforeFailure`); `madeBy` the row that sent it; `filledBy`
- * the row whose slice it fills there.
+ * the row whose slice it fills there; `rows` every card refund row on the
+ * payment, the checks already raised against a close among them.
  */
 export async function findPaidAnotherWayCloseThatSettled(
   tx: Prisma.TransactionClient,
@@ -89,31 +133,46 @@ export async function findPaidAnotherWayCloseThatSettled(
   const recorded = beforeFailure.refunds.find((each) => each.stripeRefundId === refund.id);
   const closed = (id: string | null) =>
     rows.find((row) => row.id === id && row.status === PaymentRecoveryOperationStatus.SUCCEEDED && row.succeededAt !== null);
-  // The row that sent it decides; by amount only a refund no door of this booking made.
+  // The row that sent it decides; by the slice it fills only a refund no door of this booking made.
   const row = madeBy !== null ? closed(madeBy) : refund.metadata?.bookingId !== bookingId ? closed(filledBy) : undefined;
-  if (!recorded || !row) return null;
+  if (!recorded || !row || !operationWindowTakes(row, recorded)) return null;
   const onPaidTwiceList = cardRefundsSentAfterPaidAnotherWay(beforeFailure, new Set([row.id])).get(row.id)?.has(refund.id) === true;
-  // Sent by it: made by Stripe by its close, and never counted by that close -
-  // recorded after it, or filling another row's slice. Sent by none: the paid-twice reading.
-  const settled = madeBy !== null ? operationWindowTakes(row, recorded) && (onPaidTwiceList || filledBy !== row.id) : onPaidTwiceList;
-  if (!settled) return null;
+  if (madeBy === null && !onPaidTwiceList) return null;
   const record = await tx.manualRefundTask.findFirst({
     where: { ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: closeKeysOf(row.id) } },
     select: { id: true, amountCents: true, raisedAmountCents: true, reviewContext: true },
   });
   if (!record) return null;
-  // A resolution speaks only for refunds its paid-twice row listed.
+  const owedCents = record.raisedAmountCents ?? record.amountCents ?? 0;
+  const paidItBack = closePaidItBack(row, readPaidAnotherWayCounted(record.reviewContext), recorded, onPaidTwiceList);
+  if (paidItBack === null) return null;
   const resolution = onPaidTwiceList ? readPaidTwiceResolution(record.reviewContext) : null;
-  const unpaidCents = paidAnotherWayUnpaidCents(record);
-  const checkCents = resolution ? refund.amount : Math.min(refund.amount, unpaidCents);
+  let outcome: PaidAnotherWayFailedLaterOutcome;
+  let checkCents: number;
+  if (paidItBack === "uncertain" || refund.amount > owedCents) {
+    [outcome, checkCents] = ["raised-check-uncertain", refund.amount];
+  } else if (resolution) {
+    [outcome, checkCents] = ["raised-check-resolved", refund.amount];
+  } else {
+    // Money F3: what the close gave up, less what part-close checks against it already list.
+    const listedCents = rows
+      .filter((each) => {
+        const check = paidAnotherWayCheckOf(each);
+        return check?.closedOperationId === row.id && check.reason === "part-close";
+      })
+      .reduce((sum, each) => sum + each.amountCents, 0);
+    checkCents = Math.min(refund.amount, Math.max(0, paidAnotherWayUnpaidCents(record) - listedCents));
+    outcome = checkCents === 0 ? "settled-paid-another-way" : "raised-check-part-close";
+  }
   return {
-    outcome: checkCents === 0 ? "settled-paid-another-way" : resolution ? "raised-check-resolved" : "raised-check-part-close",
+    outcome,
     recordId: record.id,
     operationId: row.id,
     paidBackCents: record.amountCents ?? 0,
-    owedCents: record.raisedAmountCents ?? record.amountCents ?? 0,
+    owedCents,
     checkCents,
     onPaidTwiceList,
+    recordedAfterClose: recordedAfterClose(row, recorded),
     resolutionNote: resolution?.note ?? null,
   };
 }

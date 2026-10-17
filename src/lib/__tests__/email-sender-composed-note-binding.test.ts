@@ -509,6 +509,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
       partClose: true,
       check: "$15.00",
       onPaidTwiceList: true,
+      recordedAfterClose: true,
       resolutionNote: null,
     });
     await sendAdminCardRefundFailedAfterPaidAnotherWayAlert(

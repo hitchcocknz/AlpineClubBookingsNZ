@@ -9,7 +9,7 @@ import {
 } from "@/lib/booking-payment-state";
 import { cardRefundFailedLaterRefundId, isGroupSettlementRefundRecoveryKey, isRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
-import type { RefundAllocationSlice } from "@/lib/payment-transactions";
+import type { PaidAnotherWayCheck, PaidAnotherWayCheckReason, RefundAllocationSlice } from "@/lib/payment-transactions";
 
 /**
  * #3372 (owner, 7 Oct 2026: "count in both"): CARD REFUNDS STARTED BUT NOT YET
@@ -64,6 +64,19 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
   ...CARD_REFUND_OPERATION_WHERE,
 };
 
+const CHECK_REASONS: readonly PaidAnotherWayCheckReason[] = ["part-close", "resolved", "uncertain"];
+
+function isPaidAnotherWayCheck(value: unknown): value is PaidAnotherWayCheck {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const { closedOperationId, reason } = value as Record<string, unknown>;
+  return typeof closedOperationId === "string" && closedOperationId.length > 0 && (CHECK_REASONS as readonly unknown[]).includes(reason);
+}
+
+/** #4210: the check a failed-later row was raised as (`PaidAnotherWayCheck`), or null for a row the runner sends. */
+export function paidAnotherWayCheckOf(operation: { allocationPlan?: unknown }): PaidAnotherWayCheck | null {
+  return parseRefundAllocationPlan(operation.allocationPlan)?.[0]?.paidAnotherWayCheck ?? null;
+}
+
 /**
  * Parse a persisted allocation plan (#1097); null when absent or malformed. A
  * slice's key generation after a refusal (#4083) is kept, so a replay sends it,
@@ -77,7 +90,7 @@ export function parseRefundAllocationPlan(
   const slices: RefundAllocationSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId, paidAnotherWayCheck } = entry as Record<
       string,
       unknown
     >;
@@ -91,7 +104,8 @@ export function parseRefundAllocationPlan(
       (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId)) ||
       (failedRefundIds !== undefined &&
         (!Array.isArray(failedRefundIds) || !failedRefundIds.every((id) => typeof id === "string" && id.length > 0))) ||
-      (madeByOperationId !== undefined && madeByOperationId !== null && (typeof madeByOperationId !== "string" || !madeByOperationId))
+      (madeByOperationId !== undefined && madeByOperationId !== null && (typeof madeByOperationId !== "string" || !madeByOperationId)) ||
+      (paidAnotherWayCheck !== undefined && !isPaidAnotherWayCheck(paidAnotherWayCheck))
     ) {
       return null;
     }
@@ -102,6 +116,7 @@ export function parseRefundAllocationPlan(
       ...(madeRefundId === undefined ? {} : { madeRefundId }),
       ...(failedRefundIds === undefined ? {} : { failedRefundIds: [...(failedRefundIds as string[])] }),
       ...(madeByOperationId === undefined ? {} : { madeByOperationId: madeByOperationId as string | null }),
+      ...(paidAnotherWayCheck === undefined ? {} : { paidAnotherWayCheck: { ...(paidAnotherWayCheck as PaidAnotherWayCheck) } }),
     });
   }
   return slices;
@@ -476,6 +491,63 @@ export function cardRefundMadeForOperation(
     if (lastMadeAt === null || madeAt.getTime() > lastMadeAt.getTime()) lastMadeAt = madeAt;
   });
   return { madeCents, lastMadeAt };
+}
+
+/** #4210: a slice a "Paid another way" close found unsent, and so paid back (`cardRefundCountedAtClose`). */
+export type UnsentSliceAtClose = { paymentTransactionId: string; amountCents: number; exact: boolean; madeRefundId?: string };
+
+/**
+ * #4210 round 3 (`INV-PAY-136`, money F1/F2): what a "Paid another way" close
+ * counts as it closes, by the attribution its owed figure runs: the recorded
+ * refunds its slices took as made (`refundIds`), and its slices still unsent
+ * (`unsentSlices`), whose amounts the close pays back. Kept on the close's
+ * record, so a refund failing later is weighed against what the close saw,
+ * never against today's matching, which a later failure can move.
+ */
+export function cardRefundCountedAtClose(
+  payment: CardRefundOwedPaymentRow,
+  operationId: string,
+): { refundIds: string[]; unsentSlices: UnsentSliceAtClose[] } {
+  const refundIds = new Set<string>();
+  const { operations } = attributeRecordedRefunds(payment, (refund, operation, _sliceIndex, cents) => {
+    if (operation.id === operationId && cents > 0) refundIds.add(refund.stripeRefundId);
+  });
+  const slices = operations.find(({ operation }) => operation.id === operationId)?.slices ?? [];
+  return {
+    refundIds: [...refundIds],
+    unsentSlices: slices
+      .filter((slice) => unsentSliceCents(slice) > 0)
+      .map((slice) => ({
+        paymentTransactionId: slice.paymentTransactionId,
+        amountCents: unsentSliceCents(slice),
+        exact: slice.exact,
+        ...(slice.madeRefundId ? { madeRefundId: slice.madeRefundId } : {}),
+      })),
+  };
+}
+
+/**
+ * #4210 round 3: whether a recorded refund can be the refund of a slice - on
+ * its charge, of exactly its amount (or, for a superseded intent's inexact
+ * slice, no more), and not a slice marked as another refund's.
+ */
+export function refundFitsSlice(
+  slice: Pick<UnsentSliceAtClose, "paymentTransactionId" | "amountCents" | "exact" | "madeRefundId">,
+  refund: Pick<RecordedCardRefundRow, "stripeRefundId" | "paymentTransactionId" | "amountCents">,
+): boolean {
+  if (slice.paymentTransactionId !== refund.paymentTransactionId) return false;
+  if (slice.madeRefundId !== undefined && slice.madeRefundId !== refund.stripeRefundId) return false;
+  return slice.exact ? refund.amountCents === slice.amountCents : refund.amountCents > 0 && refund.amountCents <= slice.amountCents;
+}
+
+/** #4210 round 3: an operation's planned slices, nothing filled (`operationSlices`) - what a close kept no record of. */
+export function cardRefundPlannedSlices(operation: CardRefundOperationRow): UnsentSliceAtClose[] {
+  return operationSlices(operation).map(({ paymentTransactionId, amountCents, exact, madeRefundId }) => ({
+    paymentTransactionId,
+    amountCents,
+    exact,
+    ...(madeRefundId ? { madeRefundId } : {}),
+  }));
 }
 
 /**

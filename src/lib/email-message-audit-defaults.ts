@@ -302,7 +302,7 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   // #4210 (`INV-PAY-136`): a card refund failed after it was paid back another way.
   "admin-card-refund-failed-after-paid-another-way": {
     "defaultSubject": "Card refund failed after it was paid back another way: {{memberName}}",
-    "defaultBody": "Card Refund Failed After It Was Paid Back Another Way\n\nStripe failed a card refund after the treasurer had already paid it back another way. Check before paying the member anything more.\n\n{{paidAnotherWayFailedLaterNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nCard refund that failed: {{amount}}\n\nOpen Stuck States: {{reviewUrl}}"
+    "defaultBody": "Card Refund Failed After It Was Paid Back Another Way\n\nStripe failed a card refund on a booking whose card refund the treasurer had closed as paid another way. Check before paying the member anything more.\n\n{{paidAnotherWayFailedLaterNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nCard refund that failed: {{amount}}\n\nOpen Stuck States: {{reviewUrl}}"
   },
   "admin-late-capture-held": {
     "defaultSubject": "Late payment held for approval: {{memberName}}",
