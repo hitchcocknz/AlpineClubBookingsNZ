@@ -22,7 +22,6 @@ import {
   enqueueCapacityClaimFailedRefundRecovery,
   enqueueDuplicateCaptureRefundRecovery,
   enqueuePaymentIntentCancellationRecovery,
-  listDuplicateCaptureRefundIntentIds,
   markCapacityClaimFailedRefundRecoverySucceeded,
   markDuplicateCaptureRefundRecoverySucceeded,
   recordCapacityClaimFailedRefundRecoveryInlineError,
@@ -37,6 +36,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
+import { listDuplicateCaptureRefundIntentIds } from "@/lib/duplicate-capture-ownership";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {

@@ -154,6 +154,7 @@ import {
   isManualSettlementMarkerEvent,
   settlementMarkerTimelineEntries,
 } from "@/lib/manual-settlement-reversal-event";
+import { duplicateCaptureRefundOperationWhere } from "@/lib/duplicate-capture-ownership";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { IB_RECEIPT_FROM_CASH_REASON } from "@/lib/xero-inbound/settle-from-cash";
 import {
@@ -891,10 +892,9 @@ describe("the opposite order belongs to #1992 (#3638)", () => {
 
     expect(result.secondInstrumentSettlementConflicts).toBe(0);
     expect(result.skippedAlreadyPaidBookings).toBe(1);
+    // #4211: the one reading guard (c) of the duplicate-capture refund uses.
     expect(mocks.paymentRecoveryOperationFindMany).toHaveBeenCalledWith({
-      where: {
-        idempotencyKey: { in: ["duplicate_capture_booking-1_pi_card_3638"] },
-      },
+      where: duplicateCaptureRefundOperationWhere("booking-1"),
       select: { idempotencyKey: true },
     });
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();

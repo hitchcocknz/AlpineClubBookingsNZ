@@ -85,7 +85,6 @@ vi.mock("@/lib/payment-recovery", () => ({
   enqueueDuplicateCaptureRefundRecovery: vi.fn(),
   enqueuePaymentIntentCancellationRecovery: (...args: unknown[]) =>
     mocks.enqueuePaymentIntentCancellationRecovery(...args),
-  listDuplicateCaptureRefundIntentIds: vi.fn(async () => []),
   markCapacityClaimFailedRefundRecoverySucceeded: vi.fn(),
   markDuplicateCaptureRefundRecoverySucceeded: vi.fn(),
   recordCapacityClaimFailedRefundRecoveryInlineError: vi.fn(),

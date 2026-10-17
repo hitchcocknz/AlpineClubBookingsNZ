@@ -96,12 +96,16 @@ vi.mock("@/lib/payment-recovery", () => ({
     mocks.recordCapacityClaimFailedRefundRecoveryInlineError(...args),
   enqueueDuplicateCaptureRefundRecovery: (...args: unknown[]) =>
     mocks.enqueueDuplicateCaptureRefundRecovery(...args),
-  listDuplicateCaptureRefundIntentIds: (...args: unknown[]) =>
-    mocks.listDuplicateCaptureRefundIntentIds(...args),
   markDuplicateCaptureRefundRecoverySucceeded: (...args: unknown[]) =>
     mocks.markDuplicateCaptureRefundRecoverySucceeded(...args),
   recordDuplicateCaptureRefundRecoveryInlineError: (...args: unknown[]) =>
     mocks.recordDuplicateCaptureRefundRecoveryInlineError(...args),
+}));
+
+// #4211: guard (c)'s reading, shared with the Xero second-instrument conflict.
+vi.mock("@/lib/duplicate-capture-ownership", () => ({
+  listDuplicateCaptureRefundIntentIds: (...args: unknown[]) =>
+    mocks.listDuplicateCaptureRefundIntentIds(...args),
 }));
 
 vi.mock("@/lib/member-credit", () => ({

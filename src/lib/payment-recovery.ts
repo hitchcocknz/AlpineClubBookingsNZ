@@ -555,7 +555,6 @@ export async function enqueueRefundRequestRefundRecovery({
   });
 }
 
-import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import {
   BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX,
   CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
@@ -566,7 +565,6 @@ import {
   buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
   buildCapacityClaimFailedRefundStripeKeyPrefix,
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
-  buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking,
   buildDuplicateCaptureRefundStripeKeyPrefix,
   duplicateCaptureIntentIdForRecoveryKey,
   buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey,
@@ -895,35 +893,6 @@ export async function enqueueDuplicateCaptureRefundRecovery({
     ),
     allocationPlan,
     store,
-  });
-}
-
-/**
- * The duplicate-capture adjudication lookup (#1992, #4211): the intent ids of
- * this booking's captures a duplicate-capture refund owns, at any status. Read
- * under lock(1) BEFORE enqueueing a refund: such a capture is going back to the
- * member, so it is never the settlement an arriving capture duplicates. Replays
- * of a pair never refund both sides, and a third capture is still refunded.
- */
-export async function listDuplicateCaptureRefundIntentIds({
-  bookingId,
-  store = prisma,
-}: {
-  bookingId: string;
-  store?: PaymentRecoveryStore;
-}): Promise<string[]> {
-  const operations = await store.paymentRecoveryOperation.findMany({
-    where: {
-      // #4146: on the booking's index, and the prefix matched literally: Prisma's
-      // `startsWith` is `LIKE`, which reads a `_` in the booking id as any character.
-      bookingId,
-      idempotencyKey: exactPrefix(buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId)),
-    },
-    select: { idempotencyKey: true },
-  });
-  return operations.flatMap((operation) => {
-    const intentId = duplicateCaptureIntentIdForRecoveryKey(bookingId, operation.idempotencyKey);
-    return intentId ? [intentId] : [];
   });
 }
 

@@ -110,6 +110,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     paying from three stale tabs) is refunded too. Before #4211, any other
     duplicate-capture refund on the booking kept the arriving capture, with no
     task or alert.
+  - **One home**: `listDuplicateCaptureRefundIntentIds`
+    (`duplicate-capture-ownership.ts`), which the Xero second-instrument
+    conflict reads too (`INV-PAY-102`), so the two never disagree.
   - Decided under `lock(1)`, enqueued before any Stripe call, one operation
     per (booking, intent), so a replay re-sends only its own frozen refund.
   - Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on
