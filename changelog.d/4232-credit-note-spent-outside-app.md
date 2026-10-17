@@ -14,7 +14,7 @@
   should go through. If it was deliberate, nothing in Xero needs changing: the
   invoice already shows what is still owed, but the failed row stays under Active
   failures until the planned fix (#4219) clears it. If Xero cannot be read
-  for the amount, the same reason is shown without it. This change only makes the
+  to confirm it, the failure looks exactly as it did before. This change only makes the
   failure clear; it does not change any credit balance or write anything to Xero.
   Bringing the app's credit ledger into line automatically is planned separately
   (#4219).

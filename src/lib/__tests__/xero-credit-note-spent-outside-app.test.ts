@@ -86,10 +86,9 @@ describe("isCreditNoteOverAllocationText", () => {
 });
 
 describe("refusalMeansSpentOutsideApp", () => {
-  it("stands on Xero's refusal when the read shows less than the slice, or nothing", () => {
+  it("stands when the read shows less than the slice", () => {
     expect(refusalMeansSpentOutsideApp({ remainingCents: 0, allocatedToInvoiceCents: [] }, 5250)).toBe(true);
     expect(refusalMeansSpentOutsideApp({ remainingCents: 5249, allocatedToInvoiceCents: [] }, 5250)).toBe(true);
-    expect(refusalMeansSpentOutsideApp({ remainingCents: null, allocatedToInvoiceCents: [] }, 5250)).toBe(true);
   });
 
   it("is disproved when the note now has enough, to the cent", () => {
@@ -189,24 +188,24 @@ describe("allocateCreditNoteToInvoice — credit note spent outside the app (#42
     );
   });
 
-  it("still reports the named error, without an amount, when the follow-up read fails", async () => {
-    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
+  it("keeps the original error when the follow-up read fails, since the refusal alone is not proof", async () => {
+    const original = new Error(OVER_ALLOCATION_400);
+    mocks.createCreditNoteAllocation.mockRejectedValue(original);
     mocks.getCreditNote.mockRejectedValue(new Error("Xero is down"));
 
-    const result = allocateCreditNoteToInvoice("cn_1", "inv_1", 5250);
-
-    await expect(result).rejects.toMatchObject({ remainingCents: null });
-    await expect(result).rejects.toThrow(/has less than this allocation needs left in Xero/);
-    expect(mocks.failXeroSyncOperation.mock.calls[0][1]).toBeInstanceOf(CreditNoteSpentOutsideAppError);
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(original);
+    expect(mocks.failXeroSyncOperation.mock.calls[0][1]).toBe(original);
   });
 
-  it("reports the named error when Xero returns no credit note on the follow-up read", async () => {
-    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
-    mocks.getCreditNote.mockResolvedValue({ body: { creditNotes: [] } });
+  it("keeps the original error when Xero returns no credit note, or an amount that is not exact cents", async () => {
+    const original = new Error(OVER_ALLOCATION_400);
+    mocks.createCreditNoteAllocation.mockRejectedValue(original);
 
-    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toMatchObject({
-      remainingCents: null,
-    });
+    mocks.getCreditNote.mockResolvedValueOnce({ body: { creditNotes: [] } });
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(original);
+
+    mocks.getCreditNote.mockResolvedValueOnce(note({ remainingCredit: 0.005 }));
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(original);
   });
 
   it("leaves every other Xero error exactly as it was", async () => {

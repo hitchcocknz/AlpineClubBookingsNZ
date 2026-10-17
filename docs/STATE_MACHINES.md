@@ -3539,16 +3539,17 @@ FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
   queued retry of it overlaps the mark (the mark is then withdrawn)
   refused for applied-credit allocations and deallocations (retry-only)
 credit-note allocation refused by Xero as more than the note has left (#4218)
-  -> FAILED with code CREDIT_NOTE_SPENT_OUTSIDE_APP: the note was spent in Xero
-  outside the app. Xero's refusal is the trigger (a read made beforehand could
-  lag an edit and fail an allocation Xero would accept). A read after the
-  refusal adds the amount left to the message and can disprove the refusal (the
-  note now shows enough, or this invoice already holds the app's own allocation
-  of at least the slice, whose completion was never recorded): then the original
-  error stands, unnamed. Its own failure never replaces the error. Applies to every credit-note allocation, applied credit
-  included. The row stays replayable, and still counts as refused by Xero
-  (xeroRefusedOperation): a retry sends the allocation again and should go
-  through once the credit is restored in Xero
+  -> FAILED with code CREDIT_NOTE_SPENT_OUTSIDE_APP when a read of the note
+  afterwards CONFIRMS it was spent outside the app. Xero's refusal is the
+  trigger (a read made beforehand could lag an edit and fail an allocation Xero
+  would accept) but not proof: the app's own earlier allocation, whose
+  completion was never recorded, is refused the same way. So the original error
+  stands, unnamed, when the read fails, shows the note now has enough, or shows
+  this invoice already holds an allocation of at least the slice. The row stays
+  replayable and the named code still counts as refused by Xero
+  (xeroRefusedOperation); a retry sends the allocation again and should go
+  through once the credit is restored in Xero. Applies to every credit-note
+  allocation, applied credit included
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
   in Xero (before the claim, or the claim lost to the resolve); nothing ran
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was

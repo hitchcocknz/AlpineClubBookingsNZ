@@ -22,12 +22,15 @@ import {
 
 /**
  * #4218: Xero refused the allocation as larger than the note's remaining credit.
- * That refusal is the verdict, unless a read disproves it
- * (`refusalMeansSpentOutsideApp`). The read also says how much is left, for the
- * message. Read-only, outside any transaction, and best effort with a short
- * budget (no rate-limit waits, so recording the failure is never held up): any
- * failure leaves the amount out and never replaces the error being reported.
- * Null means the refusal is not an outside spend; the caller keeps the original.
+ * The refusal alone is not enough to say the note was spent outside the app: the
+ * app's own earlier allocation, whose completion was never recorded, is refused
+ * the same way. So the note is read back and the refusal is named only when the
+ * read CONFIRMS it (`refusalMeansSpentOutsideApp`); a read that cannot be
+ * completed leaves the original error as it is, exactly as before this change,
+ * so the named error never rests on a guess (the ledger convergence in #4219
+ * acts on it). Read-only, outside any transaction, with no rate-limit retries
+ * and a short wait so recording the failure is never held up. Null means "not
+ * confirmed"; the caller keeps the original error.
  */
 export async function describeCreditNoteSpentOutsideApp(
   creditNoteId: string,
@@ -35,8 +38,8 @@ export async function describeCreditNoteSpentOutsideApp(
   amountCents: number,
   cause: unknown,
 ): Promise<CreditNoteSpentOutsideAppError | null> {
-  let remainingCents: number | null = null;
-  let allocatedToInvoiceCents: number[] = [];
+  let remainingCents: number | null;
+  let allocatedToInvoiceCents: number[];
   try {
     const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await callXeroApi(
@@ -61,19 +64,21 @@ export async function describeCreditNoteSpentOutsideApp(
   } catch (readError) {
     logger.warn(
       { err: readError, creditNoteId },
-      "Could not read the credit note after an over-allocation refusal; reporting without the amount left",
+      "Could not read the credit note after an over-allocation refusal; leaving the original error",
     );
+    return null;
   }
-  if (!refusalMeansSpentOutsideApp({ remainingCents, allocatedToInvoiceCents }, amountCents)) {
+  if (
+    remainingCents === null ||
+    !refusalMeansSpentOutsideApp({ remainingCents, allocatedToInvoiceCents }, amountCents)
+  ) {
     return null;
   }
   let left = "less than this allocation needs";
-  if (remainingCents !== null) {
-    try {
-      left = `only ${formatCents(remainingCents, await getClubFormat())}`;
-    } catch (formatError) {
-      logger.warn({ err: formatError }, "Could not format the credit-note amount left; using generic wording");
-    }
+  try {
+    left = `only ${formatCents(remainingCents, await getClubFormat())}`;
+  } catch (formatError) {
+    logger.warn({ err: formatError }, "Could not format the credit-note amount left; using generic wording");
   }
   return new CreditNoteSpentOutsideAppError(
     `The credit note this allocation needs has ${left} left in Xero; it was used outside the app. Retrying will not help until that credit is restored in Xero.`,

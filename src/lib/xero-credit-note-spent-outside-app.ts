@@ -6,15 +6,15 @@
  * The allocation worker plans from the LOCAL credit ledger and never asks Xero
  * what the note has left, so Xero refuses the allocation with a 400 and every
  * retry sends the same request. This module is the pure half of the fix: the
- * named error and the test for Xero's refusal wording. The Xero read lives with
- * `allocateCreditNoteToInvoice`.
+ * named error, the test for Xero's refusal wording, and the rule that decides
+ * whether a read confirms the refusal. The Xero read is in
+ * `xero-credit-note-spent-detail.ts`.
  *
- * Xero's refusal is the trigger, not a read made beforehand. A read can lag an
- * edit made seconds ago, and a stale "low" figure would wrongly fail an
- * allocation Xero would have accepted (and, once the ledger converges from this
- * signal in #4219, wrongly write credit down). Xero's own 400 is the one answer
- * that is authoritative at the moment of the request; the follow-up read only
- * fills in how much is left, for the message.
+ * Xero's refusal is the trigger, not a read made beforehand: a read can lag an
+ * edit made seconds ago, and a stale "low" figure would fail an allocation Xero
+ * would accept. But the refusal alone is not proof either - the app's own earlier
+ * allocation, whose completion was never recorded, is refused the same way - so
+ * the error is named only when a read after the refusal confirms it.
  *
  * Nothing here writes. The error makes the failure diagnosable; the ledger
  * convergence is #4219.
@@ -29,8 +29,8 @@ export class CreditNoteSpentOutsideAppError extends Error {
   constructor(
     message: string,
     readonly creditNoteId: string,
-    /** What Xero says is left, in cents; null when the follow-up read failed. */
-    readonly remainingCents: number | null,
+    /** What Xero says is left, in cents. */
+    readonly remainingCents: number,
     readonly requestedCents: number,
     options?: { cause?: unknown },
   ) {
@@ -77,9 +77,10 @@ export function noteAllocationCentsForInvoice(
 }
 
 /**
- * Xero refused the allocation as too large. Is that really "spent outside the
- * app"? Not when the follow-up read disproves it, which keeps this signal free of
- * false positives (the ledger convergence in #4219 will act on it):
+ * Xero refused the allocation as too large, and the follow-up read succeeded. Is
+ * that really "spent outside the app"? Not when the read disproves it, which keeps
+ * this signal free of false positives (the ledger convergence in #4219 will act
+ * on it):
  *
  * - the note already holds an allocation to this invoice of at least the slice:
  *   that is the app's own earlier success (its completion was never recorded, or
@@ -87,17 +88,16 @@ export function noteAllocationCentsForInvoice(
  * - the note now shows at least the slice remaining: the credit was restored
  *   between the refusal and the read, so there is nothing to name.
  *
- * With no read to go on (`remainingCents` null, no allocations), Xero's refusal
- * stands.
+ * A read that failed never reaches this rule: the caller keeps the original error.
  */
 export function refusalMeansSpentOutsideApp(
-  observation: { remainingCents: number | null; allocatedToInvoiceCents: readonly number[] },
+  observation: { remainingCents: number; allocatedToInvoiceCents: readonly number[] },
   requestedCents: number,
 ): boolean {
   if (observation.allocatedToInvoiceCents.some((cents) => cents >= requestedCents)) {
     return false;
   }
-  if (observation.remainingCents !== null && observation.remainingCents >= requestedCents) {
+  if (observation.remainingCents >= requestedCents) {
     return false;
   }
   return true;
