@@ -181,6 +181,17 @@ describe("owed again as before: never settled by a close that did not pay it bac
     expect(inserted(tx)).toMatchObject({ attempts: 0, amountCents: 4_000 });
   });
 
+  // Two slices of one amount on one charge (a capacity race's halves): X made
+  // the first and the close counted it; it paid back only the second. X fits
+  // that unsent slice by amount, but the close counted X - owed again.
+  it("MUTATION (money F2): a refund the close counted fits its other, unsent slice of the same amount - still re-sent", async () => {
+    const halves = row({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000 }, { paymentTransactionId: "txn-1", amountCents: 4_000 }], amountCents: 8_000 });
+    const close = closeRecord({ reviewContext: counted({ refundIds: ["re_1"], unsentSlices: [{ paymentTransactionId: "txn-1", amountCents: 4_000, exact: true }] }) });
+    const tx = fakeTx({ rows: [halves], recordedAt: MADE_AT, close });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "raised" } });
+    expect(inserted(tx)).toMatchObject({ attempts: 0, amountCents: 4_000 });
+  });
+
   it("MUTATION (boundary): made by Stripe in the instant of the close is the close's; a second later is not (money F1)", async () => {
     expect(await keep(fakeTx({ madeAt: CLOSED_AT }))).toMatchObject({ debt: { outcome: "settled-paid-another-way" } });
     // A later refund carrying the closed row's metadata - a second change's, say - made after the close.
