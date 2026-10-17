@@ -262,6 +262,7 @@ type Edit = {
   setup?: () => void;
   boxBody?: Record<string, unknown>;
   boxGuest?: Record<string, unknown>;
+  quoteBody?: Record<string, unknown>;
 };
 
 /** The quote's answer for the edit: its total and the promo line's discount. */
@@ -275,6 +276,7 @@ async function quote(edit: Edit) {
         checkIn: "2026-08-24",
         checkOut: edit.checkOut,
         promoCode: "SAVE",
+        ...edit.quoteBody,
         ...(edit.addFriend
           ? { addGuests: [{ firstName: "Kiri", lastName: "Friend", ageTier: "ADULT", isMember: false }] }
           : {}),
@@ -437,10 +439,14 @@ const BOOKING_EDITS: Array<[string, Edit]> = [
     },
   ],
   [
-    "an officer editing a member's booking, with a code assigned to that member",
+    "an officer editing a member's booking, with a code only that member may book with",
     {
       checkOut: "2026-08-28",
-      promo: { percentOff: 50, assignments: [{ memberId: "m1" }] },
+      // "Booker picks guests": the booker must be the assigned member, so the
+      // answer depends on whose booking it is judged to be.
+      promo: { percentOff: 50, assignments: [{ memberId: "m1" }], assignedMembersOnlyOwnNights: false },
+      boxBody: { promoGuestIndexes: [0] },
+      quoteBody: { promoGuestIds: ["g1"] },
       setup: officerCalling,
     },
   ],
