@@ -130,6 +130,15 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    **Reset** — clears it; after that the `-partial` in the file's name is what
    tells you the file is short.
 
+### Which nights a code discounts
+
+A code discounts the nights each guest actually stays. When a booking uses the
+night-by-night grid, a guest can stay, say, the 10th and 12th but not the 11th;
+the promo code box, on a new booking and on a booking's edit panel, then works
+the discount out on those two nights, the same nights the price summary and the
+save charge (#4199). A guest given their own Date In and Date Out with the grid
+off is discounted over that whole continuous stay.
+
 ### What happens when a booking is edited and the code has run out
 
 A promotion's usage limits are enforced again every time a booking is repriced —

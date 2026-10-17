@@ -1,0 +1,144 @@
+/**
+ * #4199: the promo preview prices each guest on the nights the save will price,
+ * by handing the party to the modification planner (`INV-EXCEPT-022`) on an
+ * edit, and normalising each guest on their own for a create.
+ *
+ * Frozen clock discipline: every date is a fixed lodge night after the
+ * 2026-07-01 freeze; nothing reads the real calendar.
+ */
+import { describe, expect, it } from "vitest";
+import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { BookingGuestStayRangeValidationError } from "@/lib/booking-guest-stay-range-input";
+import { resolvePromoPreviewStays, type PromoPreviewStayGuest } from "@/lib/promo-preview-stay-ranges";
+
+const d = parseDateOnly;
+const keys = (nights: Date[] | undefined) => nights?.map(formatDateOnly);
+
+/** A booking of 10-13 August whose guest "bg-gap" holds the 10th and 12th only. */
+const booking = { checkIn: d("2026-08-10"), checkOut: d("2026-08-13") };
+const storedGuests = [
+  {
+    id: "bg-full",
+    memberId: "booker",
+    stayStart: d("2026-08-10"),
+    stayEnd: d("2026-08-13"),
+    nights: ["2026-08-10", "2026-08-11", "2026-08-12"].map((night) => ({ stayDate: d(night) })),
+  },
+  {
+    id: "bg-gap",
+    memberId: null,
+    stayStart: d("2026-08-10"),
+    stayEnd: d("2026-08-13"),
+    nights: ["2026-08-10", "2026-08-12"].map((night) => ({ stayDate: d(night) })),
+  },
+];
+const BOOKER = { memberId: "booker", bookingGuestId: "bg-full" };
+const GAPPED = { bookingGuestId: "bg-gap" };
+
+function resolveEdit(
+  guests: PromoPreviewStayGuest[],
+  dates: { checkIn: string; checkOut: string } = { checkIn: "2026-08-10", checkOut: "2026-08-13" },
+) {
+  return resolvePromoPreviewStays({
+    checkIn: d(dates.checkIn),
+    checkOut: d(dates.checkOut),
+    guests,
+    edit: { booking, storedGuests },
+  });
+}
+
+describe("an edit preview resolves stays through the modification planner", () => {
+  it("grid mode: a guest's chosen nights are the nights priced, gap and all", () => {
+    const resolved = resolveEdit([
+      { ...BOOKER, nights: ["2026-08-10", "2026-08-11", "2026-08-12"] },
+      { ...GAPPED, nights: ["2026-08-12", "2026-08-10"] },
+    ]);
+    expect(keys(resolved.guests[1]!.nights)).toEqual(["2026-08-10", "2026-08-12"]);
+    expect(formatDateOnly(resolved.guests[1]!.stayStart)).toBe("2026-08-10");
+    expect(formatDateOnly(resolved.guests[1]!.stayEnd)).toBe("2026-08-13");
+  });
+
+  it("grid mode: the envelope is the one the save would write, wherever the request's dates were", () => {
+    const resolved = resolveEdit(
+      [
+        { ...BOOKER, nights: ["2026-08-11"] },
+        { ...GAPPED, nights: ["2026-08-12", "2026-08-14"] },
+      ],
+      { checkIn: "2026-08-10", checkOut: "2026-08-13" },
+    );
+    expect(formatDateOnly(resolved.checkIn)).toBe("2026-08-11");
+    expect(formatDateOnly(resolved.checkOut)).toBe("2026-08-15");
+  });
+
+  it("range mode is unchanged: a gapped guest sent continuous dates is priced continuously (#4189)", () => {
+    const resolved = resolveEdit([
+      { ...BOOKER, stayStart: "2026-08-10", stayEnd: "2026-08-13" },
+      { ...GAPPED, stayStart: "2026-08-10", stayEnd: "2026-08-13" },
+    ]);
+    expect(resolved.guests[1]!.nights).toBeUndefined();
+    expect(formatDateOnly(resolved.guests[1]!.stayStart)).toBe("2026-08-10");
+    expect(formatDateOnly(resolved.guests[1]!.stayEnd)).toBe("2026-08-13");
+  });
+
+  it("with no ranges sent and the dates unmoved, each guest keeps their stored nights, as the save does", () => {
+    const resolved = resolveEdit([BOOKER, GAPPED]);
+    expect(keys(resolved.guests[1]!.nights)).toEqual(["2026-08-10", "2026-08-12"]);
+  });
+
+  it("with no ranges sent and the dates moved, every guest is reset to the new dates, as the save does", () => {
+    const resolved = resolveEdit([BOOKER, GAPPED], { checkIn: "2026-08-11", checkOut: "2026-08-14" });
+    expect(resolved.guests[1]!.nights).toBeUndefined();
+    expect(formatDateOnly(resolved.guests[1]!.stayStart)).toBe("2026-08-11");
+    expect(formatDateOnly(resolved.guests[1]!.stayEnd)).toBe("2026-08-14");
+  });
+
+  it("a guest being added (no row) is resolved as an added guest, in party order", () => {
+    const resolved = resolveEdit([
+      { ...BOOKER, nights: ["2026-08-10"] },
+      { memberId: "friend", nights: ["2026-08-11", "2026-08-12"] },
+      { ...GAPPED, nights: ["2026-08-12"] },
+    ]);
+    expect(resolved.guests.map((guest) => keys(guest.nights))).toEqual([
+      ["2026-08-10"],
+      ["2026-08-11", "2026-08-12"],
+      ["2026-08-12"],
+    ]);
+    expect(resolved.guests[1]!.memberId).toBe("friend");
+  });
+
+  it("a row named beside a different member is not that row: the guest is an added guest", () => {
+    // Range-less, so a remaining guest would keep the row's stored gap; an
+    // added guest takes the booking's dates instead.
+    const resolved = resolveEdit([BOOKER, { memberId: "stranger", bookingGuestId: "bg-gap" }]);
+    expect(resolved.guests[1]!.nights).toBeUndefined();
+    expect(formatDateOnly(resolved.guests[1]!.stayStart)).toBe("2026-08-10");
+  });
+
+  it("only the first guest naming a row claims it", () => {
+    const resolved = resolveEdit([BOOKER, GAPPED, GAPPED]);
+    expect(keys(resolved.guests[1]!.nights)).toEqual(["2026-08-10", "2026-08-12"]);
+    expect(resolved.guests[2]!.nights).toBeUndefined();
+  });
+
+  it("refuses an invalid range with the planner's own error", () => {
+    expect(() =>
+      resolveEdit([{ ...BOOKER, stayStart: "2026-08-12", stayEnd: "2026-08-11" }, GAPPED]),
+    ).toThrow(BookingGuestStayRangeValidationError);
+  });
+});
+
+describe("a create preview normalises each guest on their own", () => {
+  it("keeps a guest's night set and the request's dates", () => {
+    const resolved = resolvePromoPreviewStays({
+      checkIn: d("2026-08-10"),
+      checkOut: d("2026-08-13"),
+      guests: [{ nights: ["2026-08-10", "2026-08-12"] }, {}],
+      edit: null,
+    });
+    expect(keys(resolved.guests[0]!.nights)).toEqual(["2026-08-10", "2026-08-12"]);
+    expect(formatDateOnly(resolved.guests[1]!.stayStart)).toBe("2026-08-10");
+    expect(formatDateOnly(resolved.guests[1]!.stayEnd)).toBe("2026-08-13");
+    expect(formatDateOnly(resolved.checkIn)).toBe("2026-08-10");
+    expect(formatDateOnly(resolved.checkOut)).toBe("2026-08-13");
+  });
+});
