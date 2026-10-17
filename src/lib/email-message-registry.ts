@@ -1577,17 +1577,8 @@ export function sampleValue(token: string): string {
   if (token === "outsideAppRefundNote") return LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE;
   // #4210: previewed as the settled arm - the case the alert exists for; the check arms are the sender's others.
   if (token === "paidAnotherWayFailedLaterNote") {
-    return paidAnotherWayFailedLaterNote({
-      outcome: "settled-paid-another-way",
-      stripeRefundId: "re_example",
-      amount: "$100.00",
-      paidBack: "$100.00",
-      owed: "$100.00",
-      partClose: false,
-      check: "$0.00",
-      onPaidTwiceList: true,
-      resolutionNote: null,
-    });
+    const money = { amount: "$100.00", paidBack: "$100.00", owed: "$100.00", check: "$0.00" };
+    return paidAnotherWayFailedLaterNote({ ...money, outcome: "settled-paid-another-way", stripeRefundId: "re_example", partClose: false, onPaidTwiceList: true, resolutionNote: null });
   }
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
