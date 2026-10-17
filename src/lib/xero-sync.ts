@@ -20,8 +20,7 @@ import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instruction";
-import { xeroSyncErrorText } from "@/lib/xero-sync-error-text";
-import { namedXeroErrorCode } from "@/lib/xero-credit-note-spent-outside-app";
+import { namedXeroErrorCode, xeroSyncErrorText } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 
 export interface XeroSyncOperationInput {
@@ -1004,14 +1003,9 @@ export async function failXeroSyncOperation(
   const statusCode = getXeroErrorStatusCode(error);
   const rawMessage = options?.lastErrorMessage ?? xeroSyncErrorText(error);
   const message = redactSensitiveText(rawMessage);
-  // #4218: an error that names its own cause records that code instead of the
-  // HTTP status. The row stays replayable: a retry re-runs the pre-flight read, so
-  // it succeeds once the credit is restored in Xero and fails again, with the same
-  // clear message, until then.
-  const namedCode = namedXeroErrorCode(error);
   const data = {
     status: "FAILED" as const,
-    lastErrorCode: namedCode ?? (statusCode ? String(statusCode) : null),
+    lastErrorCode: namedXeroErrorCode(error) ?? (statusCode ? String(statusCode) : null),
     lastErrorMessage: message,
     responsePayload: sanitizeForJson(responsePayload ?? error),
     completedAt: new Date(),

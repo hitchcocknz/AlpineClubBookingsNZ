@@ -4,8 +4,10 @@ import {
   CREDIT_NOTE_SPENT_OUTSIDE_APP_CODE,
   CreditNoteSpentOutsideAppError,
   isCreditNoteOverAllocationText,
-  namedXeroErrorCode,
+  noteAllocationCentsForInvoice,
+  refusalMeansSpentOutsideApp,
 } from "@/lib/xero-credit-note-spent-outside-app";
+import { namedXeroErrorCode } from "@/lib/xero-sync-error-text";
 import { xeroRefusedOperation } from "@/lib/xero-error-shape";
 
 /**
@@ -20,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   completeXeroSyncOperation: vi.fn(),
   failXeroSyncOperation: vi.fn(),
   xeroSyncOperationUpdate: vi.fn(),
+  callXeroApiOptions: vi.fn(),
+  getClubFormat: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -53,12 +57,12 @@ vi.mock("@/lib/xero-api-client", async (importOriginal) => ({
     },
     tenantId: "tenant_1",
   }),
-  callXeroApi: async (call: () => Promise<unknown>) => call(),
+  callXeroApi: async (call: () => Promise<unknown>, options?: unknown) => {
+    mocks.callXeroApiOptions(options);
+    return call();
+  },
 }));
-vi.mock("@/lib/club-format-settings", async () => {
-  const { CLUB_FORMAT_TEST } = await import("./support/club-format-fixture");
-  return { getClubFormat: async () => CLUB_FORMAT_TEST };
-});
+vi.mock("@/lib/club-format-settings", () => ({ getClubFormat: mocks.getClubFormat }));
 vi.mock("@/lib/club-time-zone-runtime", () => ({
   readClubTimeZoneOutsideRequest: async () => "Pacific/Auckland",
 }));
@@ -81,6 +85,43 @@ describe("isCreditNoteOverAllocationText", () => {
   });
 });
 
+describe("refusalMeansSpentOutsideApp", () => {
+  it("stands on Xero's refusal when the read shows less than the slice, or nothing", () => {
+    expect(refusalMeansSpentOutsideApp({ remainingCents: 0, allocatedToInvoiceCents: [] }, 5250)).toBe(true);
+    expect(refusalMeansSpentOutsideApp({ remainingCents: 5249, allocatedToInvoiceCents: [] }, 5250)).toBe(true);
+    expect(refusalMeansSpentOutsideApp({ remainingCents: null, allocatedToInvoiceCents: [] }, 5250)).toBe(true);
+  });
+
+  it("is disproved when the note now has enough, to the cent", () => {
+    expect(refusalMeansSpentOutsideApp({ remainingCents: 5250, allocatedToInvoiceCents: [] }, 5250)).toBe(false);
+  });
+
+  it("is disproved by this invoice's own earlier allocation of at least the slice", () => {
+    expect(refusalMeansSpentOutsideApp({ remainingCents: 0, allocatedToInvoiceCents: [5250] }, 5250)).toBe(false);
+    expect(refusalMeansSpentOutsideApp({ remainingCents: 0, allocatedToInvoiceCents: [5249] }, 5250)).toBe(true);
+  });
+});
+
+describe("noteAllocationCentsForInvoice", () => {
+  const toCents = (amount: unknown) => (typeof amount === "number" ? Math.round(amount * 100) : null);
+
+  it("keeps only this invoice's allocations and skips an amount that is not exact cents", () => {
+    expect(
+      noteAllocationCentsForInvoice(
+        [
+          { invoice: { invoiceID: "inv_1" }, amount: 52.5 },
+          { invoice: { invoiceID: "inv_other" }, amount: 99 },
+          { invoice: { invoiceID: "inv_1" }, amount: "bad" },
+          { invoice: null, amount: 1 },
+        ],
+        "inv_1",
+        toCents,
+      ),
+    ).toEqual([5250]);
+    expect(noteAllocationCentsForInvoice(undefined, "inv_1", toCents)).toEqual([]);
+  });
+});
+
 describe("namedXeroErrorCode", () => {
   it("names only the dedicated error", () => {
     const error = new CreditNoteSpentOutsideAppError("x", "cn", 0, 5250);
@@ -99,8 +140,10 @@ describe("xeroRefusedOperation", () => {
 });
 
 describe("allocateCreditNoteToInvoice — credit note spent outside the app (#4218)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const { CLUB_FORMAT_TEST } = await import("./support/club-format-fixture");
+    mocks.getClubFormat.mockResolvedValue(CLUB_FORMAT_TEST);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
     mocks.completeXeroSyncOperation.mockResolvedValue(undefined);
     mocks.failXeroSyncOperation.mockResolvedValue(undefined);
@@ -173,5 +216,89 @@ describe("allocateCreditNoteToInvoice — credit note spent outside the app (#42
     await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(other);
     expect(mocks.failXeroSyncOperation.mock.calls[0][1]).toBe(other);
     expect(mocks.getCreditNote).not.toHaveBeenCalled();
+  });
+
+  it("states the amount left, in the club's money format, when there is some", async () => {
+    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
+    mocks.getCreditNote.mockResolvedValue(note({ status: "AUTHORISED", remainingCredit: 12.5 }));
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toMatchObject({
+      remainingCents: 1250,
+      message: expect.stringContaining("only $12.50 left in Xero"),
+    });
+  });
+
+  it("falls back to generic wording when the club format cannot be read", async () => {
+    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
+    mocks.getCreditNote.mockResolvedValue(note({ remainingCredit: 12.5 }));
+    mocks.getClubFormat.mockRejectedValue(new Error("settings unavailable"));
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toMatchObject({
+      remainingCents: 1250,
+      message: expect.stringContaining("has less than this allocation needs left in Xero"),
+    });
+    expect(mocks.failXeroSyncOperation.mock.calls[0][1]).toBeInstanceOf(CreditNoteSpentOutsideAppError);
+  });
+
+  it("makes the follow-up read without arming the transient-outage breaker", async () => {
+    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
+    mocks.getCreditNote.mockResolvedValue(note());
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBeInstanceOf(
+      CreditNoteSpentOutsideAppError,
+    );
+    expect(mocks.callXeroApiOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "getCreditNote", armTransientBreaker: false }),
+    );
+  });
+
+  it("does not wrap an error that is already the named error", async () => {
+    const already = new CreditNoteSpentOutsideAppError("already", "cn_1", 0, 5250);
+    mocks.createCreditNoteAllocation.mockRejectedValue(already);
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(already);
+    expect(mocks.getCreditNote).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original error when this invoice already holds the app's own allocation", async () => {
+    const original = new Error(OVER_ALLOCATION_400);
+    mocks.createCreditNoteAllocation.mockRejectedValue(original);
+    mocks.getCreditNote.mockResolvedValue(
+      note({ remainingCredit: 0, allocations: [{ invoice: { invoiceID: "inv_1" }, amount: 52.5 }] }),
+    );
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(original);
+    expect(mocks.failXeroSyncOperation.mock.calls[0][1]).toBe(original);
+  });
+
+  it("still names a note spent by an allocation to a DIFFERENT invoice", async () => {
+    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
+    mocks.getCreditNote.mockResolvedValue(
+      note({ remainingCredit: 0, allocations: [{ invoice: { invoiceID: "inv_other" }, amount: 52.5 }] }),
+    );
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBeInstanceOf(
+      CreditNoteSpentOutsideAppError,
+    );
+  });
+
+  it("keeps the original error when the note now shows enough credit", async () => {
+    const original = new Error(OVER_ALLOCATION_400);
+    mocks.createCreditNoteAllocation.mockRejectedValue(original);
+    mocks.getCreditNote.mockResolvedValue(note({ status: "AUTHORISED", remainingCredit: 52.5 }));
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBe(original);
+  });
+
+  it("reads with no rate-limit retries and a short wait", async () => {
+    mocks.createCreditNoteAllocation.mockRejectedValue(new Error(OVER_ALLOCATION_400));
+    mocks.getCreditNote.mockResolvedValue(note());
+
+    await expect(allocateCreditNoteToInvoice("cn_1", "inv_1", 5250)).rejects.toBeInstanceOf(
+      CreditNoteSpentOutsideAppError,
+    );
+    expect(mocks.callXeroApiOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRetries: 0, maxWaitSec: 5 }),
+    );
   });
 });

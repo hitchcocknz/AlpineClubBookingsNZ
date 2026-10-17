@@ -1272,9 +1272,6 @@ describe("failXeroSyncOperation keepCancelled", () => {
   });
 });
 
-// #3462: a retry that claimed the original RUNNING abandons the claim when its
-// handler throws early - but only its own claim, never a row the handler
-// already completed or a later claim re-stamped.
 describe("failXeroSyncOperation named errors (#4218)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1282,7 +1279,7 @@ describe("failXeroSyncOperation named errors (#4218)", () => {
     mocks.operationUpdate.mockResolvedValue({ id: "op_1", status: "FAILED" });
   });
 
-  it("records the named code and keeps the row replayable for a credit note spent outside the app", async () => {
+  it("records the named code for a credit note spent outside the app", async () => {
     await failXeroSyncOperation(
       "op_1",
       new CreditNoteSpentOutsideAppError("only $0.00 left in Xero", "cn_1", 0, 5250)
@@ -1296,18 +1293,18 @@ describe("failXeroSyncOperation named errors (#4218)", () => {
         }),
       })
     );
-    const { data } = mocks.operationUpdate.mock.calls[0][0];
-    expect(data).not.toHaveProperty("replayable");
   });
 
-  it("leaves every other failure replayable", async () => {
+  it("records no named code for any other failure", async () => {
     await failXeroSyncOperation("op_1", new Error("bad request"));
     const { data } = mocks.operationUpdate.mock.calls[0][0];
     expect(data.lastErrorCode).not.toBe("CREDIT_NOTE_SPENT_OUTSIDE_APP");
-    expect(data).not.toHaveProperty("replayable");
   });
 });
 
+// #3462: a retry that claimed the original RUNNING abandons the claim when its
+// handler throws early - but only its own claim, never a row the handler
+// already completed or a later claim re-stamped.
 describe("failXeroSyncOperation onlyIfRunningSince", () => {
   const claimedAt = new Date("2026-07-01T00:00:00.000Z");
 

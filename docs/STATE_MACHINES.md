@@ -3541,12 +3541,14 @@ FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
 credit-note allocation refused by Xero as more than the note has left (#4218)
   -> FAILED with code CREDIT_NOTE_SPENT_OUTSIDE_APP: the note was spent in Xero
   outside the app. Xero's refusal is the trigger (a read made beforehand could
-  lag an edit and fail an allocation Xero would accept); a read after the
-  refusal only adds the amount left to the message, and its failure never
-  replaces the error. Applies to every credit-note allocation, applied credit
+  lag an edit and fail an allocation Xero would accept). A read after the
+  refusal adds the amount left to the message and can disprove the refusal (the
+  note now shows enough, or this invoice already holds the app's own allocation
+  of at least the slice, whose completion was never recorded): then the original
+  error stands, unnamed. Its own failure never replaces the error. Applies to every credit-note allocation, applied credit
   included. The row stays replayable, and still counts as refused by Xero
-  (xeroRefusedOperation): a retry sends the allocation again and goes through
-  once the credit is restored in Xero
+  (xeroRefusedOperation): a retry sends the allocation again and should go
+  through once the credit is restored in Xero
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
   in Xero (before the claim, or the claim lost to the resolve); nothing ran
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was

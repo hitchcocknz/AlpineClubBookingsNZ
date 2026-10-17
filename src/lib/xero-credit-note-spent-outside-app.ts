@@ -46,15 +46,6 @@ export function isCreditNoteSpentOutsideAppError(
 }
 
 /**
- * The `lastErrorCode` an error names for itself, in place of an HTTP status.
- * Null for every other error. The operation stays replayable: a retry sends the
- * allocation again, so it goes through once the credit is restored in Xero.
- */
-export function namedXeroErrorCode(error: unknown): string | null {
-  return isCreditNoteSpentOutsideAppError(error) ? error.code : null;
-}
-
-/**
  * Xero's refusal of an over-allocation: "Credit Note cannot be allocated as the
  * allocation amount is greater than the amount remaining on the Credit Note".
  * Takes the error's search text (`getXeroErrorSearchText`, the one reader of a
@@ -64,4 +55,50 @@ export function isCreditNoteOverAllocationText(searchText: string): boolean {
   return /allocation amount is greater than the amount remaining on the credit note/i.test(
     searchText,
   );
+}
+
+/**
+ * This note's allocations to one invoice, as exact cents. An allocation whose
+ * amount is not an exact cent figure is skipped.
+ */
+export function noteAllocationCentsForInvoice(
+  allocations:
+    | ReadonlyArray<{ invoice?: { invoiceID?: string } | null; amount?: unknown }>
+    | null
+    | undefined,
+  invoiceId: string,
+  toCents: (amount: unknown) => number | null,
+): number[] {
+  return (allocations ?? []).flatMap((allocation) => {
+    if (allocation.invoice?.invoiceID !== invoiceId) return [];
+    const cents = toCents(allocation.amount);
+    return cents === null ? [] : [cents];
+  });
+}
+
+/**
+ * Xero refused the allocation as too large. Is that really "spent outside the
+ * app"? Not when the follow-up read disproves it, which keeps this signal free of
+ * false positives (the ledger convergence in #4219 will act on it):
+ *
+ * - the note already holds an allocation to this invoice of at least the slice:
+ *   that is the app's own earlier success (its completion was never recorded, or
+ *   Xero's duplicate-request window had passed), not an outside spend;
+ * - the note now shows at least the slice remaining: the credit was restored
+ *   between the refusal and the read, so there is nothing to name.
+ *
+ * With no read to go on (`remainingCents` null, no allocations), Xero's refusal
+ * stands.
+ */
+export function refusalMeansSpentOutsideApp(
+  observation: { remainingCents: number | null; allocatedToInvoiceCents: readonly number[] },
+  requestedCents: number,
+): boolean {
+  if (observation.allocatedToInvoiceCents.some((cents) => cents >= requestedCents)) {
+    return false;
+  }
+  if (observation.remainingCents !== null && observation.remainingCents >= requestedCents) {
+    return false;
+  }
+  return true;
 }

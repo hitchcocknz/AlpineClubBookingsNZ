@@ -116,7 +116,8 @@ export function getXeroErrorStatusCode(error: unknown): number | undefined {
  * #3836 (M2), #3924 round 15: did Xero REFUSE this operation - a FAILED or
  * PARTIAL row whose `lastErrorCode` (the status `failXeroSyncOperation` reads
  * with `getXeroErrorStatusCode`) is a 4xx other than 408 (timeout) or 429
- * (rate limit), which are transient? A refused write created nothing, and
+ * (rate limit), which are transient, or the named code of a refusal Xero
+ * explained (#4218: CREDIT_NOTE_SPENT_OUTSIDE_APP)? A refused write created nothing, and
  * re-running it changes nothing until someone fixes the cause in Xero.
  */
 export function xeroRefusedOperation(operation: { status: string; lastErrorCode: string | null }): boolean {
