@@ -51,7 +51,7 @@ vi.mock("@/lib/prisma", async () => {
   minterDb.executeRaw = hoistedVi.fn(async () => 0);
   const prisma = {
     // #4217: the door's write under its recovery locks the Payment row first.
-    $executeRaw: (...args: unknown[]) => minterDb.executeRaw(...args),
+    $executeRaw: (...args: unknown[]) => (minterDb.executeRaw as unknown as (...a: unknown[]) => Promise<number>)(...args),
     payment: { findUnique: async () => minterDb.currentPayment },
     paymentTransaction: { findMany: async () => [] },
     paymentRecoveryOperation: {
