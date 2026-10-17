@@ -1024,6 +1024,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
     paymentIntentId: string;
     paymentTransactionId: string | null;
     idempotencyKey: string;
+    amountCents: number;
     allocationPlan: unknown;
     type: PaymentRecoveryOperationType;
     status: PaymentRecoveryOperationStatus;
@@ -1041,6 +1042,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       paymentIntentId: X.stripePaymentIntentId,
       paymentTransactionId: X.id,
       idempotencyKey: `recovery-key-${opSeq}`,
+      amountCents: X.amountCents,
       allocationPlan: null,
       type,
       status: PaymentRecoveryOperationStatus.PENDING,
@@ -1081,6 +1083,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       paymentIntentId: true,
       paymentTransactionId: true,
       idempotencyKey: true,
+      amountCents: true,
       allocationPlan: true,
     },
   };
@@ -1105,12 +1108,13 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
               (operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT &&
                 isPaymentRecoveryOperationInFlight(operation))),
         )
-        .map(({ type, status, paymentIntentId, paymentTransactionId, idempotencyKey, allocationPlan }) => ({
+        .map(({ type, status, paymentIntentId, paymentTransactionId, idempotencyKey, amountCents, allocationPlan }) => ({
           type,
           status,
           paymentIntentId,
           paymentTransactionId,
           idempotencyKey,
+          amountCents,
           allocationPlan,
         }));
     });
@@ -1226,13 +1230,15 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       refundId: string,
       slice: { paymentTransactionId?: string; madeByOperationId?: string | null },
       overrides: Partial<Operation> = {},
-    ) =>
-      op(PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, {
+    ) => {
+      const amountCents = overrides.amountCents ?? X.amountCents;
+      return op(PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, {
         idempotencyKey: `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}${refundId}`,
         paymentTransactionId: null,
-        allocationPlan: [{ paymentTransactionId: slice.paymentTransactionId ?? X.id, amountCents: X.amountCents, ...slice }],
+        allocationPlan: [{ paymentTransactionId: slice.paymentTransactionId ?? X.id, amountCents, ...slice }],
         ...overrides,
       });
+    };
     /** Another door's refund on X (an edit's or a cancel's recovery row), not a superseded one. */
     const otherDoorRefund = () =>
       op(PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, {
@@ -1340,7 +1346,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       mocks.paymentTransactionFindMany.mockResolvedValue([S]);
       ownedBy([
         supersededRefund(),
-        failedLater("re_4221_only_s", { paymentTransactionId: S.id }, { paymentIntentId: S.stripePaymentIntentId }),
+        failedLater("re_4221_only_s", { paymentTransactionId: S.id }, { paymentIntentId: S.stripePaymentIntentId, amountCents: S.amountCents }),
       ]);
 
       await sync();
@@ -1368,6 +1374,8 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
         ...overrides,
       });
     const replannedOnX = { paymentTransactionId: X.id, stripeKeySuffix: nextRefusedRefundKeySuffix(undefined), failedRefundIds: ["re_4221_r"] };
+    /** X after its superseded refund took the rest: it holds R's amount again, and no more. */
+    const X_HOLDING_R = { ...X, refundedAmountCents: X.amountCents - R_CENTS };
 
     it.each([
       ["waiting to send it again", () => openDoorRow([replannedOnX])],
@@ -1376,7 +1384,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       ["dead for the treasurer (retries spent)", () => openDoorRow([replannedOnX], { attempts: 5 })],
     ])("paid: names S, not X, while an open refund row's slice on X that failed later is %s", async (_label, row) => {
       primePayment(switchedPayment(BookingStatus.PAID));
-      mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
+      mocks.paymentTransactionFindMany.mockResolvedValue([X_HOLDING_R, S]);
       ownedBy([supersededRefund(), row()]);
 
       await sync();
@@ -1387,7 +1395,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
 
     it("paid: raises nothing when X is the only card capture and an open row re-plans its slice on X", async () => {
       primePayment(switchedPayment(BookingStatus.PAID));
-      mocks.paymentTransactionFindMany.mockResolvedValue([X]);
+      mocks.paymentTransactionFindMany.mockResolvedValue([X_HOLDING_R]);
       ownedBy([supersededRefund(), openDoorRow([replannedOnX])]);
 
       const result = await sync();
@@ -1408,12 +1416,55 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       ],
     ])("paid: still names X when %s", async (_label, rows) => {
       primePayment(switchedPayment(BookingStatus.PAID));
-      mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
+      mocks.paymentTransactionFindMany.mockResolvedValue([X_HOLDING_R, S]);
       ownedBy(rows());
 
       await sync();
 
       expect(alertedIntent()).toBe(X.stripePaymentIntentId);
+    });
+    it("paid: still names X when its superseded refund closed after re-sending a re-planned slice of its own plan", async () => {
+      // #4103 gives a refused superseded refund a one-slice plan, and #4104
+      // re-plans it when Stripe fails it later; a clean re-send then closes
+      // the row SUCCEEDED with that slice still in its plan. Closed, it owes
+      // nothing, so whatever X holds now is held by nothing.
+      primePayment(switchedPayment(BookingStatus.PAID));
+      mocks.paymentTransactionFindMany.mockResolvedValue([X_HOLDING_R, S]);
+      ownedBy([{ ...supersededRefund(), amountCents: R_CENTS, allocationPlan: [{ ...replannedOnX, amountCents: R_CENTS }] }]);
+
+      await sync();
+
+      expect(alertedIntent()).toBe(X.stripePaymentIntentId);
+    });
+
+    /** X holding more than open rows owe back: a refund no row re-sends (made by hand in Stripe) failed later too. */
+    const X_HOLDING_MORE = { ...X, refundedAmountCents: X.amountCents - 3 * R_CENTS };
+
+    it.each([
+      ["a re-planned slice owes back only part of it", () => [supersededRefund(), openDoorRow([replannedOnX])]],
+      ["a failed-later row owes back only part of it", () => [supersededRefund(), failedLater("re_4221_part", {}, { amountCents: 2 * R_CENTS })]],
+      [
+        "a slice made again leaves the rest owed by nothing",
+        () => [supersededRefund(), openDoorRow([replannedOnX, replannedOnX, { ...replannedOnX, madeRefundId: "re_4221_again" }])],
+      ],
+    ])("paid: still names X when %s", async (_label, rows) => {
+      primePayment(switchedPayment(BookingStatus.PAID));
+      mocks.paymentTransactionFindMany.mockResolvedValue([X_HOLDING_MORE, S]);
+      ownedBy(rows());
+
+      await sync();
+
+      expect(alertedIntent()).toBe(X.stripePaymentIntentId);
+    });
+
+    it("paid: names S when open rows together owe back all X holds: re-planned slices and a failed-later row", async () => {
+      primePayment(switchedPayment(BookingStatus.PAID));
+      mocks.paymentTransactionFindMany.mockResolvedValue([X_HOLDING_MORE, S]);
+      ownedBy([supersededRefund(), openDoorRow([replannedOnX]), failedLater("re_4221_rest", {}, { amountCents: 2 * R_CENTS })]);
+
+      await sync();
+
+      expect(alertedIntent()).toBe(S.stripePaymentIntentId);
     });
   });
 

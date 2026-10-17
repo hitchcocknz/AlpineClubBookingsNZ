@@ -64,6 +64,29 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
   ...CARD_REFUND_OPERATION_WHERE,
 };
 
+/** Whether a card refund operation is unclosed: `OPEN_CARD_REFUND_OPERATION_WHERE`'s status, for a row already read. */
+export function isOpenCardRefundOperationStatus(status: string): boolean {
+  return status !== SUCCEEDED;
+}
+
+/**
+ * #4104: a plan slice that made a refund Stripe failed later: the failure
+ * re-planned it (`failedRefundIds`) onto its next key. Whether it was made
+ * again since is `cardRefundSliceOwesFailedLaterRefund`.
+ */
+export function cardRefundSliceRecordsFailedLaterRefund(slice: Pick<RefundAllocationSlice, "failedRefundIds">): boolean {
+  return (slice.failedRefundIds?.length ?? 0) > 0;
+}
+
+/**
+ * #4104, #4221: a re-planned slice its row still owes: not made again since
+ * (`madeRefundId`, the mark a slice made beside a refusal keeps). On an open
+ * row, the runner sends it again; on a dead one, the treasurer pays it.
+ */
+export function cardRefundSliceOwesFailedLaterRefund(slice: Pick<RefundAllocationSlice, "failedRefundIds" | "madeRefundId">): boolean {
+  return cardRefundSliceRecordsFailedLaterRefund(slice) && !slice.madeRefundId;
+}
+
 /**
  * Parse a persisted allocation plan (#1097); null when absent or malformed. A
  * slice's key generation after a refusal (#4083) is kept, so a replay sends it,

@@ -34,9 +34,9 @@
  *   refund operation behind it has handed the money to nobody, and wrongly
  *   skipping that capture would hide a booking paid twice. A refund operation
  *   still counts until it SUCCEEDED, dead or not: its machinery alerted the
- *   admins. So does a capture whose superseded refund succeeded, while an
- *   open card refund row owes money back on it again after a refund Stripe
- *   failed later, dead or not (`supersededRefundsOwedAgain`, #4221).
+ *   admins. So does a capture whose superseded refund succeeded, while open
+ *   card refund rows owe back again, dead or not, at least all it holds after
+ *   refunds Stripe failed later (`supersededRefundsOwedAgainCents`, #4221).
  *
  * Under (b′) and (c′) a superseded-machinery operation counts as LIVE while it
  * is not SUCCEEDED:
@@ -59,7 +59,13 @@ import {
   PaymentRecoveryOperationType,
   type Prisma,
 } from "@prisma/client";
-import { OPEN_CARD_REFUND_OPERATION_WHERE, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import {
+  cardRefundOperationUnmadeCents,
+  cardRefundSliceOwesFailedLaterRefund,
+  isOpenCardRefundOperationStatus,
+  OPEN_CARD_REFUND_OPERATION_WHERE,
+  parseRefundAllocationPlan,
+} from "@/lib/open-card-refund-owed";
 import { PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
 import {
   CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
@@ -123,13 +129,21 @@ type OwnershipRow = {
   paymentIntentId: string;
   paymentTransactionId: string | null;
   idempotencyKey: string;
+  amountCents: number;
   allocationPlan: unknown;
 };
 
+/** A capture the Xero reader may name: what it holds is its amount less its counted refunds. */
+export type OwnershipCapture = {
+  stripePaymentIntentId: string | null;
+  amountCents: number;
+  refundedAmountCents: number;
+};
+
 /**
- * #4221: the rows `supersededRefundsOwedAgain` reads - every superseded refund
- * operation, whatever its status (a SUCCEEDED one is the refund Stripe can
- * fail later), every OPEN failed-later row (`card_refund_failed_later_*`,
+ * #4221: the rows `supersededRefundsOwedAgainCents` reads - every superseded
+ * refund operation, whatever its status (a SUCCEEDED one is the refund Stripe
+ * can fail later), every OPEN failed-later row (`card_refund_failed_later_*`,
  * #4104), and every OPEN card refund row, whose plan a failure re-plans
  * (`OPEN_CARD_REFUND_OPERATION_WHERE`, the rows `keepFailedLaterCardRefundOwed`
  * re-plans). Open means live, or dead for the treasurer; a SUCCEEDED one was
@@ -148,53 +162,50 @@ const SUPERSEDED_REFUND_OWED_AGAIN_WHERE = [
 ] satisfies Prisma.PaymentRecoveryOperationWhereInput[];
 
 /**
- * #4221: every capture whose money is owed back again after its superseded
- * refund, on a capture a superseded refund operation exists for:
+ * #4221: how many cents an open row owes back again, by capture, on a capture
+ * a superseded refund operation exists for:
  *
  * - an open failed-later row whose OWN `paymentIntentId` is the capture (the
  *   intent Stripe's failed refund named, as `late-capture-paid-another-way`
- *   keys it). Rows carry the failed-later key's own rule
- *   (`cardRefundFailedLaterRefundId`, #4146), not just its prefix;
- * - an open card refund row with a slice on the capture's transaction (the
- *   superseded refund's `paymentTransactionId`) that a refund Stripe failed
- *   later re-planned (`failedRefundIds`) and that is not made again
- *   (`madeRefundId`). That row sends it again; no failed-later row is raised.
+ *   keys it): what it has not made (`cardRefundOperationUnmadeCents`). Rows
+ *   carry the failed-later key's own rule (`cardRefundFailedLaterRefundId`,
+ *   #4146), not just its prefix;
+ * - each slice of another open card refund row on the capture's transaction
+ *   (the superseded refund's `paymentTransactionId`) that a refund Stripe
+ *   failed later re-planned and that is not made again
+ *   (`cardRefundSliceOwesFailedLaterRefund`). That row sends it again; no
+ *   failed-later row is raised.
  *
- * It does not ask which refund failed. Once a superseded refund on the capture
- * succeeded, cash the capture holds again came back from a refund Stripe
- * failed later, whichever door sent it. A failure the club owes again
- * (`keepFailedLaterCardRefundOwed`) either raises a failed-later row on the
- * failed refund's intent or re-plans the open row's slice that made it; while
- * that row is open, the cash is on its way back to the member. A failure it
- * does not re-send - a refund made by hand in Stripe, `not-resent` - leaves
- * the capture counted, as it should: nothing owes that cash back.
+ * Open rows only, read in the rows too: the where reads every superseded
+ * refund, and one that closed after re-sending a refusal keeps a re-planned
+ * slice in its plan (#4103's one-slice plan, re-planned by #4104).
+ *
+ * A failure the club owes again (`keepFailedLaterCardRefundOwed`) raises a
+ * failed-later row on the failed refund's intent or re-plans the open row's
+ * slice that made it. A failure it does not re-send - a refund made by hand
+ * in Stripe, `not-resent` - raises nothing, so its cash is owed by nothing:
+ * the caller compares cents, never a row's mere presence.
  *
  * Pure over the rows `SUPERSEDED_REFUND_OWED_AGAIN_WHERE` reads, so guards
- * (b′) and (c′) can share it (#4227). That where decides which rows are
- * open: the one row it reads closed, a superseded refund, carries no
- * failed-later key and no plan (its enqueue writes none, and only an open
- * row's plan is re-planned).
+ * (b′) and (c′) can share it (#4227).
  */
-function supersededRefundsOwedAgain(rows: readonly OwnershipRow[]): Set<string> {
+function supersededRefundsOwedAgainCents(rows: readonly OwnershipRow[]): Map<string, number> {
   const supersededRefunds = rows.filter((row) => row.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
   const superseded = new Set(supersededRefunds.map((row) => row.paymentIntentId));
-  const owed = new Set<string>();
-  // Every row but a superseded refund is open: the where reads no other.
-  for (const row of rows) {
-    if (cardRefundFailedLaterRefundId(row.idempotencyKey) !== null && superseded.has(row.paymentIntentId)) {
-      owed.add(row.paymentIntentId);
-    }
-  }
-  const replannedTransactions = new Set(
-    rows.flatMap((row) =>
-      (parseRefundAllocationPlan(row.allocationPlan) ?? [])
-        .filter((slice) => (slice.failedRefundIds?.length ?? 0) > 0 && !slice.madeRefundId)
-        .map((slice) => slice.paymentTransactionId),
-    ),
+  const intentOfTransaction = new Map(
+    supersededRefunds.flatMap((row) => (row.paymentTransactionId === null ? [] : [[row.paymentTransactionId, row.paymentIntentId] as const])),
   );
-  for (const refund of supersededRefunds) {
-    if (refund.paymentTransactionId !== null && replannedTransactions.has(refund.paymentTransactionId)) {
-      owed.add(refund.paymentIntentId);
+  const owed = new Map<string, number>();
+  const add = (intent: string, cents: number) => owed.set(intent, (owed.get(intent) ?? 0) + cents);
+  for (const row of rows) {
+    if (!isOpenCardRefundOperationStatus(row.status)) continue;
+    if (cardRefundFailedLaterRefundId(row.idempotencyKey) !== null) {
+      if (superseded.has(row.paymentIntentId)) add(row.paymentIntentId, cardRefundOperationUnmadeCents(row));
+      continue;
+    }
+    for (const slice of parseRefundAllocationPlan(row.allocationPlan) ?? []) {
+      const intent = intentOfTransaction.get(slice.paymentTransactionId);
+      if (intent !== undefined && cardRefundSliceOwesFailedLaterRefund(slice)) add(intent, slice.amountCents);
     }
   }
   return owed;
@@ -204,15 +215,18 @@ function supersededRefundsOwedAgain(rows: readonly OwnershipRow[]): Set<string> 
  * The Xero second-instrument conflict's reading (#4177): every intent id on
  * this payment whose captured money a superseded-intent operation still holds
  * for the member - a REFUND_SUPERSEDED_PAYMENT not yet SUCCEEDED, a
- * CANCEL_PAYMENT_INTENT still in flight, or (#4221) a capture owed back again
- * after its superseded refund (`supersededRefundsOwedAgain`). See the module
- * comment for why a dead cancel does not count here while it does for (b′); a
- * dead row that owes a failed refund again counts, since it still owes the
- * member. Read under lock(1).
+ * CANCEL_PAYMENT_INTENT still in flight, or (#4221) one of `captures` whose
+ * superseded refund is owed back again (`supersededRefundsOwedAgainCents`)
+ * for at least all it holds. A capture holding more than open rows owe back
+ * holds cash nothing will return - a failed refund no row re-sends - and
+ * still counts. See the module comment for why a dead cancel does not count
+ * here while it does for (b′); a dead row that owes a failed refund again
+ * counts, since it still owes the member. Read under lock(1).
  */
 export async function listSupersededIntentIdsOwningCaptures(
   tx: RecoveryOperationReader,
-  paymentId: string
+  paymentId: string,
+  captures: readonly OwnershipCapture[],
 ): Promise<string[]> {
   const operations: OwnershipRow[] = await tx.paymentRecoveryOperation.findMany({
     where: {
@@ -231,13 +245,18 @@ export async function listSupersededIntentIdsOwningCaptures(
       paymentIntentId: true,
       paymentTransactionId: true,
       idempotencyKey: true,
+      amountCents: true,
       allocationPlan: true,
     },
   });
-  const owned = supersededRefundsOwedAgain(operations);
+  const owned = new Set<string>();
+  for (const [intent, owedCents] of supersededRefundsOwedAgainCents(operations)) {
+    const capture = captures.find((each) => each.stripePaymentIntentId === intent);
+    if (capture && owedCents >= capture.amountCents - capture.refundedAmountCents) owned.add(intent);
+  }
   for (const operation of operations) {
-    // A failed-later row counts only through `supersededRefundsOwedAgain`, as
-    // does an open edit or cancel refund row, which no branch below matches.
+    // A failed-later row counts only through `supersededRefundsOwedAgainCents`,
+    // as does an open edit or cancel refund row, which no branch below matches.
     if (cardRefundFailedLaterRefundId(operation.idempotencyKey) !== null) continue;
     if (operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT) {
       // Only an in-flight cancel is read.

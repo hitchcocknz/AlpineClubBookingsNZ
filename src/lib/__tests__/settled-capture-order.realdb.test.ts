@@ -73,6 +73,14 @@ const TIED_AT = new Date("2026-06-15T00:00:00.000Z");
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
+/** Every capture on the payment, as the Xero reader weighs what each holds (#4221). */
+function capturesOnPayment() {
+  return prisma.paymentTransaction.findMany({
+    where: { paymentId: PAYMENT_ID },
+    select: { stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
+  });
+}
+
 (RUN ? describe : describe.skip)(
   "the duplicate-capture refund names the first-inserted settled capture, not heap order - real PostgreSQL (#4177)",
   { timeout: 60_000 },
@@ -310,7 +318,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         "@/lib/superseded-intent-ownership"
       );
 
-      expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID)).sort()).toEqual(
+      expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID, await capturesOnPayment())).sort()).toEqual(
         [
           "pi_race_4177_cancel_retrying",
           "pi_race_4177_cancel_running",
@@ -341,6 +349,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         "replanned",
         "remade",
         "replanned_closed",
+        "short",
+        "closed_plan",
       ] as const;
       type Case = (typeof cases)[number];
       const txn = (name: Case) => `race-4177-txn-4221-${name}`;
@@ -354,6 +364,9 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           source: "STRIPE" as const,
           stripePaymentIntentId: intent(name),
           amountCents: PRICE_CENTS,
+          // Each re-planned capture holds the 5000 its slice owes back again,
+          // after its superseded refund took the rest; short holds all of it.
+          refundedAmountCents: ["replanned", "remade", "replanned_closed", "closed_plan"].includes(name) ? PRICE_CENTS - 5000 : 0,
           status: "SUCCEEDED" as const,
           createdAt: EARLIER,
         })),
@@ -374,6 +387,20 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
               paymentTransactionId: txn(name),
               paymentIntentId: intent(name),
               idempotencyKey: `race-4177-4221-superseded-${name}`,
+              // #4103/#4104: closed after re-sending its own re-planned refusal
+              // slice, which its plan keeps. Closed, it owes nothing.
+              ...(name === "closed_plan"
+                ? {
+                    allocationPlan: [
+                      {
+                        paymentTransactionId: txn(name),
+                        amountCents: 5000,
+                        stripeKeySuffix: nextRefusedRefundKeySuffix(undefined),
+                        failedRefundIds: ["re_race_4221_closed_plan"],
+                      },
+                    ],
+                  }
+                : {}),
             })),
           // Another door's refund on the other_door capture (the money lens's F2).
           {
@@ -431,7 +458,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       // The other door's path: an open edit refund row whose slices made
       // refunds Stripe failed later, each re-planned (`failedRefundIds`, its
       // next key) rather than given a failed-later row. Only the slice on
-      // replanned, not made again, beside a superseded refund, counts.
+      // replanned, not made again, beside a superseded refund and owing all
+      // its capture holds, counts.
       const replannedSlice = (name: Case, extra: Record<string, unknown> = {}) => ({
         paymentTransactionId: txn(name),
         amountCents: 5000,
@@ -454,6 +482,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
               replannedSlice("replanned"),
               replannedSlice("remade", { madeRefundId: "re_race_4221_remade_again" }),
               replannedSlice("no_superseded"),
+              // Owes back 5000 of the 20000 short holds: the rest is owed by nothing.
+              replannedSlice("short"),
             ],
           },
           {
@@ -471,7 +501,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       });
       const { listSupersededIntentIdsOwningCaptures } = await import("@/lib/superseded-intent-ownership");
 
-      expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID)).sort()).toEqual(
+      expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID, await capturesOnPayment())).sort()).toEqual(
         [intent("chain"), intent("dead"), intent("open"), intent("other_door"), intent("replanned")].sort(),
       );
     });
