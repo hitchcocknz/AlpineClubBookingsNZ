@@ -518,6 +518,20 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-001",
   },
   {
+    site: "followUpVoidedBankRefundNote#1",
+    tier: "GLOBAL",
+    reason:
+      "#4162 (owner decision 17 Oct 2026, INV-ADDPAY-042): the nightly undo of a voided bank-transfer refund note takes the refund back out of the payment's transactions (unwindLocalRefundAllocation), reverses its BANK_REFUND line, recomputes the refunded total (reconcilePaymentAggregates) and raises one open follow-up hand-back in one commit - the settlement money and the open hand-backs every edit, acceptance, paid cancel and refund appeal reads separately to size a refund, so under lock(1) the undo cannot commit between those reads. First lock of its transaction, then the Payment row (lockPaymentForRefundedTotal) BEFORE anything about the payment is read - every refunded-total writer without lock(1) (every Stripe refund recorder, a cancellation hand-back's completion) takes that row first - then the note re-classified under both. The claim is the follow-up's unique occurrence key (createMany skipDuplicates), inserted before any money moves; a lost claim moves nothing. A spare note's marker takes its link row last and NOWAIT, after the Payment row: the inbound link write and #4161's heal take the link first, so a busy link defers the note to the next run instead of waiting with the Payment row held. One note per transaction; no provider call, no email, no booking event.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "markUnmatchedBankRefundVoidAnswered#1",
+    tier: "GLOBAL",
+    reason:
+      "#4162 (INV-ADDPAY-042): a person's answer to a voided bank-transfer refund note the nightly follow-up could not match moves no money, but it must not interleave with that follow-up's classification and undo of the same note, so it joins its cohort and tiers: lock(1) first, then the Payment row (lockPaymentForRefundedTotal), then the note re-classified - refused unless still unmatched - and the answered marker written on the link row, taken last and NOWAIT as the follow-up takes it. Then the audit row. No provider call.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:
@@ -1290,6 +1304,11 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // per-site identity and deliberately left this one per-file.
   "src/lib/bed-allocation-approval.ts": 1,
   "src/lib/bed-allocation-bunk-pairing.ts": 1,
+  // #4162: a voided bank-transfer refund note's marker takes its link row
+  // `FOR UPDATE NOWAIT` after lock(1) and the Payment row
+  // (`writeBankRefundVoidMarker`); the link-first writers (the inbound link
+  // write, #4161's heal) never wait on it, and a busy link defers the note.
+  "src/lib/bank-refund-void-follow-up.ts": 1,
   // #2595 reviewed moves lock every selected/destination/old-bed counterpart
   // tuple after the advisory tiers and before their authoritative re-read.
   "src/lib/bed-allocation-move.ts": 1,
