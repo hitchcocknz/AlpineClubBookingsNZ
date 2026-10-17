@@ -176,7 +176,10 @@ export interface ClassifiedVoidedNote {
 async function refundNoteHandBackTaskIds(db: Reader, paymentId: string): Promise<Set<string>> {
   const tasks =
     (await db.manualRefundTask.findMany({
-      where: { paymentId, status: "COMPLETED", kind: { in: ["CANCELLED_BOOKING_HAND_BACK", "EDIT_FINANCIAL_REVIEW"] } },
+      // Every completed task on the payment, sorted by kind below: a hand-back's
+      // that is no edit's or refund request's (their notes are another role),
+      // and a review's whose refund a refund note recorded.
+      where: { paymentId, status: "COMPLETED" },
       select: { id: true, kind: true, occurrenceKey: true },
     })) ?? [];
   const reviewIds = tasks.filter((task) => task.kind === "EDIT_FINANCIAL_REVIEW").map((task) => task.id);
@@ -205,7 +208,7 @@ async function refundNoteHandBackTaskIds(db: Reader, paymentId: string): Promise
       .filter((task) =>
         task.kind === "EDIT_FINANCIAL_REVIEW"
           ? notedReviewIds.has(task.id)
-          : !isEditRefundHandBackTask(task) && !isRefundRequestHandBackTask(task),
+          : task.kind === "CANCELLED_BOOKING_HAND_BACK" && !isEditRefundHandBackTask(task) && !isRefundRequestHandBackTask(task),
       )
       .map((task) => task.id),
   );

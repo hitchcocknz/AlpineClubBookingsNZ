@@ -33,7 +33,7 @@ vi.mock("@/lib/manual-refund-task-resolution", () => ({
   },
 }));
 
-import { POST } from "../[id]/route";
+import { POST } from "@/app/api/admin/payments/manual-refund-tasks/[id]/route";
 import { ManualBookingPaymentError } from "@/lib/manual-refund-task-resolution";
 
 function request(body: unknown) {
