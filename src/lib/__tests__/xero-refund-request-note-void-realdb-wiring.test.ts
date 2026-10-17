@@ -24,7 +24,7 @@ describe("the voided refund-request note's real-database proof stays wired into 
       "utf8",
     );
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
-    expect(suite).toContain("the inbound void writes the mirror inactive and moves no money; the retry raises a fresh note, never the voided one");
+    expect(suite).toContain("the inbound void writes the mirror inactive and moves no money; no retry re-raises it, and a re-raise takes a fresh note, never the voided one");
     expect(suite).toContain("a retry's status-less link write that waited on an inbound void keeps the void: inactive, status kept (race)");
     expect(suite).toContain("pg_blocking_pids");
   });

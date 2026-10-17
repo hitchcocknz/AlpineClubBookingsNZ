@@ -3,10 +3,12 @@
  * request's OWN Xero refund credit note, voided in Xero.
  *
  * The inbound reconcile of that note writes its mirror inactive (before #4195
- * the request role kept it active) and moves no refunded total. The operator's
- * retry of the request's failed row then never takes the voided note as the
- * request's cover: it raises a fresh note, under a Xero key naming the voided
- * one, so a Xero that still remembers the request's key cannot replay it back.
+ * the request role kept it active) and moves no refunded total. No retry of
+ * the request's failed row re-raises it (#4214: the officer decides). A
+ * re-raise never takes the voided note as the request's cover: it raises a
+ * fresh note, under a Xero key naming the voided one, so a Xero that still
+ * remembers the request's key cannot replay it back. And a status-less link
+ * write racing the void keeps it.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
@@ -153,7 +155,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       });
     }
 
-    it("the inbound void writes the mirror inactive and moves no money; the retry raises a fresh note, never the voided one", async () => {
+    it("the inbound void writes the mirror inactive and moves no money; no retry re-raises it, and a re-raise takes a fresh note, never the voided one", async () => {
       const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
       const voided = {
         creditNoteID: VOIDED_NOTE, creditNoteNumber: "CN-4195", status: "VOIDED",
@@ -173,13 +175,19 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await reconcile();
       expect(await requestLinks()).toEqual([{ id: VOIDED_NOTE, active: false, status: "VOIDED", requestId: REQUEST_ID }]);
 
-      // The builder raising the request's note again, driven through the
-      // retry of its stale failed row. Neither the panel nor the repair tool
-      // offers that row once the note is voided (#4214: the officer decides);
-      // the proof is of the key and the cover, which any re-raise uses. A
-      // Xero that remembers the request's key would hand the voided note back.
-      const keys: string[] = [];
+      // #4214 (owner decision): no retry re-raises it. The stale failed row's
+      // retry is refused before anything is queued or sent to Xero.
       const { retryXeroSyncOperation } = await import("@/lib/xero-operation-retry");
+      const { enqueueXeroSyncOperationRetry } = await import("@/lib/xero-operation-queue");
+      await expect(retryXeroSyncOperation("race-4195-op-failed", CLUB_FORMAT_TEST)).rejects.toMatchObject({ status: 409 });
+      await expect(enqueueXeroSyncOperationRetry("race-4195-op-failed")).rejects.toMatchObject({ status: 409 });
+      expect(await prisma.xeroSyncOperation.count({ where: { localModel: "Payment", localId: PAYMENT_ID } })).toBe(2);
+
+      // The re-raise itself: the builder an officer's action runs (#4214), for
+      // the request's amount. A Xero that remembers the request's key would
+      // hand the voided note back for it.
+      const keys: string[] = [];
+      const { createXeroCreditNote } = await import("@/lib/xero-credit-notes");
       await withFakeXero(
         {
           createCreditNotes: async (_t: string, body: { creditNotes: Array<{ lineItems: Array<{ unitAmount: number }> }> }, _s?: unknown, _u?: unknown, key?: string) => {
@@ -197,7 +205,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           },
           getCreditNote: async () => ({ body: { creditNotes: [] } }),
         },
-        () => retryXeroSyncOperation("race-4195-op-failed", CLUB_FORMAT_TEST),
+        () => createXeroCreditNote(PAYMENT_ID, 5_000, { refundRequestId: REQUEST_ID, refundMethod: "internet-banking" }),
       );
 
       expect(keys).toEqual([`${REQUEST_KEY}:after-void:${VOIDED_NOTE}`]);

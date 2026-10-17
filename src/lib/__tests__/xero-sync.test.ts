@@ -584,7 +584,12 @@ describe("upsertXeroObjectLink", () => {
       // Replacing the metadata would drop the status the after-void key and the create check read.
       expect(call.update.metadata).toEqual({ amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" });
       // The stored row is read under its lock, in the write's own transaction.
-      expect(String((mocks.txExecuteRaw.mock.calls[0] as [TemplateStringsArray])[0].join("?"))).toContain("FOR UPDATE");
+      // F-D: one row, by all five fields of its unique key, so a broader lock fails here.
+      const [template, ...values] = mocks.txExecuteRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+      expect(template.join("?").replace(/\s+/g, " ").trim()).toBe(
+        'SELECT 1 FROM "XeroObjectLink" WHERE "localModel" = ? AND "localId" = ? AND "xeroObjectType" = ? AND "xeroObjectId" = ? AND "role" = ? FOR UPDATE',
+      );
+      expect(values).toEqual(["Payment", "payment_1", "CREDIT_NOTE", "cn_request", "REFUND_REQUEST_CREDIT_NOTE"]);
       expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
     });
 

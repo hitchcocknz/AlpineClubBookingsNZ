@@ -165,6 +165,36 @@ export function refundRequestNoteVoidedWithNoLive(
   return raised && !own.some((link) => !isRefundCreditNoteLinkCancelledInXero(link.metadata));
 }
 
+/** #4214 (owner decision): why no retry or requeue path re-raises a voided refund request note. */
+export const VOIDED_REQUEST_NOTE_RETRY_REASON =
+  "This refund request's own Xero credit note was voided in Xero and nothing live replaces it. An officer decides whether to raise a fresh note (#4214); no retry raises one.";
+
+/**
+ * #4195 review F-A, #4214 (owner decision: the officer re-raises): true when
+ * this row is a refund request's own note create whose request's note Xero
+ * voided with no live replacement (`refundRequestNoteVoidedWithNoLive`). The
+ * retry, requeue and retry-all doors and the queued retry's worker refuse it,
+ * whatever the row's state, so no retry raises a second credit after a void.
+ */
+export async function isRetryOfVoidedRefundRequestNote(
+  operation: { localModel: string | null; localId: string | null; entityType: string; operationType: string; requestPayload: unknown; correlationKey?: string | null; idempotencyKey?: string | null },
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink" | "xeroSyncOperation">,
+): Promise<boolean> {
+  const refundRequestId = readRefundRequestIdFromOperation(operation);
+  const paymentId = operation.localId;
+  if (!refundRequestId || !paymentId || operation.localModel !== "Payment" || operation.entityType !== "CREDIT_NOTE" || operation.operationType !== "CREATE") {
+    return false;
+  }
+  const operations = (await db.xeroSyncOperation.findMany({
+    where: { localModel: "Payment", localId: paymentId, entityType: "CREDIT_NOTE", operationType: "CREATE", xeroObjectId: { not: null } },
+    select: { entityType: true, operationType: true, xeroObjectId: true, requestPayload: true, correlationKey: true, idempotencyKey: true },
+  })) ?? [];
+  const activeLinks = (await readRefundRequestNoteLinks(paymentId, db))
+    .filter((link) => link.active)
+    .map((link) => ({ ...link, xeroObjectType: "CREDIT_NOTE", role: REFUND_REQUEST_CREDIT_NOTE_ROLE }));
+  return refundRequestNoteVoidedWithNoLive(refundRequestId, operations, activeLinks);
+}
+
 /**
  * #4195 race: a request-note link write that names no Xero status (a retry's,
  * or a completion's) never re-arms a mirror an inbound void wrote off. The
