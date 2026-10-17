@@ -221,6 +221,20 @@ describe("an edit preview carries each remaining guest's sold prices (#4202)", (
     expect(lockKeys(resolved.guests[1]!.lockedNightPrices)?.[0]).toEqual(["2026-08-10", SOLD]);
   });
 
+  it("a remaining guest keeps the row's other-lodge flag; an added guest has none", () => {
+    const resolved = resolvePromoPreviewStays({
+      checkIn: d("2026-08-10"),
+      checkOut: d("2026-08-14"),
+      guests: [{ bookingGuestId: "bg-visitor" }, { memberId: "friend" }],
+      edit: {
+        booking,
+        storedGuests: [{ ...soldGuests[1]!, id: "bg-visitor", otherLodgeMember: true }],
+      },
+    });
+    expect(resolved.guests[0]!.otherLodgeMember).toBe(true);
+    expect(resolved.guests[1]!.otherLodgeMember).toBeUndefined();
+  });
+
   it("a create preview carries no locks", () => {
     const resolved = resolvePromoPreviewStays({
       checkIn: d("2026-08-10"),

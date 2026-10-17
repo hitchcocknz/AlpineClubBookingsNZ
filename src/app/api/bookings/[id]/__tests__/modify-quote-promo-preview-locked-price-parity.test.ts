@@ -26,6 +26,7 @@ import { NextRequest } from "next/server";
 
 const h = vi.hoisted(() => ({
   auth: vi.fn(),
+  authorizationRole: vi.fn(),
   prisma: {
     manualRefundTask: { findFirst: vi.fn(), findMany: vi.fn() },
     booking: { findUnique: vi.fn() },
@@ -46,7 +47,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
 vi.mock("@/lib/auth", () => ({ auth: h.auth }));
 vi.mock("@/lib/session-guards", () => ({ requireActiveSessionUser: vi.fn(async () => null) }));
-vi.mock("@/lib/admin-permissions", () => ({ bookingManagementAuthorizationRole: vi.fn(() => "USER") }));
+vi.mock("@/lib/admin-permissions", () => ({ bookingManagementAuthorizationRole: h.authorizationRole }));
 vi.mock("@/lib/rate-limit", () => ({
   applyRateLimit: vi.fn().mockReturnValue(null),
   rateLimiters: { bookingQuery: {} },
@@ -54,7 +55,8 @@ vi.mock("@/lib/rate-limit", () => ({
 vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: vi.fn(async () => "lodge-1"),
   lodgeNullTolerantScope: () => ({}),
-  resolveOptionalActiveLodgeId: vi.fn(async () => "lodge-1"),
+  // The lodge a request names, as the real resolver answers for an active one.
+  resolveOptionalActiveLodgeId: vi.fn(async (_db: unknown, lodgeId?: string) => lodgeId ?? "lodge-1"),
 }));
 vi.mock("@/lib/lodge-capacity", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/lodge-capacity")),
@@ -212,6 +214,7 @@ function storedBooking() {
 beforeEach(() => {
   vi.clearAllMocks();
   h.auth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } });
+  h.authorizationRole.mockReturnValue("USER");
   h.prisma.manualRefundTask.findFirst.mockResolvedValue(null);
   h.prisma.manualRefundTask.findMany.mockResolvedValue([]);
   h.prisma.booking.findUnique.mockResolvedValue(storedBooking());
@@ -246,8 +249,20 @@ beforeEach(() => {
   });
 });
 
-/** An edit: the new check-out, the code, and whether a non-member friend joins for the whole stay. */
-type Edit = { checkOut: string; promo: Record<string, unknown>; addFriend?: boolean };
+/**
+ * An edit: the new check-out, the code, and whether a non-member friend joins
+ * for the whole stay. `setup` arranges the case's world before either route
+ * runs; `boxBody` and `boxGuest` are what the editor's box sends beyond the
+ * common request.
+ */
+type Edit = {
+  checkOut: string;
+  promo: Record<string, unknown>;
+  addFriend?: boolean;
+  setup?: () => void;
+  boxBody?: Record<string, unknown>;
+  boxGuest?: Record<string, unknown>;
+};
 
 /** The quote's answer for the edit: its total and the promo line's discount. */
 async function quote(edit: Edit) {
@@ -280,6 +295,7 @@ async function quote(edit: Edit) {
 /** The promo box's answer for the same edit, as the booking editor sends it. */
 async function box(edit: Edit) {
   h.prisma.promoCode.findUnique.mockResolvedValue(promo(edit.promo));
+  h.prisma.promoCode.findMany.mockResolvedValue([promo(edit.promo)]);
   const res = await validatePromo(
     new NextRequest("http://localhost/api/promo-codes/validate", {
       method: "POST",
@@ -291,6 +307,7 @@ async function box(edit: Edit) {
         forBookingEdit: true,
         bookingId: "b1",
         lodgeId: "lodge-1",
+        ...edit.boxBody,
         guests: [
           {
             ageTier: "ADULT",
@@ -299,6 +316,7 @@ async function box(edit: Edit) {
             bookingGuestId: "g1",
             stayStart: "2026-08-24",
             stayEnd: edit.checkOut,
+            ...edit.boxGuest,
           },
           ...(edit.addFriend ? [{ ageTier: "ADULT", isMember: false }] : []),
         ],
@@ -338,6 +356,7 @@ const EDITS: Array<[string, Edit]> = [
 describe("#4202 the promo box and the quote give one discount after the rates moved", () => {
   for (const [name, edit] of EDITS) {
     it(`agrees on the total and the discount: ${name}`, async () => {
+      edit.setup?.();
       const quoted = await quote(edit);
       const boxed = await box(edit);
       expect(boxed).toEqual(quoted);
@@ -353,5 +372,101 @@ describe("#4202 the promo box and the quote give one discount after the rates mo
   it("the added-guest case really prices the friend, at today's rate on every night", async () => {
     const [, edit] = EDITS.find(([, candidate]) => candidate.addFriend)!;
     expect((await quote(edit)).totalPriceCents).toBe(3 * SOLD + NOW_RATE + 4 * NOW_RATE);
+  });
+});
+
+/** An officer editing the member's booking: the caller is not the booking's owner. */
+function officerCalling() {
+  h.auth.mockResolvedValue({ user: { id: "officer-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+  h.authorizationRole.mockReturnValue("ADMIN");
+}
+
+/**
+ * #4202 (follow-on): beyond the prices, the box answers for the BOOKING the
+ * quote prices — its own promotion slots left out of the usage caps, its stored
+ * other-lodge flags, its owner and its lodge — not for whoever is asking or
+ * whatever the request names.
+ */
+const BOOKING_EDITS: Array<[string, Edit]> = [
+  [
+    "a total-uses cap whose last slot is this booking's own",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50, maxRedemptionsTotal: 1, currentRedemptions: 1 },
+      setup: () =>
+        h.prisma.promoRedemptionAllocation.count.mockImplementation(
+          async ({ where }: { where?: { bookingId?: string } }) => (where?.bookingId === "b1" ? 1 : 0),
+        ),
+    },
+  ],
+  [
+    "the same cap, through the box's several-code request",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50, maxRedemptionsTotal: 1, currentRedemptions: 1 },
+      boxBody: { code: undefined, codes: [{ code: "SAVE" }] },
+      setup: () =>
+        h.prisma.promoRedemptionAllocation.count.mockImplementation(
+          async ({ where }: { where?: { bookingId?: string } }) => (where?.bookingId === "b1" ? 1 : 0),
+        ),
+    },
+  ],
+  [
+    "a guest recognised as another club's member keeps that rate on the nights the edit buys",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      boxGuest: { isMember: false, memberId: undefined },
+      setup: () => {
+        const visitor = { ...storedGuest, isMember: false, memberId: null, otherLodgeMember: true };
+        h.prisma.booking.findUnique.mockResolvedValue({ ...storedBooking(), guests: [visitor] });
+        h.prisma.bookingGuest.findMany.mockResolvedValue([visitor]);
+        h.prisma.season.findMany.mockResolvedValue([
+          {
+            id: "season-1",
+            startDate: D("2026-06-01"),
+            endDate: D("2026-10-31"),
+            type: "WINTER",
+            membershipTypeRates: [
+              { membershipTypeId: "type-full", ageTier: "ADULT", pricePerNightCents: NOW_RATE },
+              { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 2 * NOW_RATE },
+            ],
+          },
+        ]);
+      },
+    },
+  ],
+  [
+    "an officer editing a member's booking, with a code assigned to that member",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50, assignments: [{ memberId: "m1" }] },
+      setup: officerCalling,
+    },
+  ],
+  [
+    "a request naming another lodge than the booking's, with a code for the booking's lodge",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50, lodges: [{ lodgeId: "lodge-1" }] },
+      boxBody: { lodgeId: "lodge-2" },
+    },
+  ],
+];
+
+describe("#4202 the box answers for the booking the quote prices", () => {
+  for (const [name, edit] of BOOKING_EDITS) {
+    it(`agrees on the total and the discount: ${name}`, async () => {
+      edit.setup?.();
+      const quoted = await quote(edit);
+      const boxed = await box(edit);
+      expect(boxed).toEqual(quoted);
+    });
+  }
+
+  it("the other-lodge case has teeth: the bought night is at the member rate, not the non-member one", async () => {
+    const [, edit] = BOOKING_EDITS[2]!;
+    edit.setup?.();
+    expect((await quote(edit)).totalPriceCents).toBe(3 * SOLD + NOW_RATE);
   });
 });

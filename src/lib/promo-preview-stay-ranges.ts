@@ -50,8 +50,11 @@ import type { BookingGuestNightPriceSource } from "@prisma/client";
  * lock is cleared here: the two re-rates that clear them on an edit are a #2337
  * member link — a guest whose member differs from the row's, which this module
  * already treats as an ADDED guest, priced afresh — and an other-lodge election,
- * which this preview is never sent. An added guest and a create preview carry
- * no locks.
+ * which this preview is never sent. So a remaining guest also keeps the row's
+ * stored other-lodge flag, which is the flag the quote prices them with when the
+ * edit carries no election: the nights they buy price at a recognised other-club
+ * guest's rate there, and here. An added guest and a create preview carry no
+ * locks and no flag.
  */
 export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
   memberId?: string | null;
@@ -64,6 +67,8 @@ export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
  */
 export type PromoPreviewStoredGuest = Omit<LiveGuestStayRow, "nights"> & {
   memberId: string | null;
+  /** The stored other-lodge flag (Other Lodges epic), kept by a remaining guest. */
+  otherLodgeMember?: boolean;
   nights?: ReadonlyArray<{
     stayDate: Date;
     priceCents?: number | null;
@@ -77,8 +82,10 @@ export type PromoPreviewEdit = {
   storedGuests: ReadonlyArray<PromoPreviewStoredGuest>;
 };
 
-/** The locks a guest prices with (#4202): present only on a remaining guest. */
-type PromoPreviewGuestLocks = Partial<Pick<ReturnType<typeof editedGuestPricingLocks>, "lockedNightPrices">>;
+/** What a guest prices with from their stored row (#4202): only a remaining guest has any. */
+type PromoPreviewGuestLocks = Partial<Pick<ReturnType<typeof editedGuestPricingLocks>, "lockedNightPrices">> & {
+  otherLodgeMember?: boolean;
+};
 
 export type PromoPreviewStays<Guest> = {
   checkIn: Date;
@@ -169,7 +176,10 @@ export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
   for (const { guest: row, ...range } of resolved.remaining) {
     const index = partyIndexByRowId.get(row.id)!;
     rangeByPartyIndex.set(index, range);
-    locksByPartyIndex.set(index, editedGuestPricingLocks(lockableNights(row), false));
+    locksByPartyIndex.set(index, {
+      ...editedGuestPricingLocks(lockableNights(row), false),
+      otherLodgeMember: row.otherLodgeMember ?? false,
+    });
   }
   resolved.added.forEach((range, addedIndex) => {
     rangeByPartyIndex.set(addedPartyIndexes[addedIndex]!, range);
@@ -185,13 +195,14 @@ export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
       }
       // The planner's answer replaces the request's own fields outright, so a
       // night set the planner did not keep cannot ride along as strings; and a
-      // remaining guest's locks are the stored row's, never anything sent.
+      // remaining guest's locks and flag are the stored row's, never anything sent.
       return {
         ...guest,
         stayStart: range.stayStart,
         stayEnd: range.stayEnd,
         nights: range.nights,
         lockedNightPrices: locksByPartyIndex.get(index)?.lockedNightPrices,
+        otherLodgeMember: locksByPartyIndex.get(index)?.otherLodgeMember,
       };
     }),
   };

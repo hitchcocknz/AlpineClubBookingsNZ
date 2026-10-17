@@ -37,7 +37,7 @@ import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
 import {
   BOOKING_PARTY_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
 } from "@/lib/booking-guest-stay-range-input";
-import { type PromoPreviewEdit, resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
+import { resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { workPartyWindowOverlapsStay } from "@/lib/work-party";
 import { bookingFinalPriceCents } from "@/lib/booking-final-price";
@@ -45,8 +45,7 @@ import { normalizePromoCodeInput } from "@/lib/promo-code-list-rules";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy, planMemberGuestConsentWrites } from "@/lib/member-guest-add-policy";
 import { guestConsentStatus } from "@/lib/member-guest-consent";
-import { bookingForPromoLookup, promoPreviewBookingRows } from "@/lib/promo-guest-codes";
-import type { MemberGuestConsentStatus } from "@prisma/client";
+import { promoPreviewEditContext } from "@/lib/promo-guest-codes";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -167,7 +166,6 @@ export async function POST(req: NextRequest) {
   // forMemberId is rejected rather than silently checked against the caller.
   const onBehalfRefusal = refuseOnBehalfUnlessBookingOfficer(session.user, parsed.data.forMemberId);
   if (onBehalfRefusal) return onBehalfRefusal;
-  const effectiveMemberId = parsed.data.forMemberId ?? session.user.id;
   // #3492: an edit preview judges a guest already on the booking by the consent
   // stored on their row (D-3492-4: a confirmed cross-family guest's code counts),
   // exactly as `modify-quote` does. Unowned or missing: one 404, no difference.
@@ -179,26 +177,23 @@ export async function POST(req: NextRequest) {
   // unknown id — the guest is judged as a fresh add, the same answer as sending
   // no row id at all, so the pairing neither widens who counts as present
   // (D-3492-3/4, D-3813-4) nor tells the caller anything.
-  let storedGuestById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }> | null =
-    null;
-  // #4199: the edited booking and the rows the request names, for the planner.
-  let editStays: PromoPreviewEdit | null = null;
-  if (parsed.data.bookingId) {
-    const booking = await bookingForPromoLookup({
-      bookingId: parsed.data.bookingId,
-      actorMemberId: session.user.id,
-      isBookingOfficer: bookingManagementAuthorizationRole(session.user) === "ADMIN",
-    });
-    if (!booking) {
-      return NextResponse.json({ error: "Booking not found" }, { status: 404 });
-    }
-    ({ consentById: storedGuestById, edit: editStays } = await promoPreviewBookingRows(
-      booking,
-      parsed.data.guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : [])),
-    ));
-  }
+  //
+  // #4199, #4202: the edited booking, as the quote prices it — its rows for the
+  // planner, its owner, its lodge and its own promotion slots.
+  const edited = parsed.data.bookingId
+    ? await promoPreviewEditContext({
+        bookingId: parsed.data.bookingId,
+        actorMemberId: session.user.id,
+        isBookingOfficer: bookingManagementAuthorizationRole(session.user) === "ADMIN",
+        bookingGuestIds: parsed.data.guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : [])),
+      })
+    : undefined;
+  if (edited === null) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  const storedGuestById = edited?.consentById ?? null;
+  // An edit is judged against the booking's owner, as the quote judges it.
+  const effectiveMemberId = edited?.ownerMemberId ?? parsed.data.forMemberId ?? session.user.id;
   // #4199, #4202: each guest's nights and sold prices, as the save has them (`INV-EXCEPT-022`).
-  const stays = resolvePromoPreviewStaysOrRefusal({ ...parsed.data, edit: editStays });
+  const stays = resolvePromoPreviewStaysOrRefusal({ ...parsed.data, edit: edited?.edit ?? null });
   if ("refusal" in stays) return NextResponse.json({ error: stays.refusal }, { status: 400 });
   const { checkIn, checkOut, guests } = stays;
   /** The stored row for this guest, only when it is this guest's own member's row. */
@@ -279,10 +274,7 @@ export async function POST(req: NextRequest) {
     : null;
 
   // Calculate the booking price to determine discount
-  const quoteLodgeId = await resolveOptionalActiveLodgeId(
-    prisma,
-    parsed.data.lodgeId,
-  );
+  const quoteLodgeId = edited?.lodgeId ?? (await resolveOptionalActiveLodgeId(prisma, parsed.data.lodgeId));
   if (!quoteLodgeId) {
     return NextResponse.json(
       { error: "Unknown or inactive lodgeId" },
@@ -409,6 +401,7 @@ export async function POST(req: NextRequest) {
           guests: promoGuests,
           lodgeId: quoteLodgeId,
           todayAtClub: (await clubTime()).today(),
+          excludeBookingId: edited?.bookingId,
         }),
       );
     }
@@ -436,6 +429,7 @@ export async function POST(req: NextRequest) {
           guests: promoGuests,
           db: prisma,
           lodgeId: quoteLodgeId,
+          excludeBookingId: edited?.bookingId, // #4202: the quote leaves this booking's own slots out
           // #3123 — the CLUB's day, from its persisted zone (`INV-CONFIG-002`),
           // and what the promotion's validity window is judged against. No
           // transaction is open on this route, and it is not reachable from a

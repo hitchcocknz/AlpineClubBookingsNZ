@@ -86,27 +86,49 @@ export async function bookingForPromoLookup(params: {
 }
 
 /**
- * The rows of the booking an edit preview is for (#3492, #4199, #4202), read
- * only for the guests the request names by row id: each row's stored consent,
- * which the preview judges that guest by; its stay, which the modification
- * planner keeps for a guest the edit sends no dates for; and the price each of
- * its nights was sold at, which the pricing pass keeps for every night the
- * guest still holds (#1036), as the quote and the save do.
+ * The booking an edit preview is for (#3492, #4199, #4202): the booking the
+ * quote and the save price, so the promo box prices it the way they do.
+ *
+ * `null` both for a booking that does not exist and for one the caller may not
+ * read (`bookingForPromoLookup`), so the route answers both with one 404.
+ * Otherwise:
+ *
+ * - `bookingId`, `ownerMemberId` and `lodgeId` are the booking's own. The
+ *   quote judges the membership type and the promotion against the booking's
+ *   OWNER, excludes the booking's own promotion slots from the usage caps, and
+ *   prices at the booking's lodge; the preview does the same, whoever is asking
+ *   and whatever lodge the request names.
+ * - Each row the request names is read for its stored consent, which the
+ *   preview judges that guest by; its stay, which the modification planner
+ *   keeps for a guest the edit sends no dates for; the price each night was
+ *   sold at, which the pricing pass keeps for every night the guest still holds
+ *   (#1036); and its other-lodge flag, which prices the nights the edit buys at
+ *   the rate the quote gives a recognised other-club guest.
  */
-export async function promoPreviewBookingRows(
-  booking: { id: string; checkIn: Date; checkOut: Date },
-  bookingGuestIds: string[],
-): Promise<{
+export type PromoPreviewEditContext = {
+  bookingId: string;
+  ownerMemberId: string | null;
+  lodgeId: string;
   consentById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }>;
   edit: PromoPreviewEdit;
-}> {
-  const rows = bookingGuestIds.length
+};
+
+export async function promoPreviewEditContext(params: {
+  bookingId: string;
+  actorMemberId: string;
+  isBookingOfficer: boolean;
+  bookingGuestIds: string[];
+}): Promise<PromoPreviewEditContext | null> {
+  const booking = await bookingForPromoLookup(params);
+  if (!booking) return null;
+  const rows = params.bookingGuestIds.length
     ? await prisma.bookingGuest.findMany({
-        where: { bookingId: booking.id, id: { in: bookingGuestIds } },
+        where: { bookingId: booking.id, id: { in: params.bookingGuestIds } },
         select: {
           id: true,
           memberId: true,
           consentStatus: true,
+          otherLodgeMember: true,
           stayStart: true,
           stayEnd: true,
           nights: { select: { stayDate: true, priceCents: true, priceSource: true } },
@@ -114,12 +136,16 @@ export async function promoPreviewBookingRows(
       })
     : [];
   return {
+    bookingId: booking.id,
+    ownerMemberId: booking.ownerMemberId,
+    lodgeId: booking.lodgeId,
     consentById: new Map(rows.map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }])),
     edit: {
       booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
-      storedGuests: rows.map(({ id, memberId, stayStart, stayEnd, nights }) => ({
+      storedGuests: rows.map(({ id, memberId, otherLodgeMember, stayStart, stayEnd, nights }) => ({
         id,
         memberId,
+        otherLodgeMember,
         stayStart,
         stayEnd,
         nights,
