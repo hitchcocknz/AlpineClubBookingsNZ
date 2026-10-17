@@ -94,34 +94,32 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 
 ## INV-PAY-043
 
-- Duplicate-capture visibility: the #1992 distinctness predicate matches ANY
-  settled PRIMARY transaction, not only a Stripe one, so a stray capture on a
-  cash-settled (or Xero-inbound-settled) booking is auto-refunded instead of
-  silently kept.
-- **Every capture beyond the settling one is refunded** (#4211). A card
-  capture arriving on a PAID booking is refunded when another captured PRIMARY
-  row with net cash exists that neither a superseded-intent operation nor a
-  duplicate-capture refund owns. The oldest-inserted such row is the
-  settlement (`INV-PAY-133`). The alert names it; the history entry names it
-  only when the refund completes inline, and a cash or Xero settlement names
-  no card.
-  - **A capture a duplicate-capture refund owns, at any status, is never the
-    settlement.** So a third capture (a member paying from three stale tabs)
-    is refunded too, and the settling capture's redelivery keeps its money
-    while every other capture holding money is owned, even by a refund still
-    queued. Before #4211, any other duplicate-capture refund on the booking
-    kept the arriving capture, with no task or alert.
-  - **Not yet guaranteed:** that redelivery is itself refunded when another
-    row holds net cash nothing owns: a capture kept before #4211, a Xero bank
-    receipt on a card-paid booking (`INV-PAY-102`), or a superseded capture
-    whose refund failed later (#4227).
-  - **One home**: `listDuplicateCaptureRefundIntentIds`
-    (`duplicate-capture-ownership.ts`), which the Xero second-instrument
-    conflict reads too (`INV-PAY-102`), so the two never disagree.
-  - Decided under `lock(1)`, enqueued before any Stripe call, one operation
-    per (booking, intent), so a replay re-sends only its own frozen refund.
-  - Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on
-    PostgreSQL in every arrival order, `third-duplicate-capture.realdb.test.ts`.
+- **The settlement is recorded, never guessed** (#4211, owner decision 17 Oct
+  2026). The PAID claim that wins under `lock(1)` writes
+  `Payment.settledByTransactionId`: the card capture, or the cash or bank
+  receipt's PRIMARY row (`payment-settler.ts`). The manual reversal clears it.
+- **The recorded settler is never refunded.** Its redelivery is kept whatever
+  else holds money: a capture kept before #4211, a Xero bank receipt
+  (`INV-PAY-102`), or a superseded capture whose refund failed later (#4227).
+- **Every other card capture arriving on a PAID booking is refunded** while
+  the settler still holds net cash that neither a superseded-intent operation
+  nor a duplicate-capture refund owns: a third capture (three stale tabs), or a
+  stray capture on a cash- or Xero-settled booking (#2262). The alert names the
+  settlement; the history entry names it only when the refund completes
+  inline, and a cash or bank settlement names no card.
+- **No record, no automatic refund.** A booking paid before this release or by
+  the draining old colour has none, and a settler that no longer holds money
+  counts as none. If another capture holds money beside the arriving one, the
+  arriving capture is kept and the admins are emailed to check by hand, once a
+  day per capture, naming the oldest-inserted other (`INV-PAY-133`). A capture
+  a duplicate-capture refund already owns still re-sends its own refund.
+- **One home**: `duplicate-capture-guard.ts`. Ownership is
+  `listDuplicateCaptureRefundIntentIds`, which the Xero second-instrument
+  conflict reads too; that conflict names the recorded settler first.
+- Decided under `lock(1)`, enqueued before any Stripe call, one operation per
+  (booking, intent), so a replay re-sends only its own frozen refund.
+- Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
+  `third-duplicate-capture.realdb.test.ts`.
 
 ## INV-PAY-102
 
@@ -1439,9 +1437,10 @@ short).
     refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change at this release;
     check for open ones after the old colour drains.
-  - **The settling capture is the oldest-inserted qualifying one** (#4177). The
-    duplicate-capture refund and Xero's conflict (#4163) skip a capture owned by
-    a duplicate-capture refund, at any status (`INV-PAY-043`). When
+  - **The settling capture, when none is recorded (`INV-PAY-043`), is the
+    oldest-inserted qualifying one** (#4177). The duplicate-capture refund and
+    Xero's conflict (#4163) skip one a duplicate-capture refund owns, at any
+    status. When
     paid, the Xero conflict also skips a capture a superseded refund or
     in-flight cancel holds, and #1765 refund history (ranked last when
     cancelled).

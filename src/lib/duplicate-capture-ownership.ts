@@ -7,9 +7,9 @@
  * back to the member, whatever the operation's status, so it is never the
  * capture that settled the booking. Two readers decide that, here:
  *
- * - guard (c) of the duplicate-capture refund: an arriving capture is refunded
- *   only against a settlement no such refund owns, so a replay of the settling
- *   capture keeps its money and a third capture is still refunded (#4211);
+ * - the duplicate-capture guard (`duplicate-capture-guard.ts`): a settlement
+ *   such a refund owns never counts as one, and an owned capture's replay
+ *   re-sends only its own refund (#4211);
  * - the Xero second-instrument conflict (`findSecondInstrumentSettlement`),
  *   which never names an owned capture as the card side (#3638, #4163).
  *

@@ -2019,6 +2019,22 @@ matches it for drift, but the `SERIAL` Prisma would generate is never accepted:
 it rewrites the table and numbers rows in an order nobody chose.
 `ledger-row-order-census.test.ts` fails any ledger read ordered another way.
 
+### Which row settled a booking (#4211)
+
+`Payment.settledByTransactionId` names the `PaymentTransaction` whose
+settlement moved the booking to PAID: the card capture, or the cash or bank
+receipt's PRIMARY row. The PAID claim writes it under `lock(1)`, in the claim's
+own transaction (the card and manual settle in `payment-reconciliation.ts`, the
+Xero bank-receipt settle in `xero-inbound/invoice-paid-effects.ts`, both through
+`src/lib/payment-settler.ts`); the manual mark-paid reversal clears it. NULL
+means not recorded: paid before the column existed, by the draining old colour,
+or by a path no transaction of this payment settles (zero cash, an organiser's
+group settlement). The duplicate-capture guard (`duplicate-capture-guard.ts`)
+never refunds the recorded settler, and with no record it refunds nothing new and
+emails the admins; the Xero second-instrument conflict names it first
+(`INV-PAY-043`). It has no foreign key, because the guard re-reads the row and
+trusts it only while it still holds money on this payment.
+
 ## Booking and Payment Flow
 
 The happy-path request/data flow for a card booking. Capacity is claimed under

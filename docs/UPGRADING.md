@@ -119,6 +119,29 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The app records which payment settled each booking (#4211)
+
+`20261119020000_payment_settled_by_transaction` adds one nullable column,
+`Payment.settledByTransactionId`. It is **additive only** (no backfill, no
+index, no rewrite), so it is safe in the ordinary deploy window with the
+previous colour still serving.
+
+**What changes.** When a booking is paid, the app now records which payment
+paid it. If the member pays again (a second or third card payment from old
+browser tabs), the extra payments are refunded automatically and the recorded
+one never is.
+
+**Bookings paid before this release, or by the old colour during the switch,**
+have no record. The old colour does not know the column, so a booking it
+settles stays unrecorded. For those bookings, if a card payment arrives while
+another payment on the booking still holds money, the app keeps it, refunds
+nothing, and emails the admins (as a payment alert) to check which payment
+settled the booking and refund the other by hand. The same email repeats at
+most once a day per payment while Stripe re-sends the event.
+
+**No action is needed.** Nothing goes back through past bookings. Expect the
+alert only on a booking already paid twice.
+
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)
 
 `20261119010000_correct_starter_privacy_audit_retention` is a **data-only

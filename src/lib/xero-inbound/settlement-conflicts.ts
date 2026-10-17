@@ -261,6 +261,8 @@ export type SecondInstrumentSettlement = {
  *   receipt (`recordSecondInstrumentMarkerInTransaction`), so "receipt
  *   recorded and no marker" really does mean no conflict was ever raised.
  *
+ * The capture the booking's PAID claim recorded (`Payment.settledByTransactionId`,
+ * #4211) is named first when it qualifies; with none, the oldest-inserted.
  * Never a capture the #1992 duplicate-capture refund owns: the opposite order
  * (bank first, card second), whose durable refund operation already says which
  * side goes back (`INV-PAY-043`). On a PAID / COMPLETED booking, nor one the

@@ -3935,17 +3935,20 @@ writers happening to hold `lock(1)`. The reversal takes the first two tiers only
 it writes no amount and reads no credit ledger, but it does restore booking
 status and can release capacity.
 
-`lock(1)` also serialises the duplicate-capture adjudication (#1992). When a
-Stripe success arrives for an already-PAID booking, `markBookingPaymentSucceeded`
-refunds the arriving capture, when it has no refund history (#1765), only if
-another captured PRIMARY transaction still holds net cash and is either a card
-capture under a different intent that neither a live superseded-intent
+`lock(1)` also serialises the duplicate-capture adjudication (#1992,
+`duplicate-capture-guard.ts`). The PAID claim that wins under `lock(1)` writes
+`Payment.settledByTransactionId` in its own transaction (#4211), so exactly one
+settlement is ever recorded, and the reversal that clears it holds the same
+lock. When a Stripe success arrives for an already-PAID booking,
+`markBookingPaymentSucceeded` keeps the recorded settler, and refunds any other
+arriving capture with no refund history (#1765) only while the recorded settler
+still holds net cash, is a card capture that neither a live superseded-intent
 operation (b′) nor a duplicate-capture refund operation
-(`duplicate_capture_<bookingId>_<pi>`, at any status, #4211) owns, or any
-non-card settlement (#2262). That check-then-enqueue is race-free only
-because every caller runs it under `lock(1)`: interleaved webhook replays of
-BOTH captures would otherwise refund both sides and settle the booking at zero
-net cash. The
+(`duplicate_capture_<bookingId>_<pi>`, at any status) owns, or is a non-card
+settlement (#2262); with no usable record it refunds nothing new and alerts.
+That check-then-enqueue is race-free only because every caller runs it under
+`lock(1)`: interleaved webhook replays of BOTH captures would otherwise refund
+both sides and settle the booking at zero net cash. The
 refund itself follows the #1349 enqueue-then-execute shape — the durable
 operation (with the slice pinned to the duplicate's own transaction) commits
 with the detection, and the Stripe refund executes after commit under the
