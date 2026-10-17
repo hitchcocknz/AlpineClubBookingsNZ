@@ -63,6 +63,8 @@ wait_for_health() { :; }
 verify_internal_health() { :; }
 find() { if [ "$ENUM_FAIL" = 1 ]; then command find "$@"; return 7; fi; command find "$@"; }
 sort() { if [ "$SORT_FAIL" = 1 ]; then command sort "$@"; return 7; fi; command sort "$@"; }
+mktemp() { if [ "\${MKTEMP_FAIL:-0}" = 1 ]; then return 7; fi; command mktemp "$@"; }
+grep() { if [ "\${COMPARE_FAIL:-0}" = 1 ]; then return 2; fi; command grep "$@"; }
 docker() {
   case "$*" in
     "compose exec -T postgres psql -U tac -d tacbookings -Atqc SELECT EXISTS "*)
@@ -158,7 +160,7 @@ describe("windowed app-database migration boundary (#3963 / #4071)", () => {
     { STATE: "false\n", CLIENT_COUNT: "0\n" },
     { APP_IDS: "", BLUE_IDS: "", GREEN_IDS: "" },
     { APP_IDS: "aa\ndd", BLUE_IDS: "", GREEN_IDS: "cc\nee" },
-  ])("accepts stopped or absent services: %j", (options) => {
+  ] as Record<string, string>[])("accepts stopped or absent services: %j", (options) => {
     const result = run(options);
     expect(result.code, result.output).toBe(0);
     expect(result.migrated).toBe(true);
@@ -203,6 +205,17 @@ describe("windowed app-database migration boundary (#3963 / #4071)", () => {
 
   it.each([{ ENUM_FAIL: "1" }, { SORT_FAIL: "1" }, { TABLE_RESULT: "" }, { TABLE_RESULT: "unknown" }] as Record<string, string>[])("refuses failed/unknown enumeration %j", (options) => {
     refuses(run(options), /Pending migration discovery failed/);
+  }, MIGRATION_GATE_TIMEOUT_MS);
+
+  it.each([
+    [{ MKTEMP_FAIL: "1" }, /Could not prepare pending migration discovery/],
+    [{ COMPARE_FAIL: "1" }, /Could not compare applied migrations/],
+  ] as [Record<string, string>, RegExp][])("refuses failed pending-discovery setup or comparison %j", (options, producerMessage) => {
+    const result = run(options);
+    refuses(result, producerMessage);
+    expect(result.output).toContain("Pending migration discovery failed");
+    expect(result.events).not.toContain("probe");
+    expect(result.events).not.toContain("13/20");
   }, MIGRATION_GATE_TIMEOUT_MS);
 
   it.each([
