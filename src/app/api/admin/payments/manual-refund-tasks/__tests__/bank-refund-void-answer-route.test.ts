@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
-vi.mock("@/lib/bank-refund-void-answer", () => ({ prepareBankRefundVoidAnswer: mocks.prepare }));
+vi.mock("@/lib/bank-refund-void-answer", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/bank-refund-void-answer")),
+  prepareBankRefundVoidAnswer: mocks.prepare,
+}));
 vi.mock("@/lib/manual-refund-task-resolution", () => ({
   resolveManualRefundTask: mocks.resolveManualRefundTask,
   MANUAL_PAYMENT_NOTE_MAX: 500,
