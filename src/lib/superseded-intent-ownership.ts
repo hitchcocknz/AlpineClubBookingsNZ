@@ -170,20 +170,23 @@ const SUPERSEDED_REFUND_OWED_AGAIN_WHERE = [
  * the capture counted, as it should: nothing owes that cash back.
  *
  * Pure over the rows `SUPERSEDED_REFUND_OWED_AGAIN_WHERE` reads, so guards
- * (b′) and (c′) can share it (#4227).
+ * (b′) and (c′) can share it (#4227). That where decides which rows are
+ * open: the one row it reads closed, a superseded refund, carries no
+ * failed-later key and no plan (its enqueue writes none, and only an open
+ * row's plan is re-planned).
  */
 function supersededRefundsOwedAgain(rows: readonly OwnershipRow[]): Set<string> {
   const supersededRefunds = rows.filter((row) => row.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
   const superseded = new Set(supersededRefunds.map((row) => row.paymentIntentId));
   const owed = new Set<string>();
-  const open = rows.filter((row) => row.status !== PaymentRecoveryOperationStatus.SUCCEEDED);
-  for (const row of open) {
+  // Every row but a superseded refund is open: the where reads no other.
+  for (const row of rows) {
     if (cardRefundFailedLaterRefundId(row.idempotencyKey) !== null && superseded.has(row.paymentIntentId)) {
       owed.add(row.paymentIntentId);
     }
   }
   const replannedTransactions = new Set(
-    open.flatMap((row) =>
+    rows.flatMap((row) =>
       (parseRefundAllocationPlan(row.allocationPlan) ?? [])
         .filter((slice) => (slice.failedRefundIds?.length ?? 0) > 0 && !slice.madeRefundId)
         .map((slice) => slice.paymentTransactionId),
