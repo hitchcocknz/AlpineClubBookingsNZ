@@ -288,7 +288,7 @@ describe("listVoidedRefundRequestNotes and the per-row reason (#4214)", () => {
 
   it("marks the request's note rows, and only them, as voided with no live note", async () => {
     state.operations.push(requestRow({ id: "op_other", localId: "pay_2", status: "FAILED" }));
-    const rows = state.operations.map((row) => row as Row & { id: string; localModel: string; localId: string; entityType: string; operationType: string });
+    const rows = state.operations.map((row) => row as Row & { id: string; localModel: string; localId: string; entityType: string; operationType: string; requestPayload: unknown });
     expect(await voidedRequestNoteOperationIds(rows)).toEqual(new Set(["op_raised"]));
   });
 });
