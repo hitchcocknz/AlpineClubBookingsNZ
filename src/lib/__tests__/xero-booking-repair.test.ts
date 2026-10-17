@@ -8041,18 +8041,31 @@ describe("a refund request's own note never answers for the payment's refund not
     );
   });
 
-  it("sums every request paid back on the payment, and none on another", async () => {
-    const booking = await run({
-      operations: [],
-      links: [],
-      requests: [
-        { paymentId: "payment_1", amountCents: 6000 },
-        { paymentId: "payment_1", amountCents: 4000 },
-        { paymentId: "payment_other", amountCents: 9000 },
-      ],
+  it("sums every request paid back on a payment, and never one on another booking's payment in the same sweep", async () => {
+    const withRequests = cancelledInternetBanking();
+    const withoutRequests = cancelledInternetBanking();
+    Object.assign(withoutRequests, { id: "booking_2" });
+    Object.assign(withoutRequests.payment, { id: "payment_2", xeroInvoiceId: "inv_primary_2" });
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, {
+      dependencies: createDependencies({
+        bookings: [withRequests, withoutRequests],
+        links: [],
+        operations: [makePrimaryInvoiceCreateOperation()],
+        paidBackRefundRequests: [
+          { paymentId: "payment_1", amountCents: 6000 },
+          { paymentId: "payment_1", amountCents: 4000 },
+        ],
+      }),
+      scope: { all: true },
     });
-    expect(booking.findings).not.toContainEqual(ambiguousNote);
-    expect(booking.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
+    const [first, second] = report.passes[0].bookings;
+    // Two requests answer the first payment's whole $100: no cancellation note.
+    expect(first.findings).not.toContainEqual(ambiguousNote);
+    expect(first.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
+    // The second payment's $100 is its cancellation's alone, whatever the first's requests.
+    expect(second.actions).toContainEqual(
+      expect.objectContaining({ type: "QUEUE_REFUND_CREDIT_NOTE", payload: expect.objectContaining({ paymentId: "payment_2", refundAmountCents: 10000 }) }),
+    );
   });
 
   // #4195: a request's note Xero voided still answers for that request's cash.

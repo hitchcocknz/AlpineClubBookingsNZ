@@ -50,6 +50,8 @@ describe("a refund request's paid-back hand-back: one definition for the query a
     for (const occurrenceKey of [
       editRefundHandBackOccurrenceKey("mod_1"),
       cardRefundPaidAnotherWayOccurrenceKey("op_1", { xeroRefundNote: "now" }),
+      // A near miss: the prefix without its separator.
+      "refund-request-hand-back",
       null,
     ]) {
       const row = handBack(occurrenceKey);
