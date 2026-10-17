@@ -358,7 +358,7 @@ vi.mock("@/lib/logger", () => ({
 // file-level beforeEach below) is the house fixture, so every other case reads
 // the format it always did.
 const clubFormatMock = vi.hoisted(() => vi.fn());
-const mockLockPaymentForRefundedTotal = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+const mockLockPaymentForRefundedTotal = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined));
 // #3567: when the club format last changed, for the stale-queue alert.
 const mockLoadPersistedClubFormat = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/club-format-settings", async (importOriginal) => ({
