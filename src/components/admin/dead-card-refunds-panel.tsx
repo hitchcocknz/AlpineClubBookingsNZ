@@ -1,13 +1,11 @@
 "use client";
 
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState } from "react";
 import Link from "next/link";
-import { CreditCard } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { FocusedActionError } from "@/components/focused-action-error";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -32,9 +30,10 @@ import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
 import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { formatCents, formatCentsPlain } from "@/lib/utils";
 import { xeroQueuedMessage, xeroRefundNotePromise } from "@/components/admin/dead-card-refunds-xero-copy";
-import { CheckedNotOwedAction } from "@/components/admin/dead-card-refund-check-not-owed";
+import { CheckedNotOwedDialog } from "@/components/admin/dead-card-refund-check-not-owed";
+import { RefundListCard, useShownOnceItHadRows } from "@/components/admin/card-refund-list-card";
 import { PAID_ANOTHER_WAY_CHECK_WHY } from "@/lib/card-refund-failed-later-paid-another-way-note";
-import type { PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
+import type { PaidAnotherWayCheckReason } from "@/lib/open-card-refund-owed";
 
 /** One dead card refund, as `listDeadCardRefunds` returns it. */
 export interface DeadCardRefundPanelRow {
@@ -74,33 +73,6 @@ export interface CardRefundPaidTwicePanelRow {
 /** The warning a refund whose last failure may have reached Stripe carries, on its row and in its dialog. */
 export const STRIPE_MAY_HAVE_REFUNDED_WARNING =
   "Stripe may have refunded: check the Stripe dashboard first.";
-
-/**
- * #3924 round 9 (UX): a list's card, once it has had a row, stays for as long
- * as the page is open - also after its last row is closed or resolved - so the
- * status line focus moves to after the action is still there, and the card
- * says the list is empty. A list that never had a row renders nothing.
- */
-function useShownOnceItHadRows(rowCount: number): boolean {
-  const [shown, setShown] = useState(rowCount > 0);
-  // Adjusted while rendering, as React's derived-state pattern does.
-  if (!shown && rowCount > 0) setShown(true);
-  return shown;
-}
-
-function RefundListCard({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <CreditCard className="h-5 w-5 text-muted-foreground" />
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
-  );
-}
 
 /**
  * #3372 (owner, 7 Oct 2026: "Count + add close action"): the card refunds
@@ -160,6 +132,8 @@ export function DeadCardRefundsPanel({
   // close that leaves a notice, since opening the dialog clears it.
   const listNoticeRef = useRef<HTMLParagraphElement>(null);
   const shown = useShownOnceItHadRows(rows.length);
+  // #4210: the check row a "Checked - not owed" dialog is open for.
+  const [notOwedTarget, setNotOwedTarget] = useState<DeadCardRefundPanelRow | null>(null);
 
   const target = targetId === null ? null : (rows.find((row) => row.operationId === targetId) ?? null);
   // The list moved under the open dialog (a 409's refresh, another treasurer):
@@ -336,19 +310,25 @@ export function DeadCardRefundsPanel({
                 Paid another way
               </ViewOnlyActionButton>
               {row.check ? (
-                <CheckedNotOwedAction
+                <ViewOnlyActionButton
                   canEdit={canEdit}
-                  operationId={row.operationId}
-                  bookingReference={row.bookingReference}
-                  amountCents={row.owedCents}
-                  statusRef={listNoticeRef}
-                  onClosed={setListNotice}
-                />
+                  describeReason={false}
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Close the card refund for booking ${row.bookingReference} as checked - not owed`}
+                  onClick={() => {
+                    setListNotice("");
+                    setNotOwedTarget(row);
+                  }}
+                >
+                  Checked - not owed
+                </ViewOnlyActionButton>
               ) : null}
             </li>
           ))}
         </ul>
 
+        <CheckedNotOwedDialog target={notOwedTarget} onDone={() => setNotOwedTarget(null)} onClosed={setListNotice} statusRef={listNoticeRef} />
         <Dialog open={target !== null} onOpenChange={(next) => !busy && !next && close()}>
           <DialogContent
             className="max-h-[90vh] overflow-y-auto"

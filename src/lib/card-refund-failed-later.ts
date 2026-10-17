@@ -91,7 +91,7 @@ import {
   cardRefundOperationRefundMetadata,
   nextRefusedRefundKeySuffix,
 } from "@/lib/payment-recovery-keys";
-import type { PaidAnotherWayCheck } from "@/lib/payment-transactions";
+import type { PaidAnotherWayCheck } from "@/lib/open-card-refund-owed";
 import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references";
 import { formatCents } from "@/lib/utils";
 

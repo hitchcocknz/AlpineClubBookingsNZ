@@ -57,9 +57,9 @@ import {
   recordedAfterClose,
   refundFitsSlice,
   type CardRefundOwedPaymentRow,
+  type PaidAnotherWayCheckReason,
   type RecordedCardRefundRow,
 } from "@/lib/open-card-refund-owed";
-import type { PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
 
 /** The close that settled a failed refund, and what it leaves for an officer. */
 export type SettlingPaidAnotherWayClose = {

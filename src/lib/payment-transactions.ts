@@ -1300,18 +1300,7 @@ export interface RefundAllocationSlice {
   failedRefundIds?: string[];
   /** #4166: a failed-later row's maker of the failed refund, by its metadata (`card-refund-failed-later.ts`); null for none, absent before #4166. */
   madeByOperationId?: string | null;
-  /** #4210: a failed-later row raised for an officer to check against a "Paid another way" close, never sent (`PaidAnotherWayCheck`). */
-  paidAnotherWayCheck?: PaidAnotherWayCheck;
 }
-
-/**
- * #4210 (`INV-PAY-136`): why a failed-later row is a check, and the row whose
- * "Paid another way" close it is weighed against: what a part close gave up
- * (`part-close`), a refund a resolved paid-twice row listed (`resolved`), or
- * one the app cannot tell that close paid back (`uncertain`).
- */
-export type PaidAnotherWayCheckReason = "part-close" | "resolved" | "uncertain";
-export type PaidAnotherWayCheck = { closedOperationId: string; reason: PaidAnotherWayCheckReason };
 
 /**
  * Thrown when a multi-slice refund fails partway (#1097): carries how much of

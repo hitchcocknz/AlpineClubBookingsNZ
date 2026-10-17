@@ -9,7 +9,7 @@ import {
 } from "@/lib/booking-payment-state";
 import { cardRefundFailedLaterRefundId, isGroupSettlementRefundRecoveryKey, isRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
-import type { PaidAnotherWayCheck, PaidAnotherWayCheckReason, RefundAllocationSlice } from "@/lib/payment-transactions";
+import type { RefundAllocationSlice } from "@/lib/payment-transactions";
 
 /**
  * #3372 (owner, 7 Oct 2026: "count in both"): CARD REFUNDS STARTED BUT NOT YET
@@ -64,6 +64,18 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
   ...CARD_REFUND_OPERATION_WHERE,
 };
 
+/**
+ * #4210 (`INV-PAY-136`): why a failed-later row is a check, and the row whose
+ * "Paid another way" close it is weighed against: what a part close gave up
+ * (`part-close`), a refund a resolved paid-twice row listed (`resolved`), or
+ * one the app cannot tell that close paid back (`uncertain`). Kept on the
+ * row's one plan slice; a release before it reads the plan without it.
+ */
+export type PaidAnotherWayCheckReason = "part-close" | "resolved" | "uncertain";
+export type PaidAnotherWayCheck = { closedOperationId: string; reason: PaidAnotherWayCheckReason };
+/** A plan slice as parsed: the frozen plan's fields, and (#4210) a check row's mark - raised to check, never sent. */
+export type CardRefundPlanSlice = RefundAllocationSlice & { paidAnotherWayCheck?: PaidAnotherWayCheck };
+
 const CHECK_REASONS: readonly PaidAnotherWayCheckReason[] = ["part-close", "resolved", "uncertain"];
 
 function isPaidAnotherWayCheck(value: unknown): value is PaidAnotherWayCheck {
@@ -85,9 +97,9 @@ export function paidAnotherWayCheckOf(operation: { allocationPlan?: unknown }): 
  */
 export function parseRefundAllocationPlan(
   value: unknown,
-): RefundAllocationSlice[] | null {
+): CardRefundPlanSlice[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
-  const slices: RefundAllocationSlice[] = [];
+  const slices: CardRefundPlanSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
     const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId, paidAnotherWayCheck } = entry as Record<

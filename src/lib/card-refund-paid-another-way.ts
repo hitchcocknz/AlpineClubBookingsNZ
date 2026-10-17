@@ -36,12 +36,13 @@ import {
   isOwedCardRefundOperation,
   paidAnotherWayCheckOf,
   unsentSliceCents,
+  type PaidAnotherWayCheckReason,
 } from "@/lib/open-card-refund-owed";
 import { getNetCollectedCashParts } from "@/lib/payment-net-collected";
 import { prisma } from "@/lib/prisma";
 import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
-import { applyLocalRefundAllocation, lockPaymentForRefundedTotal, RefundAllocationExceedsCapturedError, RefundAllocationRacedError, type PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
+import { applyLocalRefundAllocation, lockPaymentForRefundedTotal, RefundAllocationExceedsCapturedError, RefundAllocationRacedError } from "@/lib/payment-transactions";
 import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
 
 /**

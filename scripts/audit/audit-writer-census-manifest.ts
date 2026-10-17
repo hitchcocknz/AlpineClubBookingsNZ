@@ -672,7 +672,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // a card refund Stripe failed later that a "Paid another way" close had already
   // settled, awaited on the ledger writer's transaction under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 506,
+  // 506 -> 507 (#4210 round 3): `booking-payment.card-refund.checked-not-owed`,
+  // a check row an officer closed as not owed, awaited on its claim's
+  // transaction under `payment`.
+  writeSites: 507,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -879,7 +882,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the completion's transaction so the row commits with the correction.
     // 145 -> 146 (#4210): a failed-later card refund a "Paid another way" close
     // settled, awaited on the ledger writer's transaction so the row commits with it.
-    createAuditLog: { total: 146, uncategorised: 0 },
+    // 146 -> 147 (#4210 round 3): a check row closed as checked - not owed,
+    // awaited on its claim's transaction so the row commits with it.
+    createAuditLog: { total: 147, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1083,7 +1088,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // rows before its hand-back - the payment's figures, read by the same people.
     // 58 -> 59 (#4210): a failed-later card refund a "Paid another way" close had
     // already settled - read by the people who reconcile it.
-    payment: 59,
+    // 59 -> 60 (#4210 round 3): a check row closed as checked - not owed - read
+    // by the people who reconcile it.
+    payment: 60,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

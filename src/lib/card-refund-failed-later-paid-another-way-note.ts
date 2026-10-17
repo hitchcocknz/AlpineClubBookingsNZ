@@ -8,7 +8,7 @@
  * registry imports it without loading the email layout.
  */
 
-import type { PaidAnotherWayCheckReason } from "@/lib/payment-transactions";
+import type { PaidAnotherWayCheckReason } from "@/lib/open-card-refund-owed";
 
 /** How the failed-later writer decided a refund a close had settled (`card-refund-failed-later-paid-another-way.ts`). */
 export type PaidAnotherWayFailedLaterOutcome = "settled-paid-another-way" | "raised-check-part-close" | "raised-check-resolved" | "raised-check-uncertain";
