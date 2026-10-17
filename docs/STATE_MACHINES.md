@@ -3940,12 +3940,22 @@ valid TOTP/email/recovery code -> server mints single-use challenge token (hashe
 session update carrying that token -> jwt callback consumes it -> twoFactorVerified=true
 client-forged session update without a valid token -> ignored, session stays unverified
 invalid attempts -> per-member counter increments -> 15 minute lockout after 5 failures
+enrollment accepted -> recovery codes stay visible until Continue -> replace document at server-resolved destination
+verification accepted -> replace document at server-resolved destination
+rejected or failed request -> retain challenge and correction flow, no navigation
 ```
 
 To verify: Auth.js JWT callback claim handling, challenge-token single-use
 consumption, protected route-group layout redirects, API guard rejection,
 email-code expiry, TOTP skew window, recovery code single-use consumption, and
-lockout reset after successful verification.
+lockout reset after successful verification. The two successful panel exits share
+one local document-replacement function (`window.location.replace`); destination
+selection stays server-side, including safe deep links and nonce-bound private
+family-invite returns. Neither exit renders that destination in a DOM attribute.
+Enrollment waits for explicit **Continue** so the member can save recovery codes.
+Rendered panel tests cover accepted, pending, rejected and network-failed requests;
+direct browser journeys require protected content after Continue and verification,
+without a later helper navigation (#4060).
 
 ## Magic-Link Sign-In Lifecycle
 
