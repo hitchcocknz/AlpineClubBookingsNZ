@@ -107,6 +107,8 @@ let readCardShortfallTaskStatuses: (typeof import("@/lib/cancel-card-refund-shor
 let listCardRefundsPaidTwice: (typeof import("@/lib/card-refund-paid-twice"))["listCardRefundsPaidTwice"];
 let listDeadCardRefunds: (typeof import("@/lib/card-refund-paid-another-way"))["listDeadCardRefunds"];
 let resolveCardRefundPaidTwice: (typeof import("@/lib/card-refund-paid-twice"))["resolveCardRefundPaidTwice"];
+let closeCardRefundCheckNotOwed: (typeof import("@/lib/card-refund-check-not-owed"))["closeCardRefundCheckNotOwed"];
+let readPaidAnotherWayCounted: (typeof import("@/lib/card-refund-paid-another-way-counted"))["readPaidAnotherWayCounted"];
 let resolveBookingNarrative: (typeof import("@/lib/booking-narrative"))["resolveBookingNarrative"];
 let club: ReturnType<(typeof import("@/lib/club-time"))["bindClubTime"]>;
 let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixture"))["CLUB_FORMAT_TEST"];
@@ -243,6 +245,8 @@ let markerFinishedAt: Date | null = null;
       ({ parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed"));
       ({ closeCardRefundPaidAnotherWay, listDeadCardRefunds } = await import("@/lib/card-refund-paid-another-way"));
       ({ listCardRefundsPaidTwice, resolveCardRefundPaidTwice } = await import("@/lib/card-refund-paid-twice"));
+      ({ closeCardRefundCheckNotOwed } = await import("@/lib/card-refund-check-not-owed"));
+      ({ readPaidAnotherWayCounted } = await import("@/lib/card-refund-paid-another-way-counted"));
       ({ readCancelledCardRefund, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status"));
       ({ resolveBookingNarrative } = await import("@/lib/booking-narrative"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
@@ -439,6 +443,9 @@ let markerFinishedAt: Date | null = null;
         expect(cancelRow.status).not.toBe("SUCCEEDED");
         vi.setSystemTime(CLOSED_AT);
         await paidAnotherWay(cancelRow.id, MEMBER_REFUND_CENTS);
+        // Round 3 (money F2): the close keeps what it counted - nothing made, X's slice unsent.
+        const record = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BOOKING_ID } });
+        expect(readPaidAnotherWayCounted(record.reviewContext)).toEqual({ refundIds: [], unsentSlices: [{ paymentTransactionId: TXN_ID, amountCents: MEMBER_REFUND_CENTS, exact: true }] });
         await recordedLate(x);
         // Paid twice: by the bank transfer the close recorded, and (Stripe says) by card.
         expect(await listCardRefundsPaidTwice()).toEqual([expect.objectContaining({ operationId: cancelRow.id, paidAnotherWayCents: MEMBER_REFUND_CENTS, refundedByCardCents: MEMBER_REFUND_CENTS })]);
@@ -481,7 +488,21 @@ let markerFinishedAt: Date | null = null;
         expect((await listDeadCardRefunds()).filter((each) => each.bookingId === BOOKING_ID)).toEqual([expect.objectContaining({ operationId: check.id, owedCents: 4_000 })]);
         const audit = await prisma.auditLog.findFirstOrThrow({ where: { targetId: BOOKING_ID, action: "booking-payment.card-refund.failed-later-paid-another-way" } });
         expect(audit.metadata).toMatchObject({ decision: "raised-check-part-close", raisedOperationId: check.id, paidBackCents: 6_000, owedCents: MEMBER_REFUND_CENTS, checkCents: 4_000 });
-        expect(await narrative()).not.toContain("on its way");
+        expect(parseRefundAllocationPlan(check.allocationPlan)?.[0]?.paidAnotherWayCheck).toEqual({ closedOperationId: cancelRow.id, reason: "part-close" });
+        // Round 3 (UX 5): the member's page says the club will be in touch about it, never that it was checked and closed.
+        const page = await narrative();
+        expect(page).toContain("$60.00 could not go back to your card and was paid back to you another way, the club will be in touch about the remaining $40.00");
+        expect(page).not.toContain("checked the remaining");
+        expect(page).not.toContain("on its way");
+
+        // Round 3 (UX 2): checked - not owed closes it, moving no money; the page says the club closed it.
+        const refundedBefore = (await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).refundedAmountCents;
+        await closeCardRefundCheckNotOwed({ operationId: check.id, note: "The close's transfer covered it", actingMemberId: OFFICER_ID });
+        expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: check.id } })).toMatchObject({ status: "SUCCEEDED" });
+        expect((await listDeadCardRefunds()).filter((each) => each.bookingId === BOOKING_ID)).toEqual([]);
+        expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).refundedAmountCents).toBe(refundedBefore);
+        expect(await prisma.auditLog.count({ where: { targetId: BOOKING_ID, action: "booking-payment.card-refund.checked-not-owed" } })).toBe(1);
+        expect(await narrative()).toContain("$60.00 could not go back to your card and was paid back to you another way, the club checked the remaining $40.00 and closed it");
       });
 
       // #4210 round 2 (F4): the paid-twice row was marked Resolved - the member may have returned the extra.
@@ -503,6 +524,12 @@ let markerFinishedAt: Date | null = null;
         const audit = await prisma.auditLog.findFirstOrThrow({ where: { targetId: BOOKING_ID, action: "booking-payment.card-refund.failed-later-paid-another-way" } });
         expect(audit).toMatchObject({ details: "Member paid the card refund back by bank" });
         expect(audit.metadata).toMatchObject({ decision: "raised-check-resolved", checkCents: MEMBER_REFUND_CENTS, resolutionNote: "Member paid the card refund back by bank" });
+        // Round 3 (UX 5): the member's page says the club will be in touch about it.
+        const page = await narrative();
+        expect(page).toContain("$100.00 could not go back to your card and was paid back to you another way, the club will be in touch about $100.00 of the refund");
+        expect(page).not.toContain("on its way");
+        // Round 3 (UX 1): the officers' list marks it a check, and why.
+        expect((await listDeadCardRefunds()).filter((each) => each.bookingId === BOOKING_ID)).toEqual([expect.objectContaining({ owedCents: MEMBER_REFUND_CENTS, check: "resolved" })]);
       });
 
       it("MUTATION (control): a refund the close counted as made - recorded before it - is owed again and re-sent", async () => {
