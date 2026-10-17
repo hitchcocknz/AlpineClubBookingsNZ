@@ -5,7 +5,7 @@
  * closed when neither does.
  */
 import { describe, expect, it } from "vitest";
-import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
+import { assertFreshRefundNoteFromCreate, refundNoteKeyAfterVoidParts, refundRequestOwnNotes } from "@/lib/xero-refund-note-status";
 
 type Link = { xeroObjectId: string; metadata: unknown };
 type Create = { xeroObjectId: string; requestPayload: unknown; createdAt?: Date };
@@ -76,5 +76,56 @@ describe("INV-ADDPAY-041: the after-void key parts", () => {
       { xeroObjectId: "cn_c", metadata: { amountCents: 1000, watermarkCents: 9000 } },
     ]);
     expect(await refundNoteKeyAfterVoidParts("pay_1", { watermarkCents: 8000 }, db)).toEqual(["after-void", "cn_a", "cn_b"]);
+  });
+});
+
+describe("#4195: a refund request's own notes, and the key it raises a fresh one under", () => {
+  type RoleLink = Link & { role: string; active: boolean; xeroObjectNumber?: string | null };
+  function roleClient(links: RoleLink[]) {
+    return {
+      xeroObjectLink: { findMany: async ({ where }: { where: { role: string } }) => links.filter((link) => link.role === where.role) },
+      xeroSyncOperation: { findFirst: async () => null, findMany: async () => [] },
+    } as never;
+  }
+  const request = (xeroObjectId: string, refundRequestId: string, extra: Partial<RoleLink> & { status?: string } = {}): RoleLink => ({
+    xeroObjectId,
+    role: "REFUND_REQUEST_CREDIT_NOTE",
+    active: extra.active ?? true,
+    metadata: { amountCents: 5000, refundRequestId, ...(extra.status ? { status: extra.status } : {}) },
+  });
+
+  it("MUTATION: a voided own note is never live, inactive or still active from before #4195", async () => {
+    const db = roleClient([
+      request("cn_old", "rr_1", { status: "VOIDED" }),
+      request("cn_older", "rr_1", { status: "DELETED", active: false }),
+      request("cn_other", "rr_2"),
+    ]);
+    expect(await refundRequestOwnNotes("pay_1", "rr_1", db)).toEqual({ live: null, cancelledIds: ["cn_old", "cn_older"] });
+    expect((await refundRequestOwnNotes("pay_1", "rr_2", db)).live?.xeroObjectId).toBe("cn_other");
+  });
+
+  it("a live own note is the request's cover; an inactive note with no recorded status is not", async () => {
+    const db = roleClient([request("cn_inactive", "rr_1", { active: false }), request("cn_live", "rr_1", { status: "AUTHORISED" })]);
+    expect(await refundRequestOwnNotes("pay_1", "rr_1", db)).toMatchObject({ live: { xeroObjectId: "cn_live" }, cancelledIds: [] });
+  });
+
+  it("MUTATION: the request's key names its own voided notes, sorted, and nothing else's", async () => {
+    const db = roleClient([
+      request("cn_b", "rr_1", { status: "VOIDED", active: false }),
+      request("cn_a", "rr_1", { status: "VOIDED", active: false }),
+      request("cn_x", "rr_2", { status: "VOIDED", active: false }),
+      { xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE", active: false, metadata: { amountCents: 5000, status: "VOIDED" } },
+    ]);
+    expect(await refundNoteKeyAfterVoidParts("pay_1", { refundRequestId: "rr_1" }, db)).toEqual(["after-void", "cn_a", "cn_b"]);
+    expect(await refundNoteKeyAfterVoidParts("pay_1", { refundRequestId: "rr_3" }, db)).toEqual([]);
+  });
+
+  it("MUTATION: Xero answering a create with a note any refund request's link records voided is refused", async () => {
+    // A link whose request is unreadable: no request names it, so only this check stops it.
+    const db = roleClient([{ xeroObjectId: "cn_voided", role: "REFUND_REQUEST_CREDIT_NOTE", active: false, metadata: { status: "VOIDED" } }]);
+    await expect(assertFreshRefundNoteFromCreate("pay_1", "op_1", { creditNoteID: "cn_voided", status: "AUTHORISED" }, db)).rejects.toThrow(
+      /never re-adopted \(INV-ADDPAY-041\)/,
+    );
+    await expect(assertFreshRefundNoteFromCreate("pay_1", "op_1", { creditNoteID: "cn_fresh", status: "AUTHORISED" }, db)).resolves.toBeUndefined();
   });
 });

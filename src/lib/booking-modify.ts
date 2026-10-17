@@ -12,6 +12,7 @@ export {
   EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE,
   BookingModifyReviewJustificationRequiredError,
   GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
+  GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE,
   hasOutstandingAdditionalPayment,
   isBookingFullyPaidForGuestNameEdits,
   isMemberWholeLodgeBooking,
