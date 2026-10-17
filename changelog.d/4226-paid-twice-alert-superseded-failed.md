@@ -9,9 +9,11 @@
   member, and an officer refunding the bank transfer on that advice would
   have left the booking with no money held.
 
-  The alert now skips that payment while its refund is still owed, as it
-  already did while the first refund was under way (#4177). It names the
-  payment that did settle the booking, or raises nothing when there is no
-  other card payment. Once the refund is made again, or closed as paid
-  another way, the payment counts as before. Cancelled bookings are
-  unchanged, and no money moves differently.
+  The alert now skips that payment while everything it holds is owed back
+  to the member, as it already did while the first refund was under way
+  (#4177). It names the payment that did settle the booking, or raises
+  nothing when there is no other card payment. If the payment holds more
+  than is owed back - say a refund made by hand in Stripe failed too - it
+  is still named. Once the refund is made again, or closed as paid another
+  way, the payment counts as before. Cancelled bookings are unchanged, and
+  no money moves differently.
