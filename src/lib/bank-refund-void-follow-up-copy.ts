@@ -97,3 +97,10 @@ export const BANK_REFUND_VOID_ANSWER_REQUIRED_MESSAGE =
 /** The refusal when an answer is sent for a task that is not a follow-up. */
 export const BANK_REFUND_VOID_ANSWER_NOT_ASKED_MESSAGE =
   "This refund was not put back on the list by a voided credit note, so that answer does not apply. Refresh the page and try again.";
+
+/** What the treasurer is told once a follow-up is completed on one of its answers. */
+export function bankRefundVoidCompletionMessage(answer: BankRefundVoidAnswer, creditNoteNumber?: string | null): string {
+  return answer === "fresh-note"
+    ? "Refund recorded as paid back again. One fresh credit note is queued for Xero, dated today."
+    : `Refund recorded as paid back again, against credit note ${creditNoteNumber ?? "the one you made"} in Xero, which the app now tracks.`;
+}

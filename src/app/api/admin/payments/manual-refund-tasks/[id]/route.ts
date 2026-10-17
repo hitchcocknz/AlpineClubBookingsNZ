@@ -19,6 +19,8 @@ import {
   resolveManualRefundTask,
 } from "@/lib/manual-refund-task-resolution";
 import { clubFormatValues } from "@/lib/club-format-server";
+import { prepareBankRefundVoidAnswer } from "@/lib/bank-refund-void-answer";
+import { bankRefundVoidCompletionMessage, HAND_MADE_CREDIT_NOTE_NUMBER_MAX } from "@/lib/bank-refund-void-follow-up-copy";
 
 const noteField = z.string().max(MANUAL_PAYMENT_NOTE_MAX).optional().nullable();
 // Explicit confirmation so closing a money task is never a single-click
@@ -97,6 +99,24 @@ const bodySchema = z.discriminatedUnion("resolution", [
        * changes the words on the Xero credit note and nothing else.
        */
       handedBackInCash: z.boolean().optional().nullable(),
+      /**
+       * #4162 (`INV-ADDPAY-042`): a bank refund to re-confirm's answer - raise a
+       * fresh credit note, or the number of the note the treasurer already made
+       * in Xero, which is checked against Xero before anything is written.
+       * Refused on any other task (by the writer, which knows the kind).
+       */
+      bankRefundVoidAnswer: z
+        .discriminatedUnion("answer", [
+          z.object({ answer: z.literal("fresh-note") }).strict(),
+          z
+            .object({
+              answer: z.literal("recorded-in-xero"),
+              creditNoteNumber: z.string().trim().min(1).max(HAND_MADE_CREDIT_NOTE_NUMBER_MAX),
+            })
+            .strict(),
+        ])
+        .optional()
+        .nullable(),
     })
     .strict(),
   z
@@ -179,6 +199,12 @@ export async function POST(
   const format = await clubFormatValues();
 
   try {
+    // #4162: the "already in Xero" answer reads Xero HERE, before the
+    // completion's transaction opens, so no lock is held across the call.
+    const bankRefundVoidAnswer =
+      parsed.data.resolution === "completed" && parsed.data.bankRefundVoidAnswer
+        ? await prepareBankRefundVoidAnswer({ taskId: id, answer: parsed.data.bankRefundVoidAnswer, format })
+        : null;
     const result = await resolveManualRefundTask(
       parsed.data.resolution === "completed"
         ? {
@@ -190,6 +216,7 @@ export async function POST(
             direction: parsed.data.direction ?? null,
             recordedNightPrices: parsed.data.recordedNightPrices ?? null,
             handedBackInCash: parsed.data.handedBackInCash ?? null,
+            bankRefundVoidAnswer,
           }
         : {
             taskId: id,
@@ -206,7 +233,12 @@ export async function POST(
       success: true,
       task: result,
       message: `${
-        parsed.data.resolution === "completed"
+        bankRefundVoidAnswer
+          ? bankRefundVoidCompletionMessage(
+              bankRefundVoidAnswer.answer,
+              bankRefundVoidAnswer.answer === "recorded-in-xero" ? bankRefundVoidAnswer.note.creditNoteNumber : null,
+            )
+          : parsed.data.resolution === "completed"
           ? completionMessage(result, format)
           : dismissalMessage(result.kind, result.partPaymentReview)
       }${nightPricesRecordedMessage(result.recordedNightPriceCount)}`,

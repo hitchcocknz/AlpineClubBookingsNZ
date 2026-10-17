@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { paidAnotherWayCloseReceiptRecorded } from "@/lib/late-capture-paid-another-way";
 import {
+  BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE,
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
   COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE,
   isCancelCardShortfallTask,
@@ -187,7 +188,14 @@ export async function readPaidAnotherWayCloseShare(
   closeId: string,
 ): Promise<{ amountCents: number; coveredCents: number; cardNoteCoversCents: number; uncoveredCents: number } | null> {
   const record = await db.manualRefundTask.findFirst({
-    where: { id: closeId, paymentId, ...BANK_CASH_RECORD_WHERE },
+    // #4162 (`INV-ADDPAY-042`): a completed bank refund to re-confirm raises its
+    // fresh note the same way - keyed and sized on itself, never the payment's
+    // gap - so its record is read here too (and only here: it is no card cash).
+    where: {
+      id: closeId,
+      paymentId,
+      OR: [...BANK_CASH_RECORD_WHERE.OR, { ...BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE, status: "COMPLETED" }],
+    },
     select: { amountCents: true, reviewContext: true },
   });
   if (!record) return null;
