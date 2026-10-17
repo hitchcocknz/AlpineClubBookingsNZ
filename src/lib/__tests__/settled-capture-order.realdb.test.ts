@@ -21,6 +21,11 @@
  *   `createdAt` can return the first capture without any `orderBy`, so this
  *   case cannot show the order is needed; it pins that the earlier-created
  *   capture is the one named.
+ * - The Xero second-instrument conflict's reading of the superseded-intent
+ *   machinery (`listSupersededIntentIdsOwningCaptures`): a superseded refund
+ *   counts until it SUCCEEDED, a cancel only while in flight
+ *   (`PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE`), where guard (b′) counts
+ *   both until SUCCEEDED.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -130,33 +135,19 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(seq[FIRST]! < seq[LATER]!, "premise: the first capture was inserted first").toBe(true);
       if (createdAt.first.getTime() !== createdAt.later.getTime()) return;
       // On a tie every plan returns heap order (a btree keeps equal keys in heap
-      // order), so the duplicate-capture guard's own read, repeated exactly as
-      // `settleBookingPaymentInTransaction` sends it but without its `orderBy`,
+      // order), so the duplicate-capture guard's own read - its exported
+      // `where` (`otherSettledCaptureWhere`), without its `orderBy` -
       // meets the later capture first: the answer the unordered read gave.
       // Apart, an index on `createdAt` may return the first, so the premise is
       // asserted only here.
-      const { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } = await import("@/lib/payment-transaction-status");
+      const { otherSettledCaptureWhere } = await import("@/lib/payment-reconciliation");
       const { listLiveSupersededIntentIds } = await import("@/lib/superseded-intent-ownership");
-      const liveSupersededIntentIds = await listLiveSupersededIntentIds(prisma, PAYMENT_ID);
       const unordered = await prisma.paymentTransaction.findFirst({
-        where: {
+        where: otherSettledCaptureWhere({
           paymentId: PAYMENT_ID,
-          kind: "PRIMARY",
-          status: {
-            in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST],
-          },
-          OR: [
-            {
-              source: "STRIPE",
-              stripePaymentIntentId: {
-                not: ARRIVING_PI,
-                notIn: liveSupersededIntentIds,
-              },
-              NOT: { stripePaymentIntentId: null },
-            },
-            { source: { not: "STRIPE" } },
-          ],
-        },
+          arrivingPaymentIntentId: ARRIVING_PI,
+          liveSupersededIntentIds: await listLiveSupersededIntentIds(prisma, PAYMENT_ID),
+        }),
         select: { id: true, stripePaymentIntentId: true },
       });
       expect(unordered?.id, "premise: the unordered production read meets the later capture first").toBe(LATER);
@@ -283,6 +274,44 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(result.outcome).toBe("duplicate_capture_refunded");
       expect(asked, "only the arriving capture is refunded").toEqual([ARRIVING_PI]);
       expect(await settledIntentTheHistoryNames()).toBe(FIRST_PI);
+    });
+
+    it("the Xero reader counts a superseded refund until it SUCCEEDED and a cancel only while in flight; (b′) counts both until SUCCEEDED", async () => {
+      const operations = [
+        { intent: "pi_race_4177_refund_retrying", type: "REFUND_SUPERSEDED_PAYMENT", status: "FAILED", attempts: 2, nextRetryAt: TIED_AT },
+        { intent: "pi_race_4177_refund_dead", type: "REFUND_SUPERSEDED_PAYMENT", status: "FAILED", attempts: 5, nextRetryAt: null },
+        { intent: "pi_race_4177_refund_done", type: "REFUND_SUPERSEDED_PAYMENT", status: "SUCCEEDED", attempts: 1, nextRetryAt: null },
+        { intent: "pi_race_4177_cancel_waiting", type: "CANCEL_PAYMENT_INTENT", status: "PENDING", attempts: 0, nextRetryAt: TIED_AT },
+        { intent: "pi_race_4177_cancel_running", type: "CANCEL_PAYMENT_INTENT", status: "PROCESSING", attempts: 1, nextRetryAt: null },
+        { intent: "pi_race_4177_cancel_dead", type: "CANCEL_PAYMENT_INTENT", status: "FAILED", attempts: 5, nextRetryAt: null },
+        { intent: "pi_race_4177_cancel_raised_dead", type: "CANCEL_PAYMENT_INTENT", status: "PENDING", attempts: 5, nextRetryAt: TIED_AT },
+      ] as const;
+      await prisma.paymentRecoveryOperation.createMany({
+        data: operations.map((operation) => ({
+          type: operation.type,
+          status: operation.status,
+          attempts: operation.attempts,
+          nextRetryAt: operation.nextRetryAt,
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentIntentId: operation.intent,
+          amountCents: PRICE_CENTS,
+          idempotencyKey: ["race", "4177", operation.intent].join("-"),
+        })),
+      });
+      const { listLiveSupersededIntentIds, listSupersededIntentIdsOwningCaptures } = await import(
+        "@/lib/superseded-intent-ownership"
+      );
+
+      expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID)).sort()).toEqual(
+        ["pi_race_4177_cancel_running", "pi_race_4177_cancel_waiting", "pi_race_4177_refund_dead", "pi_race_4177_refund_retrying"],
+      );
+      expect((await listLiveSupersededIntentIds(prisma, PAYMENT_ID)).sort()).toEqual(
+        operations
+          .filter((operation) => operation.status !== "SUCCEEDED")
+          .map((operation) => operation.intent)
+          .sort(),
+      );
     });
   },
 );

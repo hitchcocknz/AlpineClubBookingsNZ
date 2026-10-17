@@ -26,5 +26,6 @@ describe("the settled-capture order real-database proof stays wired into CI (#41
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("regression pin: captures created apart, the later one first in the heap");
     expect(suite).toContain("proof: captures tied on createdAt, the later one first in the heap");
+    expect(suite).toContain("the Xero reader counts a superseded refund until it SUCCEEDED and a cancel only while in flight");
   });
 });

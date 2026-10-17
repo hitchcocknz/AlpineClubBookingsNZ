@@ -140,6 +140,36 @@ const PAYABLE_SUCCESS_STATUSES = new Set<string>(PAYABLE_SUCCESS_STATUS_LIST);
 // path offering an action that was certain to 409, with a message ("changed
 // while you were recording it") that was simply untrue — nothing had changed.
 
+/**
+ * #1992 guard (b): which captures could be the settlement an arriving capture
+ * duplicates - another captured PRIMARY row with net cash: a Stripe one under a
+ * different intent no superseded-intent operation owns (b′), or any non-Stripe
+ * one (#2262). The duplicate-capture guard reads it oldest first (#4177);
+ * exported so the real-PostgreSQL proof repeats the exact read.
+ */
+export function otherSettledCaptureWhere(input: {
+  paymentId: string;
+  arrivingPaymentIntentId: string;
+  liveSupersededIntentIds: string[];
+}) {
+  return {
+    paymentId: input.paymentId,
+    kind: PaymentTransactionKind.PRIMARY,
+    status: { in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST] },
+    OR: [
+      {
+        source: PaymentSource.STRIPE,
+        stripePaymentIntentId: {
+          not: input.arrivingPaymentIntentId,
+          notIn: input.liveSupersededIntentIds,
+        },
+        NOT: { stripePaymentIntentId: null },
+      },
+      { source: { not: PaymentSource.STRIPE } },
+    ],
+  } satisfies Prisma.PaymentTransactionWhereInput;
+}
+
 async function alertRefundFailure({
   booking,
   paymentIntentId,
@@ -1125,24 +1155,11 @@ async function settleBookingPaymentInTransaction(
         // settled one (#4163's rule): (c′) re-checks it, `settledPaymentIntentId` names it.
         const otherSettledCapture = await tx.paymentTransaction.findFirst({
           orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
-          where: {
+          where: otherSettledCaptureWhere({
             paymentId: payment.id,
-            kind: PaymentTransactionKind.PRIMARY,
-            status: {
-              in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST],
-            },
-            OR: [
-              {
-                source: PaymentSource.STRIPE,
-                stripePaymentIntentId: {
-                  not: paymentIntentId,
-                  notIn: liveSupersededIntentIds,
-                },
-                NOT: { stripePaymentIntentId: null },
-              },
-              { source: { not: PaymentSource.STRIPE } },
-            ],
-          },
+            arrivingPaymentIntentId: paymentIntentId,
+            liveSupersededIntentIds,
+          }),
           select: { id: true, stripePaymentIntentId: true },
         });
 
