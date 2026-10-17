@@ -124,7 +124,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   second instruments: an ADDITIONAL card row, a capture the #1992 refund owns
   (`INV-PAY-043`), and — on a settled booking — #1765 refund history, a card
   row refunded before the booking moved to Internet Banking, or a capture a
-  superseded-intent refund or in-flight cancel holds for the member (#4177).
+  superseded-intent refund, its re-send (#4221) or in-flight cancel holds for
+  the member (#4177).
 - **A replay on a settled booking changes nothing.** COMPLETED takes the
   already-paid arm like PAID.
 - Pinned by `switch-to-internet-banking-route.test.ts`,
