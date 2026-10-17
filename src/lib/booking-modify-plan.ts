@@ -530,13 +530,6 @@ export const GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE =
   "Linking a placeholder guest to a member is an admin-only action.";
 export const GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE =
   "A placeholder guest can only be linked to a member on a whole-lodge booking.";
-/**
- * The member-ORIGIN fence (`isMemberWholeLodgeBooking`): a school's whole-lodge
- * booking carries `wholeLodgeHold` too. One wording for the save, the quote and
- * the promo box (#4202), which each raise it before the resolver below runs.
- */
-export const GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE =
-  "Linking a placeholder to a member is only available on member whole-lodge bookings.";
 export const GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE =
   "Only an unlinked placeholder guest can be linked to a member; a guest already linked to a member cannot be re-pointed.";
 export const GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE =
