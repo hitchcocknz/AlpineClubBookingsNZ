@@ -197,7 +197,7 @@ export async function POST(req: NextRequest) {
       parsed.data.guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : [])),
     ));
   }
-  // #4199: each guest's nights as the save resolves them (`INV-EXCEPT-022`).
+  // #4199, #4202: each guest's nights and sold prices, as the save has them (`INV-EXCEPT-022`).
   const stays = resolvePromoPreviewStaysOrRefusal({ ...parsed.data, edit: editStays });
   if ("refusal" in stays) return NextResponse.json({ error: stays.refusal }, { status: 400 });
   const { checkIn, checkOut, guests } = stays;
@@ -331,10 +331,6 @@ export async function POST(req: NextRequest) {
     : toGroupDiscountConfig(gds);
 
   try {
-    // #4202: on an edit, a guest already on the booking arrives carrying the
-    // locks the quote and the save price them with (`resolvePromoPreviewStays`),
-    // so this is the quote's pricing pass: the nights they bought keep their
-    // sold prices and only new nights price at current rates.
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
       ownerMemberId: effectiveMemberId,
       checkIn,
