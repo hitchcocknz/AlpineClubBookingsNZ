@@ -242,7 +242,7 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
   });
 
   it("MUTATION: keeps the request's $50 beside the canonical note's $100 - no write", async () => {
-    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000 }]);
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_1" }]);
 
     const result = await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
 
@@ -256,7 +256,7 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
 
     expect(mocks.manualRefundTaskFindMany).toHaveBeenCalledWith({
       where: { paymentId: { in: ["pay-1"] }, ...COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE },
-      select: { paymentId: true, amountCents: true },
+      select: { paymentId: true, amountCents: true, kind: true, occurrenceKey: true },
     });
     expect(COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE).toEqual({
       kind: "CANCELLED_BOOKING_HAND_BACK",
@@ -275,9 +275,9 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
 
   it("sums every request on the payment, and never one on another payment", async () => {
     mocks.manualRefundTaskFindMany.mockResolvedValue([
-      { paymentId: "pay-1", amountCents: 3000 },
-      { paymentId: "pay-1", amountCents: 2000 },
-      { paymentId: "pay-other", amountCents: 4000 },
+      { paymentId: "pay-1", amountCents: 3000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_2" },
+      { paymentId: "pay-1", amountCents: 2000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_3" },
+      { paymentId: "pay-other", amountCents: 4000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_4" },
     ]);
 
     await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
@@ -286,7 +286,7 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
   });
 
   it("an edit's note reconciled on the payment's invoice keeps the request's cash too", async () => {
-    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000 }]);
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_5" }]);
     mocks.paymentFindMany.mockResolvedValue([{ ...bankPayment, refundedAmountCents: 7000 }]);
     mocks.xeroObjectLinkFindMany.mockResolvedValue([]);
 
@@ -302,7 +302,7 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
   });
 
   it("the canonical note voided: only the request's cash stays (INV-ADDPAY-041)", async () => {
-    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000 }]);
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_6" }]);
 
     await runRepair({ paymentRow: bankPayment, creditNote: { status: "VOIDED", total: 100 } });
 
@@ -310,7 +310,7 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
   });
 
   it("a total past the amount paid is clamped and reads REFUNDED", async () => {
-    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 15000 }]);
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 15000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_7" }]);
 
     await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
 

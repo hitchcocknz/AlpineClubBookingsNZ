@@ -321,7 +321,7 @@ function createDependencies(state: {
   // #3643 F2: the organisation late-cash arm's CANCELLED_BOOKING_HAND_BACK tasks.
   handBackTasks?: { bookingId: string; paymentId: string }[];
   // #4215 (`INV-PAY-118`): refund requests' completed hand-backs, the cash each paid back.
-  paidBackRefundRequests?: { paymentId: string; amountCents: number }[];
+  paidBackRefundRequests?: { paymentId: string; amountCents: number; refundRequestId?: string }[];
   // #3643 (owner decision 28 Sep 2026): DECISION 2 part-payment review tasks.
   partPaymentReviewTasks?: {
     bookingId: string;
@@ -553,7 +553,9 @@ function createDependencies(state: {
           where?.occurrenceKey?.in
             ? (state.paidAnotherWayCloses ?? []).filter((close) => where.occurrenceKey.in.includes(close.occurrenceKey))
             : where?.occurrenceKey?.startsWith === "refund-request-hand-back:" && where?.status === "COMPLETED"
-            ? (state.paidBackRefundRequests ?? []).filter((task) => where.paymentId.in.includes(task.paymentId))
+            ? (state.paidBackRefundRequests ?? [])
+                .filter((task) => where.paymentId.in.includes(task.paymentId))
+                .map((task) => ({ paymentId: task.paymentId, amountCents: task.amountCents, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: `refund-request-hand-back:${task.refundRequestId ?? "rr_1"}` }))
             : where?.kind === "CANCELLED_BOOKING_HAND_BACK"
             ? (state.handBackTasks ?? [])
             : where?.partPaymentReviewPaymentId
@@ -636,6 +638,10 @@ function createDependencies(state: {
     }),
     enqueueXeroRefundCreditNoteOperation: vi.fn().mockResolvedValue({
       queueOperationId: "queue_refund_credit",
+      message: "queued",
+    }),
+    enqueueXeroRefundRequestCreditNoteOperation: vi.fn().mockResolvedValue({
+      queueOperationId: "queue_refund_request_credit",
       message: "queued",
     }),
     enqueueXeroAppliedCreditAllocationOperation: vi.fn().mockResolvedValue({
@@ -7941,7 +7947,7 @@ describe("a refund request's own note never answers for the payment's refund not
       (action) => action.type !== "SETTLE_REFUND_CREDIT_NOTE" && JSON.stringify(action).includes("cn_request")
     );
   // #4215: the request's $30, paid back - read from its completed hand-back, as the inbound recount reads it.
-  const paidBack = [{ paymentId: "payment_1", amountCents: 3000 }];
+  const paidBack: Array<{ paymentId: string; amountCents: number; refundRequestId?: string }> = [{ paymentId: "payment_1", amountCents: 3000 }];
   const run = async (state: { operations: any[]; links?: any[]; payment?: Record<string, unknown>; requests?: typeof paidBack }) => {
     const booking = cancelledInternetBanking();
     Object.assign(booking.payment, state.payment ?? {});
@@ -8032,6 +8038,85 @@ describe("a refund request's own note never answers for the payment's refund not
     expect(beside.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
   });
 
+  // #4231 lens F2 (`INV-PAY-118`, D-3813-8): the completion queues a request's
+  // own note only against an invoice, so a request paid back before the
+  // booking had one is credited by nothing else once the invoice exists.
+  describe("#4231: a request paid back before the invoice gets its own note queued", () => {
+    const requestNoteActions = (actions: Array<{ type: string; payload?: unknown }>) =>
+      actions.filter((action) => action.type === "QUEUE_REFUND_REQUEST_CREDIT_NOTE");
+
+    it("MUTATION: queues the request's own note for the cash its completion recorded, keyed by the request", async () => {
+      const booking = await run({ operations: [], links: [], payment: { refundedAmountCents: 3000 } });
+      expect(requestNoteActions(booking.actions)).toEqual([
+        expect.objectContaining({
+          key: "queue:refund-request-credit-note:payment_1:rr_1",
+          safeToAutoApply: true,
+          payload: { paymentId: "payment_1", refundRequestId: "rr_1", refundAmountCents: 3000 },
+        }),
+      ]);
+      expect(booking.findings).toContainEqual(
+        expect.objectContaining({
+          code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
+          severity: "critical",
+          actions: [expect.objectContaining({ key: "queue:refund-request-credit-note:payment_1:rr_1" })],
+        }),
+      );
+      // Never as the cancellation's note.
+      expect(booking.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
+    });
+
+    it("applies through the request's own enqueue, never the payment's refund note", async () => {
+      const cancelled = cancelledInternetBanking();
+      Object.assign(cancelled.payment, { refundedAmountCents: 3000 });
+      const deps = createDependencies({
+        bookings: [cancelled],
+        links: [],
+        operations: [makePrimaryInvoiceCreateOperation()],
+        paidBackRefundRequests: paidBack,
+      });
+
+      await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+      expect(deps.enqueueXeroRefundRequestCreditNoteOperation).toHaveBeenCalledWith({ paymentId: "payment_1", refundRequestId: "rr_1", amountCents: 3000 });
+      expect(deps.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION (#4195, #4214): never for a request with a note row of any status - a voided note is the officer's to re-raise", async () => {
+      for (const status of ["SUCCEEDED", "FAILED", "PARTIAL", "PENDING"]) {
+        const booking = await run({ operations: [requestNote({ status })], links: [], payment: { refundedAmountCents: 3000 } });
+        expect(requestNoteActions(booking.actions)).toEqual([]);
+      }
+      // A row whose payload was lost is still the request's, by its key.
+      const keyOnly = await run({ operations: [requestNote({ requestPayload: null })], links: [], payment: { refundedAmountCents: 3000 } });
+      expect(requestNoteActions(keyOnly.actions)).toEqual([]);
+    });
+
+    it("never for a request whose note is linked with no row", async () => {
+      const booking = await run({ operations: [], links: [requestLink], payment: { refundedAmountCents: 3000 } });
+      expect(requestNoteActions(booking.actions)).toEqual([]);
+    });
+
+    it("never while the booking still has no invoice", async () => {
+      const booking = await run({ operations: [], links: [], payment: { refundedAmountCents: 3000, xeroInvoiceId: null, xeroInvoiceNumber: null } });
+      expect(requestNoteActions(booking.actions)).toEqual([]);
+    });
+
+    it("only the request whose note was never asked for", async () => {
+      const booking = await run({
+        operations: [requestNote()],
+        links: [],
+        payment: { refundedAmountCents: 5000 },
+        requests: [
+          { paymentId: "payment_1", amountCents: 3000, refundRequestId: "rr_1" },
+          { paymentId: "payment_1", amountCents: 2000, refundRequestId: "rr_2" },
+        ],
+      });
+      expect(requestNoteActions(booking.actions).map((action) => action.payload)).toEqual([
+        { paymentId: "payment_1", refundRequestId: "rr_2", refundAmountCents: 2000 },
+      ]);
+    });
+  });
+
   it("reads no request's note for its amount: a note with no paid-back hand-back moves nothing", async () => {
     // The cancellation's own $100, and a request's note whose task is not (or no longer) completed.
     const booking = await run({ operations: [requestNote()], requests: [] });
@@ -8052,8 +8137,8 @@ describe("a refund request's own note never answers for the payment's refund not
         links: [],
         operations: [makePrimaryInvoiceCreateOperation()],
         paidBackRefundRequests: [
-          { paymentId: "payment_1", amountCents: 6000 },
-          { paymentId: "payment_1", amountCents: 4000 },
+          { paymentId: "payment_1", amountCents: 6000, refundRequestId: "rr_1" },
+          { paymentId: "payment_1", amountCents: 4000, refundRequestId: "rr_2" },
         ],
       }),
       scope: { all: true },
