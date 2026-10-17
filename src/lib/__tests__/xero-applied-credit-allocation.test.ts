@@ -106,6 +106,9 @@ const h = vi.hoisted(() => {
       },
     },
     memberCreditNoteAllocation: {
+      // #4013: the committed slices a retry must keep.
+      findMany: async ({ where }: { where: { appliedToBookingId: string } }) =>
+        state.joinRows.filter((j) => j.appliedToBookingId === where.appliedToBookingId),
       groupBy: async ({
         where,
       }: {
@@ -219,6 +222,10 @@ import {
   mintSliceMappingKey,
   planMintGroups,
 } from "@/lib/xero-applied-credit-mint-accounts";
+import {
+  AppliedCreditReplanDivergedError,
+  assertPlanKeepsCommittedSlices,
+} from "@/lib/xero-applied-credit-plan";
 import { allocateCreditNoteToInvoice } from "@/lib/xero-credit-notes";
 import { completeXeroSyncOperation } from "@/lib/xero-sync";
 
@@ -360,6 +367,28 @@ describe("planAppliedCreditAllocation (#1620 allocate-existing)", () => {
  * as a discretionary club expense for ever. An ordinary refund read before its
  * note arrives from the outbox worker would land wherever worker latency put it.
  */
+describe("assertPlanKeepsCommittedSlices (#4013, INV-PAY-127): a retry keeps what it committed", () => {
+  const plan = planAppliedCreditAllocation([noteLot("lot-a", "note-a", 5_000), restoredLot("lot-r", 5_000)], 8_000);
+  const keep = (committed: Parameters<typeof assertPlanKeepsCommittedSlices>[1]) =>
+    assertPlanKeepsCommittedSlices("booking-1", committed, plan, TEST_FORMAT);
+
+  it("passes a first run, and a retry whose committed slices the plan reproduces", () => {
+    expect(() => keep([])).not.toThrow();
+    expect(() => keep([{ memberCreditId: "lot-a", xeroCreditNoteId: "note-a", amountCents: 5_000 }])).not.toThrow();
+    // A minted slice is matched by lot and amount: the plan never knows the minted note.
+    expect(() => keep([{ memberCreditId: "lot-r", xeroCreditNoteId: "minted-note", amountCents: 3_000 }])).not.toThrow();
+  });
+
+  it.each([
+    { shape: "a lot the plan no longer uses", slice: { memberCreditId: "lot-b", xeroCreditNoteId: "note-b", amountCents: 5_000 } },
+    { shape: "another figure on a planned lot", slice: { memberCreditId: "lot-a", xeroCreditNoteId: "note-a", amountCents: 4_000 } },
+    { shape: "another note on a planned lot", slice: { memberCreditId: "lot-a", xeroCreditNoteId: "note-z", amountCents: 5_000 } },
+  ])("refuses a committed slice on $shape, naming the booking and the slice", ({ slice }) => {
+    expect(() => keep([slice])).toThrow(AppliedCreditReplanDivergedError);
+    expect(() => keep([slice])).toThrow(new RegExp(`booking-1.*on credit ${slice.memberCreditId}.*INV-PAY-127`));
+  });
+});
+
 describe("mintSliceMappingKey (#2717): goodwill is the admin adjustment", () => {
   it("sends an admin adjustment to the goodwill expense mapping", () => {
     expect(mintSliceMappingKey(CreditType.ADMIN_ADJUSTMENT)).toBe(

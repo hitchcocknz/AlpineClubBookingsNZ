@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   txExecuteRaw: vi.fn(),
   transaction: vi.fn(),
   processRefund: vi.fn(),
+  // #4103 review C3: the refusals Stripe holds on the intent, read before the replay asks.
+  listRefundsForPaymentIntent: vi.fn(async (): Promise<unknown[]> => []),
   cancelPaymentIntentIfCancellable: vi.fn(),
   calculateRefundAmount: vi.fn(),
   daysUntilDate: vi.fn(),
@@ -68,6 +70,16 @@ const groupLedger = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/booking-ledger-group-settlement-sync", () => groupLedger);
 
+// #4042: the hand-back's own rules (created, grown, supplemented; the row's
+// shape, the alert's wording) are proved in group-organiser-hand-back.test.ts and
+// against PostgreSQL (booking-ledger-group-settlement.realdb.test.ts); here only
+// WHERE the organiser cancel books each share and WHEN it alerts.
+const handBack = vi.hoisted(() => ({
+  recordGroupOrganiserHandBackShare: vi.fn<(tx: unknown, input: unknown) => Promise<{ id: string; amountCents: number; created: boolean } | null>>(async () => null),
+  alertUnsentGroupOrganiserHandBacks: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
+}));
+vi.mock("@/lib/group-organiser-hand-back", () => handBack);
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     groupBooking: {
@@ -94,6 +106,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 vi.mock("@/lib/stripe", () => ({
   processRefund: mocks.processRefund,
+  listRefundsForPaymentIntent: mocks.listRefundsForPaymentIntent,
   cancelPaymentIntentIfCancellable: mocks.cancelPaymentIntentIfCancellable,
 }));
 vi.mock("@/lib/cancellation", () => ({
@@ -1092,6 +1105,37 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     });
   });
 
+  // #4103 (`INV-PAY-130`): Stripe answers the legacy group refund `failed` or
+  // `canceled` without throwing. Nothing went back, so it fails as a throw does:
+  // no flip, no mirrors, the recovery row re-armed with the refusal.
+  it.each([["failed"], ["canceled"]])("a refund Stripe answers %s is a failure: no flip, no mirror, the retry re-armed (#4103)", async (status) => {
+    mocks.groupBookingFindUnique.mockResolvedValue({
+      id: GROUP_ID,
+      paymentMode: GroupBookingPaymentMode.ORGANISER_PAYS,
+      settlement: {
+        id: "settle-1",
+        status: PaymentStatus.SUCCEEDED,
+        amountCents: 4500,
+        stripePaymentIntentId: "pi_settle_1",
+        refundPlan: { "child-1": 4500 },
+      },
+    });
+    mocks.bookingFindMany.mockResolvedValue([paidChild("child-1", "pay-1")]);
+    mocks.processRefund.mockResolvedValueOnce({ id: "re_refused", amount: 4500, status });
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(mocks.settlementUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: expect.stringMatching(/REFUNDED/) }) }),
+    );
+    expect(mocks.enqueueGroupSettlementRefundRecovery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settlementId: "settle-1", retryDelayMs: 0, lastError: expect.stringMatching(/Stripe refused \$45\.00 .*still owed/) }),
+    );
+    expect(mocks.markGroupSettlementRefundRecoverySucceeded).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    expect(mocks.enqueueXeroRefund).not.toHaveBeenCalled();
+  });
+
   it("keeps the frozen plan and arms the durable retry when the refund fails (#1351)", async () => {
     mocks.groupBookingFindUnique.mockResolvedValue({
       id: GROUP_ID,
@@ -1453,6 +1497,34 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
   });
 
+  // #4103 (`INV-PAY-130`): a refusal fails the attempt, so the runner never
+  // closes the row on it, and its backoff asks again.
+  it.each([["failed"], ["canceled"]])("throws on a refund Stripe answers %s: no flip, no mirror (#4103)", async (status) => {
+    mocks.settlementFindUnique.mockResolvedValue(settlement());
+    mocks.processRefund.mockResolvedValueOnce({ id: "re_refused", amount: 9000, status });
+
+    await expect(executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST)).rejects.toThrow(/Stripe refused \$90\.00 .*still owed/);
+    expect(mocks.settlementUpdate).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  // #4103 review C3: Stripe answers a repeated key with its cached refusal for
+  // 24 hours, so the replay's key moves on once for each refusal Stripe holds on
+  // the intent for this refund (same amount, same reason).
+  it("asks past the refusals Stripe holds for this refund, on a key it has never seen (#4103)", async () => {
+    mocks.settlementFindUnique.mockResolvedValue(settlement());
+    mocks.listRefundsForPaymentIntent.mockResolvedValueOnce([
+      { id: "re_1", status: "failed", amount: 9000, metadata: { groupBookingId: GROUP_ID, reason: "organiser_cancellation" } },
+      { id: "re_2", status: "canceled", amount: 9000, metadata: { groupBookingId: GROUP_ID, reason: "organiser_cancellation" } },
+      { id: "re_3", status: "failed", amount: 4000, metadata: { groupBookingId: GROUP_ID, reason: "organiser_cancellation" } },
+      { id: "re_4", status: "failed", amount: 9000, metadata: { groupBookingId: GROUP_ID, reason: "something_else" } },
+    ]);
+
+    await executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST);
+
+    expect(mocks.processRefund).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "group_cancel_refund_settle-1_refused2" }));
+  });
+
   it("rolls back the refund mirror when durable Xero enqueue fails", async () => {
     mocks.settlementFindUnique.mockResolvedValue(
       settlement({ status: PaymentStatus.REFUNDED, refundPlan: { "child-1": 4500 } })
@@ -1588,6 +1660,149 @@ describe("adult-member hosting on an organiser cancel (#3209)", () => {
     );
     expect(mocks.settleHostingCoverageAfterCommit.mock.calls).toEqual([
       [{ bookingId: "child-2" }],
+    ]);
+  });
+});
+
+describe("#4042: an organiser's Internet Banking group cancel books each share on the organiser's hand-back", () => {
+  const CREATED = { id: "task-1", amountCents: 4500, created: true };
+  const GROWN = { id: "task-1", amountCents: 7500, created: false };
+
+  function ibGroup(overrides: Record<string, unknown> = {}) {
+    mocks.groupBookingFindUnique.mockResolvedValue({
+      id: GROUP_ID,
+      paymentMode: GroupBookingPaymentMode.ORGANISER_PAYS,
+      settlement: {
+        id: "settle-ib",
+        status: PaymentStatus.SUCCEEDED,
+        amountCents: 9000,
+        stripePaymentIntentId: null,
+        source: PaymentSource.INTERNET_BANKING,
+        refundPlan: null,
+        ...overrides,
+      },
+    });
+  }
+  function paid(id: string, paymentId: string) {
+    return child({
+      id,
+      status: BookingStatus.PAID,
+      finalPriceCents: 4500,
+      payment: { id: paymentId, amountCents: 4500, refundedAmountCents: 0, changeFeeCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
+  }
+
+  it("books each refunded child's share inside its own claim, after its mirror; the run that created the task alerts ONCE, after the children", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1"), paid("child-2", "pay-2")]);
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 4500, refundPercentage: 100 }).mockReturnValueOnce({ refundAmountCents: 3000, refundPercentage: 66 });
+    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED).mockResolvedValueOnce(GROWN);
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    const plan = new Map([["child-1", 4500], ["child-2", 3000]]);
+    expect(handBack.recordGroupOrganiserHandBackShare.mock.calls).toEqual([
+      [txClient, { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, plan, claimedChildId: "child-1", format: CLUB_FORMAT_TEST }],
+      [txClient, { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, plan, claimedChildId: "child-2", format: CLUB_FORMAT_TEST }],
+    ]);
+    // In the claim, after the mirror and its note: one commit or none.
+    const [firstShare, secondShare] = handBack.recordGroupOrganiserHandBackShare.mock.invocationCallOrder;
+    expect(mocks.paymentUpdate.mock.invocationCallOrder[0]).toBeLessThan(firstShare!);
+    expect(mocks.enqueueXeroRefund.mock.invocationCallOrder[0]).toBeLessThan(firstShare!);
+    // The alert sweep runs once, after every child - it sends any unsent alert, re-reading the final total.
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledWith({ settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST });
+    const [alerted] = handBack.alertUnsentGroupOrganiserHandBacks.mock.invocationCallOrder;
+    expect(alerted!).toBeGreaterThan(secondShare!);
+    expect(alerted!).toBeGreaterThan(mocks.settleHostingCoverageAfterCommit.mock.invocationCallOrder.at(-1)!);
+    const childAudits = mocks.logAudit.mock.calls.map(([entry]) => entry as { targetId: string; metadata: { organiserHandBackTaskId: string | null } });
+    expect(childAudits.map((entry) => [entry.targetId, entry.metadata.organiserHandBackTaskId])).toEqual([
+      ["child-1", "task-1"],
+      ["child-2", "task-1"],
+    ]);
+  });
+
+  it("a joiner cancelled another way between the two claims adds no share: the task holds only what this cancel booked", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1"), paid("child-2", "pay-2")]);
+    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED);
+    // child-2's status claim finds it already cancelled by someone else.
+    mocks.bookingUpdate.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.recordGroupOrganiserHandBackShare).toHaveBeenCalledTimes(1);
+    expect(handBack.recordGroupOrganiserHandBackShare.mock.calls[0]![1]).toMatchObject({ claimedChildId: "child-1" });
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+  });
+
+  it("a run whose claim only grows the task still runs the sweep once; whether to send is the task's own record", async () => {
+    ibGroup({ refundPlan: { "child-2": 3000 } });
+    mocks.bookingFindMany.mockResolvedValue([paid("child-2", "pay-2")]);
+    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(GROWN);
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.recordGroupOrganiserHandBackShare).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledWith({ settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST });
+  });
+
+  it("a claim that rolls back still leaves the sweep to run once, after the loop and outside its transaction", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED);
+    mocks.reconcileHostingReviewForSystemCancellation.mockRejectedValueOnce(new Error("hosting failed"));
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.recordGroupOrganiserHandBackShare).toHaveBeenCalledTimes(1);
+    // The rolled-back claim's task does not exist, so the sweep finds nothing to send.
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks.mock.invocationCallOrder[0]!).toBeGreaterThan(mocks.reconcileHostingReviewForSystemCancellation.mock.invocationCallOrder[0]!);
+  });
+
+  it("an exception that escapes the loop after the task was created still sends its alert", async () => {
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1"), paid("child-2", "pay-2")]);
+    handBack.recordGroupOrganiserHandBackShare.mockResolvedValueOnce(CREATED).mockResolvedValueOnce(GROWN);
+    mocks.settleHostingCoverageAfterCommit.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("coverage drain crashed"));
+
+    await expect(settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST)).rejects.toThrow("coverage drain crashed");
+
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledTimes(1);
+    expect(handBack.alertUnsentGroupOrganiserHandBacks).toHaveBeenCalledWith({ settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST });
+  });
+
+  it("books nothing for a card settlement, an unsettled group, or a child the policy refunds nothing", async () => {
+    // A card settlement (#3653): per-child Stripe refunds, no mirror in this loop.
+    ibGroup({ stripePaymentIntentId: "pi_settle", source: PaymentSource.STRIPE });
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    mocks.planOrganiserCancelChildRefunds.mockResolvedValue(new Map([["child-1", 4500]]));
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    // A pre-#3653 card plan finished the old way: a Stripe refund, not a hand-back.
+    ibGroup({ stripePaymentIntentId: "pi_legacy", source: PaymentSource.STRIPE, refundPlan: { "child-1": 4500 } });
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+    expect(mocks.processRefund).toHaveBeenCalledTimes(1);
+
+    // An Internet Banking settlement nobody has paid yet.
+    ibGroup({ status: PaymentStatus.PENDING });
+    mocks.bookingFindMany.mockResolvedValue([child({ id: "child-1", status: BookingStatus.CONFIRMED })]);
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    // Paid, but inside the no-refund tier.
+    ibGroup();
+    mocks.bookingFindMany.mockResolvedValue([paid("child-1", "pay-1")]);
+    mocks.calculateRefundAmount.mockReturnValueOnce({ refundAmountCents: 0, refundPercentage: 0 });
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4", CLUB_FORMAT_TEST);
+
+    expect(handBack.recordGroupOrganiserHandBackShare).not.toHaveBeenCalled();
+    // Only the Internet Banking groups run the sweep; a card group never does.
+    expect(handBack.alertUnsentGroupOrganiserHandBacks.mock.calls.map(([input]) => input)).toEqual([
+      { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST },
+      { settlementId: "settle-ib", organiserBookingId: ORG_BOOKING, format: CLUB_FORMAT_TEST },
     ]);
   });
 });

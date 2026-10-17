@@ -340,6 +340,7 @@ describe("what a cancelled booking adds to Net Collected (owner review on #3811,
     kind: "CANCELLED_BOOKING_HAND_BACK",
     amountCents,
     partPaymentReviewPaymentId: null,
+    occurrenceKey: null as string | null,
   });
 
   it("adds nil for a booking cancelled before anything was paid", () => {
@@ -609,6 +610,14 @@ describe("what a cancelled booking adds to Net Collected (owner review on #3811,
         netWith({ status: "SUCCEEDED", amountCents: 20_000, refundedAmountCents: 0 }, { manualRefundTasks: [handBack("OPEN", 25_000)] })
           .netCollectedCents,
       ).toBe(10_000);
+    });
+
+    it("#4042: owes nothing for a group organiser's hand-back - the joiners' payments already show those refunds", () => {
+      const group = { ...handBack("OPEN", 10_000), occurrenceKey: "group-organiser-hand-back:settle-1" };
+      expect(
+        netWith({ status: "SUCCEEDED", amountCents: 20_000, refundedAmountCents: 0 }, { manualRefundTasks: [group] })
+          .netCollectedCents,
+      ).toBe(30_000);
     });
 
     it("reads an open task raised before task kinds existed (null kind, 19 Aug 2026) as a hand-back", () => {

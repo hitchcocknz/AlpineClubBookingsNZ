@@ -782,6 +782,18 @@ let outbox: typeof import("@/lib/xero-operation-outbox");
       const dLink = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: d } });
       await prisma.xeroObjectLink.update({ where: { id: dLink.id }, data: { metadata: { ...(dLink.metadata as Record<string, unknown>), status: "VOIDED" } } });
       expect(await driftOnPayment()).toEqual([d]);
+      // #4161: while a refund-note create on the payment could still mint, the
+      // heal is deferred with no write (that create records payment-then-link).
+      const pending = await prisma.xeroSyncOperation.findMany({
+        where: { localModel: "Payment", localId: PAYMENT_ID, entityType: "CREDIT_NOTE", operationType: "CREATE", status: "PENDING" },
+        select: { id: true },
+      });
+      expect(pending.length).toBeGreaterThan(0);
+      const deferred = await cleanupStaleCanonicalXeroObjectLinks();
+      expect(deferred.deferredRefundNoteHealLinkIds).toEqual([dLink.id]);
+      expect((await refundNoteLinks()).map((link) => [link.xeroObjectId, link.active])).toEqual([[h, true], [d, true]]);
+      // Once nothing can mint, the next run retires it.
+      await prisma.xeroSyncOperation.updateMany({ where: { id: { in: pending.map((row) => row.id) } }, data: { status: "CANCELLED" } });
       await cleanupStaleCanonicalXeroObjectLinks();
       expect((await refundNoteLinks()).map((link) => [link.xeroObjectId, link.active])).toEqual([[h, true], [d, false]]);
     });

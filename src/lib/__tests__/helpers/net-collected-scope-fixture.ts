@@ -69,12 +69,12 @@ type FixtureRow = {
     amountCents: number | null;
     partPaymentReviewPaymentId: string | null;
     /**
-     * Set only where the writer sets one: an edit's refund carries
-     * `edit-refund-hand-back:<modification>` (`INV-PAY-117`). The Net
-     * Collected reader keys on kind and status alone, so this proves the key
-     * changes nothing.
+     * Null unless the writer sets one: an edit's refund carries
+     * `edit-refund-hand-back:<modification>` (`INV-PAY-117`), which changes
+     * nothing here. #4042: the one key Net Collected reads is a group
+     * organiser's hand-back's (`INV-PAY-124`), which it leaves out.
      */
-    occurrenceKey?: string | null;
+    occurrenceKey: string | null;
   }>;
 };
 
@@ -165,6 +165,7 @@ export const NET_COLLECTED_SCOPE_FIXTURE = {
         kind: "CANCELLED_BOOKING_HAND_BACK",
         amountCents: 7_500,
         partPaymentReviewPaymentId: null,
+        occurrenceKey: null,
       },
     ],
   },
@@ -238,13 +239,13 @@ export const NET_COLLECTED_SCOPE_PAYMENTS: ReadonlyArray<FixtureRow> = [
  */
 export const REFUNDS_AND_CREDITS_OWED_FIXTURE = {
   openTasks: [
-    { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 7_500, partPaymentReviewPaymentId: null, refundOwed: true },
-    { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 5_000, partPaymentReviewPaymentId: null, refundOwed: true },
-    { status: "OPEN", kind: null, amountCents: 1_000, partPaymentReviewPaymentId: null, refundOwed: true },
-    { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: null, partPaymentReviewPaymentId: "pay-review", refundOwed: false },
-    { status: "OPEN", kind: "EDIT_FINANCIAL_REVIEW", amountCents: null, partPaymentReviewPaymentId: null, refundOwed: false },
-    { status: "OPEN", kind: "EDIT_FINANCIAL_REVIEW", amountCents: 4_000, partPaymentReviewPaymentId: null, refundOwed: false },
-    { status: "OPEN", kind: "DELETED_BOOKING_LATE_CAPTURE", amountCents: 3_000, partPaymentReviewPaymentId: null, refundOwed: true },
+    { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 7_500, partPaymentReviewPaymentId: null, occurrenceKey: null, refundOwed: true },
+    { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 5_000, partPaymentReviewPaymentId: null, occurrenceKey: null, refundOwed: true },
+    { status: "OPEN", kind: null, amountCents: 1_000, partPaymentReviewPaymentId: null, occurrenceKey: null, refundOwed: true },
+    { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: null, partPaymentReviewPaymentId: "pay-review", occurrenceKey: null, refundOwed: false },
+    { status: "OPEN", kind: "EDIT_FINANCIAL_REVIEW", amountCents: null, partPaymentReviewPaymentId: null, occurrenceKey: null, refundOwed: false },
+    { status: "OPEN", kind: "EDIT_FINANCIAL_REVIEW", amountCents: 4_000, partPaymentReviewPaymentId: null, occurrenceKey: null, refundOwed: false },
+    { status: "OPEN", kind: "DELETED_BOOKING_LATE_CAPTURE", amountCents: 3_000, partPaymentReviewPaymentId: null, occurrenceKey: null, refundOwed: true },
   ],
   creditEntries: [
     { memberId: "m-part-used", amountCents: 10_000 },
@@ -329,6 +330,7 @@ type ReconciliationRow = FixtureRow & {
   memberId: string;
   recoveryOperations: ReadonlyArray<CardRefundOperationFixture>;
   refunds: ReadonlyArray<{
+    stripeRefundId: string;
     paymentTransactionId: string | null;
     amountCents: number;
     status: string;
@@ -427,9 +429,9 @@ export const OWED_RECONCILIATION_PAYMENTS: ReadonlyArray<ReconciliationRow> = [
     ],
     refunds: [
       // Before the cancel: not this operation's.
-      { paymentTransactionId: "txn-a", amountCents: 2_000, status: "succeeded", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+      { stripeRefundId: "re-before-cancel", paymentTransactionId: "txn-a", amountCents: 2_000, status: "succeeded", createdAt: new Date("2026-06-01T00:00:00.000Z") },
       // The operation's first slice, recorded before it closed.
-      { paymentTransactionId: "txn-b", amountCents: 10_000, status: "succeeded", createdAt: new Date("2026-06-21T00:00:05.000Z") },
+      { stripeRefundId: "re-first-slice", paymentTransactionId: "txn-b", amountCents: 10_000, status: "succeeded", createdAt: new Date("2026-06-21T00:00:05.000Z") },
     ],
   },
   {
@@ -445,7 +447,7 @@ export const OWED_RECONCILIATION_PAYMENTS: ReadonlyArray<ReconciliationRow> = [
     creditsApplied: [],
     creditsFromCancellation: [],
     manualRefundTasks: [
-      { status: "OPEN", kind: "DELETED_BOOKING_LATE_CAPTURE", amountCents: 4_000, partPaymentReviewPaymentId: null },
+      { status: "OPEN", kind: "DELETED_BOOKING_LATE_CAPTURE", amountCents: 4_000, partPaymentReviewPaymentId: null, occurrenceKey: null },
     ],
     recoveryOperations: [],
     refunds: [],
@@ -481,7 +483,7 @@ export const OWED_RECONCILIATION_PAYMENTS: ReadonlyArray<ReconciliationRow> = [
     creditsApplied: [],
     creditsFromCancellation: [],
     manualRefundTasks: [
-      { status: "OPEN", kind: null, amountCents: 2_500, partPaymentReviewPaymentId: null },
+      { status: "OPEN", kind: null, amountCents: 2_500, partPaymentReviewPaymentId: null, occurrenceKey: null },
     ],
     recoveryOperations: [],
     refunds: [],

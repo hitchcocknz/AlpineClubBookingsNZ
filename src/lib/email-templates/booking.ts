@@ -11,10 +11,9 @@
  * with the admin alerts about the same booking).
  */
 import {
-  type AppliedCreditSummary,
+  type AppliedCreditSummary, type BookingModificationAddedGuest,
   appliedCreditSummaryRows,
-  bookingModificationSummaryRows,
-  bookingModificationTypeLabel,
+  bookingModificationSummaryRows, bookingModificationTypeLabel,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
   resolveUnpaidCreditNetting,
@@ -28,6 +27,8 @@ import {
   bookingCancelledRefundMade,
   bookingCancelledRefundSentence,
   type BookingCancelledRefundMethod,
+  type BookingModifiedRefundDestination,
+  bookingModifiedRefundPending,
   bookingModifiedRefundSentence,
 } from "@/lib/booking-modified-email-copy";
 import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";
@@ -379,11 +380,16 @@ export function bookingCancelledTemplate(
   // #3973: the amount the refund line names when the refund is not this
   // booking's own (the group organiser's cancellation carries it).
   refundSentenceCents: number = refundCents,
+  // #4097: the parts of an own-card refund its card refund could not carry.
+  shortfall: { bankCents: number; checkCents: number } = { bankCents: 0, checkCents: 0 },
 ): string {
   // #3973: the one wording `{{refundMessage}}` also reads, and its one tone.
   const refundInfo = alertBox(
-    bookingCancelledRefundSentence(refundSentenceCents, formatCents(refundSentenceCents, format), refundMethod),
-    bookingCancelledRefundMade(refundSentenceCents, refundMethod) ? "success" : "info",
+    bookingCancelledRefundSentence(refundSentenceCents, formatCents(refundSentenceCents, format), refundMethod, {
+      ...shortfall,
+      formatAmount: (cents) => formatCents(cents, format),
+    }),
+    bookingCancelledRefundMade(refundSentenceCents, refundMethod, shortfall.bankCents + shortfall.checkCents) ? "success" : "info",
   );
 
   // #1164 / D7: the account credit originally applied to this booking is now
@@ -458,6 +464,7 @@ export function bookingModifiedTemplate(params: {
   // saved without. One more change row, so the HTML and the flat body cannot be
   // the ones to disagree about what the member asked for.
   promoChangeNotAppliedNote?: string | null;
+  addedGuests: ReadonlyArray<BookingModificationAddedGuest>; // #4030: named in the shared rows; `[]` = nobody
   /**
    * #3033 (epic #2797): this change saved and its refund or credit could not be
    * worked out from what the booking has stored, so the club is deciding it.
@@ -476,7 +483,7 @@ export function bookingModifiedTemplate(params: {
    * review, the way `confirmedAmountCents` is asked for (`INV-SSOT`).
    */
   financialReviewPending: boolean;
-  refundReturnedToOrganiser: boolean; // #3916: see `sendBookingModifiedEmail`
+  refundDestination: BookingModifiedRefundDestination; // #3916, #4057: see `sendBookingModifiedEmail`
   /** #3827 (D-3813-6, `INV-PAY-117`): a bank transfer the club must still send.
    * REQUIRED, as `financialReviewPending` is (`bookingModifiedRefundSentence`). */
   refundByBankTransfer: boolean;
@@ -521,7 +528,7 @@ export function bookingModifiedTemplate(params: {
     newFinalPriceCents,
     changeFeeCents,
     promoCoverageNote,
-    promoChangeNotAppliedNote,
+    promoChangeNotAppliedNote, addedGuests: params.addedGuests,
   }, format).map((row) => ({
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),
@@ -564,8 +571,9 @@ export function bookingModifiedTemplate(params: {
   let settlementNote = "";
   if (refundAmountCents > 0) {
     settlementNote = alertBox(
-      bookingModifiedRefundSentence(formatCents(refundAmountCents, format), params.refundByBankTransfer, params.refundReturnedToOrganiser),
-      "success"
+      bookingModifiedRefundSentence(formatCents(refundAmountCents, format), params.refundByBankTransfer, params.refundDestination),
+      // #4057, #4070: a card refund still on its way is information, not a success.
+      bookingModifiedRefundPending(params.refundDestination) ? "info" : "success"
     );
     // #3827 (D-3813-5): a split payment's reduction goes back partly as cash and
     // partly as the credit it was paid with; the member is told both.

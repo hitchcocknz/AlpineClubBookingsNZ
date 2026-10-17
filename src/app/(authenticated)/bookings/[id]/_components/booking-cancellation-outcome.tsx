@@ -11,6 +11,11 @@ import type { BookingDetailPayment } from "../_lib/booking-detail-payment";
  * what was retained, restored credit, change fees and the latest refund appeal.
  * Figures come from the payment projection; nothing is recomputed here. Moved
  * verbatim from `page.tsx`.
+ *
+ * #3991: for a viewer `canSeeOwnerCredit` excludes (a linked guest) the
+ * projection hides the two account-credit lines (`showCancellationCreditLines`)
+ * and the hand-back note, and gives a neutral badge; what was paid, returned to
+ * the card and retained stays, which still lets the credit be worked out.
  */
 export function BookingCancellationOutcome({
   booking,
@@ -28,6 +33,7 @@ export function BookingCancellationOutcome({
     retainedAfterCancellationCents,
     handBackOwedAfterCancellationCents,
     showHandBackOwedNote,
+    showCancellationCreditLines,
     latestRefundAppeal,
   } = payment;
   return (
@@ -73,10 +79,13 @@ export function BookingCancellationOutcome({
                     )}
                   </div>
 
-                  <div>
-                    <span className="text-muted-foreground">Held as account credit:</span>{" "}
-                    {money.cents(cancellationSettlement.accountCreditCents)}
-                  </div>
+                  {/* #3991: the owner's credit, not a linked guest's to read. */}
+                  {showCancellationCreditLines && (
+                    <div>
+                      <span className="text-muted-foreground">Held as account credit:</span>{" "}
+                      {money.cents(cancellationSettlement.accountCreditCents)}
+                    </div>
+                  )}
 
                   <div>
                     <span className="text-muted-foreground">
@@ -93,7 +102,8 @@ export function BookingCancellationOutcome({
                     )}
                   </div>
 
-                  {cancellationSettlement.restoredAppliedCreditCents > 0 && (
+                  {showCancellationCreditLines &&
+                    cancellationSettlement.restoredAppliedCreditCents > 0 && (
                     <div>
                       <span className="text-muted-foreground">
                         Previously applied credit restored (per the cancellation

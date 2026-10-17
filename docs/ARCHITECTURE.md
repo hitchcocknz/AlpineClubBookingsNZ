@@ -1175,14 +1175,14 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **99 components render a banner, and
- 318 of the 373 `ViewOnlyActionButton` call sites opt out** of the per-button
+ 322 of the 377 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 318 split by WHICH rule
-covers them: **284** pass the literal
-`describeReason={false}` and are covered by a banner in the same file, and **34**
+test currently pins, which is the only authority.) Those 322 split by WHICH rule
+covers them: **286** pass the literal
+`describeReason={false}` and are covered by a banner in the same file, and **36**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
-verified vouching parent — 29 by a parent's own JSX render site (#2168), 5 by the
+verified vouching parent — 31 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
 remaining **55 controls across 30 files deliberately keep the per-button
@@ -1757,11 +1757,40 @@ copy all stay local — and throws the hook's `ForbiddenSaveError` for a 403 so 
 maps to the shared `ADMIN_FORBIDDEN_SAVE_REASON` copy. Feedback rendering stays
 in the component, because booking-policy sections use `PolicyFeedback` while the
 security cards use `Alert`. Where the admin's attention goes is not per-card
-either: the hook counts explicit Edit clicks in `editRequestKey`, and a section
-hands that to `useRevealAttention` (`src/hooks/use-scroll-to-feedback.ts`, the
-one home for failure / reveal / success positioning — #2934) so the card takes
-focus and comes into view when Edit unmounts the button that held focus, and
-never merely because it re-rendered. A section whose snapshot is a LIST with per-row
+either, and the section wires nothing for the way in: Edit unmounts the button
+that held focus, so `startEditing` moves focus — once the editor has rendered,
+and never merely because the section re-rendered — to the first control the
+edit made editable (mounted or enabled by it, inside the card marked by
+`sectionRegionProps`), or to that card when it made none (#4115, through
+`useEditorFocusReturn` in `src/hooks/use-editor-focus-return.ts`, which
+positions through `src/hooks/use-scroll-to-feedback.ts`, the one home for
+failure / reveal / success positioning — #2934). A control the admin could
+already change, such as a scope select, is not what Edit opened and is skipped,
+as is an unchecked radio whose group has a checked one (Tab's own rule). The
+reveal moves nothing when focus has moved off the control that opened the
+editor — an opening that awaited a fetch first ("Create override", which
+carries Edit's `editTriggerProps` so the reveal knows it opened) — or when
+the card is hidden behind a modal, as the analytics card is while its dialog
+holds Edit. The hook's `revealTarget` option instead reveals a given element at
+the top; it exists only for the two sections whose card reveal predates #4115 —
+allocation preferences and club identity — and a new section omits it. The way back out: Save and Cancel unmount
+the button that held focus too, so the hook records the focused element when
+`startEditing` runs and, after Cancel or a successful save, returns focus to it,
+to the Edit re-rendered in its place, or — when Edit is missing or disabled for
+a view-only admin — to the section's card (#4087). A section spreads the hook's
+`editTriggerProps` on its Edit and `sectionRegionProps` on its card so both can
+be found again by a per-instance marker, and `titleProps` on the card's title:
+`sectionRegionProps` makes the card a `region` labelled by that title, so the
+card a keyboard user lands on is named by the words they can see. `CardTitle`
+renders a `div`, not a heading, so the name is declared rather than looked up;
+a card with no visible title of its own passes `regionLabel` instead.
+`section-edit-focus-return-census.test.ts` pins the adopters, checks each is
+wired, and fails an adopter that reveals its own editor or a new `revealTarget`.
+The return acts only while focus is on the page, so a success or failure
+position the card takes in the same commit still wins: after Save, a card with
+a `useActionAttention` success target (member fields) ends on that target, not
+on Edit. A failed save keeps the editor open, and if the disabled-while-saving
+Save dropped focus, hands it back to that Save. A section whose snapshot is a LIST with per-row
 edits is not out of scope, but the hook belongs one level down: the OPEN EDITOR
 gets its own instance, keyed on the row being edited AND on an instance counter
 bumped every time an editor is opened
@@ -1774,7 +1803,18 @@ actions that WRITE also need an in-flight guard held in a ref rather than only a
 disabled button, because a double-click dispatched inside one tick gives both
 handlers the same pre-update row and the second write becomes a no-op audit
 entry of the #2143 kind. The booking-periods and minimum-night-stay sections are
-the reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
+the reference for that shape (#2142). Because the open editor unmounts on close,
+the LIST owns the focus return there: it calls `useEditorFocusReturn`'s
+`capture` from Add and each row's Edit, and `close` from Cancel, a successful
+save and a save conflict that closes the stale editor, so focus goes back to the
+control that opened the editor (#4087). The same `capture` moves focus into the
+editor it opened, on its first field, even when the row's Edit stays mounted
+(#4115). A row's direct write (Activate/Deactivate,
+Delete) unmounts or disables the button pressed, so it returns focus through
+`useRowActionFocusReturn` — the row's toggle after a toggle, an Edit after a
+delete (never a button that writes by itself), or the card. Each action keeps its
+own anchor, so neither an overlapping write nor an open editor loses its return
+(#4116). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
 carry the first-save exception: count the draft as dirty so committing the
 defaults stays reachable, but
@@ -1945,6 +1985,39 @@ the booking-envelope triggers are matched on their `RAISE EXCEPTION` text instea
 (`src/lib/booking-envelope-invariants.ts`). And the rendered message echoes the
 call arguments, so any match against it is made on Prisma's whole sentence —
 member free text can otherwise supply a convincing-looking field list of its own.
+
+### The payment ledger's row order (#4132)
+
+A payment's charges, asks and receipts are `PaymentTransaction` rows, and
+several readers depend on their order: the cancel's mirror fold walks them
+oldest first, the card refund plan slices them newest first (and the slices
+name the Stripe idempotency keys), and the `Payment` mirror is derived from
+"the latest" row of each kind.
+
+`createdAt` alone cannot give that order. Prisma stamps `@default(now())` once
+per query, so rows written in one transaction tie, and under the frozen test
+clock every row ties. PostgreSQL returns a tie in whatever order its plan meets
+the rows, and an update of an indexed column (`status`, on every capture) writes
+the row's new version later in the heap, so the order of a tie could change
+whenever one of its rows was updated. A cuid `id` does not follow insertion
+order either.
+
+So the table carries **`insertionSeq`**, an `INTEGER` filled by a sequence the
+column owns. Code never writes it. Every money read orders by `createdAt`, then
+`insertionSeq`, through one home, `src/lib/payment-ledger-order.ts`, and on a tie
+"the latest" row is the one inserted last (`INV-PAY-133`). Rows stored before
+the column carry no record of the order they were inserted in, so the migration
+numbered them by a rule, under its own lock: `createdAt`; within a tie, retired
+rows (FAILED, withdrawn, or an ask whose intent is queued for cancellation)
+before live ones, so "the latest" of a stored tie is the live charge; then
+physical order (`ctid`). That is safe for money but it is not the history, and a
+stored tie's order can change at the release. The owner counts the stored ties
+before deploying (the migration's row in `BLUE_GREEN_MIGRATION_SAFETY.tsv`); when
+there are none, the numbering changes nothing anyone reads. It is the schema's
+first hand-written sequence column. Prisma's `@default(autoincrement())`
+matches it for drift, but the `SERIAL` Prisma would generate is never accepted:
+it rewrites the table and numbers rows in an order nobody chose.
+`ledger-row-order-census.test.ts` fails any ledger read ordered another way.
 
 ## Booking and Payment Flow
 
@@ -2973,20 +3046,36 @@ modification refunds `buildBookingModificationRefundMetadata`, whose per-path
 key replays the original refund instead of being rejected as an
 `idempotency_error` for mismatched parameters.
 
-Additional PaymentIntent creation has the same durable safety net (#1096):
-every price-increasing edit path (batch modify, date change, guest add,
-single-guest removal) creates the intent through one shared settlement
-helper, and a transient Stripe failure enqueues a
-`CREATE_ADDITIONAL_PAYMENT_INTENT` recovery operation keyed to the booking
-modification. The worker re-creates the intent with the original
-modification-scoped Stripe idempotency key (so route and cron can never
-double-mint), skips itself if a later edit already minted a newer additional
-intent, and settles the Xero half two ways: it points any supplementary
-invoice operation still WAITING_PAYMENT at the recovered intent, and it raises
-the supplementary invoice outright for the edits that queued none — the inline
-dispatch skips that queue while no intent exists, so those edits had a
-collectable payment request and no accounting record until the replay completed
-the deferral (#3181). The figure is the `BookingModification`'s signed
+Additional PaymentIntent creation has the same durable safety net (#1096): every
+price-increasing edit path (batch modify, date change, guest add, single-guest
+removal) creates the intent through one shared settlement helper, and a
+transient Stripe failure enqueues a `CREATE_ADDITIONAL_PAYMENT_INTENT` recovery
+operation keyed to the booking modification. The worker re-creates the intent
+with the original modification-scoped Stripe idempotency key (so route and cron
+can never double-mint) and, since #4036, the same request the door sent
+(`planOrdinaryAskMint`, `INV-MOD-060`): the door's reason, named by the frozen
+key, and the customer resolved one way (`resolveAskCustomerId`), because Stripe
+refuses a key replayed with other parameters. A replay it still refuses adopts
+an unrecorded, unpaid intent that matches this ask (`mintOrdinaryAskIntent`),
+and fails closed and retries instead when none or several match, when the intent
+scan stopped at its bound, or when another recovery of the booking still in
+flight (`isPaymentRecoveryOperationInFlight`, a FAILED row awaiting its retry
+included) could own the match; it never takes an intent under a door's reason
+that Stripe created after the recovery row (`DOOR_INTENT_CLOCK_SKEW_MS`), since
+the row exists only once the door's create failed; under its claim it re-checks
+that no ledger row took the adopted intent, and it leaves the payment's customer
+as it was. Every ask write that names its edit, the door's and the runner's,
+refuses atomically a ledger row already naming another edit
+(`AdditionalAskAttributionConflictError`), so one intent is never recorded as
+two edits' asks; the runner ends its recovery on that refusal at once and alerts
+an officer, since a retry would meet the same row (#4081). No such write lowers
+a captured row's status (`INV-PAY-132`). It skips itself if a later edit already minted a newer
+additional intent, and settles the Xero half two ways: it points any
+supplementary invoice operation still WAITING_PAYMENT at the recovered intent,
+and it raises the supplementary invoice outright for the edits that queued none
+— the inline dispatch skips that queue while no intent exists, so those edits
+had a collectable payment request and no accounting record until the replay
+completed the deferral (#3181). The figure is the `BookingModification`'s signed
 components; the anchor-scoped, advisory-locked enqueue is what keeps it to one
 invoice per edit however the two paths interleave. Whether there was an invoice
 to supplement at all is the EDIT's answer, frozen on the recovery row as
@@ -3192,7 +3281,7 @@ flowchart TD
 | `school-attendee-confirmations` | Every 3 hours | Prompt school contacts to confirm their attendee list before check-in (#1101): first email `attendeeConfirmationLeadDays` before arrival, re-sent every `attendeeConfirmationReminderDays` with a fresh tokenized link until confirmed or check-in |
 | `placeholder-guest-name-reminders` | Every 3 hours | Chase a member whole-lodge booking whose party is still "Guest 1..N" (#2550). Uses the same `attendeeConfirmationLeadDays` / `attendeeConfirmationReminderDays` settings as the school prompt, escalating to a DAILY final reminder from two days before check-in through the morning of arrival (the window deliberately includes the arrival day), and stops as soon as every guest is named. No token and no public page — the member edits their own guests behind their login. Visibility only: it never withholds check-in, confirmation, or roster generation |
 | `hosting-coverage-reevaluation` | Every 3 hours | Drain the bounded hosting-coverage queue (#2576). Every path that can change adult-member qualification records the owner, lodge and exact nights to re-examine inside its own transaction, and drains that inline right after committing; this sweep is the BACKSTOP and authority on completion. Each claimed item re-reads committed facts inside a short transaction so its transaction-scoped owner lock protects incident reconciliation, never a lodge-wide sweep; email runs after that commit under an expiring delivery lease, is stamped only after success, and failed delivery is retryable. It opens, updates or resolves one urgent compliance incident per booking, never changes booking status, and exposes unresolved rows in the Booking Officer's `/admin/bookings` queue. |
-| `payment-recovery` | Every 15 minutes | Cancel or refund superseded Stripe PaymentIntents. First task of the payments cycle (`src/lib/payments-cron-runner.ts`), which the cron leader and `POST /api/cron/payments` both call (#3663); each of its four tasks is error-isolated and records its own run |
+| `payment-recovery` | Every 15 minutes | Cancel or refund superseded Stripe PaymentIntents, and retry owed card refunds; then read card refunds still recorded pending back from Stripe, so one Stripe failed is owed again (organiser children's `reconcilePendingOrganiserChildRefunds`, the rest's `reconcilePendingCardRefunds`, #4104; each read times out at 10 s with no retries, each sweep starts no new read after 60 s, and both read the least recently read first, #4130). First task of the payments cycle (`src/lib/payments-cron-runner.ts`), which the cron leader and `POST /api/cron/payments` both call (#3663); each of its four tasks is error-isolated and records its own run |
 | `internet-banking-hold-release` | Every 15 minutes | Release an Internet Banking booking whose payment hold deadline has passed unpaid: cancel the booking, free its beds, fail the pending payment and clear its unpaid invoice. A stay that has started (check-in on or before the club's today) is never cancelled: it is counted `skippedStarted` and finance is alerted once (`INV-PAY-016`). A hold that throws is retried next run and the run records a `warning` admin cron health shows. Second task of the payments cycle |
 | `xero-waiting-invoice-reaper` | Every 15 minutes | Settle a booking change's `WAITING_PAYMENT` Xero invoice that has waited past 14 days: keep it while the payment can still be made, release it if the payment was captured, retire it only once closed. Third task of the payments cycle |
 | `late-capture-held-alert` | Every 15 minutes | Re-announce a card payment captured after its booking was cancelled and held for a treasurer's approval, while it is still waiting, when nobody has received its alert yet (#3635). Fourth task of the payments cycle; the once-ever claim makes a delivered alert a no-op |

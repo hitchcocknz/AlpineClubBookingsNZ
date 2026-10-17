@@ -7,9 +7,12 @@ import { reportCronError } from "@/lib/observability-bridge";
 import {
   REFUND_CREDIT_NOTE_GRACE_HOURS,
   getRefundsMissingXeroCreditNotes,
+  readRefundCreditNoteGap,
 } from "@/lib/xero-admin-health";
 import { findOrphanedAppliedCredits } from "@/lib/orphaned-applied-credit-backfill";
 import { queueWaitingPaidAnotherWayNotesForPayment } from "@/lib/paid-another-way-receipt-note";
+import { recoverLostLateCaptureRecordsForPayment } from "@/lib/late-capture-record-recovery";
+import { findPaymentsWithUnrecordedLateCaptures } from "@/lib/late-capture-unrecorded-refunds";
 import {
   enqueueXeroRefundCreditNoteOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
@@ -43,6 +46,12 @@ export async function reconcileCreditBalances(): Promise<{
 
   const discrepancies = negativeBalances.length;
 
+  // #4149 / #4170: a late capture whose record was lost, checked from its own
+  // list first - its refund is outside the note-eligible cash, so its payment
+  // may never show the gap the list below reads. Recovered first, so the gap
+  // read after it is already right.
+  const lateCaptureLostRecordChecks = await recoverLostLateCaptureRecordsNightly();
+
   const refundsMissingCreditNotes = await getRefundsMissingXeroCreditNotes({
     limit: 50,
   });
@@ -72,8 +81,18 @@ export async function reconcileCreditBalances(): Promise<{
     // its own row. Round 9: and a close whose note waits for a late capture's
     // receipt, whose note step failed after the receipt reached Xero, has that
     // step run again here - idempotent, under the approval task's row lock.
+    //
+    // #4149 (`INV-PAY-106`): a late capture whose automatic refund went out
+    // while its record did not is not yet a known late capture, so its refund
+    // reads as part of this gap. Its record is written first, which takes the
+    // refund out of the note-eligible cash, and the card ask is re-read from
+    // the gap after it; a payment whose late captures cannot be checked
+    // tonight gets no card note.
     let reEnqueued = 0;
     for (const missing of refundsMissingCreditNotes.payments) {
+      const lostRecords =
+        lateCaptureLostRecordChecks.get(missing.paymentId) ??
+        (await recoverLostLateCaptureRecordsForPayment(missing.paymentId));
       if (missing.paidAnotherWayUncoveredCents > 0) {
         try {
           reEnqueued += await queueWaitingPaidAnotherWayNotesForPayment(missing.paymentId);
@@ -84,8 +103,19 @@ export async function reconcileCreditBalances(): Promise<{
           );
         }
       }
+      if (lostRecords.unresolved) continue;
       try {
-        const cardAskCents = missing.uncoveredCents - missing.paidAnotherWayUncoveredCents;
+        // A recovered record took its refund out of the gap read above, so the
+        // card ask is sized from the gap as it stands now (#4149).
+        const gap =
+          lostRecords.recovered.length > 0
+            ? await readRefundCreditNoteGap({
+                id: missing.paymentId,
+                bookingId: missing.bookingId,
+                refundedAmountCents: missing.refundedAmountCents,
+              })
+            : missing;
+        const cardAskCents = gap.uncoveredCents - gap.paidAnotherWayUncoveredCents;
         if (cardAskCents <= 0) continue;
         const queued = await enqueueXeroRefundCreditNoteOperation(
           missing.paymentId,
@@ -222,4 +252,23 @@ export async function reconcileCreditBalances(): Promise<{
     refundsMissingXeroCreditNotes: refundsMissingCreditNotes.count,
     orphanedAppliedCredits: orphaned.findings.length,
   };
+}
+
+/**
+ * The nightly lost-record check over its own list
+ * (`findPaymentsWithUnrecordedLateCaptures`), each payment's answer kept so the
+ * gap loop neither checks it twice nor notes one it could not check. Never throws.
+ */
+async function recoverLostLateCaptureRecordsNightly(): Promise<
+  Map<string, Awaited<ReturnType<typeof recoverLostLateCaptureRecordsForPayment>>>
+> {
+  const checked = new Map<string, Awaited<ReturnType<typeof recoverLostLateCaptureRecordsForPayment>>>();
+  try {
+    for (const paymentId of await findPaymentsWithUnrecordedLateCaptures(new Date())) {
+      checked.set(paymentId, await recoverLostLateCaptureRecordsForPayment(paymentId));
+    }
+  } catch (err) {
+    logger.error({ err }, "Could not list late captures whose record may be lost; the refund-note gap list still checks its own (#4149)");
+  }
+  return checked;
 }

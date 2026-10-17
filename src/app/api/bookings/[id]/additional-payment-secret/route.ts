@@ -10,8 +10,8 @@ import { resolveAdditionalPaymentDoor } from "@/lib/additional-payment-chase";
 import {
   intentCurrencyDiffers,
   reissueAdditionalIntentInClubCurrency,
-  staleIntentAction,
 } from "@/lib/additional-intent-currency";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 import { restateAdditionalAsk } from "@/lib/additional-payment-ask";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";

@@ -892,6 +892,7 @@ export async function prepareGuestPlan(
     input,
     role,
     eligibleGuestIds: otherLodgeEligibleGuestIds,
+    linkedGuestIds: new Set(guestMemberLinks.map((link) => link.guestId)),
   });
   // Only when this edit named a lodge: an inert election's stored id was already
   // validated when it was set, so re-reading it on every unrelated modification
@@ -1061,12 +1062,11 @@ export async function prepareGuestPlan(
   // already ran the identical call to derive `newCheckIn`/`newCheckOut`, the
   // policy-exception workflow runs it to freeze the party an officer reviews, and
   // the modification PREVIEW (`POST /api/bookings/[id]/modify-quote`) runs it to
-  // quote the price — so all four agree by construction rather than by inspection.
-  // Keep this count in step with `docs/DOMAIN_INVARIANTS.md` ("Four surfaces, one
-  // implementation"); a stale enumeration here is how the #2526 divergence sat
-  // unnoticed. Passing the resolved envelope as `requested` keeps an in-progress
-  // edit (whose check-in is pinned to the stored one) resolving against the
-  // envelope actually being applied.
+  // quote the price, the change-request route (#4030) refuses a date move its nights
+  // ignore with it, and the promo preview (#4199) prices an edit's party with it — so
+  // they all agree by construction. Keep this list in step with `INV-EXCEPT-022`'s
+  // surfaces (a stale one hid the #2526 divergence). Passing the resolved envelope as
+  // `requested` keeps an in-progress edit (its check-in pinned) on the envelope applied.
   const resolvedRanges = resolveStayRangesOrApiError({
     booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
     guests: remainingGuests,
@@ -1603,7 +1603,7 @@ export async function resolvePartnerSharedCapacity(params: {
     stayStart?: Date | null;
     stayEnd?: Date | null;
     nights?: Date[];
-    memberId?: string | null;
+    memberId: string | null;
   }>;
   partnerSharedGuests: Array<{ memberId: string; partnerMemberId: string }>;
   excludeBookingId: string;
@@ -3044,7 +3044,7 @@ export async function applyGuestChanges(
           data: { stayStart: envelope.stayStart, stayEnd: envelope.stayEnd },
         });
       }
-      createdGuests.push(guest);
+      createdGuests.push({ ...guest, stayStart: envelope.stayStart, stayEnd: envelope.stayEnd }); // #4030 M6: as priced
     }
 
     // #3029 (W15): a row this edit linked to a member — the one rule that decides
@@ -3120,7 +3120,7 @@ export async function applyGuestChanges(
         data: { stayStart: envelope.stayStart, stayEnd: envelope.stayEnd },
       });
     }
-    createdGuests.push(guest);
+    createdGuests.push({ ...guest, stayStart: envelope.stayStart, stayEnd: envelope.stayEnd });
   }
 
   for (const [i, remainingGuest] of remainingGuests.entries()) {

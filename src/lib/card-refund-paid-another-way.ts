@@ -11,6 +11,7 @@ import { formatBookingReference } from "@/lib/booking-reference";
 import {
   PaidAnotherWayXeroChangedError,
   paidAnotherWayXeroAuditFollowUp,
+  paidAnotherWayCardNoteCoversCents,
   paidAnotherWayXeroPlan,
   paidAnotherWayXeroPromise,
   queuePaidAnotherWayXero,
@@ -20,9 +21,12 @@ import {
 } from "@/lib/card-refund-paid-another-way-xero";
 import { PAID_BACK_CHOICES, type PaidBackChoice } from "@/lib/card-refund-paid-back";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
+import { getClubFormat } from "@/lib/club-format-settings";
+import { recordCardRefundMadeBeforePaidAnotherWay } from "@/lib/cancel-card-refund-paid-another-way-event";
 import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX, normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
+import { paidAnotherWayCardNoteCoverContext } from "@/lib/card-refund-paid-another-way-cash";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 import {
   CARD_REFUND_OPERATION_WHERE,
@@ -32,8 +36,7 @@ import {
 } from "@/lib/open-card-refund-owed";
 import { getNetCollectedCashParts } from "@/lib/payment-net-collected";
 import { prisma } from "@/lib/prisma";
-import { CLAIMABLE_PAYMENT_RECOVERY_STATUSES } from "@/lib/payment-recovery";
-import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
 import {
   applyLocalRefundAllocation,
@@ -144,11 +147,10 @@ import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-
 /** What `lastError` says on an operation closed here, for a person reading the row. Nothing parses it. */
 export const PAID_ANOTHER_WAY_MARKER = "Closed by the treasurer: paid another way (#3372)";
 
-/** The card refund operations the worker will never claim again. */
+/** The card refund operations the worker will never claim again (`isPaymentRecoveryOperationExhausted`'s twin). */
 export const deadCardRefundOperationWhere = {
   ...CARD_REFUND_OPERATION_WHERE,
-  status: { in: [...CLAIMABLE_PAYMENT_RECOVERY_STATUSES] },
-  attempts: { gte: MAX_PAYMENT_RECOVERY_ATTEMPTS },
+  ...PAYMENT_RECOVERY_EXHAUSTED_WHERE,
 } satisfies Prisma.PaymentRecoveryOperationWhereInput;
 
 /** A refusal with the status the route answers. Thrown before or inside the transaction, so nothing commits. */
@@ -170,6 +172,7 @@ const OPERATION_SELECT = {
   idempotencyKey: true,
   bookingId: true,
   paymentId: true,
+  paymentIntentId: true,
   paymentTransactionId: true,
   allocationPlan: true,
   amountCents: true,
@@ -235,6 +238,12 @@ export interface DeadCardRefundRow {
    * `after-receipt-held-for-officer`, round 9), or no note (`none`).
    */
   xeroRefundNote: PaidAnotherWayXeroPromise;
+  /**
+   * #4104: how much of it a card refund note already in Xero answers - a refund
+   * Stripe accepted, noted and failed later (`failedLaterCardNoteCoverCents`);
+   * 0 for none. With it, `xeroRefundNote` is `covered-by-card-note`.
+   */
+  cardNoteCoversCents: number;
   /** Its last failure looked like a timeout or a network error, so Stripe may have refunded after all. */
   stripeMayHaveRefunded: boolean;
 }
@@ -250,10 +259,16 @@ export interface DeadCardRefundRow {
  * #3924 round 5 (money F5, concurrency F3): a 5xx is matched only beside a
  * status word ("status 502", "statusCode: 503"), never any three digits
  * starting with 5 - "$500.00" is an amount, not a server error.
+ *
+ * #4101: Stripe refusing a reused idempotency key ("Keys for idempotent requests
+ * can only be used with the same parameters...", `idempotency_error`) means an
+ * earlier request under that key reached Stripe, and a refund replay's earlier
+ * request is the refund itself. A guest-acceptance re-price refund's replay
+ * died this way before #4101 although Stripe had made the refund.
  */
 export function lastErrorSuggestsStripeMayHaveRefunded(lastError: string | null): boolean {
   if (!lastError) return false;
-  return /time[- ]?out|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network|connection (?:error|reset|closed|refused)|StripeConnectionError|StripeAPIError|status(?:Code)?\D{0,3}5\d\d\b|has already been refunded|greater than (?:the )?unrefunded amount/i.test(
+  return /time[- ]?out|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network|connection (?:error|reset|closed|refused)|StripeConnectionError|StripeAPIError|status(?:Code)?\D{0,3}5\d\d\b|has already been refunded|greater than (?:the )?unrefunded amount|idempotent requests can only be used with the same parameters|idempotency_error/i.test(
     lastError,
   );
 }
@@ -278,18 +293,20 @@ export async function listDeadCardRefunds(): Promise<DeadCardRefundRow[]> {
     .map((operation) => ({ operation, owedCents: stillOwed(operation.payment, operation.id).owedCents }))
     .filter(({ owedCents }) => owedCents > 0);
   return Promise.all(
-    closable.map(async ({ operation, owedCents }) => ({
-      operationId: operation.id,
-      bookingId: operation.bookingId,
-      bookingReference: formatBookingReference(operation.bookingId),
-      raisedAt: operation.createdAt.toISOString(),
-      owedCents,
-      wholeAmountOnly: operation.type === "REFUND_SUPERSEDED_PAYMENT",
-      xeroRefundNote: paidAnotherWayXeroPromise(
-        await paidAnotherWayXeroPlan(prisma, operation, operation.payment, { lockApprovalTask: false }),
-      ),
-      stripeMayHaveRefunded: lastErrorSuggestsStripeMayHaveRefunded(operation.lastError),
-    })),
+    closable.map(async ({ operation, owedCents }) => {
+      const xeroPlan = await paidAnotherWayXeroPlan(prisma, operation, operation.payment, { lockApprovalTask: false });
+      return {
+        operationId: operation.id,
+        bookingId: operation.bookingId,
+        bookingReference: formatBookingReference(operation.bookingId),
+        raisedAt: operation.createdAt.toISOString(),
+        owedCents,
+        wholeAmountOnly: operation.type === "REFUND_SUPERSEDED_PAYMENT",
+        xeroRefundNote: paidAnotherWayXeroPromise(xeroPlan),
+        cardNoteCoversCents: xeroPlan.xeroRefundNote === "now" ? (xeroPlan.cardNoteCoversCents ?? 0) : 0,
+        stripeMayHaveRefunded: lastErrorSuggestsStripeMayHaveRefunded(operation.lastError),
+      };
+    }),
   );
 }
 
@@ -411,6 +428,12 @@ async function postPaidAnotherWayLine(
   await writeBookingLedgerRows(tx, rows);
 }
 
+/** The record's `reviewContext` for a card-note cover, or nothing (A-F1). */
+function cardNoteCoverReviewContext(cardNoteCoversCents: number): { reviewContext?: Prisma.InputJsonObject } {
+  const reviewContext = paidAnotherWayCardNoteCoverContext(cardNoteCoversCents);
+  return reviewContext ? { reviewContext } : {};
+}
+
 /** Close one dead card refund as paid another way. See the module comment. */
 export async function closeCardRefundPaidAnotherWay(
   input: CardRefundPaidAnotherWayInput,
@@ -433,6 +456,7 @@ export async function closeCardRefundPaidAnotherWay(
   // `INV-LOCK-004`: the club's zone, for a late charge's receipt date, is read
   // before the transaction.
   const clubZone: ClubTimeZone = await readClubTimeZoneOutsideRequest();
+  const format = await getClubFormat(); // #4145: a cancel's made part's event, below
 
   const result = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
@@ -450,9 +474,7 @@ export async function closeCardRefundPaidAnotherWay(
         409,
       );
     }
-    const dead =
-      (CLAIMABLE_PAYMENT_RECOVERY_STATUSES as readonly string[]).includes(operation.status) &&
-      operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
+    const dead = isPaymentRecoveryOperationExhausted(operation);
     if (!dead) {
       throw new CardRefundPaidAnotherWayError(
         operation.status === PaymentRecoveryOperationStatus.SUCCEEDED
@@ -572,6 +594,9 @@ export async function closeCardRefundPaidAnotherWay(
         completedByMemberId: input.actingMemberId,
         note,
         reason: paidAnotherWayReason(booking.id, input.paidBack),
+        // #4104 delta review (A-F1): what a card note already in Xero answers
+        // of the close, so its share counts it covered.
+        ...cardNoteCoverReviewContext(paidAnotherWayCardNoteCoversCents(xeroPlan, input.amountCents)),
       },
       select: { id: true },
     });
@@ -582,6 +607,8 @@ export async function closeCardRefundPaidAnotherWay(
       amountCents: input.amountCents,
       officerMemberId: input.actingMemberId,
     });
+    // #4145 (`INV-PAY-134`): a cancel's slices made before this close went back to the card.
+    await recordCardRefundMadeBeforePaidAnotherWay(tx, operation, { payment, format });
 
     // M3 / round 5 / round 6: the note now, or the late charge's receipt first.
     let xeroQueued: PaidAnotherWayXeroQueued;
@@ -655,7 +682,11 @@ export async function closeCardRefundPaidAnotherWay(
   // Round 10: only a close that queued a row - its note, or the receipt its
   // note follows - kicks the outbox; a close whose note waits on another
   // invoice, or on an officer, queued nothing to run.
-  if (result.xeroQueued === "refund-note" || result.xeroQueued === "receipt-then-refund-note") {
+  if (
+    result.xeroQueued === "refund-note" ||
+    result.xeroQueued === "refund-note-beyond-card-note" ||
+    result.xeroQueued === "receipt-then-refund-note"
+  ) {
     // The note's (or the receipt's) row committed with the close: only the kick is left.
     await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((error: unknown) =>
       logger.error({ err: error, operationId: result.operationId }, "Failed to kick the Xero outbox after a paid-another-way close"),

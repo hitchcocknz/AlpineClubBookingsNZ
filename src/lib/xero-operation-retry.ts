@@ -52,7 +52,7 @@ import {
   resolveRefundNoteMethod,
 } from "@/lib/xero-refund-method";
 import { queuedReviewTaskId } from "@/lib/xero-review-task-key";
-import { mayRecordAsCanonicalRefundNote } from "@/lib/xero-refund-note-status";
+import { isRetryOfVoidedRefundRequestNote, mayRecordAsCanonicalRefundNote, VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 import type { CashRefundMethod } from "@/lib/xero-refund-method";
 import {
   readBookingClearingNoteRetryInput,
@@ -70,6 +70,11 @@ import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import type { ClubFormat } from "@/lib/club-format";
 import { readRefundRequestIdFromPayload } from "@/lib/refund-request-credit-note";
 import { findResolvedSiblingSince } from "@/lib/xero-resolved-in-xero-fences";
+import {
+  isStrayInvoiceAfterCloseOutcome,
+  membershipChargeNeedsNoInvoice,
+  STRAY_INVOICE_AFTER_CLOSE_OPERATION_REASON,
+} from "@/lib/subscription-charge-already-paid";
 
 /**
  * The `@/lib/xero` module namespace, named because an `import()` type written
@@ -254,7 +259,7 @@ async function refuseSubscriptionInvoiceRetryWithNothingToDo(chargeId: string): 
       409,
     );
   }
-  if (charge.billingBasis === "NO_INVOICE" || charge.status === "NOT_REQUIRED" || charge.status === "VOIDED") {
+  if (membershipChargeNeedsNoInvoice(charge)) {
     throw new XeroOperationRetryError(
       "This charge no longer needs a Xero invoice, so there is nothing to retry. Mark this operation non-replayable.",
       409,
@@ -904,10 +909,7 @@ async function repairRefundCreditNoteFollowUpActions(
   // the payment's one refund note, so it never takes the payment's pointer.
   // #3880 F1: a per-refund note is repaired, never made the payment's canonical one.
   const refundRequestId = readRefundRequestIdFromPayload(operation.requestPayload);
-  if (
-    !refundRequestId &&
-    (await mayRecordAsCanonicalRefundNote(operation.localId!, repair.creditNoteId, prisma))
-  ) {
+  if (!refundRequestId && (await mayRecordAsCanonicalRefundNote(operation.localId!, repair.creditNoteId, prisma))) {
     await prisma.payment.update({
       where: { id: operation.localId! },
       data: {
@@ -1066,6 +1068,11 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
   }
 
   if (operation.status === "PARTIAL") {
+    // #4098 review (money F4): a subscription invoice raised after its charge
+    // was closed as already paid is a stray to void, not a payload to repair.
+    if (isStrayInvoiceAfterCloseOutcome(operation.responsePayload)) {
+      return { supported: false, reason: STRAY_INVOICE_AFTER_CLOSE_OPERATION_REASON };
+    }
     if (operation.entityType === "INVOICE" && operation.operationType === "CREATE") {
       if (!partialInvoiceOperationHasPaymentFault(operation)) {
         return {
@@ -1335,6 +1342,7 @@ export async function retryXeroSyncOperation(
   if (!retryMeta.supported) {
     throw new XeroOperationRetryError(retryMeta.reason ?? "This Xero operation cannot be retried.");
   }
+  if (await isRetryOfVoidedRefundRequestNote(operation, prisma)) throw new XeroOperationRetryError(VOIDED_REQUEST_NOTE_RETRY_REASON, 409);
 
   const appliedCreditType = appliedCreditRequeueType(operation);
   if (appliedCreditType) {

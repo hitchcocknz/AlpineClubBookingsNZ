@@ -31,6 +31,7 @@ import {
   type CalendarDate,
 } from "@/lib/club-time";
 import { storedDateOnly } from "@/lib/stored-calendar-day";
+import { sameNightKeys } from "@/lib/booking-guest-stay-ranges";
 import { calculateDualRefundAmounts, type CancellationRule } from "@/lib/policies/cancellation";
 
 /**
@@ -153,8 +154,7 @@ export function classifyFinishedStayChangeFeeRule(plan: {
       stored.stayEnd,
       stored.nights?.map((night) => night.stayDate),
     );
-    const after = nightKeys(proposed.stayStart, proposed.stayEnd, proposed.nights);
-    return before.length === after.length && before.every((key, i) => key === after[i]);
+    return sameNightKeys(before, nightKeys(proposed.stayStart, proposed.stayEnd, proposed.nights));
   });
   return everyKeptGuestUnchanged ? "ADD_ONLY_NO_FEE" : "SAME_DAY_NOTICE";
 }

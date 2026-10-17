@@ -17,7 +17,7 @@
 
 import { reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import { assertNoRefundCreditNoteInFlight } from "@/lib/xero-refund-note-in-flight";
-import { mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField } from "@/lib/xero-refund-note-status";
+import { assertFreshRefundNoteFromCreate, mayRecordAsCanonicalRefundNote, readCanonicalRefundNoteField, refundNoteKeyAfterVoidParts, refundRequestOwnNotes, type RefundNoteKeyScope } from "@/lib/xero-refund-note-status";
 import {
   XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
@@ -37,7 +37,7 @@ import { prisma } from "./prisma";
 import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
-import { readPaidAnotherWayCloseShare } from "@/lib/card-refund-paid-another-way-cash";
+import { paidAnotherWayCloseNoteRowsWhere, readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -79,10 +79,10 @@ import {
 import type { RefundNoteWording } from "@/lib/xero-refund-method";
 import type { ClubFormat } from "@/lib/club-format";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
-import {
-  readRefundRequestIdFromPayload,
-  REFUND_REQUEST_CREDIT_NOTE_ROLE,
-} from "@/lib/refund-request-credit-note";
+import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+
+/** #4104: how often a card note re-reads the closes' figure until it agrees with the cash read between. */
+const STABLE_CLOSE_READ_ATTEMPTS = 3;
 
 export interface CreateXeroRefundCreditNoteOptions
   extends FindOrCreateXeroContactOptions {
@@ -142,10 +142,12 @@ export interface CreateXeroRefundCreditNoteOptions
 /**
  * #3827 (D-3813-8): the one key of a refund request's own refund credit note -
  * its outbox row's correlation and idempotency key and the Xero idempotency
- * key alike. Keyed by the request, never by the amount.
+ * key alike. Keyed by the request, never by the amount. #4195: the Xero key of
+ * a note raised after the request's own note was voided gains `afterVoid`
+ * (`refundNoteKeyAfterVoidParts`), so Xero never replays the voided note.
  */
-export function refundRequestCreditNoteKey(paymentId: string, refundRequestId: string): string {
-  return buildXeroIdempotencyKey("payment", paymentId, "refund-request-credit-note", refundRequestId, "v1");
+export function refundRequestCreditNoteKey(paymentId: string, refundRequestId: string, afterVoid: readonly string[] = []): string {
+  return buildXeroIdempotencyKey("payment", paymentId, "refund-request-credit-note", refundRequestId, "v1", ...afterVoid);
 }
 
 /** Stamped on a late-capture refund note the app does not raise (`INV-PAY-110`). */
@@ -381,13 +383,34 @@ export async function createXeroCreditNote(
     } else {
       // #3635 round-3 R1: the cash a note may answer, the figure the enqueue
       // capped against, never refunds of late captures Xero never received.
-      const { evidence, eligibleCashCents } = await resolveRefundNoteEligibleCash({
+      // #4104 (A-F2): less the closes' cash their own notes do not cover yet,
+      // as the self-heal sizes a card note: a card note queued before its
+      // refund failed later never bills a close's cash. The two are read
+      // without a lock, so a close committing between them would count on one
+      // side only: read the closes' figure either side of the cash and size
+      // from a pair that agrees.
+      let closesUncoveredCents = await readPaidAnotherWayUncoveredCents(prisma, paymentId);
+      let eligible = await resolveRefundNoteEligibleCash({
         id: payment.id,
         bookingId: payment.bookingId,
         refundedAmountCents: payment.refundedAmountCents,
       });
-      uncoveredCents = Math.max(0, eligibleCashCents - coveredCents);
-      evidenceLog = { cashRefundCents: evidence.cashRefundCents, cashEvidenceSource: evidence.source };
+      for (let attempt = 1; ; attempt += 1) {
+        const after = await readPaidAnotherWayUncoveredCents(prisma, paymentId);
+        if (after === closesUncoveredCents) break;
+        if (attempt >= STABLE_CLOSE_READ_ATTEMPTS) {
+          throw new Error(`A "Paid another way" close on payment ${paymentId} kept changing while its card note was sized; the note will be retried`);
+        }
+        closesUncoveredCents = after;
+        eligible = await resolveRefundNoteEligibleCash({
+          id: payment.id,
+          bookingId: payment.bookingId,
+          refundedAmountCents: payment.refundedAmountCents,
+        });
+      }
+      const { evidence, eligibleCashCents } = eligible;
+      uncoveredCents = Math.max(0, eligibleCashCents - coveredCents - closesUncoveredCents);
+      evidenceLog = { cashRefundCents: evidence.cashRefundCents, cashEvidenceSource: evidence.source, paidAnotherWayUncoveredCents: closesUncoveredCents };
     }
 
     if (uncoveredCents <= 0) {
@@ -440,42 +463,39 @@ export async function createXeroCreditNote(
       // requested), and key the note by the EXECUTION-TIME watermark so a
       // replay under unchanged state mints the identical Xero idempotency
       // key, while changed state produces a consistent new intent.
-      // #3924 round 8: a close's note is exactly its own uncovered share.
-      effectiveRefundAmountCents =
-        paidAnotherWayTaskId !== null ? uncoveredCents : Math.min(refundAmountCents, uncoveredCents);
+      // #3924 round 8: a close's note is its own uncovered share - and (#4104)
+      // never more than its row asked for, as for every other note.
+      effectiveRefundAmountCents = Math.min(refundAmountCents, uncoveredCents);
       effectiveWatermarkCents = coveredCents + effectiveRefundAmountCents;
     }
   } else if (refundRequestId !== null) {
     // #3827 (D-3813-8): THIS request's own note, and only it, covers this
     // request. Another request's note, or the payment's one refund note,
-    // never does - that absorption is what the decision removed.
-    const ownNote = (
-      (await prisma.xeroObjectLink.findMany({
-        where: {
-          localModel: "Payment",
-          localId: paymentId,
-          xeroObjectType: "CREDIT_NOTE",
-          role: REFUND_REQUEST_CREDIT_NOTE_ROLE,
-          active: true,
-        },
-        select: { xeroObjectId: true, xeroObjectNumber: true, metadata: true },
-      })) ?? []
-    ).find((link) => readRefundRequestIdFromPayload(link.metadata) === refundRequestId);
+    // never does - that absorption is what the decision removed. #4195
+    // (`INV-ADDPAY-041`): nor does its own note once Xero voided it.
+    const ownNote = (await refundRequestOwnNotes(paymentId, refundRequestId, prisma)).live;
     existingCreditNoteId = ownNote?.xeroObjectId ?? null;
     existingCreditNoteNumber = ownNote?.xeroObjectNumber ?? null;
   } else {
     const canonicalRefundCreditNote =
       await findCanonicalPaymentRefundCreditNote(paymentId);
-    // #3880 F1: never a per-refund note, even one an older writer left in the field.
-    existingCreditNoteId =
-      (await readCanonicalRefundNoteField(payment, prisma)) ?? canonicalRefundCreditNote?.xeroObjectId ?? null;
+    // #3880 F1: never a per-refund note, even one an older writer left in the
+    // field; #4091: never a voided one either - the lookup reads the field first.
+    existingCreditNoteId = canonicalRefundCreditNote?.xeroObjectId ?? null;
     existingCreditNoteNumber =
       canonicalRefundCreditNote?.xeroObjectNumber ?? null;
   }
   const noteLinkRole = refundRequestId !== null ? REFUND_REQUEST_CREDIT_NOTE_ROLE : "REFUND_CREDIT_NOTE";
 
+  // `INV-ADDPAY-041`: a reissue's Xero key names the voided notes it could
+  // replay, so Xero never hands one back; byte-identical while none matches.
+  const keyScope: RefundNoteKeyScope = refundRequestId !== null ? { refundRequestId }
+    : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null
+    ? { closeRowsWhere: paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId) }
+    : isDeltaMode ? { watermarkCents: effectiveWatermarkCents ?? watermarkCents ?? 0 } : { amountCents: refundAmountCents };
+  const afterVoid = await refundNoteKeyAfterVoidParts(paymentId, keyScope, prisma);
   const creditNoteIdempotencyKey = refundRequestId !== null
-    ? refundRequestCreditNoteKey(paymentId, refundRequestId)
+    ? refundRequestCreditNoteKey(paymentId, refundRequestId, afterVoid)
     : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null
     ? // #3924 rounds 8 and 9: a close's note is its own document in Xero, keyed
       // on the close and what ITS OWN notes already cover - never the
@@ -489,23 +509,12 @@ export async function createXeroCreditNote(
         "paid-another-way",
         options.paidAnotherWayTaskId,
         closeCoveredCents,
-        "v3"
+        "v3",
+        ...afterVoid
       )
     : isDeltaMode
-    ? buildXeroIdempotencyKey(
-        "payment",
-        paymentId,
-        "refund-credit-note",
-        effectiveWatermarkCents ?? watermarkCents,
-        "v2"
-      )
-    : buildXeroIdempotencyKey(
-        "payment",
-        paymentId,
-        "refund-credit-note",
-        refundAmountCents,
-        "v1"
-      );
+    ? buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", effectiveWatermarkCents ?? watermarkCents, "v2", ...afterVoid)
+    : buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", refundAmountCents, "v1", ...afterVoid);
   // #3635 round-3 R4/R3: which capture this note answers, and its date, ride
   // in the recorded payload and the link so a retry keeps both and the
   // capture's notes can be counted.
@@ -742,6 +751,7 @@ export async function createXeroCreditNote(
     };
     const createdNoteId = createdNote.creditNoteID;
     const createdNoteNumber = createdNote.creditNoteNumber ?? null;
+    await assertFreshRefundNoteFromCreate(paymentId, operationId!, { creditNoteID: createdNoteId, status: createdNote.status }, prisma);
     await prisma.$transaction(async (tx) => {
       // #3827 (D-3813-8): a request's own note never takes the pointer, nor
       // does a per-refund note (#3880 F1).

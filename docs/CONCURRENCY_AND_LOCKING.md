@@ -198,7 +198,7 @@ are the literal `1`.
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge identity mutations while an import resolves bundle slugs to immutable lodge ids. A lodge update/deactivation then takes its immutable target-lodge capacity key before re-reading the lodge and active-lodge/dependency predicates. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
 | **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` / `tryLockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), fences the drain's policy read before incident reconciliation, and excludes member merge while policy reconciliation enumerates bookings and inserts queue rows. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers and merge take the blocking form. The drain takes the fail-fast form, releases a contended exact queue claim without consuming an attempt, and otherwise composes policy-set → sorted member-lifecycle → sorted `Member FOR KEY SHARE` rows → coverage-owner. |
-| **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
+| **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. The #4098 close-as-already-paid writer (`closeAlreadyPaidSubscriptionCharge`, `membership-subscription-charge-close.ts`) also takes **no** advisory lock, like the #2147 void release it mirrors: in one transaction it claims the charge with a status-guarded `updateMany` (`CONFLICT` + `SUBSCRIPTION_ALREADY_PAID` + no invoice), then re-checks PAID in the `WHERE` of the subscription write that bumps `voidGeneration` (a short count rolls back), then releases the coverage claims. It refuses while an invoice operation for the charge is queued or running, which covers an old pod's worker during a rollout. It does not rely on that refusal against a new worker: every charge-status write in the invoice pipeline (`liveChargeWhere` in `subscription-charge-already-paid.ts`, shared by the enqueue, the worker and the outbox failure handler) matches only live charges, so a worker whose Xero call was in flight when the close landed loses its `INVOICE_CREATED` write, links and emails nothing, and leaves `STRAY_INVOICE_AFTER_CLOSE` on the closed charge naming the invoice to void, written in the same transaction as the lost claim (only when that attempt raised or adopted the invoice; a voided charge or a resumed invoice just finishes as skipped). A concurrent close loses the claim and reads the charge closed; a manual reversal committing first rolls it back; the members are PAID, so a concurrent confirm never bills them either way. A later re-bill of a closed or voided family (#4110) runs inside confirm under this season key, and the family/type/season partial unique index (live charges only) still refuses a second LIVE family charge if two confirms ever raced past it. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `acquireMemberPartnerLinkLocks` (`member-partner-lock.ts`), called by `lockPartnerMembers` (`member-partner-link.ts`), existing-member parent-link writers, nomination mapping, the reviewed move (`bed-allocation-move.ts`) and member merge (`member-merge.ts`) | — | Serialises partner-link invariants across every member touched by a link, including the direct parent/partner exclusion in `INV-LIFE-024`; same-family keys are sorted. The CONFIRMED partial uniques are per side (`memberAId`, `memberBId`), so "at most one confirmed partner" is enforced by this key alone — every writer of a partner link, every existing-member writer that adds a direct parent, and every reader whose relationship read decides such a write must hold the complete affected set. Partner-only service paths take ONLY this family. Parent writers take any member-lifecycle keys first, then this family; the reviewed move and merge likewise take it after member-lifecycle, so the edge remains one-way (#2595, #3271). Create-new-member paths are structurally outside this cross-table race because the generated child id cannot already own a partner row; the closed-world writer census records those sites rather than silently exempting them. |
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
@@ -345,9 +345,11 @@ The other three writers, and why the guarantee is worded the way it is:
 
 **The cron's coverage probes are a fifth decision point, and they are
 deliberately NOT the same rule** (#2926). `cron-hut-leader-auto-assign` asks two
-questions per (lodge, night): *is this night already covered?* — a `findFirst`
-over any assignment spanning the night, once cheaply and once again under the key
-— and *would this assignment overlap?*, which is the shared predicate. The
+questions per (lodge, night): *is this night already covered?* — since #3818
+`isHutLeaderNightCovered` from `hut-leader-night-cover.ts` (an assignment claims
+the night AND its leader is staying it, `INV-DATE-031`), asked once cheaply on
+`prisma` and once again on `tx` under the key; it is two reads and takes no lock
+of its own — and *would this assignment overlap?*, which is the shared predicate. The
 coverage probes stay **source-blind**: a school-teacher row counts as coverage,
 so the job does not auto-assign a leader for a night a school group already has
 teachers on site. The overlap predicate excludes those same rows **only for a
@@ -374,7 +376,9 @@ would make the two skips disagree.
 
 **COVERAGE is a whole class of reader, and every one of them stays
 source-blind.** The cron's two probes are the ones that can refuse an automatic
-write, which is why they are named above, but `hut-leader-coverage.ts`, the
+write, which is why they are named above, but `hut-leader-coverage.ts` (all of
+them now through the one `hut-leader-night-cover.ts` helper, where a teacher row
+is present on its school booking's nights), the
 admin page's uncovered-dates panel and the `eligible-members` suggester all ask
 the same "is somebody on site that night?" question, and all of them should keep
 counting a teacher. The consequence to know about is a conservatism, not a
@@ -384,6 +388,19 @@ accept one. An officer who wants a leader beside the teachers adds the
 assignment directly and is no longer refused. Anything NEW that refuses a write
 on the strength of an overlap belongs behind `findHutLeaderOverlapRefusal`
 rather than behind its own read.
+
+**The custodian exemption reads the cover under the same key (#3821).** When a
+clash pairs a custodian row with an ordinary one — either may be the existing
+row or the proposed row the caller passes as `candidate` — the predicate loads
+`hut-leader-night-cover.ts` on the client it was given and leaves out the
+school nights the custodian does not cover and the ordinary row does, then
+applies the one-night rule to each remaining run. Two custodians are never
+exempted from each other. These are reads on the transaction client after
+`acquireLodgeCapacityLock`, like the overlap read itself: no new key, no new
+order, and nothing is read unless a custodian clashes with an ordinary row.
+The cron passes its ordinary CRON row as `candidate` and writes no custodian;
+its span is cut to the nights the member may lead (`leadableNightRun`),
+re-read on `tx` under the key before the locked overlap ask.
 
 ### Composition: roster-date writers (#2586)
 
@@ -1154,7 +1171,7 @@ value**:
 
 The mode is also passed for a second, non-pool reason: two independent reads in
 one request can disagree if an admin saves the panel between them, which on
-`modify-quote` (seven or more pricing passes, two of them differenced into the
+`modify-quote` (at #2543, seven or more pricing passes, two differenced into the
 member's settlement delta) is a money error rather than a nuisance. See the
 `INV-LOCKOUT` rules in `docs/invariants/subscription-lockout-pricing.md`.
 
@@ -2968,6 +2985,40 @@ mirror, Xero note, settlement status and the debt's close together, so a
 concurrent headroom read sees the debt either owed or recorded. The status-
 guarded recovery claim is the guarded claim before the provider effect.
 
+**#3956 adds a fourth writer of a child refund debt, and no key: a refund
+appeal's approval (`INV-PAY-123`).** `PUT /api/admin/refund-requests/[id]#1`
+already holds `lock(1)`, then (#4124) the child's Payment row. Under them the approval first re-reads the
+request's status, so one another review settled while it waited answers
+"already reviewed" rather than a cap refusal. On a booking the organiser paid
+for by card it then reads the same headroom (`organiserCardAppealCap`), refuses
+past it before the claim, claims the request with its status-guarded
+`updateMany`, and reserves the debt (`reserveOrganiserChildAppealRefund`) in
+that transaction - so a reduction, a cancel or a second approval queues behind
+it and reads the debt as owed (proven by
+`organiser-child-refund.realdb.test.ts`). The cap is zero while the group
+cancel's own combined refund is unmade - a pre-#3653 plan on a settlement still
+`SUCCEEDED`, or its `group_settlement_refund_recovery_` retry not yet
+`SUCCEEDED` - because `executeGroupSettlementRefundPlan` records that refund
+without reading this headroom. Stripe is called after the commit through the
+recorder above, never by the route; the debt, not an inline refund, is the
+durable record, so the approval's release path (`#2`) is never reached on this
+branch.
+
+The appeal's debt is keyed `organiser_card_appeal_refund_<request>`, outside
+the `organiser_child_refund_` prefix a pre-#3956 worker routes to the executor.
+During a blue/green window such a worker takes the row for an ordinary
+modification refund, meets the allocation that names no real transaction, and
+fails it before any Stripe call; the retry, with backoff, lands on a current
+worker. Every current reader counts both prefixes (`isOrganiserChildRefundKey`,
+`ORGANISER_CHILD_REFUND_KEY_WHERE`). A pre-#3956 headroom reader does not count
+an appeal debt; each child's own room still bounds its refunds, and the
+approval runs its debt inline on the new code.
+On a rollback to that code an appeal debt also counts as an ordinary
+modification refund: the old `listDeadCardRefunds` and its "paid another way"
+close can act on it once it has used its attempts, and the old headroom readers
+ignore it, with each cancelled child's own room still bounding it. That is
+accepted for a short window; a rollback drains or closes these debts first.
+
 **#3854 adds booking-ledger lines to this cohort and no lock.** The settle
 posts each child's confirmation and share after its `lock(1)` and the sorted
 child-lodge keys, beside the PAID flips; the organiser cancel's per-child claim
@@ -3055,7 +3106,53 @@ release's next inbound sync of a credit note on the payment recomputes the
 total without it - lowering it for a bank payment; for a card payment the
 raise-only floor (#1353) keeps the higher figure and sends the
 refund-ledger-divergence alert, so a treasurer corrects it by hand. A stated
-limit of the window, not of the release.
+limit of the window, not of the release. An ORDINARY increase's door and
+replay share one request (`INV-MOD-060`, #4036), so in the window an old
+door's row replays byte for byte under this runner, a new door's row the old
+runner replays is refused and backs off until this runner replays it, and an
+intent the old runner minted under its own reason is adopted only as the one
+unrecorded match no other in-flight recovery of the booking could own.
+
+**#4042 adds the organiser's hand-back to the same claim, and no key.** An
+Internet Banking settlement's per-child claim, after its `lock(1)` and the
+joiner's mirror, books that joiner's share on the one `ManualRefundTask` keyed
+`group-organiser-hand-back:<settlement id>` (`recordGroupOrganiserHandBackShare`,
+`INV-PAY-124`): the first share creates it, each later one sets it, by a
+status-guarded `updateMany` while OPEN, to the total derived under the lock
+(the joiners whose refund lines are on the ledger, those a group task records,
+and its own, less closed group tasks), and one booked after it closed creates
+a supplementary task keyed per joiner. That per-child claim is the ONLY raise
+site - it runs on the first cancel and on the reaper's resume, both through
+`settleGroupBookingOnOrganiserCancel` - and the plan's recovery replay never
+raises it (an Internet Banking plan is never replayed). Each step is a
+find-then-write made single by the claim's `lock(1)`, with the unique key as
+the backstop; it reads ledger lines and children under that lock and makes no
+provider call. **Its alert adds one `lock(1)` participant,
+`updateGroupHandBackAlertRecord`** (registered as
+`updateGroupHandBackAlertRecord#1`, `INV-LOCK-003`). Once the children loop
+ends - and from the reaper's own task-keyed sweep of OPEN group tasks older
+than the resume grace (by `updatedAt`, which every growth moves) with no alert
+sent, skipping a group that still has an active organiser-settled joiner - a
+run CLAIMS each unsent alert: a short transaction takes `lock(1)` first, reads
+the database's time, re-reads the task and writes a 30-minute lease
+(`alertClaimedAt`), but only on an OPEN, unsent task with no unexpired lease.
+Only the winning run sends, after that commit, so two runs never send at once;
+it then records the send (`alertSentAt`, lease cleared, retried three times)
+through the same writer, or, when the send reached nobody, gives the lease back
+and counts it (three and no run tries again). The guarantee is AT LEAST ONCE:
+a crash, or a record that never lands, between the send and the record lets
+the lease expire and the alert repeat. Every write to `reviewContext` - the
+lease, its release, the record and a claim's growth of the task - takes
+`lock(1)` and re-reads first, so none drops another's fields; the growth's
+`updateMany` is fenced on status only, since a fence miss there would raise a
+supplementary task. It takes the key ALONE, holds it for a read and an
+update, and makes no provider call inside. Its
+COMPLETION joins the cohort too: `resolveManualRefundTask` takes `lock(1)`
+first for this task (as for an edit review and a non-cancellation hand-back,
+`resolveManualRefundTask#1`), so a growth and a completion never interleave,
+and a completion must name the total its screen showed; a grown one is
+refused. No new key
+or order.
 
 **#2700 adds one more, and it is the smallest participant in this cohort.**
 `raiseDeletedBookingModificationRefundTask`
@@ -3093,6 +3190,66 @@ capture — `refundedAmountCents >= amountCents`, which is the field that surviv
 interleaving it exists to catch: a webhook refund committing between the check
 and the create.
 
+**#4097 adds creates inside the paid cancel's own claim, and no key.** When an
+own-card cancel's frozen card refund plan carries less than the refund due,
+`raiseCancelCardShortfallHandBack` reads the payment's captured non-card
+charges and inserts up to two hand-backs for the rest in the claim
+transaction, after the plan's recovery row, under the locks the claim already
+holds (`lock(1)`, the lodge key, the member's credit-ledger key, the `Payment`
+row), in that order. Each is an insert on no conflict under a unique
+`occurrenceKey`, not a find-then-create, and the claim's status flip is already
+single-flight. Completing one takes no advisory key, as a cancellation
+hand-back's never has; before its claim it takes the `Payment` row
+(`lockPaymentForRefundedTotal`) and reads the cancel's card refund recovery
+row, refusing while that row is not SUCCEEDED, so a completion and the card
+refund's recording are serialised by the row every refunded-total writer takes
+first. Its Xero refund note is an outbox row queued inside the completion
+transaction, with no provider call (`INV-PAY-129`).
+
+**#4154 adds one more create, inside the capacity void's claim, and no key.**
+Where the race's frozen card refund plan is short of the charge, the settle
+inserts the part to check of the same task (`raiseCapacityRaceRefundShortfallTask`)
+after freezing the plan, under the locks it already holds (`lock(1)`, the
+lodge key, the member's credit-ledger key where it takes one), on no
+conflict under its unique
+`occurrenceKey`. A key already held is logged, never thrown, so the webhook's
+settle never rolls back on it. Its completion is the one above, reading the
+race's own recovery rows (one per intent, on the booking) beside the cancel's,
+and it reads the race intent's captured charge under the same `Payment` row
+lock its allocation then writes, on that charge alone (`INV-PAY-135`).
+
+**#4154's guarded correction is a new writer of a charge's refunded total, and
+takes no new key.** Where the race's charge holds too little for the task, the
+completion lowers that one charge's `refundedAmountCents` to its recorded refund
+rows before allocating, inside the same transaction and under the `Payment` row
+lock (`lockPaymentForRefundedTotal`) - the lock every writer of that column
+takes before touching it (`INV-PAY-103`), and which the writer
+(`capacityRaceChargeForHandBack`) takes itself as well as its caller. It runs
+after the card refund gate, which refuses only while the race's own card refund
+recovery row, or a card refund on the payment that Stripe failed later, is not
+SUCCEEDED. No other refund reaches the race's charge meanwhile: the booking is
+cancelled, so no member cancel or edit refunds it; the correction refuses while
+the booking or payment has any other refund task, which shuts out every
+hand-back and "Paid another way" close; and a refund made in the Stripe
+dashboard is checked before the transaction against Stripe's own
+`amount_refunded` (read outside it, bounded, no retries), while its later
+`charge.refunded` recording (`recordStripeRefundsAgainstTransaction`) queues on
+the same row lock. Two completions of one task serialise on that lock too, and
+the second loses the task's status claim. It writes through the shared compare-and-set
+(`compareAndSetRefundedAmount`) taking the smaller of the row's total and the
+rows' sum, so a writer that slipped past cannot be undone into a raise. The
+payment's aggregate is re-derived in the same transaction
+(`reconcilePaymentAggregates`). No `lock(1)`: a cancellation's hand-back
+completion never takes it, and the correction moves no booking status or
+capacity. A refusal anywhere later in the completion rolls the correction back
+with it. **One window remains, and is stated rather than closed:** a refund made
+in Stripe after the completion's Stripe read but recorded only after its commit
+can still pay the member twice, since the read is outside the transaction and
+no lock reaches Stripe. Its recording then meets the charge's cap, and
+`recordStripeRefundsAgainstTransaction` alerts the officers after its own commit
+(`alertCardRefundCapOverflow`, once per charge and set of counted refunds),
+never inside the transaction.
+
 Its counterpart writer is the **second `lock(1)` site in that file, and it did
 not used to take a lock at all** — read this before assuming the webhook path
 holds nothing. Until #2760 it was
@@ -3123,12 +3280,11 @@ holder of `lock(1)` in the tree is `assignBedRange`, which runs on
 an admin assigning a bed range concurrently with a Stripe delivery would blow a
 defaulted budget with a `P2028`. Copying the admin precedent is the wrong fix in
 the other direction — a webhook has Stripe's own delivery timeout over it, and a
-handler that sits on a lock for 30s trades a lost row for a lost delivery. The
-caller must answer 200 (the money is already back with the member, and a 500
-replays the whole refund path for a bookkeeping row), so Stripe never
-redelivers: a failure here is unrecoverable, and its caller therefore writes a
-`critical` `booking.payment.auto_refund_record_failed` audit row rather than
-only logging. See `INV-ADDPAY-037`.
+handler that sits on a lock for 30s trades a lost row for a lost delivery. A
+failure here writes a `critical` `booking.payment.auto_refund_record_failed`
+audit row, and since #4149 the webhook then answers 500 (after its refund entry
+and alert): a replay no longer refunds again (#3639), so Stripe's redelivery
+writes the row (`late-capture-record-recovery.ts`). See `INV-ADDPAY-037`.
 
 **TWO CALLERS SINCE #2773, AND THAT CHANGES THE COHORT'S FOOTPRINT RATHER THAN ITS
 SHAPE.** `handleCancelledBookingPaymentSucceeded` — the late-capture handler for a
@@ -3139,6 +3295,24 @@ key, same budget, same single-key acquisition, no new tier and no new ordering: 
 only difference is that one more Stripe event type can now be the thing waiting on
 `lock(1)`. Both callers make every provider call outside the transaction, and both
 re-read `Booking.deletedAt` outside it.
+
+**#4149 ADDS CALLERS OF THE SAME WRITER, NOT A NEW PARTICIPANT.** A webhook
+redelivery that finds a late capture refunded with no closed record row (an
+`OPEN` #2700 task the refund never closed counts as none), and the nightly
+credit-reconciliation self-heal before it raises a card note, both call this
+writer through `recoverLostLateCaptureRecord`: same key, same budget, no new tier
+or ordering. Each asks Stripe which door sent the refund BEFORE the transaction,
+never inside it. The writer's row is the claim that makes the recovery
+exactly-once: two deliveries, a delivery racing the self-heal, or a retried lost
+write serialise on `lock(1)`, the later finds the row (`alreadyRecorded`), and
+only the recovery that closed or created it writes its
+`booking.payment.auto_refund_record_recovered` entry and re-sends the alert
+(and, when the refunding delivery died before its entry, writes that too). A
+hand-`COMPLETED` #2700 row beside a door refund is escalated instead, through the
+writer's own #2774 escalation: its `critical` entry for every detection, its email
+claimed once ever per capture (`sendAdminAlertOnceEver`, no lock: the claim is the
+guard, and a send that throws gives it back). Proved on real
+PostgreSQL by `late-capture-record-recovery.realdb.test.ts`.
 
 **AND ONE READ THAT IS DELIBERATELY OUTSIDE EVERY LOCK (#2774,
 `INV-ADDPAY-039`).** Before refunding, both handlers call
@@ -3368,8 +3542,9 @@ does too, and both would post. So `resolveManualRefundTask` takes
   `updateMany` still fences on `OPEN` for every kind, pinned with the lock
   mocked in `manual-refund-task.test.ts`. Legacy hand-back kinds take no key,
   exactly as before — **except an edit refund hand-back** (#3827,
-  `INV-PAY-117`) and an approved refund appeal's (`INV-PAY-118`), which take
-  the same key first, decided from its immutable
+  `INV-PAY-117`), an approved refund appeal's (`INV-PAY-118`) and a group
+  organiser's (#4042, `INV-PAY-124`, which later joiners' claims grow under
+  it), which take the same key first, decided from its immutable
   `kind` and `occurrenceKey`. Its completion moves the payment's
   `refundedAmountCents` and closes the task in one commit, and every edit,
   acceptance, paid cancel and by-hand edit-review refund (refused before its
@@ -3378,9 +3553,10 @@ does too, and both would post. So `resolveManualRefundTask` takes
   `lock(1)` the completion cannot commit between the two reads. A reopen of
   one already holds `lock(1)` and is refused past that same net cash, and a
   refund appeal's approval reads ITS net cash (`INV-PAY-118`: every open
-  hand-back and the late-cash credit, `refundAppealHandedBackCents`, read
-  BEFORE the payment so a cancellation hand-back's lock-free completion in
-  between errs the cap low) under `lock(1)` and claims
+  hand-back, the late-cash credit and, #4124, the card refunds still owed,
+  `refundAppealHandedBackParts`) under `lock(1)` and then the Payment row
+  (#4124 review F2; see the #4104 section), so a cancellation hand-back's
+  completion, which holds only that row, cannot land between its reads; it claims
   the request in that transaction, planning the card refund and raising the
   bank-transfer task for the rest there too, before its Stripe refund and Xero
   note (`PUT /api/admin/refund-requests/[id]#1`, `INV-LOCK-001`). A released
@@ -4776,6 +4952,198 @@ not stopped by any lock either, so the request carries the card figure the
 dialog showed (`expectedRefundedByCardCents`, round 8) and a different figure
 is a 409: a refund the treasurer never saw is never marked resolved.
 
+## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103, #4144)
+
+A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds these
+writes to a `PaymentRecoveryOperation`, all lock-free and each fenced in its
+own `where`, because none moves booking status, capacity or a payment's
+refunded total (`INV-LOCK-001`), and none runs inside a transaction with the
+Stripe call:
+
+- **The runner's re-plan** (`refundPlanOrRetryRefusals`) writes the plan
+  (never the amount) only while the row is `PROCESSING` under the attempt's
+  own `processingStartedAt` - the reaper's fence. A lost fence moves nothing; the
+  next attempt reads the same refusal back and moves it then.
+- **A pre-persisted door's re-plan** (`keepRefusedPrePersistedRefundOwed`:
+  the cancellation, and since #4103 the edit financial review, the
+  late-capture approval, the duplicate capture and the capacity race) writes
+  only while its row is `PENDING` with `attempts` 0, so it never races a worker
+  that has claimed the row; that worker reads the refusal and moves it itself.
+  It reads the row's plan and writes compare-and-set on it, skipping a slice
+  already moved, so two deliveries of one refusal move it, and alert, once.
+- **The ledger refund enqueue** inserts if absent (`createMany`,
+  `skipDuplicates`) and refreshes only a `PENDING` row, so a repeat enqueue
+  never re-plans a row a worker has picked up. A fresh plan with no refusal in
+  it never replaces one a refusal moved, and is written compare-and-set on the
+  plan it read (#4103).
+- **A pre-persisted door's happy-path close** (`closePrePersistedRefundRow`,
+  `pre-persisted-refund-close.ts`, #4144) is a compare-and-set on the plan the
+  door sent. The cancellation, the edit financial review, the duplicate
+  capture and the capacity race close a row that is open and still on that
+  plan (`sentPlanRowWhere`). A row the runner holds on the same plan is
+  closed: its replay of the same keys is answered with the door's refunds, and
+  only the close that moved the row writes a record - the duplicate capture's
+  event, and the capacity race's and the member cancel's REFUNDED event
+  (`closeRefundRowRecordingEvent`, close and event in one transaction, the
+  runner's close the same way; #4125, #4145, `INV-PAY-134`) - so it is written
+  once. A row another
+  writer re-planned is not on that plan and is left open: one moved after a
+  refusal, or after Stripe's later report that a refund failed, is still owed;
+  one re-planned only by the runner marking a slice made is left to the
+  runner, whose replay closes it without moving money. The window this shuts:
+  the door's refund is made, the runner claims the row and its attempt fails,
+  Stripe's later report that the refund failed re-plans it
+  (`card-refund-failed-later.ts` writes only a tried row), and only then the
+  door's close runs. The row's key is built once per door (`closeDoorRow`
+  hands it to the close and to the read-back).
+  The late-capture approval closes only a row still `PENDING` with `attempts`
+  0 on the plan it sent (#4126, `untouchedPrePersistedRowWhere`, the
+  compare-and-set it shares with the doors' refusal re-plan,
+  `replanPrePersistedRow`), as its record is written by whichever close moves
+  the row. Every door reads a lost close back (`reportLostPrePersistedClose`):
+  closed, held or re-planned is logged and left to the runner; a row that is
+  gone (nothing deletes one) is logged as an error; a row still `PENDING`
+  with `attempts` 0 is an anomaly, logged and alerted to officers once for
+  the row (`<door>-close-lost:<row id>`), naming the refund.
+  A close that threw is logged and left to the runner's replay.
+- **The worker's failure write** (`failPaymentRecoveryOperation`) is fenced on
+  the attempt's `attempts` and a live claim, so an attempt the reaper gave up
+  on cannot write `FAILED` over a reclaimed one. Not on the claim time: an
+  attempt may re-stamp that itself (`holdAdditionalIntentRecoveryClaim`, the
+  worker's own superseded hand-off). The reaper's write takes both fences, each
+  its own clause. Every claim therefore counts an attempt: the worker's claim,
+  and the webhook's superseded hand-off
+  (`queueSupersededPaymentIntentRefundRecovery`), which takes the row from
+  outside any attempt and so spends one of its five.
+
+The legacy group settlement replay and the superseded group intent's webhook
+refund carry no plan: each reads Stripe's refunds on the intent before it asks
+(`keyAfterStripeRefusals`), outside any transaction, and moves its key past the
+refusals there.
+
+The "Paid another way" close above claims only `PENDING|FAILED` rows with
+their attempts spent, so it never meets the runner's re-plan.
+
+**Deploy window.** An older release still draining knows no refusal: its
+worker closes a refused row as paid, and drops a slice's key generation, so it
+replays the slice's first key and reads Stripe's cached refusal. Nothing is
+refunded twice within Stripe's 24-hour key window; a row it closed is found by
+a recorded `failed` or `canceled` refund with no later one, and checked against
+the Stripe dashboard.
+
+## A card refund that failed later: the Payment row lock, no advisory key (#4104)
+
+A refund Stripe accepted (`pending`) and failed later (`INV-PAY-128`) is kept
+owed inside the one writer of a charge's refund rows,
+`recordStripeRefundsAgainstTransaction`, in the transaction that sees it fail.
+That writer already takes the refunded-total order - the Payment row
+(`lockPaymentForRefundedTotal`), then refund rows, then the transaction row -
+and the debt's writes come last, on `PaymentRecoveryOperation`:
+
+- **Exactly one writer sees the failure**: the guarded counted -> refused write
+  (`recordStripeRefundLedgerEntry`), or a door told `pending` by a replayed key
+  while the row already says refused. Two deliveries of one event queue on the
+  Payment row; the second sees the row refused and writes nothing.
+- **One row owes it.** The owner search reads every card refund row of the
+  payment under that lock: a row of its own, or a slice that already records
+  the failure (`failedRefundIds`), means another observer decided - nothing is
+  written. Otherwise the open row that counted it (marked `madeRefundId`, or
+  the unmarked slice the owed figure fills with it as the payment stood before
+  the failure, when the refund carries exactly that row's runner metadata) is
+  re-planned, and with none a row is inserted keyed on the Stripe refund
+  (`card_refund_failed_later_<refund>`, `skipDuplicates`). A refund that names
+  no booking writes an audit row on the same transaction instead.
+- **A re-plan** is a compare-and-set on the plan, status, `attempts` and
+  `nextRetryAt` it read (a claim or re-arm between moves one), never on a row
+  someone may be writing: a worker mid-attempt (`PROCESSING`), or a row no
+  worker has claimed yet (`PENDING`, no attempt - a door's inline attempt may
+  still close or re-plan it). There, or when the plan moved since the read, a
+  failure seen by its own counted -> refused write throws
+  (`FailedLaterRefundHeldError`): the whole transaction - refund row and
+  refunded total too - rolls back, and the webhook answers 500 or the cron
+  reads it back again next run. A failure a door or worker meets replaying its
+  own key is handed back to it as refused, and it moves its own row
+  (`INV-PAY-128`'s refusal path).
+- **A door that marks a slice made after the failure was handed to a row of
+  its own** (the event between the door's record and its plan write) leaves a
+  marked slice whose refund is refused: the owed figure reads it filled by the
+  failed-later row, and the runner never sends a marked slice, so it is owed once.
+
+**The cancel card refund shortfall's completion** (`cardShortfallSettlement`,
+#4097) reads these rows under the same Payment row lock beside the cancel's
+own: a failed-later row still unsettled refuses the completion (409), as the
+cancel's own row would.
+
+No advisory key: it moves no booking status or capacity, and every other writer
+of that row takes the Payment row before it - "Paid another way" (`lock(1)`,
+then the Payment row, then its claim) - or touches only the row (the runner's
+claim and re-plan), so Payment row -> operation row is no cycle. A reader that
+sizes a refund net of promised card refunds (the edit review's cap,
+`unfinishedCardRefundDebts`) reads the payment's refundable total before the
+debts, so straddling this commit errs towards refusing.
+
+**Refund appeal caps read under the Payment row (#4124).** A refund appeal's
+ceiling nets the payment's open card refund debts (`INV-PAY-118`,
+`refundAppealHandedBackParts`) beside its open hand-backs and late-cash credit,
+then reads the payment. Two readers hold the money decision and take the
+Payment row (`lockPaymentForRefundedTotal`) after `lock(1)` and BEFORE those
+reads: the approval (`PUT /api/admin/refund-requests/[id]#1`) and the reopen
+of a dismissed appeal task (`reopenManualRefundTask#1`, for that task only).
+`lock(1)`, then the Payment row, is the order every holder of both already
+takes (`INV-LOCK-002`; the paid cancel, "Paid another way", the organiser
+child refund recorder), and no holder of the Payment row takes `lock(1)` after
+it, so it closes no cycle. Under both, nothing that writes those figures can
+commit between the reads: this writer, every other refunded-total writer and a
+cancellation hand-back's completion hold the row; every other hand-back writer
+and the late-cash mint hold `lock(1)`. Re-taking the row later in the same
+transaction (the approval's allocation) waits on nothing. The member's request,
+the review screen and the booking page read the same figure unlocked, as advice. The provider calls - the
+webhook's own Stripe payload, and the cron's read-back
+(`reconcilePendingCardRefunds`) - run outside the transaction, and the officers'
+alert after its commit.
+
+**Stated limit: a failure seen before the refund was ever recorded** (delta
+review B-2). `recordRefusedCardRefund` writes a refund it has never seen as
+refused, and owes nothing for it: the door that asked for it, told `pending`,
+then reads the row refused and keeps its own debt (`INV-PAY-128`'s refusal
+path). A first-seen failure cannot tell that door, merely slower than the
+webhook, from one that crashed between Stripe and its record; owing it there
+would owe it twice whenever the door lives. So a door with no row persisted
+before its call that crashes there, its refund then failing, leaves no debt -
+as the same crash before the call would. Its booking's state, not this event,
+is what an officer reconciles.
+
+**The deploy window** (delta review B-1): the previous release's runner claims
+any due card refund row, and knows neither the failed-later key's Stripe reason
+(`bookingModificationRefundReasonForKeyPrefix`) nor a slice's `failedRefundIds`
+(`parseRefundAllocationPlan`). A failed-later row it claims is re-sent under
+the old reason - so if that re-send fails later too it is asked for once more,
+not raised dead - and a re-planned row's plan it rewrites loses the failed
+refunds it recorded,
+so a later "Paid another way" close reads no card-note cover and Xero is
+credited twice (listed as over-coverage). Subscribing to `refund.failed` only
+once the new release alone serves keeps that event's rows out of the window;
+it does not close it, because the new release raises a row from any refund
+status it reads - `charge.refunded`, the cron's read-back, a door's replay
+(`DEPLOYMENT.md`). In the same window an old release's "Resolved" on a
+paid-twice task writes that close record's `reviewContext` whole, dropping the
+card-note cover a new close kept there, and an old release's card-note
+executor does not subtract the closes' uncovered cash. Either way Xero's total
+can drift from the refunds by that close's amount; the Xero reconciliation
+report lists the difference for the treasurer to correct.
+
+**Stated limits: the close's card-note cover and the card note's sizing**
+(delta review 2). The cover is what the failed refund's card note answered when
+the close was planned, kept on the record. It is not re-read: if an officer
+later voids or reduces that note in Xero, the close still counts it as covered,
+and the reconciliation report shows the gap rather than any note filling it. A
+card note the outbox is already *sending* while the close plans is not yet a
+link, so the close notes its full share too and Xero is credited twice for that
+refund; the report lists it as over-coverage. The card note sizes itself from
+two unlocked reads (eligible cash and the closes' uncovered cash) and re-reads
+the closes' figure either side of the cash until both agree, so a close that
+commits between them is counted on both sides or neither.
+
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 
 `applyStripeRefundNoteLinkRepairs` (`src/lib/xero-refund-note-link-repair.ts`,
@@ -4828,6 +5196,81 @@ The tolerated counterpart reads are additive-only: every other refund-note
 writer only ever ADDS active coverage, whose worst case (coverage above the
 target) suppresses further enqueues and is now reported as drift, never
 compounded by this repair.
+
+## Refund-note link heal (#4161)
+
+The nightly `link-cleanup` (`cleanupStaleCanonicalXeroObjectLinks`,
+`xero-hardening-canonical-links.ts`) heals two shapes of refund-note mirror
+whose recorded Xero status is VOIDED or DELETED: an active one (#4161), and an
+inactive one its own payment's `xeroRefundCreditNoteId` still names (#4192).
+It writes only `XeroObjectLink.active` and that pointer: no money column, no
+booking status, no provider call. Under `INV-LOCK-001` it joins no advisory
+cohort and takes no advisory key, so `INV-LOCK-003`'s Tier-2 registry has no
+entry for it; its row lock is in the advisory-lock guard's row-lock inventory.
+
+Each heal is its own short transaction. It locks the link row
+(`SELECT 1 … FOR UPDATE NOWAIT`), then the Payment row
+(`SELECT 1 … FOR NO KEY UPDATE NOWAIT`, the strength the pointer's own UPDATE
+takes), and re-reads both under the locks. It writes nothing unless the link
+is still the mirror the scan saw and, for the inactive shape, the pointer still
+names it. It then calls `upsertXeroObjectLink` with that client, which writes
+the link and then the payment it already holds: link, then Payment, the order
+of the #2901 repair apply and of the funnel's own pointer release (#4046).
+
+**The accepted inversion, and why it cannot deadlock.** Two writers take the
+same two rows Payment first, inside their own transactions:
+
+- the refund-note create's record (`createXeroCreditNote`): the pointer, then
+  the link write, whose single-canonical rule updates the payment's other
+  active links;
+- the outbox enqueue's existing-note branch
+  (`enqueueXeroRefundCreditNoteOperation`, "already linked"): the pointer,
+  then the link write, inside the caller's transaction (a group cancel or an
+  edit review's refund leg).
+
+The heal never waits on Payment while it holds the link: `NOWAIT` turns a held
+Payment row into SQLSTATE 55P03 at once (`isPostgresLockNotAvailable`), the
+transaction rolls back having written nothing, and the heal is reported as
+deferred for the next nightly run. The link row is taken `NOWAIT` as well, so
+a writer holding it (an enqueue inside a long group cancel) defers the heal
+rather than expiring its transaction. The heal waits on no lock at all, so it
+can never be one side of a deadlock cycle and never rolls back the other
+writer. A real-PostgreSQL proof
+(`xero-refund-note-void-pointer.realdb.test.ts`) holds the Payment row on
+another connection and shows the heal deferring at once and healing on the
+next run. Separately, the heal also defers while the payment has a
+credit-note operation that could still mint (the #2901 repair's refusal,
+`findBlockingRefundCreditNoteOperationId`), so a create's later record never
+finds the mirror half-healed. The writers' order is kept rather than
+reordered: the create's one-transaction record is `INV-PAY-111`'s, and the
+enqueue joins its caller's transaction. An inbound void racing a create's
+record on one payment can take the same two rows in the opposite order; that
+predates #4161 and is not changed here.
+
+## Refund-request note link writes (#4195)
+
+A refund request's own Xero note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`)
+goes inactive when the inbound sync records it VOIDED or DELETED
+(`INV-ADDPAY-041`). A retry or completion that read the note as live before
+that void committed would otherwise write the link back active. So when a
+request-note link write names no Xero status, `keepStoredRequestNoteVoid`
+(`xero-refund-note-status.ts`, called from the link normaliser in
+`upsertXeroObjectLink`) locks that one link row (`SELECT 1 … FOR UPDATE`),
+re-reads it through Prisma, and keeps a stored VOIDED/DELETED: inactive, its
+status kept on the row.
+
+It writes no money column, no booking status and calls no provider; under
+`INV-LOCK-001` it joins no advisory cohort and takes no advisory key, so
+`INV-LOCK-003`'s Tier-2 registry has no entry for it, and its row lock is in
+the advisory-lock guard's row-lock inventory. The lock is the row the write
+that follows updates anyway, so it adds no row to the transaction and changes
+no order. Its counterpart is the inbound void, which holds only that link row
+(a request note never names the payment pointer), so the two cannot form a
+cycle: whichever takes the row first finishes, and the other then sees its
+write. The nightly heal (#4161) never selects this role. A real-PostgreSQL
+proof (`xero-refund-request-note-void.realdb.test.ts`) holds the void open on
+another connection, shows the retry's write queued behind it, and finds the
+link inactive with its status after both commit.
 
 ## One Xero contact, one local home: the contact-home key (#3367)
 

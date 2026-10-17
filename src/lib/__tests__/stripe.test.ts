@@ -71,6 +71,7 @@ const {
   stripeChargeCurrency,
   UnsupportedChargeCurrencyError,
   findRecentPaymentIntentByMetadata,
+  listRecentPaymentIntentsMatching,
 } = await import("../stripe");
 
 describe("Stripe library", () => {
@@ -495,5 +496,59 @@ describe("findRecentPaymentIntentByMetadata", () => {
       { id: "pi_late", metadata: { reissuedAskKey: "mod_reissued_ask_mod_1" } },
     ]));
     expect(await findRecentPaymentIntentByMetadata({ ...CALL, customerId: "cus_1", maxScanned: 10 })).toBeNull();
+  });
+});
+
+/*
+ * #4036: an ordinary ask's refused replay must tell one candidate from several,
+ * so the listing returns every match from BOTH bounded scans - the caller's
+ * customer's and the account's - merged by id, and says when a scan stopped at
+ * its bound with intents unread (review round: a truncated scan fails closed).
+ */
+describe("listRecentPaymentIntentsMatching", () => {
+  const listOf = (intents: Array<{ id: string; amount: number }>) => ({
+    async *[Symbol.asyncIterator]() {
+      yield* intents;
+    },
+  });
+  const matches = (intent: { amount: number }) => intent.amount === 6_000;
+  const createdSince = new Date("2026-07-01T00:00:00.000Z");
+
+  beforeEach(() => {
+    mockPaymentIntentsList.mockReset();
+  });
+
+  it("MUTATION: a match under the caller's customer never hides a second one under another customer", async () => {
+    mockPaymentIntentsList
+      .mockReturnValueOnce(listOf([{ id: "pi_mine", amount: 6_000 }, { id: "pi_small", amount: 10 }]))
+      .mockReturnValueOnce(listOf([{ id: "pi_mine", amount: 6_000 }, { id: "pi_theirs", amount: 6_000 }]));
+    const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, customerId: "cus_1" });
+    expect(found.intents.map((intent) => intent.id)).toEqual(["pi_mine", "pi_theirs"]);
+    expect(found.complete).toBe(true);
+    expect(mockPaymentIntentsList.mock.calls[0]![0]).toEqual(expect.objectContaining({ customer: "cus_1", created: { gte: 1782864000 } }));
+    expect(mockPaymentIntentsList.mock.calls[1]![0]).not.toHaveProperty("customer");
+  });
+
+  it("MUTATION: a scan that stops at maxScanned with intents unread says the list is incomplete", async () => {
+    mockPaymentIntentsList.mockReturnValueOnce(
+      listOf([{ id: "pi_1", amount: 6_000 }, { id: "pi_2", amount: 6_000 }, { id: "pi_3", amount: 6_000 }]),
+    );
+    const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, maxScanned: 2 });
+    expect(found).toEqual({ intents: [expect.objectContaining({ id: "pi_1" }), expect.objectContaining({ id: "pi_2" })], complete: false });
+    expect(mockPaymentIntentsList).toHaveBeenCalledTimes(1);
+  });
+
+  it("only the customer's scan truncated still makes the whole list incomplete", async () => {
+    mockPaymentIntentsList
+      .mockReturnValueOnce(listOf([{ id: "pi_1", amount: 6_000 }, { id: "pi_2", amount: 6_000 }]))
+      .mockReturnValueOnce(listOf([{ id: "pi_1", amount: 6_000 }]));
+    const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, customerId: "cus_1", maxScanned: 2 });
+    expect(found.complete).toBe(false);
+  });
+
+  it("a window read to its end is complete", async () => {
+    mockPaymentIntentsList.mockReturnValueOnce(listOf([{ id: "pi_1", amount: 6_000 }, { id: "pi_2", amount: 10 }]));
+    const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, maxScanned: 3 });
+    expect(found).toEqual({ intents: [expect.objectContaining({ id: "pi_1" })], complete: true });
   });
 });

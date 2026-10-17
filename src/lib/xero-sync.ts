@@ -6,8 +6,9 @@ import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
   isPerDeltaRefundNoteLink,
-  isRefundCreditNoteLinkCancelledInXero,
+  isRefundCreditNoteLinkCancelledInXero, keepStoredRequestNoteVoid,
   perDeltaRefundNoteIds,
+  neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
 } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
@@ -358,9 +359,11 @@ export async function findCanonicalPaymentRefundCreditNote(
     ).map((link) => link.xeroObjectId)
   );
   // #3880: a per-refund note is never the canonical one, in any form below.
-  const perDeltaNoteIds = await perDeltaRefundNoteIds(paymentId, db);
-  const refundCreditNoteLinks = allRefundCreditNoteLinks.filter((link) => !perDeltaNoteIds.has(link.xeroObjectId));
-  const nonCanonicalNoteIds = new Set([...refundRequestNoteIds, ...perDeltaNoteIds]);
+  // `INV-ADDPAY-041`: nor is a note Xero voided or deleted - a later
+  // request raises a fresh note rather than re-adopting it.
+  const neverCanonicalNoteIds = await neverCanonicalRefundNoteIds(paymentId, db);
+  const refundCreditNoteLinks = allRefundCreditNoteLinks.filter((link) => !neverCanonicalNoteIds.has(link.xeroObjectId));
+  const nonCanonicalNoteIds = new Set([...refundRequestNoteIds, ...neverCanonicalNoteIds]);
   const refundPaymentLinks = await db.xeroObjectLink.findMany({
     where: {
       localModel: "Payment",
@@ -411,7 +414,7 @@ export async function findCanonicalPaymentRefundCreditNote(
     );
   }
 
-  const canonicalFieldNoteId = canonicalRefundNoteFromField(payment?.xeroRefundCreditNoteId, perDeltaNoteIds);
+  const canonicalFieldNoteId = canonicalRefundNoteFromField(payment?.xeroRefundCreditNoteId, neverCanonicalNoteIds);
   if (canonicalFieldNoteId) {
     return {
       xeroObjectId: canonicalFieldNoteId,
@@ -546,6 +549,52 @@ export async function startXeroSyncOperation(
   }
 }
 
+async function releaseCancelledRefundCreditNotePointer(
+  client: Prisma.TransactionClient,
+  link: XeroObjectLinkInput,
+): Promise<void> {
+  const remaining = await client.xeroObjectLink.findMany({
+    where: {
+      localModel: "Payment",
+      localId: link.localId,
+      xeroObjectType: "CREDIT_NOTE",
+      role: "REFUND_CREDIT_NOTE",
+      active: true,
+      xeroObjectId: { not: link.xeroObjectId },
+    },
+    select: {
+      id: true,
+      xeroObjectId: true,
+      metadata: true,
+      createdAt: true,
+    },
+  });
+  const newestLive = [...remaining]
+    .sort((left, right) => {
+      const byCreated = right.createdAt.getTime() - left.createdAt.getTime();
+      if (byCreated !== 0) {
+        return byCreated;
+      }
+      return right.id.localeCompare(left.id);
+    })
+    // #3880: a per-refund note is never written into the field.
+    .find(
+      (candidate) =>
+        !isRefundCreditNoteLinkCancelledInXero(candidate.metadata) &&
+        !isPerDeltaRefundNoteLink(candidate.metadata),
+    );
+
+  await client.payment.updateMany({
+    where: {
+      id: link.localId,
+      xeroRefundCreditNoteId: link.xeroObjectId,
+    },
+    data: {
+      xeroRefundCreditNoteId: newestLive?.xeroObjectId ?? null,
+    },
+  });
+}
+
 async function normalizePaymentRefundLinkWithClient(
   client: Prisma.TransactionClient,
   link: XeroObjectLinkInput
@@ -554,7 +603,18 @@ async function normalizePaymentRefundLinkWithClient(
     return link;
   }
 
-  if (link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectType === "CREDIT_NOTE") {
+  if ((link.role === "REFUND_CREDIT_NOTE" || link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) && link.xeroObjectType === "CREDIT_NOTE") {
+    // A note the incoming write records VOIDED/DELETED in Xero credits nothing, so its mirror is
+    // written inactive on every payment: a Stripe or per-refund note (#2901), a bank-transfer
+    // payment's one canonical note (#4091) and a refund request's own note (#4195, `INV-PAY-118`).
+    // Else an inbound re-reconcile re-arms phantom coverage (upsert forces `active` from this
+    // return). It claims nothing, so retires no sibling.
+    if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
+      // The pointer moves after this link row is written: link, then payment, the repair apply's order.
+      return { ...link, active: false };
+    }
+    if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) return keepStoredRequestNoteVoid(client, link); // never the one note below
+
     const payment = await client.payment.findUnique({
       where: { id: link.localId },
       select: {
@@ -572,19 +632,6 @@ async function normalizePaymentRefundLinkWithClient(
     // the single-refund rule below never retires one.
     const perDeltaNoteIds = payment?.source === PaymentSource.STRIPE ? new Set<string>() : await perDeltaRefundNoteIds(link.localId, client);
     if (payment?.source === PaymentSource.STRIPE || isPerDeltaRefundNoteLink(link.metadata) || perDeltaNoteIds.has(link.xeroObjectId)) {
-      // ... unless the incoming write itself says the note was VOIDED/DELETED
-      // in Xero (inbound reconciliation and the operator status recorder carry
-      // the live provider status). A cancelled note credits nothing, so its
-      // local mirror is deactivated on write — without this, an inbound
-      // re-reconcile of a voided note re-armed the phantom coverage the #2901
-      // repair had just removed (upsert's update clause forces `active` from
-      // this return value).
-      if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
-        return {
-          ...link,
-          active: false,
-        };
-      }
       return {
         ...link,
         active: link.active ?? true,
@@ -761,7 +808,7 @@ async function upsertXeroObjectLinkWithClient(
     }
   }
 
-  return client.xeroObjectLink.upsert({
+  const written = await client.xeroObjectLink.upsert({
     where: {
       localModel_localId_xeroObjectType_xeroObjectId_role: {
         localModel: normalizedLink.localModel,
@@ -789,6 +836,31 @@ async function upsertXeroObjectLinkWithClient(
       metadata: sanitizeForJson(metadataForUpdate),
     },
   });
+
+  // After the link row, so this transaction locks links and then the payment —
+  // the same order as the refund-note repair apply. The nightly report treats
+  // Payment.xeroRefundCreditNoteId as a promise that an active
+  // REFUND_CREDIT_NOTE link exists. Deactivating a VOIDED or DELETED mirror
+  // without moving that pointer is a permanent "missing refund credit note
+  // link". Repoint at the newest other live note, or clear it. The where-clause
+  // is the claim: a pointer that already names a different note is left alone.
+  if (
+    normalizedLink.localModel === "Payment" &&
+    normalizedLink.role === "REFUND_CREDIT_NOTE" &&
+    normalizedLink.xeroObjectType === "CREDIT_NOTE" &&
+    normalizedLink.active === false &&
+    isRefundCreditNoteLinkCancelledInXero(normalizedLink.metadata)
+  ) {
+    const payment = await client.payment.findUnique({
+      where: { id: normalizedLink.localId },
+      select: { xeroRefundCreditNoteId: true },
+    });
+    if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
+      await releaseCancelledRefundCreditNotePointer(client, normalizedLink);
+    }
+  }
+
+  return written;
 }
 
 export async function upsertXeroObjectLink(

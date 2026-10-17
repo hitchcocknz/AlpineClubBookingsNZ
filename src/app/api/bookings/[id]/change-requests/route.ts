@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { AgeTier } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { auth } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { clubTodayDateOnlyInstant } from "@/lib/club-time/server";
-import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { formatDateOnly } from "@/lib/date-only";
 import {
   calendarDateOfDateOnlyInstant,
 } from "@/lib/club-time";
@@ -14,8 +13,6 @@ import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
-import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
-import { nameField } from "@/lib/zod-helpers";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import logger from "@/lib/logger";
@@ -27,44 +24,25 @@ import {
 } from "@/lib/booking-change-request-member-view";
 import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 import { lodgeGuestLimitMessage } from "@/lib/lodge-booking-readiness";
+import {
+  addedGuestFirstNights,
+  buildChangeRequestSummary,
+  CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE,
+  changeRequestValidationMessage,
+  isAppliedChangeRequestRange,
+  namesStayRangeChange,
+  storedGuestNightsAsDays,
+  CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
+} from "@/lib/booking-change-request-guests";
+import { changeRequestDeltaSchema, validateChangeRequestDatesAndNights } from "@/lib/booking-change-request-input";
+import {
+  checkOwnDependantIdentityForParty,
+  claimedMemberPathIds,
+} from "@/lib/booking-dependant-identity";
 
-const createChangeRequestSchema = z.object({
-  checkIn: z.string().optional(),
-  checkOut: z.string().optional(),
-  addGuests: z
-    .array(
-      z.object({
-        firstName: nameField(),
-        lastName: nameField(),
-        ageTier: bookableAgeTierEnum,
-        isMember: z.boolean(),
-        memberId: z.string().trim().min(1).optional(),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-      })
-    )
-    .max(200)
-    .optional(),
-  removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
-  guestStayRanges: z
-    .array(
-      z.object({
-        guestId: z.string().trim().min(1),
-        stayStart: z.string().optional(),
-        stayEnd: z.string().optional(),
-      })
-    )
-    .max(200)
-    .optional(),
-  requestedEffectiveDate: z.string().optional(),
+const createChangeRequestSchema = changeRequestDeltaSchema.extend({
   reason: z.string().max(2000).optional(),
 });
-
-function normalizeOptionalDateOnly(value: string | undefined) {
-  if (!value) return null;
-  const parsed = parseDateOnly(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
 
 function normalizeReason(value: string | undefined) {
   const trimmed = value?.trim();
@@ -88,12 +66,15 @@ function requestTouchesLockedPeriod({
   requestedCheckIn,
   requestedCheckOut,
   requestedEffectiveDate,
+  addedGuestStarts,
 }: {
   booking: { checkIn: Date; checkOut: Date };
   editPolicy: ReturnType<typeof getBookingEditPolicy>;
   requestedCheckIn: Date | null;
   requestedCheckOut: Date | null;
   requestedEffectiveDate: Date | null;
+  /** #4030: the first night of each guest the request adds. */
+  addedGuestStarts: Date[];
 }) {
   const today = editPolicy.today;
   const editableFrom = editPolicy.editableFrom;
@@ -118,6 +99,18 @@ function requestTouchesLockedPeriod({
     return true;
   }
 
+  // #4030: a guest added from a night the member can no longer book themselves
+  // (on an in-progress stay, today or earlier) is a locked-period change. A
+  // guest added only from `editableFrom` on is an ordinary edit, which the
+  // member makes in the guest editor.
+  if (
+    addedGuestStarts.some((start) =>
+      editableFrom ? start < editableFrom : start <= today,
+    )
+  ) {
+    return true;
+  }
+
   if (requestedCheckIn && requestedCheckIn.getTime() !== currentCheckIn.getTime()) {
     return requestedCheckIn <= today || editPolicy.mode === "in-progress";
   }
@@ -130,43 +123,6 @@ function requestTouchesLockedPeriod({
   }
 
   return false;
-}
-
-function buildRequestedSummary({
-  checkIn,
-  checkOut,
-  addGuests,
-  removedGuests,
-  guestStayRanges,
-  requestedEffectiveDate,
-}: {
-  checkIn?: string;
-  checkOut?: string;
-  addGuests?: Array<{ firstName: string; lastName: string; ageTier: AgeTier; isMember: boolean }>;
-  removedGuests: Array<{ firstName: string; lastName: string }>;
-  guestStayRanges?: Array<{ guestId: string; stayStart?: string; stayEnd?: string }>;
-  requestedEffectiveDate?: string;
-}) {
-  const parts: string[] = [];
-  if (checkIn) parts.push(`check-in to ${checkIn}`);
-  if (checkOut) parts.push(`check-out to ${checkOut}`);
-  if (addGuests?.length) {
-    parts.push(
-      `add ${addGuests.map((guest) => `${guest.firstName} ${guest.lastName}`).join(", ")}`
-    );
-  }
-  if (removedGuests.length) {
-    parts.push(
-      `remove ${removedGuests.map((guest) => `${guest.firstName} ${guest.lastName}`).join(", ")}`
-    );
-  }
-  if (guestStayRanges?.length) {
-    parts.push(`update ${guestStayRanges.length} guest stay range${guestStayRanges.length === 1 ? "" : "s"}`);
-  }
-  if (requestedEffectiveDate) {
-    parts.push(`effective ${requestedEffectiveDate}`);
-  }
-  return parts.length ? parts.join("; ") : "Locked-period booking change";
 }
 
 export async function POST(
@@ -189,7 +145,8 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      guests: true,
+      // #4088: the night rows, which a grid night set is compared with and the request records.
+      guests: { include: { nights: { select: { stayDate: true } } } },
       member: true,
       // #3369: the owner may be an Organisation; bookingOwner() reads both.
       organisation: { select: { name: true, email: true } },
@@ -237,7 +194,7 @@ export async function POST(
   const parsed = createChangeRequestSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
+      { error: changeRequestValidationMessage(parsed.error), details: parsed.error.flatten() },
       { status: 400 }
     );
   }
@@ -247,43 +204,50 @@ export async function POST(
     checkOut,
     addGuests,
     removeGuestIds,
-    guestStayRanges,
+    guestStayRanges: sentGuestStayRanges,
     requestedEffectiveDate,
     reason,
   } = parsed.data;
+  // #4157: what approval applies, so what is judged and stored; per-entry refusals read what was sent.
+  const guestStayRanges = sentGuestStayRanges?.filter(isAppliedChangeRequestRange);
+  // #4030 (owner decision: "a structured delta is required"). A request must
+  // name the change it asks for: new dates, guests added or removed, or a
+  // guest's nights. `requestedEffectiveDate` and the note are context for the
+  // officer, never a change on their own — a note-only request was the free
+  // text the finished-stay approval (#3750) cannot apply or charge.
   const hasRequestedChange =
     changedDate(checkIn, booking.checkIn) ||
     changedDate(checkOut, booking.checkOut) ||
     Boolean(addGuests?.length) ||
     Boolean(removeGuestIds?.length) ||
-    Boolean(guestStayRanges?.length) ||
-    Boolean(requestedEffectiveDate);
+    // #4030 review M2: a range only counts when it changes the guest's nights.
+    namesStayRangeChange(guestStayRanges ?? [], booking.guests);
 
   if (!hasRequestedChange) {
     return NextResponse.json(
-      { error: "At least one booking change is required" },
+      { error: CHANGE_REQUEST_NEEDS_STRUCTURED_CHANGE_MESSAGE, code: "STRUCTURED_CHANGE_REQUIRED" },
       { status: 400 }
     );
   }
 
-  const requestedCheckIn = normalizeOptionalDateOnly(checkIn);
-  const requestedCheckOut = normalizeOptionalDateOnly(checkOut);
-  const effectiveDate = normalizeOptionalDateOnly(requestedEffectiveDate);
-  if (
-    (checkIn && !requestedCheckIn) ||
-    (checkOut && !requestedCheckOut) ||
-    (requestedEffectiveDate && !effectiveDate)
-  ) {
-    return NextResponse.json({ error: "Invalid booking date" }, { status: 400 });
+  const validated = validateChangeRequestDatesAndNights(booking, parsed.data);
+  if (validated.error !== undefined) {
+    return NextResponse.json({ error: validated.error }, { status: 400 });
   }
-
-  const nextCheckIn = requestedCheckIn ?? storedDateOnly(booking.checkIn);
-  const nextCheckOut = requestedCheckOut ?? storedDateOnly(booking.checkOut);
-  if (nextCheckOut <= nextCheckIn) {
-    return NextResponse.json(
-      { error: "Check-out must be after check-in" },
-      { status: 400 }
-    );
+  const { requestedCheckIn, requestedCheckOut, effectiveDate, nextCheckIn, nextCheckOut } = validated;
+  // #4030 review M4 (`INV-GUEST-019`): the one dependant-identity rule.
+  if (addGuests?.length) {
+    const dependantRefusal = await checkOwnDependantIdentityForParty(prisma, {
+      bookerMemberId: bookingOwner(booking).memberId,
+      party: addGuests,
+      memberPathMemberIds: claimedMemberPathIds(addGuests),
+    });
+    if (dependantRefusal) {
+      return NextResponse.json(
+        { error: CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE, code: dependantRefusal.code },
+        { status: 409 },
+      );
+    }
   }
 
   // #2266 (LOW-7): DRAFT joined the member-editable statuses, which would
@@ -323,6 +287,7 @@ export async function POST(
     requestedCheckIn,
     requestedCheckOut,
     requestedEffectiveDate: effectiveDate,
+    addedGuestStarts: addedGuestFirstNights(addGuests ?? [], { checkIn: nextCheckIn, checkOut: nextCheckOut }),
   });
 
   if (!touchesLockedPeriod) {
@@ -374,7 +339,7 @@ export async function POST(
     );
   }
 
-  const invalidRangeGuestIds = (guestStayRanges ?? [])
+  const invalidRangeGuestIds = (sentGuestStayRanges ?? [])
     .map((range) => range.guestId)
     .filter((guestId) => !booking.guests.some((guest) => guest.id === guestId));
   if (invalidRangeGuestIds.length > 0) {
@@ -396,7 +361,7 @@ export async function POST(
       stayStart: formatBookingDate(guest.stayStart),
       stayEnd: formatBookingDate(guest.stayEnd),
     }));
-  const requestedSummary = buildRequestedSummary({
+  const requestedSummary = buildChangeRequestSummary({
     checkIn,
     checkOut,
     addGuests,
@@ -420,8 +385,8 @@ export async function POST(
             ageTier: guest.ageTier,
             isMember: guest.isMember,
             memberId: guest.memberId,
-            stayStart: formatBookingDate(guest.stayStart),
-            stayEnd: formatBookingDate(guest.stayEnd),
+            // `stayStart`, `stayEnd` and (#4088) the night rows approval's drift check compares.
+            ...storedGuestNightsAsDays(guest),
           })),
         },
         requested: {

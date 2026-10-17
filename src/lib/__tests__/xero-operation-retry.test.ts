@@ -305,6 +305,23 @@ describe("getXeroOperationRetryMeta", () => {
     });
   });
 
+  it("gives a stray subscription invoice (raised after its charge was closed as paid) its own reason, not a payload repair (#4098 review)", () => {
+    expect(
+      getXeroOperationRetryMeta(
+        makeOperation({
+          status: "PARTIAL",
+          localModel: "MembershipSubscriptionCharge",
+          localId: "charge-1",
+          xeroObjectId: "inv_stray",
+          responsePayload: { conflict: "STRAY_INVOICE_AFTER_CLOSE", invoice: { invoiceID: "inv_stray" }, adopted: false, email: null },
+        })
+      )
+    ).toEqual({
+      supported: false,
+      reason: expect.stringMatching(/^The membership charge was closed as already paid while this invoice was being raised.*Void it in Xero promptly.*then mark this operation resolved\. There is nothing to retry\.$/),
+    });
+  });
+
   it("marks repairable partial invoice operations as supported", () => {
     expect(
       getXeroOperationRetryMeta(
@@ -2253,6 +2270,28 @@ describe("retryXeroSyncOperation", () => {
         responsePayload: expect.objectContaining({ refundPaymentSkipped: true, refundPaymentSkipReason: "unset" }),
       })
     );
+  });
+
+  it("MUTATION (INV-ADDPAY-041): a PARTIAL row's repair never writes a note Xero voided into the payment's pointer", async () => {
+    mocks.findUniquePayment.mockResolvedValue({ id: "pay_123", source: "STRIPE" });
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        status: "PARTIAL", entityType: "CREDIT_NOTE", operationType: "CREATE", xeroObjectId: "cn_123",
+        requestPayload: { allocation: { invoiceId: "inv_123", amount: 12.34 } },
+        responsePayload: { allocation: { allocations: [{ amount: 12.34 }] } },
+      })
+    );
+    mocks.findManyXeroObjectLink.mockImplementation((async ({ where }: any) =>
+      where?.role === "REFUND_CREDIT_NOTE" ? [{ xeroObjectId: "cn_123", metadata: { amountCents: 1234, status: "VOIDED" } }] : []) as never);
+    mocks.updatePayment.mockResolvedValue({ id: "pay_123" });
+
+    try {
+      await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+      expect(mocks.updatePayment).not.toHaveBeenCalledWith(expect.objectContaining({ data: { xeroRefundCreditNoteId: "cn_123" } }));
+    } finally {
+      mocks.findManyXeroObjectLink.mockImplementation((async () => []) as never);
+    }
   });
 
   it("repairs partial refund credit note follow-up actions", async () => {

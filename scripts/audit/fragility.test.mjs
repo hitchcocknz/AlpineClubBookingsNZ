@@ -62,6 +62,8 @@ describe("fix units", () => {
   it("reads a year-month date at the start of a branch as a date, not an issue number", () => {
     expect(issueNumbersFromBranch("codex/2026-10-05-fragility-follow-up")).toEqual([]);
     expect(issueNumbersFromBranch("release/2026-10")).toEqual([]);
+    expect(issueNumbersFromBranch("release/2026-10-hotfix")).toEqual([]);
+    expect(issueNumbersFromBranch("codex/2026-10-wip")).toEqual([]);
     expect(issueNumbersFromBranch("fix/2026-12-31-rollover")).toEqual([]);
     // An issue numbered like a year is still an issue when no month follows, or when named outright.
     expect(issueNumbersFromBranch("fix/2026-guest-form")).toEqual([2026]);
@@ -312,6 +314,35 @@ describe("buildRepeats", () => {
     expect(repeats[0]).toMatchObject({ signals: ["revert"], earlier: { unit: "pr-61" }, sinceAudit: false });
   });
 
+  it.each([
+    ['Revert "fix(xero): y"', ["xero"]],
+    ['Revert "fix(xero): y" (#124)', ["xero"]],
+    ['Revert "Revert "fix(xero): y""', ["xero"]],
+    ['Revert "Revert "fix(xero): y"" (#124)', ["xero"]],
+    ['Revert "Revert "fix(xero): y" (#123)"', ["xero"]],
+    ['Revert "Revert "fix(xero): y" (#123)" (#124)', ["xero"]],
+    ['Revert "fix(xero): y (#123)" (#124)', ["xero"]],
+    ['Revert "feat(xero): y" (#124)', []],
+    ['Revert "fix(xero): y" (follow-up)', []],
+    ['Revert "fix(xero): y (#124)', []],
+    ['Revert "Revert fix(xero): y" (#124)', []],
+    ['fix(xero): y (#124)', []],
+  ])("keeps revert scope evidence for %s", (subject, scopes) => {
+    const repeats = buildRepeats({
+      units: [unit("pr-61", "2026-07-01T00:00:00.000Z", { commits: [SHA_A], scopes: ["booking"] })],
+      codePairs: [],
+      github: github(),
+      reverts: [{ sha: SHA_B, date: "2026-07-02T00:00:00.000Z", subject, reverts: SHA_A.slice(0, 12), files: [] }],
+    });
+    expect(repeats).toHaveLength(1);
+    expect(repeats[0]).toMatchObject({
+      earlier: { unit: "pr-61", scopes, files: [] },
+      later: { key: `commit-${SHA_B.slice(0, 12)}`, title: subject, scopes, files: [] },
+      signals: ["revert"],
+    });
+    expect(areasForPair(repeats[0], new Map()).map((match) => match.area)).toEqual(scopes);
+  });
+
   it("maps a revert by the reverted commit's own scope and files, not the whole PR's", () => {
     const wide = unit("pr-2618", "2026-07-01T00:00:00.000Z", {
       pr: 2618,
@@ -411,6 +442,11 @@ describe("proposed business areas", () => {
     expect(areasForPair(entry(side("pr-1", e2e), side("pr-2", e2e)), new Map())).toEqual([{ area: "tests", via: "both sides' files" }]);
     const e2eDocs = { files: ["e2e/README.md"] };
     expect(areasForPair(entry(side("pr-1", e2eDocs), side("pr-2", e2eDocs)), new Map())).toEqual([]);
+  });
+
+  it("does not treat a Markdown helper guide as test-infrastructure evidence", () => {
+    const shared = { files: ["e2e/helpers/README.md"] };
+    expect(areasForPair(entry(side("pr-1", shared), side("pr-2", shared)), new Map())).toEqual([]);
   });
 
   it("lists every area scope in the folded form parseFixScope produces", () => {

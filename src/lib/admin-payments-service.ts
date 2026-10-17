@@ -1,3 +1,4 @@
+import { exactContains } from "@/lib/prisma-exact-prefix";
 import { readRefundsAndCreditsOwed } from "@/lib/refunds-and-credits-owed";
 import type { PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
 import { BOOKING_ISSUED_CREDIT_TYPES } from "@/lib/member-credit-booking-rows";
@@ -258,10 +259,6 @@ function inputDateOnly(date: string) {
   return parseDateOnly(date);
 }
 
-function insensitiveContains(term: string) {
-  return { contains: term, mode: "insensitive" as const };
-}
-
 function latestPaymentActivityAt(payment: PaymentCandidate) {
   let latest = payment.updatedAt;
 
@@ -407,20 +404,20 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
       andFilters.push(
         ...terms.map((term) => ({
           OR: [
-            { reference: insensitiveContains(term) },
-            { bookingId: insensitiveContains(term) },
-            { stripePaymentIntentId: insensitiveContains(term) },
-            { xeroInvoiceId: insensitiveContains(term) },
-            { xeroInvoiceNumber: insensitiveContains(term) },
+            { reference: exactContains(term, "insensitive") },
+            { bookingId: exactContains(term, "insensitive") },
+            { stripePaymentIntentId: exactContains(term, "insensitive") },
+            { xeroInvoiceId: exactContains(term, "insensitive") },
+            { xeroInvoiceNumber: exactContains(term, "insensitive") },
             {
               booking: {
                 is: {
                   member: {
                     is: {
                       OR: [
-                        { firstName: insensitiveContains(term) },
-                        { lastName: insensitiveContains(term) },
-                        { email: insensitiveContains(term) },
+                        { firstName: exactContains(term, "insensitive") },
+                        { lastName: exactContains(term, "insensitive") },
+                        { email: exactContains(term, "insensitive") },
                       ],
                     },
                   },
@@ -441,8 +438,8 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
                   organisation: {
                     is: {
                       OR: [
-                        { name: insensitiveContains(term) },
-                        { email: insensitiveContains(term) },
+                        { name: exactContains(term, "insensitive") },
+                        { email: exactContains(term, "insensitive") },
                       ],
                     },
                   },

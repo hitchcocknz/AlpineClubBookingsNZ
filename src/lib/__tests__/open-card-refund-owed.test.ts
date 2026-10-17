@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   cardRefundSentAfterPaidAnotherWay,
+  cardRefundSliceFilledBy,
+  parseRefundAllocationPlan,
   isOwedCardRefundOperation,
   openCardRefundOwedByOperation,
   openCardRefundOwedCents,
@@ -29,8 +31,9 @@ function operation(overrides: Partial<CardRefundOperationRow>): CardRefundOperat
   };
 }
 
+let refundSeq = 0;
 function refund(overrides: Partial<RecordedCardRefundRow>): RecordedCardRefundRow {
-  return { paymentTransactionId: "txn-a", amountCents: 0, status: "succeeded", createdAt: at(20), ...overrides };
+  return { stripeRefundId: `re-${(refundSeq += 1)}`, paymentTransactionId: "txn-a", amountCents: 0, status: "succeeded", createdAt: at(20), ...overrides };
 }
 
 function payment(
@@ -326,5 +329,134 @@ describe("openCardRefundOwedCents attributes each recorded refund to the operati
       expect(Object.fromEntries(cardRefundSentAfterPaidAnotherWay(owing, new Set(["op2"])))).toEqual({ op2: 5_000 });
       expect(cardRefundSentAfterPaidAnotherWay(owing, new Set(["op1"])).size).toBe(0);
     });
+  });
+});
+
+/*
+  #4083 review: a row whose attempt met a refusal keeps the slice Stripe made
+  beside it, marked with its refund (`madeRefundId`), rather than dropping it.
+  The marked slice is still this row's, so its refund fills it - and is never
+  taken as an OLDER open row's unsent slice of the same transaction and amount.
+*/
+describe("a slice made beside a refusal stays its row's (#4083)", () => {
+  const older = () =>
+    operation({
+      id: "op-older",
+      status: "PENDING",
+      amountCents: 5_000,
+      allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000 }],
+      createdAt: at(1),
+    });
+  const madeRefund = refund({ stripeRefundId: "re_made", paymentTransactionId: "txn-a", amountCents: 5_000, createdAt: at(20) });
+
+  it("the made refund fills the marked slice of the row that made it; the older row's slice stays owed", () => {
+    const retried = operation({
+      id: "op-retried",
+      status: "FAILED",
+      amountCents: 8_000,
+      allocationPlan: [
+        { paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_made" },
+        { paymentTransactionId: "txn-b", amountCents: 3_000, stripeKeySuffix: "refused1" },
+      ],
+      createdAt: at(10),
+    });
+
+    const owed = openCardRefundOwedByOperation(payment([older(), retried], [madeRefund], { refundedAmountCents: 5_000 }));
+
+    expect(owed.get("op-retried")).toBe(3_000);
+    expect(owed.get("op-older")).toBe(5_000);
+  });
+
+  // #4117 (money F1): a refund request raises its row AFTER its inline attempt,
+  // so a slice it made predates the row - outside the row's window. It is filled
+  // by its refund id all the same, and that refund fills nothing else.
+  it("a marked slice made BEFORE its row was raised is filled by that refund, and the older row's same slice stays owed", () => {
+    const raisedAfter = operation({
+      id: "op-appeal",
+      status: "PENDING",
+      amountCents: 8_000,
+      allocationPlan: [
+        { paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_made" },
+        { paymentTransactionId: "txn-b", amountCents: 3_000, stripeKeySuffix: "refused1" },
+      ],
+      createdAt: at(30),
+    });
+
+    const owed = openCardRefundOwedByOperation(payment([older(), raisedAfter], [madeRefund], { refundedAmountCents: 5_000 }));
+
+    expect(owed.get("op-appeal")).toBe(3_000);
+    expect(owed.get("op-older")).toBe(5_000);
+  });
+
+  it("a marked slice takes only its own refund: one of the same transaction and amount under another id leaves it owed", () => {
+    const marked = operation({
+      id: "op-marked",
+      status: "PENDING",
+      amountCents: 5_000,
+      allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_made" }],
+      createdAt: at(10),
+    });
+    const someoneElses = refund({ stripeRefundId: "re_other", paymentTransactionId: "txn-a", amountCents: 5_000, createdAt: at(20) });
+
+    expect(openCardRefundOwedByOperation(payment([marked], [someoneElses], { refundedAmountCents: 5_000 })).get("op-marked")).toBe(5_000);
+  });
+
+  it("CONTROL: had the made slice been dropped from the plan, the older row would have taken its refund", () => {
+    const dropped = operation({
+      id: "op-retried",
+      status: "FAILED",
+      amountCents: 3_000,
+      allocationPlan: [{ paymentTransactionId: "txn-b", amountCents: 3_000, stripeKeySuffix: "refused1" }],
+      createdAt: at(10),
+    });
+
+    const owed = openCardRefundOwedByOperation(payment([older(), dropped], [madeRefund], { refundedAmountCents: 5_000 }));
+
+    expect(owed.get("op-older")).toBe(0);
+  });
+});
+
+/*
+  #4104 (`INV-PAY-128`): a refund Stripe failed later is owed once. The owner
+  search asks which slice the owed figure fills with it, and a slice a door
+  marked made after the failure was handed to a row of its own reads filled.
+*/
+describe("a refund Stripe failed later (#4104)", () => {
+  it("names the slice a recorded refund fills: a marked one by its id, an unmarked one by the attribution", () => {
+    const marked = operation({ id: "op-marked", amountCents: 5_000, allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_m" }] });
+    const unmarked = operation({ id: "op-plain", amountCents: 3_000, createdAt: at(11), allocationPlan: [{ paymentTransactionId: "txn-b", amountCents: 1_000 }, { paymentTransactionId: "txn-a", amountCents: 3_000 }] });
+    const row = payment([marked, unmarked], [
+      refund({ stripeRefundId: "re_m", amountCents: 5_000, createdAt: at(15) }),
+      refund({ stripeRefundId: "re_u", amountCents: 3_000, createdAt: at(16) }),
+    ]);
+    expect(cardRefundSliceFilledBy(row, "re_m")).toMatchObject({ operation: { id: "op-marked" }, sliceIndex: 0 });
+    expect(cardRefundSliceFilledBy(row, "re_u")).toMatchObject({ operation: { id: "op-plain" }, sliceIndex: 1 });
+    expect(cardRefundSliceFilledBy(row, "re_none")).toBeNull();
+  });
+
+  it("MUTATION (concurrency B): a marked slice whose refund failed and was handed to a row of its own reads filled, so it is owed once", () => {
+    const doorRow = operation({ id: "op-door", amountCents: 5_000, allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000, madeRefundId: "re_a" }] });
+    const handed = operation({
+      id: "op-failed-later",
+      idempotencyKey: "card_refund_failed_later_re_a",
+      status: "PENDING",
+      amountCents: 5_000,
+      createdAt: at(30),
+      allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 5_000 }],
+    });
+    const failed = refund({ stripeRefundId: "re_a", amountCents: 5_000, status: "failed", createdAt: at(15) });
+    const owed = openCardRefundOwedByOperation(payment([doorRow, handed], [failed]));
+    expect(owed.get("op-door")).toBe(0);
+    expect(owed.get("op-failed-later")).toBe(5_000);
+    // Without the row of its own, the door's row owes it.
+    expect(openCardRefundOwedByOperation(payment([doorRow], [failed])).get("op-door")).toBe(5_000);
+  });
+
+  it("keeps the failures a slice records, and refuses a malformed list", () => {
+    expect(parseRefundAllocationPlan([{ paymentTransactionId: "txn-a", amountCents: 100, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] }])).toEqual([
+      { paymentTransactionId: "txn-a", amountCents: 100, stripeKeySuffix: "refused1", failedRefundIds: ["re_1"] },
+    ]);
+    expect(parseRefundAllocationPlan([{ paymentTransactionId: "txn-a", amountCents: 100, failedRefundIds: [""] }])).toBeNull();
+    expect(parseRefundAllocationPlan([{ paymentTransactionId: "txn-a", amountCents: 100, failedRefundIds: "re_1" }])).toBeNull();
   });
 });

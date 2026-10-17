@@ -38,6 +38,7 @@ import {
   createXeroCreditNote,
 } from "@/lib/xero-credit-notes";
 import { readRefundRequestIdFromPayload } from "@/lib/refund-request-credit-note";
+import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 import {
   readModificationNoteWording,
   readRefundNoteWording,
@@ -73,6 +74,10 @@ import {
   voidXeroInvoiceForCancelledGroupSettlement,
 } from "@/lib/xero-group-settlement-invoice-voids";
 import { createXeroMembershipSubscriptionInvoice } from "@/lib/xero-subscription-invoices";
+import {
+  liveChargeWhere,
+  membershipChargeNeedsNoInvoice,
+} from "@/lib/subscription-charge-already-paid";
 import {
   readXeroInvoiceEmailInstruction,
   type XeroInvoiceEmailInstruction,
@@ -829,7 +834,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
      * own beside any card delta on the payment - never deduplicated into a
      * pending card note that happens to share its watermark. Round 8: sized by
      * the record alone - what it paid back less what its own notes cover
-     * (`readPaidAnotherWayCloseShare`) - so `refundAmountCents` is not read.
+     * (`readPaidAnotherWayCloseShare`), and never above `refundAmountCents`
+     * (#4104: a close a card note partly answers asks for less).
      */
     paidAnotherWayTaskId?: string;
     /**
@@ -938,7 +944,10 @@ export async function enqueueXeroRefundCreditNoteOperation(
           `Refusing to queue a paid-another-way Xero refund note for payment ${paymentId}: its close ${options.paidAnotherWayTaskId} is not on this payment`
         );
       }
-      noteAmountCents = share.uncoveredCents;
+      // #4104 review (MM2, ML1): never more than the caller asks for - a close
+      // of a refund Stripe failed later asks only for what the card refund
+      // note already in Xero does not answer (`queuePaidAnotherWayXero`).
+      noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
     } else {
       // #3635 round-3 R1: the cash a note may answer, which leaves out refunds of
       // late captures the app never recorded in Xero (`INV-PAY-110`).
@@ -997,14 +1006,13 @@ export async function enqueueXeroRefundCreditNoteOperation(
   // gets its own note, while replays of the same state produce the same key and
   // collide into the PENDING/RUNNING dedupe just below.
   const correlationKey = buildXeroIdempotencyKey(
-    "payment",
-    paymentId,
-    "refund-credit-note",
-    stepped ? watermarkCents : noteAmountCents,
-    stepped ? "v2" : "v1",
+    "payment", paymentId, "refund-credit-note", stepped ? watermarkCents : noteAmountCents, stepped ? "v2" : "v1",
     ...reviewTaskKeyParts(options?.reviewTaskId),
-    ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : [])
+    ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : []),
+    ...(await refundNoteKeyAfterVoidParts(paymentId, options?.paidAnotherWayTaskId // `INV-ADDPAY-041`, the executor's rule
+      ? { closeRowsWhere: paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId) } : stepped ? { watermarkCents } : { amountCents: noteAmountCents }, db))
   );
+
 
   // #3635: a non-Stripe payment issues one refund, so the resolved create for
   // THIS refund carries this very key; its hand-made note covers it.
@@ -3262,13 +3270,15 @@ export async function processQueuedXeroOutboxOperations(options?: {
       if (payload?.queueType === XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE && subscriptionChargeId) {
         const currentCharge = await prisma.membershipSubscriptionCharge.findUnique({
           where: { id: subscriptionChargeId },
-          select: { xeroInvoiceId: true, status: true },
+          select: { xeroInvoiceId: true, status: true, billingBasis: true },
         }).catch(() => null);
         // #2147: never resurrect a VOIDED charge (its invoice was voided and its
-        // coverage released) back to a retryable QUEUED/EMAIL_FAILED state.
-        if (currentCharge && currentCharge.status !== "VOIDED") {
-          await prisma.membershipSubscriptionCharge.update({
-            where: { id: subscriptionChargeId },
+        // coverage released) back to a retryable QUEUED/EMAIL_FAILED state, nor
+        // (#4098) a charge an officer closed as already paid. The write is
+        // status-guarded too, so a close landing after the read still stands.
+        if (currentCharge && !membershipChargeNeedsNoInvoice(currentCharge)) {
+          await prisma.membershipSubscriptionCharge.updateMany({
+            where: liveChargeWhere(subscriptionChargeId),
             data: {
               status: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "QUEUED",
               lastErrorCode: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "XERO_FAILED",

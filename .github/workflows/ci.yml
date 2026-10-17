@@ -590,13 +590,29 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # #4053: the PR description reaches the gates below as a FILE, never as an
+      # environment variable. Linux caps one environment string at 128 KiB
+      # (`MAX_ARG_STRLEN`), so `PR_BODY: ${{ github.event.pull_request.body }}`
+      # on a description past that size meant the runner could not start the
+      # step's shell ("Argument list too long") and `verify` went red with no
+      # finding (PR #3924: 173 KB after 15 review rounds). The body is read from
+      # the event payload on disk with `jq` and written to a file the gates open
+      # via `PR_BODY_FILE` (`readEventPrBody` in `scripts/ci/pr-body.mjs`). Keep
+      # `github.event.pull_request.body` out of every `env:` and `run:` in this
+      # workflow; `scripts/ci/pr-body-file.test.mjs` fails if it comes back.
+      # No job-level `if:` here and none on `verify`: it is a required check.
+      - name: Write the PR description to a file
+        if: github.event_name == 'pull_request'
+        run: jq -j '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr-body.md"
+
       - name: Validate PR concurrency declaration
         if: github.event_name == 'pull_request'
         env:
           # Event-payload body is the fallback; the script prefers the live body
           # fetched from the pulls API so a post-failure body edit can go green
-          # on a re-run without re-triggering the whole workflow.
-          PR_BODY: ${{ github.event.pull_request.body }}
+          # on a re-run without re-triggering the whole workflow. The fallback
+          # arrives as a FILE, never an env var (#4053): see the step above.
+          PR_BODY_FILE: ${{ runner.temp }}/pr-body.md
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -610,7 +626,7 @@ jobs:
       - name: Validate PR changelog entry
         if: github.event_name == 'pull_request'
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BODY_FILE: ${{ runner.temp }}/pr-body.md
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}

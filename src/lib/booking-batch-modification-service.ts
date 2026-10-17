@@ -37,6 +37,7 @@ import {
   isBookingFullyPaidForGuestNameEdits,
   isMemberWholeLodgeBooking,
   isQuotePricedBooking,
+  GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
 } from "@/lib/booking-modify";
 // Pure readers of the request, imported from their home rather than the barrel
@@ -156,6 +157,7 @@ import {
   type BookingGuestDietarySeeding,
 } from "@/lib/member-dietary-booking-writes";
 import type { ClubFormat } from "@/lib/club-format";
+import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
 import {
   assertFinishedStayCorrectionCall,
@@ -261,6 +263,7 @@ type BatchModificationTransactionResult =
     oldCheckIn: Date;
     oldCheckOut: Date;
     oldGuestCount: number;
+    addedGuests: BookingGuest[]; // #4030: the rows this edit created, named in its change email
     hasIssuedXeroInvoice: boolean;
     paymentStatus: PaymentStatus | null;
     paymentSource: PaymentSource | null;
@@ -1115,10 +1118,7 @@ export async function modifyBookingBatch({
       ? await isMemberWholeLodgeBooking(tx, bookingId)
       : false;
     if (hasLinks && !memberWholeLodgeForLink) {
-      throw new ApiError(
-        "Linking a placeholder to a member is only available on member whole-lodge bookings.",
-        400,
-      );
+      throw new ApiError(GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE, 400);
     }
     // A member whole-lodge booking is quote-priced (its placeholders were
     // flat-split at approval), but a link-only request is EXACTLY the sanctioned
@@ -2374,6 +2374,7 @@ export async function modifyBookingBatch({
       oldCheckIn: booking.checkIn,
       oldCheckOut: booking.checkOut,
       oldGuestCount: booking.guests.length,
+      addedGuests: createdGuests,
       hasSucceededPayment: payments.hasSucceededPayment,
       hasIssuedXeroInvoice: payments.hasIssuedXeroInvoice,
       paymentStatus: booking.payment?.status ?? null,
@@ -2544,11 +2545,10 @@ export async function modifyBookingBatch({
       supersededPrimaryPaymentIntents: result.supersededPrimaryPaymentIntents,
     });
 
-    const stripeRefundId = await executeBookingModificationRefund({
+    const refund = await executeBookingModificationRefund({
       format,
       bookingId,
       result,
-      metadataReason: "batch_modification",
       idempotencyKeyPrefix: `mod_batch_refund_${bookingId}`,
       failureMessage: "Stripe refund failed after batch modification - enqueueing recovery",
       recoveryFailureMessage:
@@ -2559,8 +2559,7 @@ export async function modifyBookingBatch({
       format,
       bookingId,
       result,
-      reason: "batch_modify_price_increase",
-      idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
+      door: "batchModify",
       failureMessage: "Failed to create additional PaymentIntent for batch modification",
     });
 
@@ -2581,6 +2580,7 @@ export async function modifyBookingBatch({
       ipAddress,
       result,
       additionalMint,
+      refundDestination: refund.refundDestination,
       linkedChangeRequestId,
       format,
     });
@@ -2597,7 +2597,7 @@ export async function modifyBookingBatch({
       settlementMethod: result.settlementMethod,
       requiresSettlementMethod: result.requiresSettlementMethod,
       additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
-      stripeRefundId: stripeRefundId ?? null,
+      stripeRefundId: refund.stripeRefundId ?? null,
       promoRemoved: result.promoRemoved,
       promoChanged: result.promoChanged,
       promoCoverage: result.promoCoverage,
@@ -2666,6 +2666,7 @@ async function dispatchBatchPostTransactionSideEffects({
   ipAddress,
   result,
   additionalMint,
+  refundDestination,
   linkedChangeRequestId,
   format,
 }: {
@@ -2674,6 +2675,7 @@ async function dispatchBatchPostTransactionSideEffects({
   ipAddress: string;
   result: BatchModificationTransactionResult;
   additionalMint: ModificationAdditionalAskMint;
+  refundDestination: BookingModifiedRefundDestination;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -2906,8 +2908,9 @@ async function dispatchBatchPostTransactionSideEffects({
     // says THAT in the same words too. The email is the durable copy: a member
     // who closed the panel without reading the banner still has this.
     promoChangeNotAppliedNote: result.promoChangeNotApplied?.message ?? null,
+    addedGuests: result.addedGuests, // #4030: named in the change rows
     financialReviewPending,
-    refundReturnedToOrganiser: result.organiserChildRefund !== null,
+    refundDestination,
     refundByBankTransfer: editRefundGoesBackByHand(result),
     lodgeId: result.booking.lodgeId,
   }, format).catch((err) =>

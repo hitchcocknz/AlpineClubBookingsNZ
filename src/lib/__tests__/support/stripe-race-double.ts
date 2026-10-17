@@ -17,15 +17,27 @@ export const stripeRaceHooks: {
   get: null | ((id: string) => Promise<unknown>);
   create: null | ((args: Parameters<Stripe["createPaymentIntent"]>[0]) => Promise<unknown>);
   findByMetadata: null | ((args: Parameters<Stripe["findRecentPaymentIntentByMetadata"]>[0]) => Promise<unknown>);
+  /** #4036: the recent intents an ordinary ask's refused replay looks through. */
+  list: null | ((args: Parameters<Stripe["listRecentPaymentIntentsMatching"]>[0]) => Promise<unknown>);
   cancel: null | ((id: string) => Promise<unknown>);
-} = { update: null, get: null, create: null, findByMetadata: null, cancel: null };
+  /** #4096: a card refund's answer, e.g. one Stripe refused (`failed`). */
+  refund: null | ((args: Parameters<Stripe["processRefund"]>[0]) => Promise<unknown>);
+  /** #4149: the refunds Stripe lists for one intent, read to prove which door sent them. */
+  listRefunds: null | ((paymentIntentId: string) => Promise<unknown>);
+  /** #4170: the refunds Stripe lists for one charge, which `charge.refunded` records. */
+  listChargeRefunds: null | ((chargeId: string) => Promise<unknown>);
+} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null, refund: null, listRefunds: null, listChargeRefunds: null };
 
 export function resetStripeRaceHooks(): void {
   stripeRaceHooks.update = null;
   stripeRaceHooks.get = null;
   stripeRaceHooks.create = null;
   stripeRaceHooks.findByMetadata = null;
+  stripeRaceHooks.list = null;
   stripeRaceHooks.cancel = null;
+  stripeRaceHooks.refund = null;
+  stripeRaceHooks.listRefunds = null;
+  stripeRaceHooks.listChargeRefunds = null;
 }
 
 export function stripeRaceDouble(actual: Stripe): Stripe {
@@ -43,9 +55,23 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
       stripeRaceHooks.findByMetadata
         ? stripeRaceHooks.findByMetadata(args)
         : actual.findRecentPaymentIntentByMetadata(args)) as Stripe["findRecentPaymentIntentByMetadata"],
+    listRecentPaymentIntentsMatching: ((args: Parameters<Stripe["listRecentPaymentIntentsMatching"]>[0]) =>
+      stripeRaceHooks.list
+        ? stripeRaceHooks.list(args)
+        : actual.listRecentPaymentIntentsMatching(args)) as Stripe["listRecentPaymentIntentsMatching"],
     cancelPaymentIntentIfCancellableWithResult: ((...args: Parameters<Stripe["cancelPaymentIntentIfCancellableWithResult"]>) =>
       stripeRaceHooks.cancel
         ? stripeRaceHooks.cancel(args[0])
         : actual.cancelPaymentIntentIfCancellableWithResult(...args)) as Stripe["cancelPaymentIntentIfCancellableWithResult"],
+    processRefund: ((args: Parameters<Stripe["processRefund"]>[0]) =>
+      stripeRaceHooks.refund ? stripeRaceHooks.refund(args) : actual.processRefund(args)) as Stripe["processRefund"],
+    listRefundsForPaymentIntent: ((...args: Parameters<Stripe["listRefundsForPaymentIntent"]>) =>
+      stripeRaceHooks.listRefunds
+        ? stripeRaceHooks.listRefunds(args[0])
+        : actual.listRefundsForPaymentIntent(...args)) as Stripe["listRefundsForPaymentIntent"],
+    listRefundsForCharge: ((...args: Parameters<Stripe["listRefundsForCharge"]>) =>
+      stripeRaceHooks.listChargeRefunds
+        ? stripeRaceHooks.listChargeRefunds(args[0])
+        : actual.listRefundsForCharge(...args)) as Stripe["listRefundsForCharge"],
   };
 }

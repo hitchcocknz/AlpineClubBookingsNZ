@@ -265,7 +265,7 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "PUT /api/admin/refund-requests/[id]#1",
     tier: "GLOBAL",
     reason:
-      "#3827 (INV-PAY-117, INV-PAY-118): a refund appeal's approval caps at the refundable cash NET of the refunds still promised back by bank transfer (an edit's, or an earlier approved appeal's). A hand-back's completion moves the payment's refunded total and closes its task in one commit under this key, and a reopen re-promises one under it, so the cap reads the payment and the open-task sum under the same key, claims the request, plans the card refund and raises the bank-transfer task for the rest in the same transaction - a second approval queues behind it and sees that task. Takes the global key alone; the Stripe refund and Xero note run after the commit.",
+      "#3827 (INV-PAY-117, INV-PAY-118): a refund appeal's approval caps at the refundable cash NET of the refunds still promised back by bank transfer (an edit's, or an earlier approved appeal's). A hand-back's completion moves the payment's refunded total and closes its task in one commit under this key, and a reopen re-promises one under it, so the cap reads the payment and the open-task sum under the same key, claims the request, plans the card refund and raises the bank-transfer task for the rest in the same transaction - a second approval queues behind it and sees that task. #3956 (INV-PAY-123): on a booking the group organiser paid for by card it instead reads the combined payment's child-refund headroom and reserves the refund debt after the claim, in the same transaction, as every #3653 debt writer does under this key. #4124: the cap also nets the payment's open card refund debts, so after this key it takes the Payment row (lockPaymentForRefundedTotal, INV-LOCK-002's lock(1) -> Payment row order) BEFORE the hand-back, credit, card-debt and payment reads - a cancellation hand-back's completion, every refunded-total writer and the failed-later card refund debt hold that row without this key; no holder of the row takes this key after it. The Stripe refund and Xero note run after the commit.",
     invariant: "INV-LOCK-001",
   },
   {
@@ -521,7 +521,7 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:
-      "#3582: an EDIT_FINANCIAL_REVIEW closure posts booking-ledger lines, and whether the booking is confirmed on the ledger must be asked under the key the settle asks it under, or a closure and a first settle could both see 'not yet' and both post. Taken only for that task kind, as the transaction's first lock — before the claim, the payment-row allocation and the re-price's promotion key — so it orders global before anything narrower as every edit door does; the Stripe refund and the Xero leg run after the commit, so it is never held across a provider round trip. Order: global → member-credit (#3791, account-credit route only).",
+      "#3582: an EDIT_FINANCIAL_REVIEW closure posts booking-ledger lines, and whether the booking is confirmed on the ledger must be asked under the key the settle asks it under, or a closure and a first settle could both see 'not yet' and both post. Taken only for that task kind, as the transaction's first lock — before the claim, the payment-row allocation and the re-price's promotion key — so it orders global before anything narrower as every edit door does; the Stripe refund and the Xero leg run after the commit, so it is never held across a provider round trip. Order: global → member-credit (#3791, account-credit route only). #4042: also taken for a group organiser's hand-back, which each later joiner's claim grows under this key while it is OPEN, so a growth and a completion never interleave.",
     invariant: "INV-LOCK-002",
   },
   {
@@ -693,7 +693,7 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "settleGroupBookingOnOrganiserCancel#3",
     tier: "GLOBAL",
     reason:
-      "Each child's cancel and its refund credit-note enqueue commit inside one transaction on the settlement cohort's key, and reconcile that child's allocations through the lock-held seam.",
+      "Each child's cancel and its refund credit-note enqueue commit inside one transaction on the settlement cohort's key, and reconcile that child's allocations through the lock-held seam. #4042: on an Internet Banking settlement the same claim books the joiner's share on the organiser's hand-back task (create, grow while OPEN, or a supplementary task once closed), which this key makes single.",
     invariant: "INV-LOCK-002",
   },
   {
@@ -960,7 +960,14 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "reopenManualRefundTask#1",
     tier: "GLOBAL",
     reason:
-      "DISMISSED -> OPEN re-arms assertNoPendingEditFinancialReview RETROACTIVELY, against money-affecting edits already in flight - unlike the closure it mirrors, which only relaxes that fence. Unlocked, an edit that read the fence while the task was dismissed can settle a credit under its own modification while the reopen commits, leaving an OPEN task whose context still points at the earlier anchor and whose completion credits the member twice. It makes no provider call, so the bounded exception that keeps resolveManualRefundTask lock-free does not apply.",
+      "DISMISSED -> OPEN re-arms assertNoPendingEditFinancialReview RETROACTIVELY, against money-affecting edits already in flight - unlike the closure it mirrors, which only relaxes that fence. Unlocked, an edit that read the fence while the task was dismissed can settle a credit under its own modification while the reopen commits, leaving an OPEN task whose context still points at the earlier anchor and whose completion credits the member twice. It makes no provider call, so the bounded exception that keeps resolveManualRefundTask lock-free does not apply. #4124: an approved appeal's task is measured by the appeal's ceiling, which nets the payment's open card refund debts, so for that task it takes the Payment row (lockPaymentForRefundedTotal) after this key and before the ceiling's reads, as the approval does.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "updateGroupHandBackAlertRecord#1",
+    tier: "GLOBAL",
+    reason:
+      "#4042: the one writer of a group organiser hand-back's alert record outside the claim that grows the task - the lease a run claims before it sends, its release after a send that reached nobody, and the record of a send. Every group-cancel claim rewrites the same reviewContext under this key when it grows the task, and two runs (the cancel and the reaper's sweep, or two replicas) can each try to send; taking the key and re-reading makes the lease single and stops any write dropping another's fields. Held only for a read and an update; the email is sent after the claim's transaction commits, never inside it.",
     invariant: "INV-LOCK-001",
   },
 ];
@@ -1402,11 +1409,33 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // row `FOR NO KEY UPDATE` FIRST in every writer of the transaction refund
   // mirror - the card-refund writer, `applyLocalRefundAllocation`, and the
   // cancel claim before its #1491 fold - so the order is Payment row -> refund
-  // rows -> transaction row everywhere. NO KEY strength so a `PaymentRefund`
+  // rows -> transaction row -> PaymentRecoveryOperation (#4104: a refund seen
+  // failing after it counted is kept owed last) everywhere. NO KEY strength so a `PaymentRefund`
   // insert's FK check (`FOR KEY SHARE`) is not blocked. Keyed on an immutable
   // cuid; taken after `lock(1)` where the caller holds it. See
   // docs/CONCURRENCY_AND_LOCKING.md -> the #3640 paragraph.
   "src/lib/payment-transactions.ts": 1,
+  // #4161 / #4192: the nightly link cleanup's refund-note heal takes two
+  // lock-only statements: the one `XeroObjectLink` row it is about to re-write
+  // (`SELECT 1 … FOR UPDATE`), then its Payment row
+  // (`SELECT 1 … FOR NO KEY UPDATE NOWAIT`), and re-reads both through Prisma
+  // under them. Order: link, then Payment - the #2901 repair apply's order.
+  // Two writers take Payment first (the refund-note create's record, and the
+  // outbox enqueue's existing-note branch inside a group cancel or an edit
+  // review), so the Payment lock never waits: 55P03 defers the heal with no
+  // write. Keyed on immutable cuids; no advisory lock. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Refund-note link heal (#4161)".
+  "src/lib/xero-hardening-canonical-links.ts": 2,
+  // #4195: a refund request's own note link written with no Xero status (a
+  // retry's, a completion's) locks that one `XeroObjectLink` row
+  // (`SELECT 1 … FOR UPDATE`, the heal's statement) inside the link write's own
+  // transaction and re-reads it through Prisma, so an inbound void that
+  // committed meanwhile is kept. The write that follows updates the same row,
+  // so no new row joins the transaction and no order changes; the inbound void
+  // holds only that row. Keyed on the link's immutable unique key; no advisory
+  // lock. See docs/CONCURRENCY_AND_LOCKING.md -> "Refund-request note link
+  // writes (#4195)".
+  "src/lib/xero-refund-note-status.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

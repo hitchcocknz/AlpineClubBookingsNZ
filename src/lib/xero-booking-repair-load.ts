@@ -18,7 +18,8 @@ import {
   type XeroObjectLinkRecord,
   type XeroOperationRecord,
 } from "./xero-booking-repair-types";
-import { buildBookingCancellationRefundIdempotencyKey } from "./payment-recovery-keys";
+import { buildBookingCancellationRefundIdempotencyKey, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } from "./payment-recovery-keys";
+import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { groupOpenIntentRecoveriesByBooking, intentRecoveryKeyMaps } from "./xero-booking-repair-intent-recoveries";
 import { unallocatedAppliedCreditCentsByBooking } from "@/lib/xero-applied-credit-ledger-state";
 import {
@@ -44,6 +45,7 @@ import {
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { isPartPaymentReviewTask, NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { refundPaymentLinkWhere } from "@/lib/xero-refund-note-settlement";
+import { cancelledRefundNoteIds as cancelledRefundNoteIdsFor } from "@/lib/xero-refund-note-status";
 
 /** A settled edit-review charge share, carrying the booking it was raised on. */
 type EditReviewChargeShareRecord = EditReviewChargeShareRow & {
@@ -426,6 +428,7 @@ export async function loadAuditData(
           [] as Array<{ appliedToBookingId: string; _sum: { amountCents: number | null } }>
         ),
   ]);
+  const failedLaterOwedByPaymentId = await loadFailedLaterOwedCents(deps, paymentIds);
   const unallocatedAppliedCreditByBookingId = await unallocatedAppliedCreditCentsByBooking(bookingIds, deps.prisma);
   const allocatedAppliedCreditByBookingId = new Map(
     appliedCreditAllocations.map((row) => [
@@ -443,6 +446,8 @@ export async function loadAuditData(
         })
       : [];
 
+  // #4091: refund notes Xero voided, active or not (`paymentLinks` holds active links only).
+  const cancelledRefundNoteIds = await cancelledRefundNoteIdsFor(paymentIds, deps.prisma);
   const linksByLocalKey = new Map<string, XeroObjectLinkRecord[]>();
   for (const link of links) {
     const key = makeLocalKey(link.localModel, link.localId);
@@ -588,6 +593,7 @@ export async function loadAuditData(
     paymentLinks: booking.payment
       ? linksByLocalKey.get(makeLocalKey("Payment", booking.payment.id)) ?? []
       : [],
+    cancelledRefundNoteIds,
     paymentRefundPaymentLinks: booking.payment
       ? refundPaymentLinks.filter((link) => link.localModel === "Payment" && link.localId === booking.payment!.id)
       : [],
@@ -612,6 +618,8 @@ export async function loadAuditData(
       cancellationRecoveryByBookingId.get(booking.id) ?? [],
     lateCaptureApprovalIntentIds:
       approvalIntentIdsByBookingId.get(booking.id) ?? new Set<string>(),
+    failedLaterOwedCentsByTransactionId:
+      (booking.payment ? failedLaterOwedByPaymentId.get(booking.payment.id) : undefined) ?? new Map<string, number>(),
     keptLateCaptures: new Map(
       [...(keptApprovalsByBookingId.get(booking.id) ?? new Map<string, { id: string; createdAt: Date }>())].map(
         ([paymentIntentId, task]) => [
@@ -656,4 +664,37 @@ export async function loadAuditData(
     openAdditionalIntentRecoveryModificationIds:
       openIntentRecoveries.ordinary.get(booking.id) ?? new Set<string>(),
   }));
+}
+
+/**
+ * #4104 (#4128 review C5): the cents a card refund Stripe failed later is still
+ * owed by a row of its own (`card_refund_failed_later_<refund>`, unsettled), by
+ * payment then by charge. The late-capture finding leaves them out: the row
+ * asks Stripe for them again, or the treasurer closes it as paid another way,
+ * and an offer to refund them here too would refund them twice.
+ */
+async function loadFailedLaterOwedCents(
+  deps: Pick<RepairDependencies, "prisma">,
+  paymentIds: readonly string[],
+): Promise<Map<string, Map<string, number>>> {
+  const owed = new Map<string, Map<string, number>>();
+  if (paymentIds.length === 0) return owed;
+  const rows =
+    (await deps.prisma.paymentRecoveryOperation.findMany({
+      where: {
+        paymentId: { in: [...paymentIds] },
+        idempotencyKey: { startsWith: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX },
+        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+      },
+      select: { paymentId: true, idempotencyKey: true, allocationPlan: true },
+    })) ?? [];
+  for (const row of rows) {
+    if (!row.idempotencyKey?.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX)) continue;
+    const byTransaction = owed.get(row.paymentId) ?? new Map<string, number>();
+    for (const slice of parseRefundAllocationPlan(row.allocationPlan) ?? []) {
+      byTransaction.set(slice.paymentTransactionId, (byTransaction.get(slice.paymentTransactionId) ?? 0) + slice.amountCents);
+    }
+    owed.set(row.paymentId, byTransaction);
+  }
+  return owed;
 }

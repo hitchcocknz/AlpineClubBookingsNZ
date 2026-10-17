@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BookingEventType,
   BookingStatus,
+  PaymentRecoveryOperationStatus,
+  PaymentRecoveryOperationType,
   PaymentSource,
   PaymentStatus,
   PaymentTransactionKind,
@@ -30,9 +32,15 @@ const mocks = vi.hoisted(() => ({
   paymentUpdate: vi.fn(),
   paymentTransactionUpdateMany: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
+  // #3979: the settle's read of the payment's own rows, kept apart from the
+  // second-instrument question above so each test's answer to that question
+  // stays its own.
+  settleRowsFindMany: vi.fn(),
   paymentTransactionFindFirst: vi.fn(),
   paymentTransactionCreate: vi.fn(),
   paymentRecoveryOperationFindMany: vi.fn(),
+  // #4177: the superseded-intent machinery's live operations on the payment.
+  supersededOperationFindMany: vi.fn(),
   paymentRefundFindMany: vi.fn(),
   txBookingEventFindFirst: vi.fn(),
   txBookingEventCreate: vi.fn(),
@@ -147,6 +155,11 @@ import {
   settlementMarkerTimelineEntries,
 } from "@/lib/manual-settlement-reversal-event";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { IB_RECEIPT_FROM_CASH_REASON } from "@/lib/xero-inbound/settle-from-cash";
+import {
+  isPaymentRecoveryOperationInFlight,
+  PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE,
+} from "@/lib/payment-recovery-constants";
 
 const INVOICE_ID = "inv-xero-3638";
 
@@ -156,9 +169,15 @@ const tx = {
     findUnique: (...a: unknown[]) => mocks.paymentFindUnique(...a),
     update: (...a: unknown[]) => mocks.paymentUpdate(...a),
   },
+  // #3979: the receipt figure's cross-check reads the booking's supplementary
+  // invoices; none here.
+  bookingModification: { findMany: async () => [] },
   paymentTransaction: {
     updateMany: (...a: unknown[]) => mocks.paymentTransactionUpdateMany(...a),
-    findMany: (...a: unknown[]) => mocks.paymentTransactionFindMany(...a),
+    findMany: (...a: unknown[]) =>
+      (a[0] as { where?: { kind?: unknown } } | undefined)?.where?.kind === undefined
+        ? mocks.settleRowsFindMany(...a)
+        : mocks.paymentTransactionFindMany(...a),
     findFirst: (...a: unknown[]) => mocks.paymentTransactionFindFirst(...a),
     create: (...a: unknown[]) => mocks.paymentTransactionCreate(...a),
   },
@@ -171,14 +190,19 @@ const tx = {
     aggregate: (...a: unknown[]) => mocks.memberCreditAggregate(...a),
   },
   paymentRecoveryOperation: {
-    findMany: (...a: unknown[]) => mocks.paymentRecoveryOperationFindMany(...a),
+    // The duplicate-capture refund lookup asks by idempotency key; the
+    // superseded-intent ownership read (#4177) asks by payment, type and status.
+    findMany: (...a: unknown[]) =>
+      (a[0] as { where?: { idempotencyKey?: unknown } } | undefined)?.where?.idempotencyKey === undefined
+        ? mocks.supersededOperationFindMany(...a)
+        : mocks.paymentRecoveryOperationFindMany(...a),
   },
   paymentRefund: {
     findMany: (...a: unknown[]) => mocks.paymentRefundFindMany(...a),
   },
   // #3535's clearing-note evidence, read by the already-cancelled credit arm
   // these bookings fall through to: no clearing note on file.
-  xeroObjectLink: { findFirst: vi.fn().mockResolvedValue(null) },
+  xeroObjectLink: { findFirst: vi.fn().mockResolvedValue(null), findMany: async () => [] },
   xeroSyncOperation: {
     findFirst: vi.fn().mockResolvedValue(null),
     updateMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -279,9 +303,21 @@ beforeEach(() => {
   mocks.executeRaw.mockResolvedValue(undefined);
   mocks.paymentTransactionUpdateMany.mockResolvedValue({ count: 1 });
   mocks.paymentTransactionFindMany.mockResolvedValue([CARD_PRIMARY]);
+  // The bank receipt this suite's switched payment already carries (#3979):
+  // a replay, so the settle decides no figure again.
+  mocks.settleRowsFindMany.mockResolvedValue([
+    {
+      kind: PaymentTransactionKind.PRIMARY,
+      source: PaymentSource.INTERNET_BANKING,
+      status: PaymentStatus.SUCCEEDED,
+      amountCents: 27000,
+      refundedAmountCents: 0,
+    },
+  ]);
   // No captured Internet Banking row yet: this bank cash is new.
   mocks.paymentTransactionFindFirst.mockResolvedValue(null);
   mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
+  mocks.supersededOperationFindMany.mockResolvedValue([]);
   mocks.paymentRefundFindMany.mockResolvedValue([]);
   markerRows = [];
   mocks.txBookingEventFindFirst.mockImplementation(
@@ -863,6 +899,284 @@ describe("the opposite order belongs to #1992 (#3638)", () => {
     });
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * #4163 (`INV-PAY-133`): two card captures both qualify, and the one the
+ * conflict names is the settling capture - the OLDEST-INSERTED one no
+ * duplicate-capture refund owns (#1765 refund history aside: skipped on a
+ * paid booking, ranked last on a cancelled one). The mock answers like the database: it
+ * honours the read's `orderBy`, so a read without the shared ledger order
+ * hands back the rows as seeded (newest first) and names the later capture.
+ */
+describe("the settling capture follows the shared ledger order (#4163)", () => {
+  const FIRST_CAPTURE = {
+    ...CARD_PRIMARY,
+    id: "first-capture",
+    stripePaymentIntentId: "pi_first_4163",
+    amountCents: 27000,
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    insertionSeq: 1,
+  };
+  // Same createdAt (one transaction): only insertionSeq tells them apart.
+  const SECOND_CAPTURE = {
+    ...CARD_PRIMARY,
+    id: "second-capture",
+    stripePaymentIntentId: "pi_second_4163",
+    amountCents: 31000,
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    insertionSeq: 2,
+  };
+
+  function answerLikeTheDatabase(rows: (typeof FIRST_CAPTURE)[]) {
+    mocks.paymentTransactionFindMany.mockImplementation(
+      async ({ orderBy }: { orderBy?: Record<string, "asc" | "desc">[] }) => {
+        const sorted = [...rows];
+        for (const key of [...(orderBy ?? [])].reverse()) {
+          const [[field, direction]] = Object.entries(key) as [
+            ["createdAt" | "insertionSeq", "asc" | "desc"],
+          ];
+          const sign = direction === "asc" ? 1 : -1;
+          sorted.sort(
+            (a, b) =>
+              sign *
+              (field === "createdAt"
+                ? a.createdAt.getTime() - b.createdAt.getTime()
+                : a.insertionSeq - b.insertionSeq),
+          );
+        }
+        return sorted;
+      },
+    );
+  }
+
+  it("names the oldest-inserted capture when two qualify, whatever order the rows come back in", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    // Seeded newest first: the "wrong" order for the `.find()`.
+    answerLikeTheDatabase([SECOND_CAPTURE, FIRST_CAPTURE]);
+
+    const result = await sync();
+
+    expect(result.secondInstrumentSettlementConflicts).toBe(1);
+    expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ createdAt: "asc" }, { insertionSeq: "asc" }],
+      }),
+    );
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({
+      cardPaymentIntentId: "pi_first_4163",
+      cardHeldCents: 27000,
+    });
+  });
+
+  it("skips an older capture the duplicate-capture refund owns and names the next oldest", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    answerLikeTheDatabase([SECOND_CAPTURE, FIRST_CAPTURE]);
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
+      { idempotencyKey: "duplicate_capture_booking-1_pi_first_4163" },
+    ]);
+
+    await sync();
+
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({
+      cardPaymentIntentId: "pi_second_4163",
+      cardHeldCents: 31000,
+    });
+  });
+});
+
+/**
+ * #4177: on a PAID booking, an older capture X whose captured money the
+ * superseded-intent machinery holds for the member (a REFUND_SUPERSEDED_PAYMENT
+ * not yet SUCCEEDED, or a CANCEL_PAYMENT_INTENT still in flight) is not the
+ * settling capture: the duplicate-capture refund skips it too, so the conflict
+ * names S, never X. A dead cancel holds nothing, so X still counts; and on a
+ * CANCELLED booking every capture counts, because the new bank cash has nowhere
+ * to go. The fake answers the read with the predicate's own semantics.
+ */
+describe("the settling capture skips one the superseded-intent machinery holds, on a paid booking (#4177)", () => {
+  const X = {
+    ...CARD_PRIMARY,
+    id: "superseded-capture",
+    stripePaymentIntentId: "pi_superseded_4177",
+    amountCents: 27000,
+  };
+  const S = {
+    ...CARD_PRIMARY,
+    id: "settling-capture",
+    stripePaymentIntentId: "pi_settling_4177",
+    amountCents: 31000,
+  };
+
+  type Operation = {
+    paymentId: string;
+    paymentIntentId: string;
+    type: PaymentRecoveryOperationType;
+    status: PaymentRecoveryOperationStatus;
+    attempts: number;
+    nextRetryAt: Date | null;
+  };
+
+  const RETRY_AT = new Date("2026-07-02T00:00:00.000Z");
+  const op = (type: PaymentRecoveryOperationType, overrides: Partial<Operation> = {}): Operation => ({
+    paymentId: "payment-1",
+    paymentIntentId: X.stripePaymentIntentId,
+    type,
+    status: PaymentRecoveryOperationStatus.PENDING,
+    attempts: 0,
+    nextRetryAt: RETRY_AT,
+    ...overrides,
+  });
+
+  /** The read `listSupersededIntentIdsOwningCaptures` sends, pinned whole. */
+  const EXPECTED_READ = {
+    where: {
+      paymentId: "payment-1",
+      OR: [
+        {
+          type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
+        {
+          type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+          AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE],
+        },
+      ],
+    },
+    select: { paymentIntentId: true },
+  };
+
+  /** Answers like the database: a refund op not SUCCEEDED, or a cancel op in flight. */
+  function ownedBy(operations: Operation[]) {
+    mocks.supersededOperationFindMany.mockImplementation(async (args: unknown) => {
+      expect(args).toEqual(EXPECTED_READ);
+      return operations
+        .filter(
+          (operation) =>
+            operation.paymentId === "payment-1" &&
+            (operation.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT
+              ? operation.status !== PaymentRecoveryOperationStatus.SUCCEEDED
+              : operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT &&
+                isPaymentRecoveryOperationInFlight(operation)),
+        )
+        .map(({ paymentIntentId }) => ({ paymentIntentId }));
+    });
+  }
+
+  function alertedIntent() {
+    return mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0].cardPaymentIntentId;
+  }
+
+  it.each([
+    ["a REFUND_SUPERSEDED_PAYMENT still retrying", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.FAILED })],
+    ["a REFUND_SUPERSEDED_PAYMENT whose retries are spent", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null })],
+    ["a CANCEL_PAYMENT_INTENT waiting to run", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)],
+    ["a CANCEL_PAYMENT_INTENT being run", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.PROCESSING })],
+    ["a CANCEL_PAYMENT_INTENT that failed and will retry", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 2 })],
+  ])("paid: names S, not the older X %s holds", async (_label, operation) => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    // Oldest first, as the ordered read returns them: X, then S.
+    mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
+    ownedBy([operation]);
+
+    const result = await sync();
+
+    expect(result.secondInstrumentSettlementConflicts).toBe(1);
+    expect(mocks.supersededOperationFindMany).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({ cardPaymentIntentId: S.stripePaymentIntentId, cardHeldCents: 31000 });
+  });
+
+  it.each([
+    ["its superseded refund SUCCEEDED", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.SUCCEEDED })],
+    ["its cancel died with no refund behind it (retries spent)", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null })],
+    ["its cancel was raised dead (PENDING, retries spent)", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { attempts: 5 })],
+  ])("paid: still names X once %s: nothing holds its money for the member", async (_label, operation) => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
+    ownedBy([operation]);
+
+    await sync();
+
+    expect(alertedIntent()).toBe(X.stripePaymentIntentId);
+  });
+
+  it("paid: raises nothing when the only card capture is one the machinery holds for the member, and records the receipt at the cash", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID));
+    mocks.paymentTransactionFindMany.mockResolvedValue([X]);
+    ownedBy([op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)]);
+    // The transition: the bank receipt is not captured yet, and its stored
+    // figure (300.00) differs from the invoice's cash (270.00).
+    mocks.settleRowsFindMany.mockResolvedValue([
+      {
+        kind: PaymentTransactionKind.PRIMARY,
+        source: PaymentSource.INTERNET_BANKING,
+        status: PaymentStatus.PENDING,
+        amountCents: 30000,
+        refundedAmountCents: 0,
+      },
+      {
+        kind: PaymentTransactionKind.PRIMARY,
+        source: PaymentSource.STRIPE,
+        status: PaymentStatus.SUCCEEDED,
+        amountCents: X.amountCents,
+        refundedAmountCents: 0,
+      },
+    ]);
+
+    const result = await sync();
+
+    expect(result.secondInstrumentSettlementConflicts).toBe(0);
+    expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
+    // No second instrument, so the settle records the receipt at the cash
+    // (INV-PAY-125), and the payment's figure is the cash plus X until X's
+    // refund is recorded.
+    expect(mocks.paymentTransactionUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ source: PaymentSource.INTERNET_BANKING, kind: PaymentTransactionKind.PRIMARY }),
+        data: expect.objectContaining({
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 27000,
+          reason: IB_RECEIPT_FROM_CASH_REASON,
+        }),
+      }),
+    );
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ amountCents: 27000 + X.amountCents, refundedAmountCents: 0 }),
+      }),
+    );
+  });
+
+  it.each([
+    PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+    PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+  ])(
+    "cancelled: the bank cash has nowhere to go, so X, held by a live %s, is still the cancelledAfterCard conflict",
+    async (type) => {
+      primePayment(switchedPayment(BookingStatus.CANCELLED));
+      mocks.paymentTransactionFindMany.mockResolvedValue([X]);
+      ownedBy([op(type)]);
+
+      const result = await sync();
+
+      expect(result.secondInstrumentSettlementConflicts).toBe(1);
+      expect(mocks.supersededOperationFindMany).not.toHaveBeenCalled();
+      expect(markerRows).toEqual([
+        expect.objectContaining({
+          snapshot: expect.objectContaining({ conflictKind: "cancelledAfterCard" }),
+        }),
+      ]);
+      expect(
+        mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+      ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: X.stripePaymentIntentId });
+    },
+  );
 });
 
 describe("a replay on a completed booking (#3638)", () => {

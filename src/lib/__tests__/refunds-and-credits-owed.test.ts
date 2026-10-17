@@ -17,6 +17,7 @@ import {
   refundsOwedTaskRows,
 } from "@/lib/__tests__/helpers/net-collected-scope-fixture";
 import { getNetCollectedPaymentParts, summarizeCollectedCash } from "@/lib/payment-net-collected";
+import { mirrorPlanRefundUnmade } from "@/lib/group-settlement-refund-plan";
 import {
   legacyGroupSettlementRefundOwedCents,
   readRefundsAndCreditsOwed,
@@ -183,7 +184,7 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
     const both = owedReconciliationPaymentRow({
       ...failed,
       manualRefundTasks: [
-        { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null },
+        { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null, occurrenceKey: null },
       ],
     });
     const db = reconciliationDb();
@@ -206,6 +207,79 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
     expect(parts.capturedGrossCents - parts.heldCashCents - owed.refundsOwedCents).toBe(0);
   });
 
+  it("#4042: a group organiser's OPEN hand-back counts once in Refunds owed at its own amount, and never comes off the organiser's Net Collected", async () => {
+    // The organiser's own payment holds $200.00; the group task owes $300.00
+    // of joiners' refunds, which the joiners' payments already read refunded.
+    const [failed] = OWED_RECONCILIATION_PAYMENTS;
+    const groupTask = { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 30_000, partPaymentReviewPaymentId: null, occurrenceKey: "group-organiser-hand-back:settle-1" };
+    const organiser = owedReconciliationPaymentRow({ ...failed, manualRefundTasks: [groupTask] });
+    const withoutTask = owedReconciliationPaymentRow({ ...failed, manualRefundTasks: [] });
+
+    // Net Collected: the organiser's payment reads exactly as with no task.
+    expect(getNetCollectedPaymentParts(organiser)).toEqual(getNetCollectedPaymentParts(withoutTask));
+
+    // Refunds owed: the payment's own owed parts, plus the task at its full amount, once.
+    const withId = { id: "pay-organiser", ...organiser };
+    const ownOnly = reconciliationDb();
+    ownOnly.manualRefundTask.findMany.mockResolvedValue([]);
+    ownOnly.paymentRecoveryOperation.findMany = operationReads(() => [{ payment: withId }]);
+    ownOnly.memberCredit.groupBy.mockResolvedValue([]);
+    const before = (await readRefundsAndCreditsOwed(ownOnly as never)).refundsOwedCents;
+
+    const db = reconciliationDb();
+    db.manualRefundTask.findMany.mockResolvedValue([{ ...groupTask, booking: { deletedAt: null, payment: withId } }]);
+    db.paymentRecoveryOperation.findMany = operationReads(() => [{ payment: withId }]);
+    db.memberCredit.groupBy.mockResolvedValue([]);
+    expect((await readRefundsAndCreditsOwed(db as never)).refundsOwedCents).toBe(before + 30_000);
+
+    // Its payment reached only through the task: the task alone, uncapped.
+    const taskOnly = reconciliationDb();
+    taskOnly.manualRefundTask.findMany.mockResolvedValue([{ ...groupTask, booking: { deletedAt: null, payment: withId } }]);
+    taskOnly.paymentRecoveryOperation.findMany = operationReads(() => []);
+    taskOnly.memberCredit.groupBy.mockResolvedValue([]);
+    expect((await readRefundsAndCreditsOwed(taskOnly as never)).refundsOwedCents).toBe(30_000);
+  });
+
+  it("#4097 (`INV-PAY-129`): a cancellation's card refund shortfall counts in Refunds owed and off Net Collected, once", async () => {
+    // $100.00 captured by card, $60.00 refunded to it, $40.00 the plan could not carry.
+    const shortfallTask = { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 4_000, partPaymentReviewPaymentId: null, occurrenceKey: "cancel-card-shortfall:b-short" };
+    const row = owedReconciliationPaymentRow({
+      bookingId: "b-short",
+      memberId: "m-short",
+      bookingStatus: "CANCELLED",
+      status: "PARTIALLY_REFUNDED",
+      amountCents: 10_000,
+      refundedAmountCents: 6_000,
+      source: "STRIPE",
+      capturedLedgerRows: 1,
+      deletedAt: null,
+      creditsApplied: [],
+      creditsFromCancellation: [],
+      manualRefundTasks: [shortfallTask],
+      recoveryOperations: [],
+      refunds: [],
+    });
+
+    const parts = getNetCollectedPaymentParts(row);
+    expect(parts.handBackOwedCents).toBe(4_000);
+    expect(parts.heldCashCents).toBe(0);
+
+    const db = reconciliationDb();
+    db.manualRefundTask.findMany.mockResolvedValue([{ ...shortfallTask, booking: { deletedAt: null, payment: { id: "pay-short", ...row } } }]);
+    db.paymentRecoveryOperation.findMany = operationReads(() => []);
+    db.memberCredit.groupBy.mockResolvedValue([]);
+    expect((await readRefundsAndCreditsOwed(db as never)).refundsOwedCents).toBe(4_000);
+
+    // Paid back or dismissed, it is owed nowhere.
+    const closed = owedReconciliationPaymentRow({
+      bookingId: "b-short", memberId: "m-short", bookingStatus: "CANCELLED", status: "PARTIALLY_REFUNDED",
+      amountCents: 10_000, refundedAmountCents: 6_000, source: "STRIPE", capturedLedgerRows: 1, deletedAt: null,
+      creditsApplied: [], creditsFromCancellation: [], manualRefundTasks: [{ ...shortfallTask, status: "DISMISSED" }],
+      recoveryOperations: [], refunds: [],
+    });
+    expect(getNetCollectedPaymentParts(closed).handBackOwedCents).toBe(0);
+  });
+
   it("never takes one payment's money off twice across a hand-back and a card refund", () => {
     const [failed] = rows;
     const both = {
@@ -213,7 +287,7 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
       booking: {
         ...failed.booking,
         manualRefundTasks: [
-          { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null },
+          { status: "OPEN", kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: 10_000, partPaymentReviewPaymentId: null, occurrenceKey: null },
         ],
       },
     };
@@ -224,6 +298,76 @@ describe("Net Collected, Refunds owed and Credits owed reconcile to the cent", (
     expect(parts.handBackOwedCents).toBe(10_000);
     expect(parts.cardRefundOwedCents).toBe(10_000);
     expect(parts.heldCashCents).toBe(0);
+  });
+});
+
+/*
+  #4083 (`INV-PAY-128`): a booking edit's card refund Stripe refused (failed or
+  canceled) is queued as a recovery row whose plan is exactly the refused
+  slices. It counts in "Refunds owed" at what was refused - the slice Stripe
+  made is not owed, and a refusal is never taken as progress - until a retry
+  under a fresh key makes it.
+*/
+describe("a refused edit refund counts in Refunds owed (#4083)", () => {
+  const [base] = OWED_RECONCILIATION_PAYMENTS;
+  const edited = new Date("2026-06-20T00:00:00.000Z");
+  const queuedAt = new Date("2026-06-20T00:00:01.000Z");
+  const refusedSlice = { paymentTransactionId: "txn-primary", amountCents: 4_000 };
+  // A $100.00 edit refund: $60.00 made from the newer charge, $40.00 refused on the older one.
+  const row = (overrides: { status?: string; stripeKeySuffix?: string; retried?: { status: string } } = {}) => ({
+    ...base,
+    bookingId: "b-edit-refund-refused",
+    bookingStatus: "CONFIRMED",
+    status: "PARTIALLY_REFUNDED",
+    amountCents: 20_000,
+    refundedAmountCents: 6_000,
+    capturedLedgerRows: 2,
+    recoveryOperations: [
+      {
+        id: "op-edit-refund-refused",
+        type: "REFUND_BOOKING_MODIFICATION",
+        status: overrides.status ?? "PENDING",
+        idempotencyKey: "booking_modification_refund_mod-refused",
+        amountCents: 4_000,
+        allocationPlan: [{ ...refusedSlice, ...(overrides.stripeKeySuffix ? { stripeKeySuffix: overrides.stripeKeySuffix } : {}) }],
+        paymentTransactionId: null,
+        createdAt: queuedAt,
+        succeededAt: null,
+      },
+    ],
+    refunds: [
+      { paymentTransactionId: "txn-additional", amountCents: 6_000, status: "succeeded", createdAt: edited },
+      { paymentTransactionId: "txn-primary", amountCents: 4_000, status: "failed", createdAt: edited },
+      ...(overrides.retried
+        ? [{ paymentTransactionId: "txn-primary", amountCents: 4_000, status: overrides.retried.status, createdAt: new Date("2026-06-20T00:05:00.000Z") }]
+        : []),
+    ],
+  });
+  const owedFor = async (reconciliation: ReturnType<typeof row>) => {
+    const payment = { id: "pay-edit-refund-refused", ...owedReconciliationPaymentRow(reconciliation as never) };
+    const db = reconciliationDb();
+    db.manualRefundTask.findMany.mockResolvedValue([]);
+    db.paymentRecoveryOperation.findMany = operationReads(() =>
+      reconciliation.recoveryOperations.filter((operation) => operation.status !== "SUCCEEDED").map(() => ({ payment })),
+    );
+    db.memberCredit.groupBy.mockResolvedValue([]);
+    return (await readRefundsAndCreditsOwed(db as never)).refundsOwedCents;
+  };
+
+  it("counts exactly the refused $40.00, not the $60.00 Stripe made", async () => {
+    expect(await owedFor(row())).toBe(4_000);
+  });
+
+  it("still counts it when the runner's retry under a fresh key was refused again", async () => {
+    expect(await owedFor(row({ stripeKeySuffix: "refused1", retried: { status: "canceled" } }))).toBe(4_000);
+  });
+
+  it("counts nothing once the retry made it and the row closed", async () => {
+    expect(await owedFor(row({ status: "SUCCEEDED", stripeKeySuffix: "refused1", retried: { status: "succeeded" } }))).toBe(0);
+  });
+
+  it("a dead row (retries spent) still counts until the treasurer closes it", async () => {
+    expect(await owedFor(row({ status: "FAILED", stripeKeySuffix: "refused4" }))).toBe(4_000);
   });
 });
 
@@ -251,6 +395,16 @@ describe("pre-#3653 group settlement card refunds: one club-wide line in Refunds
 
   it("counts what the unclosed ones still have to send: $65.00 here", () => {
     expect(legacyGroupSettlementRefundOwedCents(settlements)).toBe(6_500);
+  });
+
+  it("is the rule the refund appeal waits on: a settlement owes here exactly when its combined refund is unmade (#3956, INV-SSOT)", () => {
+    for (const settlement of settlements) {
+      expect(mirrorPlanRefundUnmade(settlement), settlement.id).toBe(legacyGroupSettlementRefundOwedCents([settlement]) > 0);
+    }
+    expect(settlements.filter((settlement) => mirrorPlanRefundUnmade(settlement)).map((settlement) => settlement.id)).toEqual([
+      "s-open",
+      "s-dead",
+    ]);
   });
 
   it("adds that one amount to Refunds owed, beside every booking's own, and reads only the unclosed rows", async () => {

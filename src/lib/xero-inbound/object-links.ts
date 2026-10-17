@@ -44,6 +44,14 @@ export function dedupeResolvedXeroObjectLinks(
 
 /** #3643: the payment roles on a booking's own invoices, named once. */
 export const INVOICE_PAYMENT_ROLE = "INVOICE_PAYMENT";
+
+/**
+ * #3979: the primary-invoice link's metadata key recording that the invoice
+ * was paid, wholly or partly, by applied overpayments or prepayments - which
+ * Xero records as allocations, leaving no payment to link. The inbound invoice
+ * sync writes it; the settled-cash audit reads it.
+ */
+export const PRIMARY_INVOICE_CASH_ALLOCATIONS_KEY = "overpaymentOrPrepaymentAllocations";
 export const SUPPLEMENTARY_INVOICE_PAYMENT_ROLE = "SUPPLEMENTARY_INVOICE_PAYMENT";
 
 export function getDerivedInboundPaymentRole(link: Pick<ResolvedXeroObjectLink, "xeroObjectType" | "role">) {

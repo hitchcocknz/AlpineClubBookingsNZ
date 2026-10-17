@@ -61,7 +61,10 @@ vi.mock("@/lib/prisma", () => ({
         deletedAt: null,
       }),
     },
-    paymentTransaction: { findFirst: async () => ({ kind: "PRIMARY" }) },
+    // #4170: the note-eligible cash also asks whether the booking is cancelled
+    // (it reads which captures landed after the cancel only then); not here.
+    paymentTransaction: { findFirst: async () => ({ kind: "PRIMARY" }), findMany: async () => [] },
+    payment: { findUnique: async () => null },
   },
 }));
 vi.mock("@/lib/stripe-cash-refund-evidence", () => ({

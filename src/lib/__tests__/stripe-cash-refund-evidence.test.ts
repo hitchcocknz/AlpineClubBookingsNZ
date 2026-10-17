@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   findTasks: vi.fn(),
   findOperations: vi.fn(),
   receiptRecorded: vi.fn(),
+  countNoteRows: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -29,6 +30,7 @@ vi.mock("@/lib/prisma", () => ({
     memberCredit: { aggregate: mocks.aggregate },
     manualRefundTask: { findMany: mocks.findTasks },
     paymentRecoveryOperation: { findMany: mocks.findOperations },
+    xeroSyncOperation: { count: mocks.countNoteRows },
   },
 }));
 
@@ -51,6 +53,7 @@ beforeEach(() => {
   mocks.findTasks.mockResolvedValue([]);
   mocks.findOperations.mockResolvedValue([]);
   mocks.receiptRecorded.mockResolvedValue(false);
+  mocks.countNoteRows.mockResolvedValue(0);
 });
 
 describe("resolveStripeCashRefundEvidence — provider-ledger rule", () => {
@@ -306,8 +309,11 @@ describe("resolveStripeCashRefundEvidence - a card refund closed as paid another
       expect.objectContaining({
         where: expect.objectContaining({
           paymentId: "pay_1",
-          status: "COMPLETED",
-          occurrenceKey: { startsWith: "card-refund-paid-another-way:" },
+          OR: expect.arrayContaining([
+            expect.objectContaining({ status: "COMPLETED", occurrenceKey: { startsWith: "card-refund-paid-another-way:" } }),
+            // #4097: and a paid-back card refund shortfall.
+            expect.objectContaining({ status: "COMPLETED", occurrenceKey: { startsWith: "cancel-card-shortfall:" } }),
+          ]),
         }),
       }),
     );
@@ -338,6 +344,30 @@ describe("resolveStripeCashRefundEvidence - a card refund closed as paid another
     await resolveStripeCashRefundEvidence(payment);
     expect(mocks.findOperations).not.toHaveBeenCalled();
     expect(mocks.receiptRecorded).not.toHaveBeenCalled();
+  });
+
+  // #4097 (`INV-PAY-129`): a paid-back card refund shortfall is the same bank
+  // cash, noted exactly when its completion queued its own note.
+  describe("a cancel's card refund shortfall, paid back by bank transfer", () => {
+    const shortfall = { id: "task-short", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:book_1", amountCents: 4000 };
+
+    it("MUTATION: noted (its own note row exists): kept as cash on the legacy mirror, added to the card rows on the provider ledger", async () => {
+      mocks.findTasks.mockResolvedValue([shortfall]);
+      mocks.countNoteRows.mockResolvedValue(1);
+      expect((await resolveStripeCashRefundEvidence(payment)).cashRefundCents).toBe(10000);
+      mocks.groupBy.mockResolvedValue([{ status: "succeeded", _sum: { amountCents: 6000 }, _count: { _all: 1 } }]);
+      expect((await resolveStripeCashRefundEvidence(payment)).cashRefundCents).toBe(10000);
+      expect(mocks.countNoteRows).toHaveBeenCalledWith({
+        where: expect.objectContaining({ localId: "pay_1", requestPayload: { path: ["paidAnotherWayTaskId"], equals: "task-short" } }),
+      });
+    });
+
+    it("MUTATION: un-noted (no invoice, so no note): never cash a card note may answer", async () => {
+      mocks.findTasks.mockResolvedValue([shortfall]);
+      expect((await resolveStripeCashRefundEvidence(payment)).cashRefundCents).toBe(6000);
+      mocks.groupBy.mockResolvedValue([{ status: "succeeded", _sum: { amountCents: 6000 }, _count: { _all: 1 } }]);
+      expect((await resolveStripeCashRefundEvidence(payment)).cashRefundCents).toBe(6000);
+    });
   });
 
   // #3924 round 6 (owner, 8 Oct 2026: "Record receipt, then credit").

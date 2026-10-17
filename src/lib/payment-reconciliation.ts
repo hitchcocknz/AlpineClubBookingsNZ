@@ -7,7 +7,6 @@ import {
   BookingEventType,
   BookingStatus,
   PaymentRecoveryOperationStatus,
-  PaymentRecoveryOperationType,
   PaymentSource,
   PaymentStatus,
   PaymentTransactionKind,
@@ -31,10 +30,13 @@ import {
 } from "@/lib/payment-recovery";
 import {
   buildBookingModificationRefundMetadata,
+  buildCapacityClaimFailedRefundRecoveryIdempotencyKey,
   buildCapacityClaimFailedRefundStripeKeyPrefix,
   buildDuplicateCaptureRefundRecoveryIdempotencyKey,
   buildDuplicateCaptureRefundStripeKeyPrefix,
 } from "@/lib/payment-recovery-keys";
+import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
+import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -50,10 +52,8 @@ import {
   MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
   type ManualSettlementReversalEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
-import {
-  recordBookingEvent,
-  recordDuplicateCaptureRefundEvent,
-} from "@/lib/booking-events";
+import { closeCapacityRaceRefundRecordingEvent, recordBookingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
+import { alertCapacityRaceRefundShortfall, raiseCapacityRaceRefundShortfallTask } from "@/lib/capacity-race-refund-shortfall";
 import {
   sendAdminDuplicateCaptureRefundAlert,
   sendAdminPaymentFailureAlert,
@@ -72,6 +72,12 @@ import {
   MANUAL_SETTLE_FROM_PAYMENT_STATUS_LIST,
 } from "@/lib/booking-payment-state";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
+import {
+  findLiveSupersededIntentOperation,
+  listLiveSupersededIntentIds,
+  SUPERSEDED_INTENT_OPERATION_TYPES,
+} from "@/lib/superseded-intent-ownership";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import {
   bookingHasCapacityOverride,
@@ -134,73 +140,34 @@ const PAYABLE_SUCCESS_STATUSES = new Set<string>(PAYABLE_SUCCESS_STATUS_LIST);
 // path offering an action that was certain to 409, with a message ("changed
 // while you were recording it") that was simply untrue — nothing had changed.
 
-// #1992 (superseded-handoff exclusion) — the pre-existing superseded-intent
-// machinery (booking-payment-cleanup queues a CANCEL_PAYMENT_INTENT recovery
-// operation; when the cancel loses to a late capture, payment-recovery's
-// handoff marks that transaction SUCCEEDED and queues a
-// REFUND_SUPERSEDED_PAYMENT operation for the cron) transiently produces
-// EXACTLY the shape the duplicate-capture predicate below hunts for: another
-// SUCCEEDED PRIMARY Stripe capture with net cash under a different intent id,
-// with no duplicate_capture adjudication marker (the handoff never passes
-// through markBookingPaymentSucceeded). That capture's money is already spoken
-// for — the recovery cron will refund it under its
-// `payment_recovery_refund_<txn>_<pi>` key — so treating it as "the
-// settlement" would refund the REAL settlement as the duplicate and, once the
-// cron also refunds the superseded capture, leave the booking PAID at zero net
-// cash. A superseded-machinery operation counts as LIVE while it is not
-// SUCCEEDED: PENDING, PROCESSING and FAILED (retrying or exhausted, where the
-// money is still adjudicated to that machinery and admins were alerted). A
-// SUCCEEDED cancel operation either actually cancelled the intent (its
-// transaction is FAILED — never a predicate candidate) or handed off to a
-// refund operation that is enqueued BEFORE the cancel operation completes; a
-// SUCCEEDED refund operation leaves the transaction REFUNDED, which predicate
-// (b) already excludes. So `status != SUCCEEDED` across both types covers the
-// whole handoff window with no gap.
-const SUPERSEDED_INTENT_OPERATION_TYPES = [
-  PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-  PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
-] as const;
-
 /**
- * Guard (b′): every intent id on this payment whose money a live
- * superseded-intent recovery operation already owns. Run under lock(1) inside
- * the reconciliation transaction; the result feeds the `notIn` exclusion of
- * the duplicate-capture candidate query.
+ * #1992 guard (b): which captures could be the settlement an arriving capture
+ * duplicates - another captured PRIMARY row with net cash: a Stripe one under a
+ * different intent no superseded-intent operation owns (b′), or any non-Stripe
+ * one (#2262). The duplicate-capture guard reads it oldest first (#4177);
+ * exported so the real-PostgreSQL proof repeats the exact read.
  */
-async function listLiveSupersededIntentIds(
-  tx: Prisma.TransactionClient,
-  paymentId: string
-): Promise<string[]> {
-  const operations = await tx.paymentRecoveryOperation.findMany({
-    where: {
-      paymentId,
-      type: { in: [...SUPERSEDED_INTENT_OPERATION_TYPES] },
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    select: { paymentIntentId: true },
-  });
-  return [...new Set(operations.map((operation) => operation.paymentIntentId))];
-}
-
-/**
- * Guard (c′), belt-and-braces sibling of (b′) with a deliberately DIFFERENT
- * query shape (direct intent-id lookup, not scoped to a payment): does a live
- * superseded-intent recovery operation own this specific intent's money? Used
- * to re-check the matched "settlement" candidate so that even if it slipped
- * the (b′) exclusion, the arriving capture stays plain already_paid.
- */
-async function findLiveSupersededIntentOperation(
-  tx: Prisma.TransactionClient,
-  paymentIntentId: string
-) {
-  return tx.paymentRecoveryOperation.findFirst({
-    where: {
-      paymentIntentId,
-      type: { in: [...SUPERSEDED_INTENT_OPERATION_TYPES] },
-      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-    },
-    select: { id: true },
-  });
+export function otherSettledCaptureWhere(input: {
+  paymentId: string;
+  arrivingPaymentIntentId: string;
+  liveSupersededIntentIds: string[];
+}) {
+  return {
+    paymentId: input.paymentId,
+    kind: PaymentTransactionKind.PRIMARY,
+    status: { in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST] },
+    OR: [
+      {
+        source: PaymentSource.STRIPE,
+        stripePaymentIntentId: {
+          not: input.arrivingPaymentIntentId,
+          notIn: input.liveSupersededIntentIds,
+        },
+        NOT: { stripePaymentIntentId: null },
+      },
+      { source: { not: PaymentSource.STRIPE } },
+    ],
+  } satisfies Prisma.PaymentTransactionWhereInput;
 }
 
 async function alertRefundFailure({
@@ -1184,25 +1151,15 @@ async function settleBookingPaymentInTransaction(
           tx,
           payment.id
         );
+        // #4177 (`INV-PAY-133`): when several qualify, the OLDEST-INSERTED is the
+        // settled one (#4163's rule): (c′) re-checks it, `settledPaymentIntentId` names it.
         const otherSettledCapture = await tx.paymentTransaction.findFirst({
-          where: {
+          orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+          where: otherSettledCaptureWhere({
             paymentId: payment.id,
-            kind: PaymentTransactionKind.PRIMARY,
-            status: {
-              in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST],
-            },
-            OR: [
-              {
-                source: PaymentSource.STRIPE,
-                stripePaymentIntentId: {
-                  not: paymentIntentId,
-                  notIn: liveSupersededIntentIds,
-                },
-                NOT: { stripePaymentIntentId: null },
-              },
-              { source: { not: PaymentSource.STRIPE } },
-            ],
-          },
+            arrivingPaymentIntentId: paymentIntentId,
+            liveSupersededIntentIds,
+          }),
           select: { id: true, stripePaymentIntentId: true },
         });
 
@@ -1442,12 +1399,9 @@ async function settleBookingPaymentInTransaction(
       // both mint identical `capacity_claim_failed_<bookingId>_<pi>_<txn>_
       // <amount>` Stripe keys, Stripe answers repeats with the original
       // refunds, and the ledger dedupes on refund id.
-      const { slices: refundPlan, plannedAmountCents: plannedRefundCents } =
-        await planStripeRefundAllocation({
-          paymentId: payment.id,
-          amountCents,
-          store: tx,
-        });
+      const { slices: refundPlan, plannedAmountCents: plannedRefundCents } = await planStripeRefundAllocation({ paymentId: payment.id, amountCents, store: tx });
+      // #4154 (`INV-PAY-135`): what the plan does not carry is a hand-back task to check, raised with the cancel.
+      const shortfallTaskRaised = await raiseCapacityRaceRefundShortfallTask(tx, { bookingId: booking.id, paymentId: payment.id, paymentIntentId, chargedCents: amountCents, plannedRefundCents, format: settlement.format });
       if (plannedRefundCents > 0) {
         await enqueueCapacityClaimFailedRefundRecovery({
           bookingId: booking.id,
@@ -1477,7 +1431,7 @@ async function settleBookingPaymentInTransaction(
         paymentId: payment.id,
         bumpedBookingIds: [] as string[],
         refundPlan,
-        plannedRefundCents,
+        plannedRefundCents, shortfallTaskRaised,
       };
     }
 
@@ -2063,8 +2017,10 @@ export async function markBookingPaymentSucceeded({
     // cancellation. The rest of the audit trail is unchanged: the
     // PaymentRecoveryOperation row, the PaymentRefund ledger entries, this log
     // line and the admin alert below.
+    const keepRefusalOwed = (attempt: RefundAttempt) =>
+      keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
     try {
-      await refundPaymentTransactions({
+      const refundResult = await refundPaymentTransactions({
         format,
         paymentId: reconciliation.paymentId,
         amountCents: plannedRefundCents,
@@ -2085,27 +2041,26 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
+      // #4103 (`INV-PAY-130`): a refusal stays owed, re-planned; the failure branch alerts once.
+      const refused = await keepRefusalOwed(refundResult);
+      if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
-      // close leaves a PENDING row whose replay re-requests the identical
-      // slice/keys, which Stripe answers with the original refund.
-      const markResult = await markDuplicateCaptureRefundRecoverySucceeded({
-        bookingId,
-        paymentIntentId,
-      }).catch((markErr) => {
-        logger.error(
-          { err: markErr, bookingId, paymentIntentId },
-          "Failed to mark duplicate-capture refund recovery succeeded; the cron will replay the frozen plan idempotently"
-        );
-        return null;
-      });
+      // close leaves an open row whose replay re-requests the identical
+      // slice/keys, which Stripe answers with the original refund. #4144: only
+      // on the plan sent, so a row another writer re-planned stays owed.
+      const closed = await closeDoorRow(
+        { door: "duplicate-capture", idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+          bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format },
+        async (idempotencyKey) => (await markDuplicateCaptureRefundRecoverySucceeded({ idempotencyKey, sentPlan: refundPlan })).count === 1,
+      );
 
       // #2008 — record the admin-only history event EXACTLY ONCE, gated on this
-      // call being the one that flipped the operation to SUCCEEDED (count > 0).
-      // If the mark was lost or the cron already closed the operation, this
+      // call being the one that flipped the operation to SUCCEEDED. If the
+      // close was lost or the cron already closed the operation, this
       // path records nothing and the cron-replay path owns the event, so the
       // inline and cron paths never double-record. Post-commit, base client.
-      if (markResult && markResult.count > 0) {
+      if (closed) {
         await recordDuplicateCaptureRefundEvent({
           bookingId,
           amountCents: plannedRefundCents,
@@ -2151,50 +2106,46 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund a duplicate capture; the pre-persisted recovery operation will replay the refund"
       );
+      // #4103: one slice (the duplicate's own capture), so no refusal comes before a throw.
+      const refundErrorMessage = refundError instanceof Error ? refundError.message : String(refundError);
       await recordDuplicateCaptureRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
-        message:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        message: refundErrorMessage,
       }).catch((recordErr) =>
         logger.error(
           { err: recordErr, bookingId, paymentIntentId },
           "Failed to record inline duplicate-capture refund failure on the recovery operation"
         )
       );
-      sendAdminDuplicateCaptureRefundAlert({
-        memberName: `${bookingOwner(reconciliation.booking).member.firstName} ${bookingOwner(reconciliation.booking).member.lastName}`,
-        checkIn: reconciliation.booking.checkIn,
-        checkOut: reconciliation.booking.checkOut,
-        amountCents: plannedRefundCents,
-        paymentIntentId,
-        settledPaymentIntentId: settledPaymentIntentId ?? null,
-        operationReference: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
-          bookingId,
-          paymentIntentId
-        ),
-        errorMessage:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
-        refundFailed: true,
-      }, format).catch((alertErr) =>
-        logger.error(
-          { err: alertErr, bookingId, paymentIntentId },
-          "Failed to alert admins about the failed duplicate-capture refund"
-        )
-      );
+      // #4103: a refusal whose row a worker already holds is alerted by that worker.
+      if (!(refundError instanceof RefusedCardRefundError && !refundError.replanned)) {
+        sendAdminDuplicateCaptureRefundAlert({
+          memberName: `${bookingOwner(reconciliation.booking).member.firstName} ${bookingOwner(reconciliation.booking).member.lastName}`,
+          checkIn: reconciliation.booking.checkIn,
+          checkOut: reconciliation.booking.checkOut,
+          amountCents: plannedRefundCents,
+          paymentIntentId,
+          settledPaymentIntentId: settledPaymentIntentId ?? null,
+          operationReference: buildDuplicateCaptureRefundRecoveryIdempotencyKey(
+            bookingId,
+            paymentIntentId
+          ),
+          errorMessage: refundErrorMessage,
+          refundFailed: true,
+        }, format).catch((alertErr) =>
+          logger.error(
+            { err: alertErr, bookingId, paymentIntentId },
+            "Failed to alert admins about the failed duplicate-capture refund"
+          )
+        );
+      }
 
       return {
         outcome: "duplicate_capture_refund_failed",
         bookingId,
         bumpedBookingIds: [],
-        refundError:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        refundError: refundErrorMessage,
       };
     }
   }
@@ -2207,15 +2158,15 @@ export async function markBookingPaymentSucceeded({
       type: BookingEventType.CANCELLED,
       actorMemberId: bookingOwner(reconciliation.booking).memberId,
       amountCents,
-      reason:
-        "These dates filled up before payment could be secured, so the booking was cancelled and refunded.",
+      reason: // #4125: written before the attempt, so "being refunded"; REFUNDED records it made.
+        "These dates filled up before payment could be secured, so the booking was cancelled and the full amount is being refunded.",
       snapshot: {
         policySummary:
-          "These dates were no longer available when payment completed, so the full amount was refunded.",
-        refundMethod: "card",
+          "These dates were no longer available when payment completed, so the full amount is being refunded.",
+        refundMethod: "card", cancelledBecause: "capacity_race",
         refundPercentage: 100,
         paidAmountCents: amountCents,
-        settledAmountCents: amountCents,
+        settledAmountCents: reconciliation.plannedRefundCents, // #4125: what the plan refunds; any rest is the club's to follow up.
         retainedAmountCents: 0,
       },
     });
@@ -2226,15 +2177,12 @@ export async function markBookingPaymentSucceeded({
     // operation for the recovery cron — never a stranded charge that only an
     // alert email knows about.
     const { refundPlan, plannedRefundCents } = reconciliation;
-    if (plannedRefundCents < amountCents) {
-      // Mirror-vs-ledger drift (same guard as booking-cancel): refund what
-      // the payment ledger actually shows refundable and surface the gap.
-      logger.error(
-        { bookingId, paymentIntentId, amountCents, plannedRefundCents },
-        "Capacity-race refund plan covers less than the captured amount; refunding what the payment ledger shows refundable"
-      );
-    }
+    // Mirror-vs-ledger drift (same guard as booking-cancel): refund what the
+    // payment ledger actually shows refundable; #4125: the officers are told the rest, once.
+    await alertCapacityRaceRefundShortfall({ bookingId, paymentIntentId, chargedCents: amountCents, plannedRefundCents, taskRaised: reconciliation.shortfallTaskRaised }, format);
 
+    const keepRefusalOwed = (attempt: RefundAttempt) =>
+      keepRefusedPrePersistedRefundOwed({ bookingId, idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId), plan: refundPlan, attempt, format, alertOfficers: false });
     try {
       if (refundPlan.length === 0 || plannedRefundCents <= 0) {
         throw new Error(
@@ -2242,7 +2190,7 @@ export async function markBookingPaymentSucceeded({
         );
       }
 
-      await refundPaymentTransactions({
+      const refundResult = await refundPaymentTransactions({
         format,
         paymentId: reconciliation.paymentId,
         amountCents: plannedRefundCents,
@@ -2264,27 +2212,20 @@ export async function markBookingPaymentSucceeded({
           paymentIntentId
         ),
       });
+      // #4103 (`INV-PAY-130`): a refusal stays owed, re-planned, no REFUNDED event; the failure branch alerts once.
+      const refused = await keepRefusalOwed(refundResult);
+      if (refused) throw refused;
 
       // Happy-path close of the pre-persisted operation. Best-effort: a lost
       // close leaves a PENDING row whose replay re-requests the identical
-      // slices/keys, which Stripe answers with the original refunds.
-      await markCapacityClaimFailedRefundRecoverySucceeded({
-        bookingId,
-        paymentIntentId,
-      }).catch((markErr) =>
-        logger.error(
-          { err: markErr, bookingId, paymentIntentId },
-          "Failed to mark capacity-race refund recovery succeeded; the cron will replay the frozen plan idempotently"
-        )
-      );
-
-      await recordBookingEvent({
-        bookingId,
-        type: BookingEventType.REFUNDED,
-        actorMemberId: bookingOwner(reconciliation.booking).memberId,
-        amountCents,
-        reason: "Automatic refund after lodge capacity was no longer available.",
-      });
+      // slices/keys, which Stripe answers with the original refunds - and
+      // (#4125) records the REFUNDED event, which commits with this close only
+      // when it is the one that closed the row, for what was refunded.
+      await closeDoorRow({ door: "capacity-race", idempotencyKey: buildCapacityClaimFailedRefundRecoveryIdempotencyKey(bookingId, paymentIntentId),
+        bookingId, paymentIntentId, amountCents: plannedRefundCents, refundId: refundResult.refunds[0]?.refundId ?? null, format }, (idempotencyKey) => closeCapacityRaceRefundRecordingEvent(
+        { bookingId, amountCents: plannedRefundCents, actorMemberId: bookingOwner(reconciliation.booking).memberId },
+        async (tx) => (await markCapacityClaimFailedRefundRecoverySucceeded({ idempotencyKey, sentPlan: refundPlan, store: tx })).count === 1,
+      ));
 
       return {
         outcome: "cancelled_refunded",
@@ -2303,33 +2244,35 @@ export async function markBookingPaymentSucceeded({
         { err: refundError, bookingId, paymentIntentId },
         "Failed to auto-refund booking after final capacity claim failed; the pre-persisted recovery operation will replay the refund"
       );
+      // #4103: a slice refused before a later one threw is re-planned now, and named in the alert.
+      const refusedBefore = await keepRefusalOwed({ error: refundError });
+      const refundErrorMessage = [refusedBefore?.message, refundError instanceof Error ? refundError.message : String(refundError)].filter(Boolean).join(" ");
       await recordCapacityClaimFailedRefundRecoveryInlineError({
         bookingId,
         paymentIntentId,
-        message:
-          refundError instanceof Error
-            ? refundError.message
-            : String(refundError),
+        message: refundErrorMessage,
       }).catch((recordErr) =>
         logger.error(
           { err: recordErr, bookingId, paymentIntentId },
           "Failed to record inline capacity-race refund failure on the recovery operation"
         )
       );
-      await alertRefundFailure({
-        format,
-        booking: reconciliation.booking,
-        paymentIntentId,
-        amountCents,
-        error: refundError,
-      });
+      // #4103: a refusal whose row a worker already holds is alerted by that worker.
+      if (!(refundError instanceof RefusedCardRefundError && !refundError.replanned)) {
+        await alertRefundFailure({
+          format,
+          booking: reconciliation.booking,
+          paymentIntentId,
+          amountCents,
+          error: refundErrorMessage,
+        });
+      }
 
       return {
         outcome: "cancelled_refund_failed",
         bookingId,
         bumpedBookingIds: [],
-        refundError:
-          refundError instanceof Error ? refundError.message : String(refundError),
+        refundError: refundErrorMessage,
       };
     }
   }

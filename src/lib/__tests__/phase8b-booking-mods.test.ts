@@ -87,7 +87,21 @@ vi.mock("@/lib/prisma", () => ({
     promoCode: { update: mockUpdate },
     choreAssignment: { findMany: mockFindMany, delete: mockDelete, deleteMany: mockDeleteMany },
     season: { findMany: mockFindMany },
-    payment: { update: mockUpdate },
+    payment: {
+      update: mockUpdate,
+      // #4036: with no stored customer, the door reads the owner after commit
+      // and resolves the customer as the recovery runner does.
+      findUnique: vi.fn(async () => ({
+        additionalAmountCents: 0,
+        additionalPaymentStatus: null,
+        stripeCustomerId: null,
+        booking: {
+          organisationId: null,
+          member: { id: "m1", email: "alice@test.com", firstName: "Alice", lastName: "Smith" },
+          organisation: null,
+        },
+      })),
+    },
     // #3954 round 7: the door re-reads its new intent (`isMintedAskStillLive`).
     paymentTransaction: { findUnique: vi.fn().mockResolvedValue({ status: "PENDING", withdrawnAt: null }) },
     member: { count: mockMemberCount, findUnique: mockFindUnique, findMany: mockFindMany },
@@ -1988,7 +2002,8 @@ describe("POST /api/bookings/[id]/guests", () => {
       booking.checkOut,
       [
         ...booking.guests,
-        { stayStart: booking.checkIn, stayEnd: booking.checkOut },
+        // A typed guest is no member, said so (#3817: the party's members).
+        { stayStart: booking.checkIn, stayEnd: booking.checkOut, memberId: null },
       ],
       "bk1",
       tx
@@ -3251,6 +3266,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders date change template", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Alice",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3270,7 +3286,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Booking Modified");
     expect(html).toContain("Alice");
@@ -3282,6 +3298,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders guest add template", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Bob",
       modificationType: "GUEST_ADD",
       oldCheckIn: new Date("2026-06-01"),
@@ -3301,7 +3318,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Guests Added");
     expect(html).toContain("Previous Guests");
@@ -3312,6 +3329,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders guest remove with refund", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Carol",
       modificationType: "GUEST_REMOVE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3331,7 +3349,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Guest Removed");
     expect(html).toContain("refund");
@@ -3341,6 +3359,7 @@ describe("bookingModifiedTemplate", () => {
   it("shows change fee when present", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Dave",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3360,7 +3379,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).toContain("Change Fee");
     expect(html).toContain("$50.00");
@@ -3370,6 +3389,7 @@ describe("bookingModifiedTemplate", () => {
   it("renders Internet Banking additional payment context", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "Eve",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3392,7 +3412,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
 
     expect(html).toContain("additional Internet Banking payment");
@@ -3404,6 +3424,7 @@ describe("bookingModifiedTemplate", () => {
   it("escapes HTML in firstName", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
+      addedGuests: [],
       firstName: "<script>alert('xss')</script>",
       modificationType: "DATE_CHANGE",
       oldCheckIn: new Date("2026-06-01"),
@@ -3423,7 +3444,7 @@ describe("bookingModifiedTemplate", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
     }, CLUB_FORMAT_TEST);
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");

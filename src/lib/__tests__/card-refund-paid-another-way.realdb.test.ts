@@ -93,6 +93,7 @@ let recordStripeRefundsAgainstTransaction: (typeof import("@/lib/payment-transac
 let realElapsedMs: (typeof import("@/lib/__tests__/helpers/clock"))["realElapsedMs"];
 let resolveRefundNoteEligibleCash: (typeof import("@/lib/refund-note-eligible-cash"))["resolveRefundNoteEligibleCash"];
 let readRefundCreditNoteGap: (typeof import("@/lib/xero-admin-health"))["readRefundCreditNoteGap"];
+let getRefundsMissingXeroCreditNotes: (typeof import("@/lib/xero-admin-health"))["getRefundsMissingXeroCreditNotes"];
 let enqueueXeroRefundCreditNoteOperation: (typeof import("@/lib/xero-operation-outbox"))["enqueueXeroRefundCreditNoteOperation"];
 let createXeroKeptLateCaptureInvoice: (typeof import("@/lib/xero-kept-late-capture-invoice"))["createXeroKeptLateCaptureInvoice"];
 let resolveCardRefundPaidTwice: (typeof import("@/lib/card-refund-paid-twice"))["resolveCardRefundPaidTwice"];
@@ -116,6 +117,7 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.paymentRefund.deleteMany({ where: { paymentId: PAYMENT_ID } });
+      await prisma.refundRequest.deleteMany({ where: { bookingId: BOOKING_ID } });
     }
 
     async function deleteFixtures() {
@@ -150,7 +152,7 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
       ({ recordStripeRefundsAgainstTransaction } = await import("@/lib/payment-transactions"));
       ({ realElapsedMs } = await import("@/lib/__tests__/helpers/clock"));
       ({ resolveRefundNoteEligibleCash } = await import("@/lib/refund-note-eligible-cash"));
-      ({ readRefundCreditNoteGap } = await import("@/lib/xero-admin-health"));
+      ({ readRefundCreditNoteGap, getRefundsMissingXeroCreditNotes } = await import("@/lib/xero-admin-health"));
       ({ enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox"));
       ({ createXeroKeptLateCaptureInvoice } = await import("@/lib/xero-kept-late-capture-invoice"));
       ({ resolveCardRefundPaidTwice, listCardRefundsPaidTwice } = await import("@/lib/card-refund-paid-twice"));
@@ -324,6 +326,34 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
       expect(notes[0]!.requestPayload).toMatchObject({ refundAmountCents: REFUND_CENTS, refundMethod: "internet-banking" });
     });
 
+    it("#4120: an appeal's dead card refund closed in part reads its unpaid rest through the appeal's outcome", async () => {
+      // The same dead row, as an approved refund appeal's own card refund.
+      const request = await prisma.refundRequest.create({
+        data: { bookingId: BOOKING_ID, memberId: MEMBER_ID, reason: "race 3372 paw appeal", requestedAmountCents: REFUND_CENTS, status: "APPROVED", approvedAmountCents: REFUND_CENTS, reviewedBy: OFFICER_ID, reviewedAt: new Date("2026-06-20T00:00:00.000Z") },
+        select: { id: true },
+      });
+      const { buildRefundRequestRefundRecoveryIdempotencyKey } = await import("@/lib/payment-recovery-keys");
+      await prisma.paymentRecoveryOperation.update({ where: { id: OPERATION_ID }, data: { idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey(request.id) } });
+      const { readApprovedAppealOutcomes } = await import("@/lib/refund-appeal-outcome");
+      const { approvedAppealRefundedCents } = await import("@/lib/refund-request-card-refund-copy");
+      const read = async () =>
+        (await readApprovedAppealOutcomes(prisma, [{ id: request.id, status: "APPROVED", booking: { payment: { id: PAYMENT_ID } } }])).get(request.id);
+      expect(await read()).toMatchObject({ cardRefundState: "dead", cardRefundOwedCents: REFUND_CENTS });
+
+      const paidCents = 2_000;
+      await closeCardRefundPaidAnotherWay({
+        operationId: OPERATION_ID,
+        amountCents: paidCents,
+        paidBack: "partial",
+        expectedOwedCents: REFUND_CENTS,
+        note: "Bank transfer, part, ref RACE",
+        actingMemberId: OFFICER_ID,
+      });
+      const outcome = await read();
+      expect(outcome).toMatchObject({ cardRefundState: "made", cardRefundOwedCents: 0, cardRefundClosedUnpaidCents: REFUND_CENTS - paidCents });
+      expect(approvedAppealRefundedCents(REFUND_CENTS, outcome ?? {})).toBe(paidCents);
+    });
+
     it("C1: a card refund recorded while the close waits for the payment row is read by the close, which refuses - the member is not paid twice", async () => {
       let release!: () => void;
       const released = new Promise<void>((resolve) => {
@@ -479,6 +509,45 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
           },
         });
         expect(await gapNow()).toMatchObject({ paidAnotherWayUncoveredCents: 0, cardAskCents: CARD_CENTS });
+      });
+
+      // #4104 delta review (A-F1): a close a failed refund's card note, still in
+      // Xero, partly answers keeps that cover on its record. Its own note is for
+      // the rest, so the close is fully covered, and the self-heal (by the
+      // missing-notes snapshot) and the repair tool (by the gap) ask a later
+      // card refund's note in full - never short by the card note's share.
+      it("MUTATION (A-F1): after a close its card note partly answers, the self-heal and the repair tool ask a later card refund in full", async () => {
+        const COVER_CENTS = 2_000;
+        const record = await prisma.manualRefundTask.findFirstOrThrow({
+          where: { bookingId: BOOKING_ID, occurrenceKey: { startsWith: "card-refund-paid-another-way:" } },
+        });
+        await prisma.manualRefundTask.update({
+          where: { id: record.id },
+          data: { reviewContext: { paidAnotherWayCardNoteCover: COVER_CENTS } },
+        });
+        await prisma.xeroSyncOperation.update({
+          where: { id: (await closeNote()).id },
+          data: { status: "SUCCEEDED", xeroObjectId: "cn_race_3372_paw_bank" },
+        });
+        await linkNote("cn_race_3372_paw_bank", REFUND_CENTS - COVER_CENTS);
+        await linkNote("cn_race_3372_paw_failed_card", COVER_CENTS);
+
+        // The repair tool's ask (`xero-booking-repair-load.ts`).
+        expect(await gapNow()).toMatchObject({ uncoveredCents: CARD_CENTS, paidAnotherWayUncoveredCents: 0, cardAskCents: CARD_CENTS });
+        // The self-heal's (`cron-credit-reconciliation.ts`), and what it queues.
+        const missing = (await getRefundsMissingXeroCreditNotes({ now: new Date("2100-01-01T00:00:00.000Z") })).payments.find(
+          (payment) => payment.paymentId === PAYMENT_ID,
+        );
+        expect(missing).toBeDefined();
+        const cardAskCents = missing!.uncoveredCents - missing!.paidAnotherWayUncoveredCents;
+        expect(cardAskCents).toBe(CARD_CENTS);
+        await expect(enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, cardAskCents)).resolves.toMatchObject({
+          queueOperationId: expect.any(String),
+        });
+        const cardNote = (await prisma.xeroSyncOperation.findMany({ where: { localModel: "Payment", localId: PAYMENT_ID } })).find(
+          (operation) => (operation.requestPayload as { paidAnotherWayTaskId?: string } | null)?.paidAnotherWayTaskId === undefined,
+        );
+        expect(cardNote?.requestPayload).toMatchObject({ refundAmountCents: CARD_CENTS });
       });
 
       // Round 8 (M3): sized by its record, over real eligible cash - never by a

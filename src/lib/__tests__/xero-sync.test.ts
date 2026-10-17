@@ -12,10 +12,12 @@ const mocks = vi.hoisted(() => ({
   operationCreate: vi.fn(),
   transaction: vi.fn(),
   txPaymentFindUnique: vi.fn(),
+  txPaymentUpdateMany: vi.fn(),
   txLinkUpdateMany: vi.fn(),
   txLinkUpsert: vi.fn(),
   txLinkFindUnique: vi.fn(),
   txLinkFindMany: vi.fn(),
+  txExecuteRaw: vi.fn(),
   operationUpdate: vi.fn(),
   operationUpdateMany: vi.fn(),
   operationFindUniqueOrThrow: vi.fn(),
@@ -318,6 +320,46 @@ describe("findCanonicalPaymentRefundCreditNote", () => {
     );
   });
 
+  describe("INV-ADDPAY-041 (#4091): a note Xero voided is never re-adopted", () => {
+    // A bank-transfer payment whose one refund note Xero voided: its mirror is
+    // inactive and recorded VOIDED, but its refund payment link and its
+    // succeeded create still name it.
+    function voidedNoteOnPayment(field: string | null, active: Array<{ xeroObjectId: string; xeroObjectNumber: string }> = []) {
+      mocks.paymentFindUnique.mockResolvedValue({ xeroRefundCreditNoteId: field });
+      mocks.linkFindMany.mockImplementation(async ({ where }: any) => {
+        if (where?.role === "REFUND_CREDIT_NOTE") {
+          return where.active
+            ? active
+            : [{ xeroObjectId: "cn_voided", metadata: { amountCents: 20_000, status: "VOIDED" } }, ...active.map((link) => ({ ...link, metadata: { amountCents: 500 } }))];
+        }
+        if (where?.role === "REFUND_PAYMENT") return [{ metadata: { creditNoteId: "cn_voided" } }];
+        return [];
+      });
+      mocks.operationFindFirst.mockImplementation(async ({ where }: any) =>
+        where.xeroObjectId.notIn?.includes("cn_voided") ? null : { xeroObjectId: "cn_voided", xeroObjectNumber: "CN-V" },
+      );
+    }
+
+    it("MUTATION: with the field released, neither its refund payment nor its create re-adopts it - a later request raises a fresh note", async () => {
+      voidedNoteOnPayment(null);
+
+      await expect(findCanonicalPaymentRefundCreditNote("payment_1")).resolves.toBeNull();
+      expect(mocks.operationFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ xeroObjectId: { not: null, notIn: ["cn_voided"] } }) }),
+      );
+    });
+
+    it("MUTATION: a field still naming the voided note does not re-adopt it, and a live note is still found", async () => {
+      voidedNoteOnPayment("cn_voided", [{ xeroObjectId: "cn_live", xeroObjectNumber: "CN-L" }]);
+
+      await expect(findCanonicalPaymentRefundCreditNote("payment_1")).resolves.toEqual({
+        xeroObjectId: "cn_live",
+        xeroObjectNumber: "CN-L",
+        source: "link",
+      });
+    });
+  });
+
   it("falls back to the latest succeeded credit note create when no durable link exists yet", async () => {
     mocks.linkFindMany.mockImplementation(async ({ where }: any) => {
       if (where?.role === "REFUND_CREDIT_NOTE") {
@@ -341,13 +383,17 @@ describe("upsertXeroObjectLink", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.txLinkUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.txPaymentUpdateMany.mockResolvedValue({ count: 1 });
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
     mocks.txLinkFindUnique.mockResolvedValue(null);
     mocks.txLinkFindMany.mockResolvedValue([]);
+    mocks.txExecuteRaw.mockResolvedValue(0);
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
+        $executeRaw: mocks.txExecuteRaw,
         payment: {
           findUnique: mocks.txPaymentFindUnique,
+          updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
           updateMany: mocks.txLinkUpdateMany,
@@ -437,6 +483,122 @@ describe("upsertXeroObjectLink", () => {
     });
   });
 
+  describe("#4091: a bank-transfer payment's one canonical note, voided in Xero", () => {
+    const voidCanonical = () =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE",
+        metadata: { status: "VOIDED", total: 200 }, mergeMetadata: true,
+      });
+
+    it("MUTATION: the mirror is written inactive and the pointer is released", async () => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await voidCanonical();
+
+      // Before the fix the canonical branch wrote it active: the field named it.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ active: false }), update: expect.objectContaining({ active: false }) }),
+      );
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: null },
+      });
+    });
+
+    it("MUTATION: a voided note retires no sibling, so the pointer can move to another live note", async () => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+      mocks.txLinkFindMany.mockResolvedValue([
+        { id: "link_review", xeroObjectId: "cn_review", metadata: { amountCents: 3000, perDelta: true }, createdAt: new Date("2026-06-03T00:00:00.000Z") },
+        { id: "link_other", xeroObjectId: "cn_other", metadata: { amountCents: 5000 }, createdAt: new Date("2026-06-02T00:00:00.000Z") },
+      ]);
+
+      await voidCanonical();
+
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: "cn_other" },
+      });
+    });
+
+    it("MUTATION: a redelivered void, after the pointer was released, stays inactive and retires nothing", async () => {
+      // With the field empty the canonical branch fell back to the incoming
+      // note itself, so a redelivery re-armed the mirror and retired siblings.
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await voidCanonical();
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false }) }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#4195: a refund request's own note, voided in Xero (INV-ADDPAY-041)", () => {
+    const writeRequestNote = (status: string | undefined) =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_request", role: "REFUND_REQUEST_CREDIT_NOTE",
+        metadata: { ...(status ? { status } : {}), total: 50 }, mergeMetadata: true,
+      });
+
+    it.each(["VOIDED", "DELETED", "voided"])("MUTATION: a %s mirror is written inactive, and moves no pointer and no sibling", async (status) => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await writeRequestNote(status);
+
+      // Before #4195 the request role skipped every void rule and stayed active.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ active: false }), update: expect.objectContaining({ active: false }) }),
+      );
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a live request note keeps the activity its write gives it", async () => {
+      await writeRequestNote("AUTHORISED");
+      await writeRequestNote(undefined);
+
+      for (const [call] of mocks.txLinkUpsert.mock.calls as Array<[{ create: { active: boolean }; update: { active: boolean } }]>) {
+        expect(call.create.active).toBe(true);
+        expect(call.update.active).toBe(true);
+      }
+      expect(mocks.txLinkUpsert).toHaveBeenCalledTimes(2);
+      // Never the payment's one note: it retires no refund note and reads no payment.
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentFindUnique).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION (race): a write naming no status keeps a void the stored row records - inactive, its status kept", async () => {
+      // The inbound void committed while this retry's write waited on the row lock.
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" } });
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_request", role: "REFUND_REQUEST_CREDIT_NOTE",
+        metadata: { amountCents: 5000, refundRequestId: "rr_1" },
+      });
+
+      const [call] = mocks.txLinkUpsert.mock.calls[0] as [{ create: { active: boolean }; update: { active: boolean; metadata: Record<string, unknown> } }];
+      expect(call.update.active).toBe(false);
+      expect(call.create.active).toBe(false);
+      // Replacing the metadata would drop the status the after-void key and the create check read.
+      expect(call.update.metadata).toEqual({ amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" });
+      // The stored row is read under its lock, in the write's own transaction.
+      // F-D: one row, by all five fields of its unique key, so a broader lock fails here.
+      const [template, ...values] = mocks.txExecuteRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+      expect(template.join("?").replace(/\s+/g, " ").trim()).toBe(
+        'SELECT 1 FROM "XeroObjectLink" WHERE "localModel" = ? AND "localId" = ? AND "xeroObjectType" = ? AND "xeroObjectId" = ? AND "role" = ? FOR UPDATE',
+      );
+      expect(values).toEqual(["Payment", "payment_1", "CREDIT_NOTE", "cn_request", "REFUND_REQUEST_CREDIT_NOTE"]);
+      expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
+    });
+
+    it("a write naming a status is judged on it, without reading the stored row", async () => {
+      await writeRequestNote("AUTHORISED");
+      expect(mocks.txExecuteRaw).not.toHaveBeenCalled();
+    });
+  });
+
   it("merges inbound metadata over the outbound per-delta keys when mergeMetadata is set (#1354)", async () => {
     const txLinkFindUnique = vi.fn().mockResolvedValue({
       metadata: { amountCents: 3000, watermarkCents: 8000 },
@@ -445,6 +607,7 @@ describe("upsertXeroObjectLink", () => {
       callback({
         payment: {
           findUnique: mocks.txPaymentFindUnique,
+          updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
           updateMany: mocks.txLinkUpdateMany,
@@ -564,14 +727,17 @@ describe("upsertXeroObjectLink", () => {
       callback({
         payment: {
           findUnique: mocks.txPaymentFindUnique,
+          updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: txLinkFindUnique,
+          findMany: mocks.txLinkFindMany,
         },
       })
     );
+    mocks.txLinkFindMany.mockResolvedValue([]);
     mocks.txPaymentFindUnique.mockResolvedValue({
       source: "STRIPE",
       xeroRefundCreditNoteId: "cn_delta",
@@ -607,6 +773,129 @@ describe("upsertXeroObjectLink", () => {
     );
     // Sibling per-delta links are untouched either way.
     expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    // The scalar named this note. With no other live note, it is cleared so
+    // the nightly report does not call the inactive mirror "missing".
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: null },
+    });
+  });
+
+  it("repoints the payment's refund-note pointer at the newest other live note when a void deactivates the one it named", async () => {
+    mocks.txLinkFindMany.mockResolvedValue([
+      {
+        id: "link_old",
+        xeroObjectId: "cn_older",
+        metadata: { status: "AUTHORISED" },
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        id: "link_new",
+        xeroObjectId: "cn_newer",
+        metadata: { status: "PAID" },
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+      {
+        id: "link_void_sibling",
+        xeroObjectId: "cn_also_void",
+        metadata: { status: "VOIDED" },
+        createdAt: new Date("2026-06-03T00:00:00.000Z"),
+      },
+    ]);
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_delta",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "DELETED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: "cn_newer" },
+    });
+  });
+
+  it("never repoints the refund-note pointer at a per-refund note when a void deactivates the one it named (#3880)", async () => {
+    mocks.txLinkFindMany.mockResolvedValue([
+      {
+        id: "link_canonical",
+        xeroObjectId: "cn_canonical",
+        metadata: { status: "AUTHORISED" },
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        id: "link_per_refund",
+        xeroObjectId: "cn_per_refund",
+        metadata: { status: "AUTHORISED", perDelta: true },
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+    ]);
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_delta",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroRefundCreditNoteId: "cn_delta" },
+      data: { xeroRefundCreditNoteId: "cn_canonical" },
+    });
+  });
+
+  it("leaves the refund-note pointer alone when a voided note is not the one it names", async () => {
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_other",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ active: false }),
+      }),
+    );
+    expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not move the refund-note pointer again once it no longer names the voided note", async () => {
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: null,
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED" },
+    });
+
+    expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
   });
 
   it("keeps every Stripe refund credit note link active so per-delta notes coexist (#1162)", async () => {

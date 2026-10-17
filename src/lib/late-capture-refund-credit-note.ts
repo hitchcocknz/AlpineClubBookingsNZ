@@ -9,6 +9,7 @@ import {
 import { hasXeroReceiptForLateCapture, readLateCaptureXeroReceipt } from "@/lib/late-capture-xero-receipt";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
+import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { lateCaptureRefundPaymentIntentId } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
@@ -276,6 +277,16 @@ export async function queueLateCaptureRefundCreditNote(params: {
 }
 
 /**
+ * The `kind` a `booking.payment.refunded_after_cancellation` entry names:
+ * every writer of that entry reads it here (#4149), so the rows are told apart
+ * by the row itself, whichever door refunded.
+ */
+export function lateCaptureAuditKind(captureKind: "primary" | "modification" | null): string | null {
+  if (captureKind === null) return null;
+  return captureKind === "primary" ? "primary" : ADDITIONAL_ASK_INTENT_TYPE;
+}
+
+/**
  * #3639: the record and the Xero correction of a treasurer-approved late-capture
  * refund, written wherever that refund actually went out - inline after the
  * approval, or by the recovery cron replaying it (review F4). The audit entry is
@@ -302,12 +313,7 @@ export async function finishApprovedLateCaptureRefund(refund: {
       paymentIntentId: refund.paymentIntentId,
       refundId: refund.refundId,
       amountCents: refund.amountCents,
-      kind:
-        refund.captureKind === null
-          ? null
-          : refund.captureKind === "primary"
-            ? "primary"
-            : "modification_additional",
+      kind: lateCaptureAuditKind(refund.captureKind),
       approvedByMemberId: refund.approvedByMemberId,
       manualRefundTaskId: refund.manualRefundTaskId,
     }),
@@ -349,13 +355,16 @@ export async function creditBackLateCaptureRefunds(paymentIntentId: string): Pro
  * The recovery cron's replay of a treasurer-approved refund the inline attempt
  * did not finish. The operation's own `paymentIntentId` is the payment's
  * representative intent, so the late capture's is read back off its prefix, and
- * the approving officer off the task that owns it.
+ * the approving officer off the task that owns it. The refund is the one the
+ * replay read back for the plan's first slice (#4126), as the inline path names
+ * its own.
  */
 export async function finishApprovedLateCaptureRefundAfterReplay(operation: {
   bookingId: string;
   paymentId: string;
   stripeKeyPrefix: string | null;
   amountCents: number;
+  refundId: string | null;
 }): Promise<void> {
   const paymentIntentId = lateCaptureRefundPaymentIntentId(
     operation.stripeKeyPrefix ?? "",
@@ -370,7 +379,7 @@ export async function finishApprovedLateCaptureRefundAfterReplay(operation: {
     paymentId: operation.paymentId,
     paymentIntentId,
     amountCents: operation.amountCents,
-    refundId: null,
+    refundId: operation.refundId,
     captureKind: null,
     approvedByMemberId: task?.completedByMemberId ?? null,
     manualRefundTaskId: task?.id ?? null,

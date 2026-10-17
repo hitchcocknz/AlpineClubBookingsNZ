@@ -39,7 +39,10 @@
  *           Open, it is the appeal's money in flight; paid, it posts its own
  *           refund and is taken back out of `refundedAmountCents` here;
  *           dismissed, nothing moved. Either way the kept figure stays what
- *           the cancel kept (#3854 sync lens F1).
+ *           the cancel kept (#3854 sync lens F1). An appeal refunded to the
+ *           organiser's card (#3956, `INV-PAY-123`) is the same: its debt
+ *           and refund are in the child's refunds, made or owed, and come back
+ *           out by its key (`organiserCardAppealRefundsFromRows`).
  */
 import type { BookingStatus, ManualRefundTaskStatus, PaymentSource } from "@prisma/client";
 
@@ -59,7 +62,7 @@ import {
   type OrganiserChildRefundEvidence,
 } from "@/lib/group-settlement-refund-plan";
 import { isEditRefundHandBackTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
-import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
+import { isOrganiserChildAppealRefundKey, isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 
 export type GroupChildSettlement = {
@@ -160,6 +163,37 @@ export function groupChildHandBacksFromRows(
 }
 
 /**
+ * #3956 (`INV-PAY-123`): a child's approved refund appeals paid out of the
+ * organiser's combined card payment, which the cancel never counted:
+ *
+ *  - `recordedCents`: the debts Stripe has made (`SUCCEEDED`), which the
+ *    executor wrote into `refundedAmountCents` and the refund rows;
+ *  - `committedCents`: every such debt, made or still owed, as
+ *    `organiserChildCommittedRefundFrom` counts them (made through the mirror
+ *    and the refund rows, owed through `childOwedCents`).
+ *
+ * Each debt's amount is frozen at the approval and refused rather than clamped,
+ * so its refund is exactly that amount.
+ */
+export type OrganiserCardAppealRefunds = { recordedCents: number; committedCents: number };
+
+export function organiserCardAppealRefundsFromRows(input: {
+  paymentId: string;
+  paymentIntentId: string | null;
+  operations: ReadonlyArray<{ status: string; amountCents: number; idempotencyKey: string; paymentId: string; paymentIntentId: string }>;
+}): OrganiserCardAppealRefunds {
+  const debts = input.operations.filter(
+    (operation) =>
+      input.paymentIntentId !== null &&
+      operation.paymentIntentId === input.paymentIntentId &&
+      operation.paymentId === input.paymentId &&
+      isOrganiserChildAppealRefundKey(operation.idempotencyKey),
+  );
+  const sum = (rows: typeof debts) => rows.reduce((total, operation) => total + operation.amountCents, 0);
+  return { recordedCents: sum(debts.filter((operation) => operation.status === "SUCCEEDED")), committedCents: sum(debts) };
+}
+
+/**
  * `organiserChildCommittedRefundCents`'s evidence, read from rows already in
  * hand (the census's snapshot): the child payment's recorded refunds, and its
  * `organiser_child_refund_` debts on the settlement's intent not yet SUCCEEDED
@@ -213,6 +247,8 @@ export function planGroupChildLines(input: {
   perChildCommittedRefundCents: number | null;
   /** The child payment's hand-backs now, as the kept figure reads them (`groupChildHandBacksFromRows`). */
   handBacks: GroupChildHandBacks;
+  /** Its approved appeals' refunds to the organiser's card (`organiserCardAppealRefundsFromRows`). */
+  appealRefunds: OrganiserCardAppealRefunds;
 }): GroupChildPlan | null {
   const { child, payment, settlement } = input;
   if (!isPaidBySettlement(payment, settlement)) return null;
@@ -235,7 +271,9 @@ export function planGroupChildLines(input: {
   const planKind = groupCancelRefundPlanKind(settlement);
   const mirror = isMirrorRefundPlan(settlement);
   const plannedRefundCents = mirror ? (deserializeRefundPlan(settlement.refundPlan).get(child.id) ?? 0) : 0;
-  const mirrored = payment.refundedAmountCents > 0;
+  // The refunds as the cancel left them: an appeal's card refund since is not its (#3956).
+  const refundedBeforeAppealsCents = Math.max(0, payment.refundedAmountCents - input.appealRefunds.recordedCents);
+  const mirrored = refundedBeforeAppealsCents > 0;
   if (mirror && mirrored) {
     const refund = planGroupSettlementRefundLine({ settlement, bookingId: child.id, lodgeId: child.lodgeId, refundCents: plannedRefundCents });
     if (refund) {
@@ -251,7 +289,7 @@ export function planGroupChildLines(input: {
     // hand-back open at the cancel is either still open or, paid since, in
     // `refundedAmountCents`. An appeal paid since is in `refundedAmountCents`
     // too, but is not the cancel's, so it comes back out (F1, see the header).
-    const refundedAtCancelCents = Math.max(0, payment.refundedAmountCents - input.handBacks.completedRefundRequestHandBackCents);
+    const refundedAtCancelCents = Math.max(0, refundedBeforeAppealsCents - input.handBacks.completedRefundRequestHandBackCents);
     const now = {
       amountCents: payment.amountCents,
       refundedAmountCents: refundedAtCancelCents,
@@ -264,7 +302,10 @@ export function planGroupChildLines(input: {
       now,
       planKind === "mirror"
         ? { kind: "mirror", plannedRefundCents: mirror && refundedAtCancelCents > 0 ? 0 : plannedRefundCents }
-        : { kind: "per-child", committedRefundCents: input.perChildCommittedRefundCents! },
+        : {
+            kind: "per-child",
+            committedRefundCents: Math.max(0, input.perChildCommittedRefundCents! - input.appealRefunds.committedCents),
+          },
     );
   }
   return { kind: "plan", postings, steps, cancellationKeptCents };

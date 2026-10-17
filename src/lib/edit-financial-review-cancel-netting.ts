@@ -29,6 +29,7 @@ import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import {
   buildBookingCancellationRefundIdempotencyKey,
   buildEditFinancialReviewRefundRecoveryIdempotencyKey,
+  CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
 } from "@/lib/payment-recovery-keys";
 
 /**
@@ -445,7 +446,8 @@ export function reviewsSettledAfterCancelWhere({
 
 /**
  * #3835: card refunds already promised out of this payment and not yet made -
- * the cancellation's and earlier reviews' frozen Stripe debts that have not
+ * the cancellation's, earlier reviews' and refunds owed again after Stripe
+ * failed them (#4104) - frozen Stripe debts that have not
  * SUCCEEDED and are still being retried. A debt that is dead (no next retry, or
  * its attempts spent - the recovery module's rule) is a person's to settle, and once they refund by hand the payment's
  * refunded total already says so, so it is not counted twice. A debt partly
@@ -468,6 +470,8 @@ async function unfinishedCardRefundDebts(
       OR: [
         { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
         { idempotencyKey: { startsWith: buildEditFinancialReviewRefundRecoveryIdempotencyKey("") } },
+        // #4104: a refund Stripe accepted and failed later, owed again.
+        { idempotencyKey: { startsWith: CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } },
       ],
     },
     _sum: { amountCents: true },

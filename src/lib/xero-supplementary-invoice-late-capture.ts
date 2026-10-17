@@ -7,6 +7,7 @@
 import type { PaymentStatus, Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { SUPERSEDED_INTENT_OPERATION_TYPES } from "@/lib/superseded-intent-ownership";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import {
   decideLateCapture,
@@ -130,7 +131,7 @@ export async function lateCaptureRefundState(params: {
       ? (await prisma.paymentRecoveryOperation.findFirst({
           where: {
             paymentIntentId: params.paymentIntentId,
-            type: { in: ["CANCEL_PAYMENT_INTENT", "REFUND_SUPERSEDED_PAYMENT"] },
+            type: { in: [...SUPERSEDED_INTENT_OPERATION_TYPES] },
           },
           select: { id: true },
         })) !== null

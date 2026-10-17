@@ -417,6 +417,8 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
     for (const name of [
       "admin-late-capture-auto-refund",
       "admin-late-capture-hand-back-conflict",
+      // #4170: money left the club with no record the app wrote - never muteable.
+      "admin-late-capture-refunded-outside-app",
     ] as const) {
       const definition = getEmailTemplateDefinition(name);
       if (!definition) throw new Error(`missing ${name}`);
@@ -469,6 +471,21 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
         "memberName",
         "reviewUrl",
       ]),
+    );
+  });
+
+  it("keeps the bank-transfer settlement alert admin-audience, delivery-locked and pinned to its note and invoice link (#3979)", () => {
+    // A wrong recorded bank-transfer figure sizes every later refund and credit;
+    // this mail is what pulls a person to check it. MUTATION PROOF: drop it from
+    // LOCKED_DELIVERY_TEMPLATE_NAMES and this fails.
+    const definition = getEmailTemplateDefinition("admin-bank-transfer-settlement-figure");
+    if (!definition) throw new Error("missing admin-bank-transfer-settlement-figure");
+    expect(definition.audience).toBe("admin");
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("admin-bank-transfer-settlement-figure")).toBe("always");
+    expect(definition.defaultSubject).toBe("Bank transfer amount needs checking: {{memberName}}");
+    expect(definition.requiredTokens).toEqual(
+      expect.arrayContaining(["settlementFigureNote", "xeroObjectUrl", "memberName", "reviewUrl"]),
     );
   });
 

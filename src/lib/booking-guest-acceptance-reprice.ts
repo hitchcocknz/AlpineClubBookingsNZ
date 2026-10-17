@@ -588,11 +588,10 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
     memberFirstName: reprice.owner.firstName,
     memberId: reprice.owner.memberId,
   };
-  const stripeRefundId = await executeBookingModificationRefund({
+  const refund = await executeBookingModificationRefund({
     format,
     bookingId,
     result: paymentContext,
-    metadataReason: "guest_accepted_promo_reprice",
     idempotencyKeyPrefix: `guest_accept_refund_${bookingId}`,
     failureMessage: "Stripe refund failed after a guest-acceptance re-price - enqueueing recovery",
     recoveryFailureMessage:
@@ -601,8 +600,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
   // #3954: the retired asks die at Stripe and the smaller one is minted - the
   // only ask a re-price can mint, since it never raises a settled price.
   const additionalMint = await createModificationAdditionalPaymentIntent({
-    format, bookingId, result: paymentContext, reason: "guest_accepted_promo_reprice_reissued_ask",
-    idempotencyKey: `guest_accept_${bookingId}_${bookingModificationId}`,
+    format, bookingId, result: paymentContext, door: "guestAcceptanceReprice",
     failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a guest-acceptance re-price",
   });
   try {
@@ -641,7 +639,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
     accountCreditAmountCents: reprice.accountCreditAmountCents,
     settlementMethod: reprice.settlementMethod,
     zeroDollarAutoPaid: reprice.zeroDollarAutoPaid,
-    stripeRefundId: stripeRefundId ?? null,
+    stripeRefundId: refund.stripeRefundId ?? null,
     ...(await loadModificationLinesAuditFields(prisma, reprice.priceLines, logger, format)),
   };
   logAudit({
@@ -666,7 +664,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       recipientMemberId: reprice.owner.memberId,
       email: reprice.owner.email,
       firstName: reprice.owner.firstName,
-      modificationType: "PROMO_REPRICE",
+      modificationType: "PROMO_REPRICE", addedGuests: [], // #4030: an acceptance re-price adds nobody
       oldCheckIn: reprice.checkIn,
       oldCheckOut: reprice.checkOut,
       newCheckIn: reprice.checkIn,
@@ -687,7 +685,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       financialReviewPending: false,
       // D-3813-6: an internet-banking refund is the club's to send.
       refundByBankTransfer: editRefundGoesBackByHand(reprice),
-      refundReturnedToOrganiser: reprice.organiserChildRefund !== null,
+      refundDestination: refund.refundDestination,
       lodgeId: reprice.lodgeId,
       // #3954 round 9: not named once a later reduction retired the re-issue.
       additionalAmountCents: additionalAmountToName(reprice.additionalAsk.amountCents, additionalMint),

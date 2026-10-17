@@ -46,6 +46,7 @@ function row(overrides: Partial<DeadCardRefundPanelRow> = {}): DeadCardRefundPan
     owedCents: 15_000,
     wholeAmountOnly: false,
     xeroRefundNote: "now",
+    cardNoteCoversCents: 0,
     stripeMayHaveRefunded: false,
     ...overrides,
   };
@@ -280,6 +281,28 @@ describe("the Paid another way dialog", () => {
     const notice = await screen.findByText("The card refund for booking BK-0001 was closed as paid another way.");
     expect(notice).toHaveAttribute("role", "status");
     await waitFor(() => expect(document.activeElement).toBe(notice));
+  });
+
+  // #4104 delta review (D4, D8): a refund Stripe failed later, whose card note
+  // is still in Xero - the dialog says how much it covers, for a close of any
+  // amount, and the list says why the app will not ask Stripe again.
+  it("a refund whose card note Xero still holds: the dialog says how much it covers and what a part close leaves", async () => {
+    openDialog(row({ xeroRefundNote: "covered-by-card-note", cardNoteCoversCents: 4_000 }));
+    expect(screen.getByText(/later reported it failed - a retry that failed again/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Xero already holds a card refund credit note for $40.00 of this refund, raised when the card provider first accepted it. Up to that much of what you pay back needs no new note; for anything beyond it, a Xero refund credit note worded "${BANK_NOTE_WORDING}" is queued when you close it. If you pay back less than $40.00, Xero's note credits more than went back: the Xero reconciliation report lists the difference as refund coverage above the refunded total, for you to correct in Xero.`,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(fullChoice());
+    fireEvent.change(noteBox(), { target: { value: "Bank transfer" } });
+    respond(200, { success: true, xeroQueued: "refund-note-beyond-card-note" });
+    fireEvent.click(closeButton());
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        `Closed. $150.00 recorded as paid back in full. A card refund credit note already in Xero records part of what you paid back; a Xero refund credit note worded "${BANK_NOTE_WORDING}" is queued for the rest.`,
+      ),
+    );
   });
 
   // #3924 round 8 (owner, 8 Oct 2026: "Raise a refund note for all").

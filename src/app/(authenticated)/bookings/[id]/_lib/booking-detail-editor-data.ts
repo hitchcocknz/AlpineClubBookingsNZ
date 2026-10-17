@@ -9,10 +9,7 @@ import type { BoundClubTime } from "@/lib/club-time";
 import type { BookingEditorData } from "@/components/booking-editor";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
-import {
-  deriveBookingAppliedCreditCents,
-  getMemberCreditBalance,
-} from "@/lib/member-credit";
+import { getMemberCreditBalance } from "@/lib/member-credit";
 import { isMemberWholeLodgeBooking } from "@/lib/booking-modify";
 import { formatDateOnly } from "@/lib/date-only";
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
@@ -49,6 +46,7 @@ export async function buildBookingDetailEditorData({
   viewer,
   consent,
   access,
+  appliedCreditCents,
 }: {
   session: NonNullable<Awaited<ReturnType<typeof auth>>>;
   booking: BookingDetailRecord;
@@ -57,6 +55,8 @@ export async function buildBookingDetailEditorData({
   viewer: BookingDetailViewer;
   consent: BookingDetailConsent;
   access: BookingDetailEditAccess;
+  /** #3991: the page's one ledger read of applied credit (`history.amountOwed`). */
+  appliedCreditCents: number;
 }): Promise<BookingEditorData> {
   const { viewerAuthorizationRole } = viewer;
   const { consentBadgeAudience, consentResponderNameById } = consent;
@@ -91,7 +91,7 @@ export async function buildBookingDetailEditorData({
             )
           : 0,
         electionCents: booking.creditElectionCents,
-        appliedCents: await deriveBookingAppliedCreditCents(booking.id),
+        appliedCents: appliedCreditCents,
       }
     : null;
 

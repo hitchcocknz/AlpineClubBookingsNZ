@@ -59,9 +59,10 @@ export async function closeWaitingAskRecoveries(
     ) {
       throw new AdditionalAskChangedDuringReductionError(ADDITIONAL_ASK_BEING_RAISED_MESSAGE);
     }
-    // THE FENCE: exactly the state read. Only a claim moves `attempts`, and a
-    // claimed runner re-stamps `processingStartedAt` in the same statement that
-    // lets it write its row (`holdAdditionalIntentRecoveryClaim`). So a retry
+    // THE FENCE: exactly the state read. A claim increments `attempts`, and a
+    // terminal failure raises it to the ceiling as it sets FAILED and clears
+    // `processingStartedAt` (#4081). A claimed runner re-stamps that in the
+    // statement that lets it write its row (`holdAdditionalIntentRecoveryClaim`). So a retry
     // that claimed or wrote since the read rolls this edit back, and one that
     // comes after finds nothing to claim or to write.
     const closed = await tx.paymentRecoveryOperation.updateMany({

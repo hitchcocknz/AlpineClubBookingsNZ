@@ -255,6 +255,8 @@ const fakePrisma = vi.hoisted(() => {
         }));
       },
     },
+    // #4170: no capture here carries the late-capture handler's own marker.
+    paymentTransaction: { findMany: async () => [] },
     memberCredit: {
       aggregate: async (args: {
         where: {

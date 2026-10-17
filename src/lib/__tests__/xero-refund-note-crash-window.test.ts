@@ -32,6 +32,12 @@ const state = vi.hoisted(() => ({
   eligibleCents: 5000,
   /** #3924 round 8: paid-another-way closes on the payment - record id to amount paid back. */
   closes: {} as Record<string, number>,
+  /** #4104 (A-F1): what a card note already in Xero answers of a close, kept on its record. */
+  closeCovers: {} as Record<string, number>,
+  /** #4104: runs once before the next eligible-cash read - a close committing mid-sizing. */
+  beforeEligibleRead: null as (() => void) | null,
+  /** #4104: runs once after the next eligible-cash read. */
+  afterEligibleRead: null as (() => void) | null,
   resolved: { coveredCents: 0, correlationKeys: [] as string[], operationIds: [] as string[], unreadableOperationIds: [] as string[] },
   /** Read the officer's resolved rows off the ledger through the real reader. */
   realResolved: false,
@@ -66,6 +72,11 @@ function matches(row: Row, where: Row | undefined): boolean {
       if ("notIn" in expected) return !(expected as { notIn: unknown[] }).notIn.includes(actual);
       if ("not" in expected) return actual !== (expected as { not: unknown }).not;
       if ("gte" in expected) return actual instanceof Date && actual >= (expected as { gte: Date }).gte;
+      // A JSON path filter (`paidAnotherWayCloseNoteRowsWhere`): one top-level key.
+      if ("path" in expected) {
+        const { path, equals } = expected as { path: string[]; equals: unknown };
+        return (actual as Row | null)?.[path[0]!] === equals;
+      }
       return true;
     }
     return actual === expected;
@@ -97,10 +108,23 @@ vi.mock("@/lib/prisma", () => {
       }),
     },
     manualRefundTask: {
-      findMany: vi.fn(async () => []),
+      // #4104 (A-F2): the payment's closes, each queued its note `now`.
+      findMany: vi.fn(async () =>
+        Object.entries(state.closes).map(([id, amountCents]) => ({
+          id,
+          kind: "CANCELLED_BOOKING_HAND_BACK",
+          occurrenceKey: `card-refund-paid-another-way:op_${id}`,
+          amountCents,
+        })),
+      ),
       // #3924 round 8: a paid-another-way close's record, by id.
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
-        where.id in state.closes ? { amountCents: state.closes[where.id] } : null,
+        where.id in state.closes
+          ? {
+              amountCents: state.closes[where.id],
+              reviewContext: where.id in state.closeCovers ? { paidAnotherWayCardNoteCover: state.closeCovers[where.id] } : null,
+            }
+          : null,
       ),
     },
     xeroObjectLink: {
@@ -170,9 +194,9 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
         for (const link of completion.extraLinks ?? []) upsertLink(link);
       },
     ),
-    failXeroSyncOperation: vi.fn(async (id: string) => {
+    failXeroSyncOperation: vi.fn(async (id: string, error?: unknown) => {
       const row = state.operations.find((operation) => operation.id === id);
-      if (row) Object.assign(row, { status: "FAILED", responsePayload: { error: "failed" } });
+      if (row) Object.assign(row, { status: "FAILED", responsePayload: { error: "failed" }, lastErrorMessage: error instanceof Error ? error.message : null });
     }),
     upsertXeroObjectLink: vi.fn(async (link: Row) => upsertLink(link)),
     findCanonicalPaymentRefundCreditNote: vi.fn(async () => null),
@@ -211,11 +235,20 @@ vi.mock("@/lib/xero-resolved-in-xero-fences", async (importOriginal) => {
 });
 
 vi.mock("@/lib/refund-note-eligible-cash", () => ({
-  resolveRefundNoteEligibleCash: vi.fn(async () => ({
-    evidence: { cashRefundCents: state.eligibleCents, source: "provider-ledger" },
-    lateCaptureExcludedCents: 0,
-    eligibleCashCents: state.eligibleCents,
-  })),
+  resolveRefundNoteEligibleCash: vi.fn(async () => {
+    const hook = state.beforeEligibleRead;
+    state.beforeEligibleRead = null;
+    hook?.();
+    const read = {
+      evidence: { cashRefundCents: state.eligibleCents, source: "provider-ledger" },
+      lateCaptureExcludedCents: 0,
+      eligibleCashCents: state.eligibleCents,
+    };
+    const after = state.afterEligibleRead;
+    state.afterEligibleRead = null;
+    after?.();
+    return read;
+  }),
 }));
 
 vi.mock("@/lib/late-capture-xero-receipt", async (importOriginal) => ({
@@ -498,6 +531,9 @@ beforeEach(() => {
   state.operations = [];
   state.eligibleCents = 5000;
   state.closes = {};
+  state.closeCovers = {};
+  state.beforeEligibleRead = null;
+  state.afterEligibleRead = null;
   state.resolved = { coveredCents: 0, correlationKeys: [], operationIds: [], unreadableOperationIds: [] };
   state.realResolved = false;
   state.onFailedPayment = null;
@@ -917,6 +953,19 @@ describe("#3880: one refund note in flight per payment, from coverage read to re
       expect(row("op_close").xeroObjectId).not.toBe("cn_hand_back");
     });
 
+    // #4104 (delta review ML1): a close a card refund note already in Xero
+    // partly answers queues its note for the rest only; executed, it is never
+    // grown back to the close's whole share.
+    it("MUTATION: never bills more than its row asked for", async () => {
+      seedPayment(PaymentSource.INTERNET_BANKING);
+      state.closes = { close_1: 2500 };
+      queueClose("op_close", "close_1", 1000, 1000);
+
+      await dispatch("op_close");
+
+      expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([10]);
+    });
+
     it("MUTATION: once its own note covers it, a second row for it raises nothing and borrows no other note", async () => {
       seedPayment(PaymentSource.INTERNET_BANKING);
       state.closes = { close_1: 2500 };
@@ -931,7 +980,81 @@ describe("#3880: one refund note in flight per payment, from coverage read to re
       expect(row("op_second").responsePayload).toMatchObject({ skippedNothingUncovered: true, closeCoveredCents: 2500 });
     });
 
-    // #3924 round 9: the Xero key is the close's and its own coverage, never
+    // #4104 delta review (A-F2): a card note queued before its refund failed
+  // later, run after a close paid the member back another way, bills nothing
+  // for the close's bank cash - only the close's own note answers it.
+  it("MUTATION (A-F2): a card note still queued when its refund failed later bills nothing for a close's cash, whichever runs first", async () => {
+    seedPayment();
+    // The failed refund no longer counts; the close's 2500 does.
+    state.eligibleCents = 2500;
+    state.closes = { close_1: 2500 };
+    queueRefundNote("op_card", 2500, 2500);
+    queueClose("op_close", "close_1", 2500, 2500);
+
+    await dispatch("op_card");
+    expect(row("op_card").responsePayload).toMatchObject({ skippedNothingUncovered: true, paidAnotherWayUncoveredCents: 2500 });
+    await dispatch("op_close");
+
+    expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([25]);
+  });
+
+  // #4104 delta review 2 (F1): a close that commits while a card note is being
+  // sized must not be read on one side only: its cash counted as eligible but
+  // not subtracted would bill the close's bank cash on the card note too.
+  it("MUTATION (#4104 F1): a close committing mid-sizing is read on both sides, so the card note bills none of it", async () => {
+    seedPayment();
+    // The failed refund no longer counts and no close exists yet.
+    state.eligibleCents = 0;
+    state.closes = {};
+    queueRefundNote("op_card", 2500, 2500);
+    state.beforeEligibleRead = () => {
+      state.closes = { close_1: 2500 };
+      state.eligibleCents = 2500;
+    };
+
+    await dispatch("op_card");
+
+    expect(row("op_card").responsePayload).toMatchObject({ skippedNothingUncovered: true, paidAnotherWayUncoveredCents: 2500 });
+    expect(state.xero.notes.size).toBe(0);
+  });
+
+  it("MUTATION (#4104 F1): a close committing just after the cash read does not short a later card refund's note", async () => {
+    seedPayment();
+    // A later card refund of 3000 counts; the close's 2500 lands mid-sizing.
+    state.eligibleCents = 3000;
+    state.closes = {};
+    queueRefundNote("op_later", 3000, 3000);
+    state.afterEligibleRead = () => {
+      state.closes = { close_1: 2500 };
+      state.eligibleCents = 5500;
+    };
+
+    await dispatch("op_later");
+
+    expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([30]);
+  });
+
+  // #4104 delta review (A-F1): a close a card note in Xero partly answers keeps
+  // that cover on its record, so a later card refund's note is asked in full.
+  it("MUTATION (A-F1): after a close its card note partly answers, a later card refund's note is billed in full", async () => {
+    seedPayment();
+    // The close's 2500 and a later card refund of 3000 count; Xero holds the
+    // failed refund's card note (1000) and the close's own note (1500).
+    state.eligibleCents = 5500;
+    state.closes = { close_1: 2500 };
+    state.closeCovers = { close_1: 1000 };
+    upsertLink({ localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_failed_card", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 1000, watermarkCents: 1000 } });
+    queueClose("op_close", "close_1", 1500, 2500);
+    await dispatch("op_close");
+    expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([15]);
+
+    queueRefundNote("op_later", 3000, 5500);
+    await dispatch("op_later");
+
+    expect([...state.xero.notes.values()].map((note) => note.total)).toEqual([15, 30]);
+  });
+
+  // #3924 round 9: the Xero key is the close's and its own coverage, never
     // the payment-wide watermark another refund's note can move.
     it("MUTATION: round 9: a close's note Xero raised but whose answer was lost is answered by Xero with the same note on retry, though another note landed meanwhile", async () => {
       seedPayment(PaymentSource.INTERNET_BANKING);
@@ -1129,7 +1252,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     const findings: MutableFinding[] = [];
     const actions = new Map<string, BookingXeroRepairAction>();
 
-    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
 
     expect(findings).toEqual([
       expect.objectContaining({ code: "REFUND_CREDIT_NOTE_UNSETTLED", safeToAutoApply: false }),
@@ -1191,7 +1314,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     const findings: MutableFinding[] = [];
     const actions = new Map<string, BookingXeroRepairAction>();
 
-    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
 
     expect(await findUnsettledRefundNoteRows()).toEqual([]);
     expect(findings).toEqual([]);
@@ -1208,7 +1331,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     state.links.push({ localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "PAYMENT", xeroObjectId: "pay_9", role: "REFUND_PAYMENT", active: false, metadata: { creditNoteId: "cn_9", amountCents: 5000 } });
     const findings: MutableFinding[] = [];
 
-    addUnsettledRefundCreditNoteFindings(findings, new Map(), "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, new Map(), "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
 
     expect(await findUnsettledRefundNoteRows()).toEqual([]);
     expect(findings).toEqual([]);
@@ -1228,7 +1351,7 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
     expect(await findUnsettledRefundNoteRows()).toEqual([expect.objectContaining({ kind: "part-settled" })]);
     const findings: MutableFinding[] = [];
     const actions = new Map<string, BookingXeroRepairAction>();
-    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never);
+    addUnsettledRefundCreditNoteFindings(findings, actions, "cmbooking0001xyz", state.links as never, state.operations as never, state.links as never);
     expect([...actions.values()]).toEqual([
       expect.objectContaining({ type: "SETTLE_REFUND_CREDIT_NOTE", safeToAutoApply: false, payload: { operationId: "op_crashed", paymentId: PAYMENT_ID, creditNoteId: "cn_1" } }),
     ]);
@@ -1260,5 +1383,205 @@ describe("rows the pre-#3548 early return closed with neither (report and repair
       applyRefundNoteSettlementRepair({ operationId: "op_crashed", paymentId: PAYMENT_ID, creditNoteId: "cn_1" }),
     ).rejects.toThrow(/shows no settlement in Xero now/);
     expect(state.xero.createPaymentsCalls).toEqual([]);
+  });
+});
+
+describe("INV-ADDPAY-041 (#4091): the reissue's Xero key names only the voided notes it could replay", () => {
+  /** Raise the refund's note, then let Xero void it as the inbound sync records it: mirror off, pointer released. */
+  async function raiseThenVoid() {
+    queueRefundNote("op_first", 5000, 5000);
+    await dispatch("op_first");
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000]);
+    const link = state.links.find((candidate) => candidate.role === "REFUND_CREDIT_NOTE" && candidate.xeroObjectId === "cn_1")!;
+    link.active = false;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+    state.xero.notes.get("cn_1")!.status = "VOIDED";
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: null };
+  }
+
+  it("MUTATION: a reissue after the void names the voided note in its key, so Xero raises a fresh note rather than replaying the voided one (card payment, the #2901 self-heal path)", async () => {
+    await raiseThenVoid();
+
+    queueRefundNote("op_reissue", 5000, 5000);
+    await dispatch("op_reissue");
+
+    // Same watermark as the voided note's create: before #4091 Xero replayed cn_1.
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
+    expect(row("op_reissue")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_2" });
+  });
+
+  it("MUTATION: the same on a bank-transfer payment's one note", async () => {
+    seedPayment(PaymentSource.INTERNET_BANKING);
+    state.xero.notes = new Map();
+    queueRefundNote("op_first", 5000, 5000, "internet-banking");
+    await dispatch("op_first");
+    const link = state.links.find((candidate) => candidate.role === "REFUND_CREDIT_NOTE" && candidate.xeroObjectId === "cn_1")!;
+    link.active = false;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: null };
+
+    queueRefundNote("op_reissue", 5000, 5000, "internet-banking");
+    await dispatch("op_reissue");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, `${NOTE_KEY_5000}:after-void:cn_1`]);
+    expect(row("op_reissue")).toMatchObject({ xeroObjectId: "cn_2" });
+  });
+
+  it("MUTATION: a sibling note voided between a close's lost attempt and its retry leaves the retry's key alone - no duplicate in Xero", async () => {
+    seedPayment(PaymentSource.INTERNET_BANKING);
+    // The payment's own refund note, beside a "Paid another way" close.
+    upsertLink({ localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_C", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 5000, watermarkCents: 5000 } });
+    state.eligibleCents = 7500;
+    state.closes = { close_1: 2500 };
+    queueRefundNote("op_close", 2500, 7500, "internet-banking");
+    row("op_close").requestPayload = { ...(row("op_close").requestPayload as Row), paidAnotherWayTaskId: "close_1" };
+    // Xero raises the close's note but the answer is lost.
+    state.xero.loseNextCreateAnswer = true;
+    await expect(dispatch("op_close")).rejects.toThrow(/socket hang up/);
+    const firstKey = [...state.xero.noteKeys.keys()];
+
+    // Xero voids the OTHER note before anyone retries the close.
+    const sibling = state.links.find((link) => link.xeroObjectId === "cn_C")!;
+    sibling.active = false;
+    sibling.metadata = { ...(sibling.metadata as Row), status: "VOIDED" };
+    await dispatch("op_close");
+
+    // The retry sends the same key, so Xero answers with the note it raised.
+    expect([...state.xero.noteKeys.keys()]).toEqual(firstKey);
+    expect(state.xero.notes.size).toBe(1);
+    expect(row("op_close")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_1" });
+  });
+
+  it("MUTATION (final lens F1): a reissue whose base lands on a LIVE note's key names that note - Xero never hands the live note back to be relabelled", async () => {
+    // A ($50, watermark 5000), then B ($30, watermark 8000).
+    state.eligibleCents = 8000;
+    queueRefundNote("op_a", 5000, 5000);
+    await dispatch("op_a");
+    queueRefundNote("op_b", 3000, 8000);
+    await dispatch("op_b");
+    // Xero voids A: coverage drops to B's 3000, so A's reissue lands on watermark 8000 - B's key.
+    const a = state.links.find((link) => link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectId === "cn_1")!;
+    a.active = false;
+    a.metadata = { ...(a.metadata as Row), status: "VOIDED" };
+    state.payment = { ...state.payment!, xeroRefundCreditNoteId: "cn_2" };
+
+    queueRefundNote("op_reissue", 5000, 8000);
+    await dispatch("op_reissue");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([
+      NOTE_KEY_5000,
+      "payment:cmpayment0001xyz:refund-credit-note:8000:v2",
+      "payment:cmpayment0001xyz:refund-credit-note:8000:v2:after-void:cn_2",
+    ]);
+    expect(row("op_reissue")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_3" });
+    const b = state.links.find((link) => link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectId === "cn_2")!;
+    expect(b.metadata).toMatchObject({ amountCents: 3000, watermarkCents: 8000 });
+  });
+
+  describe("final lens: Xero's answer to a create is checked before anything is recorded", () => {
+    it("MUTATION: a VOIDED note handed back is refused - the row fails loudly and neither the pointer nor a link is written", async () => {
+      await raiseThenVoid();
+      // A Xero that answers the reissue's key with the voided note.
+      state.xero.noteKeys.set(`${NOTE_KEY_5000}:after-void:cn_1`, "cn_1");
+      const linksBefore = JSON.stringify(state.links);
+
+      queueRefundNote("op_reissue", 5000, 5000);
+      await expect(dispatch("op_reissue")).rejects.toThrow(/VOIDED or DELETED note, which is never re-adopted \(INV-ADDPAY-041\)/);
+
+      expect(row("op_reissue")).toMatchObject({ status: "FAILED", xeroObjectId: null });
+      expect(row("op_reissue").lastErrorMessage).toMatch(/INV-ADDPAY-041/);
+      expect(state.payment!.xeroRefundCreditNoteId).toBeNull();
+      expect(JSON.stringify(state.links)).toBe(linksBefore);
+    });
+
+    it("MUTATION: a note another create row already raised is refused - it is never relabelled as this refund's", async () => {
+      queueRefundNote("op_a", 5000, 5000);
+      await dispatch("op_a");
+      state.eligibleCents = 8000;
+      // A Xero that answers the next refund's key with the first refund's note.
+      state.xero.noteKeys.set("payment:cmpayment0001xyz:refund-credit-note:8000:v2", "cn_1");
+      const linksBefore = JSON.stringify(state.links);
+
+      queueRefundNote("op_b", 3000, 8000);
+      await expect(dispatch("op_b")).rejects.toThrow(/operation op_a already raised it/);
+
+      expect(row("op_b")).toMatchObject({ status: "FAILED", xeroObjectId: null });
+      expect(row("op_b").lastErrorMessage).toMatch(/INV-ADDPAY-041/);
+      expect(JSON.stringify(state.links)).toBe(linksBefore);
+    });
+  });
+
+  it("with no note voided the key is byte-identical to before", async () => {
+    queueRefundNote("op_first", 5000, 5000);
+    await dispatch("op_first");
+    state.eligibleCents = 8000;
+    queueRefundNote("op_second", 3000, 8000);
+    await dispatch("op_second");
+
+    expect([...state.xero.noteKeys.keys()]).toEqual([NOTE_KEY_5000, "payment:cmpayment0001xyz:refund-credit-note:8000:v2"]);
+  });
+});
+
+describe("#4195 (INV-ADDPAY-041): a refund request's own note, voided in Xero", () => {
+  const REQUEST_KEY = `payment:${PAYMENT_ID}:refund-request-credit-note:rr_1:v1`;
+  /** The operator's retry of the request's row, run inline as `xero-operation-retry.ts` runs it. */
+  function retryRequestNote(refundRequestId = "rr_1") {
+    return createXeroCreditNote(PAYMENT_ID, 5000, { refundRequestId, refundMethod: "internet-banking", repairExistingLink: true });
+  }
+  /** Xero voids the note; its mirror records VOIDED but stays active - the shape a pre-#4195 sync left. */
+  function voidInXero(noteId: string) {
+    state.xero.notes.get(noteId)!.status = "VOIDED";
+    const link = state.links.find((candidate) => candidate.xeroObjectId === noteId)!;
+    link.metadata = { ...(link.metadata as Row), status: "VOIDED" };
+  }
+  const requestLinks = () =>
+    state.links
+      .filter((link) => link.role === "REFUND_REQUEST_CREDIT_NOTE")
+      .map((link) => ({ id: link.xeroObjectId, requestId: (link.metadata as Row).refundRequestId, status: (link.metadata as Row).status ?? null }));
+
+  beforeEach(() => seedPayment(PaymentSource.INTERNET_BANKING));
+
+  it("a live own note still covers its request: the retry raises nothing", async () => {
+    expect(await retryRequestNote()).toBe("cn_1");
+    expect(await retryRequestNote()).toBe("cn_1");
+    expect([...state.xero.noteKeys.keys()]).toEqual([REQUEST_KEY]);
+  });
+
+  it("MUTATION: a voided own note never covers the request - the retry raises a fresh note under a key naming it", async () => {
+    await retryRequestNote();
+    voidInXero("cn_1");
+
+    // Before #4195 the lookup took the active, voided mirror as the request's cover.
+    expect(await retryRequestNote()).toBe("cn_2");
+
+    // And without the key's suffix Xero would have replayed cn_1 for the same key.
+    expect([...state.xero.noteKeys.keys()]).toEqual([REQUEST_KEY, `${REQUEST_KEY}:after-void:cn_1`]);
+    expect(requestLinks()).toEqual([
+      { id: "cn_1", requestId: "rr_1", status: "VOIDED" },
+      { id: "cn_2", requestId: "rr_1", status: null },
+    ]);
+    expect(state.payment!.xeroRefundCreditNoteId).toBeNull();
+    // Once the fresh note is live it covers the request.
+    expect(await retryRequestNote()).toBe("cn_2");
+    expect(state.xero.notes.size).toBe(2);
+  });
+
+  it("MUTATION: a Xero that hands the voided note back for the new key is refused, and nothing is recorded", async () => {
+    await retryRequestNote();
+    voidInXero("cn_1");
+    state.xero.noteKeys.set(`${REQUEST_KEY}:after-void:cn_1`, "cn_1");
+    const linksBefore = JSON.stringify(state.links);
+
+    await expect(retryRequestNote()).rejects.toThrow(/VOIDED or DELETED note, which is never re-adopted \(INV-ADDPAY-041\)/);
+
+    expect(JSON.stringify(state.links)).toBe(linksBefore);
+  });
+
+  it("another request's voided note neither covers this request nor changes its key", async () => {
+    await retryRequestNote("rr_other");
+    voidInXero("cn_1");
+
+    expect(await retryRequestNote()).toBe("cn_2");
+    expect([...state.xero.noteKeys.keys()]).toEqual([`payment:${PAYMENT_ID}:refund-request-credit-note:rr_other:v1`, REQUEST_KEY]);
   });
 });

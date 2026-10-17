@@ -155,6 +155,128 @@ describe("an approved appeal's refund hand-back has its own sentence (#3827, D-3
   });
 });
 
+describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY-129`)", () => {
+  it("prints the card-shortfall sentence, never the cash one, and offers paid back and dismiss", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, cardShortfallHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    const intro = screen.getByTestId("manual-refund-task-card-shortfall-intro");
+    expect(intro.textContent).toMatch(/card refund could not carry all of the refund due/);
+    // #4154 review: one order on every hand-back - mark first, then pay straight after the app accepts.
+    expect(intro.textContent).toMatch(/mark it paid back\s+first/);
+    expect(intro.textContent).toMatch(/then pay it by bank\s+transfer straight after the app accepts/);
+    // #4159 review round 2 (F4): a Xero note only where the booking has an invoice to credit.
+    expect(intro.textContent).toMatch(/where the booking has a Xero invoice, raises its refund credit note/);
+    expect(intro.textContent).not.toMatch(/which also raises its Xero refund credit note/);
+    expect(intro.textContent).not.toMatch(/pay it by bank\s+transfer, then mark/);
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+  });
+
+  it("a part to check prints its own sentence, which never says to pay it", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, cardShortfallCheck: true }],
+      viewerCanViewBookings: true,
+    });
+    const intro = screen.getByTestId("manual-refund-task-card-shortfall-check-intro");
+    expect(intro.textContent).toMatch(/Check Stripe and\s+the bank before paying anything, then contact the member with what you found/);
+    expect(intro.textContent).toMatch(/dismiss it with a note/);
+    // Paying it is only the answer once the check shows it is owed - and (#4154 review M3) only after the
+    // app has accepted the mark: mark first, then pay, on every surface.
+    expect(intro.textContent).toMatch(/If it really is owed, mark it\s+paid\s+back first/);
+    expect(intro.textContent).toMatch(/pay it by bank transfer\s+straight after the app accepts/);
+    expect(intro.textContent).not.toMatch(/pay it by bank transfer,? (then|and) mark/i);
+    // #4154: a capacity race's too - whose member is told on the booking page only, never by email.
+    expect(intro.textContent).toMatch(/from a booking cancelled because its dates filled up during the card payment/);
+    expect(intro.textContent).toMatch(/on their booking page,\s+and for a cancellation by email unless emails were turned off/);
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+  });
+
+  it("#4154 review (M3): a part to check's paid-back dialog says to mark first and pay straight after, never that the money has already gone", async () => {
+    await renderQueue({ tasks: [{ ...HAND_BACK_TASK, cardShortfallCheck: true }], viewerCanViewBookings: true });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/The app first checks it can record this; pay straight after it accepts\./);
+    expect(dialog.textContent).not.toMatch(/once the money has actually gone back/);
+  });
+
+  it("CONTROL: a cash hand-back's paid-back dialog keeps its sentence", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/once the money has actually gone back to the member/);
+    expect(dialog.textContent).not.toMatch(/first checks it can record this/);
+  });
+
+  it("a cash hand-back does not print it", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-intro")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("manual-refund-task-card-shortfall-check-intro")).not.toBeInTheDocument();
+  });
+});
+
+describe("a group organiser's Internet Banking hand-back has its own sentence (#4042)", () => {
+  it("prints the group sentence, never the cash one or a Xero claim, is marked paid back and offers no Dismiss", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    const intro = screen.getByTestId("manual-refund-task-group-organiser-intro");
+    expect(intro).toBeInTheDocument();
+    expect(intro.textContent).toMatch(/take it to the treasurer/);
+    expect(intro.textContent).toMatch(/Marking it paid back sends nothing to Xero/);
+    expect(intro.textContent).not.toMatch(/(in|recorded in) Xero/);
+    expect(screen.queryByTestId("manual-refund-task-hand-back-intro")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /paid back/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^dismiss$/i })).not.toBeInTheDocument();
+  });
+
+  it("marking it paid back posts the total the card showed, so a total grown since is refused by the server", async () => {
+    const fetchMock = stubLoad({ tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }], viewerCanViewBookings: true });
+    render(<ManualRefundTaskQueue />);
+    await waitFor(() => expect(screen.getByTestId("manual-refund-task-queue")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Record as paid back" }));
+
+    await waitFor(() => expect(postCount(fetchMock)).toBe(1));
+    expect(postBody(fetchMock)).toEqual({ resolution: "completed", confirmed: true, note: null, confirmedAmountCents: 8000 });
+  });
+
+  it("CONTROL: a cash hand-back posts the body it always did, with no amount", async () => {
+    const fetchMock = stubLoad({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    render(<ManualRefundTaskQueue />);
+    await waitFor(() => expect(screen.getByTestId("manual-refund-task-queue")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Record as paid back" }));
+
+    await waitFor(() => expect(postCount(fetchMock)).toBe(1));
+    expect(postBody(fetchMock)).toEqual({ resolution: "completed", confirmed: true, note: null });
+  });
+
+  it("its paid-back dialog says what the action records, never that it writes the refund into the ledger", async () => {
+    await renderQueue({
+      tasks: [{ ...HAND_BACK_TASK, groupOrganiserHandBack: true }],
+      viewerCanViewBookings: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/as repaid to the group organiser/);
+    expect(dialog.textContent).toMatch(/joiners' refunds are already in the ledger/);
+    expect(dialog.textContent).not.toMatch(/writes the refund into the payment ledger/);
+  });
+
+  it("a cancellation's hand-back does not print it", async () => {
+    await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
+    expect(screen.queryByTestId("manual-refund-task-group-organiser-intro")).not.toBeInTheDocument();
+  });
+});
+
 describe("the card only makes claims about rows it actually holds (#3033)", () => {
   it("prints the cash hand-back sentence only over rows it describes", async () => {
     await renderQueue({ tasks: [REVIEW_TASK], viewerCanViewBookings: true });

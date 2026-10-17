@@ -15,7 +15,8 @@ import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-a
 import { assertNoAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import { getClubFormat } from "@/lib/club-format-settings";
 import { formatCents } from "@/lib/utils";
-import { noCashModificationNoteIds } from "./account-credit-modification-notes";
+import { invoiceCorrectionNoteIds, noCashModificationNoteIds } from "./account-credit-modification-notes";
+import { paymentsCountingInvoiceCorrections, uncapturedPrimaryStatus } from "./modification-note-refunds";
 import { capOrganiserChildMirrorAtStripeRefunds } from "@/lib/organiser-child-refund";
 
 /** #3792: the operator alert, and the audit action, for a refused change. */
@@ -120,101 +121,20 @@ async function includeDeletedAppliedCreditAllocationTargets(
   return [...targetsByInvoiceId.values()];
 }
 
-export async function resolvePaymentIdsByInvoiceTargets(
-  creditNoteId: string,
-  allocationTargets: AccountCreditAllocationTarget[]
-) {
-  const uniqueInvoiceIds = Array.from(
-    new Set(
-      allocationTargets
-        .map((target) => target.invoiceId)
-        .filter((invoiceId): invoiceId is string => Boolean(invoiceId))
-    )
-  );
-  if (uniqueInvoiceIds.length === 0) {
-    return new Map<string, string>();
-  }
-
-  const paymentIdsByInvoiceId = new Map<string, Set<string>>();
-  const directMatches = await prisma.payment.findMany({
-    where: {
-      xeroInvoiceId: {
-        in: uniqueInvoiceIds,
-      },
-    },
-    select: {
-      id: true,
-      xeroInvoiceId: true,
-    },
-  });
-
-  for (const payment of directMatches) {
-    if (!payment.xeroInvoiceId) {
-      continue;
-    }
-
-    const ids = paymentIdsByInvoiceId.get(payment.xeroInvoiceId) ?? new Set<string>();
-    ids.add(payment.id);
-    paymentIdsByInvoiceId.set(payment.xeroInvoiceId, ids);
-  }
-
-  const unresolvedInvoiceIds = uniqueInvoiceIds.filter(
-    (invoiceId) => (paymentIdsByInvoiceId.get(invoiceId)?.size ?? 0) !== 1
-  );
-  if (unresolvedInvoiceIds.length > 0) {
-    const linkedMatches = await prisma.xeroObjectLink.findMany({
-      where: {
-        localModel: "Payment",
-        xeroObjectType: "INVOICE",
-        xeroObjectId: {
-          in: unresolvedInvoiceIds,
-        },
-        active: true,
-      },
-      select: {
-        localId: true,
-        xeroObjectId: true,
-      },
-    });
-
-    for (const link of linkedMatches) {
-      const ids = paymentIdsByInvoiceId.get(link.xeroObjectId) ?? new Set<string>();
-      ids.add(link.localId);
-      paymentIdsByInvoiceId.set(link.xeroObjectId, ids);
-    }
-  }
-
-  const resolvedPaymentIds = new Map<string, string>();
-  for (const invoiceId of uniqueInvoiceIds) {
-    const paymentIds = paymentIdsByInvoiceId.get(invoiceId);
-    // "Exactly one payment" said as a first with no rest, so the id the
-    // resolution stores is a value this branch already holds (#2800).
-    const [onlyPaymentId, ...extraPaymentIds] = paymentIds ?? [];
-    if (onlyPaymentId !== undefined && extraPaymentIds.length === 0) {
-      resolvedPaymentIds.set(invoiceId, onlyPaymentId);
-      continue;
-    }
-
-    if ((paymentIds?.size ?? 0) > 1) {
-      logger.warn(
-        {
-          creditNoteId,
-          invoiceId,
-          matchedPayments: paymentIds?.size ?? 0,
-        },
-        "Skipping refunded-payment repair because the allocated invoice resolved to multiple local payments"
-      );
-    }
-  }
-
-  return resolvedPaymentIds;
-}
-
 export async function repairRefundedPaymentBusinessState(input: {
   creditNoteId: string;
   creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit">;
   directPaymentIds: string[];
   modificationRefundAmountsByPaymentId: Map<string, number>;
+  /**
+   * #3979: how the caller derived `modificationRefundAmountsByPaymentId`, so a
+   * repair that lost its claim to a concurrent writer recomputes it too - an
+   * invoice correction's count depends on the payment's receipt, which that
+   * writer (the inbound settle) may just have recorded.
+   */
+  recomputeModificationRefundAmounts?: () => Promise<Map<string, number>>;
+  /** Internal: the one re-run, for the payments whose claims were lost. */
+  retryPaymentIds?: string[];
 }): Promise<RefundedPaymentBusinessStateRepairResult> {
   const directPaymentIds = Array.from(
     new Set(
@@ -223,12 +143,14 @@ export async function repairRefundedPaymentBusinessState(input: {
       )
     )
   );
-  const paymentIds = Array.from(
-    new Set([
-      ...directPaymentIds,
-      ...Array.from(input.modificationRefundAmountsByPaymentId.keys()),
-    ])
-  );
+  const paymentIds =
+    input.retryPaymentIds ??
+    Array.from(
+      new Set([
+        ...directPaymentIds,
+        ...Array.from(input.modificationRefundAmountsByPaymentId.keys()),
+      ])
+    );
   if (paymentIds.length === 0) {
     return {
       matchedPayments: 0,
@@ -249,6 +171,9 @@ export async function repairRefundedPaymentBusinessState(input: {
       status: true,
       // F5 (#1353): Stripe payments get a raise-only ledger floor below.
       source: true,
+      xeroInvoiceId: true,
+      // #3979: the claim below is on the whole row as read.
+      updatedAt: true,
       booking: { select: { organiserSettled: true } },
     },
   });
@@ -296,9 +221,44 @@ export async function repairRefundedPaymentBusinessState(input: {
     }),
   ]);
 
+  // #3979 (`INV-PAY-126`): a bank-transfer payment's modification notes are
+  // found by its invoice too. The inbound sync links an edit's note and its
+  // allocation to the edit, not the payment, so a recount triggered by any
+  // later note used to drop every earlier modification note from the total -
+  // overstating the net of a payment whose receipt kept the stored figure.
+  const invoicePaymentIds = new Map(
+    payments.flatMap((payment) =>
+      payment.source === PaymentSource.INTERNET_BANKING && payment.xeroInvoiceId
+        ? [[payment.xeroInvoiceId, payment.id] as const]
+        : [],
+    ),
+  );
+  const invoiceAllocationLinks =
+    invoicePaymentIds.size === 0
+      ? []
+      : await prisma.xeroObjectLink.findMany({
+          where: {
+            xeroObjectType: "ALLOCATION",
+            role: "MODIFICATION_CREDIT_NOTE_ALLOCATION",
+            active: true,
+            OR: [...invoicePaymentIds.keys()].map((invoiceId) => ({
+              metadata: { path: ["invoiceId"], equals: invoiceId },
+            })),
+          },
+          select: { localId: true, xeroObjectId: true, metadata: true },
+        });
+  const existingModificationAllocations = [
+    ...modificationAllocationLinks.map((link) => ({ paymentId: link.localId, metadata: link.metadata })),
+    ...invoiceAllocationLinks.flatMap((link) => {
+      const invoiceId = getJsonRecord(link.metadata)?.invoiceId;
+      const paymentId = typeof invoiceId === "string" ? invoicePaymentIds.get(invoiceId) : undefined;
+      return paymentId ? [{ paymentId, metadata: link.metadata }] : [];
+    }),
+  ];
+
   const existingModificationCreditNoteIds = Array.from(
     new Set(
-      modificationAllocationLinks
+      existingModificationAllocations
         .map((link) => getCreditNoteIdFromAllocationMetadata(link.metadata))
         .filter(
           (creditNoteId): creditNoteId is string =>
@@ -307,6 +267,7 @@ export async function repairRefundedPaymentBusinessState(input: {
     )
   );
   const validModificationCreditNoteIds = new Set<string>();
+  const validCorrectionNoteIds = new Set<string>();
 
   if (existingModificationCreditNoteIds.length > 0) {
     const modificationCreditNotes = await prisma.xeroObjectLink.findMany({
@@ -325,16 +286,23 @@ export async function repairRefundedPaymentBusinessState(input: {
     });
 
     // #3809 (review M2), #3954: a give-back or billed-offset note moved no cash.
-    const noCashNoteIds = await noCashModificationNoteIds(existingModificationCreditNoteIds);
+    // #3979: nor did an invoice correction, but it is counted against a payment
+    // whose bank receipt was recorded at the stored figure.
+    const [noCashNoteIds, correctionNoteIds] = await Promise.all([
+      noCashModificationNoteIds(existingModificationCreditNoteIds),
+      invoiceCorrectionNoteIds(existingModificationCreditNoteIds),
+    ]);
     for (const link of modificationCreditNotes) {
-      if (
-        isIncludedRefundCreditNoteStatus(getJsonRecord(link.metadata)?.status) &&
-        !noCashNoteIds.has(link.xeroObjectId)
-      ) {
+      if (!isIncludedRefundCreditNoteStatus(getJsonRecord(link.metadata)?.status)) continue;
+      if (!noCashNoteIds.has(link.xeroObjectId)) {
         validModificationCreditNoteIds.add(link.xeroObjectId);
+      } else if (correctionNoteIds.has(link.xeroObjectId)) {
+        validCorrectionNoteIds.add(link.xeroObjectId);
       }
     }
   }
+  const paymentsCountingCorrections =
+    validCorrectionNoteIds.size > 0 ? await paymentsCountingInvoiceCorrections(paymentIds) : new Set<string>();
 
   const directRefundCentsByPaymentId = new Map<string, Map<string, number>>();
   for (const link of directRefundLinks) {
@@ -355,13 +323,17 @@ export async function repairRefundedPaymentBusinessState(input: {
     directRefundCentsByPaymentId.set(link.localId, paymentRefunds);
   }
 
+  // One contribution per note and payment, however many links name it.
   const modificationRefundCentsByPaymentId = new Map<string, Map<string, number>>();
-  for (const link of modificationAllocationLinks) {
+  for (const link of existingModificationAllocations) {
     const creditNoteId = getCreditNoteIdFromAllocationMetadata(link.metadata);
     if (!creditNoteId || creditNoteId === input.creditNoteId) {
       continue;
     }
-    if (!validModificationCreditNoteIds.has(creditNoteId)) {
+    if (
+      !validModificationCreditNoteIds.has(creditNoteId) &&
+      !(validCorrectionNoteIds.has(creditNoteId) && paymentsCountingCorrections.has(link.paymentId))
+    ) {
       continue;
     }
 
@@ -371,10 +343,10 @@ export async function repairRefundedPaymentBusinessState(input: {
     }
 
     const paymentRefunds =
-      modificationRefundCentsByPaymentId.get(link.localId) ??
+      modificationRefundCentsByPaymentId.get(link.paymentId) ??
       new Map<string, number>();
-    paymentRefunds.set(link.xeroObjectId, contributionCents);
-    modificationRefundCentsByPaymentId.set(link.localId, paymentRefunds);
+    paymentRefunds.set(creditNoteId, contributionCents);
+    modificationRefundCentsByPaymentId.set(link.paymentId, paymentRefunds);
   }
 
   const includesCurrentCreditNoteContribution = isIncludedRefundCreditNoteStatus(
@@ -403,7 +375,8 @@ export async function repairRefundedPaymentBusinessState(input: {
   // loop or a write transaction (the operator message may name several rows).
   const format = await getClubFormat();
 
-  for (const payment of payments) {
+  type RepairedPayment = (typeof payments)[number];
+  const repairOne = async (payment: RepairedPayment): Promise<"updated" | "unchanged" | "lost"> => {
     const directRefundTotalCents = Array.from(
       directRefundCentsByPaymentId.get(payment.id)?.values() ?? []
     ).reduce((sum, amountCents) => sum + amountCents, 0);
@@ -497,6 +470,20 @@ export async function repairRefundedPaymentBusinessState(input: {
       // F5 (#1353): never un-refund a Stripe payment from Xero-derived data.
       nextStatus = null;
     }
+    if (
+      nextStatus === PaymentStatus.SUCCEEDED &&
+      (payment.status === PaymentStatus.REFUNDED ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED)
+    ) {
+      // #3979 (`INV-PAY-126`): a refunded total falling to nothing on a payment
+      // nothing was ever captured on undoes an older fold (an invoice correction
+      // counted as a refund), never a refund given back: the payment returns to
+      // its uncaptured state, never to SUCCEEDED. An organiser-settled child is
+      // the #3653 mirror's, and a payment with no rows keeps today's answer.
+      if (!payment.booking.organiserSettled) {
+        nextStatus = (await uncapturedPrimaryStatus(payment.id)) ?? nextStatus;
+      }
+    }
     const updates: {
       refundedAmountCents?: number;
       status?: PaymentStatus;
@@ -510,16 +497,56 @@ export async function repairRefundedPaymentBusinessState(input: {
     }
 
     if (Object.keys(updates).length === 0) {
-      continue;
+      return "unchanged";
     }
 
-    await prisma.payment.update({
+    // #3979: a claim on the row as read, so a concurrent writer is never
+    // overwritten with a figure derived from the row before it wrote. The
+    // inbound settle touches the payment at every transition, even when it
+    // keeps the stored figure and leaves status and refunded total alone, so
+    // `updatedAt` is what catches it.
+    const written = await prisma.payment.updateMany({
       where: {
         id: payment.id,
+        status: payment.status,
+        refundedAmountCents: payment.refundedAmountCents,
+        amountCents: payment.amountCents,
+        updatedAt: payment.updatedAt,
       },
       data: updates,
     });
-    updatedPayments += 1;
+    return written.count === 1 ? "updated" : "lost";
+  };
+
+  const lostPaymentIds: string[] = [];
+  for (const payment of payments) {
+    const outcome = await repairOne(payment);
+    if (outcome === "updated") updatedPayments += 1;
+    if (outcome === "lost") lostPaymentIds.push(payment.id);
+  }
+
+  if (lostPaymentIds.length > 0) {
+    if (input.retryPaymentIds) {
+      logger.warn(
+        { creditNoteId: input.creditNoteId, paymentIds: lostPaymentIds },
+        "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"
+      );
+    } else {
+      // Decide once more from scratch for those payments: every input is read
+      // again - the rows, the links, which notes count, and the current note's
+      // own contribution - from what the other writer left (#3979).
+      const amounts = input.recomputeModificationRefundAmounts
+        ? await input.recomputeModificationRefundAmounts()
+        : input.modificationRefundAmountsByPaymentId;
+      const retry = await repairRefundedPaymentBusinessState({
+        ...input,
+        modificationRefundAmountsByPaymentId: new Map(
+          [...amounts].filter(([paymentId]) => lostPaymentIds.includes(paymentId)),
+        ),
+        retryPaymentIds: lostPaymentIds,
+      });
+      updatedPayments += retry.updatedPayments;
+    }
   }
 
   return {

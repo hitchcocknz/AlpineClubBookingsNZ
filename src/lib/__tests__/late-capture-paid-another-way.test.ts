@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   findOperation: vi.fn(),
+  findOperations: vi.fn(),
+  lateIntents: vi.fn<(...args: unknown[]) => Promise<Set<string>>>(async () => new Set<string>()),
   findClose: vi.fn(),
   readLateCaptureXeroReceipt: vi.fn(),
   enqueueXeroRefundCreditNoteOperation: vi.fn(),
@@ -20,6 +22,7 @@ vi.mock("@/lib/late-capture-xero-receipt", () => ({
     throw new Error("a paid-another-way path read readLateCaptureXeroReceipt");
   },
   readPaidAnotherWayLateCaptureXeroReceipt: (...args: unknown[]) => mocks.readLateCaptureXeroReceipt(...args),
+  findLateCapturePaymentIntents: (...args: unknown[]) => mocks.lateIntents(...args),
   hasXeroReceiptForLateCapture: async (...args: unknown[]) =>
     ((await mocks.readLateCaptureXeroReceipt(...args)) as { kind: string }).kind === "recorded",
 }));
@@ -38,7 +41,10 @@ import { cardRefundPaidAnotherWayOccurrenceKey, type PaidAnotherWayXeroNote } fr
 import type { ClubTimeZone } from "@/lib/club-time";
 
 const store = {
-  paymentRecoveryOperation: { findUnique: (...args: unknown[]) => mocks.findOperation(...args) },
+  paymentRecoveryOperation: {
+    findUnique: (...args: unknown[]) => mocks.findOperation(...args),
+    findMany: (...args: unknown[]) => mocks.findOperations(...args),
+  },
   manualRefundTask: { findFirst: (...args: unknown[]) => mocks.findClose(...args) },
   xeroSyncOperation: { findFirst: (...args: unknown[]) => mocks.findAskedNote(...args) },
 };
@@ -59,6 +65,8 @@ function closeRecord(xeroRefundNote: PaidAnotherWayXeroNote, overrides: Record<s
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findOperation.mockResolvedValue({ id: "op-dead", idempotencyKey: "late_capture_approval_refund_recovery_pi_late" });
+  mocks.findOperations.mockResolvedValue([{ id: "op-dead" }]);
+  mocks.lateIntents.mockResolvedValue(new Set<string>());
   mocks.findClose.mockResolvedValue(null);
   mocks.readLateCaptureXeroReceipt.mockResolvedValue({ kind: "none" });
   mocks.enqueueXeroRefundCreditNoteOperation.mockResolvedValue({ queueOperationId: "xop-note" });
@@ -69,8 +77,14 @@ describe("findLateCaptureRefundPaidAnotherWay", () => {
   it("joins the capture to the close through its approval's card refund row, under any of the three keys", async () => {
     mocks.findClose.mockResolvedValue(closeRecord("after-receipt"));
     await expect(findLateCaptureRefundPaidAnotherWay("pi_late", store as never)).resolves.toMatchObject({ id: "close-1" });
-    expect(mocks.findOperation).toHaveBeenCalledWith({
-      where: { idempotencyKey: "late_capture_approval_refund_recovery_pi_late" },
+    // #4104: its approval row, or a row owing a refund of it that Stripe failed later.
+    expect(mocks.findOperations).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { idempotencyKey: { in: ["late_capture_approval_refund_recovery_pi_late"] } },
+          { idempotencyKey: { startsWith: "card_refund_failed_later_" }, paymentIntentId: { in: ["pi_late"] } },
+        ],
+      },
       select: { id: true },
     });
     const [{ where }] = mocks.findClose.mock.calls[0] as [{ where: Record<string, unknown> }];
@@ -88,7 +102,7 @@ describe("findLateCaptureRefundPaidAnotherWay", () => {
   });
 
   it("is null when the capture's refund was never raised", async () => {
-    mocks.findOperation.mockResolvedValue(null);
+    mocks.findOperations.mockResolvedValue([]);
     await expect(findLateCaptureRefundPaidAnotherWay("pi_late", store as never)).resolves.toBeNull();
     expect(mocks.findClose).not.toHaveBeenCalled();
   });
@@ -98,7 +112,7 @@ describe("paidAnotherWayCloseReceiptRecorded: the cash evidence's gate", () => {
   it("MUTATION: asks the late capture's own receipt, read off the close's operation", async () => {
     mocks.readLateCaptureXeroReceipt.mockResolvedValue({ kind: "recorded", invoiceId: "inv-receipt" });
     await expect(paidAnotherWayCloseReceiptRecorded(closeRecord("after-receipt"), store as never)).resolves.toBe(true);
-    expect(mocks.findOperation).toHaveBeenCalledWith({ where: { id: "op-dead" }, select: { idempotencyKey: true } });
+    expect(mocks.findOperation).toHaveBeenCalledWith({ where: { id: "op-dead" }, select: { idempotencyKey: true, paymentIntentId: true } });
     expect(mocks.readLateCaptureXeroReceipt).toHaveBeenCalledWith("pi_late", store);
 
     mocks.readLateCaptureXeroReceipt.mockResolvedValue({ kind: "none" });
@@ -183,5 +197,24 @@ describe("notePaidAnotherWayCloseOnReceipt: the second step, run by the receipt'
     mocks.findClose.mockResolvedValue(closeRecord("after-receipt"));
     mocks.enqueueXeroRefundCreditNoteOperation.mockRejectedValue(new Error("database blip"));
     await expect(note()).rejects.toThrow("database blip");
+  });
+});
+
+// #4104 review (money 3): a late capture's refund that Stripe failed later is
+// owed by a row of its own; its close keeps INV-PAY-110's routing.
+describe("a late capture's refund that failed later (#4104)", () => {
+  it("MUTATION: a failed-later row on a late capture's intent is that capture's, for the receipt gate", async () => {
+    mocks.findOperation.mockResolvedValue({ idempotencyKey: "card_refund_failed_later_re_late", paymentIntentId: "pi_late" });
+    mocks.lateIntents.mockResolvedValue(new Set(["pi_late"]));
+    mocks.readLateCaptureXeroReceipt.mockResolvedValue({ kind: "recorded", invoiceId: "inv-receipt" });
+    await expect(paidAnotherWayCloseReceiptRecorded(closeRecord("after-receipt"), store as never)).resolves.toBe(true);
+    expect(mocks.readLateCaptureXeroReceipt).toHaveBeenCalledWith("pi_late", store);
+  });
+
+  it("a failed-later row on an ordinary intent is no late capture's", async () => {
+    mocks.findOperation.mockResolvedValue({ idempotencyKey: "card_refund_failed_later_re_x", paymentIntentId: "pi_booking" });
+    mocks.lateIntents.mockResolvedValue(new Set());
+    await expect(paidAnotherWayCloseReceiptRecorded(closeRecord("after-receipt"), store as never)).resolves.toBe(false);
+    expect(mocks.readLateCaptureXeroReceipt).not.toHaveBeenCalled();
   });
 });

@@ -140,6 +140,7 @@ import {
 } from "@prisma/client";
 
 import logger from "@/lib/logger";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { isCapturedTransactionStatus } from "./payment-transactions";
 
 /**
@@ -538,7 +539,7 @@ export async function beginSavedCardChargeAttempt(
       kind: PaymentTransactionKind.PRIMARY,
       source: PaymentSource.STRIPE,
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: {
       id: true,
       status: true,

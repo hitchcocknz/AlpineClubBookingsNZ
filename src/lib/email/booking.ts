@@ -2,6 +2,7 @@ import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
 import {
   bookingCancelledRefundSentence,
   type BookingCancelledRefundMethod,
+  type BookingModifiedRefundDestination,
   bookingModifiedRefundSentence,
 } from "@/lib/booking-modified-email-copy";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
@@ -28,7 +29,7 @@ import {
 import {
   type AppliedCreditSummary,
   appliedCreditSummaryRows,
-  bookingModificationSummaryRows,
+  bookingModificationSummaryRows, type BookingModificationAddedGuest,
   bookingModificationTypeLabel,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
@@ -842,6 +843,8 @@ export async function sendBookingCancelledEmail(
   creditRestoredBasis: CreditRestoredBasis = "cancellation-policy",
   // #3973: the amount the refund line names when the refund is the group's; `{{refundAmount}}` stays this booking's.
   refundSentenceCents: number = refundCents,
+  // #4097: the parts of an own-card refund its card refund could not carry; the refund line names each.
+  shortfall: { bankCents: number; checkCents: number } = { bankCents: 0, checkCents: 0 },
 ) {
   await sendEmail({
     to: email,
@@ -856,6 +859,7 @@ export async function sendBookingCancelledEmail(
       creditRestoredCents,
       creditRestoredBasis,
       refundSentenceCents,
+      shortfall,
     )),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-cancelled",
@@ -864,7 +868,10 @@ export async function sendBookingCancelledEmail(
       checkIn: emailCalendarDay(checkIn),
       checkOut: emailCalendarDay(checkOut),
       refundAmount: formatMoneyCents(refundCents, format),
-      refundMessage: bookingCancelledRefundSentence(refundSentenceCents, formatMoneyCents(refundSentenceCents, format), refundMethod),
+      refundMessage: bookingCancelledRefundSentence(refundSentenceCents, formatMoneyCents(refundSentenceCents, format), refundMethod, {
+        ...shortfall,
+        formatAmount: (cents) => formatMoneyCents(cents, format),
+      }),
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).
@@ -1411,6 +1418,7 @@ export async function sendBookingModifiedEmail(params: {
    * question would be asking them to answer `null` by hand.
    */
   promoChangeNotAppliedNote?: string | null;
+  addedGuests: ReadonlyArray<BookingModificationAddedGuest>; // #4030: named in the change rows; `[]` = nobody
   /**
    * #3033 (epic #2797): this change saved and its refund or credit could not be
    * worked out from stored history, so the club is deciding it.
@@ -1426,9 +1434,8 @@ export async function sendBookingModifiedEmail(params: {
    * instead (`INV-SSOT`, "prefer unrepresentable over policed").
    */
   financialReviewPending: boolean;
-  /** #3916: the refund went to the group organiser's card (#3653). REQUIRED, like `financialReviewPending`;
-   * the settlement's own `result.organiserChildRefund !== null`, never recomputed. */
-  refundReturnedToOrganiser: boolean;
+  /** #3916, #4057: REQUIRED; the answer `executeBookingModificationRefund` gives after the refund ran, never recomputed. */
+  refundDestination: BookingModifiedRefundDestination;
   /**
    * #3827 (D-3813-6, `INV-PAY-117`): the refund is a bank transfer the club
    * still has to send. REQUIRED, as `financialReviewPending` is; the template's
@@ -1494,7 +1501,7 @@ export async function sendBookingModifiedEmail(params: {
           bookingModifiedRefundSentence(
             formatMoneyCents(params.refundAmountCents, format),
             params.refundByBankTransfer,
-            params.refundReturnedToOrganiser,
+            params.refundDestination,
           ),
           accountCreditAmountCents > 0
             ? `Account credit of ${formatMoneyCents(accountCreditAmountCents, format)} has been added for future bookings.`

@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import type { XeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement-rules";
 import type { PaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "MISSING_PRIMARY_INVOICE",
@@ -256,9 +257,7 @@ export const bookingRepairSelect = Prisma.validator<Prisma.BookingSelect>()({
       // #3635: only a Stripe payment's refund gap is read (the note-eligible cash).
       source: true,
       transactions: {
-        orderBy: {
-          createdAt: "asc",
-        },
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
         select: {
           id: true,
           paymentId: true,
@@ -273,6 +272,7 @@ export const bookingRepairSelect = Prisma.validator<Prisma.BookingSelect>()({
           // #3528: a withdrawn charge request must not plan a new invoice.
           withdrawnAt: true,
           createdAt: true,
+          insertionSeq: true,
           updatedAt: true,
         },
       },
@@ -463,6 +463,8 @@ export interface BookingClassificationContext {
    * reads the same evidence as the hardening report.
    */
   paymentRefundPaymentLinks: XeroObjectLinkRecord[];
+  /** `INV-ADDPAY-041`: refund notes a link records VOIDED/DELETED, active or not - never a conflict or a field backfill. */
+  cancelledRefundNoteIds: ReadonlySet<string>;
   bookingLinks: XeroObjectLinkRecord[];
   modificationLinksById: Map<string, XeroObjectLinkRecord[]>;
   paymentOperations: XeroOperationRecord[];
@@ -475,6 +477,12 @@ export interface BookingClassificationContext {
    * the late-capture finding must not offer to refund it.
    */
   lateCaptureApprovalIntentIds: Set<string>;
+  /**
+   * #4104 (#4128 review C5): by charge, the cents a card refund Stripe failed
+   * later is still owed by a row of its own. The late-capture finding leaves
+   * them out, as it leaves out a capture an approval task owns. Absent, none.
+   */
+  failedLaterOwedCentsByTransactionId?: Map<string, number>;
   /**
    * #3635: of those, the ones a treasurer KEPT (task DISMISSED), by intent: the
    * task and the Xero rows anchored on it. A kept booking payment is recorded

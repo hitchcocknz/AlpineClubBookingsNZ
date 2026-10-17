@@ -106,6 +106,7 @@ import {
   bookingHasPrimaryXeroInvoice,
   keptLateCaptureRecordRoute,
 } from "@/lib/late-capture-kept-xero-rules";
+import { compareLedgerRowsNewestFirst } from "@/lib/payment-ledger-order";
 
 /**
  * #3643: a booking's invoice-clearing credit note create that still stands -
@@ -1402,7 +1403,9 @@ export function classifyBookingContext(
       })
     : null;
 
-  if (payment && refundCreditNote?.conflicts.length) {
+  // `INV-ADDPAY-041`: a voided note is never the payment's note - no conflict, no field backfill.
+  const refundNoteConflicts = refundCreditNote?.conflicts.filter((id) => !context.cancelledRefundNoteIds.has(id)) ?? [];
+  if (payment && refundCreditNote && refundNoteConflicts.length) {
     const action = addAction(
       actionMap,
       buildManualReviewAction(
@@ -1418,24 +1421,22 @@ export function classifyBookingContext(
       details: {
         paymentId: payment.id,
         creditNoteId: refundCreditNote.objectId,
-        conflictingCreditNoteIds: refundCreditNote.conflicts,
+        conflictingCreditNoteIds: refundNoteConflicts,
       },
       actionKeys: [action.key],
     });
   }
 
-  if (payment && refundCreditNote && !payment.xeroRefundCreditNoteId) {
+  const backfillNote = refundCreditNote && !context.cancelledRefundNoteIds.has(refundCreditNote.objectId) ? refundCreditNote : null;
+  if (payment && backfillNote && !payment.xeroRefundCreditNoteId) {
     const action = addAction(actionMap, {
-      key: `payment-field:refund-credit-note:${payment.id}:${refundCreditNote.objectId}`,
+      key: `payment-field:refund-credit-note:${payment.id}:${backfillNote.objectId}`,
       bookingId: booking.id,
       type: "SYNC_PAYMENT_REFUND_CREDIT_NOTE_FIELD",
       description:
         "Backfill payment.xeroRefundCreditNoteId from an existing refund credit note link or completed operation.",
       safeToAutoApply: true,
-      payload: {
-        paymentId: payment.id,
-        xeroRefundCreditNoteId: refundCreditNote.objectId,
-      },
+      payload: { paymentId: payment.id, xeroRefundCreditNoteId: backfillNote.objectId },
     });
     addFinding(findings, {
       code: "XERO_LINK_MISMATCH",
@@ -1444,16 +1445,16 @@ export function classifyBookingContext(
       safeToAutoApply: true,
       details: {
         paymentId: payment.id,
-        creditNoteId: refundCreditNote.objectId,
+        creditNoteId: backfillNote.objectId,
       },
       actionKeys: [action.key],
     });
   }
 
-  if (payment) addUnsettledRefundCreditNoteFindings(findings, actionMap, booking.id, context.paymentRefundPaymentLinks, paymentOperations);
+  if (payment) addUnsettledRefundCreditNoteFindings(findings, actionMap, booking.id, context.paymentRefundPaymentLinks, paymentOperations, paymentLinks);
   addUnallocatedCardAppliedCreditFindings(findings, actionMap, context);
   if (payment && refundCreditNote) {
-    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks);
+    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
     if (refundAmountCents !== null && refundAmountCents > 0) {
       addXeroAmountMismatchFinding({
         findings,
@@ -2133,15 +2134,27 @@ export function classifyBookingContext(
         transaction.stripePaymentIntentId !== null &&
         context.lateCaptureApprovalIntentIds.has(transaction.stripePaymentIntentId)
     );
+    // #4104 (#4128 review C5): money a card refund Stripe failed later still
+    // owes on a row of its own is that row's to refund, never offered here too.
+    const owedByRow = (transaction: (typeof capturedPaymentTransactions)[number]) =>
+      transaction.id === null ? 0 : (context.failedLaterOwedCentsByTransactionId?.get(transaction.id) ?? 0);
+    const headroomCents = (transaction: (typeof capturedPaymentTransactions)[number]) =>
+      Math.max(transaction.amountCents - transaction.refundedAmountCents - owedByRow(transaction), 0);
     const unheldOutstandingCents =
       outstandingCapturedRefundAmountCents -
       heldOutstanding.reduce(
         (sum, t) => sum + Math.max(t.amountCents - t.refundedAmountCents, 0),
         0
-      );
+      ) -
+      capturedPaymentTransactions
+        .filter((transaction) => !heldOutstanding.includes(transaction))
+        .reduce(
+          (sum, t) => sum + Math.min(owedByRow(t), Math.max(t.amountCents - t.refundedAmountCents, 0)),
+          0
+        );
     const lateCaptureTransactions = capturedPaymentTransactions.filter(
       (transaction) =>
-        transaction.amountCents > transaction.refundedAmountCents &&
+        headroomCents(transaction) > 0 &&
         !heldOutstanding.includes(transaction)
     );
     // #3639 delta D1: the refund is PINNED to the unheld captures, slice by
@@ -2151,14 +2164,9 @@ export function classifyBookingContext(
     const pinnable = lateCaptureTransactions.every((transaction) => transaction.id !== null);
     const lateCaptureAllocation: { paymentTransactionId: string; amountCents: number }[] = [];
     let unallocatedCents = Math.max(unheldOutstandingCents, 0);
-    for (const transaction of [...lateCaptureTransactions].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    )) {
+    for (const transaction of [...lateCaptureTransactions].sort(compareLedgerRowsNewestFirst)) {
       if (!pinnable || transaction.id === null || unallocatedCents <= 0) break;
-      const sliceCents = Math.min(
-        transaction.amountCents - transaction.refundedAmountCents,
-        unallocatedCents
-      );
+      const sliceCents = Math.min(headroomCents(transaction), unallocatedCents);
       lateCaptureAllocation.push({ paymentTransactionId: transaction.id, amountCents: sliceCents });
       unallocatedCents -= sliceCents;
     }
@@ -2276,7 +2284,7 @@ export function classifyBookingContext(
     // per-refund ones - already answer every cent a note may: nothing is
     // missing, and nothing is ambiguous.
     if (primaryInvoice && !refundCreditNote && context.refundNoteUncoveredCents !== 0) {
-      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks);
+      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
       if (cashCancellationRefundCents === null) {
         const action = addAction(
           actionMap,
@@ -2294,7 +2302,7 @@ export function classifyBookingContext(
           details: {
             paymentId: payment.id,
             refundedAmountCents: payment.refundedAmountCents,
-            knownModificationRefundCents: getKnownModificationRefundTotalCents(booking),
+            knownModificationRefundCents: getKnownModificationRefundTotalCents(booking, context.modificationOperationsById),
           },
           actionKeys: [action.key],
         });

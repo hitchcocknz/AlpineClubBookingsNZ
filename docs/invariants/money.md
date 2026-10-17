@@ -635,7 +635,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   internet banking (#3529's wording decision, `INV-PAY-101`) — except on a
   card payment, whose refund posts from its refund row. A card refund closed
   as paid another way has no refund row, so its close posts the line on its
-  own completed task (`INV-PAY-122`).
+  own completed task (`INV-PAY-122`); so does a cancel's card refund
+  shortfall, on its completion (`INV-PAY-129`).
   `booking-ledger-credit-sync.realdb.test.ts` proves the `member-credit.ts`
   writers and the real resolver.
 
@@ -681,8 +682,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   fee, credit row, capture or refund no live line records. Every class holds
   the gate until the owner's `--acknowledged` file, kept outside the
   repository, names its instance to the cent — `KNOWN_DEFECT_HISTORY` too —
-  except `GROUP_SETTLEMENT_OFF_LEDGER`, listed only (owner decisions,
-  #3583) while #3854's lines agree. A moved figure is stale and still holds. `booking-ledger-projection-census.realdb.test.ts` proves it
+  except `GROUP_SETTLEMENT_OFF_LEDGER` (#3583, while #3854's lines agree) and
+  `REFUND_APPEAL_PAID` (#4075), listed only. A moved figure is stale and still holds. `booking-ledger-projection-census.realdb.test.ts` proves it
   on real-writer bookings.
 
 ## INV-MONEY-006
@@ -861,7 +862,12 @@ check the others.
   carries no Xero invoice link (a write-time fence, so a manual mark-paid
   landing mid-sync is also safe); and `flushMemberSubscriptionHistory` treats a
   manual-PAID row as financial history and never deletes it on contact
-  link/push/unlink. Once a real Xero subscription invoice links to the row,
+  link/push/unlink. An audited finance:edit close (#4098) moves that conflict
+  to `NOT_REQUIRED` only while every covered subscription is settled (`PAID`,
+  or exempt `NOT_REQUIRED`), releasing its coverage claims and bumping
+  `voidGeneration`, so a later payment reversal re-bills that member; a closed
+  family stays billed until then (#4110). Once a real Xero
+  subscription invoice links to the row,
   Xero is authoritative again and the linking write clears the manual
   provenance columns (a row can never read "UNPAID (manual)"). Reversal
   (finance:edit) restores `NOT_INVOICED` (or `UNPAID` on a legacy row with an

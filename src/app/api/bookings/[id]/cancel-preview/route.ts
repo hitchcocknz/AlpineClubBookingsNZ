@@ -18,6 +18,7 @@ import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
+import { cancelPreviewCardShortfall } from "@/lib/cancel-card-refund-shortfall-preview";
 import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import {
   findGroupCancellationChildDebt,
@@ -225,6 +226,7 @@ export async function GET(
     return NextResponse.json({
       ...preview,
       ...groupCancellation,
+      ...(await cancelPreviewCardShortfall(prisma, { payment: booking.payment, organiserCard: organiserCard !== null, refundAmountCents: preview.refundAmountCents })), // #4119: the card's part as the cancel plans it
       hasPayment: true,
       // B5 (#2262): this booking was settled in cash / by an off-Xero bank
       // transfer, so cancelling raises a hand-back task an admin pays by hand —

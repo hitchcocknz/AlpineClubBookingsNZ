@@ -124,7 +124,9 @@ every member's account credit not yet used (the total of their credit
 balances). Each stays until it is paid, kept or the credit is spent. Each
 amount owed comes off Net Collected only for its own booking, so one outside
 the chosen dates or lodge is in Refunds owed and not in the Net Collected
-beside it. Both are in the CSV, labelled "as at today".
+beside it. A group organiser's repayment task (#4042) is in Refunds owed at
+its own amount and comes off no booking's Net Collected, because the joiners'
+Net Collected already treats that money as refunded. Both are in the CSV, labelled "as at today".
 
 A captured later addition is already inside that payment amount and is never
 added again. **Outstanding Additions** remains the booking-level amount still

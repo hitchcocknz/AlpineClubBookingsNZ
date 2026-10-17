@@ -296,6 +296,11 @@ function createDependencies(state: {
   // #3924 round 7 (money M2): an approved capture's card refund row, and the
   // record of its close as paid another way.
   lateCaptureApprovalRefunds?: { id: string; idempotencyKey: string }[];
+  // #4104 (#4128 review C5): card refunds Stripe failed later, owed by rows of their own.
+  failedLaterRows?: { paymentId: string; idempotencyKey: string; allocationPlan: unknown }[];
+  // #4103: the refunds already recorded on a payment, which the late-capture
+  // repair reads for each slice's key generation.
+  paymentRefunds?: { paymentId: string; paymentTransactionId: string | null; amountCents: number; status: string }[];
   paidAnotherWayCloses?: { kind: string; occurrenceKey: string }[];
   // #3924 round 8: where that close's receipt and note stand.
   paidAnotherWayReceipt?: { kind: "none" } | { kind: "resolved-by-hand" } | { kind: "recorded"; invoiceId: string | null };
@@ -495,8 +500,13 @@ function createDependencies(state: {
         // open statuses only. The mock discriminates the way the real table
         // would rather than returning one list to both.
         findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+          // #4104 (#4128 review C5): the unsettled failed-later rows, by key prefix.
+          if (where?.idempotencyKey?.startsWith === "card_refund_failed_later_") {
+            return (state.failedLaterRows ?? []).filter((row) => (where.paymentId?.in ?? []).includes(row.paymentId));
+          }
           // #3924 round 7: the approval refund rows, by their exact keys.
-          const askedKeys: string[] = where?.idempotencyKey?.in ?? [];
+          // #4104: asked as an OR with the failed-later rows on the captures' intents.
+          const askedKeys: string[] = where?.idempotencyKey?.in ?? where?.OR?.[0]?.idempotencyKey?.in ?? [];
           if (where?.type === undefined && askedKeys.some((key) => key.startsWith("late_capture_approval_refund"))) {
             return (state.lateCaptureApprovalRefunds ?? []).filter((row) => askedKeys.includes(row.idempotencyKey));
           }
@@ -556,6 +566,11 @@ function createDependencies(state: {
       // notice; and it applies the same three criteria plus the intent id the
       // real query does, so a test cannot pass on a row the real read would
       // never have returned.
+      paymentRefund: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+          (state.paymentRefunds ?? []).filter((refund) => refund.paymentId === where?.paymentId),
+        ),
+      },
       paymentTransaction: {
         findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
           const booking = state.bookings.find(
@@ -771,6 +786,59 @@ describe("runBookingXeroRepair", () => {
     expect(codes).not.toContain("REFUND_CREDIT_NOTE_UNSETTLED");
     // The report's pure half over the same fixture: the same verdict.
     expect(unsettledRefundNoteRows(operations as never, links)).toEqual([]);
+  });
+
+  it("MUTATION (INV-ADDPAY-041): a note Xero voided is never offered back into the payment's field", async () => {
+    // The void deactivated the mirror and released the field; the create that
+    // raised the note is still in the history.
+    const noteRow = makeOperation({
+      id: "op_voided", entityType: "CREDIT_NOTE", localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided",
+      requestPayload: { allocation: { invoiceId: "inv_primary", amount: 20 }, refundMethod: "internet-banking" },
+    });
+    const backfills = async (metadata: Record<string, unknown>) => {
+      const links = [paymentLink({ id: "link_voided", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role: "REFUND_CREDIT_NOTE", active: false, metadata })];
+      const deps = createDependencies({ bookings: [makeBooking()], links, operations: [noteRow] });
+      vi.mocked(deps.prisma.xeroObjectLink.findMany).mockImplementation((async ({ where }: any) =>
+        links.filter((link) => where?.active === undefined || link.active === where.active)) as never);
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+      return report.passes[0].bookings[0].actions.filter((action) => action.type === "SYNC_PAYMENT_REFUND_CREDIT_NOTE_FIELD");
+    };
+
+    expect(await backfills({ amountCents: 2000, status: "VOIDED" })).toEqual([]);
+    expect(await backfills({ amountCents: 2000, status: "DELETED" })).toEqual([]);
+    // Control: the same history with no recorded void is still backfilled.
+    expect(await backfills({ amountCents: 2000 })).toEqual([
+      expect.objectContaining({ payload: { paymentId: "payment_1", xeroRefundCreditNoteId: "cn_voided" } }),
+    ]);
+  });
+
+  it("MUTATION (INV-ADDPAY-041): a voided note's create beside the reissued note's is no conflict", async () => {
+    const noteRow = (id: string, creditNoteId: string, updatedAt: string) =>
+      makeOperation({
+        id, entityType: "CREDIT_NOTE", localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: creditNoteId,
+        requestPayload: { allocation: { invoiceId: "inv_primary", amount: 20 }, refundMethod: "card" }, updatedAt: new Date(updatedAt),
+      });
+    const conflictSummary = "Refund credit note references conflict across local fields, links, or past operations.";
+    const summaries = async (voidedMetadata: Record<string, unknown>) => {
+      const booking = makeBooking();
+      Object.assign(booking.payment!, { xeroRefundCreditNoteId: "cn_live" });
+      const links = [
+        paymentLink({ id: "link_voided", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role: "REFUND_CREDIT_NOTE", active: false, metadata: voidedMetadata }),
+        paymentLink({ id: "link_live", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_live", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 2000 } }),
+      ];
+      const deps = createDependencies({
+        bookings: [booking], links,
+        operations: [noteRow("op_live", "cn_live", "2026-06-02T00:00:00.000Z"), noteRow("op_voided", "cn_voided", "2026-06-01T00:00:00.000Z")],
+      });
+      vi.mocked(deps.prisma.xeroObjectLink.findMany).mockImplementation((async ({ where }: any) =>
+        links.filter((link) => where?.active === undefined || link.active === where.active)) as never);
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+      return report.passes[0].bookings[0].findings.map((finding) => finding.summary);
+    };
+
+    expect(await summaries({ amountCents: 2000, status: "VOIDED" })).not.toContain(conflictSummary);
+    // Control: unvoided, the two creates still disagree.
+    expect(await summaries({ amountCents: 2000 })).toContain(conflictSummary);
   });
 
   it("MUTATION (#3880 F1): a bank payment holding only per-refund notes is offered no backfill of its canonical field", async () => {
@@ -4014,6 +4082,47 @@ describe("runBookingXeroRepair", () => {
     expect(deps.enqueueXeroSupplementaryInvoiceOperation).toHaveBeenCalledTimes(1);
   });
 
+  // #4104 (#4128 review C5): a late capture's refund that Stripe failed later
+  // is owed again by a row of its own; the repair must not offer it as well.
+  it("MUTATION: leaves out of the late-capture refund what a failed-later card refund row still owes", async () => {
+    const transaction = {
+      id: "txn_primary",
+      paymentId: "payment_1",
+      kind: "PRIMARY",
+      source: "STRIPE",
+      stripePaymentIntentId: "pi_primary_captured",
+      amountCents: 10000,
+      refundedAmountCents: 0,
+      status: "SUCCEEDED",
+      paymentMethodId: "pm_123",
+      reason: null,
+      createdAt: new Date("2026-05-01T00:00:00Z"),
+      updatedAt: new Date("2026-05-01T00:00:00Z"),
+    };
+    const booking = makeBooking({
+      status: "CANCELLED",
+      payment: { ...makeBooking().payment, amountCents: 10000, refundedAmountCents: 0, status: "SUCCEEDED", transactions: [transaction] },
+    });
+    const owing = (amountCents: number) =>
+      createDependencies({
+        bookings: [booking],
+        failedLaterRows: [
+          { paymentId: "payment_1", idempotencyKey: "card_refund_failed_later_re_1", allocationPlan: [{ paymentTransactionId: "txn_primary", amountCents }] },
+        ],
+      });
+    const lateCaptureRefund = async (deps: ReturnType<typeof createDependencies>) =>
+      (await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } })).passes[0].bookings[0].actions.find(
+        (action) => action.type === "AUTO_REFUND_LATE_CAPTURED_PAYMENT",
+      );
+
+    expect((await lateCaptureRefund(owing(4000)))?.payload).toMatchObject({
+      refundAmountCents: 6000,
+      allocation: [{ paymentTransactionId: "txn_primary", amountCents: 6000 }],
+    });
+    // All of it owed by the row: nothing is offered.
+    expect(await lateCaptureRefund(owing(10000))).toBeUndefined();
+  });
+
   it("classifies cancelled bookings using per-intent transaction state instead of aggregate payment status", async () => {
     const booking = makeBooking({
       status: "CANCELLED",
@@ -5306,6 +5415,7 @@ describe("runBookingXeroRepair", () => {
               paymentMethodId: "pm_123",
               reason: null,
               createdAt: new Date("2026-05-01T00:00:00Z"),
+              insertionSeq: 1,
               updatedAt: new Date("2026-05-01T00:00:00Z"),
             },
             {
@@ -5320,6 +5430,7 @@ describe("runBookingXeroRepair", () => {
               paymentMethodId: null,
               reason: "date_change",
               createdAt: new Date("2026-05-02T00:00:00Z"),
+              insertionSeq: 2,
               updatedAt: new Date("2026-05-02T00:00:00Z"),
             },
           ],
@@ -5367,6 +5478,184 @@ describe("runBookingXeroRepair", () => {
     });
     expect(booking.payment.status).toBe("REFUNDED");
     expect(report.summary.bookingsWithFindings).toBe(0);
+  });
+
+  // #4132 (`INV-PAY-133`): two captures written in one transaction share a
+  // `createdAt`. The pinned allocation is newest first by insertion order, so
+  // the row inserted LAST is refunded first - here the ADDITIONAL, though the
+  // read returns it second (a `createdAt`-only sort keeps the read's order).
+  it("pins a tied pair of late captures newest first by insertion order (#4132)", async () => {
+    const booking = lateCaptureRefundBooking();
+    const tiedAt = new Date("2026-05-01T00:00:00Z");
+    const [primary, additional] = booking.payment.transactions;
+    Object.assign(primary!, { createdAt: tiedAt, insertionSeq: 1 });
+    Object.assign(additional!, { createdAt: tiedAt, insertionSeq: 2 });
+    const deps = createDependencies({ bookings: [booking] });
+
+    await runBookingXeroRepair(CLUB_FORMAT_TEST, {
+      apply: true,
+      applyActionKeys: ["late-capture-refund:booking_1:payment_1:13000"],
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    expect(deps.refundPaymentTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allocation: [
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ],
+      }),
+    );
+  });
+
+  // #4103 (`INV-PAY-130`): Stripe answers a slice `failed` or `canceled`
+  // without throwing. That slice sent nothing back, so it is never recorded or
+  // noted as refunded, and the action fails saying the money is still with the club.
+  describe("a late-capture refund Stripe refuses (#4103)", () => {
+    const KEY = "late-capture-refund:booking_1:payment_1:13000";
+    const answer = (paymentIntentId: string, transactionId: string, amountCents: number, status: string) => ({
+      paymentIntentId,
+      refundId: `re_${paymentIntentId}`,
+      amountCents,
+      status,
+      slice: { paymentTransactionId: transactionId, amountCents },
+    });
+    async function applyWith(refund: ReturnType<typeof vi.fn>) {
+      const deps = createDependencies({ bookings: [lateCaptureRefundBooking()] });
+      deps.refundPaymentTransactions = refund as unknown as typeof deps.refundPaymentTransactions;
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, applyActionKeys: [KEY], dependencies: deps, scope: { all: true } });
+      const action = report.passes
+        .flatMap((pass) => pass.bookings.flatMap((bookingReport) => bookingReport.actions))
+        .find((item) => item.key === KEY);
+      const recorded = (deps.recordAndNoteRepairedLateCaptureRefunds as ReturnType<typeof vi.fn>).mock.calls.flatMap(([args]) =>
+        (args as { refunds: { paymentIntentId: string }[] }).refunds.map((each) => each.paymentIntentId),
+      );
+      return { action, recorded };
+    }
+
+    it.each([["failed"], ["canceled"]])("every slice answered %s: nothing recorded or noted, and the action fails naming the refusal", async (status) => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, status), answer("pi_primary_captured", "txn_primary", 10000, status)],
+          totalRefundedAmountCents: 13000,
+        }),
+      );
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+      expect(action?.resultMessage).toMatch(/Stripe refused \$130\.00 .*still owed\. That money is still with the club/);
+      expect(action?.resultMessage).not.toMatch(/^Refunded/);
+    });
+
+    it("one slice made beside one refused: only the made one is recorded, and the action fails naming the refused amount", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, "succeeded"), answer("pi_primary_captured", "txn_primary", 10000, "failed")],
+          totalRefundedAmountCents: 13000,
+        }),
+      );
+
+      expect(recorded).toEqual(["pi_additional_captured"]);
+      expect(action?.status).toBe("failed");
+      expect(action?.resultMessage).toContain("Recorded the refund of pi_additional_captured as the webhook does.");
+      expect(action?.resultMessage).toMatch(/Stripe refused \$100\.00/);
+    });
+
+    it("refused then thrown: the refused slice is not recorded, and the action fails", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockRejectedValue(
+          new PartialRefundError({
+            format: CLUB_FORMAT_TEST,
+            completedRefundCents: 0,
+            refunds: [answer("pi_additional_captured", "txn_additional", 3000, "failed")],
+            refusedSlices: [{ paymentTransactionId: "txn_additional", amountCents: 3000 }],
+            cause: new Error("network"),
+          }),
+        ),
+      );
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+    });
+
+    it("one made, one refused, then a throw: only the made slice is recorded", async () => {
+      const { action, recorded } = await applyWith(
+        vi.fn().mockRejectedValue(
+          new PartialRefundError({
+            format: CLUB_FORMAT_TEST,
+            completedRefundCents: 3000,
+            refunds: [answer("pi_additional_captured", "txn_additional", 3000, "succeeded"), answer("pi_primary_captured", "txn_primary", 10000, "canceled")],
+            refusedSlices: [{ paymentTransactionId: "txn_primary", amountCents: 10000 }],
+            cause: new Error("network"),
+          }),
+        ),
+      );
+
+      expect(recorded).toEqual(["pi_additional_captured"]);
+      expect(action?.status).toBe("failed");
+    });
+
+    // #4103 (option c): the repair has no row to carry a slice's key generation,
+    // so it reads it from the refusals recorded for that slice. A retry after a
+    // refusal is a fresh request; a lost answer records nothing, so its replay
+    // keeps the key Stripe answers with the original.
+    describe("the retry's key generation follows the refusals recorded for each slice", () => {
+      async function sentAllocation(paymentRefunds: NonNullable<Parameters<typeof createDependencies>[0]["paymentRefunds"]>) {
+        const deps = createDependencies({ bookings: [lateCaptureRefundBooking()], paymentRefunds });
+        await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, applyActionKeys: [KEY], dependencies: deps, scope: { all: true } });
+        return (deps.refundPaymentTransactions as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.allocation;
+      }
+      const refusal = (transactionId: string, amountCents: number, status = "failed") => ({ paymentId: "payment_1", paymentTransactionId: transactionId, amountCents, status });
+
+      it("no refusal recorded: every slice keeps its first key", async () => {
+        expect(await sentAllocation([])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ]);
+      });
+
+      it("a refusal recorded for one slice moves only that slice to its next key", async () => {
+        expect(await sentAllocation([refusal("txn_primary", 10000)])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000, stripeKeySuffix: "refused1" },
+        ]);
+      });
+
+      it("a second refusal moves it on again, never back to a key already refused", async () => {
+        expect(await sentAllocation([refusal("txn_primary", 10000), refusal("txn_primary", 10000, "canceled")])).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000, stripeKeySuffix: "refused2" },
+        ]);
+      });
+
+      it("a made refund, another payment's refusal, or a refusal of another amount moves nothing", async () => {
+        expect(
+          await sentAllocation([
+            refusal("txn_primary", 10000, "succeeded"),
+            refusal("txn_primary", 10000, "pending"),
+            refusal("txn_primary", 9999),
+            { ...refusal("txn_primary", 10000), paymentId: "payment_other" },
+          ]),
+        ).toEqual([
+          { paymentTransactionId: "txn_additional", amountCents: 3000 },
+          { paymentTransactionId: "txn_primary", amountCents: 10000 },
+        ]);
+      });
+    });
+
+    it("a re-run that Stripe answers with the same refusal records nothing, again", async () => {
+      const refusal = () =>
+        vi.fn().mockResolvedValue({
+          refunds: [answer("pi_additional_captured", "txn_additional", 3000, "failed"), answer("pi_primary_captured", "txn_primary", 10000, "failed")],
+          totalRefundedAmountCents: 13000,
+        });
+      await applyWith(refusal());
+      const { action, recorded } = await applyWith(refusal());
+
+      expect(recorded).toEqual([]);
+      expect(action?.status).toBe("failed");
+    });
   });
 
   it("says it recorded the refund only for the intents whose record was written, and queued only a note that was queued (#3635 N4)", async () => {
@@ -7736,6 +8025,79 @@ describe("a refund request's own note never answers for the payment's refund not
       payment: { refundedAmountCents: 3000 },
     });
     expect(booking.findings).toContainEqual(ambiguousNote);
+  });
+
+  // #4195: a request's note Xero voided still answers for that request's cash.
+  // The void moves no refunded total (the inbound repair reads only the
+  // payment's own refund-note roles), and the request, never the
+  // cancellation's note, raises the replacement (`INV-PAY-118`).
+  it("MUTATION (#4195): a request whose note Xero voided keeps its cash out of the cancellation's note", async () => {
+    // Its mirror is inactive now, so the loader (active links only) never reads it: the row's amount counts.
+    const inactive = await run({ operations: [requestNote()], links: [], payment: { refundedAmountCents: 3000 } });
+    // A mirror left active before #4195 still records VOIDED: with the row's payload gone, its amount counts.
+    const voidedStillActive = { ...requestLink, metadata: { amountCents: 3000, refundRequestId: "rr_1", status: "VOIDED" } };
+    const legacy = await run({ operations: [requestNote({ requestPayload: null })], links: [voidedStillActive], payment: { refundedAmountCents: 3000 } });
+    for (const booking of [inactive, legacy]) {
+      expect(booking.findings).not.toContainEqual(ambiguousNote);
+      expect(booking.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
+    }
+    // Neither the row nor an active mirror says the amount: a person sizes it, never the tool.
+    const unknown = await run({ operations: [requestNote({ requestPayload: null })], links: [], payment: { refundedAmountCents: 3000 } });
+    expect(unknown.findings).toContainEqual(ambiguousNote);
+    expect(unknown.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
+  });
+
+  // #4195 money lens F1, #4214 (owner decision: the officer re-raises): once
+  // Xero voided the request's own note and nothing live replaces it, a stale
+  // FAILED row gets no Retry, so `--apply` never raises a second live credit
+  // beside the one the treasurer may have raised by hand.
+  describe("#4214: a request whose own note Xero voided is the officer's to re-raise", () => {
+    const failedRow = requestNote({ status: "FAILED", xeroObjectId: null, xeroObjectType: null });
+    // An earlier inline retry raised cn_request on a row of its own.
+    const raisedRow = requestNote({ id: "operation_request_note_retry" });
+    const officerDecides = expect.objectContaining({
+      code: "BLOCKED_BY_XERO_OPERATION",
+      safeToAutoApply: false,
+      actions: [],
+      summary: expect.stringContaining("An officer decides whether to raise a fresh note"),
+    });
+
+    it("MUTATION: --apply raises nothing for a stale FAILED row once the request's note is voided", async () => {
+      const cancelled = cancelledInternetBanking();
+      Object.assign(cancelled.payment, { refundedAmountCents: 3000 });
+      const deps = createDependencies({
+        bookings: [cancelled],
+        // The voided mirror is inactive, so the active-only loader never reads it.
+        links: [],
+        operations: [makePrimaryInvoiceCreateOperation(), failedRow, raisedRow],
+      });
+
+      const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+
+      const booking = report.passes[0].bookings[0];
+      expect(booking.findings).toContainEqual(officerDecides);
+      expect(booking.actions.map((action) => action.key)).not.toContain("retry:operation_request_note");
+      expect(deps.enqueueXeroSyncOperationRetry).not.toHaveBeenCalled();
+    });
+
+    it("the same for a mirror left active before #4195 that records VOIDED, and for a PARTIAL row naming the voided note", async () => {
+      const voidedStillActive = { ...requestLink, metadata: { amountCents: 3000, refundRequestId: "rr_1", status: "VOIDED" } };
+      const legacy = await run({ operations: [failedRow, raisedRow], links: [voidedStillActive], payment: { refundedAmountCents: 3000 } });
+      expect(legacy.findings).toContainEqual(officerDecides);
+      const partial = await run({ operations: [requestNote({ status: "PARTIAL" })], links: [], payment: { refundedAmountCents: 3000 } });
+      expect(partial.findings).toContainEqual(officerDecides);
+    });
+
+    it("a live own note leaves the Retry as it was", async () => {
+      const booking = await run({ operations: [failedRow, raisedRow], links: [requestLink], payment: { refundedAmountCents: 3000 } });
+      expect(booking.findings).toContainEqual(
+        expect.objectContaining({
+          code: "BLOCKED_BY_XERO_OPERATION",
+          safeToAutoApply: true,
+          actions: [expect.objectContaining({ key: "retry:operation_request_note" })],
+        }),
+      );
+    });
   });
 
   // Review F2 at a19beb492: no other arm reads a request's note, so its own

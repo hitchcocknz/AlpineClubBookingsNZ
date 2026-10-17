@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
   isXeroConnected: vi.fn(),
   getXeroLockDates: vi.fn(),
   isQuotePricedBooking: vi.fn(),
+  isMemberWholeLodgeBooking: vi.fn(),
   // #2978 review: hoisted so the tests can assert what the ROUTE passes it. It
   // was previously an inline stub, which meant nothing checked that the route
   // handed it the booking's guests or the booking's season — the two inputs that
@@ -122,7 +123,7 @@ vi.mock("@/lib/booking-modify", async (importOriginal) => {
   return {
     ...actual,
     isQuotePricedBooking: h.isQuotePricedBooking,
-    isMemberWholeLodgeBooking: vi.fn().mockResolvedValue(false),
+    isMemberWholeLodgeBooking: h.isMemberWholeLodgeBooking,
     calculateModificationSettlementOptions: vi.fn().mockResolvedValue(null),
   };
 });
@@ -181,6 +182,7 @@ import { POST } from "@/app/api/bookings/[id]/modify-quote/route";
 import {
   OTHER_LODGE_RATE_AMOUNT_UNDER_REVIEW_MESSAGE,
   OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE,
+  OTHER_LODGE_RATE_LINKED_GUEST_MESSAGE,
 } from "@/lib/booking-other-lodge-rate";
 
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
@@ -213,10 +215,11 @@ function booking(overrides: Record<string, unknown> = {}) {
     otherLodgeId: null,
     checkIn: D("2026-08-01"),
     checkOut: D("2026-08-03"),
-    totalPriceCents: 10600,
+    // The stored guest prices summed: 2000 + 4800 + 4800 (#4197).
+    totalPriceCents: 11600,
     discountCents: 0,
     promoAdjustmentCents: 0,
-    finalPriceCents: 10600,
+    finalPriceCents: 11600,
     payment: null,
     promoRedemption: null,
     guests: [
@@ -261,10 +264,9 @@ function booking(overrides: Record<string, unknown> = {}) {
 /**
  * The guest rows the route handed to the pricing engine, keyed by guest id.
  *
- * The FIRST call, which is the one that produces the new price. A date change
- * makes several further passes to itemise what each part of the edit cost, and
- * those price the OLD dates from differently-shaped rows — reading the last call
- * would quietly assert against a comparison pass instead of the real quote.
+ * The FIRST call, which is the one that produces the new price. The breakdown
+ * reads that same pass since #4197; before then a date change made further
+ * comparison passes, which is why this names the first call rather than the last.
  */
 function pricedGuestsById() {
   const call = h.priceGuests.mock.calls[0]?.[1] as {
@@ -288,6 +290,7 @@ beforeEach(() => {
   h.groupDiscountFindUnique.mockResolvedValue(null);
   h.bookingRequestFindFirst.mockResolvedValue(null);
   h.isQuotePricedBooking.mockResolvedValue(false);
+  h.isMemberWholeLodgeBooking.mockResolvedValue(false);
   h.resolveOtherLodgeRateEligible.mockImplementation(
     (_db: unknown, { guests }: { guests: Array<{ id: string }> }) =>
       Promise.resolve(new Set(guests.map((guest) => guest.id))),
@@ -358,6 +361,106 @@ describe("modify-quote — other-lodge member rate", () => {
       // 2000 quoted against 4800 booked.
       amountCents: -2800,
     });
+  });
+
+  it("itemises the re-rate once, so the breakdown adds up to the total (#4197)", async () => {
+    const res = await POST(
+      req({
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+    const body = await res.json();
+
+    // The re-rated guest's whole change is on the re-rate line; the stay line
+    // must not count it a second time.
+    expect(body.priceDiffCents).toBe(-2800);
+    expect(body.itemizedChanges).toEqual([
+      { label: expect.stringContaining("other-lodge member rate"), amountCents: -2800 },
+    ]);
+  });
+
+  it("a re-rate beside a date change says its line includes the guest's date change (#4197)", async () => {
+    // One more night: the owner and the stranger keep their locked nights and buy
+    // the 3rd at their rates; the visitor's whole stay re-prices at the member rate.
+    const nightDates = [D("2026-08-01"), D("2026-08-02"), D("2026-08-03")];
+    h.priceGuests.mockResolvedValue({
+      totalPriceCents: 13200,
+      guests: [
+        { priceCents: 3000, perNightCents: [1000, 1000, 1000], nightDates },
+        { priceCents: 3000, perNightCents: [1000, 1000, 1000], nightDates },
+        { priceCents: 7200, perNightCents: [2400, 2400, 2400], nightDates },
+      ],
+    });
+    const res = await POST(
+      req({
+        checkOut: "2026-08-04",
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.priceDiffCents).toBe(13200 - 11600);
+    expect(body.itemizedChanges).toEqual([
+      {
+        label: expect.stringMatching(/other-lodge member rate, including their date change$/),
+        amountCents: 3000 - 4800,
+      },
+      { label: "Date change: 2 nights → 3 nights", amountCents: 1000 + 2400 },
+    ]);
+  });
+
+  it("refuses linking a guest and changing their other-lodge rate in one change (#4197)", async () => {
+    // Both would re-rate the same guest, and each has its own breakdown line, so
+    // the quote would count the change twice. The same resolver refuses it on
+    // the save. (On a real booking the negotiated-price block, which a link plus
+    // an election does not escape, refuses first; this pins the rule itself.)
+    h.isMemberWholeLodgeBooking.mockResolvedValue(true);
+    h.bookingFindUnique.mockResolvedValue(booking({ wholeLodgeHold: true }));
+    const res = await POST(
+      req({
+        linkGuestToMember: [{ guestId: "g-visitor", memberId: "member-9" }],
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: OTHER_LODGE_RATE_LINKED_GUEST_MESSAGE });
+    expect(h.priceGuests).not.toHaveBeenCalled();
+  });
+
+  it("an untouched guest priced differently with no date change reads as a recalculation (#4197)", async () => {
+    // The owner's nights do not move but come back dearer. In real data the
+    // pre-check-in gate parks an unlocked strand before this line is built
+    // (#3166); the pricer is stubbed here to reach the label regardless.
+    h.priceGuests.mockResolvedValue({
+      totalPriceCents: 9300,
+      guests: [
+        { priceCents: 2500, perNightCents: [1250, 1250], nightDates: [] },
+        { priceCents: 2000, perNightCents: [1000, 1000], nightDates: [] },
+        { priceCents: 4800, perNightCents: [2400, 2400], nightDates: [] },
+      ],
+    });
+    const res = await POST(
+      req({
+        otherLodgeId: "lodge-partner",
+        otherLodgeMemberGuestIds: ["g-visitor"],
+      }),
+      { params },
+    );
+    const body = await res.json();
+
+    expect(body.priceDiffCents).toBe(9300 - 11600);
+    expect(body.itemizedChanges).toEqual([
+      { label: expect.stringMatching(/other-lodge member rate$/), amountCents: -2800 },
+      { label: "Price recalculated (rate difference)", amountCents: 500 },
+    ]);
   });
 
   it("unticking clears the locks the other way, so the guest goes back to the non-member rate", async () => {

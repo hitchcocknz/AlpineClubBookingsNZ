@@ -1780,7 +1780,8 @@ owed — against the ledger lines that project them, and prints:
   booking's own rows (in-flight refunds and hand-backs, a review share kept by
   the club, the refunded total's credit and hand-back allocations, and so on).
   Each instance holds the gate until the owner acknowledges it to the cent,
-  except `GROUP_SETTLEMENT_OFF_LEDGER`, which is listed only. One class is the
+  except `GROUP_SETTLEMENT_OFF_LEDGER` and `REFUND_APPEAL_PAID`, which are
+  listed only. One class is the
   census failing closed rather than an expected difference:
   `AMBIGUOUS_REVIEW_GIVE_BACK`, a booking whose #3791 review give-back
   rows it cannot attribute to their reviews (a sibling review's price drop, a
@@ -2069,7 +2070,8 @@ unclassified disagreement, any coverage gap (a booking the back-post listed
 `CANNOT POST` still has one), any integrity finding, every
 `KNOWN_DEFECT_HISTORY` booking until an officer corrects it or you write it off
 in the acknowledgement file on #3583 (owner decision 1), and every other class
-instance until you acknowledge it to the cent. `GROUP_SETTLEMENT_OFF_LEDGER` is
+instance until you acknowledge it to the cent. `REFUND_APPEAL_PAID` (an appeal
+paid back exactly as recorded, #4075) is listed only. `GROUP_SETTLEMENT_OFF_LEDGER` is
 listed only; a group-settled child whose planned lines would not agree
 outright — refused by the back-post (correct the history), or posted with a
 class to acknowledge (run the back-post, then acknowledge) — is never in it,
@@ -2205,6 +2207,38 @@ another cause - typically a credit that was never folded into the total, such as
 internet-banking cash that became credit on an already-cancelled booking. Only
 the first is the #3640 repair question. The arithmetic and its caveats are in
 `src/lib/refunded-total-shortfall-audit.ts`.
+
+### Audit bank-transfer receipts settled at a stale figure (#3979)
+
+Before #3979 the inbound Xero settle kept the figure an Internet Banking payment
+was born with, so a booking re-priced (or charged a recorded fee) before its
+invoice was raised was settled at its old price: its ledger bank receipt and
+`Payment.amountCents`, which refund and credit caps read, were wrong
+(`INV-PAY-125` stops new cases). And while the old and new code are both live in
+a deploy, they can count an invoice correction differently (`INV-PAY-126`).
+`scripts/audit-ib-settled-cash.ts` lists:
+
+- each captured bank-transfer receipt whose figure differs from the payments Xero
+  recorded against its invoice, as the inbound invoice sync stored them;
+- each payment whose refunded total exceeds what its rows record (a credit note
+  folded in), which catches both directions of the deploy window.
+
+It is READ-ONLY and repairs nothing. **Run it after every cutover that carries
+#3979**, on a non-production copy:
+
+```bash
+DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash
+DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash --json
+```
+
+A receipt whose invoice was paid by an applied overpayment or prepayment (Xero
+records an allocation, not a payment; the inbound sync marks the primary-invoice
+link), one with no recorded payment, or one whose amount cannot be read is
+listed apart as not judged: check its invoice in Xero. Officer-settled payments
+(`INV-PAY-001`) are left out. **Correcting a row is a database change**: the
+owner or a developer makes it under the raw-SQL rules (`INV-OPS`), and corrects
+the receipt and the payment's refunded total TOGETHER - either alone moves the
+payment's net. The rules are in `src/lib/ib-settled-cash-audit.ts`.
 
 ### Audit organiser-settled children's refunded mirrors (#3653)
 

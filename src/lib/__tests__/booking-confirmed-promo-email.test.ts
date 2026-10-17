@@ -736,6 +736,7 @@ describe("booking-modified default body (#2267)", () => {
   }): Promise<{ templateData: EmailTemplateData; html: string }> {
     const { sendBookingModifiedEmail } = await import("../email/booking");
     await sendBookingModifiedEmail({
+      addedGuests: [],
       bookingId: "bk_test",
       recipientMemberId: "member_1",
       email: "member@example.org",
@@ -757,7 +758,7 @@ describe("booking-modified default body (#2267)", () => {
       refundByBankTransfer: false,
       appliedCreditGivenBackCents: 0,
       unpaidAskCancelled: false,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
       ...overrides,
     }, CLUB_FORMAT_TEST);
     const call = sendEmailMock.mock.calls[0][0];

@@ -105,6 +105,11 @@ interface ManualRefundTask {
   editRefundHandBack?: boolean;
   /** #3827 (D-3813-7): an approved appeal's refund, by bank transfer. Optional, as above. */
   refundRequestHandBack?: boolean;
+  /** #4042: an organiser's Internet Banking group cancel, repaid to the organiser. Optional, as above. */
+  groupOrganiserHandBack?: boolean;
+  /** #4097: what a card cancellation's card refund could not carry - by bank transfer, or checked first. Optional, as above. */
+  cardShortfallHandBack?: boolean;
+  cardShortfallCheck?: boolean;
   /**
    * #3643 (`INV-PAY-108`): Xero reported the review's invoice paid after the
    * cancel, and the invoice's cash then. Optional, as above.
@@ -628,6 +633,9 @@ function completionTitle({ task, resolution }: ResolutionTarget, format: ClubFor
     return `Settle this review for ${task.memberName}?`;
   }
 
+  if (task.groupOrganiserHandBack === true && task.amountCents !== null) {
+    return `Record ${formatCents(task.amountCents, format)} as repaid to the group organiser, ${task.memberName}?`;
+  }
   return task.amountCents === null
     ? `Record this refund as paid back to ${task.memberName}?`
     : `Record ${formatCents(task.amountCents, format)} as paid back to ${task.memberName}?`;
@@ -660,6 +668,10 @@ function resolutionDescription({
     return "This refunds the payment to the card it came from, through Stripe, now. If you already refunded it in the Stripe dashboard, close it without refunding instead, saying so.";
   }
 
+  if (task.groupOrganiserHandBack === true) {
+    return "Only do this once the money has actually gone back to the organiser. It records that the club repaid them and who did it; the joiners' refunds are already in the ledger, so nothing more is written there or on the bookings' history.";
+  }
+  if (task.cardShortfallCheck === true) return "Only do this once you have checked the member really is owed it. The app first checks it can record this; pay straight after it accepts. It writes the refund into the payment ledger and records a refund on the booking's history. If it refuses, follow what it says."; // #4154 review (M3): mark first, then pay
   return "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history.";
 }
 
@@ -1390,7 +1402,10 @@ export function ManualRefundTaskQueue() {
                     ? { handedBackInCash }
                     : {}),
                 }
-              : {}),
+              : target.resolution === "completed" && target.task.groupOrganiserHandBack === true
+                ? // #4042: the total this card showed; the server refuses it once another share has grown the task.
+                  { confirmedAmountCents: target.task.amountCents }
+                : {}),
             /*
               #3191: sent only when the officer filled every box and the figures
               reconcile. A partial answer is never posted - the button is
@@ -1485,6 +1500,9 @@ export function ManualRefundTaskQueue() {
   const hasPartPaymentReviewRows = openTasks.some(isPartPaymentReview);
   const hasEditRefundRows = openTasks.some(isEditRefundHandBack);
   const hasRefundRequestRows = openTasks.some(isRefundRequestHandBack);
+  const hasGroupOrganiserRows = openTasks.some((task) => task.groupOrganiserHandBack === true);
+  const hasCardShortfallRows = openTasks.some((task) => task.cardShortfallHandBack === true);
+  const hasCardShortfallCheckRows = openTasks.some((task) => task.cardShortfallCheck === true);
   const hasHandBackRows = openTasks.some(
     (task) =>
       !isFinancialReview(task) &&
@@ -1492,7 +1510,10 @@ export function ManualRefundTaskQueue() {
       !isLateCaptureApproval(task) &&
       !isPartPaymentReview(task) &&
       !isEditRefundHandBack(task) &&
-      !isRefundRequestHandBack(task),
+      !isRefundRequestHandBack(task) &&
+      task.groupOrganiserHandBack !== true &&
+      task.cardShortfallHandBack !== true &&
+      task.cardShortfallCheck !== true,
   );
   if (
     !showQueue &&
@@ -1571,6 +1592,51 @@ export function ManualRefundTaskQueue() {
                 club sends the approved amount by bank transfer; the member has
                 been told it is coming. Mark a refund as paid back once the
                 money has actually gone.
+              </p>
+            ) : null}
+            {hasCardShortfallRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-card-shortfall-intro"
+              >
+                Some of these are from card cancellations whose card refund could
+                not carry all of the refund due; each is the part the
+                payment&apos;s other (non-card) charges hold. The member is told
+                (on their booking page, and by email unless emails were turned
+                off) that the club will refund it by bank transfer: mark it paid back first, which
+                records it and, where the booking has a Xero invoice, raises its refund credit note,
+                then pay it by bank transfer straight after the app accepts. None can be marked
+                until the card refund itself has gone through.
+              </p>
+            ) : null}
+            {hasCardShortfallCheckRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-card-shortfall-check-intro"
+              >
+                Some of these are the rest of a card refund that the payment&apos;s records show already
+                refunded, or that nothing holds: from a card cancellation, or from a booking cancelled because
+                its dates filled up during the card payment. The member is told only that the club will be in
+                touch: on their booking page, and for a cancellation by email unless emails were turned off.
+                Check Stripe and the bank before paying anything, then contact the member with what you found.
+                If they were refunded, dismiss it with a note saying how. If it really is owed, mark it paid
+                back first, once any bank-transfer part and the card refund are done, and pay it by bank
+                transfer straight after the app accepts; if it refuses, follow what it says.
+              </p>
+            ) : null}
+            {hasGroupOrganiserRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-group-organiser-intro"
+              >
+                Some of these are group bookings paid by internet banking that
+                the organiser cancelled. Each joiner&apos;s refund is already
+                recorded in the app&apos;s ledger, but the money has not gone:
+                the club repays the organiser by bank transfer. The row lists
+                each joiner&apos;s share. Mark it paid back once the money has
+                actually gone; it cannot be dismissed. If the club decides not
+                to repay them, take it to the treasurer. Marking it paid back
+                sends nothing to Xero.
               </p>
             ) : null}
             {hasReviewRows ? (
@@ -1820,6 +1886,8 @@ export function ManualRefundTaskQueue() {
                             : "Mark paid back"}
                       </ViewOnlyActionButton>
                       ) : null}
+                      {/* #4042: a group organiser's hand-back is paid, never dismissed. */}
+                      {task.groupOrganiserHandBack === true ? null : (
                       <ViewOnlyActionButton
                         canEdit={canEdit}
                         type="button"
@@ -1841,6 +1909,7 @@ export function ManualRefundTaskQueue() {
                               ? "Close without refunding"
                               : "Dismiss"}
                       </ViewOnlyActionButton>
+                      )}
                     </div>
                   </li>
                 ))}

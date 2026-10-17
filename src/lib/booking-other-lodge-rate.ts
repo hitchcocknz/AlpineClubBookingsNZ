@@ -74,6 +74,13 @@ export const OTHER_LODGE_RATE_LODGE_REQUIRED_MESSAGE =
   "Choose the other lodge before marking anybody as one of its members.";
 export const OTHER_LODGE_RATE_LODGE_NOT_FOUND_MESSAGE = "Selected lodge not found";
 /**
+ * #4197: a guest this edit links to a member (#2337) is re-rated by the link.
+ * Changing their other-lodge rate in the same edit would re-rate them twice, so
+ * the combination is refused, on the preview and the save alike.
+ */
+export const OTHER_LODGE_RATE_LINKED_GUEST_MESSAGE =
+  "A guest can't be linked to a member and have their other-lodge rate changed in the same change. Save the link first, then change their rate.";
+/**
  * The other-club re-rate is refused on a mid-stay (in-progress) edit, for
  * exactly the reason the #2337 link is (`GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE`).
  *
@@ -252,6 +259,11 @@ function guestDisplayName(guest: {
  */
 export interface OtherLodgeRateEligibility {
   eligibleGuestIds: ReadonlySet<string>;
+  /**
+   * The guests this same edit links to a member (#2337). Required so neither
+   * caller can forget the refusal below (#4197).
+   */
+  linkedGuestIds: ReadonlySet<string>;
 }
 
 /** The two request fields, exactly as both routes' zod schemas parse them. */
@@ -408,6 +420,7 @@ export function resolveOtherLodgeRateElection({
   input,
   role,
   eligibleGuestIds,
+  linkedGuestIds,
 }: {
   booking: OtherLodgeRateBooking;
   input: OtherLodgeRateInput;
@@ -453,6 +466,10 @@ export function resolveOtherLodgeRateElection({
     if (guest.otherLodgeMember !== flaggedGuestIds.has(guest.id)) {
       repriceGuestIds.add(guest.id);
     }
+  }
+
+  if ([...repriceGuestIds].some((guestId) => linkedGuestIds.has(guestId))) {
+    throw new ApiError(OTHER_LODGE_RATE_LINKED_GUEST_MESSAGE, 400);
   }
 
   return {

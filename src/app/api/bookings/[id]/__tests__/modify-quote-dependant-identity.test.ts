@@ -271,13 +271,21 @@ beforeEach(() => {
     minAvailable: 5,
     nightDetails: [],
   });
-  h.priceGuests.mockResolvedValue({
-    totalPriceCents: 16000,
-    guests: [
-      { priceCents: 10000, perNightCents: [5000, 5000], nightDates: [] },
-      { priceCents: 6000, perNightCents: [3000, 3000], nightDates: [] },
-    ],
-  });
+  // One priced row per guest it is handed, as the real pricer returns: the
+  // quote's breakdown reads each guest's price by position (#4197).
+  h.priceGuests.mockImplementation(
+    async (_db: unknown, { guests }: { guests: Array<{ ageTier: string }> }) => {
+      const rows = guests.map((guest) =>
+        guest.ageTier === "CHILD"
+          ? { priceCents: 6000, perNightCents: [3000, 3000], nightDates: [] }
+          : { priceCents: 10000, perNightCents: [5000, 5000], nightDates: [] },
+      );
+      return {
+        totalPriceCents: rows.reduce((sum, row) => sum + row.priceCents, 0),
+        guests: rows,
+      };
+    },
+  );
   h.calculateChangeFee.mockReturnValue({ feeCents: 0 });
   h.loadModuleFlags.mockResolvedValue({ xeroIntegration: false });
   h.isXeroConnected.mockResolvedValue(true);

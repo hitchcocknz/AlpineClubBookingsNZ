@@ -161,6 +161,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
+import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 
 export type ModifyBookingDatesInput = {
   checkIn?: string;
@@ -532,9 +533,9 @@ export async function modifyBookingDates({
         bookingLodgeId,
         newCheckIn,
         newCheckOut,
-        booking.guests.map(() => ({
-          stayStart: newCheckIn,
-          stayEnd: newCheckOut,
+        booking.guests.map((guest) => ({
+          stayStart: newCheckIn, stayEnd: newCheckOut,
+          memberId: guest.memberId,
         })),
         bookingId,
         tx,
@@ -556,11 +557,11 @@ export async function modifyBookingDates({
     } else {
       const capacity = await checkCapacity(
         bookingLodgeId,
-        newCheckIn,
-        newCheckOut,
+        newCheckIn, newCheckOut,
         booking.guests.length,
         bookingId,
         tx,
+        booking.guests.map((guest) => guest.memberId), // so a custodian is one space (#3817)
       );
 
       if (!capacity.available) {
@@ -1510,11 +1511,10 @@ export async function modifyBookingDates({
     } satisfies DateModificationTransactionResult;
   });
 
-  const stripeRefundId = await executeBookingModificationRefund({
+  const refund = await executeBookingModificationRefund({
     format,
     bookingId,
     result,
-    metadataReason: "date_change_price_decrease",
     idempotencyKeyPrefix: `mod_dates_refund_${bookingId}`,
     failureMessage: "Stripe refund failed after date change - enqueueing recovery",
     recoveryFailureMessage:
@@ -1525,8 +1525,7 @@ export async function modifyBookingDates({
     format,
     bookingId,
     result,
-    reason: "date_change_price_increase",
-    idempotencyKey: `mod_dates_${bookingId}_${result.bookingModificationId}`,
+    door: "dateChange",
     failureMessage: "Failed to create additional PaymentIntent for modification",
   });
 
@@ -1553,6 +1552,7 @@ export async function modifyBookingDates({
     ipAddress,
     result,
     additionalMint,
+    refundDestination: refund.refundDestination,
     linkedChangeRequestId,
     format,
   });
@@ -1568,7 +1568,7 @@ export async function modifyBookingDates({
     policyRetainedAmountCents: result.policyRetainedAmountCents,
     additionalAmountCents: result.additionalAmountCents,
     additionalPaymentClientSecret: additionalMint.additionalPaymentClientSecret ?? null,
-    stripeRefundId: stripeRefundId ?? null,
+    stripeRefundId: refund.stripeRefundId ?? null,
     promoRemoved: result.promoRemoved,
     promoCoverage: result.promoCoverage,
     choreWarnings: result.choreWarnings,
@@ -1582,6 +1582,7 @@ async function dispatchDatePostTransactionSideEffects({
   ipAddress,
   result,
   additionalMint,
+  refundDestination,
   linkedChangeRequestId,
   format,
 }: {
@@ -1590,6 +1591,7 @@ async function dispatchDatePostTransactionSideEffects({
   ipAddress: string;
   result: DateModificationTransactionResult;
   additionalMint: ModificationAdditionalAskMint;
+  refundDestination: BookingModifiedRefundDestination;
   linkedChangeRequestId: string | null;
   /** The club's format (#3565), resolved before the edit's transaction. */
   format: ClubFormat;
@@ -1740,6 +1742,7 @@ async function dispatchDatePostTransactionSideEffects({
     // #3954 round 9: an ask a reduction retired before it was offered is not named.
     const namedAdditionalCents = additionalAmountToName(result.additionalAmountCents, additionalMint);
     sendBookingModifiedEmail({
+      addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
       email: member.email,
@@ -1771,7 +1774,7 @@ async function dispatchDatePostTransactionSideEffects({
       // #2390: same words as the edit preview and the booking history.
       promoCoverageNote: result.promoCoverage?.message ?? null,
       financialReviewPending,
-      refundReturnedToOrganiser: result.organiserChildRefund !== null,
+      refundDestination,
       refundByBankTransfer: editRefundGoesBackByHand(result),
       lodgeId: result.booking.lodgeId,
     }, format).catch((err) =>
@@ -2314,6 +2317,7 @@ export async function adminShiftBookingDates({
     );
 
     sendBookingModifiedEmail({
+      addedGuests: [], // #4030: a date change adds nobody
       bookingId: result.booking.id,
       recipientMemberId: result.memberId,
       email: result.memberEmail,
@@ -2337,7 +2341,7 @@ export async function adminShiftBookingDates({
       paymentReference: result.paymentReference,
       xeroInvoiceNumber: result.xeroInvoiceNumber,
       financialReviewPending,
-      refundReturnedToOrganiser: false,
+      refundDestination: "own",
       // A shift keeps the price, so nothing is refunded.
       refundByBankTransfer: false,
       lodgeId: result.lodgeId,

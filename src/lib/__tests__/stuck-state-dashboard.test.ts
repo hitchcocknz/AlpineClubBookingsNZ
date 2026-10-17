@@ -4,6 +4,7 @@ import {
   MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
   MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
   SECOND_INSTRUMENT_SETTLEMENT_CONFLICT_EVENT_REASON,
+  IB_SETTLEMENT_FIGURE_CHECK_EVENT_REASON,
   GROUP_JOINER_PAYS_OWN_EVENT_REASON,
 } from "@/lib/manual-settlement-reversal-event";
 import {
@@ -417,7 +418,7 @@ describe("getStuckStateDashboard", () => {
       title: "Unassigned hut leader lodge dates",
       count: 3,
       summary:
-        "3 upcoming lodge dates in the next 21 days with bookings have no hut leader assigned.",
+        "3 upcoming lodge dates in the next 21 days with guests have no hut leader who counts.",
     });
   });
 
@@ -449,7 +450,7 @@ describe("getStuckStateDashboard", () => {
       title: "Unassigned hut leader lodge-nights",
       count: 4,
       summary:
-        "4 upcoming lodge-nights in the next 21 days with bookings have no hut leader assigned.",
+        "4 upcoming lodge-nights in the next 21 days with guests have no hut leader who counts.",
     });
   });
 
@@ -480,8 +481,19 @@ describe("getStuckStateDashboard", () => {
       title: "Unassigned hut leader lodge-nights",
       count: 2,
       summary:
-        "2 upcoming lodge-nights in the next 21 days with bookings have no hut leader assigned.",
+        "2 upcoming lodge-nights in the next 21 days with guests have no hut leader who counts.",
     });
+  });
+
+  // #4104 (ops 7, concurrency C): a card refund raised dead is PENDING with its
+  // attempts spent. It is exhausted - a person's - never an overdue queue.
+  it("MUTATION: counts a dead PENDING row as exhausted, never as overdue (#4104)", async () => {
+    const deps = buildDeps({});
+    vi.mocked(deps.db.paymentRecoveryOperation.count).mockResolvedValue(0);
+    await getStuckStateDashboard({ deps, now: new Date("2026-06-22T00:00:00.000Z") });
+    const wheres = vi.mocked(deps.db.paymentRecoveryOperation.count).mock.calls.map((call) => (call[0] as { where: Record<string, unknown> }).where);
+    expect(wheres).toContainEqual({ status: { in: ["PENDING", "FAILED"] }, attempts: { gte: 5 } });
+    expect(wheres).toContainEqual(expect.objectContaining({ status: "PENDING", attempts: { lt: 5 } }));
   });
 
   // #2550: the admin-dashboard half of the placeholder-naming feature. Both
@@ -713,6 +725,8 @@ describe("getStuckStateDashboard", () => {
                     MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
                     // #3638: the second-instrument conflict marker.
                     SECOND_INSTRUMENT_SETTLEMENT_CONFLICT_EVENT_REASON,
+                    // #3979: the bank-transfer settlement-figure marker.
+                    IB_SETTLEMENT_FIGURE_CHECK_EVENT_REASON,
                     // #3672: the group payer-switch marker.
                     GROUP_JOINER_PAYS_OWN_EVENT_REASON,
                   ],

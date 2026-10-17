@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { ManualRefundTaskStatus, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { KEPT_LATE_CAPTURE_INVOICE_ROLE, xeroCreateCallAttempted } from "@/lib/late-capture-kept-xero-rules";
 import { automaticCancelledBookingRefundTaskReasons } from "@/lib/deleted-booking-modification-payment";
@@ -196,15 +196,71 @@ export async function hasXeroReceiptForLateCapture(
  * (`lateCaptureApprovalIntentId`), or one the webhook refunded automatically,
  * recorded by the #2760/#2773 row whose frozen `reason` names the intent
  * (`automaticCancelledBookingRefundTaskReasons`). A capture the webhook refunded
- * whose record write FAILED (audited `booking.payment.auto_refund_record_failed`)
- * leaves no row and cannot be told apart here - a stated limit.
+ * whose record was lost (a crash, or a write audited
+ * `booking.payment.auto_refund_record_failed`) has no row until Stripe's
+ * redelivery or the nightly self-heal writes it (#4149,
+ * `late-capture-record-recovery.ts`); until then it cannot be told apart here.
  */
 export async function findLateCapturePaymentIntents(
   paymentIntentIds: readonly string[],
   store: Pick<Prisma.TransactionClient, "manualRefundTask"> = prisma,
 ): Promise<Set<string>> {
+  return findLateCaptureTaskIntents(paymentIntentIds, store);
+}
+
+/**
+ * #4149: the intents whose late capture already HAS its record - an approval
+ * task in any status, or an automatic-refund row no longer `OPEN` - and which
+ * kind. An `OPEN` row under the same `reason` is the confirm route's #2700
+ * question, which the automatic refund answers by closing it: while it is still
+ * `OPEN` after the refund, the record was lost, so the lost-record recovery
+ * treats the capture as unrecorded and the record writer closes the row.
+ *
+ * `"hand-completed"` is a `COMPLETED` automatic-reason row that carries NO
+ * approval marker: the record writer never completes a row, so an operator
+ * handed the capture back by hand - beside a refund the late-capture door sent,
+ * #2774's residual double payment. The approval-marked row itself is #3639's
+ * treasurer task (`holdLateCaptureForTreasurerIfRequired` puts the marker on the
+ * confirm route's own `OPEN` row, which the approval completes), so it is
+ * `"record"` whatever its status; a SEPARATE unmarked hand-`COMPLETED` row on
+ * the same capture still makes it `"hand-completed"`, because the treasurer's
+ * refund and an operator's hand-back are then two payments.
+ */
+export async function findClosedLateCaptureRecords(
+  paymentIntentIds: readonly string[],
+): Promise<Map<string, "record" | "hand-completed">> {
+  const found = new Map<string, "record" | "hand-completed">();
+  for (const task of await findLateCaptureTaskRows(paymentIntentIds, prisma)) {
+    if (task.approvalIntentId) {
+      if (!found.has(task.approvalIntentId)) found.set(task.approvalIntentId, "record");
+      continue;
+    }
+    if (!task.reasonIntentId || task.status === ManualRefundTaskStatus.OPEN) continue;
+    if (task.status === ManualRefundTaskStatus.COMPLETED) found.set(task.reasonIntentId, "hand-completed");
+    else if (!found.has(task.reasonIntentId)) found.set(task.reasonIntentId, "record");
+  }
+  return found;
+}
+
+async function findLateCaptureTaskIntents(
+  paymentIntentIds: readonly string[],
+  store: Pick<Prisma.TransactionClient, "manualRefundTask">,
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const task of await findLateCaptureTaskRows(paymentIntentIds, store)) {
+    if (task.approvalIntentId) found.add(task.approvalIntentId);
+    if (task.reasonIntentId) found.add(task.reasonIntentId);
+  }
+  return found;
+}
+
+/** Every task row naming one of these intents: by approval marker, or by an automatic-refund `reason`. */
+async function findLateCaptureTaskRows(
+  paymentIntentIds: readonly string[],
+  store: Pick<Prisma.TransactionClient, "manualRefundTask">,
+): Promise<{ approvalIntentId: string | null; reasonIntentId: string | null; status: ManualRefundTaskStatus }[]> {
   const ids = [...new Set(paymentIntentIds)];
-  if (ids.length === 0) return new Set();
+  if (ids.length === 0) return [];
   const byReason = new Map<string, string>();
   for (const id of ids) {
     for (const reason of automaticCancelledBookingRefundTaskReasons(id)) byReason.set(reason, id);
@@ -216,17 +272,16 @@ export async function findLateCapturePaymentIntents(
         { reason: { in: [...byReason.keys()] } },
       ],
     },
-    select: { lateCaptureApprovalIntentId: true, reason: true },
+    select: { lateCaptureApprovalIntentId: true, reason: true, status: true },
   });
-  const found = new Set<string>();
-  for (const task of tasks ?? []) {
-    if (task.lateCaptureApprovalIntentId && ids.includes(task.lateCaptureApprovalIntentId)) {
-      found.add(task.lateCaptureApprovalIntentId);
-    }
-    const byTaskReason = task.reason ? byReason.get(task.reason) : undefined;
-    if (byTaskReason) found.add(byTaskReason);
-  }
-  return found;
+  return (tasks ?? []).map((task) => ({
+    approvalIntentId:
+      task.lateCaptureApprovalIntentId && ids.includes(task.lateCaptureApprovalIntentId)
+        ? task.lateCaptureApprovalIntentId
+        : null,
+    reasonIntentId: (task.reason ? byReason.get(task.reason) : undefined) ?? null,
+    status: task.status,
+  }));
 }
 
 /**

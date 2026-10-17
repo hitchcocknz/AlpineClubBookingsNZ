@@ -163,6 +163,7 @@ import { ApiError } from "@/lib/api-error";
 import { AdditionalAskChangedDuringReductionError } from "@/lib/additional-ask-reduction-error";
 import { MembershipTypeBookingPolicyError } from "@/lib/membership-type-policy";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { ordinaryAskDoorRequest } from "@/lib/ordinary-ask-request";
 
 // Test helper: reads a fixed repo file under process.cwd(); the path is
 // test-controlled, not user input.
@@ -1544,12 +1545,13 @@ describe("#3954: a decline or expiry whose reduction retired an unpaid ask settl
     });
 
     expect(h.mint).toHaveBeenCalledTimes(1);
-    expect(h.mint.mock.calls[0]?.[0]).toMatchObject({
-      bookingId: BOOKING,
+    // #4036 review: the door is named, and its key and reason are derived from it.
+    expect(h.mint.mock.calls[0]?.[0]).toMatchObject({ bookingId: BOOKING, door: "guestConsentRemoval" });
+    expect(h.mint.mock.calls[0]?.[0].result).toBe(retired);
+    expect(ordinaryAskDoorRequest("guestConsentRemoval", BOOKING, retired.bookingModificationId)).toEqual({
       reason: "guest_consent_removal_reissued_ask",
       idempotencyKey: `mod_guest_consent_${BOOKING}_mod-consent-1`,
     });
-    expect(h.mint.mock.calls[0]?.[0].result).toBe(retired);
   });
 
   it("MUTATION: re-issues what is left of an ask whose failed mint the removal netted off, though no row was retired (retry nets it off)", async () => {

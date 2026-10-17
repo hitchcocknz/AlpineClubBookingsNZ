@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+
 import {
   ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN,
   ADDITIONAL_PAYMENT_REMINDER_DAYS,
@@ -26,6 +28,7 @@ import {
   buildAdditionalOwedWhere,
 } from "@/lib/unpaid-finished-stays";
 import { clubFormatValues } from "@/lib/club-format-server";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * Chase an uncollected additional payment (#2350).
@@ -446,7 +449,9 @@ const CHASE_BOOKING_INCLUDE = {
       transactions: {
         where: { kind: "ADDITIONAL" },
         select: { createdAt: true },
-        orderBy: { createdAt: "desc" },
+        // A mutable copy, typed as Prisma takes it: `as const` below would
+        // otherwise make the spread a readonly tuple.
+        orderBy: [...LEDGER_ROWS_NEWEST_FIRST] as Prisma.PaymentTransactionOrderByWithRelationInput[],
         take: 1,
       },
     },

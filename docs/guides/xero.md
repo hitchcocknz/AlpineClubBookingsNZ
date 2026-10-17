@@ -253,6 +253,16 @@ one button that reaches Xero at all only asks it a question.
    invite emails; **Repair Canonical Links** and **Scan for Duplicates & Family
    Groups** clean up the link ledger.
 
+### Subscribe to Xero webhooks, including credit notes
+
+This app does not register webhook events. In the Xero developer portal
+(**My Apps → your app → Webhooks**), paste the delivery URL from **Xero Setup →
+Webhooks**, then tick **Invoices**, **Contacts**, and **Credit Notes**. Credit
+Notes is what tells this app when a credit note is created, updated, or voided.
+Save the webhook, copy its signing key into the setup wizard, and **Verify**.
+Without the Credit Notes tick, a void made in Xero stays invisible here until
+something else reads that note.
+
 ### Manage auto-grouping (Xero member grouping)
 
 1. **Xero member grouping** (`/admin/xero/member-grouping`, also linked from the
@@ -294,6 +304,7 @@ one button that reaches Xero at all only asks it a question.
 | The Connect step shows the organisation as **"the last organisation we saw"** rather than a green tick | The name came from cache because the live re-check failed — most often because the club revoked this app inside Xero's own **Connected apps** screen, which leaves the stored connection looking healthy | Treat the name as unconfirmed. Follow the warning above it: usually disconnect and connect again, re-authorising the app in Xero |
 | Operations/events are read-only ("… can view Xero operations but cannot retry…") | Your finance role is view-only | Ask a finance-edit admin |
 | An outbound operation is stuck **Failed** | A push failed and needs a replay (or was fixed directly in Xero) | **Retry in background**, or **Resolve (fixed in Xero)** with a reason |
+| A credit note voided in Xero still looks live here | The Xero app is not subscribed to Credit Notes, or the void was delivered before credit-note events were reconciled | In the Xero developer portal (**My Apps → your app → Webhooks**), tick **Credit Notes** as well as Invoices and Contacts. Then open **Inbound Events**, filter Category to CREDITNOTE, and **Replay** the void. A later void is recorded on its own. A card payment's voided refund note is then switched off; an internet-banking payment's stays linked, marked voided |
 | A membership subscription invoice operation is **Failed** with "Membership subscription charge not found: [REDACTED]" | A fault before this release (#3971): the job lost the charge it was meant to invoice, so the member was never invoiced | Press **Retry in background** on the row. It goes back to the queue and the next Xero run invoices and emails the member; check the charge in [Subscriptions](subscriptions.md) afterwards. If one charge has several failed rows, only the newest offers the button; the older ones are superseded and need nothing, and show as repaired once it succeeds |
 | An operation is stuck **Running** with no Retry button | Its run stopped without finishing it — a worker was interrupted, or (before this release) a requeue failed early | After 15 minutes the row shows **Mark failed**. Use it, fix the cause named in the error, then **Retry in background** |
 | A **REQUEUE** row says "not marked replayable" | A requeue is never replayed itself. Its error names the original operation and says where that operation now stands | Find the original operation it names. If it is back to **Failed**, fix the cause and requeue it again |

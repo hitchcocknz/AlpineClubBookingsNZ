@@ -221,6 +221,9 @@ Things worth knowing:
   lodge, and everybody else on the booking keeps the price they were quoted. Set
   the tick on its own, though: combine it with a date change, adding or removing
   somebody, or a promo code and the edit is refused as usual.
+- **Not with a member link for the same person.** Linking a placeholder guest
+  to a member already re-rates them, so changing that guest's tick in the same
+  change is refused: save the link first, then change the tick.
 - **Only one lodge per booking.** A party split across two visiting clubs needs
   the officer to pick the one that applies, or to price the second club's people
   by hand.
@@ -270,6 +273,17 @@ Things worth knowing:
    bookings, this button is disabled.
 
 ### Chase money still owed after a booking change
+
+The booking's confirmation now also shows its additional-payment information
+(#4047). Card asks point the member to their own pay card; officers see a
+read-only explanation. Issued supplementary bank invoices show each remaining
+amount, invoice number and when it was checked, including on a finished stay.
+**Check more invoices** reads the next group when there are many. These are
+individual dated observations, never a current combined balance. An unavailable
+or unissued amount says it cannot yet be confirmed. Check the invoice in Xero
+or contact the member before chasing it. The admin panel and automatic card
+reminders below keep their existing scope; bank supplements do not join those
+reminders. Linked guests see a neutral stay confirmation.
 
 When a change increases a booking's price after the booking has been confirmed —
 adding a non-member guest to a paid booking, say — the difference becomes an

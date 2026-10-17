@@ -538,7 +538,7 @@ const BLOCKING_REQUEUE_STATUSES = ["PENDING", "RUNNING"];
  * payloads), but invoice/contact/allocation operations and other payments
  * never block.
  */
-async function findBlockingRefundCreditNoteOperationId(
+export async function findBlockingRefundCreditNoteOperationId(
   paymentId: string,
   db: Prisma.TransactionClient
 ): Promise<string | null> {

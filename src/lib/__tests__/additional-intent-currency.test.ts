@@ -45,12 +45,12 @@ vi.mock("@/lib/payment-recovery", () => ({
 }));
 
 import {
-  staleIntentAction,
   intentCurrencyDiffers,
   reissueAdditionalIntentInClubCurrency,
   reissueRaisedAskIfCurrencyChanged,
 } from "@/lib/additional-intent-currency";
 import { restateAdditionalAsk } from "@/lib/additional-payment-ask";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 import { UnsupportedChargeCurrencyError } from "@/lib/stripe-charge-currency";
 import { CLUB_FORMAT_TEST, CLUB_FORMAT_TEST_OTHER } from "./support/club-format-fixture";
 

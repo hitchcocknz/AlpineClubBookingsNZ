@@ -3,6 +3,8 @@ import type { Prisma } from "@prisma/client";
 import { paidAnotherWayCloseReceiptRecorded } from "@/lib/late-capture-paid-another-way";
 import {
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
+  COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE,
+  isCancelCardShortfallTask,
   paidAnotherWayCloseXeroNote,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -45,7 +47,44 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  *   un-noted and waiting ones come off it - or the nightly self-heal would
  *   raise a card note, settled from the Stripe account, for money that went
  *   back by bank with no invoice to credit.
+ *
+ * #4097 (`INV-PAY-129`): A CANCEL'S CARD REFUND SHORTFALL, PAID BACK, IS READ
+ * THE SAME WAY. Its completion raises the refunded total by bank money with no
+ * refund row, and queues its own bank-transfer note keyed on the task where
+ * the payment has an invoice to credit. So a COMPLETED one is one of these
+ * records (`BANK_CASH_RECORD_WHERE`): noted when a note row names it, in any
+ * status, else un-noted - read off the rows its completion committed, never
+ * off the invoice as it stands later. #4159 round 2 (F1): a capacity race's
+ * part whose record keeps a card note's cover (`paidAnotherWayCardNoteCover`)
+ * is noted too: that note answers its cash, and its own note the rest.
  */
+
+/**
+ * #4104 delta review (A-F1, `INV-PAY-128`): HOW MUCH OF A `now` CLOSE A CARD
+ * REFUND NOTE ALREADY IN XERO ANSWERS - the card note of a refund Stripe failed
+ * later (`failedLaterCardNoteCoverCents`), capped at what the close paid back.
+ * The close's own note is for the rest, so its record keeps this figure: the
+ * close's share counts it as covered (`readPaidAnotherWayCloseShare`), or the
+ * self-heal and the repair tool would read that much of the close as un-noted
+ * forever and size later card notes short. Kept in the record's
+ * `reviewContext` (`paidAnotherWayCardNoteCover`) beside a paid-twice
+ * resolution, which keeps it when written; written once, at the close.
+ */
+export function paidAnotherWayCardNoteCoverContext(cardNoteCoversCents: number): { paidAnotherWayCardNoteCover: number } | null {
+  return cardNoteCoversCents > 0 ? { paidAnotherWayCardNoteCover: cardNoteCoversCents } : null;
+}
+
+/** The card-note cover a close's record keeps (`paidAnotherWayCardNoteCoverContext`), or 0. */
+export function readPaidAnotherWayCardNoteCoverCents(reviewContext: unknown): number {
+  if (!reviewContext || typeof reviewContext !== "object" || Array.isArray(reviewContext)) return 0;
+  const value = (reviewContext as Record<string, unknown>).paidAnotherWayCardNoteCover;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+/** The records whose bank cash this module reads: paid-another-way closes and (#4097) paid-back card refund shortfalls. */
+const BANK_CASH_RECORD_WHERE = {
+  OR: [CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE],
+};
 
 export interface PaidAnotherWayCash {
   /** Paid back on closes that queued a refund note. */
@@ -70,12 +109,18 @@ interface PaidAnotherWayCloseCash {
 
 async function readPaidAnotherWayCloses(db: CashStore, paymentId: string): Promise<PaidAnotherWayCloseCash[]> {
   const tasks = await db.manualRefundTask.findMany({
-    where: { paymentId, ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE },
-    select: { id: true, kind: true, occurrenceKey: true, amountCents: true },
+    where: { paymentId, ...BANK_CASH_RECORD_WHERE },
+    select: { id: true, kind: true, occurrenceKey: true, amountCents: true, reviewContext: true },
   });
   const closes: PaidAnotherWayCloseCash[] = [];
   for (const task of tasks ?? []) {
     const amountCents = Math.max(0, task.amountCents ?? 0);
+    if (isCancelCardShortfallTask(task)) {
+      // #4159 round 2 (F1): a capacity race's part a card note already answers is noted, with or without a row of its own.
+      const noted = readPaidAnotherWayCardNoteCoverCents(task.reviewContext) > 0 || (await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) })) > 0;
+      closes.push({ id: task.id, amountCents, counted: noted ? "noted" : "unnoted" });
+      continue;
+    }
     const note = paidAnotherWayCloseXeroNote(task);
     const counted =
       note === "now"
@@ -132,16 +177,18 @@ export function paidAnotherWayCloseNoteRowsWhere(paymentId: string, closeId: str
  * amount here, as it does in the payment's coverage, and a row that raised no
  * note covers nothing. `uncoveredCents` sizes the close's note exactly: the
  * enqueue and the note's execution both ask it, never the payment-wide gap.
- * Null when the payment has no such record.
+ * #4104: less what a card note already in Xero answers of it, as its record
+ * keeps (`readPaidAnotherWayCardNoteCoverCents`). Null when the payment has no
+ * such record.
  */
 export async function readPaidAnotherWayCloseShare(
   db: Pick<Prisma.TransactionClient, "manualRefundTask" | "xeroObjectLink" | "xeroSyncOperation">,
   paymentId: string,
   closeId: string,
-): Promise<{ amountCents: number; coveredCents: number; uncoveredCents: number } | null> {
+): Promise<{ amountCents: number; coveredCents: number; cardNoteCoversCents: number; uncoveredCents: number } | null> {
   const record = await db.manualRefundTask.findFirst({
-    where: { id: closeId, paymentId, ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE },
-    select: { amountCents: true },
+    where: { id: closeId, paymentId, ...BANK_CASH_RECORD_WHERE },
+    select: { amountCents: true, reviewContext: true },
   });
   if (!record) return null;
   const amountCents = Math.max(0, record.amountCents ?? 0);
@@ -150,7 +197,16 @@ export async function readPaidAnotherWayCloseShare(
     paidAnotherWayCloseNoteRowsWhere(paymentId, closeId),
     db,
   );
-  return { amountCents, coveredCents, uncoveredCents: Math.max(0, amountCents - coveredCents) };
+  // #4104 delta review (A-F1): what a card note already in Xero answered of the
+  // close, kept on its record - covered too, though no note of its own says so.
+  // `coveredCents` stays the close's own notes: it keys the close's note.
+  const cardNoteCoversCents = readPaidAnotherWayCardNoteCoverCents(record.reviewContext);
+  return {
+    amountCents,
+    coveredCents,
+    cardNoteCoversCents,
+    uncoveredCents: Math.max(0, amountCents - coveredCents - cardNoteCoversCents),
+  };
 }
 
 /**

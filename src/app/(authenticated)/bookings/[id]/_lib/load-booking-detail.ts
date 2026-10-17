@@ -10,6 +10,7 @@ import {
   BOOKING_MONEY_RECONCILIATION_SELECT,
   reconcileStoredBookingMoney,
 } from "@/lib/booking-money-reconciliation-store";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * The booking-detail READ MODEL: the one `findUnique` every section of the
@@ -47,7 +48,7 @@ export async function loadBookingDetail(id: string) {
           transactions: {
             where: { kind: "ADDITIONAL" },
             select: { createdAt: true },
-            orderBy: { createdAt: "desc" },
+            orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
             take: 1,
           },
           // #3811: the capture evidence Net Collected's cash rule reads, so the

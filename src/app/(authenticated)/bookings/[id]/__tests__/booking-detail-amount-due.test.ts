@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveBookingDetailPayment } from "../_lib/booking-detail-payment";
+import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
 
 /**
  * #3750 (#3955 review F8, `INV-PAY-119`): a change fee recorded on an unpaid
  * booking's payment is owed with the price, so the pay card shows it as its
  * own row and charges — and says — the total the rows add up to.
+ *
+ * #3991: the applied credit is the page's one ledger read (`amountOwed`), handed
+ * in; the payment row's mirror column is set to a different figure throughout,
+ * so a card that read the column would show it.
  */
 function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }) {
   const booking = {
@@ -29,15 +34,27 @@ function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }
       recoveryOperations: [],
       refunds: [],
       manualRefundTasks: [],
-      ...payment,
+      changeFeeCents: payment.changeFeeCents,
+      creditAppliedCents: payment.creditAppliedCents + 999,
     },
+  };
+  const owedCents = bookingAmountOwedCents({
+    finalPriceCents: booking.finalPriceCents,
+    changeFeeCents: payment.changeFeeCents,
+    appliedCreditCents: payment.creditAppliedCents,
+  });
+  const amountOwed = {
+    owedCents,
+    dueCents: Math.max(0, owedCents),
+    appliedCreditCents: payment.creditAppliedCents,
   };
   return resolveBookingDetailPayment({
     booking: booking as never,
     modules: {} as never,
-    viewer: { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false } as never,
+    viewer: { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false, canSeeOwnerCredit: true } as never,
     access: { isDeleted: false } as never,
     party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
+    amountOwed,
   });
 }
 

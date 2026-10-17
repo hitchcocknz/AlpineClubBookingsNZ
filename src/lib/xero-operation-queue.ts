@@ -22,6 +22,7 @@ import { STALE_RUNNING_XERO_OPERATION_MINUTES } from "@/lib/xero-stale-operation
 import { xeroSyncErrorText } from "@/lib/xero-sync-error-text";
 import { XeroRefundCreditNoteInFlightError } from "@/lib/xero-applied-credit-operation-serialization";
 import { XERO_REQUEUE_OPERATION_TYPE } from "@/lib/xero-hardening-shared";
+import { isRetryOfVoidedRefundRequestNote, VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 
 // The requeue correlation key is `${REQUEUE_CORRELATION_KEY_PREFIX}${originalOperationId}`.
 // Operation IDs are cuids, so the key stays well under the idempotency-key
@@ -102,6 +103,10 @@ export async function enqueueXeroSyncOperationRetry(
     throw new XeroOperationRetryError(
       retryMeta.reason ?? "This Xero operation cannot be queued for retry."
     );
+  }
+  // #4214 (owner decision): a voided refund request note is the officer's to re-raise.
+  if (await isRetryOfVoidedRefundRequestNote(operation, prisma)) {
+    throw new XeroOperationRetryError(VOIDED_REQUEST_NOTE_RETRY_REASON, 409);
   }
 
   const correlationKey = buildXeroOperationRequeueCorrelationKey(operationId);

@@ -392,14 +392,14 @@ the database makes — and its lines cascade with it.)
 | Event today | Lines posted | Anchor | Writer |
 | --- | --- | --- | --- |
 | Card capture, PRIMARY or ADDITIONAL (`INV-PAY-055`, `INV-PAY-081`) | `CARD_CAPTURE` (+) for the captured amount, `method = CARD` | `PAYMENT_TRANSACTION` | the Stripe webhook / recovery settle, inside the fenced claim |
-| Internet Banking invoice paid (`INV-PAY-015`, `INV-PAY-026`) | `BANK_RECEIPT` (+) for the cash evidenced, `method = INTERNET_BANKING` | `PAYMENT_TRANSACTION` | the inbound Xero reconciler's settle |
+| Internet Banking invoice paid (`INV-PAY-015`, `INV-PAY-026`) | `BANK_RECEIPT` (+) for the cash evidenced, `method = INTERNET_BANKING` — since #3979 the PRIMARY row carries the cash the invoice collected, not the figure it was born with (`INV-PAY-125`) | `PAYMENT_TRANSACTION` | the inbound Xero reconciler's settle |
 | Account credit applied at confirmation (`INV-PAY-002`, `INV-PAY-024`) | `CREDIT_APPLIED` (+), `method = ACCOUNT_CREDIT`, linked to the `BOOKING_APPLIED` `MemberCredit` row; a clamp give-back (a positive applied row) posts a negative one, and so does a credit-paid booking's review share, which goes through that same `giveBackAppliedCredit` (#3791, `INV-PAY-113`), and its ordinary price reduction (#3809, `INV-MOD-011`) | `MEMBER_CREDIT` | every writer of the row, through `syncBookingLedgerCredits` |
 | Manual mark-paid (`INV-PAY-001`, `INV-PAY-038`) | `CASH_RECORDED` (+), `method = CASH`, `postedByMemberId` = the officer | `PAYMENT_TRANSACTION` | the mark-paid settle |
 | Mark-paid reversal (`INV-PAY-045`) | reversal of the `CASH_RECORDED` line | `PAYMENT_TRANSACTION` | the reversal |
 | Card refund — cancellation tier, reduction, superseded payment, duplicate capture (`INV-MOD-011`, `INV-PAY-043`, `INV-PAY-065`) | `CARD_REFUND` (−), `method = CARD` | `PAYMENT_REFUND` | converges from the `PaymentRefund` row once it records the refund (see above: the debt is durable before the provider call, `INV-ADDPAY-018`; the ledger line follows the answer) |
 | Cancellation credited to account (`CANCELLATION_REFUND`) | `CREDIT_ISSUED` (−), `method = ACCOUNT_CREDIT`, linked to the credit row | `MEMBER_CREDIT` | every writer of the row (the cancel paths and the Xero inbound credit mints), through `syncBookingLedgerCredits` |
 | Reduction credited to account (`BOOKING_MODIFICATION_REFUND`) | `CREDIT_ISSUED` (−), `method = ACCOUNT_CREDIT` | `MEMBER_CREDIT` | `createBookingModificationCredit`, through `syncBookingLedgerCredits` |
-| Hand-back completed on the `local-allocation` route — an IB/cash cancellation (`CANCELLED_BOOKING_HAND_BACK`, #3529), or a review refund the club sends back itself — on a payment that is not a card payment | `BANK_REFUND` (−), `method = INTERNET_BANKING` by #3529's wording decision (`refundMethodForEditReviewRoute`, `INV-PAY-101`), `postedByMemberId` = the officer. A legacy task on a card capture posts none: that money goes back on the card and posts `CARD_REFUND` from its refund row | `REVIEW_TASK` | `manual-refund-task-resolution.ts` |
+| Hand-back completed on the `local-allocation` route — an IB/cash cancellation (`CANCELLED_BOOKING_HAND_BACK`, #3529), or a review refund the club sends back itself — on a payment that is not a card payment | `BANK_REFUND` (−), `method = INTERNET_BANKING` by #3529's wording decision (`refundMethodForEditReviewRoute`, `INV-PAY-101`), `postedByMemberId` = the officer. A legacy task on a card capture posts none: that money goes back on the card and posts `CARD_REFUND` from its refund row. A card refund shortfall's part (`INV-PAY-129`) - a card cancellation's, or a capacity race's part to check (`INV-PAY-135`) - does post one on the card payment, since that money went back by hand | `REVIEW_TASK` | `manual-refund-task-resolution.ts` |
 | Applied credit restored on cancellation (`INV-PAY-019`) | `CREDIT_ISSUED` (−) for exactly what was restored — **not** a reversal of the `CREDIT_APPLIED` line, because the restore is tiered (see above) | `CANCELLATION` (the booking) | `restoreCreditFromBooking`, through `syncBookingLedgerCredits` |
 | A group organiser's settlement paid — card capture, or the combined Internet Banking invoice's inbound reconcile (#3854) | per child it paid: the child's confirmation lines (§5.1, fenced per booking), and its share — the child's own `finalPriceCents`, never a split of the total — as `CARD_CAPTURE` (`method = CARD`) or `BANK_RECEIPT` (`method = INTERNET_BANKING`), keyed `groupSettlementShareKey`; sum or nothing against what the settlement collected | `GROUP_SETTLEMENT` / settlement id | `settleConfirmedChildrenAndNotify`, in the claim that flips the children PAID, under its `lock(1)` and the children's lodge keys, through `postGroupSettlementLedgerLines`; for a child settled before #3854, the back-post (§6), through the same planner and key |
 | Organiser cancel's frozen mirror plan (`refundPlan`, #1236): a card plan frozen before #3653, or an Internet Banking settlement's | `CARD_REFUND` or `BANK_REFUND` (−) for the child's planned share, beside the mirror that records it, keyed `groupSettlementRefundKey` — only where this settlement's share is on the child's ledger, so a child settled before #3854 waits for the back-post to post share, refund and kept together | `GROUP_SETTLEMENT` / settlement id | the organiser cancel's per-child claim, and the plan's recovery replay (`executeGroupSettlementRefundPlan`) for a refund that failed inline, and the back-post (§6) for a mirror written before #3854 — one key, so only one posts |
@@ -591,11 +591,45 @@ and `V3_LEGACY_HAND_BACK` — the last
 two on the refunded column only, since on `owed(b)` they are money the ledger
 is missing; `CHANGE_FEE_REVERSED_BY_CANCELLATION`;
 `RETAINED_REVIEW_SHARE` (§5.3); and a cancelled booking's `IN_FLIGHT_HAND_BACK`,
-`IN_FLIGHT_REFUND`, `V5_PLANNED_REFUND_SHORT` and `D2_DISMISSED_HAND_BACK`. A
-refund is in flight while the recovery runner will still make it — pending,
+`IN_FLIGHT_REFUND`, `V5_PLANNED_REFUND_SHORT`, `D2_DISMISSED_HAND_BACK` and
+`REFUND_APPEAL_PAID` (#4120). That last is a refund appeal paid back after the
+cancel: it returns more than the cancel kept and no charge line says so. It is
+sized from each approved appeal's own outcome as the refund-requests screen
+reads it (`readApprovedAppealOutcomes`, `approvedAppealRefundedCents`), by
+card (its own, or the group organiser's, #3956) or by its own completed
+hand-back, and never from the lines. An appeal's hand-back is never the
+cancel's in-flight or dismissed one, nor is its card refund still retrying the
+cancel's in-flight refund, because the cancel never netted either. An unpaid,
+dismissed or declined appeal explains nothing, nor does one paid for a
+different amount than the ledger shows. The class checks a booking's total
+against its appeals' outcomes, not which ledger lines are the appeal's. An
+appeal's card refund closed as paid another way counts only what was paid
+back: a part close's unpaid rest is read from the close's task as not refunded
+(`cardRefundClosedUnpaidCents`). One case it cannot classify, left a
+disagreement for an officer to look at: a card payment whose refund plan
+covers less than the approved amount refunds only the planned part; once that
+refund succeeds (or when nothing could be planned) no record holds the rest,
+so the outcome reads the whole approved amount and PRICE disagrees by the
+unplanned part — the drift `INV-PAY-118` logs at approval. A refund is in flight while the recovery runner will still make it — pending,
 processing, or failed with a retry scheduled and attempts left
 (`isPaymentRecoveryOperationInFlight`, #3854 K1); an exhausted one is not, and
 the money it owes back is a disagreement.
+`V5_PLANNED_REFUND_SHORT` is a card cancel's refund plan short of the refund
+due. The plan is the cancel's own card refund rows: a member's cancel's one
+row, or a capacity race's, one per intent (`isBookingCancelCardRefundRecoveryKey`,
+the rule the booking page reads them by, #4147). The refund due is the
+CANCELLED snapshot's settled figure, except on a capacity race: since #4125
+that figure is the plan's total, so what it owes back is all it did not
+retain (`paidAmountCents` less `retainedAmountCents`), but never more than the
+ledger captured. A charge the payment's records never captured never reaches
+`owed(b)`, so V5 does not name it; `CAPTURED` reports that gap. A capacity
+race whose plan fell short of what was captured, or was empty, is named for
+the rest with the detail `capacity race`, and one whose refund is dead
+disagrees, like any other. Since #4154 the rest is a hand-back task to check,
+raised with the cancel (`INV-PAY-135`): marked paid back, it posts the
+`BANK_REFUND` line a card refund shortfall's part posts (`INV-PAY-129`), so
+the booking agrees; open or dismissed, nothing is posted and V5 still names
+the rest, the dismissal's note saying how it was settled.
 `AMBIGUOUS_REVIEW_GIVE_BACK` is a booking whose review give-back rows
 the census cannot attribute to their tasks (below the review-line paragraph).
 `KNOWN_DEFECT_HISTORY` finds bookings #3791, #3792 or #1641's shape damaged,
@@ -636,7 +670,8 @@ coverage gaps, zero integrity findings and no booking in a class that holds
 the gate, every other class acknowledged by the owner on #3583 — instance by
 instance, to the cent, in the acknowledgement file, save
 `GROUP_SETTLEMENT_OFF_LEDGER`, which the owner decided is listed only (and
-which names only a child whose planned lines agree) — because a
+which names only a child whose planned lines agree), and `REFUND_APPEAL_PAID`,
+listed only too (owner decision on #4075) — because a
 literal zero is not reachable on a live history (in-flight refunds and the
 classes above are expected states). A disagreement is a poster bug, fixed and
 re-run. It

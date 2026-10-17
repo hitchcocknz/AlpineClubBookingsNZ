@@ -233,11 +233,10 @@ export async function DELETE(
     // non-Stripe captured payments never issue a Stripe refund. The shared
     // helper scopes the idempotency key to this modification and enqueues
     // durable recovery on failure (issue #818).
-    const stripeRefundId = await executeBookingModificationRefund({
+    const refund = await executeBookingModificationRefund({
       format,
       bookingId,
       result,
-      metadataReason: "guest_removed_price_decrease",
       idempotencyKeyPrefix: `guest_remove_refund_${bookingId}`,
       failureMessage:
         "Stripe refund failed after guest removal - enqueueing recovery",
@@ -257,8 +256,7 @@ export async function DELETE(
       format,
       bookingId,
       result,
-      reason: "guest_removal_price_increase",
-      idempotencyKey: `mod_guest_remove_${bookingId}_${result.bookingModificationId}`,
+      door: "guestRemoval",
       failureMessage:
         "Failed to create additional PaymentIntent for guest removal",
     });
@@ -340,6 +338,7 @@ export async function DELETE(
         email: member.email,
         firstName: member.firstName,
         modificationType: "GUEST_REMOVE",
+        addedGuests: [], // #4030: adds nobody
         oldCheckIn: result.booking.checkIn,
         oldCheckOut: result.booking.checkOut,
         newCheckIn: result.booking.checkIn,
@@ -365,7 +364,7 @@ export async function DELETE(
           docblock), and why this is a single hand-off rather than a query.
         */
         financialReviewPending: result.financialReviewPending,
-        refundReturnedToOrganiser: result.organiserChildRefund !== null,
+        refundDestination: refund.refundDestination,
         // D-3813-6: an internet-banking refund is the club's to send.
         refundByBankTransfer: editRefundGoesBackByHand(result),
         lodgeId: result.booking.lodgeId,
@@ -416,7 +415,7 @@ export async function DELETE(
       accountCreditAmountCents: result.accountCreditAmountCents,
       settlementMethod: result.settlementMethod,
       policyRetainedAmountCents: result.policyRetainedAmountCents,
-      stripeRefundId: stripeRefundId ?? null,
+      stripeRefundId: refund.stripeRefundId ?? null,
       additionalAmountCents: result.additionalAmountCents,
       // The payer is the booking owner. Hand the client secret only to them
       // (or an admin acting on their behalf); a linked guest self-removing

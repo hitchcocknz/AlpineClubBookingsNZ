@@ -226,16 +226,149 @@ you paid back; each appeal gets its own note, beside the payment's one refund
 note for its cancellation. While it is open its amount counts as already promised, so a second
 appeal can only be approved for what is left. An appeal's limit also leaves
 out every other task still open on the payment, a cancellation's own
-included, and any account credit already given for a bank transfer that
-arrived after the cancellation. Because an appeal is only ever
+included, any account credit already given for a bank transfer that
+arrived after the cancellation, and any card refund on the payment not yet
+made (being retried, or stopped and listed on
+[Stuck States](stuck-states.md#close-a-card-refund-stripe-gave-up-on)). Because an appeal is only ever
 made after the booking is cancelled, the cancellation never counted this task,
 and it can be dismissed (with a note) if the club settles it another way.
+
+**The same task for a group paid by internet banking (#4042).** When the
+organiser of a group they paid for with one internet banking settlement
+cancels it, each joiner's refund is recorded in the app's ledger straight
+away, but nobody has sent any money: the club repays the organiser by bank
+transfer. The cancel raises one of these tasks on the organiser's booking, and
+its total is every joiner refund the ledger shows for the group, kept up to
+date as each joiner's place is cancelled; its reason lists the shares (a very
+large group lists the first ones and counts the rest: see each joiner's
+booking). Admins get the **Manual refund needed** email once, after the cancel
+has worked through the joiners, with the amount owed when it was sent (pay the
+total the task shows). It goes at least once; a crash between sending and
+recording can repeat it. If it could not go out - the app stopped first, or it
+reached nobody - the background job that tidies group settlements sends it on
+a later run, once the cancel has finished; after three attempts that reach
+nobody it stops, and the task on this page is the record. Mark the task paid
+back once the money has gone; that records only that the money went, because
+the refunds are already in the ledger, and sends nothing to Xero. If the total
+changed while you had the page open, you are told the new total: repay the
+difference, then mark it paid back. It cannot be dismissed: the refunds are
+already recorded as made, so if the club decides not to repay the organiser,
+take it to the treasurer to correct the cancelled bookings. Each group raises
+at most one task, however often the cancel is re-run; a joiner's share
+recorded after the task was marked paid back gets a task of its own for what
+the first did not cover. If the group's combined Xero invoice was paid, the
+alert that it could not be voided points to this task: pay the organiser what
+the task shows, not the invoice's paid total, then raise a credit note on the
+invoice in Xero for the amount you repaid and record the refund against that
+credit note.
+
+A club that has customised the **Manual refund needed** message keeps its own
+wording for this email too. Add `{{handBackNote}}` to the body (and keep
+`{{handBackLabel}}` in the subject, which is now required) so the group
+wording appears; until then the email's reason line still says it is a
+group repayment. `{{handBackHeading}}`, `{{handBackRecipientLabel}}` and
+`{{handBackAmountLabel}}` fill in the heading and the row labels for whichever
+case it is, the card refund shortfall below included. The editor's preview
+shows the cash wording.
+
+**The same task for a card refund that falls short (#4097).** A card
+cancellation refunds to the card only what the payment's card charges can
+still give back. When that is less than the refund the cancellation policy
+gives, usually because the payment's records disagree, the cancel records the
+rest as up to two of these tasks, and admins are emailed once ("card refund
+short on a cancelled booking"). The cancel dialog says so before anyone
+confirms (#4119): its refund option and summary show only the card's part as
+going to the card, then the bank-transfer part and the part "To be confirmed
+by the club", worked out the same way the cancel works them out.
+
+- **The part to refund by bank transfer** is what the payment's other
+  (non-card) charges still hold. The member is told the club will refund it by
+  bank transfer: mark it paid back first, then pay it by bank transfer straight
+  after the app accepts - it refuses while the card refund is still moving, or
+  where the payment's records no longer hold the money. Accepted, it records
+  the refund on the payment and the booking ledger and queues one Xero refund
+  credit note for exactly that amount, worded as a bank transfer, beside the
+  card refund's own note; nothing needs recording in Xero by hand. A booking
+  with no Xero invoice to credit gets no note.
+- **The part to check before paying** is anything beyond that: the payment's
+  records show it already refunded, or nothing holds it. The member is told
+  only that the club will be in touch. Check Stripe and the bank, then contact
+  the member with what you found. If they have had the money, dismiss it with
+  a note saying how. If it really is owed, mark it paid back first - after the
+  bank-transfer part, which the app requires, since both are settled on the
+  same money. The app first checks it can record it: pay it by bank transfer
+  straight after it accepts. Where the payment's records show nothing left to
+  refund, the app refuses and says what to do instead: dismiss it with a note,
+  and if the member really is owed, pay them anyway and raise the refund credit
+  note in Xero by hand where the booking has a Xero invoice.
+
+**Neither part can be marked paid back until the card refund itself has gone
+through.** While Stripe is still making it, the app says to mark the part once
+it settles. If the card refund failed and is waiting to retry, wait for the
+retry. If its retries have run out, close it as **Paid another way** on
+[Stuck States](stuck-states.md#close-a-card-refund-stripe-gave-up-on) once the
+member has had that money back, then mark the part.
+
+**The same part to check when the dates fill up during a card payment
+(#4154).** If a member's card payment completes after the last beds went, the
+booking is cancelled and the card refunded automatically - but only for what
+the payment's records show can go back to the card. When that is less than
+the charge, or nothing, the rest appears here as one part to check, and the
+officers are emailed once. The member's booking page says the club will be in
+touch about it; no email goes to the member about it. Check Stripe and the
+bank first, because the records may be wrong and the money may already have
+gone back. If it has, dismiss it with a note saying how, and the member's
+page then says the club checked it and closed it. If it really is owed, use
+**Mark paid back** first, once the card refund has gone through, and pay
+straight after the app accepts. The app first checks it can record it, only on
+that card charge:
+
+- It asks Stripe what the charge has refunded. If Stripe shows more than the
+  app has recorded (a refund made in the Stripe dashboard that has not reached
+  the app yet), or Stripe cannot be reached, it refuses for now: try again in a
+  few minutes, and do not pay until it accepts. If it keeps refusing, check the
+  charge in Stripe; if the member is owed, refund them by bank transfer and
+  dismiss the task with a note saying when and how much.
+- Where the charge's records read more refunded than its card refunds on
+  record, it corrects them itself first, and logs the correction in the audit
+  log, but only for a charge made since the app has kept a record of each card
+  refund, on a booking with no account credit given back and no other refund
+  task.
+
+If it accepts, pay the member by bank transfer straight away; it records the
+refund, queues its Xero refund credit note, and the member's page says the
+whole payment was refunded. If the nightly Xero check already raised a card
+refund note for that money, the app counts it and its own note covers only the
+rest. If the app cannot tell that note apart from one for another charge on the
+payment, it refuses and says so, and its message then never asks for a note by
+hand. A booking with no Xero invoice to credit gets no
+note - usual here, since a payment that lost the race is rarely invoiced. If it
+refuses, it says why: pay the member anyway if they are owed, and dismiss the
+task with a note saying when and how much. Raise the refund credit note in Xero
+by hand only where it says to (the booking has an invoice and no note covers it
+yet).
+
+If the card refund itself stopped retrying, close it as **Paid another way**
+on Stuck States once the member has had that money back, but do not then mark
+this part: that close is another refund task, so the app cannot record this
+one. Dismiss it with a note instead, as the app says.
+
+One gap the app cannot close: a refund made in the Stripe dashboard in the
+moments between **Mark paid back** and your bank transfer. When that refund
+reaches the app, the charge already reads fully refunded, so officers are
+emailed that a card refund took the charge past what was charged. Where the
+member has already had money back another way on that payment - any hand-back
+marked paid back, a card refund closed as Paid another way, or account credit
+given back - the email says they may have been paid twice: check Stripe, the
+bank and their account credit, and recover any overpayment. Otherwise it says
+the charge's records drifted: check the charge in Stripe against the booking's
+payment records.
 
 The card holds several kinds of row and says which is which: a cash hand-back
 (above), a part payment settled in Xero (next), a booking change to price
 ("Decide a booking change the system would not price"), an amount the club may
-not have asked for ("Check an amount the club may not have asked for"), and a
-late card payment held for approval. Each kind's explaining paragraph appears
+not have asked for ("Check an amount the club may not have asked for"), a
+late card payment held for approval, a group organiser's repayment and a card refund that fell short (above). Each kind's explaining paragraph appears
 only when a row of that kind is waiting, and none of them speaks for the others.
 
 ### Settle a part payment an officer cancelled as unpaid
@@ -603,12 +736,18 @@ the money went back and the stay, and it covers the last 30 days.
    `booking.payment.refunded_after_cancellation` entry. **Both kinds of payment are
    listed** — a booking's own payment and a payment for a change to it. Until
    recently only the second kind appeared, and each row's reason line says which it
-   was.
+   was. If the app could not save a row at the moment of the refund (the server
+   stopped, or the database was busy), the row appears a little later — when Stripe
+   sends the payment notice again, or overnight at the latest — still dated the day
+   the money went back.
 3. **You are also emailed at the time.** The subject says what happened — *Payment
    refunded automatically — booking already deleted*, or *… already cancelled* — and
    it cannot be switched off in [Notification Recipients](notification-recipients.md)
    or [Delivery Rules](notification-rules.md), because money moved without anybody
-   deciding it. It goes to everyone whose role can edit Finance.
+   deciding it. It goes to everyone whose role can edit Finance. It is sent when the
+   money goes back. If the card's row could not be saved then, the email is sent
+   again when the row is saved, because the first may not have gone - so you may
+   get it twice, but never not at all.
 4. **If it says it could not be loaded, reload.** A line in place of the card means
    the page could not read the record — not that there is nothing to see. The
    hand-back queue above it is unaffected.
@@ -624,6 +763,14 @@ to it — is **not** refunded. The money
 stays with the club and the payment appears in **Money to settle**, with a
 line saying it went through after the booking was cancelled. It counts towards the
 waiting-items badge in the sidebar like any other refund task.
+
+**A refund Stripe refuses when the payment arrives always waits for approval,
+whichever way the club is set** (#4103). If the automatic refund is answered as
+failed or cancelled, nothing went back, so the payment is held here exactly as
+above, and the item says it has not been refunded. **Refund to card** then asks
+Stripe again, as a fresh request; a refusal after that is retried
+automatically. A change payment that replaced an earlier one is refunded by the
+payments cron instead, which retries a refusal itself.
 
 1. **Refund to card** sends the payment back to the card it came from, through
    Stripe, straight away. It is exactly the refund the automatic setting would have
@@ -727,7 +874,7 @@ Payments is a read-only ledger (aside from Generate Invoice). Its controls:
 | Reset | Restore filters, sort, and page | rolling three-month Updated range through today | Disabled while the ledger is already at its defaults |
 | Generate Invoice | Create a Xero invoice for a succeeded payment | — | Needs finance **edit**; only for succeeded, non-Internet-Banking payments with no invoice. Never offered for a manually recorded cash payment — no invoice is expected for one |
 | Record / Reverse manual payment | Record a cash or off-Xero bank-transfer settlement on a booking, or undo one | — | On the booking page, not here. Needs finance **edit**. Never contacts Xero |
-| Mark paid back / Dismiss | Close a hand-back task for a cancelled cash booking, or for a price cut on a booking paid by internet banking or cash | — | Needs finance **edit**. "Mark paid back" writes the refund into the ledger; "Dismiss" needs a note |
+| Mark paid back / Dismiss | Close a hand-back task for a cancelled cash booking, for a price cut on a booking paid by internet banking or cash, or for a group's organiser repaid by bank transfer | — | Needs finance **edit**. "Mark paid back" writes the refund into the ledger (a group organiser's refund is already there, so it records only that the money went); "Dismiss" needs a note, and a group organiser's repayment cannot be dismissed |
 | Refund to card / Close without refunding | Decide a card payment that went through after its booking was cancelled and was held for a treasurer's approval | — | Needs finance **edit**. "Refund to card" refunds the card through Stripe now; "Close without refunding" refunds nothing and needs a note. Only appears on a payment held for approval, which stays held if the club later switches back to automatic refunds |
 | Record the adjustment / No adjustment | Close a booking change the system would not price | — | Needs finance **edit**. "Record the adjustment" is disabled until an amount has been confirmed; "No adjustment" closes the review as looked-at with nothing due, moves no money, and needs a note |
 | Refunded automatically — nothing to pay back | Read-only record of a payment Stripe returned by itself, because the booking had already been cancelled — the booking's own payment or one for a change to it | last 30 days | No controls at all: the money has already gone back. Every such refund of the last 30 days is listed, grouped into bookings that were deleted (worth a look) and bookings still on file (normally nothing to do); the audit log holds anything older. A capture you had already paid back by hand is not refunded again and is not listed here — you are emailed instead |
@@ -792,7 +939,10 @@ owed on a booking your filters leave out, or on a deleted booking, is in
 **Refunds owed** but not in the Net Collected beside it, so the two are not a
 subtraction of one another either. Nor is the club-wide group cancellation
 amount, or a refund owed by hand on a payment that never showed money taken:
-both are in Refunds owed and in no booking's Net Collected.
+both are in Refunds owed and in no booking's Net Collected. So is a group
+organiser's repayment task (#4042): it is in Refunds owed at its own amount
+but comes off no booking's Net Collected - not the organiser's, and not the
+joiners', whose Net Collected already treats that money as refunded.
 
 ## Troubleshooting
 

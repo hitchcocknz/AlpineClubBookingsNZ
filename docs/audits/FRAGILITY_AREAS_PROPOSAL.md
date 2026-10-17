@@ -84,7 +84,9 @@ a single `fix(bookings)` commit, but its PR (#2618, branch
 `fix/issue-2597-hosting-queue-merge`) carries fix scopes for eight areas,
 so the run above counted it in all eight. The mapper has since been
 corrected for reverts (a revert pair now carries the reverted commit's own
-scope and files, which puts this one in booking creation only), and also
+scope and files, which puts this one in booking creation only). Revert
+subjects are unwrapped through nested `Revert "…"` wrappers, ignoring a
+trailing squash PR suffix (`(#N)`) at each wrapper. The mapper also
 folds plural scopes
 (`fix(beds)`, `fix(public-pages)`), matches only whole-word `lock` files to
 concurrency, and lets the test-infrastructure area see test files. The

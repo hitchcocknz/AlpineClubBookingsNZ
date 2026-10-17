@@ -15,13 +15,18 @@ const mocks = vi.hoisted(() => ({
   notifyXeroSyncError: vi.fn(),
   xeroSyncOperationFindMany: vi.fn(),
   paymentRefundAggregate: vi.fn(),
+  paymentTransactionFindMany: vi.fn(),
+  paymentUpdateMany: vi.fn(),
+  paymentFindUnique: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     payment: {
       findMany: mocks.paymentFindMany,
+      findUnique: mocks.paymentFindUnique,
       update: mocks.paymentUpdate,
+      updateMany: mocks.paymentUpdateMany,
     },
     xeroObjectLink: {
       findMany: mocks.xeroObjectLinkFindMany,
@@ -35,6 +40,9 @@ vi.mock("@/lib/prisma", () => ({
     paymentRefund: {
       aggregate: mocks.paymentRefundAggregate,
     },
+    paymentTransaction: {
+      findMany: mocks.paymentTransactionFindMany,
+    },
   },
 }));
 
@@ -47,6 +55,18 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { repairRefundedPaymentBusinessState } from "@/lib/xero-inbound/credit-note-repairs";
+import { resolveModificationRefundAmountsByPaymentId } from "@/lib/xero-inbound/modification-note-refunds";
+
+// #3979: the repair writes through a claim on what it read
+// (`updateMany` keyed on id, status and refunded total). These suites assert the
+// data written through `paymentUpdate`; the claim itself is pinned below.
+beforeEach(() => {
+  mocks.paymentUpdateMany.mockImplementation(async ({ where, data }: { where: { id: string }; data: unknown }) => {
+    await mocks.paymentUpdate({ where: { id: where.id }, data });
+    return { count: 1 };
+  });
+  mocks.paymentTransactionFindMany.mockResolvedValue([]);
+});
 
 function payment(overrides: Record<string, unknown> = {}) {
   return {
@@ -328,5 +348,245 @@ describe("an organiser-settled child's mirror is raised only by Stripe evidence 
 
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(result).toEqual({ matchedPayments: 1, updatedPayments: 0 });
+  });
+});
+
+// #3979 (`INV-PAY-125`): an invoice correction is not a refund, so a re-sync can
+// take an older fold off a payment nothing was ever captured on. The payment
+// goes back to its uncaptured state; it never reads as paid.
+describe("repairRefundedPaymentBusinessState undoing a fold on a never-captured payment (#3979)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.paymentUpdate.mockResolvedValue({});
+  });
+
+  const folded = () =>
+    payment({
+      source: PaymentSource.INTERNET_BANKING,
+      amountCents: 30_000,
+      refundedAmountCents: 10_000,
+      status: PaymentStatus.PARTIALLY_REFUNDED,
+    });
+
+  it("returns the payment to its PRIMARY row's PENDING, never SUCCEEDED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.PENDING, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.PENDING },
+    });
+  });
+
+  it("a cancelled booking's never-captured payment goes back to FAILED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.FAILED, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.FAILED },
+    });
+  });
+
+  it("a captured payment still un-refunds to SUCCEEDED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.PARTIALLY_REFUNDED, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
+  });
+});
+
+describe("the un-refund guard's limits and the write's claim (#3979 review C)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.paymentUpdate.mockResolvedValue({});
+  });
+
+  const folded = (overrides: Record<string, unknown> = {}) =>
+    payment({
+      source: PaymentSource.INTERNET_BANKING,
+      amountCents: 30_000,
+      refundedAmountCents: 10_000,
+      status: PaymentStatus.PARTIALLY_REFUNDED,
+      ...overrides,
+    });
+
+  it("a payment with no rows at all keeps today's answer: SUCCEEDED", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([]);
+
+    await runRepair({ paymentRow: folded(), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
+  });
+
+  it("an organiser-settled child is left to the #3653 mirror, never asked", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { kind: "PRIMARY", status: PaymentStatus.PENDING, createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+
+    await runRepair({ paymentRow: folded({ booking: { organiserSettled: true } }), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
+  });
+
+  it("writes only through a claim on the whole row it read", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([]);
+    const readAt = new Date("2026-06-30T00:00:00.000Z");
+
+    await runRepair({ paymentRow: folded({ updatedAt: readAt }), creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "pay-1",
+        status: PaymentStatus.PARTIALLY_REFUNDED,
+        refundedAmountCents: 10_000,
+        amountCents: 30_000,
+        updatedAt: readAt,
+      },
+      data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED },
+    });
+  });
+
+  it("MUTATION: a settle that KEEPS the stored figure between the repair's read and its write is never overwritten - the repair re-runs from scratch (#3979 final review)", async () => {
+    // $300 invoiced, a $100 correction already folded in, the payment never
+    // captured when the repair reads it: the correction does not count there,
+    // so the repair would write $0 refunded. Before it writes, the settle
+    // records the receipt and KEEPS the stored $300 - status and refunded total
+    // unchanged, the row touched. Writing $0 would leave a net of $300 against
+    // $200 of cash.
+    let settled = false;
+    const receipt = () => ({
+      paymentId: "pay-1",
+      kind: "PRIMARY",
+      source: PaymentSource.INTERNET_BANKING,
+      status: settled ? PaymentStatus.SUCCEEDED : PaymentStatus.PENDING,
+      reason: "internet_banking_booking_payment",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+    mocks.paymentTransactionFindMany.mockImplementation(async () => [receipt()]);
+    const row = (updatedAt: string) =>
+      folded({ xeroInvoiceId: "inv-1", updatedAt: new Date(updatedAt) });
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([row("2026-06-30T00:00:00.000Z")])
+      .mockResolvedValueOnce([row("2026-07-01T00:00:00.000Z")]);
+    mocks.xeroObjectLinkFindMany.mockImplementation(async ({ where }: { where: { role?: unknown } }) => {
+      if (where.role === "MODIFICATION_CREDIT_NOTE_ALLOCATION") {
+        return [{ localId: "mod-1", xeroObjectId: "alloc-correction", metadata: { creditNoteId: "cn-correction", invoiceId: "inv-1", amountCents: 10_000 } }];
+      }
+      if (where.role === "MODIFICATION_CREDIT_NOTE") {
+        return [{ xeroObjectId: "cn-correction", metadata: { status: "AUTHORISED" } }];
+      }
+      return [];
+    });
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+    ]);
+    mocks.paymentUpdateMany.mockImplementationOnce(async () => {
+      settled = true;
+      return { count: 0 };
+    });
+    const recompute = vi.fn().mockResolvedValue(new Map());
+
+    const result = await repairRefundedPaymentBusinessState({
+      creditNoteId: "cn-current",
+      creditNote: { status: "VOIDED", total: 100 } as never,
+      directPaymentIds: ["pay-1"],
+      modificationRefundAmountsByPaymentId: new Map(),
+      recomputeModificationRefundAmounts: recompute,
+    });
+
+    // The first pass would have written $0; it lost its claim.
+    expect(mocks.paymentUpdateMany.mock.calls[0][0].data).toMatchObject({ refundedAmountCents: 0 });
+    // The re-run read everything again, the current note's share included,
+    // and now counts the correction against the stored-figure receipt: the
+    // $100 stays, so it writes nothing.
+    expect(recompute).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentFindMany).toHaveBeenCalledTimes(2);
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(result.updatedPayments).toBe(0);
+  });
+});
+
+describe("an invoice correction counts only against a receipt recorded at the stored figure (#3979 review A)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+    ]);
+    mocks.paymentFindMany.mockResolvedValue([{ id: "pay-1", xeroInvoiceId: "inv-1" }]);
+  });
+
+  const resolve = () =>
+    resolveModificationRefundAmountsByPaymentId({
+      creditNoteId: "cn-correction",
+      isModificationNote: true,
+      allocationTargets: [{ invoiceId: "inv-1", amountCents: 10_000 }],
+    });
+
+  it("counts it against a payment settled at the stored figure (before #3979, or kept)", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { paymentId: "pay-1", kind: "PRIMARY", source: "INTERNET_BANKING", status: "SUCCEEDED", reason: "xero_invoice_paid_reconciliation" },
+    ]);
+
+    expect(await resolve()).toEqual(new Map([["pay-1", 10_000]]));
+  });
+
+  it("never against a payment settled from cash", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { paymentId: "pay-1", kind: "PRIMARY", source: "INTERNET_BANKING", status: "SUCCEEDED", reason: "xero_invoice_paid_cash" },
+    ]);
+
+    expect(await resolve()).toEqual(new Map());
+  });
+
+  it("never against a payment not yet captured", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { paymentId: "pay-1", kind: "PRIMARY", source: "INTERNET_BANKING", status: "PENDING", reason: null },
+    ]);
+
+    expect(await resolve()).toEqual(new Map());
+  });
+});
+
+describe("a part payment recognised at cancel is cash-sized, never a stored-figure receipt (#3979 final review)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+    ]);
+    mocks.paymentFindMany.mockResolvedValue([{ id: "pay-1", xeroInvoiceId: "inv-1" }]);
+  });
+
+  it("MUTATION: a correction does not count against a receipt the cancel recorded at the cash paid", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { paymentId: "pay-1", kind: "PRIMARY", source: "INTERNET_BANKING", status: "PARTIALLY_REFUNDED", reason: "xero_part_payment_recognised_at_cancel" },
+    ]);
+
+    expect(
+      await resolveModificationRefundAmountsByPaymentId({
+        creditNoteId: "cn-correction",
+        isModificationNote: true,
+        allocationTargets: [{ invoiceId: "inv-1", amountCents: 10_000 }],
+      }),
+    ).toEqual(new Map());
   });
 });

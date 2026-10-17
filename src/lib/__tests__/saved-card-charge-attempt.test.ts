@@ -32,6 +32,8 @@ type LedgerRow = {
   paymentMethodId: string | null;
   reason: string | null;
   createdAt: Date;
+  /** The database's insertion order (#4132): numbered in seed/create order. */
+  insertionSeq: number;
   updatedAt: Date;
 };
 
@@ -86,6 +88,7 @@ const { ledger, mocks } = vi.hoisted(() => {
         paymentMethodId: partial.paymentMethodId ?? null,
         reason: partial.reason ?? null,
         createdAt,
+        insertionSeq: seq,
         updatedAt: partial.updatedAt ?? createdAt,
       };
       rows.push(row);
@@ -103,7 +106,8 @@ const { ledger, mocks } = vi.hoisted(() => {
                 r.kind === args.where.kind &&
                 r.source === args.where.source
             )
-            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            // LEDGER_ROWS_OLDEST_FIRST (#4132): createdAt, then insertion order.
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.insertionSeq - b.insertionSeq)
             .map((r) => ({ ...r }))
       ),
       // The adoption lookup (`adoptSavedCardChargeAttemptForIntent`).

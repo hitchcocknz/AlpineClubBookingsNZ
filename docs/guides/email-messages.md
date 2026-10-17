@@ -115,21 +115,48 @@ exists.
 `{{paymentNote}}` on the **Booking Modified** message is another: it says what
 happens to the money for the change, and the wording follows how the booking was
 paid. A card refund reads "A refund of $X has been processed to your original
-payment method." A refund on a booking paid by internet banking or in cash reads
-"The club will refund $X to you by bank transfer." — it is promised, not
-reported, because a treasurer still has to send it from the **Money to settle**
-card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
-(#3827). A reduction that goes back partly to the card and partly as account
-credit names both. A reduction that cancels the member's unpaid additional
-payment outright adds "The additional payment we asked for has been
-cancelled, so you no longer need to pay it." (#3954).
+payment method." once the card refund has gone through; until then — when the
+card refund failed, timed out or was not made — it reads "A refund of $X is on
+its way to your original payment method." (#4070). A refund on a booking
+paid by internet banking or in cash reads "The club will refund $X to you by
+bank transfer." — it is promised, not reported, because a treasurer still has
+to send it from the **Money to settle** card (see the [payments guide](payments.md#pay-back-a-refund-for-a-cash-booking))
+(#3827). On a group booking the organiser paid for by card, the refund goes to
+the group organiser's card, and the sentence says it has been processed there
+only once that card refund has gone through; until then it says the refund is
+on its way to the group organiser's card (#4057). A reduction that goes back
+partly to the card and partly as account credit names both. A reduction that
+cancels the member's unpaid additional payment outright adds "The additional
+payment we asked for has been cancelled, so you no longer need to pay it."
+(#3954).
 
 `{{refundSentence}}` on the **Refund Appeal Approved** message works the same
 way. A card refund reads "A refund of $X will be processed to your original
 payment method."; on a booking paid by internet banking it reads "The club will
 refund $X to you by bank transfer.", and a booking paid partly by card names
-both parts (#3827). `{{amount}}` is still available to a saved override, but it
-cannot say which way the money goes, so use `{{refundSentence}}`.
+both parts (#3827). On a group joiner's booking the organiser paid for by card
+it reads "A refund of $X has been processed to the group organiser's card,
+because the group organiser paid for this booking." (or "is on its way to" while
+the card provider has not answered yet) (#3956). `{{amount}}` is still available
+to a saved override, but it cannot say which way the money goes, so use
+`{{refundSentence}}`.
+
+The organiser of that group gets their own message at the same time, **Group
+Organiser Joiner Refund** (#3956). Its `{{refundSentence}}` names the joiner and
+says the amount for their share is being refunded to the card the organiser paid
+with; `{{joinerName}}` and `{{amount}}` are there for an override too. It is not
+sent when the admin chose not to email, or when the organiser is the joiner.
+
+`{{amountDue}}` on the **Booking Request Approved** and **Split Guest Payment
+Link** messages is what the pay link asks the member to pay: the booking's price
+plus any change fee recorded on it, less account credit already applied - the
+same figure the `/pay/` page shows (#4058). Their default bodies read
+`Amount due: {{amountDue}}`. `{{price}}` stays the booking's own price, so an
+override written against it keeps its meaning, but it can differ from what the
+link asks for (applied credit lowers that, a recorded change fee raises it); use
+`{{amountDue}}` to name what to pay. A saved Split Guest Payment Link override
+copied from the old default reads `Amount due: {{price}}`: re-save it against
+the new default so it quotes `{{amountDue}}`.
 
 `{{promoSummary}}` on a booking that carries several promo codes shows one
 `Promo adjustment (CODE)` line per code, each with its own amount, while
@@ -340,16 +367,42 @@ Two consequences worth knowing before you edit one:
   being returned to the member (a reduction on a booking paid with credit), an
   amount still to pay, an unpaid additional payment cancelled by the change
   (#3954) — whichever apply, already worded and with the amount in them. A
-  refund names where it went: the member's original payment method, a bank
-  transfer the club will send, or, on a group booking the organiser paid for
-  by card, the group organiser's card. Keep it on a line of its own, with no
-  `$` or label in front.
+  refund names where it went: the member's original payment method or, on a
+  group booking the organiser paid for by card, the group organiser's card —
+  processed there, or on its way there when the card refund has not gone
+  through yet (#4057, #4070) — or a bank transfer the club will send. Keep it
+  on a line of its own, with no `$` or label in front.
+- **`{{changeSummary}}` on Booking Modified lists what changed, one line each.**
+  Dates, guest count and total appear as a Previous/New pair only when they
+  changed. When the change added people, a **Guests Added** line names each of
+  them, with their own nights in brackets for anyone not staying the whole stay
+  (#4030), and "(waiting for them to accept)" after a member from outside the
+  family who has not yet accepted their place — the same line the built-in email
+  shows. Keep the token on a line of its own.
+- **`{{settlementFigureNote}}` on *Bank transfer amount needs checking* is what
+  needs a person (#3979).** It says whether the app kept the amount it had
+  recorded instead of the cash Xero shows (and why), whether the member paid more
+  or less than the booking owes, and who corrects a recorded figure. The amounts
+  themselves are `{{amount}}` (recorded), `{{paidAmount}}` (the cash Xero shows)
+  and `{{amountOwing}}` (what the booking owes, or "as recorded"). The message is
+  locked to always send.
 - **`{{refundMessage}}` on Booking Cancelled is the whole refund sentence.** It
-  says where the refund went: the member's original payment method, account
-  credit, or a refund the club will arrange directly. Otherwise it says no
-  refund applied. On a group booking the organiser paid for by card, it names
-  the organiser instead: the refund has been processed to the group organiser's
-  card, or is on its way there when the card refund has not gone through yet.
+  says where the refund went or is going: the member's original payment method,
+  account credit, or a refund the club will arrange directly. Otherwise it says
+  no refund applied. A refund to the member's own card reads "has been
+  processed" only once the card refund has gone through; until then — when it
+  failed, timed out or was not made — it reads "A refund of $X is on its way to
+  your original payment method.", shown as information (#4084). When the card
+  refund can carry only part of the refund due, the sentence names what went
+  (or is on its way) to the card, then "the club will refund the remaining $Y
+  to you by bank transfer" for the part the payment's other charges hold, and
+  "the club will be in touch about the remaining $Z" for anything the club has
+  to check first, shown as information; with nothing on the card it begins
+  "The club will refund..." or reads "The club will be in touch about the $X
+  refund." (#4097). On a group
+  booking the organiser paid for by card, it names the organiser instead: the
+  refund has been processed to the group organiser's card, or is on its way
+  there when the card refund has not gone through yet.
   If the organiser had already cancelled the whole group, it says that
   cancellation is refunding, or has refunded, the booking to the organiser's
   card. When the organiser cancels a group they paid for by Internet Banking,

@@ -7,7 +7,7 @@ import {
   getRemainingRefundableCents,
   type BookingPaymentState,
 } from "@/lib/booking-payment-state";
-import { isGroupSettlementRefundRecoveryKey } from "@/lib/payment-recovery-keys";
+import { cardRefundFailedLaterRefundId, isGroupSettlementRefundRecoveryKey, isRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import type { RefundAllocationSlice } from "@/lib/payment-transactions";
 
@@ -64,7 +64,12 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
   ...CARD_REFUND_OPERATION_WHERE,
 };
 
-/** Parse a persisted allocation plan (#1097); null when absent or malformed. */
+/**
+ * Parse a persisted allocation plan (#1097); null when absent or malformed. A
+ * slice's key generation after a refusal (#4083) is kept, so a replay sends it,
+ * and so is the mark of a slice Stripe made beside one it refused, which the
+ * runner never sends again and which still fills here, as this row's.
+ */
 export function parseRefundAllocationPlan(
   value: unknown,
 ): RefundAllocationSlice[] | null {
@@ -72,7 +77,7 @@ export function parseRefundAllocationPlan(
   const slices: RefundAllocationSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId } = entry as Record<
       string,
       unknown
     >;
@@ -81,13 +86,39 @@ export function parseRefundAllocationPlan(
       !paymentTransactionId ||
       typeof amountCents !== "number" ||
       !Number.isInteger(amountCents) ||
-      amountCents <= 0
+      amountCents <= 0 ||
+      (stripeKeySuffix !== undefined && !isRefusedRefundKeySuffix(stripeKeySuffix)) ||
+      (madeRefundId !== undefined && (typeof madeRefundId !== "string" || !madeRefundId)) ||
+      (failedRefundIds !== undefined &&
+        (!Array.isArray(failedRefundIds) || !failedRefundIds.every((id) => typeof id === "string" && id.length > 0))) ||
+      (madeByOperationId !== undefined && madeByOperationId !== null && (typeof madeByOperationId !== "string" || !madeByOperationId))
     ) {
       return null;
     }
-    slices.push({ paymentTransactionId, amountCents });
+    slices.push({
+      paymentTransactionId,
+      amountCents,
+      ...(stripeKeySuffix === undefined ? {} : { stripeKeySuffix }),
+      ...(madeRefundId === undefined ? {} : { madeRefundId }),
+      ...(failedRefundIds === undefined ? {} : { failedRefundIds: [...(failedRefundIds as string[])] }),
+      ...(madeByOperationId === undefined ? {} : { madeByOperationId: madeByOperationId as string | null }),
+    });
   }
   return slices;
+}
+
+/**
+ * #4117: what a card refund operation still has to send, by its own record:
+ * its amount less the slices its plan marks made (`madeRefundId`). A marked
+ * slice was made by Stripe and is never sent again, though the amount keeps
+ * it (the cancellation's, the runner's and a refund request's rows). A row
+ * with no marked slice reads its amount, exactly as before. Not the owed
+ * figure: that also nets the refunds recorded since (`openCardRefundOwedByOperation`).
+ */
+export function cardRefundOperationUnmadeCents(operation: { amountCents: number; allocationPlan?: unknown }): number {
+  const plan = parseRefundAllocationPlan(operation.allocationPlan);
+  const madeCents = (plan ?? []).reduce((sum, slice) => sum + (slice.madeRefundId ? slice.amountCents : 0), 0);
+  return Math.max(0, operation.amountCents - madeCents);
 }
 
 /** A card refund operation, as the owed figure reads it. */
@@ -109,6 +140,8 @@ export interface CardRefundOperationRow {
 
 /** A refund recorded on the payment (`PaymentRefund`), as the net-out reads it. */
 export interface RecordedCardRefundRow {
+  /** Stripe's refund id: a plan slice marked with it (`madeRefundId`) is filled by this refund (#4117). */
+  stripeRefundId: string;
   paymentTransactionId: string | null;
   amountCents: number;
   status: string;
@@ -164,13 +197,21 @@ export interface CardRefundSlice {
    */
   exact: boolean;
   filledCents: number;
+  /**
+   * #4083/#4102: the Stripe refund that made this slice, on an attempt that met
+   * a refusal. Filled by exactly that recorded refund, whenever it was made.
+   */
+  madeRefundId?: string;
+  /** #4083: the key generation it moved to after Stripe refused it: it was refused, so is certainly unmade. */
+  stripeKeySuffix?: string;
 }
 
 /**
  * The slices an operation still has to send, with nothing filled yet.
  *
  * - A frozen plan (#1097): each slice is replayed under its own Stripe key, so
- *   what the operation still owes is the plan's unsent slices.
+ *   what the operation still owes is the plan's unsent slices. A slice marked
+ *   made (`madeRefundId`) is filled by that refund alone (`attributeRecordedRefunds`).
  * - A superseded intent's refund (#3340): the whole of one transaction goes
  *   back, and the worker sends whatever that transaction still holds, up to the
  *   operation's amount (`processRefundSupersededPaymentOperation`). Any refund
@@ -198,9 +239,9 @@ function operationSlices(operation: CardRefundOperationRow): CardRefundSlice[] {
   return [{ paymentTransactionId: "", amountCents: operation.amountCents, exact: true, filledCents: 0 }];
 }
 
-/** Whether a slice takes this refund, of which `leftCents` is not yet placed. */
+/** Whether a slice takes this refund, of which `leftCents` is not yet placed. A marked slice takes only its own. */
 function sliceTakes(slice: CardRefundSlice, refund: RecordedCardRefundRow, leftCents: number): boolean {
-  if (slice.paymentTransactionId !== refund.paymentTransactionId) return false;
+  if (slice.madeRefundId || slice.paymentTransactionId !== refund.paymentTransactionId) return false;
   if (slice.filledCents >= slice.amountCents) return false;
   return slice.exact
     ? leftCents === refund.amountCents && refund.amountCents === slice.amountCents
@@ -262,12 +303,19 @@ function operationWindowTakes(operation: CardRefundOperationRow, refund: Recorde
  * slice's transaction, of exactly its amount, inside the operation's window
  * (`operationWindowTakes`: made by Stripe no earlier than it was raised and,
  * once it closed, no later than its close). A refund made BEFORE an operation
- * was raised is never its: every writer that raises one after a partial inline refund carries only
- * the remainder - the refund request's route enqueues the plan's unsent slices
- * (a recording failure included, since round 4: `refundPaymentTransactions`
- * wraps it in `PartialRefundError`), an edit's enqueues the amount less what
- * was recorded, and a cancellation persists its plan before its first Stripe
- * call. Each row fills at most one slice, and goes to the operation raised MOST
+ * was raised is never its: every writer that raises one after a partial
+ * inline refund carries only the remainder, or marks what was made - the
+ * refund request's route enqueues the slices its attempt did not make, refused
+ * ones on their next key, with each made one marked (#4102); an edit's
+ * enqueues the amount less what was made; and a cancellation persists its plan
+ * before its first Stripe call.
+ *
+ * A MARKED SLICE (`madeRefundId`, #4083, #4102) is filled first, by the
+ * recorded refund with exactly that Stripe id, whenever Stripe made it - the
+ * refund request's row is raised after its made slices - and that refund then
+ * leaves the pool, so it can fill nothing else (an older row's slice of the
+ * same transaction and amount included). A marked slice whose refund is not
+ * recorded as made stays unfilled, and owed. Each other row fills at most one slice, and goes to the operation raised MOST
  * RECENTLY before it with a slice it fits - so a later operation's own refund,
  * open or closed, is never taken as an older open one's progress. Every card
  * refund operation on the payment takes part, closed ones included, though only
@@ -296,7 +344,11 @@ export function cardRefundSlicesByOperation(
  * any operation is open, with the cents each closed operation took from refunds
  * the app recorded AFTER its close (`lateCentsByOperation`).
  */
-function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
+function attributeRecordedRefunds(
+  payment: CardRefundOwedPaymentRow,
+  /** #4104: told which slice each recorded refund filled, and with how much (`cardRefundSliceFilledBy`). */
+  onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number, cents: number) => void,
+): {
   operations: Array<{ operation: CardRefundOperationRow; slices: CardRefundSlice[] }>;
   lateCentsByOperation: Map<string, number>;
 } {
@@ -305,8 +357,38 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
     .map((operation) => ({ operation, slices: operationSlices(operation) }))
     .sort((left, right) => left.operation.createdAt.getTime() - right.operation.createdAt.getTime());
   const lateCentsByOperation = new Map<string, number>();
-  const refunds = payment.refunds
-    .filter((refund) => refund.paymentTransactionId !== null && isRecordedRefundStatus(refund.status))
+  const recorded = payment.refunds.filter(
+    (refund) => refund.paymentTransactionId !== null && isRecordedRefundStatus(refund.status),
+  );
+  const claimed = new Set<RecordedCardRefundRow>();
+  // #4104: a refund Stripe failed later whose debt was handed to a row of its
+  // own (`card_refund_failed_later_<refund>`) is that row's to owe, never this one's.
+  const handedOver = new Set(
+    payment.recoveryOperations.flatMap((operation) => {
+      const refundId = cardRefundFailedLaterRefundId(operation.idempotencyKey);
+      return refundId ? [refundId] : [];
+    }),
+  );
+  for (const { operation, slices } of operations) {
+    for (const [sliceIndex, slice] of slices.entries()) {
+      if (slice.madeRefundId && handedOver.has(slice.madeRefundId)) {
+        slice.filledCents = slice.amountCents;
+        continue;
+      }
+      const refund = slice.madeRefundId
+        ? recorded.find((each) => each.stripeRefundId === slice.madeRefundId && !claimed.has(each))
+        : undefined;
+      if (!refund) continue;
+      claimed.add(refund);
+      slice.filledCents = Math.min(slice.amountCents, Math.max(0, refund.amountCents));
+      onFill?.(refund, operation, sliceIndex, slice.filledCents);
+      if (operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime()) {
+        lateCentsByOperation.set(operation.id, (lateCentsByOperation.get(operation.id) ?? 0) + slice.filledCents);
+      }
+    }
+  }
+  const refunds = recorded
+    .filter((refund) => !claimed.has(refund))
     .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
   for (const refund of refunds) {
     let leftCents = Math.max(0, refund.amountCents);
@@ -316,6 +398,7 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
       const slice = candidate.slices.find((each) => sliceTakes(each, refund, leftCents));
       if (!slice) continue;
       const takenCents = Math.min(leftCents, slice.amountCents - slice.filledCents);
+      onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice), takenCents);
       slice.filledCents += takenCents;
       leftCents -= takenCents;
       const { succeededAt } = candidate.operation;
@@ -325,6 +408,60 @@ function attributeRecordedRefunds(payment: CardRefundOwedPaymentRow): {
     }
   }
   return { operations, lateCentsByOperation };
+}
+
+/**
+ * #4104: the slice a recorded refund fills, by the attribution the owed figure
+ * runs (`attributeRecordedRefunds`) - so a refund Stripe failed later is owed
+ * again by the row that counted it as made, not by a second one. The caller
+ * passes the payment as it stood before the failure (the refund still counted).
+ */
+export function cardRefundSliceFilledBy(
+  payment: CardRefundOwedPaymentRow,
+  stripeRefundId: string,
+): { operation: CardRefundOperationRow; sliceIndex: number } | null {
+  let owner: { operation: CardRefundOperationRow; sliceIndex: number } | null = null;
+  attributeRecordedRefunds(payment, (refund, operation, sliceIndex) => {
+    if (refund.stripeRefundId === stripeRefundId && owner === null) owner = { operation, sliceIndex };
+  });
+  return owner;
+}
+
+/**
+ * #4104, #4166 (`INV-SSOT`): a payment as it stood before Stripe failed one of
+ * its refunds later - that refund still counted (`pending`), and the row owing
+ * it again (`card_refund_failed_later_<refund>`) not yet raised, so it cannot
+ * take its own refund. What the failed-later writer reads as it raises that
+ * row, and what the booking page reads to find which row made the refund.
+ */
+export function cardRefundPaymentBeforeFailure(payment: CardRefundOwedPaymentRow, stripeRefundId: string): CardRefundOwedPaymentRow {
+  return {
+    ...payment,
+    recoveryOperations: payment.recoveryOperations.filter((operation) => cardRefundFailedLaterRefundId(operation.idempotencyKey) !== stripeRefundId),
+    refunds: payment.refunds.map((refund) => (refund.stripeRefundId === stripeRefundId ? { ...refund, status: "pending" } : refund)),
+  };
+}
+
+/**
+ * #4145 (`INV-PAY-134`): what the recorded refunds made of one operation's
+ * slices - marked or matched, by the attribution the owed figure runs - and
+ * when Stripe made the latest of them (`stripeMadeAt`). A slice whose refund
+ * failed later and was handed to a row of its own counts nothing: no recorded
+ * refund made it.
+ */
+export function cardRefundMadeForOperation(
+  payment: CardRefundOwedPaymentRow,
+  operationId: string,
+): { madeCents: number; lastMadeAt: Date | null } {
+  let madeCents = 0;
+  let lastMadeAt: Date | null = null;
+  attributeRecordedRefunds(payment, (refund, operation, _sliceIndex, cents) => {
+    if (operation.id !== operationId || cents <= 0) return;
+    madeCents += cents;
+    const madeAt = stripeMadeAt(refund);
+    if (lastMadeAt === null || madeAt.getTime() > lastMadeAt.getTime()) lastMadeAt = madeAt;
+  });
+  return { madeCents, lastMadeAt };
 }
 
 /**
