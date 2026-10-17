@@ -1053,26 +1053,21 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       OR: [
         { type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT },
         {
+          idempotencyKey: exactPrefix(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX),
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
+        {
           type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
           AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE],
         },
-        { idempotencyKey: exactPrefix(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) },
       ],
     },
-    select: {
-      id: true,
-      type: true,
-      status: true,
-      paymentIntentId: true,
-      paymentTransactionId: true,
-      idempotencyKey: true,
-      allocationPlan: true,
-    },
+    select: { type: true, status: true, paymentIntentId: true, idempotencyKey: true },
   };
 
   /**
-   * Answers like the database: every superseded refund op, a cancel op in
-   * flight, and every row under the failed-later key prefix.
+   * Answers like the database: every superseded refund op, an open row under
+   * the failed-later key prefix, and a cancel op in flight.
    */
   function ownedBy(operations: Operation[]) {
     mocks.supersededOperationFindMany.mockImplementation(async (args: unknown) => {
@@ -1082,19 +1077,12 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
           (operation) =>
             operation.paymentId === "payment-1" &&
             (operation.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT ||
+              (operation.idempotencyKey.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX) &&
+                operation.status !== PaymentRecoveryOperationStatus.SUCCEEDED) ||
               (operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT &&
-                isPaymentRecoveryOperationInFlight(operation)) ||
-              operation.idempotencyKey.startsWith(CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX)),
+                isPaymentRecoveryOperationInFlight(operation))),
         )
-        .map(({ id, type, status, paymentIntentId, paymentTransactionId, idempotencyKey, allocationPlan }) => ({
-          id,
-          type,
-          status,
-          paymentIntentId,
-          paymentTransactionId,
-          idempotencyKey,
-          allocationPlan,
-        }));
+        .map(({ type, status, paymentIntentId, idempotencyKey }) => ({ type, status, paymentIntentId, idempotencyKey }));
     });
   }
 
@@ -1185,19 +1173,25 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
   });
 
   /**
-   * #4221: X's superseded refund SUCCEEDED (Stripe accepted it) and Stripe
-   * failed it later, so the failed-later row (#4104) owes it again on X's
-   * charge. While that row is open - re-sent automatically, or dead for the
-   * treasurer - X's money is still on its way back to the member.
+   * #4221: X's superseded refund SUCCEEDED (Stripe accepted it), so any cash X
+   * holds again came back from a refund Stripe failed later, and the
+   * failed-later row (#4104) raised for that failure, on X's own intent, owes
+   * it back. While that row is open - re-sent automatically, or dead for the
+   * treasurer - X's money is on its way back to the member, whichever door
+   * sent the refund that failed.
    */
-  describe("a superseded refund Stripe failed later (#4221)", () => {
+  describe("a capture owed back again after its superseded refund (#4221)", () => {
     const supersededRefund = () =>
       op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, {
         status: PaymentRecoveryOperationStatus.SUCCEEDED,
         attempts: 1,
         nextRetryAt: null,
       });
-    /** A failed-later row as `keepFailedLaterCardRefundOwed` raises it: no transaction column, one slice. */
+    /**
+     * A failed-later row as `keepFailedLaterCardRefundOwed` raises it: on the
+     * failed refund's own intent (X unless overridden), no transaction column,
+     * one slice recording who made the refund.
+     */
     const failedLater = (
       refundId: string,
       slice: { paymentTransactionId?: string; madeByOperationId?: string | null },
@@ -1209,11 +1203,18 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
         allocationPlan: [{ paymentTransactionId: slice.paymentTransactionId ?? X.id, amountCents: X.amountCents, ...slice }],
         ...overrides,
       });
+    /** Another door's refund on X (an edit's or a cancel's recovery row), not a superseded one. */
+    const otherDoorRefund = () =>
+      op(PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, {
+        status: PaymentRecoveryOperationStatus.SUCCEEDED,
+        attempts: 1,
+        nextRetryAt: null,
+      });
 
     it.each([
       ["recorded as made by X's superseded refund", (refund: Operation) => [failedLater("re_4221_a", { madeByOperationId: refund.id })]],
-      ["raised before #4166 (no maker recorded), its slice on X's charge", () => [failedLater("re_4221_b", {})]],
-      ["whose maker could not be told apart (null), its slice on X's charge", () => [failedLater("re_4221_c", { madeByOperationId: null })]],
+      ["raised before #4166 (no maker recorded)", () => [failedLater("re_4221_b", {})]],
+      ["whose maker could not be told apart (null)", () => [failedLater("re_4221_c", { madeByOperationId: null })]],
       [
         "dead for the treasurer (retries spent)",
         (refund: Operation) => [failedLater("re_4221_d", { madeByOperationId: refund.id }, { attempts: 5 })],
@@ -1237,14 +1238,17 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
           return [first, failedLater("re_4221_e2", { madeByOperationId: first.id }, { attempts: 5 })];
         },
       ],
+      ["recorded as made by another door's refund", () => [failedLater("re_4221_other_door", { madeByOperationId: "an-edit-refund-row" })]],
       [
-        "made by an earlier closed failed-later row that recorded no maker, its slice on X's charge",
+        // The money lens's F2: the superseded refund succeeded for good, and
+        // another door's refund on X failed later. X holds that cash again.
+        "for another door's refund on X that failed later, after the superseded refund succeeded",
         () => {
-          const first = failedLater("re_4221_f1", {}, { status: PaymentRecoveryOperationStatus.SUCCEEDED });
-          return [first, failedLater("re_4221_f2", { madeByOperationId: first.id })];
+          const edit = otherDoorRefund();
+          return [edit, failedLater("re_4221_f2", { madeByOperationId: edit.id })];
         },
       ],
-    ])("paid: names S, not X, while an open failed-later row %s asks again", async (_label, rows) => {
+    ])("paid: names S, not X, while an open failed-later row on X %s asks again", async (_label, rows) => {
       primePayment(switchedPayment(BookingStatus.PAID));
       mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
       const refund = supersededRefund();
@@ -1270,21 +1274,29 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
 
     it.each([
       [
-        "closed (made again, or paid another way)",
-        (refund: Operation) => [
-          failedLater("re_4221_closed", { madeByOperationId: refund.id }, { status: PaymentRecoveryOperationStatus.SUCCEEDED }),
+        "its failed-later row is closed (made again, or paid another way)",
+        () => [
+          supersededRefund(),
+          failedLater("re_4221_closed", {}, { status: PaymentRecoveryOperationStatus.SUCCEEDED }),
         ],
       ],
       [
-        "recorded as made by another door's refund",
-        () => [failedLater("re_4221_other_door", { madeByOperationId: "an-edit-refund-row" })],
+        // Keyed on the row's own intent: one on S says nothing about X.
+        "the open failed-later row is on S's intent, not X's",
+        () => [
+          supersededRefund(),
+          failedLater("re_4221_on_s", { paymentTransactionId: S.id }, { paymentIntentId: S.stripePaymentIntentId }),
+        ],
       ],
-      ["with no maker recorded, its slice on S's charge", () => [failedLater("re_4221_s", { paymentTransactionId: S.id })]],
-    ])("paid: still names X once its failed-later row is %s", async (_label, rows) => {
+      [
+        // No superseded refund on X: an ordinary failed-later refund, not this machinery's.
+        "no superseded refund exists on X",
+        () => [otherDoorRefund(), failedLater("re_4221_no_superseded", {})],
+      ],
+    ])("paid: still names X when %s", async (_label, rows) => {
       primePayment(switchedPayment(BookingStatus.PAID));
       mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
-      const refund = supersededRefund();
-      ownedBy([refund, ...rows(refund)]);
+      ownedBy(rows());
 
       await sync();
 
