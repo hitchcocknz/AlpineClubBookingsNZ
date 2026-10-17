@@ -139,6 +139,12 @@ the discount out on those two nights, the same nights the price summary and the
 save charge (#4199). A guest given their own Date In and Date Out with the grid
 off is discounted over that whole continuous stay.
 
+On a booking's edit panel the box also uses the same prices as the price
+summary and the save (#4202): a night a guest already holds keeps the price it
+was sold at, and only a night the edit adds is priced at today's rates. So if
+the club's rates have changed since the booking was made, the discount the box
+shows is worked out on what the guests actually paid, and matches the summary.
+
 ### What happens when a booking is edited and the code has run out
 
 A promotion's usage limits are enforced again every time a booking is repriced —
