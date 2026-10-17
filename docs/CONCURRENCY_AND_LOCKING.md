@@ -3964,8 +3964,10 @@ the pre-#4217 code). Now:
 The order is `lock(1)` where held, then the lodge key, then the member
 credit-ledger key, then the `Payment` row, then refund rows, recovery rows and
 transaction rows (`INV-LOCK-001`, `INV-LOCK-002`). Every writer that holds two
-of those last rows holds the `Payment` row first, so their order beneath it
-cannot form a cycle: two of them on one payment queue on the `Payment` row. No
+of those last rows and then waits holds the `Payment` row first, so their order
+beneath it cannot form a cycle: two of them on one payment queue on the
+`Payment` row (`beginSavedCardChargeAttempt` holds attempt rows but never waits
+after them). No
 advisory key and no row-lock statement was added: every site calls
 `lockPaymentForRefundedTotal`. Every holder of the `Payment` row was checked
 for a row it takes after it that a writer above already held. The retire, the
