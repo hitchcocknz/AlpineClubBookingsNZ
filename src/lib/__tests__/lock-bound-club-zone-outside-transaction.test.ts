@@ -244,6 +244,10 @@ const PURE_CALLEES = [
   // whenever they are handed one (`withStoreTransaction`) - the cancel claim's,
   // with `lock(1)` held - so they resolve no club day at all.
   "src/lib/payment-transactions.ts",
+  // #4217: the saved-card attempt's settle, a ledger-row writer that takes the
+  // Payment row first - in the caller's locked release transaction, or a short
+  // one of its own (`withStoreTransaction`). It resolves no club day.
+  "src/lib/saved-card-charge-settle.ts",
 ] as const;
 
 /**

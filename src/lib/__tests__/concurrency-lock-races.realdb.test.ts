@@ -399,6 +399,13 @@ import "./prisma-exact-prefix.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4165` rows.
 import "./audit-query-exact-prefix.realdb.test";
+// #4217 reuses it to prove every payment-ledger writer takes the Payment row
+// before its first row write and the aggregate rebuild reads under it: seven
+// forced interleavings against the refund writers, the settle, the Internet
+// Banking settle (#4094) and the manual-payment reversal, the P2028 cost among
+// them. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4217-` fixtures.
+import "./payment-lock-before-rebuild.realdb.test";
 // #4022 reuses it to prove the nightly card self-heal never fills a bank
 // hand-back's note with a card note: an edit review's (both wordings), an
 // approved refund request's and an edit's refund hand-back, each completed
