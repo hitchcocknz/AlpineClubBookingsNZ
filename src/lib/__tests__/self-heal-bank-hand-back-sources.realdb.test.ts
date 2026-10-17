@@ -13,7 +13,7 @@
  * - (a) an edit review's hand-back on a cancelled booking (#3880), in both
  *   wordings (#3935). Raised as a hand-back only when the payment is not a
  *   card one (`editReviewRefundGoesBackOnCard`); a card payment takes the
- *   card route instead (the #3880 suite's card cases).
+ *   card route instead (`booking-payment-state.test.ts` pins the chooser).
  * - (b) an approved refund request's hand-back (#3827, `INV-PAY-118`). Raised
  *   only on an internet-banking payment (the approval route; a card payment
  *   planned short raises none, `admin-refund-request-review-route.test.ts`).
@@ -24,6 +24,13 @@
  * So each is on an internet-banking payment, which the self-heal's list never
  * reads (`source: "STRIPE"`), and none is filled with a card note. A positive
  * control shows the same read does list a card payment's uncovered card refund.
+ *
+ * What this file proves, and what it does not: it pins the source filter, the
+ * one guard keeping these hand-backs out of the self-heal (drop it and every
+ * case here fails). That each kind is raised only off-card is the routing
+ * above, held by the unit suites named there, not by this file; (b) and (c)
+ * call their raisers directly. Routes this file does not cover - a payment
+ * whose source changes later, and the other hand-back writers - are #4239.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
