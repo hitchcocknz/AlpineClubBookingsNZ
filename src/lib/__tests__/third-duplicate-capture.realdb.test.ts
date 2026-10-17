@@ -301,6 +301,70 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       },
     );
 
+    it.each([1, 2, 3])(
+      "three captures arriving at once leave exactly one, and three simultaneous replays change nothing (round %s)",
+      async () => {
+        const asked = stripeMakesRefunds();
+        const outcomes = await Promise.all(TABS.map(async (paymentIntentId) => (await arrive(paymentIntentId)).outcome));
+        expect([...outcomes].sort()).toEqual(["duplicate_capture_refunded", "duplicate_capture_refunded", "paid"]);
+        expect(asked, "Stripe is asked to refund the two later captures once each").toHaveLength(2);
+        const settled = await snapshot();
+        expect(settled.transactions.filter((row) => row.status === "SUCCEEDED"), "exactly one capture stays").toHaveLength(1);
+        expect(settled.operations.map((operation) => operation.status)).toEqual(["SUCCEEDED", "SUCCEEDED"]);
+
+        const replays = await Promise.all(TABS.map(async (paymentIntentId) => (await arrive(paymentIntentId)).outcome));
+        expect(replays).toEqual(["already_paid", "already_paid", "already_paid"]);
+        expect(asked, "no refund is asked for again").toHaveLength(2);
+        expect(await snapshot()).toEqual(settled);
+      },
+    );
+
+    it("a saved-card charge recorded SUCCEEDED on its attempt row before it reaches the settlement is still refunded when another capture already settled the booking", async () => {
+      // The #1967 split-child window: the member's link intent settles the
+      // booking, then the cron's saved-card charge captures. Every saved-card
+      // path (`cron-confirm-pending`, `charge-saved-method`,
+      // `confirm-pending-guests`, the webhook's attempt adoption) records the
+      // capture on its attempt row in its own committed write
+      // (`settleSavedCardChargeAttempt`) BEFORE `markBookingPaymentSucceeded`.
+      // So "the arriving row was already SUCCEEDED" does not mean the capture
+      // was judged and kept before: it must still be refunded here.
+      const asked = stripeMakesRefunds();
+      const [settling] = TABS;
+      const savedCardIntent = "pi_race_4211_saved_card";
+      const attempt = await prisma.paymentTransaction.create({
+        data: {
+          paymentId: PAYMENT_ID,
+          kind: "PRIMARY",
+          source: "STRIPE",
+          amountCents: PRICE_CENTS,
+          status: "PENDING",
+          reason: "race_4211_saved_card_attempt",
+        },
+        select: { id: true },
+      });
+
+      expect((await arrive(settling)).outcome).toBe("paid");
+      const { settleSavedCardChargeAttempt } = await import("@/lib/saved-card-charge-settle");
+      const recorded = await settleSavedCardChargeAttempt({
+        attemptRowId: attempt.id,
+        paymentId: PAYMENT_ID,
+        paymentIntent: { id: savedCardIntent, status: "succeeded", amount: PRICE_CENTS, payment_method: null },
+      });
+      expect(recorded).toMatchObject({ ledgerStatus: "SUCCEEDED", moved: true });
+
+      expect((await arrive(savedCardIntent)).outcome).toBe("duplicate_capture_refunded");
+      expect(asked).toEqual([savedCardIntent]);
+      const after = await snapshot();
+      expect(
+        after.transactions
+          .filter((row) => row.status !== "PENDING")
+          .map((row) => [row.stripePaymentIntentId, row.status]),
+      ).toEqual([
+        [savedCardIntent, "REFUNDED"],
+        [settling, "SUCCEEDED"],
+      ]);
+    });
+
     it("the second capture's refund fails at Stripe and stays queued: the third is still refunded, the settling capture's replay keeps its money, and the second's replay finishes its own refund", async () => {
       const [settling, second, third] = TABS;
       const asked: string[] = [];
