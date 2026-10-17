@@ -281,7 +281,9 @@ let markerFinishedAt: Date | null = null;
         idempotencyKey: failedLaterKey(refundId),
         stripeKeyPrefix: failedLaterKey(refundId),
       });
-      expect(parseRefundAllocationPlan(rows[0]?.allocationPlan)).toEqual([{ paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS }]);
+      // #4166: the door row that sent it, by its metadata, is recorded as its maker; with none, none.
+      const doorRow = doorRowKey ? await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: doorRowKey } }) : null;
+      expect(parseRefundAllocationPlan(rows[0]?.allocationPlan)).toEqual([{ paymentTransactionId: TXN_ID, amountCents: REFUND_CENTS, madeByOperationId: doorRow?.id ?? null }]);
       expect(await owedNow()).toBe(REFUND_CENTS);
 
       // The same event again: nothing more is written or taken out.

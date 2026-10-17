@@ -1428,9 +1428,8 @@ short).
 
 - **A cancel's card refund is recorded by the close that made it, once**
   (#4125, #4145). A member's cancel and a capacity race write REFUNDED only
-  with the close moving their pre-persisted recovery row to `SUCCEEDED` (the
-  door's, or the runner's), in its transaction
-  (`closeRefundRowRecordingEvent`). A close that moves nothing writes nothing.
+  with the close moving their pre-persisted recovery row to `SUCCEEDED`, in
+  its transaction (`closeRefundRowRecordingEvent`).
   - **Never on a failure**: an inline refund that threw, was refused or was
     part-made writes none; the page reads the row (`readCancelledCardRefund`).
   - **Dated by that close, for the frozen plan's total**; a failed insert
@@ -1447,17 +1446,20 @@ short).
     close records none; the page prefers an open or paid-another-way row to it.
   - **Stated limits, history only.** While both colours serve, an old cancel
     can write its up-front event after a new close recorded one, and an old
-    runner can close a new cancel's row with none. The event's dated part
-    keeps what the close found, even a refund failing later; the undated part
-    follows the refunds as recorded now.
+    runner close a new cancel's row with none. An old worker re-planning a
+    failed-later row drops `madeByOperationId`; the page matches by amount.
+  - **A refund failing later is told by the row owing it** (#4166).
   - **The cancel's own event is its settlement** (`isCancelCardRefundEvent`),
     never an edit review's or hand-back's that landed first.
   - Proven by `booking-cancel.test.ts`, `payment-recovery.test.ts`,
     `card-refund-paid-another-way.test.ts`,
     `booking-narrative-own-card-refund.test.ts`,
     `booking-narrative-card-shortfall.test.ts`,
-    `capacity-race-refund-event.realdb.test.ts` and
-    `cancel-card-refund-event.realdb.test.ts`.
+    `booking-narrative-failed-later-refund.test.ts`,
+    `cancelled-card-refund-failed-later.test.ts`,
+    `capacity-race-refund-event.realdb.test.ts`,
+    `cancel-card-refund-event.realdb.test.ts` and
+    `cancel-card-refund-failed-later.realdb.test.ts`.
 
 ## INV-PAY-135
 
