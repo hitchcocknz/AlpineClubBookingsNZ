@@ -269,6 +269,19 @@ while the dialog is open, the dialog says so; if it happens just as you mark it
 resolved, the app refuses and the list refreshes, so you only ever resolve the
 amount you saw.
 
+**If Stripe then fails that card refund** (#4210). Stripe can accept a refund
+and report it failed days later. If it fails a refund that showed here, the
+member did not get the card money after all: the bank transfer you recorded is
+the only time they were paid back. The app does **not** ask Stripe for it
+again, and does not list it under **Card refunds Stripe gave up on** or count
+it under **Refunds owed**. The row leaves this list, the officers are emailed
+once, and the [audit log](audit-log.md) records it under **Payment**. Do not
+pay the member again, unless you had already asked them to return the extra:
+then they are owed it again, so pay them back and record it in Xero. A card
+refund credit note raised in Xero while Stripe counted the refund no longer
+matches money paid back; the Xero reconciliation report lists it as refund
+coverage above the refunded total, for you to correct in Xero.
+
 This action does not cover two kinds of refund:
 
 - A group organiser's refund for a member of their group comes out of the
