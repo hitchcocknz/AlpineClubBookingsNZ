@@ -26,8 +26,10 @@
  *   counts until it SUCCEEDED, a cancel only while in flight
  *   (`PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE`), where guard (b′) counts
  *   both until SUCCEEDED; and (#4221) a capture with a superseded refund
- *   counts while an open failed-later row on its own intent owes money back,
- *   whichever door made the refund that failed. The read's whole shape,
+ *   counts while an open row owes money back on it again after a refund
+ *   Stripe failed later, whichever door made it: a failed-later row on its
+ *   own intent, or an open card refund row's slice on its transaction that
+ *   the failure re-planned and nothing has made again. The read's whole shape,
  *   escaped key prefix included, is pinned by the unit suite's
  *   `EXPECTED_READ`; this proves the rows PostgreSQL returns for it.
  *
@@ -325,9 +327,21 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       );
     });
 
-    it("the Xero reader counts a capture whose superseded refund is owed back again while an open failed-later row on its intent asks (#4221)", async () => {
-      const { CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } = await import("@/lib/payment-recovery-keys");
-      const cases = ["open", "dead", "chain", "closed", "other_door", "misplaced", "no_superseded", "decoy"] as const;
+    it("the Xero reader counts a capture whose superseded refund is owed back again while an open row asks for it (#4221)", async () => {
+      const { CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX, nextRefusedRefundKeySuffix } = await import("@/lib/payment-recovery-keys");
+      const cases = [
+        "open",
+        "dead",
+        "chain",
+        "closed",
+        "other_door",
+        "misplaced",
+        "no_superseded",
+        "decoy",
+        "replanned",
+        "remade",
+        "replanned_closed",
+      ] as const;
       type Case = (typeof cases)[number];
       const txn = (name: Case) => `race-4177-txn-4221-${name}`;
       const intent = (name: Case) => `pi_race_4221_${name}`;
@@ -408,15 +422,57 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           // and slice, but sits on no_superseded's intent, which has no
           // superseded refund. Neither capture counts.
           failedLater("misplaced", "no_superseded", refundOp("misplaced"), { sliceOn: "misplaced" }),
-          // Read by the escaped prefix, then rejected by the key's own rule
-          // (`cardRefundFailedLaterRefundId`) too, so it shows nothing alone.
+          // Missed by the escaped prefix and rejected by the key's own rule
+          // (`cardRefundFailedLaterRefundId`); read only as an open card
+          // refund row, whose slice nothing re-planned. It shows nothing alone.
           failedLater("decoy", "decoy", refundOp("decoy"), {}, "card-refund-failed-later-re_race_4221_decoy"),
+        ],
+      });
+      // The other door's path: an open edit refund row whose slices made
+      // refunds Stripe failed later, each re-planned (`failedRefundIds`, its
+      // next key) rather than given a failed-later row. Only the slice on
+      // replanned, not made again, beside a superseded refund, counts.
+      const replannedSlice = (name: Case, extra: Record<string, unknown> = {}) => ({
+        paymentTransactionId: txn(name),
+        amountCents: 5000,
+        stripeKeySuffix: nextRefusedRefundKeySuffix(undefined),
+        failedRefundIds: [`re_race_4221_slice_${name}`],
+        ...extra,
+      });
+      await prisma.paymentRecoveryOperation.createMany({
+        data: [
+          {
+            ...base,
+            id: "race-4177-op-4221-edit-open",
+            type: "REFUND_BOOKING_MODIFICATION" as const,
+            status: "FAILED" as const,
+            attempts: 2,
+            nextRetryAt: TIED_AT,
+            paymentIntentId: intent("other_door"),
+            idempotencyKey: "race-4177-4221-edit-open",
+            allocationPlan: [
+              replannedSlice("replanned"),
+              replannedSlice("remade", { madeRefundId: "re_race_4221_remade_again" }),
+              replannedSlice("no_superseded"),
+            ],
+          },
+          {
+            ...base,
+            id: "race-4177-op-4221-edit-closed",
+            type: "REFUND_BOOKING_MODIFICATION" as const,
+            status: "SUCCEEDED" as const,
+            attempts: 1,
+            nextRetryAt: null,
+            paymentIntentId: intent("other_door"),
+            idempotencyKey: "race-4177-4221-edit-closed",
+            allocationPlan: [replannedSlice("replanned_closed")],
+          },
         ],
       });
       const { listSupersededIntentIdsOwningCaptures } = await import("@/lib/superseded-intent-ownership");
 
       expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID)).sort()).toEqual(
-        [intent("chain"), intent("dead"), intent("open"), intent("other_door")].sort(),
+        [intent("chain"), intent("dead"), intent("open"), intent("other_door"), intent("replanned")].sort(),
       );
     });
   },
