@@ -1219,6 +1219,16 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
         (refund: Operation) => [failedLater("re_4221_d", { madeByOperationId: refund.id }, { attempts: 5 })],
       ],
       [
+        "whose re-sends failed and are spent",
+        (refund: Operation) => [
+          failedLater("re_4221_g", { madeByOperationId: refund.id }, {
+            status: PaymentRecoveryOperationStatus.FAILED,
+            attempts: 5,
+            nextRetryAt: null,
+          }),
+        ],
+      ],
+      [
         "dead after a retry that failed later too, made by an earlier failed-later row now closed",
         (refund: Operation) => {
           const first = failedLater("re_4221_e1", { madeByOperationId: refund.id }, {
