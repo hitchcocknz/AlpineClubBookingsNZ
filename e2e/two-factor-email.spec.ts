@@ -59,6 +59,8 @@ test("first login forces enrollment and completes email-code enrollment", async 
 
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page).toHaveURL(/\/dashboard/);
+  await expect(page.locator(".app-brand-mark")).toBeVisible();
+  await expect(page.getByRole("heading", { name: `Welcome back, ${enrollee.firstName}`, exact: true })).toBeVisible();
 });
 
 test("re-login rejects a wrong email code and accepts the emailed one", async ({
@@ -84,4 +86,6 @@ test("re-login rejects a wrong email code and accepts the emailed one", async ({
   await page.locator("#two-factor-code").fill(code);
   await page.getByRole("button", { name: "Verify" }).click();
   await expect(page).toHaveURL(/\/dashboard/);
+  await expect(page.locator(".app-brand-mark")).toBeVisible();
+  await expect(page.getByRole("heading", { name: `Welcome back, ${enrollee.firstName}`, exact: true })).toBeVisible();
 });

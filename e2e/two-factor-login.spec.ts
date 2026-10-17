@@ -40,6 +40,8 @@ test("first login forces two-factor enrollment and issues recovery codes", async
   // member to their first accessible admin page (#2090 D-D3), which for a
   // finance-only member is /admin/payments — not /dashboard.
   await expect(page).toHaveURL(/\/admin\/payments/);
+  await expect(page.locator(".app-brand-mark")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Payments", exact: true })).toBeVisible();
 });
 
 test("session that has not passed the challenge cannot reach protected pages", async ({
@@ -73,6 +75,8 @@ test("re-login rejects a wrong code and accepts a valid TOTP code", async ({
   // Bob (finance VIEWER) defaults to his first accessible admin page (#2090
   // D-D3): /admin/payments, re-resolved server-side at /login/verify.
   await expect(page).toHaveURL(/\/admin\/payments/);
+  await expect(page.locator(".app-brand-mark")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Payments", exact: true })).toBeVisible();
 });
 
 test("recovery code completes the challenge and is single-use", async ({
@@ -94,6 +98,8 @@ test("recovery code completes the challenge and is single-use", async ({
   // Bob (finance VIEWER) defaults to his first accessible admin page (#2090
   // D-D3): /admin/payments, re-resolved server-side at /login/verify.
   await expect(page).toHaveURL(/\/admin\/payments/);
+  await expect(page.locator(".app-brand-mark")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Payments", exact: true })).toBeVisible();
 
   // The same code must not work twice.
   const secondContext = await page.context().browser()!.newContext();
