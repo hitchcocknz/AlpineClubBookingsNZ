@@ -6,7 +6,7 @@ The list, both writers and the record-again note's sizing live in new modules
 below gains is the one place it already owns being told about a record-again.
 
 file: src/lib/payment-transactions.ts
-lines: 1705
+lines: 1707
 reason: `unwindLocalRefundAllocation` is the inverse of
   `applyLocalRefundAllocation` and has to share its private compare-and-set
   (`compareAndSetRefundedAmount`), its backfill and the Payment-row-first lock
