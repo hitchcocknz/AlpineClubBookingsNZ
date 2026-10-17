@@ -8,6 +8,8 @@ import {
   type LiveGuestStayRow,
   type StayRangeDeltaEntry,
 } from "@/lib/booking-modification-stay-ranges";
+import { editedGuestPricingLocks } from "@/lib/booking-modify-plan";
+import type { BookingGuestNightPriceSource } from "@prisma/client";
 
 /**
  * Which nights each guest is priced on in the promo preview
@@ -37,14 +39,53 @@ import {
  * A create preview (no booking) has no planner: each guest is normalised on
  * their own, exactly as the create route does. Range errors surface as
  * `BookingGuestStayRangeValidationError` for the route to answer with a 400.
+ *
+ * PRICES, #4202. A remaining guest also carries the locks the quote and the
+ * save price them with, from the one home for them (`editedGuestPricingLocks`,
+ * `INV-SSOT`): every night they already bought keeps the price it was sold at
+ * (#1036, `INV-MOD-005`), and only a night the edit buys prices at current
+ * rates. The route hands the party to the same pricing pass the quote uses
+ * (`priceBookingGuestsWithMembershipTypePolicy`), so when rates have changed
+ * since the booking was made the box discounts what the quote discounts.
+ *
+ * RE-RATES. The two officer re-rates the quote clears a guest's locks for — a
+ * #2337 placeholder-to-member link and an other-lodge tick or untick — are
+ * resolved before this module runs, by the quote's own resolvers
+ * (`promoPreviewEditContext`), and arrive on the stored row: `linkedMemberId`
+ * (the guest then prices as that member) and `repricedDeliberately` (the locks
+ * are cleared through the same `editedGuestPricingLocks(row, true)` the quote
+ * calls). A linked guest is still the row's placeholder in the request, so the
+ * row match below is unchanged by the link. `otherLodgeMember` is the flag the
+ * quote prices the guest with: the election's end state, or the stored flag
+ * when the edit carries none. An added guest and a create preview carry no
+ * locks and no flag. The refusals of a re-rate are the quote's and are raised
+ * there too, before this module runs; what the box does NOT mirror (the
+ * parked-amount election refusal, the mid-stay refusal of any code change) is
+ * listed on `promoPreviewEditContext`.
  */
 export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
   memberId?: string | null;
   bookingGuestId?: string;
 };
 
-/** A row of the booking being edited, as much of it as stay resolution needs. */
-export type PromoPreviewStoredGuest = LiveGuestStayRow & { memberId: string | null };
+/**
+ * A row of the booking being edited: as much of it as stay resolution needs,
+ * plus the price each night was sold at, which the pricing pass keeps (#4202).
+ */
+export type PromoPreviewStoredGuest = Omit<LiveGuestStayRow, "nights"> & {
+  memberId: string | null;
+  /** The other-lodge flag the quote prices this guest with (Other Lodges epic). */
+  otherLodgeMember?: boolean;
+  /** The edit re-rates this guest (a #2337 link, an other-lodge tick or untick): no locks. */
+  repricedDeliberately?: boolean;
+  /** #2337: the member this placeholder is being linked to, whom it then prices as. */
+  linkedMemberId?: string;
+  nights?: ReadonlyArray<{
+    stayDate: Date;
+    priceCents?: number | null;
+    priceSource?: BookingGuestNightPriceSource;
+  }> | null;
+};
 
 /** The booking an edit preview is for, with its rows the request names. */
 export type PromoPreviewEdit = {
@@ -52,10 +93,17 @@ export type PromoPreviewEdit = {
   storedGuests: ReadonlyArray<PromoPreviewStoredGuest>;
 };
 
+/** What a guest prices with from their stored row (#4202): only a remaining guest has any. */
+type PromoPreviewGuestLocks = Partial<Pick<ReturnType<typeof editedGuestPricingLocks>, "lockedNightPrices">> & {
+  otherLodgeMember?: boolean;
+  /** #2337: a linked placeholder prices as the member it is being linked to. */
+  link?: { memberId: string; isMember: true };
+};
+
 export type PromoPreviewStays<Guest> = {
   checkIn: Date;
   checkOut: Date;
-  guests: Array<Guest & NormalizedBookingGuestStayRange>;
+  guests: Array<Guest & NormalizedBookingGuestStayRange & Omit<PromoPreviewGuestLocks, "link">>;
 };
 
 type PromoPreviewStayArgs<Guest> = {
@@ -137,8 +185,15 @@ export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
   });
 
   const rangeByPartyIndex = new Map<number, NormalizedBookingGuestStayRange>();
+  const locksByPartyIndex = new Map<number, PromoPreviewGuestLocks>();
   for (const { guest: row, ...range } of resolved.remaining) {
-    rangeByPartyIndex.set(partyIndexByRowId.get(row.id)!, range);
+    const index = partyIndexByRowId.get(row.id)!;
+    rangeByPartyIndex.set(index, range);
+    locksByPartyIndex.set(index, {
+      ...editedGuestPricingLocks(lockableNights(row), row.repricedDeliberately === true),
+      otherLodgeMember: row.otherLodgeMember ?? false,
+      ...(row.linkedMemberId ? { link: { memberId: row.linkedMemberId, isMember: true as const } } : {}),
+    });
   }
   resolved.added.forEach((range, addedIndex) => {
     rangeByPartyIndex.set(addedPartyIndexes[addedIndex]!, range);
@@ -153,8 +208,30 @@ export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
         throw new Error(`Promo preview resolved no stay for party position ${index} (#4199).`);
       }
       // The planner's answer replaces the request's own fields outright, so a
-      // night set the planner did not keep cannot ride along as strings.
-      return { ...guest, stayStart: range.stayStart, stayEnd: range.stayEnd, nights: range.nights };
+      // night set the planner did not keep cannot ride along as strings; and a
+      // remaining guest's locks and flag are the stored row's, never anything sent.
+      return {
+        ...guest,
+        stayStart: range.stayStart,
+        stayEnd: range.stayEnd,
+        nights: range.nights,
+        lockedNightPrices: locksByPartyIndex.get(index)?.lockedNightPrices,
+        otherLodgeMember: locksByPartyIndex.get(index)?.otherLodgeMember,
+        ...locksByPartyIndex.get(index)?.link,
+      };
     }),
+  };
+}
+
+/**
+ * The stored nights in the shape the lock reader takes. A row read without its
+ * price source carries no usable sold price, so it yields no lock and that night
+ * prices at current rates — the reader's own lenient answer for a missing price.
+ */
+function lockableNights(row: PromoPreviewStoredGuest): Parameters<typeof editedGuestPricingLocks>[0] {
+  return {
+    nights: (row.nights ?? []).flatMap((night) =>
+      night.priceSource ? [{ stayDate: night.stayDate, priceCents: night.priceCents, priceSource: night.priceSource }] : [],
+    ),
   };
 }

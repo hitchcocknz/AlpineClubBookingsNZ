@@ -174,6 +174,10 @@ import {
   bookingModificationRefundReasonForKeyPrefix,
 } from "@/lib/payment-recovery-keys";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import {
+  compareLedgerRowsOldestFirst,
+  LEDGER_ROWS_OLDEST_FIRST,
+} from "@/lib/payment-ledger-order";
 
 const tx = {
   $executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
@@ -222,7 +226,13 @@ type LedgerRow = {
   stripePaymentIntentId: string | null;
   amountCents: number;
   refundedAmountCents: number;
+  /** #4177: the ledger order (`INV-PAY-133`). Defaults tie on `createdAt`; see primeLedger. */
+  createdAt?: Date;
+  insertionSeq?: number;
 };
+
+/** The one `createdAt` every row ties on unless a case sets its own. */
+const TIED_AT = new Date("2026-06-15T00:00:00.000Z");
 
 function ledgerRow(overrides: Partial<LedgerRow> & { id: string }): LedgerRow {
   return {
@@ -249,8 +259,19 @@ let reachedSibling = false;
  * the REAL where-clause semantics of the duplicate-capture predicate:
  * `findFirst` honours kind/source/status filters and the arriving-intent
  * exclusion; `findPaymentTransactionByIntentId` resolves by intent id.
+ *
+ * The list is the PHYSICAL (heap) order. A row's ledger order is its
+ * `createdAt` then `insertionSeq` (default: its position in the list). The fake
+ * answers like PostgreSQL: with `orderBy: LEDGER_ROWS_OLDEST_FIRST` the oldest-
+ * inserted match, with no `orderBy` the first match in heap order (#4177), and
+ * any other `orderBy` throws rather than being ignored.
  */
-function primeLedger(transactions: LedgerRow[]) {
+function primeLedger(physicalOrder: LedgerRow[]) {
+  const transactions = physicalOrder.map((row, index) => ({
+    ...row,
+    createdAt: row.createdAt ?? TIED_AT,
+    insertionSeq: row.insertionSeq ?? index + 1,
+  }));
   // #2262 widened the predicate to an OR: the STRIPE arm keeps the
   // arriving-intent + superseded exclusions, and a second arm matches ANY
   // settled non-Stripe PRIMARY row (a cash settlement, or a Xero-inbound
@@ -260,6 +281,7 @@ function primeLedger(transactions: LedgerRow[]) {
   // why reachedSibling below is asserted by those tests.
   mocks.paymentTransactionFindFirst.mockImplementation(
     async (args: {
+      orderBy?: unknown;
       where: {
         kind: PaymentTransactionKind;
         status: { in: PaymentStatus[] };
@@ -270,6 +292,16 @@ function primeLedger(transactions: LedgerRow[]) {
       };
     }) => {
       const { where } = args;
+      if (
+        args.orderBy !== undefined &&
+        JSON.stringify(args.orderBy) !== JSON.stringify(LEDGER_ROWS_OLDEST_FIRST)
+      ) {
+        throw new Error(`fake ledger: unsupported orderBy ${JSON.stringify(args.orderBy)}`);
+      }
+      const candidates =
+        args.orderBy === undefined
+          ? transactions
+          : [...transactions].sort(compareLedgerRowsOldestFirst);
       const matchesArm = (
         transaction: LedgerRow,
         arm: {
@@ -298,7 +330,7 @@ function primeLedger(transactions: LedgerRow[]) {
         return true;
       };
       const match =
-        transactions.find(
+        candidates.find(
           (transaction) =>
             transaction.kind === where.kind &&
             where.status.in.includes(transaction.status) &&
@@ -718,6 +750,117 @@ describe("#1992 duplicate-capture auto-refund", () => {
     });
 
     expect(result.outcome).toBe("duplicate_capture_refunded");
+  });
+
+  describe("#4177 several captures qualify: the OLDEST-INSERTED is the settled one, whatever order the rows come back in (INV-PAY-133)", () => {
+    const OLDER_PI = "pi_settled_first";
+    const NEWER_PI = "pi_settled_later";
+
+    async function settleDuplicate() {
+      return markBookingPaymentSucceeded({
+        format: CLUB_FORMAT_TEST,
+        bookingId: "booking-1",
+        paymentIntentId: DUPLICATE_PI,
+        amountCents: 10000,
+        paymentMethodId: "pm_1",
+      });
+    }
+
+    function expectSettledBy(settledPaymentIntentId: string | null) {
+      expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: DUPLICATE_PI, settledPaymentIntentId }),
+        CLUB_FORMAT_TEST,
+      );
+      expect(mocks.recordDuplicateCaptureRefundEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ duplicatePaymentIntentId: DUPLICATE_PI, settledPaymentIntentId }),
+      );
+    }
+
+    it("reads the candidate in the shared ledger order, oldest first", async () => {
+      primeDuplicateCaptureLedger();
+
+      await settleDuplicate();
+
+      expect(mocks.paymentTransactionFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: [...LEDGER_ROWS_OLDEST_FIRST] }),
+      );
+    });
+
+    it("two card captures tied on createdAt, heap order newest first: names and re-checks the one inserted first", async () => {
+      primeLedger([
+        ledgerRow({ id: "txn-newer", stripePaymentIntentId: NEWER_PI, insertionSeq: 2 }),
+        ledgerRow({ id: "txn-older", stripePaymentIntentId: OLDER_PI, insertionSeq: 1 }),
+        ledgerRow({
+          id: "txn-duplicate",
+          stripePaymentIntentId: DUPLICATE_PI,
+          status: PaymentStatus.PROCESSING,
+          insertionSeq: 3,
+        }),
+      ]);
+
+      const result = await settleDuplicate();
+
+      expect(result.outcome).toBe("duplicate_capture_refunded");
+      expectSettledBy(OLDER_PI);
+      // (c′) re-checks the chosen settlement, never the later capture.
+      const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
+        ([args]) => (args as { where: { paymentIntentId: string } }).where.paymentIntentId,
+      );
+      expect(recheckedIntents).toEqual([OLDER_PI]);
+      // Only the arriving duplicate is refunded.
+      expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allocationPlan: [{ paymentTransactionId: "txn-duplicate", amountCents: 10000 }],
+        }),
+      );
+    });
+
+    it("createdAt outranks insertionSeq: the earlier-created capture is the settled one even with the higher sequence", async () => {
+      primeLedger([
+        ledgerRow({
+          id: "txn-newer",
+          stripePaymentIntentId: NEWER_PI,
+          createdAt: new Date("2026-06-16T00:00:00.000Z"),
+          insertionSeq: 1,
+        }),
+        ledgerRow({
+          id: "txn-older",
+          stripePaymentIntentId: OLDER_PI,
+          createdAt: new Date("2026-06-15T00:00:00.000Z"),
+          insertionSeq: 2,
+        }),
+        ledgerRow({ id: "txn-duplicate", stripePaymentIntentId: DUPLICATE_PI, insertionSeq: 3 }),
+      ]);
+
+      await settleDuplicate();
+
+      expectSettledBy(OLDER_PI);
+    });
+
+    it.each([
+      { settledFirst: "the cash settlement", cashSeq: 1, cardSeq: 2, settledBy: null },
+      { settledFirst: "the card capture", cashSeq: 2, cardSeq: 1, settledBy: NEWER_PI },
+    ])(
+      "a non-Stripe settlement beside a card capture, heap order reversed: $settledFirst, inserted first, is the settled one",
+      async ({ cashSeq, cardSeq, settledBy }) => {
+        const cash = ledgerRow({
+          id: "txn-cash",
+          source: PaymentSource.INTERNET_BANKING,
+          insertionSeq: cashSeq,
+        });
+        const card = ledgerRow({ id: "txn-card", stripePaymentIntentId: NEWER_PI, insertionSeq: cardSeq });
+        const physical = cashSeq < cardSeq ? [card, cash] : [cash, card];
+        primeLedger([
+          ...physical,
+          ledgerRow({ id: "txn-duplicate", stripePaymentIntentId: DUPLICATE_PI, insertionSeq: 3 }),
+        ]);
+
+        const result = await settleDuplicate();
+
+        expect(result.outcome).toBe("duplicate_capture_refunded");
+        expectSettledBy(settledBy);
+      },
+    );
   });
 
   describe("SAME-intent replay stays already_paid with NO refund, from every legitimate caller path", () => {

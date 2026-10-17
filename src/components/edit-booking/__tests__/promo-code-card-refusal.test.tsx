@@ -53,6 +53,7 @@ describe("PromoCodeCard — a refused code (#4197)", () => {
         quote={quote}
         forMemberId={undefined}
         lodgeId={null}
+        editRerates={{}}
         onRemovePromo={noop}
         onKeepPromo={noop}
         onPrefillCode={noop}

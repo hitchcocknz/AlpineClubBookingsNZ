@@ -33,6 +33,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
 
 /** The one shared double: the LAST file to register a factory wins, so every realdb file registers this same one. */
@@ -62,30 +63,6 @@ const NIGHT = new Date("2026-08-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
 /** The one instant all three rows carry: the tie under test, independent of the frozen clock. */
 const TIED_AT = new Date("2026-06-15T00:00:00.000Z");
-
-/** Standalone fail-closed copy: importing this file must not register another suite. */
-function assertSafeRaceDbUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Ledger insertion-order proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
-  }
-  const port = Number.parseInt(parsed.port, 10);
-  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
-    throw new Error(
-      `Refusing to run ledger insertion-order proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
-    );
-  }
-  const host = parsed.hostname.toLowerCase();
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
-    throw new Error("Ledger insertion-order proof DB must be loopback-only.");
-  }
-  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  if (!databaseName.includes("concurrency_race_1881")) {
-    throw new Error("Ledger insertion-order proof DB name must contain 'concurrency_race_1881'.");
-  }
-}
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
@@ -151,7 +128,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     }
 
     beforeAll(async () => {
-      assertSafeRaceDbUrl(RACE_DB_URL);
+      assertSafeRaceDbUrl(RACE_DB_URL, "Ledger insertion-order proof");
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       await deleteFixtures();

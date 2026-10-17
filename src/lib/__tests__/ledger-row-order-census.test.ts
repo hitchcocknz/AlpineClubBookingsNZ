@@ -132,9 +132,6 @@ const UNPROVEN_FIRST_READS: Record<string, string> = {
     "looks the attempt row up by `reference`, the saved-card idempotency key, which embeds the row's own id " +
     "(savedCardChargeIdempotencyKey(bookingId, row.id)), and re-checks that key against the row it got, so " +
     "only that one row can be adopted.",
-  "src/lib/payment-reconciliation.ts > settleBookingPaymentInTransaction > otherSettledCapture":
-    "KNOWN, PRE-EXISTING and out of #4132's scope (#4177): `otherSettledCapture` reads one of several " +
-    "captures with no order. Tracked in #4177; remove this entry when that fix orders the read.",
 };
 
 /**

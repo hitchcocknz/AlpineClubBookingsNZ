@@ -570,6 +570,27 @@ the checks in [§2.4.1](#241-2520-drop-familygroupmemberrole) as well as the one
 here, plus [§2.4.3](#243-3271-parentpartner-exclusivity-backstop) when #3271 is
 pending, and name every pending windowed migration in the override reason.
 
+Before the deploy reaches step 13, it verifies the window itself: every replica
+of Compose `app`, `app_blue` and `app_green` must be stopped or absent (a paused
+container is still running), and the app database must have zero other client
+backends. This includes idle or idle-in-transaction sessions, every user, and
+external/admin/monitoring clients; it excludes only the checking session,
+background processes and other databases. Disconnect those clients as well as
+stopping the old runtime. A running replica, nonzero count, failed command or
+invalid result refuses before the app-database migration marker, migrate command
+and new app startup. A failed pending-migration discovery also refuses instead
+of reporting nothing pending (#4071).
+
+The deploy prints the service or client count and corrective action without
+connection addresses or session query text. Resolve the reported condition and
+retry within the offline window. It does not stop containers or terminate
+sessions for you. These are snapshots, **not reconnect fencing**: keep external
+workers disconnected and prevent service restarts until the new runtime is ready.
+The earlier shadow-database replay is separate and precedes these checks. The
+standalone validator checks the ledger and acknowledgements; these runtime
+checks belong to the production deploy wrapper, so a hand-run migration still
+requires the operator's own drain verification.
+
 #### #3413: pending school-adult capacity activation
 
 `20261101020000_add_pending_school_adult_capacity` is additive, but old runtime

@@ -347,6 +347,12 @@ import "./xero-subscription-invoice-retry.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4046-` fixtures.
 import "./xero-refund-note-void-pointer.realdb.test";
+// #4195 reuses it to prove a refund request's own Xero note, voided in Xero, is
+// written inactive by the inbound reconcile and never re-adopted: no retry
+// re-raises it (#4214), a re-raise takes a fresh note under a key naming the
+// voided one, and a link write racing the void keeps it. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4195-` fixtures.
+import "./xero-refund-request-note-void.realdb.test";
 // #4098 reuses it to prove closing a subscription charge as already paid: two
 // closes at once close it once (one audit row, each voidGeneration bumped
 // once), and a manual reversal committing while the close waits for the
@@ -377,6 +383,11 @@ import "./late-capture-record-recovery.realdb.test";
 // card refund plan. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
 // cleans its own `race-4132-` fixtures.
 import "./ledger-insertion-seq.realdb.test";
+// #4177 reuses it to prove the duplicate-capture refund names the first-inserted
+// settled capture as the settlement, not the one PostgreSQL's heap order puts
+// first. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4177-` fixtures.
+import "./settled-capture-order.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans

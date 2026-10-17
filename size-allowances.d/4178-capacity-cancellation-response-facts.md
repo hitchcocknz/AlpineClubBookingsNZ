@@ -9,5 +9,5 @@ lines: 896
 reason: One additive response field forwards the same cancellation facts at the initialization boundary. Splitting this property would add an otherwise unnecessary response abstraction; the shared client-safe display module owns all new interpretation and copy.
 
 file: src/lib/payment-reconciliation.ts
-lines: 3157
+lines: 3113
 reason: A type-only import, optional display-result field and two return projections preserve the existing refund writers while exposing facts already in scope at each outcome. Their correct home is beside those return values; extracting the reconciliation state machine would widen a display-only fix. All new formatting and interpretation is in the separate pure module.
