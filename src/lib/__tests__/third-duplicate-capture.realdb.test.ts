@@ -17,6 +17,12 @@
  * stays SUCCEEDED while its refund is queued; guard (c) still never counts it
  * as the settlement, so the settling capture's redelivery keeps its money.
  *
+ * The PAID claim records the capture that won it (`Payment.settledByTransactionId`,
+ * owner decision 17 Oct 2026). A replay of that capture is kept beside anything
+ * else holding money - a capture the old guard kept, a Xero bank receipt, a
+ * superseded capture whose refund failed later - and a booking with no record
+ * keeps the arriving capture and alerts the admins instead of refunding.
+ *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
  * (#1881), which imports this file so CI reaches it
@@ -67,6 +73,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
   { timeout: 120_000 },
   () => {
     async function deleteBookingRows() {
+      await prisma.alertCooldown.deleteMany({ where: { key: { contains: BOOKING_ID } } });
       await prisma.auditLog.deleteMany({ where: { targetId: { in: [BOOKING_ID, PAYMENT_ID] } } });
       await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [PAYMENT_ID, BOOKING_ID] } } });
@@ -120,6 +127,21 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         paymentMethodId: null,
         format: CLUB_FORMAT_TEST,
       });
+    }
+
+    /** The intent of the row `Payment.settledByTransactionId` names (#4211). */
+    async function recordedSettlerIntent() {
+      const { settledByTransactionId } = await prisma.payment.findUniqueOrThrow({
+        where: { id: PAYMENT_ID },
+        select: { settledByTransactionId: true },
+      });
+      if (!settledByTransactionId) return null;
+      return (
+        await prisma.paymentTransaction.findUniqueOrThrow({
+          where: { id: settledByTransactionId },
+          select: { stripePaymentIntentId: true },
+        })
+      ).stripePaymentIntentId;
     }
 
     /** Everything a replay could change, read in one place. */
@@ -268,6 +290,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         expect(asked, "Stripe is asked to refund each later capture once").toEqual(duplicates);
         const settled = await snapshot();
         expect(settled.booking.status).toBe("PAID");
+        expect(await recordedSettlerIntent(), "the PAID claim records the capture that won it").toBe(settling);
         expect(
           settled.transactions.map((row) => [row.stripePaymentIntentId, row.status]),
           "exactly one capture stays",
@@ -362,6 +385,115 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       ).toEqual([
         [savedCardIntent, "REFUNDED"],
         [settling, "SUCCEEDED"],
+      ]);
+    });
+
+    /** A capture whose money is held without any duplicate-capture refund owning it. */
+    async function holdUnowned(paymentIntentId: string) {
+      await prisma.paymentTransaction.updateMany({
+        where: { paymentId: PAYMENT_ID, stripePaymentIntentId: paymentIntentId },
+        data: { status: "SUCCEEDED" },
+      });
+    }
+
+    /** The aggregate the ledger writers keep, after a fixture wrote rows directly. */
+    async function reconcile() {
+      const { reconcilePaymentAggregates } = await import("@/lib/payment-transactions");
+      await reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
+    }
+
+    it.each([
+      {
+        label: "(a) a third capture the pre-#4211 guard kept",
+        arrange: async () => holdUnowned(TABS[2]),
+      },
+      {
+        label: "(b) a Xero bank receipt recorded after the card paid (#3638)",
+        arrange: async () => {
+          await prisma.paymentTransaction.create({
+            data: {
+              paymentId: PAYMENT_ID,
+              kind: "PRIMARY",
+              source: "INTERNET_BANKING",
+              amountCents: PRICE_CENTS,
+              status: "SUCCEEDED",
+              reason: "xero_invoice_paid_reconciliation",
+            },
+          });
+        },
+      },
+      {
+        label: "(c) a superseded capture whose refund failed later (#4227)",
+        arrange: async () => {
+          const superseded = await prisma.paymentTransaction.findFirstOrThrow({
+            where: { paymentId: PAYMENT_ID, stripePaymentIntentId: TABS[1] },
+            select: { id: true },
+          });
+          await holdUnowned(TABS[1]);
+          // Its superseded refund went through, then Stripe failed it: the
+          // operation is finished, so nothing live owns the capture any more.
+          await prisma.paymentRecoveryOperation.create({
+            data: {
+              type: "REFUND_SUPERSEDED_PAYMENT",
+              status: "SUCCEEDED",
+              bookingId: BOOKING_ID,
+              paymentId: PAYMENT_ID,
+              paymentTransactionId: superseded.id,
+              paymentIntentId: TABS[1],
+              amountCents: PRICE_CENTS,
+              idempotencyKey: `race-4211-superseded-${TABS[1]}`,
+            },
+          });
+        },
+      },
+    ])("$label holds money beside the recorded settler: a replay of the settler is kept and nothing is refunded", async ({ arrange }) => {
+      const asked = stripeMakesRefunds();
+      const [settling] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      await arrange();
+      await reconcile();
+      const before = await snapshot();
+
+      expect((await arrive(settling)).outcome).toBe("already_paid");
+      expect(asked, "nothing is refunded").toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      expect(await recordedSettlerIntent()).toBe(settling);
+    });
+
+    it("(a) the kept third capture's own replay is refunded against the recorded settler", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, , third] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      await holdUnowned(third);
+
+      expect((await arrive(third)).outcome).toBe("duplicate_capture_refunded");
+      expect(asked).toEqual([third]);
+      expect((await arrive(settling)).outcome).toBe("already_paid");
+      expect(asked).toEqual([third]);
+    });
+
+    it("a booking paid before the record existed: a replay beside another capture holding money is kept, nothing is refunded, and the admins are alerted once a day", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, , third] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { settledByTransactionId: null } });
+      await holdUnowned(third);
+      await reconcile();
+      const before = await snapshot();
+
+      for (const paymentIntentId of [settling, third, settling]) {
+        expect((await arrive(paymentIntentId)).outcome).toBe("already_paid");
+      }
+      expect(asked, "nothing is refunded automatically").toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      // One alert window claimed per kept capture, however often it replays.
+      expect(
+        (await prisma.alertCooldown.findMany({ where: { key: { contains: BOOKING_ID } }, select: { key: true } }))
+          .map((row) => row.key)
+          .sort(),
+      ).toEqual([
+        `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${settling}`,
+        `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${third}`,
       ]);
     });
 
