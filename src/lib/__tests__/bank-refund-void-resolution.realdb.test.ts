@@ -277,6 +277,7 @@ let retry: typeof import("@/lib/bank-refund-void-retry");
 
     beforeEach(async () => {
       await clearRun();
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { status: "CANCELLED" } });
       vi.restoreAllMocks();
     });
 
@@ -485,6 +486,8 @@ let retry: typeof import("@/lib/bank-refund-void-retry");
     });
 
     it("confirm cancelled one of two hand-backs: the census explains the refunded total by the live hand-back alone", async () => {
+      // A live booking (an edit's refunds, say): nothing is reopened, so the task stays COMPLETED.
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { status: "CONFIRMED" } });
       await paidBankTransfer();
       await handBackNoted("cn-race-4162-live", 5_000, { perDelta: true });
       await handBackNoted("cn-race-4162-v", 15_000);
@@ -681,6 +684,13 @@ let retry: typeof import("@/lib/bank-refund-void-retry");
       await unwindLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 12_000 });
 
       expect(await rowRefunds()).toEqual({ [TXN_ID]: 0, [`${TXN_ID}-2`]: 4_000 });
+
+      // A bank hand-back placed on the card row only: what Stripe refunded there is never taken back.
+      await applyLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 6_000, preferTransactionIds: [`${TXN_ID}-2`] });
+      expect(await rowRefunds()).toEqual({ [TXN_ID]: 0, [`${TXN_ID}-2`]: 10_000 });
+      const { RefundUnwindExceedsAllocatedError } = await import("@/lib/payment-transactions");
+      await expect(unwindLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 8_000 })).rejects.toBeInstanceOf(RefundUnwindExceedsAllocatedError);
+      expect(await rowRefunds()).toEqual({ [TXN_ID]: 0, [`${TXN_ID}-2`]: 10_000 });
     });
 
     it("confirm replaced in Xero moves nothing: the item leaves the list with the reason", async () => {
