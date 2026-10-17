@@ -86,10 +86,12 @@ export async function bookingForPromoLookup(params: {
 }
 
 /**
- * The rows of the booking an edit preview is for (#3492, #4199), read only for
- * the guests the request names by row id: each row's stored consent, which the
- * preview judges that guest by, and its stay, which the modification planner
- * keeps for a guest the edit sends no dates for.
+ * The rows of the booking an edit preview is for (#3492, #4199, #4202), read
+ * only for the guests the request names by row id: each row's stored consent,
+ * which the preview judges that guest by; its stay, which the modification
+ * planner keeps for a guest the edit sends no dates for; and the price each of
+ * its nights was sold at, which the pricing pass keeps for every night the
+ * guest still holds (#1036), as the quote and the save do.
  */
 export async function promoPreviewBookingRows(
   booking: { id: string; checkIn: Date; checkOut: Date },
@@ -107,7 +109,7 @@ export async function promoPreviewBookingRows(
           consentStatus: true,
           stayStart: true,
           stayEnd: true,
-          nights: { select: { stayDate: true } },
+          nights: { select: { stayDate: true, priceCents: true, priceSource: true } },
         },
       })
     : [];

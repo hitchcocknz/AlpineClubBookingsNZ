@@ -331,6 +331,10 @@ export async function POST(req: NextRequest) {
     : toGroupDiscountConfig(gds);
 
   try {
+    // #4202: on an edit, a guest already on the booking arrives carrying the
+    // locks the quote and the save price them with (`resolvePromoPreviewStays`),
+    // so this is the quote's pricing pass: the nights they bought keep their
+    // sold prices and only new nights price at current rates.
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
       ownerMemberId: effectiveMemberId,
       checkIn,
