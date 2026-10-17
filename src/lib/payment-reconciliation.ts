@@ -1141,10 +1141,9 @@ async function settleBookingPaymentInTransaction(
       //       too) and settle the booking at zero net cash. #4211: (c) used to
       //       keep the arriving capture whenever ANY other refund existed, so
       //       a THIRD capture (Y settles, X refunded, Z arrives) was kept
-      //       silently; now Z still finds Y and is refunded. Every capture
-      //       beyond the settling one is refunded, and the settling capture's
-      //       replay keeps its money while every other capture holding money
-      //       is owned (INV-PAY-043 lists where it is not). lock(1), held by
+      //       silently; now Z still finds Y and is refunded. The settling
+      //       capture's replay keeps its money while every other capture with
+      //       money is owned (INV-PAY-043 lists where not). lock(1), held by
       //       every caller of this function, serialises the check-then-enqueue;
       //   (c′) belt-and-braces re-check of (b′) against the matched candidate
       //       directly (different query shape) — if a live superseded-intent

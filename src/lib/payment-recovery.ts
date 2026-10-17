@@ -859,10 +859,9 @@ export async function recordCapacityClaimFailedRefundRecoveryInlineError({
  * inline Stripe key prefix (`duplicate_capture_refund_<bookingId>_<pi>`), so a
  * refund that succeeded on Stripe but was never recorded is replayed, never
  * repeated. One operation per (booking, duplicate intent); its key names the
- * capture it refunds, and that is what OWNS the capture: the duplicate-capture
- * guard reads the owned intents through `listDuplicateCaptureRefundIntentIds`
- * (`duplicate-capture-ownership.ts`) and never counts one as the settlement,
- * so a later replay of the settling capture keeps its money (#4211).
+ * capture it refunds and so OWNS it: the guard reads owned intents through
+ * `listDuplicateCaptureRefundIntentIds` (`duplicate-capture-ownership.ts`)
+ * and never counts one as the settlement (#4211).
  */
 export async function enqueueDuplicateCaptureRefundRecovery({
   bookingId,
