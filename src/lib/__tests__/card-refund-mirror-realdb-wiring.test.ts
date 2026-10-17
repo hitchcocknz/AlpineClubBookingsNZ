@@ -66,6 +66,24 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("one a worker holds is refused, and nothing commits");
   });
 
+  // #4166: the proof that a cancel's refund failing later is told by its own row rides the same harness.
+  it("wires the failed-later cancel refund narrative's real-database proof the same way (#4166)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./cancel-card-refund-failed-later.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/cancel-card-refund-failed-later.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("refunded, then failed later: on its way - and the runner's retry made it again");
+    expect(suite).toContain("the retry failed later too: stalled, the club follows it up - then paid another way");
+    expect(suite).toContain("X, the cancel's, fails: the writer records the cancel row as its maker");
+    expect(suite).toContain("R, the appeal's, fails: no row of the payment sent it");
+  });
+
   // #4097: the cancel's card refund shortfall proof rides the same harness.
   it("wires the card refund shortfall's real-database proof the same way (#4097)", () => {
     const harness = readFileSync(

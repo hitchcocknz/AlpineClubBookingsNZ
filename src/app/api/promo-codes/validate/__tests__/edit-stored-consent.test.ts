@@ -97,7 +97,14 @@ beforeEach(() => {
   mocks.prisma.lodge.findUnique.mockResolvedValue({ id: "lodge-1", active: true });
   mocks.prisma.season.findMany.mockResolvedValue([]);
   mocks.prisma.groupDiscountSetting.findUnique.mockResolvedValue(null);
-  mocks.prisma.booking.findUnique.mockResolvedValue({ id: "booking-1", memberId: "booker", lodgeId: "lodge-1" });
+  mocks.prisma.booking.findUnique.mockResolvedValue({
+    id: "booking-1",
+    memberId: "booker",
+    lodgeId: "lodge-1",
+    // #4199: the stored dates the preview hands the modification planner.
+    checkIn: new Date("2026-08-01"),
+    checkOut: new Date("2026-08-03"),
+  });
   mocks.priceBookingGuestsWithMembershipTypePolicy.mockImplementation(
     async (_db: unknown, input: { guests: unknown[] }) => ({
       totalPriceCents: input.guests.length * 10000,
