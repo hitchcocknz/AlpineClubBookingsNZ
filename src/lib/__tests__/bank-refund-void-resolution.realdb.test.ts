@@ -230,8 +230,11 @@ let retry: typeof import("@/lib/bank-refund-void-retry");
       try {
         if (options?.viaOutbox) {
           // The outbox worker itself: its claim and its dispatch of the payload.
+          // Oldest first is the worker's order: this row goes first, alone, so a
+          // row another suite in the shared harness left PENDING is never run here.
+          await prisma.$executeRaw`UPDATE "XeroSyncOperation" SET "createdAt" = ${new Date("2000-01-01T00:00:00.000Z")} WHERE "id" = ${operationId}`;
           const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
-          await processQueuedXeroOutboxOperations({ limit: 10 });
+          await processQueuedXeroOutboxOperations({ limit: 1 });
           return sent;
         }
         const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { requestPayload: true } });
