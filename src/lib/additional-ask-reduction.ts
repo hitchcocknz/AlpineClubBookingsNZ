@@ -76,7 +76,7 @@ import {
   CAPTURED_TRANSACTION_STATUS_LIST,
   isCapturedTransactionStatus,
 } from "@/lib/payment-transaction-status";
-import { reconcilePaymentAggregates } from "@/lib/payment-transactions";
+import { lockPaymentForRefundedTotal, reconcilePaymentAggregates } from "@/lib/payment-transactions";
 import { ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE } from "@/lib/unpaid-ask-offset-marker";
 import { waitingSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
 
@@ -472,6 +472,12 @@ async function retireUnpaidAskChainUnderLocks(
   // runner's claim hold writes them in (recovery, then its row), so the two
   // never deadlock on each other.
   await closeWaitingAskRecoveries(tx, ask.recoveries, now);
+  // #4217 (`INV-LOCK-002`): the Payment row before the ask's rows, the order
+  // the capture webhook (`markPaymentIntentTransactionSucceeded`) and the
+  // runner's claim hold (recovery, then Payment, then its row) take them in.
+  // Stamping a row first and reaching the Payment row at the reconcile would
+  // deadlock a capture of the same intent that holds the Payment row.
+  await lockPaymentForRefundedTotal(tx, paymentId);
 
   const retired: RetiredAdditionalAsk[] = [];
   for (const row of ask.rows) {

@@ -251,6 +251,16 @@ async function ensurePaymentTransactionsBackfilled(
   return loadPaymentWithTransactions(store, paymentId);
 }
 
+/**
+ * Re-derive the Payment's summary columns from its ledger rows.
+ *
+ * #4217 (`INV-LOCK-002`): the Payment row is locked BEFORE the rows are read,
+ * joined to the caller's transaction or in a short one of its own
+ * (`withStoreTransaction`). Without it a rebuild could read the rows, queue on
+ * the Payment row behind a refund writer, and then write totals worked out
+ * from the rows it read before that writer committed. Inside a writer that
+ * already took the lock it is a re-lock PostgreSQL grants at once.
+ */
 export async function reconcilePaymentAggregates({
   paymentId,
   store = prisma,
@@ -258,6 +268,13 @@ export async function reconcilePaymentAggregates({
   paymentId: string;
   store?: PaymentStore;
 }) {
+  return withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    return reconcilePaymentAggregatesUnderLock(db, paymentId);
+  });
+}
+
+async function reconcilePaymentAggregatesUnderLock(store: Prisma.TransactionClient, paymentId: string) {
   const payment = await ensurePaymentTransactionsBackfilled(store, paymentId);
   if (!payment) {
     return null;
@@ -961,17 +978,22 @@ export async function upsertPaymentIntentTransaction({
     ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
     ...provenance,
   };
-  // #4036 review: an ask write naming its edit never lands on another edit's row; #4081: no write lowers a captured status.
-  await writePaymentIntentTransaction(store, { paymentIntentId, bookingModificationId, create, update });
+  // #4217 (`INV-LOCK-002`): the Payment row before the intent's row, joined to
+  // the caller's transaction or in a short one of its own.
+  return withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    // #4036 review: an ask write naming its edit never lands on another edit's row; #4081: no write lowers a captured status.
+    await writePaymentIntentTransaction(db, { paymentIntentId, bookingModificationId, create, update });
 
-  if (stripeCustomerId) {
-    await store.payment.update({
-      where: { id: paymentId },
-      data: { stripeCustomerId },
-    });
-  }
+    if (stripeCustomerId) {
+      await db.payment.update({
+        where: { id: paymentId },
+        data: { stripeCustomerId },
+      });
+    }
 
-  return reconcilePaymentAggregates({ paymentId, store });
+    return reconcilePaymentAggregates({ paymentId, store: db });
+  });
 }
 
 /**
@@ -1007,21 +1029,25 @@ export async function writeRaisedAdditionalRequestAmount({
   carriedAskCents: number;
   store?: PaymentStore;
 }): Promise<boolean> {
-  const written = await store.paymentTransaction.updateMany({
-    where: {
-      paymentId,
-      stripePaymentIntentId: paymentIntentId,
-      kind: PaymentTransactionKind.ADDITIONAL,
-      // #3528: a withdrawn request is retired for good; raising it would put a
-      // figure on an ask the projection no longer reads.
-      withdrawnAt: null,
-      status: { notIn: [...CAPTURED_TRANSACTION_STATUS_LIST] },
-    },
-    data: { amountCents, carriedAskCents },
+  // #4217 (`INV-LOCK-002`): the Payment row before the request's row.
+  return withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    const written = await db.paymentTransaction.updateMany({
+      where: {
+        paymentId,
+        stripePaymentIntentId: paymentIntentId,
+        kind: PaymentTransactionKind.ADDITIONAL,
+        // #3528: a withdrawn request is retired for good; raising it would put a
+        // figure on an ask the projection no longer reads.
+        withdrawnAt: null,
+        status: { notIn: [...CAPTURED_TRANSACTION_STATUS_LIST] },
+      },
+      data: { amountCents, carriedAskCents },
+    });
+    if (written.count === 0) return false;
+    await reconcilePaymentAggregates({ paymentId, store: db });
+    return true;
   });
-  if (written.count === 0) return false;
-  await reconcilePaymentAggregates({ paymentId, store });
-  return true;
 }
 
 export async function recordInternetBankingPaymentTransaction({
@@ -1045,22 +1071,26 @@ export async function recordInternetBankingPaymentTransaction({
   reason?: string;
   store?: PaymentStore;
 }) {
-  await store.paymentTransaction.create({
-    data: {
-      paymentId,
-      kind,
-      source: PaymentSource.INTERNET_BANKING,
-      stripePaymentIntentId: null,
-      xeroInvoiceId: xeroInvoiceId ?? undefined,
-      xeroInvoiceNumber: xeroInvoiceNumber ?? undefined,
-      reference: reference ?? undefined,
-      amountCents,
-      status,
-      reason,
-    },
-  });
+  // #4217 (`INV-LOCK-002`): the Payment row before the receipt's row.
+  return withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    await db.paymentTransaction.create({
+      data: {
+        paymentId,
+        kind,
+        source: PaymentSource.INTERNET_BANKING,
+        stripePaymentIntentId: null,
+        xeroInvoiceId: xeroInvoiceId ?? undefined,
+        xeroInvoiceNumber: xeroInvoiceNumber ?? undefined,
+        reference: reference ?? undefined,
+        amountCents,
+        status,
+        reason,
+      },
+    });
 
-  return reconcilePaymentAggregates({ paymentId, store });
+    return reconcilePaymentAggregates({ paymentId, store: db });
+  });
 }
 
 export async function markPaymentIntentTransactionSucceeded({
@@ -1074,26 +1104,33 @@ export async function markPaymentIntentTransactionSucceeded({
   paymentMethodId?: string | null;
   store?: PaymentStore;
 }) {
-  const transaction = await findPaymentTransactionByIntentId({
-    paymentIntentId,
-    store,
-  });
-  if (!transaction) {
+  // #4217: which payment, read without writing; then that Payment row; then the
+  // re-read (which may backfill a pre-ledger payment) and the write under it.
+  const paymentId = await findPaymentIdForIntent(store, paymentIntentId);
+  if (!paymentId) {
     return null;
   }
 
-  await store.paymentTransaction.update({
-    where: { id: transaction.id },
-    data: {
-      amountCents,
-      status: PaymentStatus.SUCCEEDED,
-      ...(paymentMethodId !== undefined
-        ? { paymentMethodId: paymentMethodId ?? null }
-        : {}),
-    },
-  });
+  return withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    const transaction = await findPaymentTransactionForLockedPayment(db, paymentIntentId, paymentId);
+    if (!transaction) {
+      return null;
+    }
 
-  return reconcilePaymentAggregates({ paymentId: transaction.paymentId, store });
+    await db.paymentTransaction.update({
+      where: { id: transaction.id },
+      data: {
+        amountCents,
+        status: PaymentStatus.SUCCEEDED,
+        ...(paymentMethodId !== undefined
+          ? { paymentMethodId: paymentMethodId ?? null }
+          : {}),
+      },
+    });
+
+    return reconcilePaymentAggregates({ paymentId, store: db });
+  });
 }
 
 export async function markPaymentIntentTransactionFailed({
@@ -1103,24 +1140,71 @@ export async function markPaymentIntentTransactionFailed({
   paymentIntentId: string;
   store?: PaymentStore;
 }) {
-  const transaction = await findPaymentTransactionByIntentId({
-    paymentIntentId,
-    store,
-  });
-  if (!transaction) {
+  // #4217: as `markPaymentIntentTransactionSucceeded` - find the payment
+  // without writing, lock it, re-read and write under the lock.
+  const paymentId = await findPaymentIdForIntent(store, paymentIntentId);
+  if (!paymentId) {
     return null;
   }
 
-  if (isCapturedTransactionStatus(transaction.status)) {
-    return transaction;
-  }
+  return withStoreTransaction(store, async (db) => {
+    await lockPaymentForRefundedTotal(db, paymentId);
+    const transaction = await findPaymentTransactionForLockedPayment(db, paymentIntentId, paymentId);
+    if (!transaction) {
+      return null;
+    }
 
-  await store.paymentTransaction.update({
-    where: { id: transaction.id },
-    data: { status: PaymentStatus.FAILED },
+    if (isCapturedTransactionStatus(transaction.status)) {
+      return transaction;
+    }
+
+    // Status-guarded: a capture that committed after the re-read (a writer
+    // that does not take the Payment row) keeps its status, and the row as it
+    // now stands is returned, as for a captured row above.
+    const failed = await db.paymentTransaction.updateMany({
+      where: { id: transaction.id, status: { notIn: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+      data: { status: PaymentStatus.FAILED },
+    });
+    if (failed.count === 0) {
+      return db.paymentTransaction.findUnique({ where: { id: transaction.id } });
+    }
+
+    return reconcilePaymentAggregates({ paymentId, store: db });
   });
+}
 
-  return reconcilePaymentAggregates({ paymentId: transaction.paymentId, store });
+/**
+ * #4217: the payment an intent's row belongs to, read WITHOUT writing - the row
+ * itself, or the Payment pointer that names the intent - so the two `mark…`
+ * writers learn which Payment row to lock before anything is written. The
+ * backfill `findPaymentTransactionByIntentId` may do runs only under that lock.
+ */
+async function findPaymentIdForIntent(store: PaymentStore, paymentIntentId: string): Promise<string | null> {
+  const row = await store.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: paymentIntentId },
+    select: { paymentId: true },
+  });
+  if (row) return row.paymentId;
+  return (await findPaymentByIntentPointer(store, paymentIntentId))?.id ?? null;
+}
+
+/**
+ * #4217: the intent's row re-read under its Payment row lock. A row that now
+ * belongs to a different payment than the one locked is refused loudly rather
+ * than written under the wrong lock; the caller's retry locks the right one.
+ */
+async function findPaymentTransactionForLockedPayment(
+  db: Prisma.TransactionClient,
+  paymentIntentId: string,
+  lockedPaymentId: string,
+) {
+  const transaction = await findPaymentTransactionByIntentId({ paymentIntentId, store: db });
+  if (transaction && transaction.paymentId !== lockedPaymentId) {
+    throw new Error(
+      `PaymentIntent ${paymentIntentId}'s ledger row moved from payment ${lockedPaymentId} to ${transaction.paymentId} before its lock was held (#4217); retry`,
+    );
+  }
+  return transaction;
 }
 
 export async function syncRefundsFromStripeCharge({

@@ -172,7 +172,10 @@ const paymentFindUnique = vi.fn(async () => null);
 const transactionUpdateMany = vi.fn();
 const xeroUpdateMany = vi.fn();
 const recoveryUpdateMany = vi.fn();
+// #4217: the Payment row lock (`lockPaymentForRefundedTotal`), the retire's and the reconcile's.
+const executeRaw = vi.fn(async () => 0);
 const tx = {
+  $executeRaw: executeRaw,
   payment: { update: paymentUpdate, findUnique: paymentFindUnique },
   manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
   paymentTransaction: {
@@ -537,6 +540,23 @@ describe("#3954: what a reduction is never set against", () => {
 });
 
 describe("#3954: the race with the member paying the ask", () => {
+  // #4217 (`INV-LOCK-002`): the capture webhook takes the Payment row and then
+  // the ask's row, so the retire must take them in that order too: stamping a
+  // row first and reaching the Payment row at the reconcile is a deadlock.
+  it("MUTATION (#4217): the retire locks the Payment row before it stamps the first ask row", async () => {
+    await adjust(grownBooking(), -5_000);
+    const paymentLocks = executeRaw.mock.calls
+      .map((call, index) => ({ call: call as unknown[], order: executeRaw.mock.invocationCallOrder[index]! }))
+      .filter(({ call }) => {
+        const [strings, ...values] = call;
+        const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
+        return sql.includes('FROM "Payment"') && sql.includes("FOR NO KEY UPDATE") && values[0] === "payment_1";
+      });
+    expect(paymentLocks.length).toBeGreaterThanOrEqual(1);
+    expect(transactionUpdateMany).toHaveBeenCalled();
+    expect(paymentLocks[0]!.order).toBeLessThan(transactionUpdateMany.mock.invocationCallOrder[0]!);
+  });
+
   it("MUTATION: a capture that landed after the read fails the fence and rolls the whole edit back (409)", async () => {
     state.stampCount = 0;
     await expect(adjust(grownBooking(), -5_000)).rejects.toSatisfy(

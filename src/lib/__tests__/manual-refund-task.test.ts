@@ -1625,6 +1625,8 @@ describe("#2262 guard 3 — the self-match refutation, pinned", () => {
       amountCents: 1000,
       status: "SUCCEEDED",
       store: {
+        // #4217: the writer locks the Payment row first.
+        $executeRaw: vi.fn(async () => 0),
         paymentTransaction: { updateMany, createMany },
         payment: { update: vi.fn() },
       } as never,

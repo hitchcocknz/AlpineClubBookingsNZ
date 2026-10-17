@@ -14,6 +14,7 @@ import {
 } from "@prisma/client";
 import {
   findPaymentTransactionByIntentId,
+  lockPaymentForRefundedTotal,
   planStripeRefundAllocation,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
@@ -942,6 +943,11 @@ async function settleBookingPaymentInTransaction(
       },
       update: {},
     });
+    // #4217 (`INV-LOCK-002`): the Payment row before any transaction row - the
+    // lookup below may backfill a pre-ledger payment's rows, and both arms then
+    // write one - after lock(1), the lodge key and the member key above. The
+    // upsert's empty update does not reliably lock an existing row.
+    await lockPaymentForRefundedTotal(tx, payment.id);
 
     let refundedIntentHistory = false;
 
