@@ -13,13 +13,14 @@
   against the officer editing it.
 
   Behind the scenes, the server now answers an edit's promo check for the
-  booking itself whatever the request says, as it already did for the price
-  summary: against the booking's owner rather than any other member named,
-  at the booking's own lodge, without counting the booking's own use of a code
-  against the code's use limits, and with the club's "group discount on later
-  edits" setting. The booking editor already sent the matching values, so this
-  changes nothing on screen; it matters for anything calling the check
-  directly.
+  booking itself whatever the request says, as the price summary does: against
+  the booking's owner rather than any other member named, at the booking's own
+  lodge, and with the club's "group discount on later edits" setting. The
+  booking editor already sent those, so they change nothing on screen; they
+  matter for anything calling the check directly. The check also no longer
+  counts the booking's own use of a code against the code's use limits, which
+  the price summary never did; on screen that only shows when a code the
+  booking already carries is checked again with a different choice of guests.
 
   What a member is charged does not change: that always came from the price
   summary. The box on a new booking is unchanged.
