@@ -106,6 +106,7 @@ let readCancelledCardRefund: (typeof import("@/lib/cancel-card-refund-shortfall-
 let readCardShortfallTaskStatuses: (typeof import("@/lib/cancel-card-refund-shortfall-status"))["readCardShortfallTaskStatuses"];
 let listCardRefundsPaidTwice: (typeof import("@/lib/card-refund-paid-twice"))["listCardRefundsPaidTwice"];
 let listDeadCardRefunds: (typeof import("@/lib/card-refund-paid-another-way"))["listDeadCardRefunds"];
+let resolveCardRefundPaidTwice: (typeof import("@/lib/card-refund-paid-twice"))["resolveCardRefundPaidTwice"];
 let resolveBookingNarrative: (typeof import("@/lib/booking-narrative"))["resolveBookingNarrative"];
 let club: ReturnType<(typeof import("@/lib/club-time"))["bindClubTime"]>;
 let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixture"))["CLUB_FORMAT_TEST"];
@@ -241,7 +242,7 @@ let markerFinishedAt: Date | null = null;
       ({ recordStripeRefundsAgainstTransaction } = await import("@/lib/payment-transactions"));
       ({ parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed"));
       ({ closeCardRefundPaidAnotherWay, listDeadCardRefunds } = await import("@/lib/card-refund-paid-another-way"));
-      ({ listCardRefundsPaidTwice } = await import("@/lib/card-refund-paid-twice"));
+      ({ listCardRefundsPaidTwice, resolveCardRefundPaidTwice } = await import("@/lib/card-refund-paid-twice"));
       ({ readCancelledCardRefund, readCardShortfallTaskStatuses } = await import("@/lib/cancel-card-refund-shortfall-status"));
       ({ resolveBookingNarrative } = await import("@/lib/booking-narrative"));
       ({ CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture"));
@@ -453,13 +454,55 @@ let markerFinishedAt: Date | null = null;
         expect((await listDeadCardRefunds()).filter((each) => each.bookingId === BOOKING_ID)).toEqual([]);
         const audit = await prisma.auditLog.findMany({ where: { targetId: BOOKING_ID, action: "booking-payment.card-refund.failed-later-paid-another-way" } });
         expect(audit).toEqual([expect.objectContaining({ entityType: "PaymentRefund", entityId: x.id, category: "payment" })]);
-        expect(audit[0]?.metadata).toMatchObject({ closedOperationId: cancelRow.id, paidBackCents: MEMBER_REFUND_CENTS, owedCents: MEMBER_REFUND_CENTS });
+        expect(audit[0]?.metadata).toMatchObject({ decision: "settled-paid-another-way", operationId: cancelRow.id, paidBackCents: MEMBER_REFUND_CENTS, owedCents: MEMBER_REFUND_CENTS, checkCents: 0, onPaidTwiceList: true });
         // The member's page: paid back another way, never "on its way" or "refunded".
         expect((await readCancelledCardRefund(BOOKING_ID)).cardRefundFailedLater).toBeUndefined();
         const page = await narrative();
         expect(page).toContain(`$100.00 could not go back to your card and was paid back to you another way ${RETAINED}`);
         expect(page).not.toContain("on its way");
         expect(page).not.toContain("was refunded");
+      });
+
+      // #4210 round 2 (F3): a part close may have given up the refund's share - that much is left for an officer.
+      it("MUTATION: a part close - what it gave up is raised dead for an officer, never sent; the rest stays settled", async () => {
+        const { x, cancelRow } = await cancelAnswerLost();
+        vi.setSystemTime(CLOSED_AT);
+        await prisma.paymentRecoveryOperation.update({ where: { id: cancelRow.id }, data: { status: "FAILED", attempts: 5, nextRetryAt: null } });
+        await closeCardRefundPaidAnotherWay({ operationId: cancelRow.id, amountCents: 6_000, paidBack: "partial", expectedOwedCents: MEMBER_REFUND_CENTS, note: "Bank transfer, part", actingMemberId: OFFICER_ID });
+        await recordedLate(x);
+
+        vi.setSystemTime(FAILED_AT);
+        expect(await recordRefusedCardRefund({ ...x, status: "failed" } as Stripe.Refund)).toBe("recorded");
+
+        const check = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: `card_refund_failed_later_${x.id}` } });
+        expect(check).toMatchObject({ status: "PENDING", attempts: 5, amountCents: 4_000 });
+        expect(parseRefundAllocationPlan(check.allocationPlan)?.[0]?.madeByOperationId).toBe(cancelRow.id);
+        // On the list a treasurer closes from, for what the close gave up - never asked of Stripe.
+        expect((await listDeadCardRefunds()).filter((each) => each.bookingId === BOOKING_ID)).toEqual([expect.objectContaining({ operationId: check.id, owedCents: 4_000 })]);
+        const audit = await prisma.auditLog.findFirstOrThrow({ where: { targetId: BOOKING_ID, action: "booking-payment.card-refund.failed-later-paid-another-way" } });
+        expect(audit.metadata).toMatchObject({ decision: "raised-check-part-close", raisedOperationId: check.id, paidBackCents: 6_000, owedCents: MEMBER_REFUND_CENTS, checkCents: 4_000 });
+        expect(await narrative()).not.toContain("on its way");
+      });
+
+      // #4210 round 2 (F4): the paid-twice row was marked Resolved - the member may have returned the extra.
+      it("MUTATION: its paid-twice row marked Resolved - the whole refund is raised dead, with the note audited", async () => {
+        const { x, cancelRow } = await cancelAnswerLost();
+        vi.setSystemTime(CLOSED_AT);
+        await paidAnotherWay(cancelRow.id, MEMBER_REFUND_CENTS);
+        await recordedLate(x);
+        await resolveCardRefundPaidTwice({ operationId: cancelRow.id, note: "Member paid the card refund back by bank", expectedRefundedByCardCents: MEMBER_REFUND_CENTS, actingMemberId: OFFICER_ID });
+
+        vi.setSystemTime(FAILED_AT);
+        expect(await recordRefusedCardRefund({ ...x, status: "failed" } as Stripe.Refund)).toBe("recorded");
+
+        expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: `card_refund_failed_later_${x.id}` } })).toMatchObject({
+          status: "PENDING",
+          attempts: 5,
+          amountCents: MEMBER_REFUND_CENTS,
+        });
+        const audit = await prisma.auditLog.findFirstOrThrow({ where: { targetId: BOOKING_ID, action: "booking-payment.card-refund.failed-later-paid-another-way" } });
+        expect(audit).toMatchObject({ details: "Member paid the card refund back by bank" });
+        expect(audit.metadata).toMatchObject({ decision: "raised-check-resolved", checkCents: MEMBER_REFUND_CENTS, resolutionNote: "Member paid the card refund back by bank" });
       });
 
       it("MUTATION (control): a refund the close counted as made - recorded before it - is owed again and re-sent", async () => {
