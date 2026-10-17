@@ -1101,21 +1101,32 @@ never hands its cash to the cancellation's note.
 
 **A request's paid-back cash in the inbound recount (#4215).** The inbound
 repair rebuilds a payment's refunded total (`repairRefundedPaymentBusinessState`)
-whenever one of its notes is reconciled. On a bank transfer that total is
-Xero's (`INV-ADDPAY-021`), and before #4215 it summed only the payment's
-refund, account-credit and modification notes, so a reconcile of the
-cancellation's canonical note dropped the cash every refund request had paid
-back. The recount now adds what each request's completed hand-back recorded
-(`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`: the task's `amountCents`,
-which is what its completion moved the total by). It is read from the task,
-never the request's note, because that note may still be queued or may have
-been voided while the cash stays paid back. It is never attributed to the
+when a note that resolves to the payment is reconciled: its own refund note
+(the cancellation's), its account-credit note, or an edit's note credited to
+its invoice (`INV-PAY-126`). A request's own note resolves to no payment, so
+its update triggers no recount. On a bank transfer that total is Xero's
+(`INV-ADDPAY-021`), and before #4215 the sum held the payment's refund,
+account-credit and modification notes but no refund request's cash, so any of
+those reconciles dropped what the requests had paid back - an edit-note
+reconcile as well as the cancellation's. The recount now adds what each
+request's completed hand-back recorded (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`,
+beside `isRefundRequestHandBackTask`: the task's `amountCents`, which is what
+its completion moved the total by). It is read from the task, never the
+request's note, because that note may still be queued, may have been voided
+while the cash stays paid back, or was never queued: a request completed
+before the booking had an invoice raises none. It is never attributed to the
 canonical note (`INV-PAY-118`). The tasks are read after the payment row, so a
 request completed between the two reads moves the row and the repair's claim
-is lost and re-run, never written without it. Rollback: the previous release
-drops that cash again on the next reconcile of a note on such a payment. No
-schema changes, so a rolled-back payment is corrected on the first reconcile
-after rolling forward again.
+is lost and re-run, never written without it.
+
+The booking repair tool reads the same figure through the same reader
+(`readRefundRequestPaidBackCentsByPaymentId`, #4231): the cash a cancellation's
+missing note answers is the refunded total less the requests' paid-back cash,
+so a request with no note of its own is never sized into the cancellation's
+note and then counted again by the recount. Rollback: the previous release
+drops that cash again on the next such reconcile, and its repair tool nets only
+the requests' notes. No schema changes, so a rolled-back payment is corrected
+on the first such reconcile after rolling forward again.
 
 **Re-raising a voided request note is the officer's decision (#4214, owner
 decision).** No retry re-raises one, whatever its row's state. Every retry door

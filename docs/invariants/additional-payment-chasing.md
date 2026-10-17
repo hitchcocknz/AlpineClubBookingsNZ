@@ -667,9 +667,12 @@ both directions for them.
   `INV-PAY-118`). Its own note is outside the notes the repair sums, so the
   recount adds what each request's completed hand-back recorded
   (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`), never its note, which may
-  be queued or voided, and never the canonical note. It reads them after the
-  payment row, so a completion in between loses the claim and the repair
-  re-runs. Pinned by `xero-credit-note-repairs` and
+  be queued or voided, or never queued (completed before the invoice), and
+  never the canonical note. It reads them after the payment row, so a
+  completion in between loses the claim and the repair re-runs. The booking
+  repair tool nets the same figure from the cash a cancellation's note answers
+  (`readRefundRequestPaidBackCentsByPaymentId`, #4231). Pinned by
+  `xero-credit-note-repairs`, `xero-booking-repair` and
   `xero-bt-repair-request-cash`.
 
 ### INV-ADDPAY-022

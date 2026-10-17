@@ -285,6 +285,22 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
   });
 
+  it("an edit's note reconciled on the payment's invoice keeps the request's cash too", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000 }]);
+    mocks.paymentFindMany.mockResolvedValue([{ ...bankPayment, refundedAmountCents: 7000 }]);
+    mocks.xeroObjectLinkFindMany.mockResolvedValue([]);
+
+    await repairRefundedPaymentBusinessState({
+      creditNoteId: "cn-edit",
+      creditNote: { status: "AUTHORISED", total: 20 } as never,
+      directPaymentIds: [],
+      modificationRefundAmountsByPaymentId: new Map([["pay-1", 2000]]),
+    });
+
+    // Before #4215 this wrote 2000: the edit's $20 alone.
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
   it("the canonical note voided: only the request's cash stays (INV-ADDPAY-041)", async () => {
     mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000 }]);
 
