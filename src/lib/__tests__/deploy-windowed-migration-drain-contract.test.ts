@@ -171,7 +171,7 @@ describe("windowed app-database migration boundary (#3963 / #4071)", () => {
     [{ BLUE_IDS: "not a container" }, /Invalid container enumeration/],
     [{ GREEN_IDS: "cc\n\ndd" }, /Invalid container enumeration/],
     ...["", "paused", "False", "false\ntrue", "false\n\n", " false"].map((STATE) => [{ STATE }, /Invalid running state/] as const),
-  ])("refuses unreadable/malformed container evidence %j", (options, message) => {
+  ] as [Record<string, string>, RegExp][])("refuses unreadable/malformed container evidence %j", (options, message) => {
     refuses(run(options), message);
   }, MIGRATION_GATE_TIMEOUT_MS);
 
@@ -201,7 +201,7 @@ describe("windowed app-database migration boundary (#3963 / #4071)", () => {
     expect(result.output).not.toMatch(/No pending Prisma|Ledger declares/);
   }, MIGRATION_GATE_TIMEOUT_MS);
 
-  it.each([{ ENUM_FAIL: "1" }, { SORT_FAIL: "1" }, { TABLE_RESULT: "" }, { TABLE_RESULT: "unknown" }])("refuses failed/unknown enumeration %j", (options) => {
+  it.each([{ ENUM_FAIL: "1" }, { SORT_FAIL: "1" }, { TABLE_RESULT: "" }, { TABLE_RESULT: "unknown" }] as Record<string, string>[])("refuses failed/unknown enumeration %j", (options) => {
     refuses(run(options), /Pending migration discovery failed/);
   }, MIGRATION_GATE_TIMEOUT_MS);
 
@@ -274,7 +274,7 @@ describe("validator --report-windowed protocol", () => {
     { ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "0" },
     { BLUE_GREEN_MIGRATION_OVERRIDE_REASON: "" },
     { BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED: "0" },
-  ])("failed validation emits no usable report: %j", (env) => {
+  ] as Record<string, string>[])("failed validation emits no usable report: %j", (env) => {
     const result = validate([WINDOWED], env);
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
