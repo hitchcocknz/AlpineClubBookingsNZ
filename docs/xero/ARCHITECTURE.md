@@ -1095,9 +1095,27 @@ the request's own voided notes. Only a queued row keeps the plain key it was
 enqueued under; a row the builder starts itself (an inline retry, or a
 re-raise) carries the `after-void` key as its own keys too. The create check
 refuses a note any request link records voided. Unlike the payment's one
-note, the void moves no refunded total: the inbound repair reads only the
-payment's own refund-note roles. So the booking repair still counts that
-request's amount and never hands its cash to the cancellation's note.
+note, the void moves no refunded total: the inbound repair never reads a
+request's note. So the booking repair still counts that request's amount and
+never hands its cash to the cancellation's note.
+
+**A request's paid-back cash in the inbound recount (#4215).** The inbound
+repair rebuilds a payment's refunded total (`repairRefundedPaymentBusinessState`)
+whenever one of its notes is reconciled. On a bank transfer that total is
+Xero's (`INV-ADDPAY-021`), and before #4215 it summed only the payment's
+refund, account-credit and modification notes, so a reconcile of the
+cancellation's canonical note dropped the cash every refund request had paid
+back. The recount now adds what each request's completed hand-back recorded
+(`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`: the task's `amountCents`,
+which is what its completion moved the total by). It is read from the task,
+never the request's note, because that note may still be queued or may have
+been voided while the cash stays paid back. It is never attributed to the
+canonical note (`INV-PAY-118`). The tasks are read after the payment row, so a
+request completed between the two reads moves the row and the repair's claim
+is lost and re-run, never written without it. Rollback: the previous release
+drops that cash again on the next reconcile of a note on such a payment. No
+schema changes, so a rolled-back payment is corrected on the first reconcile
+after rolling forward again.
 
 **Re-raising a voided request note is the officer's decision (#4214, owner
 decision).** No retry re-raises one, whatever its row's state. Every retry door

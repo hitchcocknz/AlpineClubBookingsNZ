@@ -663,6 +663,15 @@ self-masked the divergence). Internet Banking payments are the deliberate
 exception: Xero is their payment rail, so the repair remains authoritative in
 both directions for them.
 
+- **A refund request's paid-back cash is not Xero's to drop** (#4215,
+  `INV-PAY-118`). Its own note is outside the notes the repair sums, so the
+  recount adds what each request's completed hand-back recorded
+  (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`), never its note, which may
+  be queued or voided, and never the canonical note. It reads them after the
+  payment row, so a completion in between loses the claim and the repair
+  re-runs. Pinned by `xero-credit-note-repairs` and
+  `xero-bt-repair-request-cash`.
+
 ### INV-ADDPAY-022
 
 Cancelled-booking soft-delete may hide an operational duplicate only when it
