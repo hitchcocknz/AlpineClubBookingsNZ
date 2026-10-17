@@ -7,14 +7,16 @@ rebuild has written. No new module would hold any of it: the lock must sit
 inside each writer, before its first statement.
 
 file: src/lib/payment-transactions.ts
-lines: 1689
+lines: 1693
 reason: the five ledger-row writers and the aggregate rebuild live here, and
   each now runs in the caller's transaction or a short one of its own
   (`withStoreTransaction`) with the lock as its first statement. The two mark
   writers gain a pure read of which payment to lock and a re-read under it (two
   small private helpers beside `findPaymentByIntentPointer`, which they reuse),
-  and mark-failed's captured check becomes a status-guarded write. Splitting
-  them out would separate each writer from the lock that has to precede it.
+  and mark-failed's captured check becomes a status-guarded write. The review
+  round adds one shared lookup (`locateIntent`) for the intent's row or
+  pointer, and the refusal of a row on another payment. Splitting them out
+  would separate each writer from the lock that has to precede it.
 
 file: src/lib/xero-inbound/invoice-paid-effects.ts
 lines: 2069
@@ -29,3 +31,11 @@ lines: 3115
 reason: the Stripe settle's transaction body is where its Payment row is first
   reached, so the lock goes straight after that upsert and before the ledger
   lookup that may backfill: one call and a one-line comment.
+
+file: src/lib/payment-recovery.ts
+lines: 3382
+reason: the recovery runner's claim hold (`holdAdditionalIntentRecoveryClaim`)
+  is the one transaction that re-stamps an additional-intent recovery before
+  writing its row, so the Payment row lock that must precede that recovery row
+  (#4217 review F1) goes at its top: one call and a one-line comment, beside
+  the claim it orders.

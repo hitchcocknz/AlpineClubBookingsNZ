@@ -2383,8 +2383,7 @@ async function holdAdditionalIntentRecoveryClaim<T>(
   write: (store: Prisma.TransactionClient) => Promise<T>,
 ): Promise<{ value: T; heldAt: Date } | null> {
   return prisma.$transaction(async (tx) => {
-    // #4217 (`INV-LOCK-002`): the Payment row before the recovery row, the
-    // order a reduction that nets this ask off takes them in.
+    // #4217 (`INV-LOCK-002`): the Payment row before the recovery row, as a reduction netting this ask off takes them.
     await lockPaymentForRefundedTotal(tx, operation.paymentId);
     const heldAt = new Date();
     const held = await tx.paymentRecoveryOperation.updateMany({
