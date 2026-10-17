@@ -197,13 +197,19 @@ describe("reraiseVoidedRefundRequestNote (#4214)", () => {
 
   it("MUTATION: refused when no note of the request is recorded voided", async () => {
     state.links = [];
-    await expect(reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" })).rejects.toMatchObject({ status: 409 });
+    await expect(reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("nothing to raise again"),
+    });
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
   });
 
   it("another request's voided note on the same payment is not this request's", async () => {
     state.links = [noteLink({ metadata: { amountCents: 5000, refundRequestId: "rr_2", status: "VOIDED" } })];
-    await expect(reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" })).rejects.toMatchObject({ status: 409 });
+    await expect(reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("nothing to raise again"),
+    });
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
   });
 
