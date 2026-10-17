@@ -12,6 +12,7 @@ import {
   closeKeysOf,
   paymentRecoveryOperationIdOfPaidAnotherWay,
 } from "@/lib/manual-refund-task-settlement-rules";
+import { readPaidTwiceResolution, type PaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
 import { cardRefundSentAfterPaidAnotherWay } from "@/lib/open-card-refund-owed";
 import { prisma } from "@/lib/prisma";
 
@@ -67,33 +68,6 @@ const RECORD_SELECT = {
 } as const satisfies Prisma.ManualRefundTaskSelect;
 
 type CloseRecord = Prisma.ManualRefundTaskGetPayload<{ select: typeof RECORD_SELECT }>;
-
-/** How a paid-twice row was resolved, as kept on the close's record. */
-export interface PaidTwiceResolution {
-  resolvedAt: string;
-  resolvedByMemberId: string;
-  note: string;
-  /** What Stripe had refunded to the card for the close when it was resolved. */
-  refundedByCardCents: number;
-}
-
-/** The resolution kept on a close's record, or null when it has none (or anything else). */
-export function readPaidTwiceResolution(reviewContext: unknown): PaidTwiceResolution | null {
-  if (!reviewContext || typeof reviewContext !== "object" || Array.isArray(reviewContext)) return null;
-  const value = (reviewContext as Record<string, unknown>).paidTwiceResolved;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const { resolvedAt, resolvedByMemberId, note, refundedByCardCents } = value as Record<string, unknown>;
-  if (
-    typeof resolvedAt !== "string" ||
-    typeof resolvedByMemberId !== "string" ||
-    typeof note !== "string" ||
-    typeof refundedByCardCents !== "number" ||
-    !Number.isSafeInteger(refundedByCardCents)
-  ) {
-    return null;
-  }
-  return { resolvedAt, resolvedByMemberId, note, refundedByCardCents };
-}
 
 /** The record's `reviewContext` as an object to add to, or an empty one. */
 function reviewContextObject(reviewContext: Prisma.JsonValue): Prisma.InputJsonObject {

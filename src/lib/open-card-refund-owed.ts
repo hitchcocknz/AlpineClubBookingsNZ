@@ -249,7 +249,7 @@ function sliceTakes(slice: CardRefundSlice, refund: RecordedCardRefundRow, leftC
 }
 
 /** When Stripe made a refund: its own time where recorded, else when the app recorded it. */
-function stripeMadeAt(refund: RecordedCardRefundRow): Date {
+function stripeMadeAt(refund: Pick<RecordedCardRefundRow, "createdAt" | "stripeCreatedAt">): Date {
   return refund.stripeCreatedAt ?? refund.createdAt;
 }
 
@@ -284,10 +284,23 @@ function flooredToSecond(at: Date): number {
  * one made in the second an operation was raised, just before it, reads as
  * made after it. A refund with no Stripe time is read at when the app recorded it.
  */
-function operationWindowTakes(operation: CardRefundOperationRow, refund: RecordedCardRefundRow): boolean {
+export function operationWindowTakes(
+  operation: Pick<CardRefundOperationRow, "createdAt" | "status" | "succeededAt">,
+  refund: Pick<RecordedCardRefundRow, "createdAt" | "stripeCreatedAt">,
+): boolean {
   if (flooredToSecond(operation.createdAt) > stripeMadeAt(refund).getTime()) return false;
   if (operation.status !== SUCCEEDED || operation.succeededAt === null) return true;
   return stripeMadeAt(refund).getTime() <= operation.succeededAt.getTime();
+}
+
+/**
+ * #3924 round 5 (concurrency F2), #4210 (`INV-SSOT`): whether the app recorded a
+ * refund after an operation closed - so that close never saw it. With
+ * `operationWindowTakes` (Stripe made it by the close), the paid-twice reading
+ * (`cardRefundSentAfterPaidAnotherWay`); the failed-later writer asks it too.
+ */
+export function recordedAfterClose(operation: { succeededAt: Date | null }, refund: { createdAt: Date }): boolean {
+  return operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime();
 }
 
 /**
@@ -341,8 +354,9 @@ export function cardRefundSlicesByOperation(
 
 /**
  * The attribution `cardRefundSlicesByOperation` describes, run whether or not
- * any operation is open, with the cents each closed operation took from refunds
- * the app recorded AFTER its close (`lateCentsByOperation`).
+ * any operation is open, with the cents each closed operation took from each
+ * refund the app recorded AFTER its close (`lateByOperation`: operation id ->
+ * Stripe refund id -> cents).
  */
 function attributeRecordedRefunds(
   payment: CardRefundOwedPaymentRow,
@@ -350,13 +364,18 @@ function attributeRecordedRefunds(
   onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number, cents: number) => void,
 ): {
   operations: Array<{ operation: CardRefundOperationRow; slices: CardRefundSlice[] }>;
-  lateCentsByOperation: Map<string, number>;
+  lateByOperation: Map<string, Map<string, number>>;
 } {
   const operations = payment.recoveryOperations
     .filter(isOwedCardRefundOperation)
     .map((operation) => ({ operation, slices: operationSlices(operation) }))
     .sort((left, right) => left.operation.createdAt.getTime() - right.operation.createdAt.getTime());
-  const lateCentsByOperation = new Map<string, number>();
+  const lateByOperation = new Map<string, Map<string, number>>();
+  const late = (operationId: string, refund: RecordedCardRefundRow, cents: number) => {
+    const byRefund = lateByOperation.get(operationId) ?? new Map<string, number>();
+    byRefund.set(refund.stripeRefundId, (byRefund.get(refund.stripeRefundId) ?? 0) + cents);
+    lateByOperation.set(operationId, byRefund);
+  };
   const recorded = payment.refunds.filter(
     (refund) => refund.paymentTransactionId !== null && isRecordedRefundStatus(refund.status),
   );
@@ -382,9 +401,7 @@ function attributeRecordedRefunds(
       claimed.add(refund);
       slice.filledCents = Math.min(slice.amountCents, Math.max(0, refund.amountCents));
       onFill?.(refund, operation, sliceIndex, slice.filledCents);
-      if (operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime()) {
-        lateCentsByOperation.set(operation.id, (lateCentsByOperation.get(operation.id) ?? 0) + slice.filledCents);
-      }
+      if (recordedAfterClose(operation, refund)) late(operation.id, refund, slice.filledCents);
     }
   }
   const refunds = recorded
@@ -401,13 +418,10 @@ function attributeRecordedRefunds(
       onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice), takenCents);
       slice.filledCents += takenCents;
       leftCents -= takenCents;
-      const { succeededAt } = candidate.operation;
-      if (succeededAt !== null && refund.createdAt.getTime() > succeededAt.getTime()) {
-        lateCentsByOperation.set(candidate.operation.id, (lateCentsByOperation.get(candidate.operation.id) ?? 0) + takenCents);
-      }
+      if (recordedAfterClose(candidate.operation, refund)) late(candidate.operation.id, refund, takenCents);
     }
   }
-  return { operations, lateCentsByOperation };
+  return { operations, lateByOperation };
 }
 
 /**
@@ -477,8 +491,26 @@ export function cardRefundSentAfterPaidAnotherWay(
   paidAnotherWayOperationIds: ReadonlySet<string>,
 ): Map<string, number> {
   const late = new Map<string, number>();
-  for (const [operationId, cents] of attributeRecordedRefunds(payment).lateCentsByOperation) {
-    if (paidAnotherWayOperationIds.has(operationId) && cents > 0) late.set(operationId, cents);
+  for (const [operationId, byRefund] of cardRefundsSentAfterPaidAnotherWay(payment, paidAnotherWayOperationIds)) {
+    late.set(operationId, [...byRefund.values()].reduce((sum, cents) => sum + cents, 0));
+  }
+  return late;
+}
+
+/**
+ * #4210: the same reading refund by refund - for each of these closed
+ * operations, the Stripe refunds it took after its close and the cents each
+ * filled. The failed-later writer asks whether a failed refund was one of them.
+ */
+export function cardRefundsSentAfterPaidAnotherWay(
+  payment: CardRefundOwedPaymentRow,
+  paidAnotherWayOperationIds: ReadonlySet<string>,
+): Map<string, Map<string, number>> {
+  const late = new Map<string, Map<string, number>>();
+  for (const [operationId, byRefund] of attributeRecordedRefunds(payment).lateByOperation) {
+    if (!paidAnotherWayOperationIds.has(operationId)) continue;
+    const positive = new Map([...byRefund].filter(([, cents]) => cents > 0));
+    if (positive.size > 0) late.set(operationId, positive);
   }
   return late;
 }

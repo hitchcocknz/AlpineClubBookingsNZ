@@ -51,16 +51,12 @@
  * (#4104 review, CL3): a refund whose Stripe metadata names no booking of this
  * payment (made by hand in the Stripe dashboard, or a legacy group refund).
  *
- * ALREADY SETTLED BY A "PAID ANOTHER WAY" CLOSE (#4210): a refund whose row -
- * the one that sent it (`madeByRow`), or the one whose slice it fills
- * (`cardRefundSliceFilledBy`) - was closed "Paid another way" BEFORE the app
- * recorded it. Stripe's answer was lost, so the close counted its amount as
- * still owed and settled it (paid back, or for a part close given up): the
- * paid-twice reading (`cardRefundSentAfterPaidAnotherWay`). Its failure leaves
- * the member paid once, so no row is raised - a live one would pay them twice,
- * a dead one would count it owed again and invite a second bank payment. Only
- * alerted, for an officer to check, and audited. The close's own record
- * (`closeKeysOf`) says it closed, and with what figures.
+ * ALREADY SETTLED BY A "PAID ANOTHER WAY" CLOSE (#4210, `INV-PAY-136`): asked
+ * first, before the no-booking rule, of every refund no open row owes
+ * (`findPaidAnotherWayCloseThatSettled`, which says which close and why). A full
+ * close's share raises nothing; what a part close gave up, or a refund whose
+ * paid-twice row was marked Resolved, is raised dead for an officer to check.
+ * Audited, and alerted through its own unmuteable mail.
  *
  * The officers are alerted once per decision, after the commit that made it
  * (`alertFailedLaterCardRefunds`).
@@ -75,17 +71,15 @@ import {
 import { createAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
+import { findPaidAnotherWayCloseThatSettled, type SettlingPaidAnotherWayClose } from "@/lib/card-refund-failed-later-paid-another-way";
+import { paidAnotherWayFailedLaterNote, type PaidAnotherWayFailedLaterOutcome } from "@/lib/card-refund-failed-later-paid-another-way-note";
 import {
   CARD_REFUND_OPERATION_WHERE,
   cardRefundPaymentBeforeFailure,
   cardRefundSliceFilledBy,
   parseRefundAllocationPlan,
+  type CardRefundOwedPaymentRow,
 } from "@/lib/open-card-refund-owed";
-import {
-  CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
-  closeKeysOf,
-  paymentRecoveryOperationIdOfPaidAnotherWay,
-} from "@/lib/manual-refund-task-settlement-rules";
 import {
   isPaymentRecoveryOperationExhausted,
   isUntouchedPrePersistedRow,
@@ -128,18 +122,19 @@ export type FailedLaterCardRefundDebt = {
    * `raised-dead`: a retry that failed too; `raised-backlog`: made before the
    * cutoff; `re-planned-dead`: moved on a row whose retries are already spent;
    * `not-resent`: not the club's refund for this booking - nothing is owed here;
-   * `settled-paid-another-way` (#4210): a "Paid another way" close already
-   * settled its amount - nothing is owed here.
+   * #4210 (`PaidAnotherWayFailedLaterOutcome`): a "Paid another way" close had
+   * settled it - nothing raised (`settled-paid-another-way`), or a dead row to
+   * check for what a part close gave up or a resolved paid-twice row covered.
    */
-  outcome: "raised" | "raised-dead" | "raised-backlog" | "re-planned" | "re-planned-dead" | "not-resent" | "settled-paid-another-way";
-  /** The row that owes it; for `settled-paid-another-way`, the row the close closed; none for `not-resent`. */
+  outcome: "raised" | "raised-dead" | "raised-backlog" | "re-planned" | "re-planned-dead" | "not-resent" | PaidAnotherWayFailedLaterOutcome;
+  /** The row that owes it (for `settled-paid-another-way`, the row the close closed); none for `not-resent`. */
   operationId: string | null;
   bookingId: string;
   paymentIntentId: string | null;
   amountCents: number;
   stripeRefundId: string;
-  /** #4210: what the close that settled it recorded - paid back, and still owed when it closed. */
-  paidAnotherWay?: { paidBackCents: number; owedCents: number };
+  /** #4210: the close that settled it (`findPaidAnotherWayCloseThatSettled`). */
+  paidAnotherWay?: Omit<SettlingPaidAnotherWayClose, "outcome">;
 };
 
 /** What the ledger writer does next: the decisions to alert, and the refunds its caller must read as refused. */
@@ -165,6 +160,10 @@ function failedLaterLastError(refundId: string, outcome: FailedLaterCardRefundDe
   }
   if (outcome === "raised-backlog") {
     return `Stripe reported refund ${refundId} failed; it was made before this release could notice that, so it is not asked for again automatically. Check whether the member was paid back, then ${CLOSE_IT_WHERE} (#4104).`;
+  }
+  // #4210: what a "Paid another way" close may not have covered - a person decides.
+  if (outcome === "raised-check-part-close" || outcome === "raised-check-resolved") {
+    return `Stripe reported refund ${refundId} failed after a "Paid another way" close had settled it. ${outcome === "raised-check-resolved" ? "Its paid-twice row was marked resolved, so the member may have returned the extra" : "That close paid back only part of what it owed, so this may be part of what it gave up"}: check before paying. Not asked for again automatically: if the member is owed it, pay them another way and ${CLOSE_IT_WHERE}; if not, ask a developer to reconcile it (#4210).`;
   }
   // #4104 review (D7): a row whose retries are already spent is never claimed again.
   if (outcome === "re-planned-dead") {
@@ -224,11 +223,16 @@ function madeByRow(
 
 /**
  * No open row owes it: the row that made it (`madeBy`), for the new row's
- * record, and (#4210) the rows that made it or whose slice it fills that had
- * closed before the app recorded it (`closedBeforeRecorded`), the ones a
- * "Paid another way" close may have settled it on.
+ * record, and (#4210) what a "Paid another way" close is weighed by - the rows,
+ * the payment as it stood before the failure, and the row whose slice it
+ * fills there (`filledBy`).
  */
-type NoOpenOwner = { madeBy: string | null; closedBeforeRecorded: string[] };
+type NoOpenOwner = {
+  madeBy: string | null;
+  filledBy: string | null;
+  rows: PaymentRecoveryOperation[];
+  beforeFailure: CardRefundOwedPaymentRow;
+};
 
 /**
  * The open row that counted this refund as made, or "owed" when one already
@@ -254,51 +258,17 @@ async function findOwner(
     where: { paymentId: payment.id },
     select: { stripeRefundId: true, paymentTransactionId: true, amountCents: true, status: true, createdAt: true, stripeCreatedAt: true },
   });
-  const filled = cardRefundSliceFilledBy(cardRefundPaymentBeforeFailure({ ...payment, recoveryOperations: rows, refunds }, refundId), refundId);
+  const beforeFailure = cardRefundPaymentBeforeFailure({ ...payment, recoveryOperations: rows, refunds }, refundId);
+  const filled = cardRefundSliceFilledBy(beforeFailure, refundId);
   const row = filled ? open.find((each) => each.id === filled.operation.id) : undefined;
   // A closed row's refund is owed by a row of its own, and so (CM) is one this
   // row's runner did not send: it sends its unmarked slice anyway. An open row
   // with no plan (a superseded intent's) re-derives what its charge still holds
   // by itself, and reads its own replay as refused (#4104 review, ML2).
   if (!filled || !row || !sentByRow(row, refund)) {
-    const madeBy = madeByRow(rows, refund, filled);
-    // #4210: as the paid-twice reading counts it - a closed row's refund the
-    // app recorded after that close, which the close therefore never saw.
-    const recordedAt = refunds.find((each) => each.stripeRefundId === refundId)?.createdAt.getTime();
-    const closedBeforeRecorded = rows
-      .filter(
-        (each) =>
-          (each.id === madeBy || each.id === filled?.operation.id) &&
-          each.status === PaymentRecoveryOperationStatus.SUCCEEDED &&
-          each.succeededAt !== null &&
-          recordedAt !== undefined &&
-          recordedAt > each.succeededAt.getTime(),
-      )
-      .map((each) => each.id);
-    return { madeBy, closedBeforeRecorded };
+    return { madeBy: madeByRow(rows, refund, filled), filledBy: filled?.operation.id ?? null, rows, beforeFailure };
   }
   return { row, sliceIndex: parseRefundAllocationPlan(row.allocationPlan) ? filled.sliceIndex : null };
-}
-
-/**
- * #4210: the "Paid another way" close that settled a refund the app recorded
- * after it - its record (`closeKeysOf`), on one of the rows that made it - or
- * null. Read under the Payment row lock the ledger writer holds, which a close
- * takes before it writes its record (`lockPaymentForRefundedTotal`).
- */
-async function paidAnotherWayCloseThatSettled(
-  tx: Prisma.TransactionClient,
-  closedBeforeRecorded: ReadonlyArray<string>,
-): Promise<{ id: string; operationId: string; paidBackCents: number; owedCents: number } | null> {
-  if (closedBeforeRecorded.length === 0) return null;
-  const record = await tx.manualRefundTask.findFirst({
-    where: { ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: closedBeforeRecorded.flatMap(closeKeysOf) } },
-    orderBy: { completedAt: "asc" },
-    select: { id: true, kind: true, occurrenceKey: true, amountCents: true, raisedAmountCents: true },
-  });
-  const operationId = record ? paymentRecoveryOperationIdOfPaidAnotherWay(record) : null;
-  if (!record || operationId === null) return null;
-  return { id: record.id, operationId, paidBackCents: record.amountCents ?? 0, owedCents: record.raisedAmountCents ?? record.amountCents ?? 0 };
 }
 
 /**
@@ -384,6 +354,41 @@ export async function keepFailedLaterCardRefundOwed(
     };
   }
 
+  // #4210 (`INV-PAY-136`): settled by a "Paid another way" close - asked before
+  // the no-booking rule, so a dashboard refund a close settled is said as settled.
+  const close = await findPaidAnotherWayCloseThatSettled(tx, { ...owner, refund, bookingId: payment.bookingId });
+  if (close) {
+    if (kind !== "transition") return {};
+    const { outcome, ...paidAnotherWay } = close;
+    let operationId: string = close.operationId;
+    let intentId = paymentIntentId;
+    if (outcome !== "settled-paid-another-way") {
+      const raised = await raiseRow(tx, { payment, paymentTransactionId, refund, paymentIntentId, amountCents: close.checkCents, dead: true, madeBy: owner.madeBy, lastError: failedLaterLastError(refund.id, outcome) });
+      if (!raised) return {};
+      ({ operationId, intentId } = raised);
+    }
+    await createAuditLog(
+      {
+        action: "booking-payment.card-refund.failed-later-paid-another-way",
+        targetId: payment.bookingId,
+        entityType: "PaymentRefund",
+        entityId: refund.id,
+        category: "payment",
+        severity: "important",
+        outcome: "failure",
+        summary: `Stripe reported card refund ${refund.id} failed after accepting it; a "Paid another way" close had already settled it${outcome === "settled-paid-another-way" ? ", so it is not asked for again" : `, and what it may not have covered is raised for an officer to check (${outcome === "raised-check-resolved" ? "its paid-twice row was marked resolved" : "a part close"})`}`,
+        ...(close.resolutionNote ? { details: close.resolutionNote } : {}),
+        metadata: { stripeRefundId: refund.id, paymentId, paymentTransactionId, paymentIntentId, amountCents: refund.amount, decision: outcome, raisedOperationId: outcome === "settled-paid-another-way" ? null : operationId, ...paidAnotherWay },
+      },
+      tx,
+    );
+    return { debt: { outcome, operationId, bookingId: payment.bookingId, paymentIntentId: intentId, amountCents: refund.amount, stripeRefundId: refund.id, paidAnotherWay } };
+  }
+  // #4210 (concurrency F1): an open row's own replay reads the refund as refused
+  // and moves its slice itself - one owes it, never two.
+  const maker = owner.rows.find((each) => each.id === owner.madeBy);
+  if (kind === "replayed" && maker && maker.status !== PaymentRecoveryOperationStatus.SUCCEEDED) return { readAsRefused: true };
+
   if (refund.metadata?.bookingId !== payment.bookingId) {
     // Not the club's to re-send: made by hand in the Stripe dashboard, or a
     // legacy group refund that names no booking. The officers are told once,
@@ -414,47 +419,54 @@ export async function keepFailedLaterCardRefundOwed(
       },
     };
   }
-  // #4210: a "Paid another way" close already settled it - the member has it
-  // back once. No row: the officers check, and the audit log keeps it.
-  const close = await paidAnotherWayCloseThatSettled(tx, owner.closedBeforeRecorded);
-  if (close) {
-    if (kind !== "transition") return {};
-    const paidAnotherWay = { paidBackCents: close.paidBackCents, owedCents: close.owedCents };
-    await createAuditLog(
-      {
-        action: "booking-payment.card-refund.failed-later-paid-another-way",
-        targetId: payment.bookingId,
-        entityType: "PaymentRefund",
-        entityId: refund.id,
-        category: "payment",
-        severity: "important",
-        outcome: "failure",
-        summary: `Stripe reported card refund ${refund.id} failed after accepting it; a "Paid another way" close had already settled it, so it is not asked for again`,
-        metadata: {
-          stripeRefundId: refund.id,
-          paymentId,
-          paymentTransactionId,
-          paymentIntentId,
-          amountCents: refund.amount,
-          closedOperationId: close.operationId,
-          manualRefundTaskId: close.id,
-          ...paidAnotherWay,
-        },
-      },
-      tx,
-    );
-    return {
-      debt: {
-        outcome: "settled-paid-another-way",
-        operationId: close.operationId,
-        bookingId: payment.bookingId,
-        paymentIntentId,
-        amountCents: refund.amount,
-        stripeRefundId: refund.id,
-        paidAnotherWay,
-      },
-    };
-  }
+  const outcome: FailedLaterCardRefundDebt["outcome"] =
+    refund.metadata?.reason === CARD_REFUND_FAILED_LATER_REASON
+      ? "raised-dead"
+      : cutoffSeconds !== null && typeof refund.created === "number" && refund.created < cutoffSeconds
+        ? "raised-backlog"
+        : "raised";
+  const raised = await raiseRow(tx, { payment, paymentTransactionId, refund, paymentIntentId, amountCents: refund.amount, dead: outcome !== "raised", madeBy: owner.madeBy, lastError: failedLaterLastError(refund.id, outcome) });
+  if (!raised) return {};
+  return {
+    debt: {
+      outcome,
+      operationId: raised.operationId,
+      bookingId: payment.bookingId,
+      paymentIntentId: raised.intentId,
+      amountCents: refund.amount,
+      stripeRefundId: refund.id,
+    },
+  };
+}
+
+/**
+ * Raise the row that owes a failed refund again, under a key Stripe has never
+ * seen (`card_refund_failed_later_<refund>`), for `amountCents` on its own
+ * charge; dead (attempts spent) when no runner may send it. Null when another
+ * writer raised it first, or the charge names no card payment.
+ */
+async function raiseRow(
+  tx: Prisma.TransactionClient,
+  {
+    payment,
+    paymentTransactionId,
+    refund,
+    paymentIntentId,
+    amountCents,
+    dead,
+    madeBy,
+    lastError,
+  }: {
+    payment: { id: string; bookingId: string };
+    paymentTransactionId: string;
+    refund: FailedLaterRefundInput;
+    paymentIntentId: string | null;
+    amountCents: number;
+    dead: boolean;
+    madeBy: string | null;
+    lastError: string;
+  },
+): Promise<{ operationId: string; intentId: string } | null> {
   const intentId =
     paymentIntentId ??
     (await tx.paymentTransaction.findUnique({ where: { id: paymentTransactionId }, select: { stripePaymentIntentId: true } }))
@@ -462,14 +474,8 @@ export async function keepFailedLaterCardRefundOwed(
     null;
   if (!intentId) {
     logger.error({ stripeRefundId: refund.id, paymentTransactionId }, "A card refund that failed later names no card payment to refund again (#4104)");
-    return {};
+    return null;
   }
-  const outcome: FailedLaterCardRefundDebt["outcome"] =
-    refund.metadata?.reason === CARD_REFUND_FAILED_LATER_REASON
-      ? "raised-dead"
-      : cutoffSeconds !== null && typeof refund.created === "number" && refund.created < cutoffSeconds
-        ? "raised-backlog"
-        : "raised";
   const idempotencyKey = buildCardRefundFailedLaterRecoveryKey(refund.id);
   const inserted = await tx.paymentRecoveryOperation.createMany({
     data: [
@@ -477,35 +483,26 @@ export async function keepFailedLaterCardRefundOwed(
         type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
         status: PaymentRecoveryOperationStatus.PENDING,
         bookingId: payment.bookingId,
-        paymentId,
+        paymentId: payment.id,
         paymentIntentId: intentId,
-        amountCents: refund.amount,
+        amountCents,
         idempotencyKey,
         stripeKeyPrefix: idempotencyKey,
         // #4166: which row made the refund, so the booking page tells it by what was sent, not by amount.
-        allocationPlan: [{ paymentTransactionId, amountCents: refund.amount, madeByOperationId: owner.madeBy }] as unknown as Prisma.InputJsonValue,
+        allocationPlan: [{ paymentTransactionId, amountCents, madeByOperationId: madeBy }] as unknown as Prisma.InputJsonValue,
         // Dead by the recovery module's own rule (attempts spent): never
         // claimed, and closable as paid another way. Not a FAILED write, which
         // has one route (`INV-PAY-056`).
-        attempts: outcome === "raised" ? 0 : MAX_PAYMENT_RECOVERY_ATTEMPTS,
+        attempts: dead ? MAX_PAYMENT_RECOVERY_ATTEMPTS : 0,
         nextRetryAt: new Date(),
-        lastError: failedLaterLastError(refund.id, outcome),
+        lastError,
       },
     ],
     skipDuplicates: true,
   });
-  if (inserted.count !== 1) return {};
+  if (inserted.count !== 1) return null;
   const row = await tx.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey }, select: { id: true } });
-  return {
-    debt: {
-      outcome,
-      operationId: row.id,
-      bookingId: payment.bookingId,
-      paymentIntentId: intentId,
-      amountCents: refund.amount,
-      stripeRefundId: refund.id,
-    },
-  };
+  return { operationId: row.id, intentId };
 }
 
 /** Each refund the ledger writer saw fail later, decided in its transaction, in the order it saw them. */
@@ -535,11 +532,14 @@ export async function keepFailedLaterCardRefundsOwed(
   return decisions;
 }
 
-/** #4210: what the close that settled it did with the money it owed. */
-function paidAnotherWayCloseSaid({ paidBackCents, owedCents }: { paidBackCents: number; owedCents: number }, money: (cents: number) => string): string {
-  return paidBackCents >= owedCents
-    ? `paid the member back ${money(paidBackCents)} another way`
-    : `paid the member back ${money(paidBackCents)} of the ${money(owedCents)} it owed another way, the rest no longer owed`;
+/** #4210: a decision about a refund a "Paid another way" close had settled - its own unmuteable mail. */
+function isPaidAnotherWayDebt(
+  debt: FailedLaterCardRefundDebt,
+): debt is FailedLaterCardRefundDebt & { outcome: PaidAnotherWayFailedLaterOutcome; paidAnotherWay: NonNullable<FailedLaterCardRefundDebt["paidAnotherWay"]> } {
+  return (
+    (debt.outcome === "settled-paid-another-way" || debt.outcome === "raised-check-part-close" || debt.outcome === "raised-check-resolved") &&
+    debt.paidAnotherWay !== undefined
+  );
 }
 
 function alertMessage(debt: FailedLaterCardRefundDebt, money: (cents: number) => string): string {
@@ -558,8 +558,10 @@ function alertMessage(debt: FailedLaterCardRefundDebt, money: (cents: number) =>
       // #4104 review (D2): which refund, and how to settle it - nothing here owes it.
       return `Stripe reported card refund ${debt.stripeRefundId} of ${amount} on this booking failed after accepting it. The app did not make it for this booking (a refund made in the Stripe dashboard, or a group refund), so it is not asked for again and is not listed under Refunds owed. Find it in the Stripe dashboard: if the member is still owed, refund them again there or pay them another way. Raise no refund note for it in Xero: the card refund credit note raised while Stripe counted it, if there is one, already records it, and a second note would credit the member twice. If they are no longer owed, the Xero reconciliation report lists that note as refund coverage above the refunded total, for you to correct in Xero.`;
     case "settled-paid-another-way":
-      // #4210: the member has it back once, by the close; a second payment would pay them twice.
-      return `Stripe reported card refund ${debt.stripeRefundId} of ${amount} on this booking failed after accepting it. The card refund it belongs to had already been closed as paid another way before this refund reached the app, so that close counted the ${amount} as still owed and ${paidAnotherWayCloseSaid(debt.paidAnotherWay ?? { paidBackCents: debt.amountCents, owedCents: debt.amountCents }, money)}. It is not owed again, is not asked for again, is not listed under Refunds owed, and no longer shows under "Card refunds paid back twice" on the Stuck states page. Do not pay the member again unless, while it showed as paid back twice, you asked them to return the extra: then they are owed it again, so pay them back and record it in Xero. Raise no other refund note for it in Xero: if a card refund credit note was raised while Stripe counted it, it no longer matches money paid back, and the Xero reconciliation report lists it as refund coverage above the refunded total, for you to correct in Xero.`;
+    case "raised-check-part-close":
+    case "raised-check-resolved":
+      // #4210: never sent this way (`isPaidAnotherWayDebt`); said for completeness.
+      return `Stripe reported card refund ${debt.stripeRefundId} of ${amount} failed after a "Paid another way" close had settled it.`;
   }
 }
 
@@ -575,14 +577,41 @@ export async function alertFailedLaterCardRefunds(debts: ReadonlyArray<FailedLat
       import("@/lib/payment-recovery-alert"),
     ]);
     const format = await clubFormatValues();
+    const money = (cents: number) => formatCents(cents, format);
     for (const debt of debts) {
+      if (isPaidAnotherWayDebt(debt)) {
+        // #4210: its own subject, through the unmuteable sender - money a person must not pay twice.
+        const { alertCardRefundFailedAfterPaidAnotherWay } = await import("@/lib/email/admin-alerts-card-refund");
+        const close = debt.paidAnotherWay;
+        await alertCardRefundFailedAfterPaidAnotherWay(
+          {
+            bookingId: debt.bookingId,
+            amountCents: debt.amountCents,
+            note: paidAnotherWayFailedLaterNote({
+              outcome: debt.outcome,
+              stripeRefundId: debt.stripeRefundId,
+              amount: money(debt.amountCents),
+              paidBack: money(close.paidBackCents),
+              owed: money(close.owedCents),
+              partClose: close.paidBackCents < close.owedCents,
+              check: money(close.checkCents),
+              onPaidTwiceList: close.onPaidTwiceList,
+              resolutionNote: close.resolutionNote,
+            }),
+          },
+          format,
+        ).catch((err: unknown) =>
+          logger.error({ err, operationId: debt.operationId }, "Could not alert the officers to a card refund that failed after it was paid back another way (#4210)"),
+        );
+        continue;
+      }
       await alertPaymentRecoveryOfficers(
         {
           bookingId: debt.bookingId,
           operationId: debt.operationId ?? undefined,
           amountCents: debt.amountCents,
           paymentIntentId: debt.paymentIntentId ?? "",
-          errorMessage: alertMessage(debt, (cents) => formatCents(cents, format)),
+          errorMessage: alertMessage(debt, money),
         },
         format,
       ).catch((err: unknown) =>

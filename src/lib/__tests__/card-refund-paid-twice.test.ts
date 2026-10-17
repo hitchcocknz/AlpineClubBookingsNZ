@@ -29,9 +29,9 @@ vi.mock("@/lib/prisma", () => {
 import {
   CardRefundPaidTwiceError,
   listCardRefundsPaidTwice,
-  readPaidTwiceResolution,
   resolveCardRefundPaidTwice,
 } from "@/lib/card-refund-paid-twice";
+import { readPaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
 
 const CLOSED_AT = new Date("2026-06-25T00:00:00.000Z");
 const STRIPE_BEFORE_CLOSE = { stripeCreatedAt: new Date("2026-06-24T23:59:00.000Z"), createdAt: new Date("2026-06-26T00:00:00.000Z") };
