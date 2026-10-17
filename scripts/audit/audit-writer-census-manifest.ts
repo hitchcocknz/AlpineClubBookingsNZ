@@ -675,7 +675,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // 506 -> 507 (#4210 round 3): `booking-payment.card-refund.checked-not-owed`,
   // a check row an officer closed as not owed, awaited on its claim's
   // transaction under `payment`.
-  writeSites: 507,
+  // 507 -> 508 (#4210 round 4): the runner's hold of a failed-later row an
+  // earlier release raised, as a check, awaited on its claim's transaction
+  // under `payment` (same action as the writer's decision).
+  writeSites: 508,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -884,7 +887,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // settled, awaited on the ledger writer's transaction so the row commits with it.
     // 146 -> 147 (#4210 round 3): a check row closed as checked - not owed,
     // awaited on its claim's transaction so the row commits with it.
-    createAuditLog: { total: 147, uncategorised: 0 },
+    // 147 -> 148 (#4210 round 4): the runner holding a failed-later row as a check.
+    createAuditLog: { total: 148, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1090,7 +1094,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // already settled - read by the people who reconcile it.
     // 59 -> 60 (#4210 round 3): a check row closed as checked - not owed - read
     // by the people who reconcile it.
-    payment: 60,
+    // 60 -> 61 (#4210 round 4): the runner holding a failed-later row as a check.
+    payment: 61,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

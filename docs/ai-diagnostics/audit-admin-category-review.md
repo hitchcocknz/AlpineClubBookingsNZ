@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  507
+row-producing sites:  508
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 60,
+category values: admin 108, booking 108, xero 39, family 35, payment 61,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -850,6 +850,12 @@ settled, filed `payment` beside the not-resent entry the same people read.
 `pnpm run audit:census`): `booking-payment.card-refund.checked-not-owed`, a row
 raised to check after such a close that an officer closed as not owed, filed
 `payment` beside the close it answers.
+
+#4210 round 4 then added one more (`payment` 60 -> 61, 507 -> 508, MEASURED with
+`pnpm run audit:census`): a second writer of
+`booking-payment.card-refund.failed-later-paid-another-way`, the runner holding a
+failed-later row an earlier release raised as a check, filed `payment` beside
+the writer's own.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

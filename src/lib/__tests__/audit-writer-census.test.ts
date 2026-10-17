@@ -1451,7 +1451,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // close settled, unpinned `payment` (506 sites minus 128 pinned).
     // 378 -> 379 unpinned (#4210 round 3): a check row closed as checked - not
     // owed, unpinned `payment` (507 sites minus 128 pinned).
-    ).toEqual({ pinned: 128, unpinned: 379 });
+    // 379 -> 380 unpinned (#4210 round 4): the runner holding a failed-later row
+    // as a check, unpinned `payment` (508 sites minus 128 pinned).
+    ).toEqual({ pinned: 128, unpinned: 380 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {
