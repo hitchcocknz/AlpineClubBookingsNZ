@@ -20,7 +20,11 @@
   back before the booking had a Xero invoice, it could offer a cancellation
   credit note that included the request's refund as well. It now leaves that
   refund out, and passes the cancellation's amount to a person when the two
-  sit side by side.
+  sit side by side. Such a request also never got its own credit note, because
+  the booking had no invoice to credit when it was paid back. The repair tool
+  now raises that note once the invoice exists, for the amount paid back. It
+  never re-raises a request's note that was voided in Xero: that stays the
+  officer's decision.
 
   A payment that already lost a request's refund this way is not corrected by
   itself: it is recounted only when Xero sends an update about the
@@ -34,3 +38,12 @@
   events from Xero, Inbound events. Stop the previous release's Xero inbound
   worker before this release takes over, because while it runs it can drop the
   request's refund again.
+
+  The same deploy note has a second check for the opposite case. Before this
+  release, a cancellation credit note could have been raised for the whole
+  refund, including a request's refund that had no note of its own. This
+  release then counts that request's refund twice. Such a payment reads more
+  refunded than its records show, and the settled-cash audit lists it under
+  "folded", which is misleading here. To fix one, correct the cancellation's
+  credit note in Xero so it carries only the cancellation's own refund, then
+  run the booking repair tool, which raises the request's own note.

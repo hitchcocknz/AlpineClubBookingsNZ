@@ -671,7 +671,10 @@ both directions for them.
   never the canonical note. It reads them after the payment row, so a
   completion in between loses the claim and the repair re-runs. The booking
   repair tool nets the same figure from the cash a cancellation's note answers
-  (`readRefundRequestPaidBackCentsByPaymentId`, #4231). Pinned by
+  (`readPaidBackRefundRequests`, #4231), and queues a request's own note its
+  completion could not (no invoice yet) through the completion's enqueue,
+  only where the request has no note row at all: a voided one stays the
+  officer's (`INV-ADDPAY-041`). Pinned by
   `xero-credit-note-repairs`, `xero-booking-repair` and
   `xero-bt-repair-request-cash`.
 

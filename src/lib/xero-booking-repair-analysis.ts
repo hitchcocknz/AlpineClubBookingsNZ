@@ -221,7 +221,7 @@ export function getUnpaidCancellationClearingAmountCents(
  * The cash a cancellation's refund note should answer, from the refunded
  * total net of an edit's refunds and (#3827, `INV-PAY-118`) the cash each
  * refund request paid back. That cash is read from the requests' completed
- * hand-backs (#4215, `readRefundRequestPaidBackCentsByPaymentId`), the figure
+ * hand-backs (#4215, `readPaidBackRefundRequests`), the figure
  * the inbound recount adds, never from their own notes: a request completed
  * before the booking had an invoice queued none, and its cash must still stay
  * out of the cancellation's note. Zero when nothing is left for it - an

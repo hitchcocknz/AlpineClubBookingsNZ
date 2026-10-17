@@ -1119,46 +1119,85 @@ canonical note (`INV-PAY-118`). The tasks are read after the payment row, so a
 request completed between the two reads moves the row and the repair's claim
 is lost and re-run, never written without it.
 
-The booking repair tool reads the same figure through the same reader
-(`readRefundRequestPaidBackCentsByPaymentId`, #4231): the cash a cancellation's
-missing note answers is the refunded total less the requests' paid-back cash,
-so a request with no note of its own is never sized into the cancellation's
-note and then counted again by the recount.
+The booking repair tool reads the same rows through the same reader
+(`readPaidBackRefundRequests`, #4231): the cash a cancellation's missing note
+answers is the refunded total less the requests' paid-back cash, so a request
+with no note of its own is never sized into the cancellation's note and then
+counted again by the recount. And because a completion queues the request's
+own note only against an invoice, a request paid back before the booking had
+one gets that note from the tool once the invoice exists
+(`REFUND_REQUEST_NOTE_NOT_QUEUED`, action `QUEUE_REFUND_REQUEST_CREDIT_NOTE`,
+auto-applied): queued through the completion's own enqueue
+(`enqueueXeroRefundRequestCreditNoteOperation`), keyed by the request and sized
+from its task, and only for a request with no request-note CREATE row of any
+status and no request-note link. A request whose note was raised and then
+voided in Xero has its row, so the tool never re-raises it: that stays the
+officer's decision (#4195, #4214).
 
 **Deploy and rollback note (#4215).** No schema changes. A payment is only
 recounted when Xero sends an event for one of the notes above, which may never
-happen again, so a damaged payment may never heal by itself, and the
-settled-cash audit (`pnpm run payments:audit-ib-settled-cash`, #3979) lists
-only a refunded total above its charge rows, never one below. Three populations need the check below: payments the previous
-release damaged before this one shipped; payments either colour damages during
-the switch window, while both serve and the old colour's inbound worker still
-runs the old recount on any reconcile (stop it before the new release takes
-over, as for #4091); and, after a rollback, every payment the previous release
-recounts until rolling forward again. The previous release's repair tool also
-nets only the requests' notes, so do not apply its refund-note actions on a
-payment with a paid-back request. After rolling forward, and again once the
-old colour has stopped, list the bank-transfer payments whose refunded total is
-below what their charge rows record and that have a paid-back refund request
-(read-only; the request's paid-back cash stays on the charge rows, which the
-recount never writes):
+happen again, so a damaged payment may never heal by itself. Three populations
+need the two checks below: payments damaged before this release shipped;
+payments either colour damages during the switch window, while both serve and
+the old colour's inbound worker still runs the old recount on any reconcile
+(stop it before the new release takes over, as for #4091); and, after a
+rollback, every payment the previous release recounts or repairs until rolling
+forward again. The previous release's repair tool nets only the requests'
+notes, so do not apply its refund-note actions on a payment with a paid-back
+request. Run both checks after rolling forward, and again once the old colour
+has stopped. Both compare the payment's refunded total with its charge rows
+(`PaymentTransaction`): a request's paid-back cash stays on the rows, which the
+recount never writes. `starts_with` matches the key prefix exactly.
+
+*Refunded total too low* - a recount dropped a request's cash. The settled-cash
+audit (`pnpm run payments:audit-ib-settled-cash`, #3979) lists only totals
+above the rows, never below, so list these (read-only):
 `SELECT p.id, p."bookingId", p."refundedAmountCents", (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) AS "rowsRefundedCents", (SELECT SUM(m."amountCents") FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:')) AS "requestsPaidBackCents" FROM "Payment" p WHERE p.source = 'INTERNET_BANKING' AND EXISTS (SELECT 1 FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:')) AND p."refundedAmountCents" < (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) ORDER BY p.id`.
-`starts_with` matches the key prefix exactly. A payment whose canonical note
-Xero voided is listed too, by design: on a bank transfer that void undoes the
-cancellation's refund in the total but not on the charge rows (#4091). So an
-officer checks each listed payment in Xero before healing it. To heal one,
-replay a stored event for one of its notes: Xero, Inbound events, the
-`CREDITNOTE` event for the payment's cancellation or account-credit note, then
-Replay (finance edit permission). The replay reads the note from Xero again and
-writes nothing there, and its recount now keeps the request's cash. Find the
-events with (read-only; put the payment's id in both places):
-`SELECT e.id, e."resourceId", e.status, e."createdAt" FROM "XeroInboundEvent" e WHERE upper(e."eventCategory") IN ('CREDITNOTE', 'CREDIT_NOTE') AND e."resourceId" IN (SELECT p."xeroRefundCreditNoteId" FROM "Payment" p WHERE p.id = '<payment id>' UNION SELECT l."xeroObjectId" FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = '<payment id>' AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role IN ('REFUND_CREDIT_NOTE', 'ACCOUNT_CREDIT_NOTE')) ORDER BY e."createdAt" DESC`.
+A payment whose canonical note Xero voided is listed too, by design: on a bank
+transfer that void undoes the cancellation's refund in the total but not on
+the rows (#4091). So an officer checks each listed payment in Xero before
+healing it. To heal one, replay a stored event for one of its notes: Xero,
+Inbound events, the `CREDITNOTE` event for the payment's cancellation or
+account-credit note, then Replay (finance edit permission). The replay reads
+the note from Xero again and writes nothing there, and its recount now keeps
+the request's cash. Find the events with (read-only; put the payment's id in
+both places):
+`SELECT e.id, e."resourceId", e.status, e."createdAt" FROM "XeroInboundEvent" e WHERE e."eventCategory" = 'CREDITNOTE' AND e."resourceId" IN (SELECT p."xeroRefundCreditNoteId" FROM "Payment" p WHERE p.id = '<payment id>' UNION SELECT l."xeroObjectId" FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = '<payment id>' AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role IN ('REFUND_CREDIT_NOTE', 'ACCOUNT_CREDIT_NOTE')) ORDER BY e."createdAt" DESC`.
 The booking repair tool does not run the recount, so it cannot heal one. Any
-later refund the app records on the payment heals it too, because recording one
-resets the refunded total from the charge rows (`reconcilePaymentAggregates`).
-A payment with no stored event for any of its notes and no later refund has no
-on-demand trigger: it heals on the next Xero event for one of those notes, and
-until then its refunded total reads low and the officer treats the charge rows'
-figure as the cash handed back.
+later refund the app records on the payment also resets the refunded total from
+the rows (`reconcilePaymentAggregates`), which heals it - but which equally
+puts back the cash a voided canonical note had taken out of the total (#4091),
+so it is no remedy for a payment listed for that reason. A payment with no
+stored event for any of its notes and no later refund has no on-demand
+trigger: it heals on the next Xero event for one of those notes, and until
+then its refunded total reads low and the officer treats the rows' figure as
+the cash handed back.
+
+*Refunded total too high* - a request's cash counted twice. Before this
+release, a request paid back before the booking had an invoice queued no note
+of its own, and the repair tool (or an officer by hand) could raise the
+cancellation's note for the whole refunded total, the request's cash included.
+The new recount adds the request's cash beside that note, so the payment reads,
+say, $200 refunded against $150 on its rows. List these (read-only; only
+requests with no request-note CREATE row, read by the row's payload or its
+key):
+`SELECT p.id, p."bookingId", p."refundedAmountCents", (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) AS "rowsRefundedCents", (SELECT SUM(m."amountCents") FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:')) AS "requestsPaidBackCents" FROM "Payment" p WHERE p.source = 'INTERNET_BANKING' AND EXISTS (SELECT 1 FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':')))) AND p."refundedAmountCents" > (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) ORDER BY p.id`.
+The settled-cash audit lists the same payments under `folded`, a label that
+misleads here: no credit note was folded in, the request's cash is counted by
+both the cancellation's note and the recount. To remedy one, correct the
+cancellation's note in Xero so it carries only the cancellation's own cash
+(here, $100: the total less the requests' paid-back cash). Its update event
+recounts the payment. Then run the booking repair tool, which queues the
+request's own note (`REFUND_REQUEST_NOTE_NOT_QUEUED`), so Xero carries each
+refund once.
+
+Stated limit of both checks: the rows are not the whole story wherever an
+invoice correction legitimately puts the refunded total above them
+(`INV-PAY-126`). Such a payment can be missed by the too-low check, its
+correction hiding a dropped request, and listed by the too-high check without
+a double count. An officer reads each listed payment's notes in Xero before
+acting, and treats a payment with an invoice correction as needing that read
+even when it is not listed.
 
 **Re-raising a voided request note is the officer's decision (#4214, owner
 decision).** No retry re-raises one, whatever its row's state. Every retry door
