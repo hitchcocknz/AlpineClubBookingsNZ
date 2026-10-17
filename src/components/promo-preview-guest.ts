@@ -39,3 +39,24 @@ export function promoPreviewGuestBody(
     ...(options.bookingId && guest.bookingGuestId ? { bookingGuestId: guest.bookingGuestId } : {}),
   };
 }
+
+/**
+ * #4202: the officer re-rates an edit sends the quote (`modify-quote`): the
+ * other-lodge election (`useOtherLodgeRate().payloadFields()`) and the #2337
+ * placeholder-to-member links. The promo preview is sent the same fields, so
+ * the server clears the same guests' locked prices for the box as for the
+ * quote. Built once by the edit panel for both requests.
+ */
+export type PromoPreviewEditRerates = {
+  otherLodgeId?: string | null;
+  otherLodgeMemberGuestIds?: string[];
+  linkGuestToMember?: Array<{ guestId: string; memberId: string }>;
+};
+
+/** The re-rate fields, sent only with a booking id (the server reads them only then). */
+export function promoPreviewEditRerateBody(options: {
+  bookingId?: string;
+  editRerates?: PromoPreviewEditRerates;
+}): PromoPreviewEditRerates {
+  return options.bookingId && options.editRerates ? { ...options.editRerates } : {};
+}

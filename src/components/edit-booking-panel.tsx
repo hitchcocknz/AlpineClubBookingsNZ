@@ -37,6 +37,7 @@ import { countNightsDateOnly, parseDateOnly } from "@/lib/date-only";
 import { promoChangeNotAppliedHeading } from "@/lib/promo-change-not-applied";
 import { type PromoResult } from "@/components/promo-code-input";
 import { promoCodeListEntries } from "@/components/promo-code-list-client";
+import type { PromoPreviewEditRerates } from "@/components/promo-preview-guest";
 import {
   hostingCoverageMutationSignature,
   readHostingCoverageOverridePrompt,
@@ -633,6 +634,21 @@ export function EditBookingPanel({
     otherLodgeRate.changed ||
     creditChanged;
 
+  // #4202: the officer re-rates this edit sends, read ONCE for the payload and
+  // the promo card, so the box clears the same guests' locked prices as the
+  // quote. The other-lodge election travels only when this edit changes it (an
+  // unchanged one would re-reprice those guests on every ordinary edit); the
+  // #2337 placeholder→member links are keyed to existing guest rows.
+  const editRerates = useMemo((): PromoPreviewEditRerates => {
+    const links = Object.entries(linkedGuestMembers).map(
+      ([guestId, candidate]) => ({ guestId, memberId: candidate.memberId }),
+    );
+    return {
+      ...otherLodgeRate.payloadFields(),
+      ...(links.length > 0 ? { linkGuestToMember: links } : {}),
+    };
+  }, [linkedGuestMembers, otherLodgeRate]);
+
   // #4199: the stays this edit sends, read ONCE for the payload and the promo
   // card, so the promo preview prices the nights the quote and the save price.
   const guestStays = useMemo(
@@ -716,17 +732,9 @@ export function EditBookingPanel({
     if (dependantIdentity.declarationsPayload) {
       body.dependantIdentityDeclarations = dependantIdentity.declarationsPayload;
     }
-    // Other Lodges epic: the other-club rate election, sent only when this edit
-    // actually proposes a change to it — an unchanged election must not travel,
-    // or every ordinary edit would re-assert it and re-reprice those guests.
-    Object.assign(body, otherLodgeRate.payloadFields());
-    // #2337: the placeholder→member links, keyed to existing guest rows.
-    const links = Object.entries(linkedGuestMembers).map(
-      ([guestId, candidate]) => ({ guestId, memberId: candidate.memberId }),
-    );
-    if (links.length > 0) {
-      body.linkGuestToMember = links;
-    }
+    // The officer re-rates (the other-lodge election, #2337 links); the promo
+    // box is sent the same ones (#4202).
+    Object.assign(body, editRerates);
     // #2266 / #3492: the promo choice, bound to guests the way the server binds them.
     Object.assign(body, promoActionPayload(promoAction, remainingGuests));
 
@@ -746,8 +754,7 @@ export function EditBookingPanel({
     checkOut,
     guestStays,
     guestNameUpdates,
-    linkedGuestMembers,
-    otherLodgeRate,
+    editRerates,
     promoAction,
     remainingGuests,
     removedGuestIds,
@@ -1764,6 +1771,7 @@ export function EditBookingPanel({
             booking.viewerRole === "ADMIN" ? bookingOwner(booking).memberId : undefined
           }
           lodgeId={booking.lodgeId}
+          editRerates={editRerates}
           onRemovePromo={() => setPromoAction({ type: "remove" })}
           onKeepPromo={() => setPromoAction({ type: "keep" })}
           onPrefillCode={setPrefillPromoCode}

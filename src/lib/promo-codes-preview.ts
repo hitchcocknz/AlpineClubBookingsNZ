@@ -22,7 +22,7 @@ export async function validateSeveralPromoCodes(params: {
       })
     | null;
   workPartyEvent: { id: string; name: string; discountPercent: number } | null;
-  memberId: string;
+  memberId: string | null;
   checkIn: Date;
   totalPriceCents: number;
   guests: PromotionGuest[];

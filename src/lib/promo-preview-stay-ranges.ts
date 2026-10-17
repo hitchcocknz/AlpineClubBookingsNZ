@@ -46,14 +46,18 @@ import type { BookingGuestNightPriceSource } from "@prisma/client";
  * (#1036, `INV-MOD-005`), and only a night the edit buys prices at current
  * rates. The route hands the party to the same pricing pass the quote uses
  * (`priceBookingGuestsWithMembershipTypePolicy`), so when rates have changed
- * since the booking was made the box discounts what the quote discounts. No
- * lock is cleared here: the two re-rates that clear them on an edit are a #2337
- * member link — a guest whose member differs from the row's, which this module
- * already treats as an ADDED guest, priced afresh — and an other-lodge election,
- * which this preview is never sent. So a remaining guest also keeps the row's
- * stored other-lodge flag, which is the flag the quote prices them with when the
- * edit carries no election: the nights they buy price at a recognised other-club
- * guest's rate there, and here. An added guest and a create preview carry no
+ * since the booking was made the box discounts what the quote discounts.
+ *
+ * RE-RATES. The two officer re-rates the quote clears a guest's locks for — a
+ * #2337 placeholder-to-member link and an other-lodge tick or untick — are
+ * resolved before this module runs, by the quote's own resolvers
+ * (`promoPreviewEditContext`), and arrive on the stored row: `linkedMemberId`
+ * (the guest then prices as that member) and `repricedDeliberately` (the locks
+ * are cleared through the same `editedGuestPricingLocks(row, true)` the quote
+ * calls). A linked guest is still the row's placeholder in the request, so the
+ * row match below is unchanged by the link. `otherLodgeMember` is the flag the
+ * quote prices the guest with: the election's end state, or the stored flag
+ * when the edit carries none. An added guest and a create preview carry no
  * locks and no flag.
  */
 export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
@@ -67,8 +71,12 @@ export type PromoPreviewStayGuest = StayRangeDeltaEntry & {
  */
 export type PromoPreviewStoredGuest = Omit<LiveGuestStayRow, "nights"> & {
   memberId: string | null;
-  /** The stored other-lodge flag (Other Lodges epic), kept by a remaining guest. */
+  /** The other-lodge flag the quote prices this guest with (Other Lodges epic). */
   otherLodgeMember?: boolean;
+  /** The edit re-rates this guest (a #2337 link, an other-lodge tick or untick): no locks. */
+  repricedDeliberately?: boolean;
+  /** #2337: the member this placeholder is being linked to, whom it then prices as. */
+  linkedMemberId?: string;
   nights?: ReadonlyArray<{
     stayDate: Date;
     priceCents?: number | null;
@@ -85,12 +93,14 @@ export type PromoPreviewEdit = {
 /** What a guest prices with from their stored row (#4202): only a remaining guest has any. */
 type PromoPreviewGuestLocks = Partial<Pick<ReturnType<typeof editedGuestPricingLocks>, "lockedNightPrices">> & {
   otherLodgeMember?: boolean;
+  /** #2337: a linked placeholder prices as the member it is being linked to. */
+  link?: { memberId: string; isMember: true };
 };
 
 export type PromoPreviewStays<Guest> = {
   checkIn: Date;
   checkOut: Date;
-  guests: Array<Guest & NormalizedBookingGuestStayRange & PromoPreviewGuestLocks>;
+  guests: Array<Guest & NormalizedBookingGuestStayRange & Omit<PromoPreviewGuestLocks, "link">>;
 };
 
 type PromoPreviewStayArgs<Guest> = {
@@ -177,8 +187,9 @@ export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
     const index = partyIndexByRowId.get(row.id)!;
     rangeByPartyIndex.set(index, range);
     locksByPartyIndex.set(index, {
-      ...editedGuestPricingLocks(lockableNights(row), false),
+      ...editedGuestPricingLocks(lockableNights(row), row.repricedDeliberately === true),
       otherLodgeMember: row.otherLodgeMember ?? false,
+      ...(row.linkedMemberId ? { link: { memberId: row.linkedMemberId, isMember: true as const } } : {}),
     });
   }
   resolved.added.forEach((range, addedIndex) => {
@@ -203,6 +214,7 @@ export function resolvePromoPreviewStays<Guest extends PromoPreviewStayGuest>(
         nights: range.nights,
         lockedNightPrices: locksByPartyIndex.get(index)?.lockedNightPrices,
         otherLodgeMember: locksByPartyIndex.get(index)?.otherLodgeMember,
+        ...locksByPartyIndex.get(index)?.link,
       };
     }),
   };

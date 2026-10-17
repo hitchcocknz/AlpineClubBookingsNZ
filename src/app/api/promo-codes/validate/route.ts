@@ -45,7 +45,8 @@ import { normalizePromoCodeInput } from "@/lib/promo-code-list-rules";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy, planMemberGuestConsentWrites } from "@/lib/member-guest-add-policy";
 import { guestConsentStatus } from "@/lib/member-guest-consent";
-import { promoPreviewEditContext } from "@/lib/promo-guest-codes";
+import { promoPreviewEditContext } from "@/lib/promo-preview-edit";
+import { modifyQuoteSchema } from "@/lib/booking-modify-quote-request";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -96,10 +97,9 @@ const validateSchema = z
       .min(1)
       .max(20)
       .optional(),
-    // Lodge the booking under quote is for (multi-lodge phase 8): promo
-    // lodge restrictions and season pricing validate against this lodge.
-    // Omitted resolves to the default lodge, so single-lodge clients keep
-    // working unchanged.
+    // Lodge the booking under quote is for (multi-lodge phase 8): promo lodge
+    // restrictions and season pricing validate against it; omitted, the default
+    // lodge. IGNORED on an edit (`bookingId`), which uses the booking's own (#4202).
     lodgeId: z.string().min(1).optional(),
     // WHICH KIND OF PURCHASE this preview is for (#2770, INV-MOD-026). This one
     // route serves both the create wizard (a first purchase) and the edit panel
@@ -109,17 +109,21 @@ const validateSchema = z
     // guests, dates and code look the same either way.
     //
     // Optional and defaulting to a FIRST purchase, so every existing client — the
-    // member wizard, the admin book page — keeps behaving exactly as it does now.
-    // A client that lied about this could only mislead ITSELF: the preview is
+    // member wizard, the admin book page — keeps behaving exactly as it does now;
+    // a `bookingId` implies an edit whatever this says (#4202). A client that lied about this could only mislead ITSELF: the preview is
     // never the charge. `modify-quote` recomputes the promo on its own gated
     // pricing and the save path recomputes it again, so the money is decided
     // there, not here (#1095).
     forBookingEdit: z.boolean().optional(),
-    // #3492: the booking an EDIT preview is for. Read only for its guests'
-    // stored consent (above); the caller must own it or hold the
-    // booking-management role, and any other id answers exactly as a missing
-    // booking does (404), so it confirms nothing about an id.
+    // #3492, #4199, #4202: the booking an EDIT preview is for, priced as the
+    // quote prices it (`promoPreviewEditContext`): its owner, lodge, stored
+    // rows (consent, nights, sold prices, flags) and its own promotion slots.
+    // The caller must own it or hold the booking-management role, and any other
+    // id answers exactly as a missing booking does (404), confirming nothing.
     bookingId: z.string().min(1).max(64).optional(),
+    // #4202: the officer re-rates the quote is sent (#2337 links, the other-lodge
+    // election), so the box clears the same guests' locks. Read only with `bookingId`.
+    ...modifyQuoteSchema.pick({ linkGuestToMember: true, otherLodgeId: true, otherLodgeMemberGuestIds: true }).shape,
   })
   .refine(
     (data) =>
@@ -179,19 +183,20 @@ export async function POST(req: NextRequest) {
   // (D-3492-3/4, D-3813-4) nor tells the caller anything.
   //
   // #4199, #4202: the edited booking, as the quote prices it — its rows for the
-  // planner, its owner, its lodge and its own promotion slots.
+  // planner, its owner, its lodge, its own promotion slots and the re-rates.
   const edited = parsed.data.bookingId
     ? await promoPreviewEditContext({
         bookingId: parsed.data.bookingId,
         actorMemberId: session.user.id,
-        isBookingOfficer: bookingManagementAuthorizationRole(session.user) === "ADMIN",
-        bookingGuestIds: parsed.data.guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : [])),
+        role: bookingManagementAuthorizationRole(session.user),
+        request: parsed.data,
       })
     : undefined;
   if (edited === null) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  if (edited && "refusal" in edited) return NextResponse.json({ error: edited.refusal.message }, { status: edited.refusal.status });
   const storedGuestById = edited?.consentById ?? null;
-  // An edit is judged against the booking's owner, as the quote judges it.
-  const effectiveMemberId = edited?.ownerMemberId ?? parsed.data.forMemberId ?? session.user.id;
+  // An edit is judged against the booking's owner (null: a school's), as the quote judges it.
+  const effectiveMemberId: string | null = edited ? edited.ownerMemberId : (parsed.data.forMemberId ?? session.user.id);
   // #4199, #4202: each guest's nights and sold prices, as the save has them (`INV-EXCEPT-022`).
   const stays = resolvePromoPreviewStaysOrRefusal({ ...parsed.data, edit: edited?.edit ?? null });
   if ("refusal" in stays) return NextResponse.json({ error: stays.refusal }, { status: 400 });
@@ -206,7 +211,8 @@ export async function POST(req: NextRequest) {
   // top of the handler because everything above is schema and authorization —
   // the collapsed refusal cannot be raised until the party is priced.
   const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
-  const isAuthorizedOnBehalf = Boolean(parsed.data.forMemberId);
+  // An officer editing somebody else's booking acts for its owner, as on the quote (`skipAuthorization: isAdmin`).
+  const isAuthorizedOnBehalf = Boolean(parsed.data.forMemberId) || (edited !== undefined && edited.ownerMemberId !== session.user.id);
 
   let promoCode:
     | (Awaited<ReturnType<typeof prisma.promoCode.findUnique>> & {
@@ -317,8 +323,8 @@ export async function POST(req: NextRequest) {
   const gds = await prisma.groupDiscountSetting.findUnique({
     where: { id: "default" },
   });
-  const groupDiscount: GroupDiscountConfig | undefined = parsed.data
-    .forBookingEdit
+  const groupDiscount: GroupDiscountConfig | undefined =
+    parsed.data.forBookingEdit || edited
     ? toEditTimeGroupDiscountConfig(gds)
     : toGroupDiscountConfig(gds);
 

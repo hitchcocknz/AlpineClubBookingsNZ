@@ -81,6 +81,7 @@ async function applyCode(guestStays: ReturnType<typeof stays>) {
       quote={null}
       forMemberId={undefined}
       lodgeId="lodge-1"
+      editRerates={{}}
       onRemovePromo={vi.fn()}
       onKeepPromo={vi.fn()}
       onPrefillCode={vi.fn()}
