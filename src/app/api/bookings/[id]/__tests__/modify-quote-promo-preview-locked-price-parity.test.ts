@@ -133,7 +133,7 @@ vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info:
 import { POST as modifyQuote } from "@/app/api/bookings/[id]/modify-quote/route";
 import { POST as validatePromo } from "@/app/api/promo-codes/validate/route";
 import { GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE } from "@/lib/booking-modify";
-import { OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE } from "@/lib/booking-other-lodge-rate";
+import { OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE, OtherLodgeRateInProgressError } from "@/lib/booking-other-lodge-rate";
 
 const D = (day: string) => new Date(`${day}T00:00:00.000Z`);
 /** Today's rate for a night. */
@@ -264,6 +264,8 @@ beforeEach(() => {
  * common request.
  */
 type Edit = {
+  /** The edit's check-in; the stored one (24 August) unless a case says otherwise. */
+  checkIn?: string;
   checkOut: string;
   promo: Record<string, unknown>;
   addFriend?: boolean;
@@ -274,6 +276,12 @@ type Edit = {
   /** Further guests the edit adds: as the quote is sent them, and as the box is. */
   quoteAdd?: Array<Record<string, unknown>>;
   boxAdd?: Array<Record<string, unknown>>;
+  /**
+   * The quote is sent the edit WITHOUT the code: for a refusal of the edit's
+   * re-rate that the quote raises only once it is past its own refusal of a
+   * code change (a stay under way refuses that first).
+   */
+  quoteWithoutCode?: boolean;
   /** Both routes refuse the code (the case compares the refusals); otherwise both must apply it. */
   refused?: boolean;
 };
@@ -294,9 +302,9 @@ async function quote(edit: Edit) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        checkIn: "2026-08-24",
+        checkIn: edit.checkIn ?? "2026-08-24",
         checkOut: edit.checkOut,
-        promoCode: "SAVE",
+        ...(edit.quoteWithoutCode ? {} : { promoCode: "SAVE" }),
         ...edit.quoteBody,
         ...(edit.addFriend || edit.quoteAdd
           ? {
@@ -340,7 +348,7 @@ async function box(edit: Edit) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         code: "SAVE",
-        checkIn: "2026-08-24",
+        checkIn: edit.checkIn ?? "2026-08-24",
         checkOut: edit.checkOut,
         forBookingEdit: true,
         bookingId: "b1",
@@ -352,7 +360,7 @@ async function box(edit: Edit) {
             isMember: true,
             memberId: "m1",
             bookingGuestId: "g1",
-            stayStart: "2026-08-24",
+            stayStart: edit.checkIn ?? "2026-08-24",
             stayEnd: edit.checkOut,
             ...edit.boxGuest,
           },
@@ -739,6 +747,35 @@ describe("#4202 review r3: who may re-rate, and an officer's own booking", () =>
     expect(await quote({ checkOut: "2026-08-28", promo: { percentOff: 50 }, quoteBody: fields })).toEqual({
       valid: false,
       error: "A guest cannot be renamed and linked in the same change",
+    });
+  });
+
+  it("a stay already under way: the quote's mid-stay refusal of an election, in the box too", async () => {
+    // The panel hides the box on a stay under way, and the quote refuses any
+    // code change there first; what the box mirrors is the re-rate's refusal.
+    const fields = { otherLodgeId: "ol-1", otherLodgeMemberGuestIds: ["g1"] };
+    await expectParity({
+      quoteWithoutCode: true,
+      checkIn: "2026-06-30",
+      checkOut: "2026-07-03",
+      promo: { percentOff: 50 },
+      boxGuest: PLACEHOLDER_IN_BOX,
+      quoteBody: fields,
+      boxBody: fields,
+      refused: true,
+      setup: () => {
+        officerCalling();
+        storedWith(
+          { ...PLACEHOLDER, stayStart: D("2026-06-30"), stayEnd: D("2026-07-03"), nights: [] },
+          { status: "PAID", checkIn: D("2026-06-30"), checkOut: D("2026-07-03") },
+        );
+      },
+    });
+    expect(
+      await quote({ checkIn: "2026-06-30", checkOut: "2026-07-03", promo: {}, quoteBody: fields, quoteWithoutCode: true }),
+    ).toEqual({
+      valid: false,
+      error: new OtherLodgeRateInProgressError().message,
     });
   });
 
