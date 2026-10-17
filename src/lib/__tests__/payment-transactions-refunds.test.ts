@@ -4,13 +4,14 @@ import { PaymentSource, PaymentStatus } from "@prisma/client";
 const mocks = vi.hoisted(() => ({
   processRefund: vi.fn(),
   loggerWarn: vi.fn(),
+  loggerError: vi.fn(),
 }));
 
 vi.mock("@/lib/logger", () => ({
   default: {
     warn: mocks.loggerWarn,
     info: vi.fn(),
-    error: vi.fn(),
+    error: mocks.loggerError,
     debug: vi.fn(),
   },
 }));
@@ -29,6 +30,12 @@ const failedLater = vi.hoisted(() => ({
   keep: vi.fn<(...args: unknown[]) => Promise<{ debts: unknown[]; readAsRefused: string[] }>>(async () => ({ debts: [], readAsRefused: [] })),
   alert: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
 }));
+// #4159 review round 2 (F2): the officers' alert for refund money a charge's total cannot hold, observed here.
+const capOverflow = vi.hoisted(() => ({ alert: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true) }));
+vi.mock("@/lib/card-refund-cap-overflow", async (importOriginal) => ({
+  ...((await importOriginal()) as object),
+  alertCardRefundCapOverflow: capOverflow.alert,
+}));
 vi.mock("@/lib/card-refund-failed-later", () => ({
   keepFailedLaterCardRefundsOwed: failedLater.keep,
   alertFailedLaterCardRefunds: failedLater.alert,
@@ -44,8 +51,10 @@ import {
   recordInternetBankingPaymentTransaction,
   RefundAllocationRacedError,
   refundPaymentTransactions,
+  recordStripeRefundsAgainstTransaction,
   syncRefundsFromStripeCharge,
 } from "@/lib/payment-transactions";
+import { predatesRefundLedger } from "@/lib/payment-transaction-status";
 import {
   cancelRefundableBaseCents,
   getRemainingRefundableCents,
@@ -283,6 +292,12 @@ function createRefundStore() {
         refunds.set(where.stripeRefundId, nextRefund);
         return nextRefund;
       }),
+      // #4159 round 3 (4): the counted refunds on a charge, which key a cap overflow's alert.
+      findMany: vi.fn(async ({ where }: any) =>
+        [...refunds.values()].filter(
+          (refund) => refund.paymentTransactionId === where.paymentTransactionId && !(where.status?.notIn ?? []).includes(refund.status),
+        ),
+      ),
       aggregate: vi.fn(async ({ where }: any) => {
         const excludedStatuses = new Set(where.status?.notIn ?? []);
         let amountCents = 0;
@@ -1146,6 +1161,34 @@ describe("#3032 - applyLocalRefundAllocation cannot lose an update", () => {
   });
 });
 
+/**
+ * #4154 (`INV-PAY-135`, PR #4159 F2/F4): a capacity race's hand-back may land
+ * only on the race's own card charge. `onlyTransactionIds` narrows the charges
+ * the allocation may use; short there, it refuses as any shortfall does, and
+ * never spills onto a charge outside the list, however much that one holds.
+ */
+describe("#4154 - applyLocalRefundAllocation onlyTransactionIds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("MUTATION: a charge outside the list is never used, though it holds the whole amount", async () => {
+    const { store, transaction } = createRefundStore();
+
+    await expect(
+      applyLocalRefundAllocation({ paymentId: "payment_1", amountCents: 2000, onlyTransactionIds: ["txn_race"], store: store as never }),
+    ).rejects.toThrow("Refund amount exceeds captured payments");
+    expect(transaction.refundedAmountCents).toBe(0);
+  });
+
+  it("a charge on the list takes it", async () => {
+    const { store, transaction } = createRefundStore();
+
+    await applyLocalRefundAllocation({ paymentId: "payment_1", amountCents: 2000, onlyTransactionIds: ["txn_1"], store: store as never });
+    expect(transaction.refundedAmountCents).toBe(2000);
+  });
+});
+
 describe("#3268 - reconcilePaymentAggregates and the saved-card column (INV-PAY-054)", () => {
   /*
     The failure this pins: the cron retires an unusable card (nulling the pm on
@@ -1722,6 +1765,68 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
   // the old max-based total already counted it (from Stripe's amount_refunded).
   // The first sync that lists it inserts its row for the first time: that must
   // not add it again.
+  // #4154 review (M1): the charge caps the total, so cents above it are refund money the total cannot hold - logged, never silent.
+  describe("a refund the charge's total cannot hold is logged as an error", () => {
+    it("MUTATION: credit for the whole charge, then a card refund on top: capped at the charge, the discarded cents named", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      await webhookSync(ctx);
+      expect(ctx.transaction.refundedAmountCents).toBe(PAID_CENTS);
+      expect(mocks.loggerError).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentTransactionId: ctx.transaction.id, discardedCents: CARD_REFUND_CENTS }),
+        expect.stringContaining("#4154"),
+      );
+    });
+
+    it("CONTROL: a refund within the charge logs no error", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx);
+      await webhookSync(ctx);
+      expect(mocks.loggerError).not.toHaveBeenCalled();
+      expect(capOverflow.alert).not.toHaveBeenCalled();
+    });
+
+    // #4159 review round 2 (F2): logged is not enough - the officers are told, after the commit, never inside it.
+    const record = (store: unknown) =>
+      recordStripeRefundsAgainstTransaction({ paymentId: "payment_1", paymentTransactionId: "txn_1", refunds: [cardRefund("re_over", CARD_REFUND_CENTS)], store: store as never });
+
+    it("MUTATION: on its own commit, the discarded cents reach the officers' alert - after the transaction - and are returned", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      let committed = false;
+      const root = { ...ctx.store, $connect: () => undefined, $transaction: async (fn: (tx: unknown) => Promise<unknown>) => { const out = await fn(ctx.store); committed = true; return out; } };
+      capOverflow.alert.mockImplementationOnce(async () => { expect(committed).toBe(true); return true; });
+      const result = await record(root);
+      const overflow = { paymentId: "payment_1", paymentTransactionId: "txn_1", discardedCents: CARD_REFUND_CENTS, recordedRefundCents: CARD_REFUND_CENTS, countedRefundIds: ["re_over"] };
+      expect(result.capOverflow).toEqual(overflow);
+      expect(capOverflow.alert).toHaveBeenCalledWith(overflow);
+    });
+
+    it("MUTATION (round 3, 6): the charge.refunded sync passes the discarded cents on to its caller", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      const synced = await syncRefundsFromStripeCharge({
+        paymentIntentId: "pi_1", stripeChargeId: "ch_1", refundedAmountCents: CARD_REFUND_CENTS, refunds: [cardRefund("re_over", CARD_REFUND_CENTS)], store: ctx.store as never,
+      });
+      expect(synced?.capOverflow).toMatchObject({ paymentTransactionId: "txn_1", discardedCents: CARD_REFUND_CENTS, countedRefundIds: ["re_over"] });
+    });
+
+    it("CONTROL (round 3, 6): an inline card refund within the charge passes on no overflow", async () => {
+      const ctx = paidStore();
+      mocks.processRefund.mockResolvedValueOnce(cardRefund("re_1", CARD_REFUND_CENTS));
+      const result = await refundPaymentTransactions({ format: CLUB_FORMAT_TEST, paymentId: "payment_1", amountCents: CARD_REFUND_CENTS, idempotencyKeyPrefix: "refund_request_rq1", store: ctx.store as never });
+      expect(result.capOverflows).toEqual([]);
+    });
+
+    it("joined to a caller's transaction, it alerts nothing itself and returns the discarded cents for the caller", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx, PAID_CENTS);
+      const result = await record(ctx.store);
+      expect(result.capOverflow).toMatchObject({ discardedCents: CARD_REFUND_CENTS });
+      expect(capOverflow.alert).not.toHaveBeenCalled();
+    });
+  });
+
   describe("a refund older than the refund ledger", () => {
     const PRE_LEDGER_CENTS = 3000;
     const preLedgerRefund = {
@@ -2304,5 +2409,21 @@ describe("#4104 review - what the refund sender and the snapshot floor do with a
     const result = await refundPaymentTransactions({ format: CLUB_FORMAT_TEST, paymentId: "payment_1", amountCents: 2000, store: store as never });
     expect(result.failedLaterDebts).toEqual([debt]);
     expect(mocks.loggerWarn).toHaveBeenCalledWith(expect.objectContaining({ failedLaterDebts: [debt] }), expect.stringContaining("#4104"));
+  });
+});
+
+// #4154 review (M9): ONE rule for "made before the refund ledger", whose undated reading is each caller's to name.
+describe("predatesRefundLedger", () => {
+  it("a dated refund predates the ledger only when made before its start; no start predates nothing", () => {
+    expect(predatesRefundLedger(999, 1_000, "since-ledger")).toBe(true);
+    expect(predatesRefundLedger(1_000, 1_000, "pre-ledger")).toBe(false);
+    expect(predatesRefundLedger(999, null, "pre-ledger")).toBe(false);
+  });
+
+  it("MUTATION: an undated refund is read as its caller names, whatever the start", () => {
+    for (const start of [1_000, null]) {
+      expect(predatesRefundLedger(null, start, "pre-ledger")).toBe(true);
+      expect(predatesRefundLedger(undefined, start, "since-ledger")).toBe(false);
+    }
   });
 });

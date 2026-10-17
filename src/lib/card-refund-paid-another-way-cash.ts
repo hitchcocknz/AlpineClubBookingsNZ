@@ -54,7 +54,9 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  * the payment has an invoice to credit. So a COMPLETED one is one of these
  * records (`BANK_CASH_RECORD_WHERE`): noted when a note row names it, in any
  * status, else un-noted - read off the rows its completion committed, never
- * off the invoice as it stands later.
+ * off the invoice as it stands later. #4159 round 2 (F1): a capacity race's
+ * part whose record keeps a card note's cover (`paidAnotherWayCardNoteCover`)
+ * is noted too: that note answers its cash, and its own note the rest.
  */
 
 /**
@@ -108,14 +110,15 @@ interface PaidAnotherWayCloseCash {
 async function readPaidAnotherWayCloses(db: CashStore, paymentId: string): Promise<PaidAnotherWayCloseCash[]> {
   const tasks = await db.manualRefundTask.findMany({
     where: { paymentId, ...BANK_CASH_RECORD_WHERE },
-    select: { id: true, kind: true, occurrenceKey: true, amountCents: true },
+    select: { id: true, kind: true, occurrenceKey: true, amountCents: true, reviewContext: true },
   });
   const closes: PaidAnotherWayCloseCash[] = [];
   for (const task of tasks ?? []) {
     const amountCents = Math.max(0, task.amountCents ?? 0);
     if (isCancelCardShortfallTask(task)) {
-      const noteRows = await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) });
-      closes.push({ id: task.id, amountCents, counted: noteRows > 0 ? "noted" : "unnoted" });
+      // #4159 round 2 (F1): a capacity race's part a card note already answers is noted, with or without a row of its own.
+      const noted = readPaidAnotherWayCardNoteCoverCents(task.reviewContext) > 0 || (await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) })) > 0;
+      closes.push({ id: task.id, amountCents, counted: noted ? "noted" : "unnoted" });
       continue;
     }
     const note = paidAnotherWayCloseXeroNote(task);

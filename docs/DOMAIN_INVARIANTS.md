@@ -340,6 +340,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-132` | No intent ledger-row write lowers a captured status |
 | `INV-PAY-133` | Ledger rows order by createdAt, then insertionSeq |
 | `INV-PAY-134` | A cancel's card refund is recorded once, by the close making it |
+| `INV-PAY-135` | A capacity race's unrefunded rest is a hand-back task to check |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -657,7 +658,7 @@ Prefix `INV-EXCEPT`.
 | `INV-EXCEPT-020` | A kept-pending capacity conflict is always recorded, on either store |
 | `INV-EXCEPT-021` | Live proposals are verified by replaying the frozen delta, never trusted |
 | `INV-EXCEPT-035` | A refusal names only what was established, never an unseen cause |
-| `INV-EXCEPT-022` | One implementation computes what the delta produces, for all four surfaces |
+| `INV-EXCEPT-022` | One implementation computes what the delta produces, on every surface |
 | `INV-EXCEPT-023` | Only reviewed rules are overridden; ADMIN never borrowed for guest authorisation |
 | `INV-EXCEPT-024` | An approved hosting exception is recorded as decided in the same transaction |
 | `INV-EXCEPT-025` | Adult-supervision review is never decided by proxy; opens PENDING and BLOCKED |

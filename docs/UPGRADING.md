@@ -119,6 +119,58 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### One-off correction of the starter privacy policy's audit-log retention (#4031)
+
+`20261119010000_correct_starter_privacy_audit_retention` is a **data-only
+correction**. It adds and removes no schema, touches no hot table, and is safe
+to run in the ordinary deploy window with the previous app colour still serving.
+
+**What it fixes.** Section 7 of the starter privacy policy said *"System audit
+logs: Retained for 90 days, then automatically pruned."* That is not what the
+retention job does. Most audit entries are kept for 7 years, sensitive-access
+entries for 2 years (up to 7 with an audit archive), and incident evidence for
+at least 10 years, while IP address and browser details are removed after 90
+days. The migration replaces the privacy page's body wherever it still holds
+exactly the previous starter text. It also moves the header's "Last updated"
+date to 17 October 2026, but only where the header is still the starter one.
+
+**What you will notice.** If your privacy page was never edited, section 7 now
+lists the schedule kind by kind, and the header reads "Last updated 17 October
+2026". If an admin has edited the page body, nothing in the body changes. If
+only the header was edited, section 7 is still corrected and the header is
+kept as written. If the body was edited, **read your section 7 and correct it
+yourself**: **Admin → Setup & Configuration → Site
+Appearance & Content → Page Content → Privacy Policy** (`/admin/page-content`).
+
+**Post-upgrade action: load `/privacy` and read section 7.** The migration runs
+once. Two things can write the old text back afterwards:
+
+- an admin who had **Privacy Policy** open in the Page Content editor *before*
+  the upgrade and presses Save *afterwards*;
+- importing a configuration bundle exported before this release (Merge or
+  Overwrite, including a disaster-recovery rebuild), which carries the page's
+  old body (#2511).
+
+Re-export your configuration bundle after upgrading, and re-check `/privacy`
+after any bundle import.
+
+### Count audit entries with an unrecognised retention class before you upgrade (#3940)
+
+**What changes.** The nightly audit prune now treats an entry whose retention
+class is not one of the four the app writes as an entry with no class: it is
+deleted at its expiry date unless its severity is critical (seven years).
+Previously such an entry matched no rule and was kept forever. No migration
+runs; this is a change to the prune's predicate only.
+
+**Before deployment (recommended).** Run the read-only count in
+[`AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` → "Rows with an unrecognised retention class"](AUDIT_RETENTION_ARCHIVE_RUNBOOK.md#rows-with-an-unrecognised-retention-class-3940)
+on a restored copy of your database, not on production. The first nightly run
+after cutover deletes those rows once, permanently, with no archive copy. Most
+installs have none, because the app only writes the four known classes.
+
+**Rollback.** Rolling the code back stops further deletions but does not bring
+back rows already pruned. Only your pre-upgrade backup does.
+
 ### Count old audit entries with no severity before you upgrade (#3524)
 
 **What changes.** The nightly audit prune now deletes an unclassified entry whose

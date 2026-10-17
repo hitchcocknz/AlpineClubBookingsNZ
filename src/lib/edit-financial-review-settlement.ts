@@ -50,6 +50,7 @@ import {
 } from "@/lib/edit-financial-review-cancel-netting";
 import type { EditReviewSettlementTask } from "@/lib/edit-financial-review-settlement-task";
 import { cardShortfallSettlement } from "@/lib/cancel-card-refund-shortfall-settle";
+import type { CapacityRaceStripeRefunded } from "@/lib/capacity-race-refunded-total-correction";
 
 /**
  * #3032 (epic #2797): WHERE a confirmed review amount goes when the task is
@@ -188,8 +189,9 @@ export type EditReviewSettlementRoute =
       /** #3536 (`INV-PAY-116`): the officer said this went back in cash, never inferred from
        * "marked paid by hand". Words on the Xero note only; settlement and ledger unchanged. */
       handedBackInCash?: true;
-      /** #4097 (`INV-PAY-129`): a card refund shortfall settles on its non-card charges first; its refusal names dismissing. */
-      cardShortfall?: { preferTransactionIds: string[] };
+      /** #4097 (`INV-PAY-129`): a card refund shortfall settles on its non-card charges first; its refusal names dismissing.
+       * #4154 (`INV-PAY-135`): a capacity race's, on the race's own charge only, with its own refusal. */
+      cardShortfall?: { preferTransactionIds: string[]; onlyTransactionIds?: string[]; nothingToAllocateMessage?: string };
     }
   | {
       kind: "account-credit";
@@ -256,6 +258,8 @@ export async function chooseEditReviewSettlementRoute({
   handedBackInCash = false,
   club,
   store,
+  actingMemberId,
+  capacityRace,
 }: {
   task: EditReviewSettlementTask;
   /**
@@ -292,6 +296,10 @@ export async function chooseEditReviewSettlementRoute({
   /** #3835: the club's zone (`INV-LOCK-004`) and format, resolved before the transaction. */
   club: { zone: ClubTimeZone; format: ClubFormat };
   store: Prisma.TransactionClient;
+  /** #4154: the officer completing it, for a capacity race's audited correction; absent on a read-only preview. */
+  actingMemberId?: string;
+  /** #4154 review (M1, M4): a capacity race's Stripe read, made before the transaction, and whether its note has an invoice. */
+  capacityRace?: { stripe: CapacityRaceStripeRefunded | null; invoiced: boolean };
 }): Promise<EditReviewSettlementRoute | null> {
   if (task.kind !== ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW) {
     if (direction === ManualRefundTaskDirection.CHARGE_TO_MEMBER) {
@@ -306,7 +314,7 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
-    const cardShortfall = await cardShortfallSettlement(task, store); // #4097: null unless a card refund shortfall
+    const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null, format: club.format, capacityRace }); // #4097: null unless a card refund shortfall
     return handsBackByHand(task) && task.paymentId !== null
       ? {
           kind: "local-allocation",
