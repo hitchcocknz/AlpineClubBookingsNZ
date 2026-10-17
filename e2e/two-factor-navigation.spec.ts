@@ -51,12 +51,11 @@ function fixtureClient() {
   return new PrismaClient({ adapter: createPrismaPgAdapter(url) });
 }
 
-
 async function expectUsableKiosk(page: Page, accessResponse: Response, weekResponse: Response) {
   expect(accessResponse.ok(), "Kiosk access request must succeed").toBe(true);
   expect(await accessResponse.json()).toMatchObject({
     tier: "lodge",
-    canManageRoster: true,
+    canMarkAttendance: true,
   });
   expect(weekResponse.ok(), "Kiosk week request must succeed").toBe(true);
   const weekData = await weekResponse.json() as { days: Array<{ accessible: boolean }> };
