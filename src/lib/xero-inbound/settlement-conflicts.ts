@@ -49,7 +49,7 @@ import { recordBookingEvent } from "@/lib/booking-events";
 import { buildDuplicateCaptureRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import type { ClubFormat } from "@/lib/club-format";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import { listLiveSupersededIntentIds } from "@/lib/superseded-intent-ownership";
+import { listSupersededIntentIdsOwningCaptures } from "@/lib/superseded-intent-ownership";
 
 /*
  * B5 (#2262): the reciprocal fence's repeat-alert window is
@@ -263,10 +263,11 @@ export type SecondInstrumentSettlement = {
  *
  * Never a capture the #1992 duplicate-capture refund owns: the opposite order
  * (bank first, card second), whose durable refund operation already says which
- * side goes back (`INV-PAY-043`). Nor one the superseded-intent machinery owns
- * (`listLiveSupersededIntentIds`, #4177): that capture is going back to the
- * member, and the duplicate-capture refund skips it too, so the two name the
- * same settling capture.
+ * side goes back (`INV-PAY-043`). On a PAID / COMPLETED booking, nor one the
+ * superseded-intent machinery holds for the member
+ * (`listSupersededIntentIdsOwningCaptures`, #4177): the duplicate-capture
+ * refund skips it too, so the two name the same settling capture. A cancelled
+ * booking still counts it, because the new bank cash has nowhere to go.
  *
  * Read under the lock(1) the settle loop already holds, which the card
  * settlement takes too, so the settlement it looks for has either committed or
@@ -312,9 +313,10 @@ export async function findSecondInstrumentSettlement(
     }
   }
   // #4163 (`INV-PAY-133`): ordered oldest first, so when several captures
-  // qualify the `.find()` below names the OLDEST-INSERTED one neither the
-  // duplicate-capture refund nor the superseded-intent machinery owns (#4177). The first capture is the one that settled the
-  // booking; a later capture is the duplicate the refund (#1992) exists for.
+  // qualify the `.find()` below names the OLDEST-INSERTED one the duplicate-
+  // capture refund does not own (nor, on a paid booking, the superseded-intent
+  // machinery, #4177). The first capture is the one that settled the booking;
+  // a later capture is the duplicate the refund (#1992) exists for.
   // #1765 refund history is dropped below on a paid booking and only ranked
   // last on a cancelled one, whose stable sort keeps this order in each group.
   const captured = await tx.paymentTransaction.findMany({
@@ -373,8 +375,12 @@ export async function findSecondInstrumentSettlement(
   const ownedByDuplicateRefund = new Set(
     duplicateRefunds.map((operation) => operation.idempotencyKey)
   );
+  // #4177: on a paid booking only. A cancelled booking's new bank cash has
+  // nowhere to go, so a capture going back to the member still counts there.
   const ownedBySupersededMachinery = new Set(
-    duplicateKeys.length > 0 ? await listLiveSupersededIntentIds(tx, paymentId) : []
+    !cancelled && duplicateKeys.length > 0
+      ? await listSupersededIntentIdsOwningCaptures(tx, paymentId)
+      : []
   );
   const settledBy = candidates.find(
     (transaction) =>

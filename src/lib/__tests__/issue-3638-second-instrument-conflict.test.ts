@@ -155,6 +155,10 @@ import {
   settlementMarkerTimelineEntries,
 } from "@/lib/manual-settlement-reversal-event";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import {
+  isPaymentRecoveryOperationInFlight,
+  PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE,
+} from "@/lib/payment-recovery-constants";
 
 const INVOICE_ID = "inv-xero-3638";
 
@@ -985,15 +989,15 @@ describe("the settling capture follows the shared ledger order (#4163)", () => {
 });
 
 /**
- * #4177: an older capture X whose intent the superseded-intent machinery owns
- * (a live CANCEL_PAYMENT_INTENT or REFUND_SUPERSEDED_PAYMENT operation: X is
- * going back to the member) is not the settling capture. The duplicate-capture
- * refund skips it through the same predicate (`listLiveSupersededIntentIds`),
- * so the conflict names S, the capture the refund names, never X. The fake
- * answers the read with the predicate's own semantics: this payment, the two
- * types, and any status but SUCCEEDED.
+ * #4177: on a PAID booking, an older capture X whose captured money the
+ * superseded-intent machinery holds for the member (a REFUND_SUPERSEDED_PAYMENT
+ * not yet SUCCEEDED, or a CANCEL_PAYMENT_INTENT still in flight) is not the
+ * settling capture: the duplicate-capture refund skips it too, so the conflict
+ * names S, never X. A dead cancel holds nothing, so X still counts; and on a
+ * CANCELLED booking every capture counts, because the new bank cash has nowhere
+ * to go. The fake answers the read with the predicate's own semantics.
  */
-describe("the settling capture skips one the superseded-intent machinery owns (#4177)", () => {
+describe("the settling capture skips one the superseded-intent machinery holds, on a paid booking (#4177)", () => {
   const X = {
     ...CARD_PRIMARY,
     id: "superseded-capture",
@@ -1007,108 +1011,134 @@ describe("the settling capture skips one the superseded-intent machinery owns (#
     amountCents: 31000,
   };
 
-  function ownedBy(
-    operations: {
-      paymentId: string;
-      paymentIntentId: string;
-      type: PaymentRecoveryOperationType;
-      status: PaymentRecoveryOperationStatus;
-    }[],
-  ) {
-    mocks.supersededOperationFindMany.mockImplementation(
-      async ({
-        where,
-      }: {
-        where: {
-          paymentId: string;
-          type: { in: PaymentRecoveryOperationType[] };
-          status: { not: PaymentRecoveryOperationStatus };
-        };
-      }) =>
-        operations
-          .filter(
-            (operation) =>
-              operation.paymentId === where.paymentId &&
-              where.type.in.includes(operation.type) &&
-              operation.status !== where.status.not,
-          )
-          .map(({ paymentIntentId }) => ({ paymentIntentId })),
-    );
+  type Operation = {
+    paymentId: string;
+    paymentIntentId: string;
+    type: PaymentRecoveryOperationType;
+    status: PaymentRecoveryOperationStatus;
+    attempts: number;
+    nextRetryAt: Date | null;
+  };
+
+  const RETRY_AT = new Date("2026-07-02T00:00:00.000Z");
+  const op = (type: PaymentRecoveryOperationType, overrides: Partial<Operation> = {}): Operation => ({
+    paymentId: "payment-1",
+    paymentIntentId: X.stripePaymentIntentId,
+    type,
+    status: PaymentRecoveryOperationStatus.PENDING,
+    attempts: 0,
+    nextRetryAt: RETRY_AT,
+    ...overrides,
+  });
+
+  /** The read `listSupersededIntentIdsOwningCaptures` sends, pinned whole. */
+  const EXPECTED_READ = {
+    where: {
+      paymentId: "payment-1",
+      OR: [
+        {
+          type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
+        {
+          type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+          AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE],
+        },
+      ],
+    },
+    select: { paymentIntentId: true },
+  };
+
+  /** Answers like the database: a refund op not SUCCEEDED, or a cancel op in flight. */
+  function ownedBy(operations: Operation[]) {
+    mocks.supersededOperationFindMany.mockImplementation(async (args: unknown) => {
+      expect(args).toEqual(EXPECTED_READ);
+      return operations
+        .filter(
+          (operation) =>
+            operation.paymentId === "payment-1" &&
+            (operation.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT
+              ? operation.status !== PaymentRecoveryOperationStatus.SUCCEEDED
+              : operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT &&
+                isPaymentRecoveryOperationInFlight(operation)),
+        )
+        .map(({ paymentIntentId }) => ({ paymentIntentId }));
+    });
+  }
+
+  function alertedIntent() {
+    return mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0].cardPaymentIntentId;
   }
 
   it.each([
-    PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-    PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
-  ])("names S, not the older X a live %s owns", async (type) => {
+    ["a REFUND_SUPERSEDED_PAYMENT still retrying", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.FAILED })],
+    ["a REFUND_SUPERSEDED_PAYMENT whose retries are spent", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null })],
+    ["a CANCEL_PAYMENT_INTENT waiting to run", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)],
+    ["a CANCEL_PAYMENT_INTENT being run", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.PROCESSING })],
+  ])("paid: names S, not the older X %s holds", async (_label, operation) => {
     primePayment(switchedPayment(BookingStatus.PAID));
     // Oldest first, as the ordered read returns them: X, then S.
     mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
-    ownedBy([
-      {
-        paymentId: "payment-1",
-        paymentIntentId: X.stripePaymentIntentId,
-        type,
-        status: PaymentRecoveryOperationStatus.FAILED,
-      },
-    ]);
+    ownedBy([operation]);
 
     const result = await sync();
 
     expect(result.secondInstrumentSettlementConflicts).toBe(1);
-    expect(mocks.supersededOperationFindMany).toHaveBeenCalledWith({
-      where: {
-        paymentId: "payment-1",
-        type: {
-          in: [
-            PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-            PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
-          ],
-        },
-        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-      },
-      select: { paymentIntentId: true },
-    });
+    expect(mocks.supersededOperationFindMany).toHaveBeenCalledTimes(1);
     expect(
       mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
     ).toMatchObject({ cardPaymentIntentId: S.stripePaymentIntentId, cardHeldCents: 31000 });
   });
 
-  it("still names X once its superseded operation SUCCEEDED (nothing owns its money any more)", async () => {
+  it.each([
+    ["its superseded refund SUCCEEDED", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.SUCCEEDED })],
+    ["its cancel died with no refund behind it (retries spent)", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null })],
+    ["its cancel was raised dead (PENDING, retries spent)", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { attempts: 5 })],
+  ])("paid: still names X once %s: nothing holds its money for the member", async (_label, operation) => {
     primePayment(switchedPayment(BookingStatus.PAID));
     mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
-    ownedBy([
-      {
-        paymentId: "payment-1",
-        paymentIntentId: X.stripePaymentIntentId,
-        type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
-        status: PaymentRecoveryOperationStatus.SUCCEEDED,
-      },
-    ]);
+    ownedBy([operation]);
 
     await sync();
 
-    expect(
-      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
-    ).toMatchObject({ cardPaymentIntentId: X.stripePaymentIntentId });
+    expect(alertedIntent()).toBe(X.stripePaymentIntentId);
   });
 
-  it("raises nothing when the only card capture is one the superseded-intent machinery owns", async () => {
+  it("paid: raises nothing when the only card capture is one the machinery holds for the member", async () => {
     primePayment(switchedPayment(BookingStatus.PAID));
     mocks.paymentTransactionFindMany.mockResolvedValue([X]);
-    ownedBy([
-      {
-        paymentId: "payment-1",
-        paymentIntentId: X.stripePaymentIntentId,
-        type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-        status: PaymentRecoveryOperationStatus.PENDING,
-      },
-    ]);
+    ownedBy([op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)]);
 
     const result = await sync();
 
     expect(result.secondInstrumentSettlementConflicts).toBe(0);
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
   });
+
+  it.each([
+    PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+    PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+  ])(
+    "cancelled: the bank cash has nowhere to go, so X, held by a live %s, is still the cancelledAfterCard conflict",
+    async (type) => {
+      primePayment(switchedPayment(BookingStatus.CANCELLED));
+      mocks.paymentTransactionFindMany.mockResolvedValue([X]);
+      ownedBy([op(type)]);
+
+      const result = await sync();
+
+      expect(result.secondInstrumentSettlementConflicts).toBe(1);
+      expect(mocks.supersededOperationFindMany).not.toHaveBeenCalled();
+      expect(markerRows).toEqual([
+        expect.objectContaining({
+          snapshot: expect.objectContaining({ conflictKind: "cancelledAfterCard" }),
+        }),
+      ]);
+      expect(
+        mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+      ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: X.stripePaymentIntentId });
+    },
+  );
 });
 
 describe("a replay on a completed booking (#3638)", () => {
