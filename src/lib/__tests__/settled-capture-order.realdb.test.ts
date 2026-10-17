@@ -25,7 +25,10 @@
  *   machinery (`listSupersededIntentIdsOwningCaptures`): a superseded refund
  *   counts until it SUCCEEDED, a cancel only while in flight
  *   (`PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE`), where guard (b′) counts
- *   both until SUCCEEDED.
+ *   both until SUCCEEDED; and (#4221) a superseded refund Stripe failed later
+ *   counts while its open failed-later row asks again, found by the recorded
+ *   maker, a chain of retries, or the slice's transaction, under the real
+ *   escaped key-prefix match.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -318,6 +321,94 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           .filter((operation) => operation.status !== "SUCCEEDED")
           .map((operation) => operation.intent)
           .sort(),
+      );
+    });
+
+    it("the Xero reader counts a superseded refund Stripe failed later while an open failed-later row asks again for it (#4221)", async () => {
+      const { CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } = await import("@/lib/payment-recovery-keys");
+      const cases = ["by_maker", "no_maker", "dead", "chain", "closed", "other_door", "decoy"] as const;
+      const txn = (name: (typeof cases)[number]) => `race-4177-txn-4221-${name}`;
+      const intent = (name: (typeof cases)[number]) => `pi_race_4221_${name}`;
+      const refundOp = (name: (typeof cases)[number]) => `race-4177-op-4221-refund-${name}`;
+      // Each superseded capture, refunded by its SUCCEEDED REFUND_SUPERSEDED_PAYMENT.
+      await prisma.paymentTransaction.createMany({
+        data: cases.map((name) => ({
+          id: txn(name),
+          paymentId: PAYMENT_ID,
+          kind: "PRIMARY" as const,
+          source: "STRIPE" as const,
+          stripePaymentIntentId: intent(name),
+          amountCents: PRICE_CENTS,
+          status: "SUCCEEDED" as const,
+          createdAt: EARLIER,
+        })),
+      });
+      const base = { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, amountCents: PRICE_CENTS };
+      await prisma.paymentRecoveryOperation.createMany({
+        data: [
+          ...cases.map((name) => ({
+            ...base,
+            id: refundOp(name),
+            type: "REFUND_SUPERSEDED_PAYMENT" as const,
+            status: "SUCCEEDED" as const,
+            attempts: 1,
+            nextRetryAt: null,
+            paymentTransactionId: txn(name),
+            paymentIntentId: intent(name),
+            idempotencyKey: `race-4177-4221-superseded-${name}`,
+          })),
+          // Another door's refund on the other_door capture.
+          {
+            ...base,
+            id: "race-4177-op-4221-edit",
+            type: "REFUND_BOOKING_MODIFICATION" as const,
+            status: "SUCCEEDED" as const,
+            paymentIntentId: intent("other_door"),
+            idempotencyKey: "race-4177-4221-edit-refund",
+          },
+        ],
+      });
+      const failedLater = (
+        name: string,
+        capture: (typeof cases)[number],
+        madeBy: string | null | undefined,
+        state: { status?: "PENDING" | "SUCCEEDED"; attempts?: number } = {},
+        key = `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}re_race_4221_${name}`,
+      ) => ({
+        ...base,
+        id: `race-4177-op-4221-failed-${name}`,
+        type: "REFUND_BOOKING_MODIFICATION" as const,
+        status: state.status ?? ("PENDING" as const),
+        attempts: state.attempts ?? 0,
+        nextRetryAt: TIED_AT,
+        paymentIntentId: intent(capture),
+        idempotencyKey: key,
+        stripeKeyPrefix: key,
+        allocationPlan: [
+          {
+            paymentTransactionId: txn(capture),
+            amountCents: PRICE_CENTS,
+            ...(madeBy === undefined ? {} : { madeByOperationId: madeBy }),
+          },
+        ],
+      });
+      await prisma.paymentRecoveryOperation.createMany({
+        data: [
+          failedLater("by_maker", "by_maker", refundOp("by_maker")),
+          failedLater("no_maker", "no_maker", undefined),
+          failedLater("dead", "dead", null, { attempts: 5 }),
+          failedLater("chain_1", "chain", refundOp("chain"), { status: "SUCCEEDED" }),
+          failedLater("chain_2", "chain", "race-4177-op-4221-failed-chain_1", { attempts: 5 }),
+          failedLater("closed", "closed", refundOp("closed"), { status: "SUCCEEDED" }),
+          failedLater("other_door", "other_door", "race-4177-op-4221-edit"),
+          // `_` is a LIKE wildcard: an unescaped prefix match would read this key.
+          failedLater("decoy", "decoy", refundOp("decoy"), {}, "card-refund-failed-later-re_race_4221_decoy"),
+        ],
+      });
+      const { listSupersededIntentIdsOwningCaptures } = await import("@/lib/superseded-intent-ownership");
+
+      expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID)).sort()).toEqual(
+        [intent("by_maker"), intent("chain"), intent("dead"), intent("no_maker")].sort(),
       );
     });
   },
