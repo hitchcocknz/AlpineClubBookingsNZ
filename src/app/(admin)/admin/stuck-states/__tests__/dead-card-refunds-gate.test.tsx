@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   areas: [] as string[],
   listDeadCardRefunds: vi.fn(),
   listCardRefundsPaidTwice: vi.fn(),
+  listBankRefundVoidsToAnswerRows: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: async () => ({ user: { id: "officer-1" } }) }));
@@ -24,6 +25,10 @@ vi.mock("@/lib/stuck-state-dashboard", () => ({
 }));
 vi.mock("@/lib/card-refund-paid-another-way", () => ({
   listDeadCardRefunds: mocks.listDeadCardRefunds,
+}));
+// #4162: the voided bank refund notes a person answers, under the same finance:view gate.
+vi.mock("@/lib/bank-refund-void-follow-up", () => ({
+  listBankRefundVoidsToAnswerRows: mocks.listBankRefundVoidsToAnswerRows,
 }));
 vi.mock("@/lib/card-refund-paid-twice", () => ({
   listCardRefundsPaidTwice: mocks.listCardRefundsPaidTwice,
@@ -72,6 +77,7 @@ const PAID_TWICE = {
 beforeEach(() => {
   mocks.listDeadCardRefunds.mockResolvedValue([DEAD]);
   mocks.listCardRefundsPaidTwice.mockResolvedValue([PAID_TWICE]);
+  mocks.listBankRefundVoidsToAnswerRows.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -117,5 +123,20 @@ describe("who sees the card refunds Stripe gave up on", () => {
     expect(mocks.listCardRefundsPaidTwice).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Card refunds paid back twice")).toBeInTheDocument();
     expect(screen.getByText(/\$90\.00 refunded to the card after \$90\.00 was paid back another way/)).toBeInTheDocument();
+  });
+
+  it("#4162: a Finance viewer sees the voided bank refund notes to answer; a Support viewer never reads them", async () => {
+    mocks.areas = ["support"];
+    render(await AdminStuckStatesPage());
+    expect(mocks.listBankRefundVoidsToAnswerRows).not.toHaveBeenCalled();
+    cleanup();
+
+    mocks.areas = ["support", "finance"];
+    mocks.listBankRefundVoidsToAnswerRows.mockResolvedValue([
+      { linkId: "link-1", bookingId: "booking-1", bookingReference: "B-123", creditNoteNumber: "CN-0456", amountCents: 20_000, voidedAt: "2026-06-30T00:00:00.000Z" },
+    ]);
+    render(await AdminStuckStatesPage());
+    expect(screen.getByText("Voided bank refund notes to answer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Answer the voided refund note on booking B-123" })).toBeInTheDocument();
   });
 });

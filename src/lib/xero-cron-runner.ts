@@ -124,12 +124,9 @@ function tasksForSelection(
   options: { includeLinkCleanupForBackfill: boolean }
 ): XeroCronTask[] {
   if (task === "all") return [...XERO_CRON_TASKS];
-  // #4162: the voided bank-transfer refund notes are followed up right after
-  // the link cleanup, wherever it runs, so #4161's heal has turned them off.
   if (task === "backfill" && options.includeLinkCleanupForBackfill) {
-    return ["backfill", "link-cleanup", "bank-refund-voids"];
+    return ["backfill", "link-cleanup"];
   }
-  if (task === "link-cleanup") return ["link-cleanup", "bank-refund-voids"];
   return [task];
 }
 
