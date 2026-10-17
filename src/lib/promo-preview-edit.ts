@@ -1,16 +1,23 @@
 import type { MemberGuestConsentStatus, Role } from "@prisma/client";
+import type { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
 import { bookingForPromoLookup } from "@/lib/promo-guest-codes";
 import { resolveGuestMemberLinks } from "@/lib/booking-modify-plan";
+import { GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE } from "@/lib/booking-modify-validation";
 import {
   assertOtherLodgeExists,
+  OtherLodgeRateInProgressError,
   requestCarriesOtherLodgeElection,
   resolveOtherLodgeRateElection,
-  type OtherLodgeRateInput,
 } from "@/lib/booking-other-lodge-rate";
 import { resolveOtherLodgeRateEligibleGuestIds } from "@/lib/membership-type-policy";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
+import { refreshFinancialYearConfig } from "@/lib/financial-year-server";
+import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
+import { clubTime } from "@/lib/club-time/server";
+import { dateOnlyInstantOf } from "@/lib/club-time";
+import { modifyQuoteSchema } from "@/lib/booking-modify-quote-request";
 import type { PromoPreviewEdit } from "@/lib/promo-preview-stay-ranges";
 
 /**
@@ -32,24 +39,48 @@ import type { PromoPreviewEdit } from "@/lib/promo-preview-stay-ranges";
  *   (#1036); and its other-lodge flag.
  * - The two officer re-rates the quote is sent — a #2337 placeholder-to-member
  *   link and the other-lodge election — are resolved by the SAME resolvers the
- *   quote and the save run (`resolveGuestMemberLinks`,
- *   `resolveOtherLodgeRateElection`), so the preview refuses what they refuse,
- *   with their words, and re-rates exactly the guests they re-rate: a linked
- *   guest prices as the member with their locks cleared, and a ticked or
- *   unticked guest takes the election's flag with their locks cleared.
+ *   quote and the save run (`resolveGuestMemberLinks`, judged against the same
+ *   removals and renames, and `resolveOtherLodgeRateElection`), so the preview
+ *   re-rates exactly the guests they re-rate: a linked guest prices as the
+ *   member with their locks cleared, and a ticked or unticked guest takes the
+ *   election's flag with their locks cleared. The refusals those resolvers raise
+ *   are the quote's, word for word, and so are its two mid-stay refusals of a
+ *   re-rate (`GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE`,
+ *   `OtherLodgeRateInProgressError`), judged on the same edit policy.
+ *
+ * NOT MIRRORED, and why. The quote also refuses an election on an edit whose
+ * money it parks for an officer (`OtherLodgeRateAmountUnderReviewError`): that
+ * needs the pre-check-in evidence of every strand the edit prices, which the
+ * box does not assemble, so the box prices such an edit instead. Nor does the
+ * box mirror the quote's other refusals of a whole edit (its status and date
+ * windows, capacity, policy exceptions): it answers about a code, and the quote
+ * beside it says why the edit itself cannot be saved.
  */
 export type PromoPreviewEditContext = {
   bookingId: string;
+  /** The caller's booking-management role: an officer acts on the owner's behalf, as on the quote. */
+  role: Role;
   ownerMemberId: string | null;
   lodgeId: string;
   consentById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }>;
   edit: PromoPreviewEdit;
 };
 
-/** The edit fields a preview request may carry, as the quote is sent them. */
-export type PromoPreviewEditRequest = OtherLodgeRateInput & {
+/**
+ * The edit fields a preview request may carry, parsed exactly as the quote
+ * parses them: the officer re-rates, and the removals and renames the link
+ * resolver judges a link against.
+ */
+export const promoPreviewEditFieldsSchema = modifyQuoteSchema.pick({
+  linkGuestToMember: true,
+  otherLodgeId: true,
+  otherLodgeMemberGuestIds: true,
+  removeGuestIds: true,
+  guestUpdates: true,
+});
+
+export type PromoPreviewEditRequest = z.infer<typeof promoPreviewEditFieldsSchema> & {
   guests: ReadonlyArray<{ bookingGuestId?: string }>;
-  linkGuestToMember?: Array<{ guestId: string; memberId: string }>;
 };
 
 /**
@@ -93,6 +124,7 @@ export async function promoPreviewEditContext(params: {
     : [];
   return {
     bookingId: booking.id,
+    role: params.role,
     ownerMemberId: booking.ownerMemberId,
     lodgeId: booking.lodgeId,
     consentById: new Map(rows.map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }])),
@@ -137,23 +169,30 @@ async function resolveRerates(
   }
   const stored = await prisma.booking.findUnique({
     where: { id: booking.id },
-    select: { wholeLodgeHold: true, otherLodgeId: true, guests: true },
+    select: { status: true, checkOut: true, wholeLodgeHold: true, otherLodgeId: true, guests: true },
   });
   if (!stored) throw new ApiError("Booking not found", 404);
   const links = resolveGuestMemberLinks({
     booking: stored,
-    input: { linkGuestToMember: request.linkGuestToMember },
+    input: {
+      linkGuestToMember: request.linkGuestToMember,
+      removeGuestIds: request.removeGuestIds,
+      guestUpdates: request.guestUpdates,
+    },
     role,
   });
   const linkedMemberByGuestId = new Map(links.map((link) => [link.guestId, link.memberId]));
-  // As the quote does: eligibility costs reads, so only for an officer's election.
-  const eligibleGuestIds =
-    role === "ADMIN" && carriesElection
-      ? await resolveOtherLodgeRateEligibleGuestIds(prisma, {
-          seasonYear: seasonYearOfStoredDate(booking.checkIn),
-          guests: stored.guests,
-        })
-      : new Set<string>();
+  // As the quote does: eligibility costs reads, so only for an officer's
+  // election, and judged on the booking's season once the club's financial
+  // year is loaded (the quote reseeds it first through the lockout mode).
+  let eligibleGuestIds = new Set<string>();
+  if (role === "ADMIN" && carriesElection) {
+    await refreshFinancialYearConfig();
+    eligibleGuestIds = await resolveOtherLodgeRateEligibleGuestIds(prisma, {
+      seasonYear: seasonYearOfStoredDate(booking.checkIn),
+      guests: stored.guests,
+    });
+  }
   const election = resolveOtherLodgeRateElection({
     booking: stored,
     input: { otherLodgeId: request.otherLodgeId, otherLodgeMemberGuestIds: request.otherLodgeMemberGuestIds },
@@ -162,6 +201,21 @@ async function resolveRerates(
     linkedGuestIds: new Set(linkedMemberByGuestId.keys()),
   });
   await assertOtherLodgeExists(prisma, election.otherLodgeId);
+  // The quote's mid-stay refusals of a re-rate, on its own edit policy: the
+  // in-progress plan prices the stored rows, so a re-rate there would show $0.
+  // The box is never sent the officer's date override (the panel hides the box
+  // while it is on), so no override is judged here.
+  const editPolicy = getBookingEditPolicy({
+    status: stored.status,
+    role,
+    checkIn: booking.checkIn,
+    checkOut: stored.checkOut,
+    today: dateOnlyInstantOf((await clubTime()).today()),
+  });
+  if (editPolicy.mode === "in-progress") {
+    if (links.length > 0) throw new ApiError(GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE, 400);
+    if (carriesElection) throw new OtherLodgeRateInProgressError();
+  }
   return {
     flaggedGuestIds: carriesElection ? election.flaggedGuestIds : null,
     repriceGuestIds: new Set([...linkedMemberByGuestId.keys(), ...election.repriceGuestIds]),

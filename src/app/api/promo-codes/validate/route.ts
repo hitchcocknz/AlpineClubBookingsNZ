@@ -45,8 +45,7 @@ import { normalizePromoCodeInput } from "@/lib/promo-code-list-rules";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy, planMemberGuestConsentWrites } from "@/lib/member-guest-add-policy";
 import { guestConsentStatus } from "@/lib/member-guest-consent";
-import { promoPreviewEditContext } from "@/lib/promo-preview-edit";
-import { modifyQuoteSchema } from "@/lib/booking-modify-quote-request";
+import { promoPreviewEditContext, promoPreviewEditFieldsSchema } from "@/lib/promo-preview-edit";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -122,8 +121,8 @@ const validateSchema = z
     // id answers exactly as a missing booking does (404), confirming nothing.
     bookingId: z.string().min(1).max(64).optional(),
     // #4202: the officer re-rates the quote is sent (#2337 links, the other-lodge
-    // election), so the box clears the same guests' locks. Read only with `bookingId`.
-    ...modifyQuoteSchema.pick({ linkGuestToMember: true, otherLodgeId: true, otherLodgeMemberGuestIds: true }).shape,
+    // election, with the removals and renames a link is judged against). Read only with `bookingId`.
+    ...promoPreviewEditFieldsSchema.shape,
   })
   .refine(
     (data) =>
@@ -211,8 +210,8 @@ export async function POST(req: NextRequest) {
   // top of the handler because everything above is schema and authorization —
   // the collapsed refusal cannot be raised until the party is priced.
   const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
-  // An officer editing somebody else's booking acts for its owner, as on the quote (`skipAuthorization: isAdmin`).
-  const isAuthorizedOnBehalf = Boolean(parsed.data.forMemberId) || (edited !== undefined && edited.ownerMemberId !== session.user.id);
+  // An officer's edit is judged as an officer's, as on the quote (`skipAuthorization: isAdmin`).
+  const isAuthorizedOnBehalf = Boolean(parsed.data.forMemberId) || edited?.role === "ADMIN";
 
   let promoCode:
     | (Awaited<ReturnType<typeof prisma.promoCode.findUnique>> & {
@@ -336,6 +335,7 @@ export async function POST(req: NextRequest) {
       guests,
       seasons: seasonData,
       groupDiscount,
+      skipAuthorization: isAuthorizedOnBehalf,
     });
 
     // D-3813-4, decided HERE exactly as the create decides it — the booker's

@@ -635,7 +635,12 @@ export function EditBookingPanel({
     creditChanged;
 
   // #4202: the officer re-rates, read ONCE for the payload and the promo box.
-  const editRerates = useEditRerates(linkedGuestMembers, otherLodgeRate.payloadFields);
+  const editRerates = useEditRerates({
+    linkedGuestMembers,
+    otherLodgePayloadFields: otherLodgeRate.payloadFields,
+    removedGuestIds,
+    guestNameUpdates,
+  });
 
   // #4199: the stays this edit sends, read ONCE for the payload and the promo
   // card, so the promo preview prices the nights the quote and the save price.
@@ -710,17 +715,11 @@ export function EditBookingPanel({
         body.partnerSharedGuests = partnerSharedGuests;
       }
     }
-    if (removedGuestIds.size > 0) {
-      body.removeGuestIds = Array.from(removedGuestIds);
-    }
-    if (guestNameUpdates.length > 0) {
-      body.guestUpdates = guestNameUpdates;
-    }
     // #3451: only the answers that still describe a live collision travel.
     if (dependantIdentity.declarationsPayload) {
       body.dependantIdentityDeclarations = dependantIdentity.declarationsPayload;
     }
-    Object.assign(body, editRerates); // other-lodge election, #2337 links (#4202)
+    Object.assign(body, editRerates); // re-rates, removals, renames (#4202)
     // #2266 / #3492: the promo choice, bound to guests the way the server binds them.
     Object.assign(body, promoActionPayload(promoAction, remainingGuests));
 
