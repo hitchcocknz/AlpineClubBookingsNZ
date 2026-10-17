@@ -13,7 +13,7 @@ import {
   paymentRecoveryOperationIdOfPaidAnotherWay,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { readPaidTwiceResolution, type PaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
-import { cardRefundSentAfterPaidAnotherWay } from "@/lib/open-card-refund-owed";
+import { cardRefundSentAfterPaidAnotherWay, cardRefundsSentAfterPaidAnotherWay } from "@/lib/open-card-refund-owed";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 
@@ -106,6 +106,12 @@ export interface CardRefundPaidTwiceRow {
 function refundedByCardAfterClose(record: CloseRecord, operationId: string): number {
   if (record.payment === null) return 0;
   return cardRefundSentAfterPaidAnotherWay(record.payment, new Set([operationId])).get(operationId) ?? 0;
+}
+
+/** #4210 round 4: the Stripe refunds the list counts for this close now. */
+function refundsListedAfterClose(record: CloseRecord, operationId: string): string[] {
+  if (record.payment === null) return [];
+  return [...(cardRefundsSentAfterPaidAnotherWay(record.payment, new Set([operationId])).get(operationId)?.keys() ?? [])];
 }
 
 /** Whether the close is on the list: Stripe paid it too, by more than any resolution already covered. */
@@ -210,6 +216,8 @@ export async function resolveCardRefundPaidTwice(
       resolvedByMemberId: input.actingMemberId,
       note,
       refundedByCardCents,
+      // #4210 round 4 (money F-C): the refunds it speaks for, as listed now.
+      refundIds: refundsListedAfterClose(record, input.operationId),
     };
     // Guarded on the record as read: a second click finds the resolution it
     // wrote and claims nothing.

@@ -62,6 +62,10 @@ describe("closing a check row as checked - not owed", () => {
       }),
       data: expect.objectContaining({ status: "SUCCEEDED", nextRetryAt: null, lastError: CHECKED_NOT_OWED_MARKER }),
     });
+    // #4210 round 4: marked not owed on the check, so the closed row is told apart from one paid another way.
+    expect((mocks.claim.mock.calls[0]?.[0] as { data: { allocationPlan: unknown } }).data.allocationPlan).toEqual([
+      { paymentTransactionId: "txn-1", amountCents: 3_000, madeByOperationId: "op-cancel", paidAnotherWayCheck: { ...CHECK, notOwed: true } },
+    ]);
   });
 
   it("MUTATION: audits it under payment, with the note and why it was a check - after the write", async () => {
@@ -110,6 +114,13 @@ describe("closing a check row as checked - not owed", () => {
       mocks.findOperation.mockResolvedValue(checkRow({ attempts: 1 }));
       await expectRefusal(close(), 409);
       mocks.findOperation.mockResolvedValue(checkRow({ status: "SUCCEEDED" }));
+      await expectRefusal(close(), 409);
+      expect(mocks.claim).not.toHaveBeenCalled();
+    });
+
+    // #4210 round 4 (money F-D): a slice recording a refund Stripe failed later owes it.
+    it("MUTATION: a row whose plan records a refund Stripe failed later - a real debt", async () => {
+      mocks.findOperation.mockResolvedValue(checkRow({ allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 3_000, failedRefundIds: ["re_y"], paidAnotherWayCheck: CHECK }] }));
       await expectRefusal(close(), 409);
       expect(mocks.claim).not.toHaveBeenCalled();
     });

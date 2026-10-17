@@ -96,6 +96,12 @@ describe("#4166: a member cancel's card refund that failed after its REFUNDED ev
       "$50.00 could not go back to your card and was paid back to you another way, the club checked the remaining $40.00 and closed it and $30.00 was retained.",
     ],
     ["paid another way, read with no record figure", failedLater(9000, "paid-another-way"), "$90.00 could not go back to your card and was paid back to you another way and $30.00 was retained."],
+    // #4210 round 4 (money F-F): a check raised against this row's own close.
+    [
+      "paid back in part another way, with what it gave up raised to check",
+      failedLater(9000, "paid-another-way", { paidBackCents: 5000, unpaidCents: 4000, checkOpenCents: 4000 }),
+      "$50.00 could not go back to your card and was paid back to you another way, the club will be in touch about the remaining $40.00 and $30.00 was retained.",
+    ],
   ] as const)("MUTATION: all of it failed, its row %s, says so - never refunded on the event's date", (_label, part, clause) => {
     const message = narrate([PAID, CANCELLED, cardRefunded(9000)], [part]);
     expect(message).toBe(`${LEAD}${clause}${END}`);

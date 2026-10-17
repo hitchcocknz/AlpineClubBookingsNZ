@@ -151,18 +151,11 @@ export class FailedLaterRefundHeldError extends Error {
   }
 }
 
-/** #4210: the audit summary's reason for a check row. */
-const AUDIT_CHECK_WHY = {
-  "raised-check-part-close": "a part close",
-  "raised-check-resolved": "its paid-twice row was marked resolved",
-  "raised-check-uncertain": "the app cannot tell whether the close paid it back",
-} as const;
-
 /** Where the treasurer closes a row the app will not ask Stripe for again (#4104 review, D1). */
 const CLOSE_IT_WHERE = 'close it under "Card refunds Stripe gave up on" on the Stuck states page';
 
 /** What the row says, for a person reading it; nothing parses it. */
-function failedLaterLastError(refundId: string, outcome: FailedLaterCardRefundDebt["outcome"]): string {
+export function failedLaterLastError(refundId: string, outcome: FailedLaterCardRefundDebt["outcome"]): string {
   if (outcome === "raised-dead") {
     return `Stripe accepted retried refund ${refundId} and later reported it failed too. Not asked for again automatically: pay the member another way and ${CLOSE_IT_WHERE} (#4104).`;
   }
@@ -237,6 +230,8 @@ function madeByRow(
  */
 type NoOpenOwner = {
   madeBy: string | null;
+  /** #4210 round 4: every row whose runner metadata the refund carries; more than one leaves the sender ambiguous. */
+  senders: string[];
   filledBy: string | null;
   rows: PaymentRecoveryOperation[];
   beforeFailure: CardRefundOwedPaymentRow;
@@ -274,7 +269,8 @@ async function findOwner(
   // with no plan (a superseded intent's) re-derives what its charge still holds
   // by itself, and reads its own replay as refused (#4104 review, ML2).
   if (!filled || !row || !sentByRow(row, refund)) {
-    return { madeBy: madeByRow(rows, refund, filled), filledBy: filled?.operation.id ?? null, rows, beforeFailure };
+    const senders = rows.filter((each) => sentByRow(each, refund)).map((each) => each.id);
+    return { madeBy: madeByRow(rows, refund, filled), senders, filledBy: filled?.operation.id ?? null, rows, beforeFailure };
   }
   return { row, sliceIndex: parseRefundAllocationPlan(row.allocationPlan) ? filled.sliceIndex : null };
 }
@@ -334,6 +330,7 @@ export async function keepFailedLaterCardRefundOwed(
         failedRefundIds: [...(slice.failedRefundIds ?? []), refund.id],
         ...(slice.madeByOperationId === undefined ? {} : { madeByOperationId: slice.madeByOperationId }),
         ...(slice.paidAnotherWayCheck === undefined ? {} : { paidAnotherWayCheck: slice.paidAnotherWayCheck }),
+        ...(slice.paidAnotherWayWeighed === undefined ? {} : { paidAnotherWayWeighed: slice.paidAnotherWayWeighed }),
       };
     });
     const outcome = isPaymentRecoveryOperationExhausted(row) ? "re-planned-dead" : "re-planned";
@@ -363,6 +360,12 @@ export async function keepFailedLaterCardRefundOwed(
     };
   }
 
+  // #4210 (concurrency F1): an open row's own replay reads the refund as refused
+  // and moves its slice itself - one owes it, never two. Round 4: asked first,
+  // so a close weighed for an ambiguous sender never silences that replay.
+  const maker = owner.rows.find((each) => each.id === owner.madeBy);
+  if (kind === "replayed" && maker && maker.status !== PaymentRecoveryOperationStatus.SUCCEEDED) return { readAsRefused: true };
+
   // #4210 (`INV-PAY-136`): settled by a "Paid another way" close - asked before
   // the no-booking rule, so a dashboard refund a close settled is said as settled.
   const close = await findPaidAnotherWayCloseThatSettled(tx, { ...owner, refund, bookingId: payment.bookingId });
@@ -386,7 +389,7 @@ export async function keepFailedLaterCardRefundOwed(
         category: "payment",
         severity: "important",
         outcome: "failure",
-        summary: `Stripe reported card refund ${refund.id} failed after accepting it, after its card refund was closed "Paid another way"${outcome === "settled-paid-another-way" ? "; that close paid it back, so it is not asked for again" : `; raised for an officer to check (${AUDIT_CHECK_WHY[outcome]})`}`,
+        summary: `Stripe reported card refund ${refund.id} failed after accepting it, after its card refund was closed "Paid another way"${outcome === "settled-paid-another-way" ? "; that close paid it back, so it is not asked for again" : `; raised for an officer to check: ${PAID_ANOTHER_WAY_CHECK_WHY[CHECK_REASON_OF[outcome]]}`}`,
         ...(close.resolutionNote ? { details: close.resolutionNote } : {}),
         metadata: { stripeRefundId: refund.id, paymentId, paymentTransactionId, paymentIntentId, amountCents: refund.amount, decision: outcome, raisedOperationId: outcome === "settled-paid-another-way" ? null : operationId, ...paidAnotherWay },
       },
@@ -394,10 +397,6 @@ export async function keepFailedLaterCardRefundOwed(
     );
     return { debt: { outcome, operationId, bookingId: payment.bookingId, paymentIntentId: intentId, amountCents: refund.amount, stripeRefundId: refund.id, paidAnotherWay } };
   }
-  // #4210 (concurrency F1): an open row's own replay reads the refund as refused
-  // and moves its slice itself - one owes it, never two.
-  const maker = owner.rows.find((each) => each.id === owner.madeBy);
-  if (kind === "replayed" && maker && maker.status !== PaymentRecoveryOperationStatus.SUCCEEDED) return { readAsRefused: true };
 
   if (refund.metadata?.bookingId !== payment.bookingId) {
     // Not the club's to re-send: made by hand in the Stripe dashboard, or a
@@ -502,7 +501,8 @@ async function raiseRow(
         idempotencyKey,
         stripeKeyPrefix: idempotencyKey,
         // #4166: which row made the refund, so the booking page tells it by what was sent, not by amount.
-        allocationPlan: [{ paymentTransactionId, amountCents, madeByOperationId: madeBy, ...(check ? { paidAnotherWayCheck: check } : {}) }] as unknown as Prisma.InputJsonValue,
+        // #4210 round 4: weighed against every "Paid another way" close by this writer, so the runner need not weigh it again.
+        allocationPlan: [{ paymentTransactionId, amountCents, madeByOperationId: madeBy, paidAnotherWayWeighed: true, ...(check ? { paidAnotherWayCheck: check } : {}) }] as unknown as Prisma.InputJsonValue,
         // Dead by the recovery module's own rule (attempts spent): never
         // claimed, and closable as paid another way. Not a FAILED write, which
         // has one route (`INV-PAY-056`).

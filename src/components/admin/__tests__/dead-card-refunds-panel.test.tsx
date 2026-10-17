@@ -689,6 +689,28 @@ describe("a row raised to check after a close", () => {
     expect(mocks.refresh).toHaveBeenCalled();
   });
 
+  // #4210 round 4 (UX 1): its "Paid another way" dialog does not say it is owed.
+  it("MUTATION: the Paid another way dialog of a check says may be owed, and points to Checked - not owed", () => {
+    openDialog(checkRow);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("$30.00 may be owed. Check before paying: if the member is not owed it, close it as Checked - not owed instead.");
+    expect(dialog).not.toHaveTextContent("is still owed");
+  });
+
+  // #4210 round 4 (UX 2, UX 3, money F-E).
+  it("MUTATION: the not-owed dialog names the Xero note, links its disabled button to the reason, and closes saying why when its row leaves the list", async () => {
+    const view = render(<DeadCardRefundsPanel rows={[checkRow]} bankNoteWording={BANK_NOTE_WORDING} />);
+    fireEvent.click(notOwedButton());
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("If you close it as not owed, a card refund credit note raised in Xero while Stripe counted the refund no longer matches money paid back");
+    const submit = within(dialog).getByRole("button", { name: "Close as not owed" });
+    expect(submit).toHaveAccessibleDescription("Say why the member is not owed it to close it.");
+    view.rerender(<DeadCardRefundsPanel rows={[]} bankNoteWording={BANK_NOTE_WORDING} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const notice = screen.getByText("That card refund is no longer waiting to be closed, so its dialog was closed. The list is up to date.");
+    await waitFor(() => expect(document.activeElement).toBe(notice));
+  });
+
   it("a finance viewer without edit cannot open it", () => {
     mocks.canEdit = false;
     render(<DeadCardRefundsPanel rows={[checkRow]} bankNoteWording={BANK_NOTE_WORDING} />);

@@ -297,7 +297,7 @@ function createDependencies(state: {
   // record of its close as paid another way.
   lateCaptureApprovalRefunds?: { id: string; idempotencyKey: string }[];
   // #4104 (#4128 review C5): card refunds Stripe failed later, owed by rows of their own.
-  failedLaterRows?: { paymentId: string; idempotencyKey: string; allocationPlan: unknown }[];
+  failedLaterRows?: { paymentId: string; idempotencyKey: string; allocationPlan: unknown; status?: string }[];
   // #4103: the refunds already recorded on a payment, which the late-capture
   // repair reads for each slice's key generation.
   paymentRefunds?: { paymentId: string; paymentTransactionId: string | null; amountCents: number; status: string }[];
@@ -4121,6 +4121,19 @@ describe("runBookingXeroRepair", () => {
     });
     // All of it owed by the row: nothing is offered.
     expect(await lateCaptureRefund(owing(10000))).toBeUndefined();
+
+    // #4210 round 4: a check an officer closed as checked - not owed is decided, so it is not offered either;
+    // a row closed any other way owes nothing here.
+    const closedRow = (check: Record<string, unknown> | undefined) =>
+      createDependencies({
+        bookings: [booking],
+        failedLaterRows: [
+          { paymentId: "payment_1", idempotencyKey: "card_refund_failed_later_re_1", status: "SUCCEEDED", allocationPlan: [{ paymentTransactionId: "txn_primary", amountCents: 4000, ...(check ? { paidAnotherWayCheck: check } : {}) }] },
+        ],
+      });
+    expect((await lateCaptureRefund(closedRow({ closedOperationId: "op-cancel", reason: "part-close", notOwed: true })))?.payload).toMatchObject({ refundAmountCents: 6000 });
+    expect((await lateCaptureRefund(closedRow({ closedOperationId: "op-cancel", reason: "part-close" })))?.payload).toMatchObject({ refundAmountCents: 10000 });
+    expect((await lateCaptureRefund(closedRow(undefined)))?.payload).toMatchObject({ refundAmountCents: 10000 });
   });
 
   it("classifies cancelled bookings using per-intent transaction state instead of aggregate payment status", async () => {

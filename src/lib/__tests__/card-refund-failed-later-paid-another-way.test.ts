@@ -357,20 +357,89 @@ describe("what a close may not have covered is raised dead, for an officer to ch
   });
 });
 
-// A check row is never sent, but a failed-later row's runner sends the same
-// metadata, so a refund of its amount can read as its own; if that one fails,
-// the check is re-planned like any open row - and stays a check.
-describe("a check row re-planned", () => {
-  it("MUTATION: keeps its check mark", async () => {
+// Round 4 (money F-D): a check row is never sent, so no refund is its own - not
+// even one of its amount carrying the metadata every failed-later row of the
+// booking sends. It stays owed until an officer closes it.
+describe("a check row takes no refund", () => {
+  it("MUTATION: a failed-later row's refund of the check's amount never fills it, and is owed on a row of its own", async () => {
     const CHECK = { closedOperationId: "op-cancel", reason: "part-close" };
     const checkRow = row({ id: "op-check", status: "PENDING", succeededAt: null, createdAt: new Date("2026-06-21T00:00:00.000Z"), idempotencyKey: "card_refund_failed_later_re_0", stripeKeyPrefix: "card_refund_failed_later_re_0", amountCents: 1_500,
       allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 1_500, madeByOperationId: "op-cancel", paidAnotherWayCheck: CHECK }] });
     const madeAt = new Date("2026-06-22T00:00:00.000Z");
     const Y: FailedLaterRefundInput = { id: "re_y", amount: 1_500, status: "failed", created: Math.floor(madeAt.getTime() / 1000), metadata: { bookingId: "booking-1", reason: bookingModificationRefundReasonForKeyPrefix("card_refund_failed_later_re_0") } };
     const tx = fakeTx({ rows: [row(), checkRow], refunds: [{ stripeRefundId: "re_y", paymentTransactionId: "txn-1", amountCents: 1_500, status: "failed", createdAt: madeAt, stripeCreatedAt: madeAt }] });
-    expect(await keep(tx, Y)).toMatchObject({ debt: { outcome: "re-planned-dead", operationId: "op-check" } });
-    const replanned = (tx.paymentRecoveryOperation.updateMany.mock.calls[0]?.[0] as { data: { allocationPlan: Array<Record<string, unknown>> } }).data.allocationPlan;
-    expect(replanned[0]).toMatchObject({ failedRefundIds: ["re_y"], paidAnotherWayCheck: CHECK });
+    // A retry's refund failing too is raised dead (`INV-PAY-128`) - on a row of its own, never the check's.
+    expect(await keep(tx, Y)).toMatchObject({ debt: { outcome: "raised-dead", operationId: "op-new" } });
+    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+    expect(inserted(tx)).toMatchObject({ idempotencyKey: "card_refund_failed_later_re_y", amountCents: 1_500 });
+  });
+});
+
+// Round 4 (money F-A/F-B): edits of one reason send the same metadata, so the
+// row that sent a refund is not known when several carry it. A close among them
+// that may have paid it back raises a check - never a settle, never a re-send.
+describe("money F-A/F-B: several rows send this refund's metadata", () => {
+  const PREFIX_1 = "mod_dates_refund_mod-1";
+  const PREFIX_2 = "mod_dates_refund_mod-2";
+  const R = row({ id: "op-change-1", idempotencyKey: "payment_recovery_modification_refund_mod-1", stripeKeyPrefix: PREFIX_1 });
+  const sameReason = (id: string, amount = 4_000): FailedLaterRefundInput => ({ id, amount, status: "failed", created: Math.floor(MADE_AT.getTime() / 1000), metadata: { bookingId: "booking-1", reason: bookingModificationRefundReasonForKeyPrefix(PREFIX_2) } });
+  const onlyRClosedPaidAnotherWay = (tx: ReturnType<typeof fakeTx>, close: Record<string, unknown> = closeRecord()) => {
+    tx.manualRefundTask.findFirst = vi.fn(async (args: unknown) =>
+      (args as { where: { occurrenceKey: { in: string[] } } }).where.occurrenceKey.in.includes(cardRefundPaidAnotherWayOccurrenceKey("op-change-1", { xeroRefundNote: "now" })) ? close : null,
+    );
+    return tx;
+  };
+
+  it("MUTATION (P1): a second edit's inline refund of the same amount, recorded after the first edit's close - a check, never settled", async () => {
+    const R2 = row({ id: "op-change-2", idempotencyKey: "payment_recovery_modification_refund_mod-2", stripeKeyPrefix: PREFIX_2, attempts: 1, createdAt: new Date(MADE_AT.getTime() + 3_000), succeededAt: RECORDED_LATE });
+    const refunds = [{ stripeRefundId: "re_e", paymentTransactionId: "txn-1", amountCents: 4_000, status: "failed", createdAt: RECORDED_LATE, stripeCreatedAt: MADE_AT }];
+    const tx = onlyRClosedPaidAnotherWay(fakeTx({ rows: [R, R2], refunds }));
+    expect(await keep(tx, sameReason("re_e"))).toMatchObject({ debt: { outcome: "raised-check-uncertain", paidAnotherWay: { operationId: "op-change-1", checkCents: 4_000 } } });
+    expect(inserted(tx)).toMatchObject({ amountCents: 4_000, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, allocationPlan: [{ paidAnotherWayCheck: { closedOperationId: "op-change-1", reason: "uncertain" } }] });
+  });
+
+  it("MUTATION (P3): the first edit's refund, filling the second edit's slice by today's matching - a check, never re-sent live", async () => {
+    const R2 = row({ id: "op-change-2", idempotencyKey: "payment_recovery_modification_refund_mod-2", stripeKeyPrefix: PREFIX_2, attempts: 2, createdAt: new Date(RAISED_AT.getTime() + 1_000), succeededAt: new Date(RECORDED_LATE.getTime() + 10_000) });
+    const yAt = new Date(RECORDED_LATE.getTime() + 5_000);
+    const refunds = [
+      { stripeRefundId: "re_x", paymentTransactionId: "txn-1", amountCents: 4_000, status: "failed", createdAt: RECORDED_LATE, stripeCreatedAt: MADE_AT },
+      { stripeRefundId: "re_y", paymentTransactionId: "txn-1", amountCents: 4_000, status: "pending", createdAt: yAt, stripeCreatedAt: yAt },
+    ];
+    const tx = onlyRClosedPaidAnotherWay(fakeTx({ rows: [R, R2], refunds }));
+    expect(await keep(tx, sameReason("re_x"))).toMatchObject({ debt: { outcome: "raised-check-uncertain", paidAnotherWay: { operationId: "op-change-1" } } });
+    expect(inserted(tx)).toMatchObject({ attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
+  });
+
+  it("MUTATION (control): no close among them may have paid it back - owed again and re-sent", async () => {
+    const R2 = row({ id: "op-change-2", idempotencyKey: "payment_recovery_modification_refund_mod-2", stripeKeyPrefix: PREFIX_2, attempts: 1, createdAt: new Date(MADE_AT.getTime() + 3_000), succeededAt: RECORDED_LATE });
+    const refunds = [{ stripeRefundId: "re_e", paymentTransactionId: "txn-1", amountCents: 4_000, status: "failed", createdAt: MADE_AT, stripeCreatedAt: MADE_AT }];
+    const tx = onlyRClosedPaidAnotherWay(fakeTx({ rows: [R, R2], refunds }), closeRecord({ reviewContext: counted({ refundIds: ["re_e"], unsentSlices: [] }) }));
+    expect(await keep(tx, sameReason("re_e"))).toMatchObject({ debt: { outcome: "raised" } });
+    expect(inserted(tx)).toMatchObject({ attempts: 0 });
+  });
+});
+
+// Round 4 (money F-C): a resolution speaks for the refunds its row listed when
+// it was resolved, never for today's matching.
+describe("money F-C: what a resolution speaks for", () => {
+  const resolved = (extra: Record<string, unknown> = {}) => ({ ...counted(), paidTwiceResolved: { resolvedAt: "2026-06-21T00:00:00.000Z", resolvedByMemberId: "officer", note: "Member returned the extra by bank", refundedByCardCents: 4_000, ...extra } });
+
+  it("MUTATION (P5): listed when resolved, moved off the list since by another refund's failure - still the whole refund to check", async () => {
+    const N = row({ id: "op-n", status: "FAILED", attempts: 1, nextRetryAt: CLOSED_AT, idempotencyKey: "payment_recovery_modification_refund_mod-1", stripeKeyPrefix: "mod_dates_refund_mod-1",
+      allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000, failedRefundIds: ["re_z"] }], createdAt: new Date("2026-06-20T00:00:01.000Z"), succeededAt: null });
+    const refunds = [
+      { stripeRefundId: "re_z", paymentTransactionId: "txn-1", amountCents: 4_000, status: "failed", createdAt: new Date("2026-06-20T00:00:03.000Z"), stripeCreatedAt: new Date("2026-06-20T00:00:02.000Z") },
+      { stripeRefundId: "re_1", paymentTransactionId: "txn-1", amountCents: 4_000, status: "failed", createdAt: RECORDED_LATE, stripeCreatedAt: MADE_AT },
+    ];
+    for (const reviewContext of [resolved(), resolved({ refundIds: ["re_1"] })]) {
+      const tx = fakeTx({ rows: [row(), N], refunds, close: closeRecord({ reviewContext }) });
+      expect(await keep(tx)).toMatchObject({ debt: { outcome: "raised-check-resolved", paidAnotherWay: { onPaidTwiceList: false, checkCents: 4_000 } } });
+    }
+  });
+
+  it("MUTATION: a resolution that listed other refunds does not speak for this one", async () => {
+    const tx = fakeTx({ close: closeRecord({ reviewContext: resolved({ refundIds: ["re_other"] }) }) });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "settled-paid-another-way", paidAnotherWay: { resolutionNote: null } } });
   });
 });
 
@@ -421,6 +490,8 @@ describe("the officers' alert: its own unmuteable mail", () => {
     for (const call of [0, 1, 2]) {
       expect(noteOf(call)).toMatch(/close it there as checked - not owed/);
       expect(noteOf(call)).not.toMatch(/developer/);
+      // Round 4 (money F-E): what becomes of a card refund note Xero still holds for it.
+      expect(noteOf(call)).toMatch(/checked - not owed, and then a card refund credit note raised in Xero while Stripe counted the refund no longer matches money paid back: the Xero reconciliation report lists it/);
     }
   });
 });

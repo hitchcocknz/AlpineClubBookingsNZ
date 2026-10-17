@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useRef, useState, type RefObject } from "react";
+import { useId, useState, type RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { FocusedActionError } from "@/components/focused-action-error";
@@ -16,6 +16,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useClubFormat } from "@/components/club-format-provider";
+import { FAILED_REFUND_XERO_NOTE } from "@/lib/card-refund-failed-later-paid-another-way-note";
 import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
 import { formatCents } from "@/lib/utils";
 
@@ -32,6 +33,7 @@ export function CheckedNotOwedDialog({
   target,
   onDone,
   onClosed,
+  listNotice,
   statusRef,
 }: {
   /** The check row it is open for; null while closed. */
@@ -40,18 +42,20 @@ export function CheckedNotOwedDialog({
   onDone: () => void;
   /** Told after a close, with the sentence for the list's status line. */
   onClosed: (notice: string) => void;
+  /** The list's status line: focus goes there when the dialog closes leaving a notice - a close, or its row vanishing. */
+  listNotice: string;
   statusRef: RefObject<HTMLElement | null>;
 }) {
   const format = useClubFormat();
   const router = useRouter();
   const noteId = useId();
   const errorId = useId();
+  const hintId = useId();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [errorAttention, setErrorAttention] = useState(0);
   const [openFor, setOpenFor] = useState<string | null>(null);
-  const closedRef = useRef(false);
   // A new target starts clean: adjusted while rendering, as React's derived-state pattern does.
   if (target !== null && openFor !== target.operationId) {
     setOpenFor(target.operationId);
@@ -82,7 +86,6 @@ export function CheckedNotOwedDialog({
         return;
       }
       toast.success(`Closed. ${amount} is no longer owed, and your note is in the audit log.`);
-      closedRef.current = true;
       onClosed(`The card refund for booking ${target.bookingReference} was closed as checked - not owed.`);
       onDone();
       setOpenFor(null);
@@ -99,7 +102,6 @@ export function CheckedNotOwedDialog({
       open={target !== null}
       onOpenChange={(next) => {
         if (busy || next) return;
-        closedRef.current = false;
         setOpenFor(null);
         onDone();
       }}
@@ -107,7 +109,7 @@ export function CheckedNotOwedDialog({
       <DialogContent
         className="max-h-[90vh] overflow-y-auto"
         onCloseAutoFocus={(event) => {
-          if (!closedRef.current) return;
+          if (listNotice === "") return;
           event.preventDefault();
           statusRef.current?.focus();
         }}
@@ -119,6 +121,7 @@ export function CheckedNotOwedDialog({
             you have checked the member is not owed it. If they are, pay them another way and close it as paid another
             way instead.
           </DialogDescription>
+          <p className="text-sm text-muted-foreground">If you close it as not owed, {FAILED_REFUND_XERO_NOTE}.</p>
         </DialogHeader>
         <div className="space-y-1">
           <Label htmlFor={noteId}>Why is it not owed? (required)</Label>
@@ -135,20 +138,19 @@ export function CheckedNotOwedDialog({
         <FocusedActionError id={errorId} error={error} attentionKey={errorAttention} />
         <DialogFooter className="flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
           {note.trim() === "" ? (
-            <p className="text-xs text-muted-foreground sm:mr-auto">Say why the member is not owed it to close it.</p>
+            <p id={hintId} className="text-xs text-muted-foreground sm:mr-auto">Say why the member is not owed it to close it.</p>
           ) : null}
           <Button
             variant="outline"
             disabled={busy}
             onClick={() => {
-              closedRef.current = false;
               setOpenFor(null);
               onDone();
             }}
           >
             Cancel
           </Button>
-          <Button disabled={busy || note.trim() === ""} onClick={() => void submit()}>
+          <Button disabled={busy || note.trim() === ""} aria-describedby={note.trim() === "" ? hintId : undefined} onClick={() => void submit()}>
             {busy ? "Closing..." : "Close as not owed"}
           </Button>
         </DialogFooter>

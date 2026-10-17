@@ -5,7 +5,7 @@ import { PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 import { createAuditLog } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
 import { normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
-import { CARD_REFUND_OPERATION_WHERE, paidAnotherWayCheckOf } from "@/lib/open-card-refund-owed";
+import { CARD_REFUND_OPERATION_WHERE, paidAnotherWayCheckOf, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 
@@ -74,6 +74,15 @@ export async function closeCardRefundCheckNotOwed(
         409,
       );
     }
+    // #4210 round 4 (money F-D): a slice that records a refund Stripe failed
+    // later owes that refund - a real debt, never closed as not owed here.
+    const plan = parseRefundAllocationPlan(operation.allocationPlan) ?? [];
+    if (plan.some((slice) => (slice.failedRefundIds?.length ?? 0) > 0)) {
+      throw new CardRefundCheckNotOwedError(
+        "A card refund Stripe failed later is recorded on this row, so it is owed and cannot be closed as not owed. If the member was paid back another way, close it as paid another way.",
+        409,
+      );
+    }
     // Dead by the one rule: a check is raised dead, and a "Paid another way" close needs it dead too.
     if (!isPaymentRecoveryOperationExhausted(operation)) {
       throw new CardRefundCheckNotOwedError(
@@ -89,6 +98,8 @@ export async function closeCardRefundCheckNotOwed(
         allocationPlan: { equals: operation.allocationPlan as Prisma.InputJsonValue },
       },
       data: {
+        // Marked not owed on the check (`notOwed`), so a reader of the closed row tells it from one paid another way.
+        allocationPlan: plan.map((slice) => (slice.paidAnotherWayCheck ? { ...slice, paidAnotherWayCheck: { ...slice.paidAnotherWayCheck, notOwed: true } } : slice)) as unknown as Prisma.InputJsonValue,
         status: PaymentRecoveryOperationStatus.SUCCEEDED,
         succeededAt: new Date(),
         nextRetryAt: null,

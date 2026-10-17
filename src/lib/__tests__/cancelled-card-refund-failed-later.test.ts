@@ -130,6 +130,25 @@ describe("readCancelledCardRefund reads the cancel's refunds that failed later (
     expect((await readCancelledCardRefund(BOOKING)).cardRefundFailedLater).toEqual([{ amountCents: 9_000, ...expected }]);
   });
 
+  // #4210 round 4 (money F-F): a check raised against the cancel's failed-later
+  // row's own "Paid another way" close is told with that row's part.
+  it("MUTATION: a check against the cancel's failed-later row's close is told with that row", async () => {
+    const closedFl = failedLaterRow("re_cancel", { status: PaymentRecoveryOperationStatus.SUCCEEDED, succeededAt: RETRIED, nextRetryAt: null, allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 9_000, madeByOperationId: "op-cancel" }] });
+    const check = failedLaterRow("re_retry", {
+      amountCents: 4_000,
+      attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS,
+      allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4_000, madeByOperationId: "op-fl-re_cancel", paidAnotherWayCheck: { closedOperationId: "op-fl-re_cancel", reason: "part-close" } }],
+    });
+    rows([cancelRow()], [closedFl, check], [refund("re_cancel", "failed"), refund("re_retry", "failed", RETRIED, 4_000)]);
+    db.findClose.mockImplementation(async ({ where }: { where: { occurrenceKey: { in: string[] } } }) =>
+      where.occurrenceKey.in.some((key) => key.includes("op-fl-re_cancel")) ? { amountCents: 5_000, raisedAmountCents: 9_000 } : null,
+    );
+
+    expect((await readCancelledCardRefund(BOOKING)).cardRefundFailedLater).toEqual([
+      { amountCents: 9_000, state: "paid-another-way", paidBackCents: 5_000, unpaidCents: 4_000, checkOpenCents: 4_000 },
+    ]);
+  });
+
   it("MUTATION: another door's refund on the booking that failed later (an edit's) is not the cancel's", async () => {
     const edit: Op = {
       id: "op-edit",

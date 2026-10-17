@@ -46,7 +46,7 @@
 import { PaymentRecoveryOperationStatus, type PaymentRecoveryOperation, type Prisma } from "@prisma/client";
 
 import { readPaidAnotherWayCounted, type PaidAnotherWayCounted } from "@/lib/card-refund-paid-another-way-counted";
-import { readPaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
+import { readPaidTwiceResolution, type PaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
 import type { PaidAnotherWayFailedLaterOutcome } from "@/lib/card-refund-failed-later-paid-another-way-note";
 import { CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, closeKeysOf, paidAnotherWayUnpaidCents } from "@/lib/manual-refund-task-settlement-rules";
 import {
@@ -105,12 +105,91 @@ function closePaidItBack(
   return cardRefundPlannedSlices(row).some((slice) => refundFitsSlice(slice, recorded)) ? "uncertain" : null;
 }
 
+type CloseRecordRow = { id: string; amountCents: number | null; raisedAmountCents: number | null; reviewContext: Prisma.JsonValue };
+
+/**
+ * One closed row's "Paid another way" close, weighed for one recorded refund:
+ * its record, whether the refund is on its paid-twice list, and whether it paid
+ * the refund back (`closePaidItBack`). Null where the row has no such close,
+ * Stripe made the refund outside its window, or it did not pay it back.
+ */
+async function weighClose(
+  tx: Prisma.TransactionClient,
+  row: PaymentRecoveryOperation,
+  recorded: RecordedCardRefundRow,
+  beforeFailure: CardRefundOwedPaymentRow,
+): Promise<{ record: CloseRecordRow; onPaidTwiceList: boolean; paidItBack: "covered" | "uncertain" } | null> {
+  if (!operationWindowTakes(row, recorded)) return null;
+  const onPaidTwiceList = cardRefundsSentAfterPaidAnotherWay(beforeFailure, new Set([row.id])).get(row.id)?.has(recorded.stripeRefundId) === true;
+  const record = await tx.manualRefundTask.findFirst({
+    where: { ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: closeKeysOf(row.id) } },
+    select: { id: true, amountCents: true, raisedAmountCents: true, reviewContext: true },
+  });
+  if (!record) return null;
+  const paidItBack = closePaidItBack(row, readPaidAnotherWayCounted(record.reviewContext), recorded, onPaidTwiceList);
+  return paidItBack === null ? null : { record, onPaidTwiceList, paidItBack };
+}
+
+/**
+ * Round 4 (money F-C): whether a paid-twice row's resolution speaks for this
+ * refund - one it listed when it was resolved (`refundIds`), never today's
+ * matching; a resolution written before it kept them, a refund Stripe made by
+ * the close and the app recorded after it.
+ */
+function resolutionCovers(resolution: PaidTwiceResolution, row: PaymentRecoveryOperation, recorded: RecordedCardRefundRow): boolean {
+  if (resolution.refundIds) return resolution.refundIds.includes(recorded.stripeRefundId);
+  return operationWindowTakes(row, recorded) && recordedAfterClose(row, recorded);
+}
+
+function settling(
+  row: PaymentRecoveryOperation,
+  record: CloseRecordRow,
+  recorded: RecordedCardRefundRow,
+  decided: { outcome: PaidAnotherWayFailedLaterOutcome; checkCents: number; onPaidTwiceList: boolean; resolutionNote: string | null },
+): SettlingPaidAnotherWayClose {
+  return {
+    outcome: decided.outcome,
+    recordId: record.id,
+    operationId: row.id,
+    paidBackCents: record.amountCents ?? 0,
+    owedCents: record.raisedAmountCents ?? record.amountCents ?? 0,
+    checkCents: decided.checkCents,
+    onPaidTwiceList: decided.onPaidTwiceList,
+    recordedAfterClose: recordedAfterClose(row, recorded),
+    resolutionNote: decided.resolutionNote,
+  };
+}
+
+const isClosed = (row: PaymentRecoveryOperation) => row.status === PaymentRecoveryOperationStatus.SUCCEEDED && row.succeededAt !== null;
+
+/**
+ * Round 4 (money F-A/F-B; the runner's re-check): the first of these closed
+ * rows whose "Paid another way" close may have paid this refund back, as an
+ * `uncertain` check for the whole refund - never settled, since which of them
+ * sent it is not known. Null where none may have.
+ */
+export async function findPaidAnotherWayCloseThatMayHavePaid(
+  tx: Prisma.TransactionClient,
+  { rows, beforeFailure, refundId, candidates }: { rows: ReadonlyArray<PaymentRecoveryOperation>; beforeFailure: CardRefundOwedPaymentRow; refundId: string; candidates: ReadonlyArray<string> },
+): Promise<SettlingPaidAnotherWayClose | null> {
+  const recorded = beforeFailure.refunds.find((each) => each.stripeRefundId === refundId);
+  if (!recorded) return null;
+  for (const id of candidates) {
+    const row = rows.find((each) => each.id === id && isClosed(each));
+    const weighed = row ? await weighClose(tx, row, recorded, beforeFailure) : null;
+    if (!row || !weighed) continue;
+    return settling(row, weighed.record, recorded, { outcome: "raised-check-uncertain", checkCents: recorded.amountCents, onPaidTwiceList: weighed.onPaidTwiceList, resolutionNote: null });
+  }
+  return null;
+}
+
 /**
  * The "Paid another way" close that settled this failed refund, or null.
  * `beforeFailure` is the payment as it stood before Stripe failed the refund
- * (`cardRefundPaymentBeforeFailure`); `madeBy` the row that sent it; `filledBy`
- * the row whose slice it fills there; `rows` every card refund row on the
- * payment, the checks already raised against a close among them.
+ * (`cardRefundPaymentBeforeFailure`); `madeBy` the row that sent it, and
+ * `senders` every row whose runner metadata it carries; `filledBy` the row
+ * whose slice it fills there; `rows` every card refund row on the payment, the
+ * checks already raised against a close among them.
  */
 export async function findPaidAnotherWayCloseThatSettled(
   tx: Prisma.TransactionClient,
@@ -118,6 +197,7 @@ export async function findPaidAnotherWayCloseThatSettled(
     rows,
     beforeFailure,
     madeBy,
+    senders,
     filledBy,
     refund,
     bookingId,
@@ -125,28 +205,30 @@ export async function findPaidAnotherWayCloseThatSettled(
     rows: ReadonlyArray<PaymentRecoveryOperation>;
     beforeFailure: CardRefundOwedPaymentRow;
     madeBy: string | null;
+    senders: ReadonlyArray<string>;
     filledBy: string | null;
     refund: { id: string; amount: number; metadata?: Record<string, string> | null };
     bookingId: string;
   },
 ): Promise<SettlingPaidAnotherWayClose | null> {
+  // Round 4 (money F-A/F-B): several rows send this refund's metadata (an edit's
+  // reason, twice) - which sent it is not known, so any of their closes that
+  // may have paid it back raises a check, never a settle and never a re-send.
+  if (senders.length > 1) {
+    const candidates = madeBy !== null ? [madeBy, ...senders.filter((id) => id !== madeBy)] : [...senders];
+    return findPaidAnotherWayCloseThatMayHavePaid(tx, { rows, beforeFailure, refundId: refund.id, candidates });
+  }
   const recorded = beforeFailure.refunds.find((each) => each.stripeRefundId === refund.id);
-  const closed = (id: string | null) =>
-    rows.find((row) => row.id === id && row.status === PaymentRecoveryOperationStatus.SUCCEEDED && row.succeededAt !== null);
+  const closed = (id: string | null) => rows.find((row) => row.id === id && isClosed(row));
   // The row that sent it decides; by the slice it fills only a refund no door of this booking made.
   const row = madeBy !== null ? closed(madeBy) : refund.metadata?.bookingId !== bookingId ? closed(filledBy) : undefined;
-  if (!recorded || !row || !operationWindowTakes(row, recorded)) return null;
-  const onPaidTwiceList = cardRefundsSentAfterPaidAnotherWay(beforeFailure, new Set([row.id])).get(row.id)?.has(refund.id) === true;
-  if (madeBy === null && !onPaidTwiceList) return null;
-  const record = await tx.manualRefundTask.findFirst({
-    where: { ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: closeKeysOf(row.id) } },
-    select: { id: true, amountCents: true, raisedAmountCents: true, reviewContext: true },
-  });
-  if (!record) return null;
+  if (!recorded || !row) return null;
+  const weighed = await weighClose(tx, row, recorded, beforeFailure);
+  if (!weighed || (madeBy === null && !weighed.onPaidTwiceList)) return null;
+  const { record, onPaidTwiceList, paidItBack } = weighed;
   const owedCents = record.raisedAmountCents ?? record.amountCents ?? 0;
-  const paidItBack = closePaidItBack(row, readPaidAnotherWayCounted(record.reviewContext), recorded, onPaidTwiceList);
-  if (paidItBack === null) return null;
-  const resolution = onPaidTwiceList ? readPaidTwiceResolution(record.reviewContext) : null;
+  const stored = readPaidTwiceResolution(record.reviewContext);
+  const resolution = stored && resolutionCovers(stored, row, recorded) ? stored : null;
   let outcome: PaidAnotherWayFailedLaterOutcome;
   let checkCents: number;
   if (paidItBack === "uncertain" || refund.amount > owedCents) {
@@ -164,15 +246,5 @@ export async function findPaidAnotherWayCloseThatSettled(
     checkCents = Math.min(refund.amount, Math.max(0, paidAnotherWayUnpaidCents(record) - listedCents));
     outcome = checkCents === 0 ? "settled-paid-another-way" : "raised-check-part-close";
   }
-  return {
-    outcome,
-    recordId: record.id,
-    operationId: row.id,
-    paidBackCents: record.amountCents ?? 0,
-    owedCents,
-    checkCents,
-    onPaidTwiceList,
-    recordedAfterClose: recordedAfterClose(row, recorded),
-    resolutionNote: resolution?.note ?? null,
-  };
+  return settling(row, record, recorded, { outcome, checkCents, onPaidTwiceList, resolutionNote: resolution?.note ?? null });
 }

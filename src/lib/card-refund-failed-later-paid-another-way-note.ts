@@ -47,8 +47,16 @@ export const PAID_ANOTHER_WAY_CHECK_WHY: Record<PaidAnotherWayCheckReason, strin
 };
 
 const GAVE_UP_ON = '"Card refunds Stripe gave up on" on the Stuck states page';
+
+/**
+ * #4210 round 4 (money F-E): what becomes of a card refund credit note Xero
+ * holds for the refund that failed, once nothing more is paid for it - said by
+ * the alert and by the "Checked - not owed" dialog, from this one home.
+ */
+export const FAILED_REFUND_XERO_NOTE =
+  "a card refund credit note raised in Xero while Stripe counted the refund no longer matches money paid back: the Xero reconciliation report lists it as refund coverage above the refunded total, for you to correct in Xero";
 /** #4210 round 3 (UX 2): how an officer closes a check row either way. */
-const CLOSE_CHECK = `If the member is owed it, pay them another way and close it there as paid another way; if they are not, close it there as checked - not owed`;
+const CLOSE_CHECK = `If the member is owed it, pay them another way and close it there as paid another way; if they are not, close it there as checked - not owed, and then ${FAILED_REFUND_XERO_NOTE}`;
 
 /** How the refund stood when the close was recorded (money F5: said only where true). */
 function howItStood(note: PaidAnotherWayFailedLaterNoteInput): string {
@@ -66,7 +74,7 @@ export function paidAnotherWayFailedLaterNote(note: PaidAnotherWayFailedLaterNot
   const lead = `Stripe reported card refund ${note.stripeRefundId} of ${note.amount} failed after accepting it, so that money did not reach the member's card. The card refund it was made for had been closed as paid another way, and that close ${close}.${howItStood(note)}${list}`;
   switch (note.outcome) {
     case "settled-paid-another-way":
-      return `${lead} The member has had this money back once, by the close, so it is not owed again and is not asked for again. ${note.onPaidTwiceList ? "Do not pay the member again unless they have already returned the extra; if you only asked, tell them not to send it." : "Do not pay the member again."} Raise no other refund note for it in Xero: if a card refund credit note was raised while Stripe counted it, it no longer matches money paid back, and the Xero reconciliation report lists it as refund coverage above the refunded total, for you to correct in Xero.`;
+      return `${lead} The member has had this money back once, by the close, so it is not owed again and is not asked for again. ${note.onPaidTwiceList ? "Do not pay the member again unless they have already returned the extra; if you only asked, tell them not to send it." : "Do not pay the member again."} Raise no other refund note for it in Xero: ${FAILED_REFUND_XERO_NOTE}.`;
     case "raised-check-part-close":
       return `${lead} Up to ${note.check} of this refund may be part of what the close gave up, so ${note.check} is listed under ${GAVE_UP_ON} for you to check. It is not asked for again automatically. ${CLOSE_CHECK}. The rest was paid back by the close: do not pay it again.`;
     case "raised-check-resolved":

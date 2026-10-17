@@ -1602,9 +1602,12 @@ async function claimPaymentRecoveryOperation(operationId: string) {
     return null;
   }
 
-  return prisma.paymentRecoveryOperation.findUnique({
+  const claimed = await prisma.paymentRecoveryOperation.findUnique({
     where: { id: operationId },
   });
+  // #4210 round 4: a failed-later row an earlier release raised is weighed against "Paid another way" closes first.
+  if (claimed && (await (await import("@/lib/card-refund-failed-later-recheck")).holdFailedLaterRowForCheck(claimed))) return null;
+  return claimed;
 }
 
 /**

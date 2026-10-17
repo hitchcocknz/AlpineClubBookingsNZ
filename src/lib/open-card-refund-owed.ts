@@ -72,16 +72,32 @@ export const OPEN_CARD_REFUND_OPERATION_WHERE: {
  * row's one plan slice; a release before it reads the plan without it.
  */
 export type PaidAnotherWayCheckReason = "part-close" | "resolved" | "uncertain";
-export type PaidAnotherWayCheck = { closedOperationId: string; reason: PaidAnotherWayCheckReason };
-/** A plan slice as parsed: the frozen plan's fields, and (#4210) a check row's mark - raised to check, never sent. */
-export type CardRefundPlanSlice = RefundAllocationSlice & { paidAnotherWayCheck?: PaidAnotherWayCheck };
+export type PaidAnotherWayCheck = {
+  closedOperationId: string;
+  reason: PaidAnotherWayCheckReason;
+  /** #4210 round 4: an officer closed it as checked - not owed (`closeCardRefundCheckNotOwed`). */
+  notOwed?: true;
+};
+/**
+ * A plan slice as parsed: the frozen plan's fields, and (#4210) a check row's
+ * mark - raised to check, never sent - and (round 4) the mark of a failed-later
+ * row this release's writer raised, having weighed it against every "Paid
+ * another way" close (`paidAnotherWayWeighed`); a row an older release raised
+ * lacks it, and the runner weighs it before sending (`card-refund-failed-later-recheck.ts`).
+ */
+export type CardRefundPlanSlice = RefundAllocationSlice & { paidAnotherWayCheck?: PaidAnotherWayCheck; paidAnotherWayWeighed?: true };
 
 const CHECK_REASONS: readonly PaidAnotherWayCheckReason[] = ["part-close", "resolved", "uncertain"];
 
 function isPaidAnotherWayCheck(value: unknown): value is PaidAnotherWayCheck {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const { closedOperationId, reason } = value as Record<string, unknown>;
-  return typeof closedOperationId === "string" && closedOperationId.length > 0 && (CHECK_REASONS as readonly unknown[]).includes(reason);
+  const { closedOperationId, reason, notOwed } = value as Record<string, unknown>;
+  return (
+    typeof closedOperationId === "string" &&
+    closedOperationId.length > 0 &&
+    (CHECK_REASONS as readonly unknown[]).includes(reason) &&
+    (notOwed === undefined || notOwed === true)
+  );
 }
 
 /** #4210: the check a failed-later row was raised as (`PaidAnotherWayCheck`), or null for a row the runner sends. */
@@ -102,7 +118,7 @@ export function parseRefundAllocationPlan(
   const slices: CardRefundPlanSlice[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return null;
-    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId, paidAnotherWayCheck } = entry as Record<
+    const { paymentTransactionId, amountCents, stripeKeySuffix, madeRefundId, failedRefundIds, madeByOperationId, paidAnotherWayCheck, paidAnotherWayWeighed } = entry as Record<
       string,
       unknown
     >;
@@ -117,7 +133,8 @@ export function parseRefundAllocationPlan(
       (failedRefundIds !== undefined &&
         (!Array.isArray(failedRefundIds) || !failedRefundIds.every((id) => typeof id === "string" && id.length > 0))) ||
       (madeByOperationId !== undefined && madeByOperationId !== null && (typeof madeByOperationId !== "string" || !madeByOperationId)) ||
-      (paidAnotherWayCheck !== undefined && !isPaidAnotherWayCheck(paidAnotherWayCheck))
+      (paidAnotherWayCheck !== undefined && !isPaidAnotherWayCheck(paidAnotherWayCheck)) ||
+      (paidAnotherWayWeighed !== undefined && paidAnotherWayWeighed !== true)
     ) {
       return null;
     }
@@ -129,6 +146,7 @@ export function parseRefundAllocationPlan(
       ...(failedRefundIds === undefined ? {} : { failedRefundIds: [...(failedRefundIds as string[])] }),
       ...(madeByOperationId === undefined ? {} : { madeByOperationId: madeByOperationId as string | null }),
       ...(paidAnotherWayCheck === undefined ? {} : { paidAnotherWayCheck: { ...(paidAnotherWayCheck as PaidAnotherWayCheck) } }),
+      ...(paidAnotherWayWeighed === undefined ? {} : { paidAnotherWayWeighed: true as const }),
     });
   }
   return slices;
@@ -231,6 +249,12 @@ export interface CardRefundSlice {
   madeRefundId?: string;
   /** #4083: the key generation it moved to after Stripe refused it: it was refused, so is certainly unmade. */
   stripeKeySuffix?: string;
+  /**
+   * #4210 round 4 (money F-D): a check row's slice, never sent, so no refund is
+   * ever its own - it takes none, and still counts as owed until an officer
+   * closes it, whatever refund of its amount another row's runner records.
+   */
+  paidAnotherWayCheck?: PaidAnotherWayCheck;
 }
 
 /**
@@ -268,7 +292,7 @@ function operationSlices(operation: CardRefundOperationRow): CardRefundSlice[] {
 
 /** Whether a slice takes this refund, of which `leftCents` is not yet placed. A marked slice takes only its own. */
 function sliceTakes(slice: CardRefundSlice, refund: RecordedCardRefundRow, leftCents: number): boolean {
-  if (slice.madeRefundId || slice.paymentTransactionId !== refund.paymentTransactionId) return false;
+  if (slice.madeRefundId || slice.paidAnotherWayCheck || slice.paymentTransactionId !== refund.paymentTransactionId) return false;
   if (slice.filledCents >= slice.amountCents) return false;
   return slice.exact
     ? leftCents === refund.amountCents && refund.amountCents === slice.amountCents

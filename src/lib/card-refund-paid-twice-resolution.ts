@@ -14,6 +14,12 @@ export interface PaidTwiceResolution {
   note: string;
   /** What Stripe had refunded to the card for the close when it was resolved. */
   refundedByCardCents: number;
+  /**
+   * #4210 round 4 (money F-C): the Stripe refunds the paid-twice row listed when
+   * it was resolved - the ones the resolution speaks for. Absent on one
+   * resolved before it kept them.
+   */
+  refundIds?: string[];
 }
 
 /** The resolution kept on a close's record, or null when it has none (or anything else). */
@@ -21,15 +27,16 @@ export function readPaidTwiceResolution(reviewContext: unknown): PaidTwiceResolu
   if (!reviewContext || typeof reviewContext !== "object" || Array.isArray(reviewContext)) return null;
   const value = (reviewContext as Record<string, unknown>).paidTwiceResolved;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const { resolvedAt, resolvedByMemberId, note, refundedByCardCents } = value as Record<string, unknown>;
+  const { resolvedAt, resolvedByMemberId, note, refundedByCardCents, refundIds } = value as Record<string, unknown>;
   if (
     typeof resolvedAt !== "string" ||
     typeof resolvedByMemberId !== "string" ||
     typeof note !== "string" ||
     typeof refundedByCardCents !== "number" ||
-    !Number.isSafeInteger(refundedByCardCents)
+    !Number.isSafeInteger(refundedByCardCents) ||
+    (refundIds !== undefined && (!Array.isArray(refundIds) || !refundIds.every((id) => typeof id === "string" && id.length > 0)))
   ) {
     return null;
   }
-  return { resolvedAt, resolvedByMemberId, note, refundedByCardCents };
+  return { resolvedAt, resolvedByMemberId, note, refundedByCardCents, ...(Array.isArray(refundIds) ? { refundIds: [...(refundIds as string[])] } : {}) };
 }

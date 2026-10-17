@@ -132,8 +132,13 @@ export function DeadCardRefundsPanel({
   // close that leaves a notice, since opening the dialog clears it.
   const listNoticeRef = useRef<HTMLParagraphElement>(null);
   const shown = useShownOnceItHadRows(rows.length);
-  // #4210: the check row a "Checked - not owed" dialog is open for.
-  const [notOwedTarget, setNotOwedTarget] = useState<DeadCardRefundPanelRow | null>(null);
+  // #4210: the check row a "Checked - not owed" dialog is open for, read from the list like `target`.
+  const [notOwedTargetId, setNotOwedTargetId] = useState<string | null>(null);
+  const notOwedTarget = notOwedTargetId === null ? null : (rows.find((row) => row.operationId === notOwedTargetId) ?? null);
+  if (notOwedTargetId !== null && notOwedTarget === null) {
+    setNotOwedTargetId(null);
+    setListNotice("That card refund is no longer waiting to be closed, so its dialog was closed. The list is up to date.");
+  }
 
   const target = targetId === null ? null : (rows.find((row) => row.operationId === targetId) ?? null);
   // The list moved under the open dialog (a 409's refresh, another treasurer):
@@ -318,7 +323,7 @@ export function DeadCardRefundsPanel({
                   aria-label={`Close the card refund for booking ${row.bookingReference} as checked - not owed`}
                   onClick={() => {
                     setListNotice("");
-                    setNotOwedTarget(row);
+                    setNotOwedTargetId(row.operationId);
                   }}
                 >
                   Checked - not owed
@@ -328,7 +333,7 @@ export function DeadCardRefundsPanel({
           ))}
         </ul>
 
-        <CheckedNotOwedDialog target={notOwedTarget} onDone={() => setNotOwedTarget(null)} onClosed={setListNotice} statusRef={listNoticeRef} />
+        <CheckedNotOwedDialog target={notOwedTarget} onDone={() => setNotOwedTargetId(null)} onClosed={setListNotice} listNotice={listNotice} statusRef={listNoticeRef} />
         <Dialog open={target !== null} onOpenChange={(next) => !busy && !next && close()}>
           <DialogContent
             className="max-h-[90vh] overflow-y-auto"
@@ -359,7 +364,11 @@ export function DeadCardRefundsPanel({
                   : null}
               </p>
               <p className="font-medium text-foreground">
-                {target ? `${formatCents(target.owedCents, format)} is still owed.` : null}
+                {target === null
+                  ? null
+                  : target.check
+                    ? `${formatCents(target.owedCents, format)} may be owed. Check before paying: if the member is not owed it, close it as Checked - not owed instead.`
+                    : `${formatCents(target.owedCents, format)} is still owed.`}
               </p>
               {/* Always mounted, so a screen reader hears the change (round 7, UX). */}
               <p role="status" className="font-medium text-warning-11 empty:hidden">

@@ -450,7 +450,8 @@ describe("#4166: the new row records which row made the refund, by what was sent
   it("the cancel's own refund: the cancel row", async () => {
     const tx = fakeTx({ rows: [cancelRow] });
     await keep(tx);
-    expect(inserted(tx)?.allocationPlan).toEqual([{ paymentTransactionId: "txn-1", amountCents: 4_000, madeByOperationId: "op-cancel" }]);
+    // #4210 round 4: weighed against the "Paid another way" closes, so the runner does not weigh it again.
+    expect(inserted(tx)?.allocationPlan).toEqual([{ paymentTransactionId: "txn-1", amountCents: 4_000, madeByOperationId: "op-cancel", paidAnotherWayWeighed: true }]);
   });
 
   it("MUTATION: X (the cancel's) fails while R of the same amount holds the cancel slice by amount: still the cancel row", async () => {

@@ -42,7 +42,7 @@ import {
 import { readPaidTwiceResolution } from "@/lib/card-refund-paid-twice-resolution";
 
 const CLOSED_AT = new Date("2026-06-25T00:00:00.000Z");
-const STRIPE_BEFORE_CLOSE = { stripeCreatedAt: new Date("2026-06-24T23:59:00.000Z"), createdAt: new Date("2026-06-26T00:00:00.000Z") };
+const STRIPE_BEFORE_CLOSE = { stripeRefundId: "re_late", stripeCreatedAt: new Date("2026-06-24T23:59:00.000Z"), createdAt: new Date("2026-06-26T00:00:00.000Z") };
 
 /** A $150.00 card refund closed as paid another way at CLOSED_AT, with the refunds the payment then recorded. */
 function closeRecord(refunds: Array<Record<string, unknown>>, overrides: Record<string, unknown> = {}) {
@@ -182,6 +182,8 @@ describe("marking a paid-twice row Resolved", () => {
             resolvedByMemberId: "treasurer-1",
             note: "Member paid the extra back by bank, ref 9",
             refundedByCardCents: 15_000,
+            // #4210 round 4 (money F-C): the refunds it speaks for, as listed now.
+            refundIds: ["re_late"],
           },
         },
       },

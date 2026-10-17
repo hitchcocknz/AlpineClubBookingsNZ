@@ -187,15 +187,19 @@ async function readFailedLaterCardRefunds(
     select: { id: true, idempotencyKey: true, paymentId: true, amountCents: true, allocationPlan: true, status: true, attempts: true, nextRetryAt: true, succeededAt: true },
   });
   const roots = new Set(closed.map(({ row }) => row.id));
+  // Every check, by the close it is weighed against: a cancel row's, or (round 4,
+  // money F-F) a failed-later row's of the cancel, told with that row's part below.
+  const byClose = new Map<string, { openCents: number; paidBackCents: number }>();
   for (const row of rows ?? []) {
     const check = paidAnotherWayCheckOf(row);
-    if (!check || !roots.has(check.closedOperationId)) continue;
+    if (!check) continue;
     const { state, record } = await cardRefundRowState(row);
-    const told = checks.get(check.closedOperationId) ?? { openCents: 0, paidBackCents: 0 };
+    const told = byClose.get(check.closedOperationId) ?? { openCents: 0, paidBackCents: 0 };
     if (state === "stalled" || state === "on-its-way") told.openCents += row.amountCents;
     else if (record) told.paidBackCents += record.amountCents ?? row.amountCents;
-    checks.set(check.closedOperationId, told);
+    byClose.set(check.closedOperationId, told);
   }
+  for (const [closeId, told] of byClose) if (roots.has(closeId)) checks.set(closeId, told);
   const failed = (rows ?? []).flatMap((row) => {
     const refundId = cardRefundFailedLaterRefundId(row.idempotencyKey);
     return refundId && paidAnotherWayCheckOf(row) === null ? [{ row, refundId }] : [];
@@ -245,12 +249,21 @@ async function readFailedLaterCardRefunds(
       madeByRow.set(root, (madeByRow.get(root) ?? 0) + head.row.amountCents);
     }
     const { state, record } = await cardRefundRowState(row);
+    // Round 4 (money F-F): checks raised against this chain's own closes, back to the cancel's row.
+    let checkOpenCents = 0;
+    let checkPaidBackCents = 0;
+    for (let id: string | null = row.id; id !== null && !roots.has(id); id = madeBy.get(id) ?? null) {
+      checkOpenCents += byClose.get(id)?.openCents ?? 0;
+      checkPaidBackCents += byClose.get(id)?.paidBackCents ?? 0;
+    }
     parts.push({
       amountCents: row.amountCents,
       state,
       ...(dated ? {} : { dated }),
       ...(state === "settled" ? { madeAt: row.succeededAt } : {}),
       ...(record ? { paidBackCents: record.amountCents ?? row.amountCents, unpaidCents: paidAnotherWayUnpaidCents(record) } : {}),
+      ...(checkOpenCents > 0 ? { checkOpenCents } : {}),
+      ...(checkPaidBackCents > 0 ? { checkPaidBackCents } : {}),
     });
   }
   return { parts, madeByRow, checks };

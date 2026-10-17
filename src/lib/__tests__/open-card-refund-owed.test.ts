@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cardRefundSlicesByOperation,
+  unsentSliceCents,
   cardRefundCountedAtClose,
   cardRefundPlannedSlices,
   paidAnotherWayCheckOf,
@@ -517,5 +519,27 @@ describe("what a close counts as it closes (#4210)", () => {
     expect(paidAnotherWayCheckOf({ allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 1_500, paidAnotherWayCheck: check }] })).toEqual(check);
     expect(paidAnotherWayCheckOf({ allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 1_500 }] })).toBeNull();
     expect(parseRefundAllocationPlan([{ paymentTransactionId: "txn-a", amountCents: 1_500, paidAnotherWayCheck: { closedOperationId: "op-close", reason: "maybe" } }])).toBeNull();
+  });
+});
+
+// #4210 round 4 (money F-D, the lens's P4): a check row is never sent, so no
+// refund is its own; one of its amount another row's runner records must not
+// read it as owing nothing.
+describe("a check row's slice takes no refund (#4210)", () => {
+  it("MUTATION: another row's later refund of the check's amount fills that row, never the check", () => {
+    const closed = operation({ id: "op-cancel", status: "SUCCEEDED", idempotencyKey: "booking_cancel_refund_recovery_b-1", amountCents: 4_000, allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 4_000 }], createdAt: at(0), succeededAt: at(10) });
+    const other = operation({ id: "op-n", idempotencyKey: "payment_recovery_modification_refund_mod-1", amountCents: 1_500, allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 1_500 }], createdAt: at(1) });
+    const check = operation({ id: "op-check", status: "PENDING", idempotencyKey: "card_refund_failed_later_re-x", amountCents: 1_500, createdAt: at(30),
+      allocationPlan: [{ paymentTransactionId: "txn-a", amountCents: 1_500, madeByOperationId: "op-cancel", paidAnotherWayCheck: { closedOperationId: "op-cancel", reason: "part-close" } }] });
+    const refunds = [
+      refund({ stripeRefundId: "re-x", amountCents: 4_000, status: "failed", createdAt: at(20) }),
+      refund({ stripeRefundId: "re-n", amountCents: 1_500, status: "pending", createdAt: at(40) }),
+    ];
+    const owed = (ops: CardRefundOperationRow[]) =>
+      new Map(cardRefundSlicesByOperation(payment(ops, refunds)).map(({ operation: op, slices }) => [op.id, slices.reduce((sum, slice) => sum + unsentSliceCents(slice), 0)]));
+    expect(owed([closed, other, check]).get("op-check")).toBe(1_500);
+    expect(owed([closed, other, check]).get("op-n")).toBe(0);
+    // And once that row has closed on its own refund.
+    expect(owed([closed, { ...other, status: "SUCCEEDED", succeededAt: at(41) }, check]).get("op-check")).toBe(1_500);
   });
 });

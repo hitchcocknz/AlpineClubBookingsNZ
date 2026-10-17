@@ -75,20 +75,37 @@ export interface FailedLaterCardRefund {
    * Absent reads as dated.
    */
   dated?: boolean;
+  /** #4210 round 4 (money F-F): checks raised against this row's own close (`PaidAnotherWayClose`'s). */
+  checkOpenCents?: number;
+  checkPaidBackCents?: number;
 }
 
-/** What "Paid another way" closes' records say: what was paid back, and what they left unpaid. */
-type PaidAnotherWayTold = { paidBackCents: number; unpaidCents: number };
+/**
+ * What "Paid another way" closes' records say: what was paid back, and what
+ * they left unpaid - and (#4210) what was raised to check against them, still
+ * open or paid another way in its turn.
+ */
+type PaidAnotherWayTold = { paidBackCents: number; unpaidCents: number; checkOpenCents?: number; checkPaidBackCents?: number };
 
 /**
  * #4145, #4166 (`INV-SSOT`): what "Paid another way" records say, appended to
  * `clauses` - the cancel's own close and its failed-later rows' together, as
  * one total each: what was paid back, and as closed by the club only what was
- * left unpaid, "remaining" after another clause.
+ * left unpaid, "remaining" after another clause. #4210 (UX 5): a check comes
+ * first out of what was left unpaid - paid back, or the club in touch about
+ * it; beyond it (a resolved or uncertain check), as part of the refund.
+ * Returns the cents said beyond the closes' own figures.
  */
-function pushPaidAnotherWayClauses(clauses: string[], { paidBackCents, unpaidCents }: PaidAnotherWayTold, money: (cents: number) => string): void {
-  if (paidBackCents > 0) clauses.push(cardRefundClause(money(paidBackCents), "paid-another-way", null));
-  if (unpaidCents > 0) clauses.push(checkedAndClosed(`${clauses.length > 0 ? "remaining " : ""}${money(unpaidCents)}`));
+function pushPaidAnotherWayClauses(clauses: string[], told: PaidAnotherWayTold, money: (cents: number) => string): number {
+  const checkOpen = told.checkOpenCents ?? 0;
+  const checkPaidBack = told.checkPaidBackCents ?? 0;
+  const reopened = Math.min(told.unpaidCents, checkOpen + checkPaidBack);
+  if (told.paidBackCents + checkPaidBack > 0) clauses.push(cardRefundClause(money(told.paidBackCents + checkPaidBack), "paid-another-way", null));
+  if (told.unpaidCents - reopened > 0) clauses.push(checkedAndClosed(`${clauses.length > 0 ? "remaining " : ""}${money(told.unpaidCents - reopened)}`));
+  if (checkOpen > 0) {
+    clauses.push(checkOpen <= told.unpaidCents && clauses.length > 0 ? `the club will be in touch about the remaining ${money(checkOpen)}` : `the club will be in touch about ${money(checkOpen)} of the refund`);
+  }
+  return Math.max(0, checkOpen + checkPaidBack - reopened);
 }
 
 /**
@@ -130,7 +147,11 @@ function lessFailedLater(
       owed -= off;
     }
   }
-  const told: FailedLaterTold = { clauses: [], paidAnotherWay: { paidBackCents: 0, unpaidCents: 0 }, saidCents: 0, stalled: false };
+  const told: FailedLaterTold = { clauses: [], paidAnotherWay: { paidBackCents: 0, unpaidCents: 0, checkOpenCents: 0, checkPaidBackCents: 0 }, saidCents: 0, stalled: false };
+  for (const each of failedLater) {
+    told.paidAnotherWay.checkOpenCents = (told.paidAnotherWay.checkOpenCents ?? 0) + (each.checkOpenCents ?? 0);
+    told.paidAnotherWay.checkPaidBackCents = (told.paidAnotherWay.checkPaidBackCents ?? 0) + (each.checkPaidBackCents ?? 0);
+  }
   for (const state of FAILED_LATER_ORDER) {
     const group = failed.filter((each) => each.state === state && each.amountCents > 0);
     const cents = group.reduce((sum, each) => sum + each.amountCents, 0);
@@ -221,8 +242,8 @@ function ownCardRefundClauses(
     const { kept: [keptCents = 0], told } = lessFailedLater([cents], state === "settled" ? failedLater : [], { club, format });
     const clauses = keptCents > 0 ? [cardRefundClause(money(keptCents), state, cardEvent ? club.instantDate(cardEvent.occurredAt) : null)] : [];
     clauses.push(...told.clauses);
-    pushPaidAnotherWayClauses(clauses, told.paidAnotherWay, money);
-    return { clauses, saidCents: keptCents + told.saidCents, stalled: told.stalled };
+    const beyond = pushPaidAnotherWayClauses(clauses, told.paidAnotherWay, money);
+    return { clauses, saidCents: keptCents + told.saidCents + beyond, stalled: told.stalled };
   }
   const datedCents = Math.min(made.datedCents, cents);
   // A caller that read no record (an older page) says the rest was paid back, as before.
@@ -234,21 +255,17 @@ function ownCardRefundClauses(
   const clauses = keptDated > 0 && made.on ? [cardRefundClause(money(keptDated), "settled", club.instantDate(made.on))] : [];
   if (keptUndated > 0) clauses.push(cardRefundClause(money(keptUndated), "settled", null));
   clauses.push(...told.clauses);
-  // #4210 round 3 (UX 5): what was raised to check comes first out of what the close left unpaid.
-  const checkOpen = close?.checkOpenCents ?? 0;
-  const checkPaidBack = close?.checkPaidBackCents ?? 0;
-  const reopened = Math.min(unpaid, checkOpen + checkPaidBack);
-  // The cancel's own close and its failed-later rows paid another way, said together.
-  pushPaidAnotherWayClauses(
+  // The cancel's own close and its failed-later rows paid another way - and (#4210) the checks raised against them - said together.
+  const beyond = pushPaidAnotherWayClauses(
     clauses,
-    { paidBackCents: paidBack + checkPaidBack + told.paidAnotherWay.paidBackCents, unpaidCents: unpaid - reopened + told.paidAnotherWay.unpaidCents },
+    {
+      paidBackCents: paidBack + told.paidAnotherWay.paidBackCents,
+      unpaidCents: unpaid + told.paidAnotherWay.unpaidCents,
+      checkOpenCents: (close?.checkOpenCents ?? 0) + (told.paidAnotherWay.checkOpenCents ?? 0),
+      checkPaidBackCents: (close?.checkPaidBackCents ?? 0) + (told.paidAnotherWay.checkPaidBackCents ?? 0),
+    },
     money,
   );
-  // Within what the close left unpaid it is "the remaining" part; beyond it (a resolved or uncertain check) part of the refund.
-  if (checkOpen > 0) {
-    clauses.push(checkOpen <= unpaid && clauses.length > 0 ? `the club will be in touch about the remaining ${money(checkOpen)}` : `the club will be in touch about ${money(checkOpen)} of the refund`);
-  }
-  const beyond = Math.max(0, checkOpen + checkPaidBack - reopened);
   return { clauses, saidCents: keptDated + keptUndated + told.saidCents + paidBack + unpaid + beyond, stalled: told.stalled };
 }
 
@@ -429,10 +446,10 @@ export function buildCancelledPostPaymentNarrative(
     // #4166 (`INV-PAY-134`): a refund the event recorded that Stripe failed later is said by its own row.
     const { kept: [keptCents = 0], told } = lessFailedLater([settledAmountCents], credited ? [] : cardRefundFailedLater, { club, format });
     const clauses = keptCents > 0 ? [`${formatCents(keptCents, format)} was ${verb} on ${settledOn}`, ...told.clauses] : told.clauses;
-    pushPaidAnotherWayClauses(clauses, told.paidAnotherWay, (cents) => formatCents(cents, format));
+    const beyond = pushPaidAnotherWayClauses(clauses, told.paidAnotherWay, (cents) => formatCents(cents, format));
     if (retainedAmountCents > 0) clauses.push(`${formatCents(retainedAmountCents, format)} was retained`);
     settlementClause = joinClauses(clauses, "");
-    accountedCents = keptCents + told.saidCents;
+    accountedCents = keptCents + told.saidCents + beyond;
     if (told.stalled) followUps.push(STALLED_CARD_REFUND);
   } else if (snapshot?.refundMethod === "manual" && settledAmountCents > 0) {
     // B5 (#2262): a cash / off-Xero settlement is handed back by a person, so
