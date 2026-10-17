@@ -581,6 +581,14 @@ describe("#4210: a refund a \"Paid another way\" close already settled is never 
     expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
   });
 
+  it("MUTATION: sent by the closed row, though a newer open row's slice of its amount takes it by amount: settled by the close", async () => {
+    const newerOpen = row({ id: "op-edit", createdAt: new Date("2026-06-20T00:00:01.000Z") });
+    const tx = closedAndRecorded({ rows: [closedRow(), newerOpen] });
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "settled-paid-another-way", operationId: "op-cancel" } });
+    expect(tx.paymentRecoveryOperation.createMany).not.toHaveBeenCalled();
+    expect(tx.paymentRecoveryOperation.updateMany).not.toHaveBeenCalled();
+  });
+
   it("MUTATION: a failed-later row's retry, its row closed \"Paid another way\" first: settled, never raised dead for a second close", async () => {
     const retryRow = closedRow({ id: "op-fl", idempotencyKey: "card_refund_failed_later_re_0", stripeKeyPrefix: "card_refund_failed_later_re_0" });
     const tx = closedAndRecorded({ rows: [retryRow], close: { ...CLOSE, occurrenceKey: cardRefundPaidAnotherWayOccurrenceKey("op-fl", { xeroRefundNote: "none" }) } });
