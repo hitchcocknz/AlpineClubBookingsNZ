@@ -97,31 +97,39 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       });
     }, 60_000);
 
-    /**
-     * A $200 bank transfer whose cancellation refunded $100 under the
-     * payment's one canonical note, and an approved refund request's $50
-     * hand-back, then paid back through the REAL completion.
-     */
     beforeEach(async () => {
       await clearRun();
+    });
+
+    /**
+     * A $200 bank transfer whose cancellation refunded `cancelRefundCents`
+     * (under the payment's one canonical note when `invoiced`), and an
+     * approved refund request's $50 hand-back, then paid back through the
+     * REAL completion. Without an invoice the completion queues no request
+     * note: there is nothing for it to credit (#4231 money lens F1).
+     */
+    async function seed({ invoiced, cancelRefundCents = 10_000 }: { invoiced: boolean; cancelRefundCents?: number }) {
       await prisma.payment.create({
         data: {
           id: PAYMENT_ID, bookingId: BOOKING_ID, amountCents: 20_000, source: "INTERNET_BANKING", status: "PARTIALLY_REFUNDED",
-          refundedAmountCents: 10_000, xeroInvoiceId: INVOICE_ID, xeroRefundCreditNoteId: CANONICAL_NOTE,
+          refundedAmountCents: cancelRefundCents,
+          ...(invoiced ? { xeroInvoiceId: INVOICE_ID, xeroRefundCreditNoteId: CANONICAL_NOTE } : {}),
         },
       });
       await prisma.paymentTransaction.create({
         data: {
           id: "race-4215-txn", paymentId: PAYMENT_ID, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 20_000,
-          refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED",
+          refundedAmountCents: cancelRefundCents, status: "PARTIALLY_REFUNDED",
         },
       });
-      await prisma.xeroObjectLink.create({
-        data: {
-          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: CANONICAL_NOTE, xeroObjectNumber: "CN-4215",
-          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 10_000, status: "PAID" },
-        },
-      });
+      if (invoiced) {
+        await prisma.xeroObjectLink.create({
+          data: {
+            localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: CANONICAL_NOTE, xeroObjectNumber: "CN-4215",
+            role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: cancelRefundCents, status: "PAID" },
+          },
+        });
+      }
       await prisma.manualRefundTask.create({
         data: {
           id: TASK_ID, bookingId: BOOKING_ID, paymentId: PAYMENT_ID, amountCents: 5_000, raisedAmountCents: 5_000,
@@ -137,14 +145,15 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         },
         CLUB_FORMAT_TEST,
       );
-      // The completion moved the refunded total and queued the request's own note.
-      expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+      // The completion moved the refunded total, and queued the request's own note only against an invoice.
+      expect(await paymentState()).toEqual({ refundedAmountCents: cancelRefundCents + 5_000, status: "PARTIALLY_REFUNDED" });
       const queued = await prisma.xeroSyncOperation.findMany({
         where: { localModel: "Payment", localId: PAYMENT_ID, entityType: "CREDIT_NOTE" },
         select: { requestPayload: true },
       });
-      expect(queued.map((row) => (row.requestPayload as Record<string, unknown>).refundRequestId)).toEqual([REQUEST_ID]);
-    });
+      expect(queued.map((row) => (row.requestPayload as Record<string, unknown>).refundRequestId)).toEqual(invoiced ? [REQUEST_ID] : []);
+    }
+    const seedInvoiced = () => seed({ invoiced: true });
 
     afterAll(async () => {
       if (!prisma) return;
@@ -187,6 +196,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     });
 
     it("a canonical-note reconcile keeps the request's $50 beside the note's $100, and only a paid-back request counts", async () => {
+      await seedInvoiced();
       await linkRequestNote("PAID");
       // A second request still awaiting payment, and a third dismissed: no cash moved for either.
       for (const [suffix, status] of [["open", "OPEN"], ["dismissed", "DISMISSED"]] as const) {
@@ -210,6 +220,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     });
 
     it("keeps it while the request's note is still queued, and after Xero voids it (#4195: a request's void moves no refunded total)", async () => {
+      await seedInvoiced();
       await reconcileFromXero(canonicalNote("PAID"));
       expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
 
@@ -223,11 +234,45 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     });
 
     it("the canonical note voided: its $100 goes (INV-ADDPAY-041), the request's $50 stays - never attributed to the canonical note", async () => {
+      await seedInvoiced();
       await linkRequestNote("PAID");
 
       await reconcileFromXero(canonicalNote("VOIDED"));
 
       expect(await paymentState()).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+    /** The booking repair tool's dry run: what it would queue for the cancellation's refund note, and whether it asks a person. */
+    async function repairToolOnRefundNote() {
+      const { runBookingXeroRepair } = await import("@/lib/xero-booking-repair");
+      const booking = (await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID } })).passes[0]!.bookings[0]!;
+      return {
+        queued: booking.actions
+          .filter((action) => action.type === "QUEUE_REFUND_CREDIT_NOTE")
+          .map((action) => (action.payload as { refundAmountCents: number }).refundAmountCents),
+        review: booking.findings.some((finding) => /missing Xero refund note amount cannot be derived/.test(finding.summary)),
+      };
+    }
+
+    it("a request paid back before the booking had an invoice: the repair tool never puts its $50 in the cancellation's note, and the recount never counts it twice (#4231)", async () => {
+      await seed({ invoiced: false });
+      // The invoice reaches Xero afterwards; the cancellation's $100 has no note yet.
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: INVOICE_ID } });
+
+      // Before the fix: { queued: [15_000], review: false } - a cancellation note holding the request's $50.
+      expect(await repairToolOnRefundNote()).toEqual({ queued: [], review: true });
+
+      // An officer raises the cancellation's $100 note by hand; its reconcile keeps $150, never $200.
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroRefundCreditNoteId: CANONICAL_NOTE } });
+      await reconcileFromXero(canonicalNote("PAID"));
+      expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("a request alone, paid back before the invoice: the repair tool asks for no cancellation note at all", async () => {
+      await seed({ invoiced: false, cancelRefundCents: 0 });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: INVOICE_ID } });
+
+      // Before the fix: { queued: [5_000], ... } - the request's own cash as the cancellation's note.
+      expect(await repairToolOnRefundNote()).toEqual({ queued: [], review: false });
     });
   },
 );

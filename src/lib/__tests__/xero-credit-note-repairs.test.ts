@@ -60,7 +60,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { repairRefundedPaymentBusinessState } from "@/lib/xero-inbound/credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "@/lib/xero-inbound/modification-note-refunds";
-import { COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE } from "@/lib/xero-inbound/refund-request-paid-back";
+import { COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 
 // #3979: the repair writes through a claim on what it read
 // (`updateMany` keyed on id, status and refunded total). These suites assert the
