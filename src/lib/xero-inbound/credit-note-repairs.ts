@@ -450,6 +450,28 @@ export async function repairRefundedPaymentBusinessState(input: {
       });
       effectiveRefundedTotalCents = payment.refundedAmountCents;
     }
+    // #4162 (`INV-ADDPAY-021`): a bank-transfer payment's total is never
+    // lowered below its own transaction detail - the hand-backs the treasurer
+    // recorded. A voided refund note is carried through the detail, the ledger
+    // line and the total together by the nightly follow-up
+    // (`bank-refund-void-follow-up.ts`), never by this recount alone. Xero
+    // showing less is logged and alerted, as the card floor's is (#1353).
+    if (payment.source === PaymentSource.INTERNET_BANKING && effectiveRefundedTotalCents < payment.refundedAmountCents) {
+      const detail = await prisma.paymentTransaction.aggregate({ where: { paymentId: payment.id }, _sum: { refundedAmountCents: true } });
+      const floorCents = Math.min(payment.refundedAmountCents, Math.max(0, detail._sum.refundedAmountCents ?? 0));
+      if (effectiveRefundedTotalCents < floorCents) {
+        logger.warn(
+          { creditNoteId: input.creditNoteId, paymentId: payment.id, localRefundedAmountCents: payment.refundedAmountCents, detailCents: floorCents, xeroDerivedRefundedTotalCents: effectiveRefundedTotalCents },
+          "Xero-derived refund total is below the bank-transfer payment's own refund detail; keeping the detail (#4162 floor)"
+        );
+        await notifyXeroSyncError({
+          errorType: "refund-ledger-divergence",
+          operation: `inbound-credit-note-repair:${input.creditNoteId}`,
+          errorMessage: `Xero-derived refund total (${formatCents(effectiveRefundedTotalCents, format)}) for bank-transfer payment ${payment.id} is below the refunds the club recorded on it (${formatCents(floorCents, format)}). Those were kept (#4162 floor). A voided refund credit note is put back on the treasurer's refund list by the nightly follow-up.`,
+        });
+        effectiveRefundedTotalCents = floorCents;
+      }
+    }
     // #3653 (`INV-PAY-114`): a Xero note never raises an organiser child's cash
     // mirror past the refunds Stripe recorded for it.
     if (isStripePayment && payment.booking.organiserSettled) {

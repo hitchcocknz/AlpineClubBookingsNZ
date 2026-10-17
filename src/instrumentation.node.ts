@@ -598,9 +598,12 @@ export async function register() {
           const { runXeroCronTasks } = await import(
             "./lib/xero-cron-runner"
           );
+          // #4162: the selection runs the voided bank-transfer refund notes'
+          // follow-up right after the cleanup (report-only unless
+          // XERO_ENABLE_BANK_REFUND_VOID_WRITES=true).
           const result = await runXeroCronTasks("link-cleanup");
           logger.info(
-            { job: "xero-link-cleanup", result: result.linkCleanup },
+            { job: "xero-link-cleanup", result: result.linkCleanup, bankRefundVoidFollowUp: result.bankRefundVoidFollowUp },
             "Xero stale link cleanup complete"
           );
           Sentry.captureCheckIn({ checkInId, monitorSlug: "xero-link-cleanup", status: "ok" });

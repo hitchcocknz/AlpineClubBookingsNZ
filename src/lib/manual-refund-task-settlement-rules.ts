@@ -221,6 +221,46 @@ export function paidAnotherWayUnpaidCents(close: { amountCents: number | null; r
 }
 
 /**
+ * #4162 (owner decision 17 Oct 2026, `INV-ADDPAY-042`): THE OCCURRENCE-KEY
+ * PREFIX of a bank refund to re-confirm - the open hand-back the nightly undo
+ * of a voided bank-transfer refund note raises (`bank-refund-void-follow-up.ts`)
+ * after taking that refund back out of the payment's records, so the
+ * treasurer answers once whether the money went to the member. One per voided
+ * note: the key is the claim, so the undo happens once per note, and with the
+ * kind it is the marker. A `CANCELLED_BOOKING_HAND_BACK`, so the previous app
+ * version lists and completes it as an ordinary hand-back.
+ *
+ * Not a cancellation's own hand-back in the sense the readers below ask: the
+ * money it owes was already promised (and once recorded) by the hand-back the
+ * note recorded, so while it is open it is netted from refundable cash like an
+ * edit's, its completion takes `lock(1)`, and it queues its own note (keyed
+ * and sized on it), never the payment's one refund note.
+ */
+export const BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX = "bank-refund-void:";
+
+/** The one occurrence key of the follow-up for one voided note on one payment (`INV-ADDPAY-042`). */
+export function bankRefundVoidFollowUpOccurrenceKey(paymentId: string, creditNoteId: string): string {
+  return `${BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX}${paymentId}:${creditNoteId}`;
+}
+
+/** #4162: is this task a bank refund to re-confirm after its note's void? The kind and the key prefix together. */
+export function isBankRefundVoidFollowUpTask(task: {
+  kind: ManualRefundTaskKind | string | null;
+  occurrenceKey: string | null;
+}): boolean {
+  return (
+    task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+    (task.occurrenceKey?.startsWith(BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX) ?? false)
+  );
+}
+
+/** #4162: the follow-ups as a `ManualRefundTask` where fragment, in any status. */
+export const BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE = {
+  kind: "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskKind,
+  occurrenceKey: { startsWith: BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX },
+} as const;
+
+/**
  * #3827 (`INV-PAY-117`): the key prefixes of every hand-back that is NOT a
  * cancellation's - money promised back by bank transfer on a decision other
  * than a cancel (an edit's reduction, an approved refund request). The one
@@ -238,6 +278,7 @@ const NON_CANCELLATION_HAND_BACK_KEY_PREFIXES = [
   EDIT_REFUND_HAND_BACK_KEY_PREFIX,
   REFUND_REQUEST_HAND_BACK_KEY_PREFIX,
   CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX,
+  BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX,
 ] as const;
 
 function hasKeyPrefix(occurrenceKey: string | null, prefix: string): boolean {
@@ -354,14 +395,21 @@ export function refundRequestIdOfHandBack(task: {
  * and both are netted from refundable cash while open. On completion an
  * edit's owes Xero nothing (the edit queued its note); a refund request's
  * queues that request's own refund note (D-3813-8,
- * `refundRequestIdOfHandBack`). Every server
- * reader that asks "is this a CANCELLATION's hand-back?" asks this.
+ * `refundRequestIdOfHandBack`). #4162: so is a bank refund to re-confirm,
+ * whose completion queues its own note (`isBankRefundVoidFollowUpTask`). Every
+ * server reader that asks "is this a CANCELLATION's hand-back?" asks this.
  */
 export function isNonCancellationHandBackTask(task: {
   kind: ManualRefundTaskKind | string | null;
   occurrenceKey: string | null;
 }): boolean {
-  return isEditRefundHandBackTask(task) || isRefundRequestHandBackTask(task) || isCardRefundPaidAnotherWayTask(task);
+  return (
+    isEditRefundHandBackTask(task) ||
+    isRefundRequestHandBackTask(task) ||
+    isCardRefundPaidAnotherWayTask(task) ||
+    // #4162: a bank refund to re-confirm after its note's void.
+    isBankRefundVoidFollowUpTask(task)
+  );
 }
 
 /**
