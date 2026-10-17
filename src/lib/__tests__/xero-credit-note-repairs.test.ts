@@ -265,6 +265,14 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
     });
   });
 
+  it("reads the requests after the payment row, so a completion between the reads loses the claim instead of being dropped", async () => {
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
+
+    const paymentRead = mocks.paymentFindMany.mock.invocationCallOrder[0]!;
+    const requestRead = mocks.manualRefundTaskFindMany.mock.invocationCallOrder[0]!;
+    expect(requestRead).toBeGreaterThan(paymentRead);
+  });
+
   it("sums every request on the payment, and never one on another payment", async () => {
     mocks.manualRefundTaskFindMany.mockResolvedValue([
       { paymentId: "pay-1", amountCents: 3000 },
