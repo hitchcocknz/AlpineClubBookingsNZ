@@ -1605,27 +1605,27 @@ decision and would need its own owner decision.
 
 - **A voided bank-transfer refund note is listed until the treasurer answers
   it, once; nothing answers it automatically** (#4162, owner decisions 16 and
-  17 Oct 2026). `listBankRefundVoids` (`bank-refund-void-report.ts`) lists each
-  `REFUND_CREDIT_NOTE` link on an `INTERNET_BANKING` payment that is inactive,
-  recorded VOIDED or DELETED, past the 24-hour grace, with no
-  `BankRefundVoidResolution`; the unique (payment, note) pair is the claim. A
-  record-again whose own note did not land comes back flagged; one whose note
-  Xero voided too comes back as that note's item. The card report and its
-  self-heal stay card-only.
+  17 Oct 2026). `listBankRefundVoids` lists each inactive `REFUND_CREDIT_NOTE`
+  link on an `INTERNET_BANKING` payment recorded VOIDED or DELETED, past the
+  24-hour grace, with no `BankRefundVoidResolution`; the unique (payment, note)
+  pair is the claim. The card report and its self-heal stay card-only.
 - **Record again** (`reRecordBankTransferRefund`) re-raises the voided note's
   recorded amount, which the request confirms (a moved figure is a 409; an
-  unreadable one refuses). It puts back only the part the void's recount took
-  out of the refunded total, and queues one note keyed
-  `re-record:<resolution id>`, sized from its own record (`readReRecordShare`),
-  copying the voided note's method, wording and invoice (`INV-PAY-101`).
-  Refused while a refund-note create could still mint, or when the voided
-  note's create was resolved in Xero (`INV-INT-025`). No booking event, no
-  member email.
-- **Confirm** (`confirmBankTransferRefundCancelled`) records why. Cancelled
-  takes the amount back out of the payment's transactions and reverses its
-  `BANK_REFUND` line, so the detail matches the total and no later reconcile
-  restores it; replaced by hand in Xero moves nothing.
-- Both take `lock(1)`, then the Payment row (`INV-LOCK-001`). Pinned by
-  `bank-refund-void-resolution.realdb.test.ts`,
-  `bank-refund-void-resolution.test.ts`, `bank-refund-void-report.test.ts`,
-  `bank-refund-voids-panel.test.tsx` and the routes' `routes.test.ts`.
+  unreadable one refuses). It puts back only what the void's recount took out
+  of the refunded total, and queues one note keyed `re-record:<resolution id>`,
+  sized from its own record, copying the voided note's method, wording and
+  invoice (`INV-PAY-101`). Refused while a refund-note create could still mint,
+  or when the voided note's create was resolved in Xero (`INV-INT-025`). No
+  booking event, no member email.
+- **A record-again whose own note failed or landed short** comes back flagged,
+  with **Retry** (`retryBankTransferRefundReRecord`): the same resolution, so
+  the same Xero key, after its failed attempts stop being replayable. It never
+  raises a second note. One whose note Xero voided too comes back as that
+  note's item.
+- **Confirm** (`confirmBankTransferRefundCancelled`) records one of two reasons
+  as the outcome. `CONFIRMED_CANCELLED` takes the amount back out of the
+  payment's transactions and reverses its `BANK_REFUND` line, so no later
+  reconcile restores it; `CONFIRMED_REPLACED_IN_XERO` moves nothing.
+- All take `lock(1)`, then the Payment row (`INV-LOCK-001`). Pinned by
+  `bank-refund-void-resolution.realdb.test.ts` and its unit, report, route and
+  panel tests.

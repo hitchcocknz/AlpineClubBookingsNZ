@@ -1449,7 +1449,8 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // suite on the sync with #4149/#4170 (505 sites minus 128 pinned).
     // 377 -> 379 (#4162): a voided bank-transfer refund recorded again, and one
     // confirmed, both unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
-    ).toEqual({ pinned: 128, unpinned: 379 });
+    // 379 -> 380 (#4162, owner 17 Oct 2026): the record-again retry, unpinned `payment`.
+    ).toEqual({ pinned: 128, unpinned: 380 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

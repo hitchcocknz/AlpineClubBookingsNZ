@@ -1,4 +1,4 @@
-# File-size allowances for #4162 — a voided bank-transfer refund note, recorded again or confirmed
+# File-size allowances for PR #4213 (#4162) — a voided bank-transfer refund note, recorded again or confirmed
 
 The list, both writers and the record-again note's sizing live in new modules
 (`bank-refund-void-report.ts`, `bank-refund-void-resolution.ts`,

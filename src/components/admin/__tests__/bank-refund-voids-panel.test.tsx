@@ -22,7 +22,7 @@ vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
 
 import { BankRefundVoidsPanel, type BankRefundVoidPanelRow } from "@/components/admin/bank-refund-voids-panel";
 import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
-import { RE_RECORD_REFUSAL_MESSAGES } from "@/lib/bank-refund-void-copy";
+import { CONFIRM_REASON_COPY, RE_RECORD_REFUSAL_MESSAGES } from "@/lib/bank-refund-void-copy";
 import { describeRefundMethod } from "@/lib/xero-refund-method";
 
 /**
@@ -48,6 +48,7 @@ function row(overrides: Partial<BankRefundVoidPanelRow> = {}): BankRefundVoidPan
     reRecordOf: null,
     reRecordRefusal: null,
     answerable: true,
+    retryable: false,
     ...overrides,
   };
 }
@@ -112,6 +113,9 @@ describe("the voided bank-transfer refund panel", () => {
     fireEvent.change(reasonBox(), { target: { value: "Replaced by CN-0099" } });
     expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
 
+    // Each reason says what it does (owner, 17 Oct 2026).
+    expect(screen.getByText(CONFIRM_REASON_COPY.cancelled.help)).toBeInTheDocument();
+    expect(screen.getByText(CONFIRM_REASON_COPY["replaced-in-xero"].help)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /Replaced by hand in Xero/ }));
     respond(200, { success: true });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
@@ -120,7 +124,7 @@ describe("the voided bank-transfer refund panel", () => {
     const [url, init] = mocks.fetch.mock.calls[0]!;
     expect(url).toBe("/api/admin/payments/bank-refund-voids/link-1/confirm-cancelled");
     expect(JSON.parse(init.body)).toEqual({
-      basis: "replaced-in-xero",
+      reason: "replaced-in-xero",
       expectedAmountCents: 20_000,
       note: "Replaced by CN-0099",
       confirmed: true,
@@ -153,13 +157,26 @@ describe("the voided bank-transfer refund panel", () => {
 
   it("flags a record-again whose note failed, with no answer offered, and a note voided again with the one it replaced", () => {
     renderPanel([
-      row({ flag: "note-failed", answerable: false }),
+      row({ flag: "note-failed", answerable: false, retryable: true }),
       row({ linkId: "link-2", bookingReference: "BK-0002", flag: "voided-again", reRecordOf: "cn-original" }),
     ]);
     expect(screen.getByText(/Recorded again, but its fresh credit note did not reach Xero for the full amount/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record the refund for booking BK-0001 again" })).not.toBeInTheDocument();
     expect(screen.getByText("This note recorded cn-original again, and Xero voided it too.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Record the refund for booking BK-0002 again" })).toBeEnabled();
+  });
+
+  it("retries a failed record-again's note with an optional note, under the retry route (owner, 17 Oct 2026)", async () => {
+    renderPanel([row({ flag: "note-failed", answerable: false, retryable: true })]);
+    fireEvent.click(screen.getByRole("button", { name: "Retry the credit note for booking BK-0001" }));
+    expect(screen.getByText(/under the same key/)).toBeInTheDocument();
+    respond(200, { success: true });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    const [url, init] = mocks.fetch.mock.calls[0]!;
+    expect(url).toBe("/api/admin/payments/bank-refund-voids/link-1/retry-re-record");
+    expect(JSON.parse(init.body)).toEqual({ note: "", confirmed: true });
   });
 
   it("is view-only without finance:edit: the banner says why, and no answer can be given", () => {

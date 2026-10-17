@@ -33,7 +33,7 @@
  * a record-again would be refused now. The writers re-read the same facts under
  * their locks (`readBankRefundVoidUnderLock`), so the list is advice.
  */
-import type { Prisma } from "@prisma/client";
+import type { BankRefundVoidOutcome, Prisma } from "@prisma/client";
 
 import { reRecordNoteRowsWhere } from "@/lib/bank-refund-re-record-note";
 import type { ReRecordRefusal } from "@/lib/bank-refund-void-copy";
@@ -105,6 +105,8 @@ export interface BankRefundVoidItem {
   reRecordRefusal: ReRecordRefusal | null;
   /** Whether either answer can be given here: false for a flagged `note-failed` item, already answered. */
   answerable: boolean;
+  /** A `note-failed` item: its record-again's note can be queued again under the same key (owner, 17 Oct 2026). */
+  retryable: boolean;
 }
 
 /** The voided note link's fields every reader here needs. */
@@ -180,9 +182,11 @@ const IN_PROGRESS_STATUSES = ["PENDING", "RUNNING", "WAITING_PAYMENT"];
 /**
  * Whether a record-again's own note landed: its own notes cover its amount,
  * or a row is still on its way (not yet a failure). A note of its own Xero
- * voided in turn is that note's own item, never this one's.
+ * voided in turn is that note's own item, never this one's. `failed` - no row
+ * on its way and its notes short of its amount - is what Retry answers
+ * (`retryBankTransferRefundReRecord`), and what the list flags `note-failed`.
  */
-async function reRecordNoteState(
+export async function readReRecordNoteState(
   db: Reader,
   paymentId: string,
   resolution: { id: string; amountCents: number; noteOperationId: string | null },
@@ -299,7 +303,7 @@ export async function listBankRefundVoids(options?: { now?: Date; db?: Reader })
     let flag: BankRefundVoidFlag | null = null;
     if (resolution) {
       if (resolution.outcome !== "RE_RECORDED") continue;
-      if ((await reRecordNoteState(db, link.localId, resolution)) !== "failed") continue;
+      if ((await readReRecordNoteState(db, link.localId, resolution)) !== "failed") continue;
       flag = "note-failed";
     }
     const reRecordOf = resolution ? null : await reRecordOfNote(db, link.localId, link.xeroObjectId);
@@ -319,6 +323,7 @@ export async function listBankRefundVoids(options?: { now?: Date; db?: Reader })
       reRecordOf,
       reRecordRefusal: resolution ? null : await reRecordRefusalFor(db, link.localId, link.xeroObjectId, amountCents),
       answerable: resolution === null,
+      retryable: flag === "note-failed",
     });
   }
   return items;
@@ -335,7 +340,7 @@ export interface BankRefundVoidUnderLock {
   paymentId: string;
   amountCents: number | null;
   /** The answer already recorded for this note, if any. */
-  resolution: { id: string; outcome: "RE_RECORDED" | "CONFIRMED_CANCELLED" } | null;
+  resolution: { id: string; outcome: BankRefundVoidOutcome } | null;
   reRecordRefusal: ReRecordRefusal | null;
 }
 

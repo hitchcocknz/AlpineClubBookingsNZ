@@ -532,6 +532,13 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-001",
   },
   {
+    site: "retryBankTransferRefundReRecord#1",
+    tier: "GLOBAL",
+    reason:
+      "#4162 (owner decision 17 Oct 2026, INV-ADDPAY-042): retrying a recorded-again bank-transfer refund's failed or short credit note queues the same note again under the same resolution, so it must not interleave with the record-again, the confirm, or a second retry on the payment - it joins their cohort and tiers. First lock of its transaction, then the Payment row (lockPaymentForRefundedTotal) before anything about the payment is read, then the voided note, its RE_RECORDED resolution and its note's state re-read under both; the claim is the status-guarded retirement of the record-again's own failed attempts (replayable off, count checked), and it refuses while any other refund-note create could still mint. Then the outbox row and the audit row. No provider call: the note's row is kicked after the commit.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:

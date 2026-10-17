@@ -426,10 +426,10 @@ let report: typeof import("@/lib/bank-refund-void-report");
       await voidLongAgo("cn-race-4162-v", PAID_CENTS);
 
       const result = await resolution.confirmBankTransferRefundCancelled({
-        linkId: await linkIdOf("cn-race-4162-v"), basis: "cancelled", expectedAmountCents: PAID_CENTS, note: "Member kept the stay credit", actingMemberId: OFFICER_ID,
+        linkId: await linkIdOf("cn-race-4162-v"), reason: "cancelled", expectedAmountCents: PAID_CENTS, note: "Member kept the stay credit", actingMemberId: OFFICER_ID,
       });
 
-      expect(result).toMatchObject({ unwoundCents: PAID_CENTS, basis: "cancelled" });
+      expect(result).toMatchObject({ unwoundCents: PAID_CENTS, reason: "cancelled" });
       const after = await money();
       expect(after.payment).toEqual({ refundedAmountCents: 0, status: "SUCCEEDED" });
       expect(after.txn).toEqual({ refundedAmountCents: 0, status: "SUCCEEDED" });
@@ -450,7 +450,8 @@ let report: typeof import("@/lib/bank-refund-void-report");
       await reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
       expect((await money()).payment.refundedAmountCents).toBe(0);
       expect(await prisma.bankRefundVoidResolution.findFirst({ where: { paymentId: PAYMENT_ID } })).toMatchObject({
-        outcome: "CONFIRMED_CANCELLED", note: "Refund cancelled: Member kept the stay credit",
+        // The reason is the outcome, never words in the note (owner, 17 Oct 2026).
+        outcome: "CONFIRMED_CANCELLED", note: "Member kept the stay credit",
       });
       expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, status: "PENDING" } })).toBe(0);
       expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
@@ -463,7 +464,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
       await voidLongAgo("cn-race-4162-v", 15_000);
 
       await resolution.confirmBankTransferRefundCancelled({
-        linkId: await linkIdOf("cn-race-4162-v"), basis: "cancelled", expectedAmountCents: 15_000, note: "Never sent", actingMemberId: OFFICER_ID,
+        linkId: await linkIdOf("cn-race-4162-v"), reason: "cancelled", expectedAmountCents: 15_000, note: "Never sent", actingMemberId: OFFICER_ID,
       });
 
       expect(await money()).toMatchObject({ payment: { refundedAmountCents: 5_000 }, txn: { refundedAmountCents: 5_000 } });
@@ -486,11 +487,14 @@ let report: typeof import("@/lib/bank-refund-void-report");
       const before = await money();
 
       const result = await resolution.confirmBankTransferRefundCancelled({
-        linkId: await linkIdOf("cn-race-4162-v"), basis: "replaced-in-xero", expectedAmountCents: PAID_CENTS, note: "CN-900 raised by hand", actingMemberId: OFFICER_ID,
+        linkId: await linkIdOf("cn-race-4162-v"), reason: "replaced-in-xero", expectedAmountCents: PAID_CENTS, note: "CN-900 raised by hand", actingMemberId: OFFICER_ID,
       });
 
       expect(result).toMatchObject({ unwoundCents: 0, reversedLedgerLineId: null });
       expect(await money()).toEqual(before);
+      expect(await prisma.bankRefundVoidResolution.findFirst({ where: { paymentId: PAYMENT_ID } })).toMatchObject({
+        outcome: "CONFIRMED_REPLACED_IN_XERO", note: "CN-900 raised by hand",
+      });
       expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
     });
 
@@ -589,7 +593,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
 
       const listed = async () => (await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID);
       expect(await listed()).toEqual([
-        expect.objectContaining({ voidedCreditNoteId: "cn-race-4162-v", flag: "note-failed", answerable: false }),
+        expect.objectContaining({ voidedCreditNoteId: "cn-race-4162-v", flag: "note-failed", answerable: false, retryable: true }),
       ]);
 
       await prisma.xeroSyncOperation.update({ where: { id: result.noteOperationId }, data: { status: "PENDING" } });
@@ -598,6 +602,76 @@ let report: typeof import("@/lib/bank-refund-void-report");
       expect(await listed()).toEqual([
         expect.objectContaining({ voidedCreditNoteId: "cn-race-4162-fresh", flag: "voided-again", reRecordOf: "cn-race-4162-v", answerable: true }),
       ]);
+    });
+
+    it("Retry: a record-again whose note failed after Xero raised it is queued again under the same key, and exactly one note results", async () => {
+      await paidBankTransfer();
+      await handBackNoted("cn-race-4162-v", PAID_CENTS);
+      await voidLongAgo("cn-race-4162-v", PAID_CENTS);
+      const linkId = await linkIdOf("cn-race-4162-v");
+      const recorded = await reRecord(linkId);
+
+      // A Xero that keeps every note it raised by key and replays a key it has
+      // seen. The first attempt raises the note and its answer is lost.
+      const raised = new Map<string, string>();
+      let loseTheAnswer = true;
+      const xero = {
+        accountingApi: {
+          createCreditNotes: async (_t: string, body: { creditNotes: Array<{ lineItems: Array<{ unitAmount: number }> }> }, _s?: unknown, _u?: unknown, key?: string) => {
+            const total = body.creditNotes[0]!.lineItems[0]!.unitAmount;
+            if (!raised.has(key!)) raised.set(key!, `cn-race-4162-retry-${raised.size + 1}`);
+            if (loseTheAnswer) {
+              loseTheAnswer = false;
+              throw new Error("socket hang up");
+            }
+            const id = raised.get(key!)!;
+            return { body: { creditNotes: [{ creditNoteID: id, creditNoteNumber: `CN-${id}`, total, remainingCredit: total, status: "AUTHORISED", payments: [] }] } };
+          },
+          getCreditNote: async () => ({ body: { creditNotes: [] } }),
+        },
+      };
+      const apiClient = await import("@/lib/xero-api-client");
+      const contacts = await import("@/lib/xero-contacts");
+      const invoicedParty = await import("@/lib/organisation-xero-contacts");
+      const invoicePayments = await import("@/lib/xero-invoice-payments");
+      const { createXeroCreditNote } = await import("@/lib/xero-credit-notes");
+      vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero, tenantId: "tenant-4162" } as never);
+      vi.spyOn(apiClient, "callXeroApi").mockImplementation(((call: () => unknown) => call()) as never);
+      vi.spyOn(invoicedParty, "findOrCreateXeroContactForInvoicedParty").mockResolvedValue("contact-4162");
+      vi.spyOn(contacts, "retryXeroWriteWithContactRepair").mockImplementation((async (opts: { run: (input: { contactId: string }) => unknown; currentContactId: string }) =>
+        opts.run({ contactId: opts.currentContactId })) as never);
+      vi.spyOn(invoicePayments, "resolveRefundSettlement").mockResolvedValue({ kind: "unsettled", reason: "race-4162" });
+      const run = async (operationId: string) => {
+        const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { requestPayload: true } });
+        const payload = row.requestPayload as { refundAmountCents: number; watermarkCents: number; reRecordId?: string };
+        await createXeroCreditNote(PAYMENT_ID, payload.refundAmountCents, {
+          syncOperationId: operationId, watermarkCents: payload.watermarkCents, refundMethod: "internet-banking", reRecordId: payload.reRecordId,
+        }).catch(() => undefined);
+      };
+
+      await run(recorded.noteOperationId);
+      expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: recorded.noteOperationId }, select: { status: true } })).toEqual({ status: "FAILED" });
+      expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([
+        expect.objectContaining({ flag: "note-failed", retryable: true }),
+      ]);
+
+      const retried = await resolution.retryBankTransferRefundReRecord({ linkId, note: "Xero was down", actingMemberId: OFFICER_ID });
+      expect(retried.retiredOperationIds).toEqual([recorded.noteOperationId]);
+      // The failed attempt can no longer run: only the new row can mint.
+      expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: recorded.noteOperationId }, select: { replayable: true } })).toEqual({ replayable: false });
+      // A double click: the second reads the note on its way and queues nothing.
+      await expect(resolution.retryBankTransferRefundReRecord({ linkId, actingMemberId: OFFICER_ID })).rejects.toMatchObject({ status: 409 });
+      await run(retried.noteOperationId);
+
+      // MUTATION: the same resolution key, so Xero handed back the note the lost attempt raised.
+      expect([...raised.keys()]).toEqual([`payment:${PAYMENT_ID}:refund-credit-note:re-record:${recorded.resolutionId}:0:v3`]);
+      const notes = await prisma.xeroObjectLink.findMany({
+        where: { localId: PAYMENT_ID, role: "REFUND_CREDIT_NOTE", active: true }, select: { xeroObjectId: true },
+      });
+      expect(notes).toEqual([{ xeroObjectId: "cn-race-4162-retry-1" }]);
+      expect(await prisma.auditLog.count({ where: { action: "booking-payment.bank-refund.re-record-retried", entityId: recorded.resolutionId } })).toBe(1);
+      expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
+      vi.restoreAllMocks();
     });
 
     it("refuses a record-again while another refund note could still mint, and a confirm at an amount that moved", async () => {
@@ -611,7 +685,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
       await expect(reRecord(linkId)).rejects.toMatchObject({ status: 409 });
       await prisma.xeroSyncOperation.delete({ where: { id: running.id } });
       await expect(
-        resolution.confirmBankTransferRefundCancelled({ linkId, basis: "cancelled", expectedAmountCents: PAID_CENTS - 1, note: "x", actingMemberId: OFFICER_ID }),
+        resolution.confirmBankTransferRefundCancelled({ linkId, reason: "cancelled", expectedAmountCents: PAID_CENTS - 1, note: "x", actingMemberId: OFFICER_ID }),
       ).rejects.toMatchObject({ status: 409 });
       expect(await prisma.bankRefundVoidResolution.count({ where: { paymentId: PAYMENT_ID } })).toBe(0);
       expect((await money()).txn.refundedAmountCents).toBe(PAID_CENTS);

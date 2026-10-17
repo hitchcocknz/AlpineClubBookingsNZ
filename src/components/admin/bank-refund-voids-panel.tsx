@@ -26,9 +26,10 @@ import { useClubFormat } from "@/components/club-format-provider";
 import { useClubTime } from "@/components/club-time-provider";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
-  CONFIRM_BASIS_LABEL,
+  BANK_REFUND_VOID_CONFIRM_REASONS,
+  CONFIRM_REASON_COPY,
   RE_RECORD_REFUSAL_MESSAGES,
-  type BankRefundVoidConfirmBasis,
+  type BankRefundVoidConfirmReason,
   type ReRecordRefusal,
 } from "@/lib/bank-refund-void-copy";
 import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
@@ -48,9 +49,17 @@ export interface BankRefundVoidPanelRow {
   reRecordOf: string | null;
   reRecordRefusal: ReRecordRefusal | null;
   answerable: boolean;
+  /** A `note-failed` item whose record-again's note can be queued again under the same key. */
+  retryable: boolean;
 }
 
-type Mode = "re-record" | "confirm";
+type Mode = "re-record" | "confirm" | "retry";
+
+const MODE_PATH: Record<Mode, string> = {
+  "re-record": "re-record",
+  confirm: "confirm-cancelled",
+  retry: "retry-re-record",
+};
 
 function noteName(row: Pick<BankRefundVoidPanelRow, "voidedCreditNoteNumber" | "voidedCreditNoteId">): string {
   return row.voidedCreditNoteNumber ?? row.voidedCreditNoteId;
@@ -67,7 +76,10 @@ function noteName(row: Pick<BankRefundVoidPanelRow, "voidedCreditNoteNumber" | "
  * the voided note's amount, shown read-only (Q1); the member is not told (Q3).
  * "Confirm" clears it, saying why: the refund was cancelled (the payment's
  * records take it back out, Q2) or the note was replaced by hand in Xero
- * (nothing moves). Both are gated `finance:edit`, the section's banner stating
+ * (nothing moves) - a required choice, each with its effect spelled out (owner,
+ * 17 Oct 2026). A row whose recorded-again note failed or landed short offers
+ * Retry, which queues the same note again under the same key. All three are
+ * gated `finance:edit`, the section's banner stating
  * the view-only reason once (`describeReason={false}`). A refusal shows in the
  * dialog (`FocusedActionError`); a 409 also refreshes the list, and if the
  * refresh drops the row the dialog closes and says why. After an answer, focus
@@ -88,11 +100,11 @@ export function BankRefundVoidsPanel({
   const noteId = useId();
   const errorId = useId();
   const submitHintId = useId();
-  const basisName = useId();
+  const reasonName = useId();
   const [targetId, setTargetId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("re-record");
   const [seenAmountCents, setSeenAmountCents] = useState<number | null>(null);
-  const [basis, setBasis] = useState<BankRefundVoidConfirmBasis | null>(null);
+  const [reason, setReason] = useState<BankRefundVoidConfirmReason | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -105,21 +117,24 @@ export function BankRefundVoidsPanel({
   if (!shown && rows.length > 0) setShown(true);
 
   const target = targetId === null ? null : (rows.find((row) => row.linkId === targetId) ?? null);
-  if (targetId !== null && (target === null || !target.answerable) && !busy) {
+  if (targetId !== null && (target === null || !(mode === "retry" ? target.retryable : target.answerable)) && !busy) {
     setTargetId(null);
     setListNotice("That voided refund note is no longer waiting for an answer, so its dialog was closed. The list is up to date.");
   }
 
-  const noteMissing = note.trim() === "";
+  // A retry's note is optional: the record-again already carries the reason.
+  const noteMissing = mode !== "retry" && note.trim() === "";
   const amountMoved = target !== null && seenAmountCents !== null && target.amountCents !== seenAmountCents;
   const canSubmit =
-    target !== null && target.amountCents !== null && !noteMissing && !busy && !amountMoved && (mode === "re-record" || basis !== null);
+    target !== null &&
+    !busy &&
+    (mode === "retry" || (target.amountCents !== null && !noteMissing && !amountMoved && (mode === "re-record" || reason !== null)));
   const submitHint =
-    target === null || busy
+    target === null || busy || mode === "retry"
       ? null
       : amountMoved
         ? "The voided note's amount changed. Close this and check it again."
-        : mode === "confirm" && basis === null
+        : mode === "confirm" && reason === null
           ? "Choose why it is being cleared."
           : noteMissing
             ? "Give a reason to continue."
@@ -129,7 +144,7 @@ export function BankRefundVoidsPanel({
     setTargetId(row.linkId);
     setMode(nextMode);
     setSeenAmountCents(row.amountCents);
-    setBasis(null);
+    setReason(null);
     setNote("");
     setError("");
     setListNotice("");
@@ -141,21 +156,25 @@ export function BankRefundVoidsPanel({
   }
 
   async function submit() {
-    if (!target || target.amountCents === null) return;
+    if (!target || (mode !== "retry" && target.amountCents === null)) return;
     setBusy(true);
     setError("");
     try {
       const res = await fetch(
-        `/api/admin/payments/bank-refund-voids/${encodeURIComponent(target.linkId)}/${mode === "re-record" ? "re-record" : "confirm-cancelled"}`,
+        `/api/admin/payments/bank-refund-voids/${encodeURIComponent(target.linkId)}/${MODE_PATH[mode]}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...(mode === "confirm" ? { basis } : {}),
-            expectedAmountCents: seenAmountCents ?? target.amountCents,
-            note,
-            confirmed: true,
-          }),
+          body: JSON.stringify(
+            mode === "retry"
+              ? { note, confirmed: true }
+              : {
+                  ...(mode === "confirm" ? { reason } : {}),
+                  expectedAmountCents: seenAmountCents ?? target.amountCents,
+                  note,
+                  confirmed: true,
+                },
+          ),
         },
       );
       const data = await res.json().catch(() => ({}));
@@ -164,13 +183,16 @@ export function BankRefundVoidsPanel({
         if (res.status === 409 || res.status === 404) router.refresh();
         return;
       }
-      const amount = formatCents(target.amountCents, format);
-      if (mode === "re-record") {
+      const amount = target.amountCents === null ? "the refund" : formatCents(target.amountCents, format);
+      if (mode === "retry") {
+        toast.success(`Queued again. The same ${bankNoteWording} credit note is on its way to Xero.`);
+        setListNotice(`The credit note for booking ${target.bookingReference} was queued again.`);
+      } else if (mode === "re-record") {
         toast.success(`Recorded again. A fresh ${bankNoteWording} credit note for ${amount} is on its way to Xero.`);
         setListNotice(`The refund for booking ${target.bookingReference} was recorded again.`);
       } else {
         toast.success(
-          basis === "cancelled"
+          reason === "cancelled"
             ? `Confirmed cancelled. ${amount} was taken back out of the payment's records.`
             : "Confirmed replaced in Xero. Nothing was changed in the club's records.",
         );
@@ -245,11 +267,8 @@ export function BankRefundVoidsPanel({
                   </div>
                   {row.flag === "note-failed" ? (
                     <div className="text-xs font-medium text-warning-11">
-                      Recorded again, but its fresh credit note did not reach Xero for the full amount.{" "}
-                      <Link href="/admin/xero" className="underline">
-                        Check it on the Xero screen
-                      </Link>
-                      .
+                      Recorded again, but its fresh credit note did not reach Xero for the full amount. Retry
+                      queues the same note again; it can never raise a second one.
                     </div>
                   ) : null}
                   {row.flag === "voided-again" ? (
@@ -261,6 +280,18 @@ export function BankRefundVoidsPanel({
                     <div className="text-xs text-muted-foreground">{RE_RECORD_REFUSAL_MESSAGES[row.reRecordRefusal]}</div>
                   ) : null}
                 </div>
+                {row.retryable ? (
+                  <ViewOnlyActionButton
+                    canEdit={canEdit}
+                    describeReason={false}
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Retry the credit note for booking ${row.bookingReference}`}
+                    onClick={() => open(row, "retry")}
+                  >
+                    Retry
+                  </ViewOnlyActionButton>
+                ) : null}
                 {row.answerable ? (
                   <div className="flex flex-wrap gap-2">
                     <ViewOnlyActionButton
@@ -302,12 +333,18 @@ export function BankRefundVoidsPanel({
             >
               <DialogHeader>
                 <DialogTitle>
-                  {mode === "re-record" ? "Record this refund again?" : "Clear this voided refund note?"}
+                  {mode === "re-record"
+                    ? "Record this refund again?"
+                    : mode === "retry"
+                      ? "Send this credit note to Xero again?"
+                      : "Clear this voided refund note?"}
                 </DialogTitle>
                 <DialogDescription>
                   {mode === "re-record"
                     ? `The refund is counted on the payment again, and one fresh ${bankNoteWording} credit note is raised in Xero for the voided note's amount. Only do this if the member was paid back. The member is not told.`
-                    : "Say why. If the refund was cancelled, it is taken back out of the payment's records. If you replaced the note by hand in Xero, nothing in the club's records changes. Nothing is sent to Xero, and the member is not told."}
+                    : mode === "retry"
+                      ? "The same credit note is queued again, under the same key, for whatever part of the refund Xero does not have yet. If the earlier attempt reached Xero after all, Xero hands that note back instead of raising a second one."
+                      : "Choose why. Nothing is sent to Xero either way, and the member is not told."}
                 </DialogDescription>
               </DialogHeader>
               <p className="text-sm font-medium text-foreground">
@@ -316,38 +353,42 @@ export function BankRefundVoidsPanel({
                   : null}
               </p>
               {mode === "confirm" ? (
-                <fieldset className="space-y-2">
-                  <legend className="text-sm font-medium">Why is it being cleared?</legend>
-                  {(["cancelled", "replaced-in-xero"] as const).map((choice) => (
-                    <label key={choice} className="flex items-center gap-2 text-sm">
+                <fieldset className="space-y-2" aria-required="true">
+                  <legend className="text-sm font-medium">Why is it being cleared? (required)</legend>
+                  {BANK_REFUND_VOID_CONFIRM_REASONS.map((choice) => (
+                    <label key={choice} className="flex items-start gap-2 text-sm">
                       <input
                         type="radio"
-                        name={basisName}
-                        className="size-4"
-                        checked={basis === choice}
-                        onChange={() => setBasis(choice)}
+                        name={reasonName}
+                        className="mt-0.5 size-4"
+                        checked={reason === choice}
+                        aria-describedby={`${reasonName}-${choice}-help`}
+                        onChange={() => setReason(choice)}
                       />
                       <span>
-                        {choice === "cancelled"
-                          ? `${CONFIRM_BASIS_LABEL.cancelled} - the member was not paid`
-                          : `${CONFIRM_BASIS_LABEL["replaced-in-xero"]} - the member was paid, and a note made in Xero records it`}
+                        <span className="font-medium">{CONFIRM_REASON_COPY[choice].label}</span>
+                        <span id={`${reasonName}-${choice}-help`} className="block text-xs text-muted-foreground">
+                          {CONFIRM_REASON_COPY[choice].help}
+                        </span>
                       </span>
                     </label>
                   ))}
                 </fieldset>
               ) : null}
               <div className="space-y-1">
-                <Label htmlFor={noteId}>Reason (required)</Label>
+                <Label htmlFor={noteId}>{mode === "retry" ? "Note (optional)" : "Reason (required)"}</Label>
                 <Textarea
                   id={noteId}
                   value={note}
-                  required
-                  aria-required="true"
+                  required={mode !== "retry"}
+                  aria-required={mode !== "retry" ? "true" : undefined}
                   maxLength={MANUAL_PAYMENT_NOTE_MAX}
                   placeholder={
                     mode === "re-record"
                       ? "For example: paid back by bank transfer on 2 Jun; the note was voided by mistake"
-                      : "For example: replaced in Xero by CN-0123"
+                      : mode === "retry"
+                        ? "For example: Xero was down when it first ran"
+                        : "For example: replaced in Xero by CN-0123"
                   }
                   onChange={(event) => setNote(event.target.value)}
                 />
@@ -367,7 +408,7 @@ export function BankRefundVoidsPanel({
                   aria-describedby={submitHint ? submitHintId : undefined}
                   onClick={() => void submit()}
                 >
-                  {busy ? "Saving..." : mode === "re-record" ? "Record again" : "Confirm"}
+                  {busy ? "Saving..." : mode === "re-record" ? "Record again" : mode === "retry" ? "Retry" : "Confirm"}
                 </Button>
               </DialogFooter>
             </DialogContent>

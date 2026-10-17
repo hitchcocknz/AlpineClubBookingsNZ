@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   reRecordBankTransferRefund: vi.fn(),
   confirmBankTransferRefundCancelled: vi.fn(),
+  retryBankTransferRefundReRecord: vi.fn(),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -25,6 +26,7 @@ vi.mock("@/lib/logger", () => ({
 vi.mock("@/lib/bank-refund-void-resolution", () => ({
   reRecordBankTransferRefund: mocks.reRecordBankTransferRefund,
   confirmBankTransferRefundCancelled: mocks.confirmBankTransferRefundCancelled,
+  retryBankTransferRefundReRecord: mocks.retryBankTransferRefundReRecord,
   BankRefundVoidResolutionError: class BankRefundVoidResolutionError extends Error {
     status: number;
     constructor(message: string, status: number) {
@@ -39,6 +41,7 @@ import { getAdminRouteRequirement } from "@/lib/admin-permissions";
 import { BankRefundVoidResolutionError } from "@/lib/bank-refund-void-resolution";
 import { POST as reRecordPOST } from "../[id]/re-record/route";
 import { POST as confirmPOST } from "../[id]/confirm-cancelled/route";
+import { POST as retryPOST } from "../[id]/retry-re-record/route";
 
 function request(path: string, body: unknown) {
   return new Request(`http://localhost/api/admin/payments/bank-refund-voids/link-1/${path}`, {
@@ -49,13 +52,15 @@ function request(path: string, body: unknown) {
 
 const params = Promise.resolve({ id: "link-1" });
 const reRecordBody = { expectedAmountCents: 20_000, note: "Paid by bank", confirmed: true };
-const confirmBody = { basis: "cancelled", expectedAmountCents: 20_000, note: "Never paid", confirmed: true };
+const confirmBody = { reason: "cancelled", expectedAmountCents: 20_000, note: "Never paid", confirmed: true };
+const retryBody = { note: "Xero was down", confirmed: true };
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.requireAdmin.mockResolvedValue({ ok: true, session: { user: { id: "treasurer-1" } } });
   mocks.reRecordBankTransferRefund.mockResolvedValue({ resolutionId: "r-1" });
   mocks.confirmBankTransferRefundCancelled.mockResolvedValue({ resolutionId: "r-2" });
+  mocks.retryBankTransferRefundReRecord.mockResolvedValue({ resolutionId: "r-1" });
 });
 
 describe("who may answer a voided bank-transfer refund note", () => {
@@ -68,11 +73,16 @@ describe("who may answer a voided bank-transfer refund note", () => {
       area: "finance",
       level: "edit",
     });
+    expect(getAdminRouteRequirement("/api/admin/payments/bank-refund-voids/link-1/retry-re-record", "POST")).toEqual({
+      area: "finance",
+      level: "edit",
+    });
   });
 
   it.each([
     ["re-record", reRecordPOST, reRecordBody],
     ["confirm-cancelled", confirmPOST, confirmBody],
+    ["retry-re-record", retryPOST, retryBody],
   ] as const)("%s asks for finance:edit explicitly, and a refusal reads and writes nothing", async (path, handler, body) => {
     await handler(request(path, body), { params });
     expect(mocks.requireAdmin).toHaveBeenCalledWith({ permission: { area: "finance", level: "edit" } });
@@ -83,10 +93,19 @@ describe("who may answer a voided bank-transfer refund note", () => {
     expect(res.status).toBe(403);
     expect(mocks.reRecordBankTransferRefund).not.toHaveBeenCalled();
     expect(mocks.confirmBankTransferRefundCancelled).not.toHaveBeenCalled();
+    expect(mocks.retryBankTransferRefundReRecord).not.toHaveBeenCalled();
   });
 });
 
 describe("what each door asks for", () => {
+  it("retry passes the link, an optional note and the acting treasurer, and refuses an unconfirmed body", async () => {
+    expect((await retryPOST(request("retry-re-record", retryBody), { params })).status).toBe(200);
+    expect(mocks.retryBankTransferRefundReRecord).toHaveBeenCalledWith({ linkId: "link-1", note: "Xero was down", actingMemberId: "treasurer-1" });
+    expect((await retryPOST(request("retry-re-record", { confirmed: false }), { params })).status).toBe(400);
+    mocks.retryBankTransferRefundReRecord.mockRejectedValue(new BankRefundVoidResolutionError("on its way", 409));
+    expect((await retryPOST(request("retry-re-record", { confirmed: true }), { params })).status).toBe(409);
+  });
+
   it("record again passes the link, the amount the dialog showed, the reason and the acting treasurer", async () => {
     const res = await reRecordPOST(request("re-record", reRecordBody), { params });
     expect(res.status).toBe(200);
@@ -102,12 +121,12 @@ describe("what each door asks for", () => {
     await confirmPOST(request("confirm-cancelled", confirmBody), { params });
     expect(mocks.confirmBankTransferRefundCancelled).toHaveBeenCalledWith({
       linkId: "link-1",
-      basis: "cancelled",
+      reason: "cancelled",
       expectedAmountCents: 20_000,
       note: "Never paid",
       actingMemberId: "treasurer-1",
     });
-    const res = await confirmPOST(request("confirm-cancelled", { ...confirmBody, basis: "lost" }), { params });
+    const res = await confirmPOST(request("confirm-cancelled", { ...confirmBody, reason: "lost" }), { params });
     expect(res.status).toBe(400);
   });
 

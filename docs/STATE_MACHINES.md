@@ -3558,10 +3558,14 @@ LISTED -> RE_RECORDED      (Record again: finance:edit, lock(1) then the Payment
                             one refund-note outbox row keyed re-record:<id>)
   RE_RECORDED, its note raised and covering the amount -> done
   RE_RECORDED, its note row failed or never covered it -> LISTED, flagged
+    -> Retry (finance:edit, same tiers): its failed attempts' replayable off
+       (status-guarded), one new row under the SAME resolution key -> on its way
   RE_RECORDED, its note voided in turn -> that note is LISTED, flagged
-LISTED -> CONFIRMED_CANCELLED (Confirm: same tiers; "cancelled" unwinds the
-                            allocation and reverses the BANK_REFUND line;
-                            "replaced in Xero" moves nothing) -> done
+LISTED -> CONFIRMED_CANCELLED (Confirm, reason "Refund cancelled": same tiers;
+                            unwinds the allocation, reverses the BANK_REFUND
+                            line) -> done
+LISTED -> CONFIRMED_REPLACED_IN_XERO (Confirm, reason "Replaced by hand in
+                            Xero": same tiers; moves nothing) -> done
 ```
 
 A resolution is never updated or deleted, so each voided note is answered at

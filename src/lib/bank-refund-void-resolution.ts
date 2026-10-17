@@ -3,17 +3,19 @@ import "server-only";
 import { Prisma, type PaymentStatus } from "@prisma/client";
 
 import { createAuditLog } from "@/lib/audit";
+import { reRecordNoteRowsWhere } from "@/lib/bank-refund-re-record-note";
 import {
   readBankRefundVoidPaymentId,
   readBankRefundVoidUnderLock,
+  readReRecordNoteState,
   readVoidedNoteCreateRow,
   type BankRefundVoidUnderLock,
 } from "@/lib/bank-refund-void-report";
 import {
-  BANK_REFUND_VOID_CONFIRM_BASES,
-  CONFIRM_BASIS_LABEL,
+  BANK_REFUND_VOID_CONFIRM_REASONS,
+  CONFIRM_REASON_OUTCOME,
   RE_RECORD_REFUSAL_MESSAGES,
-  type BankRefundVoidConfirmBasis,
+  type BankRefundVoidConfirmReason,
 } from "@/lib/bank-refund-void-copy";
 import { liveLines } from "@/lib/booking-ledger-modification-posting";
 import { handBackKey } from "@/lib/booking-ledger-posting-keys";
@@ -34,6 +36,7 @@ import { getNextRefundedPaymentStatus } from "@/lib/xero-inbound/amounts";
 import { asRecord, readString } from "@/lib/xero-json";
 import { enqueueXeroRefundCreditNoteOperation, kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
+import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 
 /**
  * #4162 (owner decisions 16 and 17 Oct 2026, `INV-ADDPAY-042`): THE
@@ -67,8 +70,17 @@ import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note
  *   reversed (`settlementLineReversal`), and the refunded total is never left
  *   above that detail. "Replaced by hand in Xero" (Q4): the money did go back
  *   and a note made by hand in Xero records it, so nothing moves - the item
- *   leaves the list with the reason. Both write `CONFIRMED_CANCELLED`; no Xero
- *   call and no member email.
+ *   leaves the list. The reason is the outcome (`CONFIRMED_CANCELLED` or
+ *   `CONFIRMED_REPLACED_IN_XERO`, owner 17 Oct 2026), never words in the note;
+ *   no Xero call and no member email.
+ * - RETRY (`retryBankTransferRefundReRecord`, owner 17 Oct 2026): a
+ *   record-again whose own note failed or landed short is queued again under
+ *   the SAME resolution, so the note's Xero key (`re-record:<id>:<own cover>`)
+ *   is the one the failed attempt used and Xero hands back any note that
+ *   attempt raised; sized from the record less its own notes, it can never
+ *   raise a second note for the same money. Its own failed attempts are retired
+ *   (status-guarded, `replayable` off) in the same transaction, and it refuses
+ *   while any other refund-note create could still mint.
  *
  * LOCKS (`INV-LOCK-001`, `INV-LOCK-002`): both move a payment's refunded total
  * (or its detail) and every edit, acceptance, paid cancel and refund appeal
@@ -347,7 +359,7 @@ export async function reRecordBankTransferRefund(
 
 export interface ConfirmBankTransferRefundCancelledInput extends CommonInput {
   /** Why it is being cleared: the refund was cancelled, or its note was replaced by hand in Xero. */
-  basis: BankRefundVoidConfirmBasis;
+  reason: BankRefundVoidConfirmReason;
 }
 
 export interface ConfirmBankTransferRefundCancelledResult {
@@ -355,7 +367,7 @@ export interface ConfirmBankTransferRefundCancelledResult {
   paymentId: string;
   bookingId: string;
   amountCents: number;
-  basis: BankRefundVoidConfirmBasis;
+  reason: BankRefundVoidConfirmReason;
   /** What came back out of the payment's transactions: V's amount for a cancellation, 0 for a note replaced in Xero. */
   unwoundCents: number;
   /** The `BANK_REFUND` line reversed, or null when there was none to reverse. */
@@ -429,11 +441,10 @@ async function findVoidedRefundLedgerLine(
 export async function confirmBankTransferRefundCancelled(
   input: ConfirmBankTransferRefundCancelledInput,
 ): Promise<ConfirmBankTransferRefundCancelledResult> {
-  const reason = validateCommon(input);
-  if (!(BANK_REFUND_VOID_CONFIRM_BASES as readonly string[]).includes(input.basis)) {
+  const note = validateCommon(input);
+  if (!(BANK_REFUND_VOID_CONFIRM_REASONS as readonly string[]).includes(input.reason)) {
     throw new BankRefundVoidResolutionError("Say whether the refund was cancelled or its note replaced in Xero.", 400);
   }
-  const note = `${CONFIRM_BASIS_LABEL[input.basis]}: ${reason}`;
   const now = new Date();
 
   return prisma.$transaction(async (tx) => {
@@ -444,7 +455,7 @@ export async function confirmBankTransferRefundCancelled(
 
     let unwoundCents = 0;
     let reversedLedgerLineId: string | null = null;
-    if (input.basis === "cancelled") {
+    if (input.reason === "cancelled") {
       // Q2: the detail follows the total. V's amount comes out of the
       // transactions and its line is reversed; the total never stays above
       // what the transactions then hold (it already does not, once the void's
@@ -502,7 +513,7 @@ export async function confirmBankTransferRefundCancelled(
     const resolution = await insertResolution(tx, {
       paymentId: payment.id,
       voidedCreditNoteId: voided.link.xeroObjectId,
-      outcome: "CONFIRMED_CANCELLED",
+      outcome: CONFIRM_REASON_OUTCOME[input.reason],
       amountCents,
       note,
       resolvedByMemberId: input.actingMemberId,
@@ -522,14 +533,14 @@ export async function confirmBankTransferRefundCancelled(
         severity: "important",
         outcome: "success",
         summary:
-          input.basis === "cancelled"
+          input.reason === "cancelled"
             ? `Bank-transfer refund on booking ${formatBookingReference(booking.id)} confirmed cancelled after Xero voided its credit note; taken back out of the payment's records`
             : `Bank-transfer refund on booking ${formatBookingReference(booking.id)} confirmed replaced by hand in Xero after its credit note was voided`,
-        details: reason,
+        details: note,
         metadata: {
           paymentId: payment.id,
           voidedCreditNoteId: voided.link.xeroObjectId,
-          basis: input.basis,
+          outcome: CONFIRM_REASON_OUTCOME[input.reason],
           amountCents,
           unwoundCents,
           reversedLedgerLineId,
@@ -543,9 +554,134 @@ export async function confirmBankTransferRefundCancelled(
       paymentId: payment.id,
       bookingId: booking.id,
       amountCents,
-      basis: input.basis,
+      reason: input.reason,
       unwoundCents,
       reversedLedgerLineId,
     };
   });
+}
+
+export interface RetryBankTransferRefundReRecordInput {
+  /** The voided note's link id (`BankRefundVoidItem.linkId`). */
+  linkId: string;
+  /** An optional note for the audit row. */
+  note?: string | null;
+  actingMemberId: string;
+}
+
+export interface RetryBankTransferRefundReRecordResult {
+  resolutionId: string;
+  paymentId: string;
+  bookingId: string;
+  /** The record-again's own failed attempts retired in favour of the new row. */
+  retiredOperationIds: string[];
+  noteOperationId: string;
+}
+
+/** Why a retry is refused, by the state its record-again's note is in. */
+const RETRY_STATE_REFUSALS = {
+  landed: "This record-again's credit note already reached Xero, so there is nothing to retry.",
+  "on-its-way": "This record-again's credit note is already on its way to Xero. Wait for it, then refresh.",
+  "voided-again": "Xero voided this record-again's credit note too. Answer that note on its own row instead.",
+} as const;
+
+/** Retry a record-again whose own note failed or landed short. See the module comment. */
+export async function retryBankTransferRefundReRecord(
+  input: RetryBankTransferRefundReRecordInput,
+): Promise<RetryBankTransferRefundReRecordResult> {
+  const auditNote = normaliseManualPaymentNote(input.note);
+  const now = new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const paymentId = await readBankRefundVoidPaymentId(tx, input.linkId);
+    if (!paymentId) throw new BankRefundVoidResolutionError("Voided refund note not found.", 404);
+    // `lock(1)` is held; the Payment row before anything about it is read.
+    await lockPaymentForRefundedTotal(tx, paymentId);
+    const voided = await readBankRefundVoidUnderLock(tx, input.linkId, now);
+    if (!voided || voided.paymentId !== paymentId) {
+      throw new BankRefundVoidResolutionError("This is not a voided bank-transfer refund note. The list has been refreshed.", 404);
+    }
+    const resolution = await tx.bankRefundVoidResolution.findUnique({
+      where: { paymentId_voidedCreditNoteId: { paymentId, voidedCreditNoteId: voided.link.xeroObjectId } },
+      select: { id: true, outcome: true, amountCents: true, noteOperationId: true },
+    });
+    if (!resolution || resolution.outcome !== "RE_RECORDED") {
+      throw new BankRefundVoidResolutionError("Only a refund recorded again can be retried.", 409);
+    }
+    const state = await readReRecordNoteState(tx, paymentId, resolution);
+    if (state !== "failed") throw new BankRefundVoidResolutionError(RETRY_STATE_REFUSALS[state], 409);
+
+    // The claim: the record-again's own failed attempts stop being replayable,
+    // status-guarded on what was read, so only the row queued below can mint.
+    const rowsWhere = reRecordNoteRowsWhere(paymentId, resolution.id, resolution.noteOperationId);
+    const retired =
+      (await tx.xeroSyncOperation.findMany({
+        where: { AND: [rowsWhere, { status: { in: ["FAILED", "PARTIAL"] }, replayable: true }] },
+        select: { id: true },
+      })) ?? [];
+    if (retired.length > 0) {
+      const claimed = await tx.xeroSyncOperation.updateMany({
+        where: { id: { in: retired.map((row) => row.id) }, status: { in: ["FAILED", "PARTIAL"] }, replayable: true },
+        data: { replayable: false },
+      });
+      if (claimed.count !== retired.length) {
+        throw new BankRefundVoidResolutionError("This record-again's credit note changed while you were retrying it - refresh and try again.", 409);
+      }
+    }
+    // Nothing else may mint a refund note on this payment meanwhile (#3880).
+    if (await findBlockingRefundCreditNoteOperationId(paymentId, tx)) {
+      throw new BankRefundVoidResolutionError(RE_RECORD_REFUSAL_MESSAGES["note-in-flight"], 409);
+    }
+
+    const { booking } = await readPaymentFigures(tx, paymentId);
+    // The same record, so the same key: sized from it less its own notes.
+    const document = await voidedNoteDocument(tx, paymentId, voided.link.xeroObjectId);
+    const queued = await enqueueXeroRefundCreditNoteOperation(paymentId, resolution.amountCents, {
+      ...document,
+      createdByMemberId: input.actingMemberId,
+      reRecordId: resolution.id,
+      store: tx,
+    });
+    if (!queued.queueOperationId) {
+      throw new BankRefundVoidResolutionError(`No refund credit note could be queued: ${queued.message}`, 409);
+    }
+
+    await createAuditLog(
+      {
+        action: "booking-payment.bank-refund.re-record-retried",
+        memberId: input.actingMemberId,
+        actorMemberId: input.actingMemberId,
+        subjectMemberId: bookingOwner(booking).memberId,
+        targetId: booking.id,
+        entityType: "BankRefundVoidResolution",
+        entityId: resolution.id,
+        category: "payment",
+        severity: "important",
+        outcome: "success",
+        summary: `Recorded-again bank-transfer refund on booking ${formatBookingReference(booking.id)}: its credit note queued again under the same record`,
+        ...(auditNote ? { details: auditNote } : {}),
+        metadata: {
+          paymentId,
+          voidedCreditNoteId: voided.link.xeroObjectId,
+          retiredOperationIds: retired.map((row) => row.id),
+          noteOperationId: queued.queueOperationId,
+        },
+      },
+      tx,
+    );
+
+    return {
+      resolutionId: resolution.id,
+      paymentId,
+      bookingId: booking.id,
+      retiredOperationIds: retired.map((row) => row.id),
+      noteOperationId: queued.queueOperationId,
+    };
+  });
+
+  await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((error: unknown) =>
+    logger.error({ err: error, resolutionId: result.resolutionId }, "Failed to kick the Xero outbox after a record-again retry"),
+  );
+  return result;
 }

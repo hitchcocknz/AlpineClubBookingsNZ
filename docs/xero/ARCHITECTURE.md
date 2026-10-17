@@ -1094,7 +1094,10 @@ after-void suffix once one of its own notes is voided), sized by its record less
 what its own notes cover (`readReRecordShare`), and copying the voided note's
 method, wording and credited invoice (`INV-PAY-101`). A replacement of the
 payment's one canonical note becomes canonical; a per-refund note's stays
-per-refund. **Confirm** writes no Xero call.
+per-refund. **Retry** queues a failed or short record-again's note again under
+the same resolution, so the same Xero key, after retiring its failed attempts.
+**Confirm** records its reason as the outcome (`CONFIRMED_CANCELLED` or
+`CONFIRMED_REPLACED_IN_XERO`) and writes no Xero call.
 
 **Deploy note (#4162).** A draining older worker knows no `reRecordId`. Running a
 record-again row, it sizes the note from the payment-wide gap, capped at the
@@ -1102,8 +1105,8 @@ row's amount, so it never raises more than the voided note's amount, and its key
 carries the after-void suffix, so it never replays the voided note. It can raise
 less only where the payment's account-credit records already disagree with
 Xero; the row is still found by its id (`noteOperationId`), so a short note lists
-the item again, flagged. Avoid recording refunds again until the old colour's
-outbox has drained.
+the item again, flagged, and its Retry raises only the rest. Avoid recording
+refunds again until the old colour's outbox has drained.
 
 **Deploy and rollback note (#4091).** The previous release writes a voided
 canonical bank-transfer mirror active, re-adopts a voided note through its

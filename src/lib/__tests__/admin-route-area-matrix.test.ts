@@ -431,6 +431,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/payments/card-refunds/[id]/paid-twice-resolved": "finance",
   "/api/admin/payments/bank-refund-voids/[id]/confirm-cancelled": "finance",
   "/api/admin/payments/bank-refund-voids/[id]/re-record": "finance",
+  "/api/admin/payments/bank-refund-voids/[id]/retry-re-record": "finance",
   "/api/admin/payments/manual-refund-tasks": "finance",
   "/api/admin/payments/manual-refund-tasks/[id]": "finance",
   // #3498 (owner decision D2): putting a dismissed money task back on the queue

@@ -295,16 +295,27 @@ Answer each one with Finance edit:
    cannot change. The refund is counted on the payment again. The member is not
    told. To record a different amount, raise that note by hand in Xero, then use
    **Confirm** with "Replaced by hand in Xero".
-2. **Confirm**, choosing why:
-   - **Refund cancelled** - the member was not paid. The refund is taken back
+2. **Confirm**, choosing one of two reasons. The choice is required, and each
+   does something different:
+   - **Refund cancelled** - the member was never paid. The refund is taken back
      out of the payment's records and its booking ledger line is reversed.
-   - **Replaced by hand in Xero** - the member was paid and a note you made in
-     Xero records it. Nothing in the club's records changes.
+   - **Replaced by hand in Xero** - the member was paid and a credit note you
+     made in Xero records it. Nothing in the club's records changes.
 
 A reason is required either way, and goes in the audit log. Each voided note
-can be answered once. If a recorded-again note does not reach Xero for the full
-amount, the row comes back marked so: retry a failed note from the Xero screen,
-or ask a developer if the note went through for less. If Xero voids the fresh
+can be answered once.
+
+**Refund cancelled means the club keeps the money.** Afterwards the booking is
+cancelled but still holds what the member paid, and nothing lists that money as
+owed to them. Only choose it when that is right - for example the member agreed
+to forfeit it. If the member is still owed the money, pay them and use **Record
+again** instead.
+
+**Retry.** If a recorded-again note does not reach Xero for the full amount, the
+row comes back marked so, with a **Retry** button. Retry sends the same note
+again under the same key: if the first attempt did reach Xero after all, Xero
+hands that note back rather than raising a second one. A note for this payment
+that is still on its way to Xero has to finish first. If Xero voids the fresh
 note too, that note is listed in its turn.
 
 ### A booking change's card request that stopped on its first refusal
@@ -343,7 +354,7 @@ The page has no settings. What it shows:
 | Generated timestamp | When the dashboard was last computed (shown in the header) |
 | Card refunds Stripe gave up on | Each dead card refund still owed, with a **Paid another way** close. Shown to Finance view (on a page that needs Support view), closed with Finance edit |
 | Card refunds paid back twice | Each refund closed as paid another way that Stripe also refunded to the card afterwards, with both amounts and a **Resolved** action. Shown to Finance view, resolved with Finance edit |
-| Bank-transfer refunds with a voided credit note | Each bank-transfer refund whose Xero credit note was voided more than a day ago, with **Record again** and **Confirm**. Shown to Finance view, answered with Finance edit |
+| Bank-transfer refunds with a voided credit note | Each bank-transfer refund whose Xero credit note was voided more than a day ago, with **Record again** and **Confirm** (or **Retry** for a recorded-again note that did not reach Xero in full). Shown to Finance view, answered with Finance edit |
 
 ### Who sees the named rows
 
@@ -380,6 +391,7 @@ without widening who can read the membership roll.
 | **Record again** is greyed out, saying the note "was marked resolved by hand in Xero" | An officer resolved the voided note's original create in Xero, so a fresh note could credit the member twice | Raise any further note by hand in Xero, then **Confirm** with "Replaced by hand in Xero" |
 | A voided bank-transfer refund row says "amount unknown", with both answers greyed out | The voided note's amount was never recorded | Ask a developer to reconcile it |
 | **Record again** or **Confirm** says the amount or the payment's refunds changed | Something moved on the payment since the page loaded | Reload the page and check before answering again |
+| **Retry** says the credit note "is already on its way to Xero" | A retry, or the first attempt, is still queued | Wait a few minutes and reload; the row clears once the note reaches Xero |
 
 ## Related links
 

@@ -672,7 +672,9 @@ export const AUDIT_CENSUS_TOTALS = {
   // (`booking-payment.bank-refund.re-recorded`) and confirmed cancelled or
   // replaced in Xero (`booking-payment.bank-refund.void-confirmed`), each
   // `payment`, awaited on its writer's transaction. RE-MEASURED.
-  writeSites: 507,
+  // 507 -> 508 (#4162, owner 17 Oct 2026): a failed record-again's note
+  // retried (`booking-payment.bank-refund.re-record-retried`), `payment`. RE-MEASURED.
+  writeSites: 508,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -879,7 +881,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the completion's transaction so the row commits with the correction.
     // 145 -> 147 (#4162): the record-again and the void confirm, awaited on
     // their transactions so each row commits with its answer.
-    createAuditLog: { total: 147, uncategorised: 0 },
+    // 147 -> 148 (#4162): the record-again retry, awaited on its transaction.
+    createAuditLog: { total: 148, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1084,7 +1087,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 58 -> 60 (#4162): a voided bank-transfer refund recorded again, and one
     // confirmed cancelled or replaced in Xero - the treasurer's answers, read by
     // the people who reconcile that refund.
-    payment: 60,
+    // 60 -> 61 (#4162): the record-again retry, read by the same people.
+    payment: 61,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

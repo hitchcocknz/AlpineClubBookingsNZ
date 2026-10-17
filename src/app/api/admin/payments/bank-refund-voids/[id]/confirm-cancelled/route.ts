@@ -5,7 +5,7 @@ import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
 import { nonNegativeCentsSchema } from "@/lib/edit-financial-review-context";
 import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
-import { BANK_REFUND_VOID_CONFIRM_BASES } from "@/lib/bank-refund-void-copy";
+import { BANK_REFUND_VOID_CONFIRM_REASONS } from "@/lib/bank-refund-void-copy";
 import {
   BankRefundVoidResolutionError,
   confirmBankTransferRefundCancelled,
@@ -18,7 +18,7 @@ import {
  */
 const bodySchema = z
   .object({
-    basis: z.enum(BANK_REFUND_VOID_CONFIRM_BASES),
+    reason: z.enum(BANK_REFUND_VOID_CONFIRM_REASONS),
     expectedAmountCents: nonNegativeCentsSchema,
     note: z.string().max(MANUAL_PAYMENT_NOTE_MAX),
     confirmed: z.literal(true),
@@ -30,9 +30,10 @@ const bodySchema = z
  *
  * #4162 (owner decisions 16 and 17 Oct 2026, `INV-ADDPAY-042`): clear a
  * voided bank-transfer refund note from the list. `[id]` is the voided note's
- * link. Gated `finance:edit`. "Cancelled" takes the refund back out of the
- * payment's records and reverses its ledger line (Q2); "replaced in Xero"
- * moves nothing (Q4). No Xero call and no member email. The rules are
+ * link. Gated `finance:edit`. The reason is required and recorded as the
+ * outcome (owner, 17 Oct 2026): "cancelled" takes the refund back out of the
+ * payment's records and reverses its ledger line; "replaced-in-xero" moves
+ * nothing. No Xero call and no member email. The rules are
  * `confirmBankTransferRefundCancelled`'s.
  */
 export async function POST(
@@ -63,7 +64,7 @@ export async function POST(
   try {
     const result = await confirmBankTransferRefundCancelled({
       linkId: id,
-      basis: parsed.data.basis,
+      reason: parsed.data.reason,
       expectedAmountCents: parsed.data.expectedAmountCents,
       note: parsed.data.note,
       actingMemberId: guard.session.user.id,

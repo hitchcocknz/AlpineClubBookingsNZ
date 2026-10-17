@@ -2984,7 +2984,9 @@ model Payment {
 /// Xero voided the note, which on a bank transfer undoes the refund
 /// (`INV-ADDPAY-041`), and nothing re-raises it automatically. The treasurer
 /// either records the refund again (`RE_RECORDED`: one fresh note, keyed on
-/// this row) or confirms it was cancelled (`CONFIRMED_CANCELLED`). The unique
+/// this row), confirms it was cancelled (`CONFIRMED_CANCELLED`: the refund is
+/// taken back out of the payment's records), or confirms the note was replaced
+/// by hand in Xero (`CONFIRMED_REPLACED_IN_XERO`: nothing moves). The unique
 /// pair is the claim: a voided note has at most one answer, so a double click
 /// or a second treasurer writes nothing. A table rather than an audit row,
 /// because audit rows are archived after a year and the item would come back.
@@ -3011,10 +3013,11 @@ model BankRefundVoidResolution {
   @@unique([paymentId, voidedCreditNoteId])
 }
 
-/// #4162: the two answers to a voided bank-transfer refund note.
+/// #4162: the answers to a voided bank-transfer refund note (owner decisions 17 Oct 2026).
 enum BankRefundVoidOutcome {
   RE_RECORDED
   CONFIRMED_CANCELLED
+  CONFIRMED_REPLACED_IN_XERO
 }
 
 // B5 (#2262): a cash / off-Xero settlement that has to be handed back by hand.

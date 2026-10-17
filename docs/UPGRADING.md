@@ -210,12 +210,13 @@ colour's outbox worker picks it up while both colours serve, it sizes the note
 the old way: never more than the voided note's amount, and under a key that
 cannot bring the voided note back, but on a payment whose account-credit records
 already disagree with Xero it can raise less. The row then comes back on the
-list, marked as not reaching Xero for the full amount; ask a developer to
-reconcile it.
+list, marked as not reaching Xero for the full amount, and its **Retry** sends
+only the rest.
 
 **What to do.** Until cutover completes and the old colour's outbox has
-drained, tell your treasurer not to use **Record again**. **Confirm** is safe at
-any time.
+drained, tell your treasurer not to use **Record again** or **Retry**.
+**Confirm**, with either reason, is safe at any time. After cutover, a row
+marked as not reaching Xero in full can be retried from the same list.
 
 ### Do not mark an edit's refund task paid back until cutover completes (#3827)
 

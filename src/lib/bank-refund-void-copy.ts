@@ -18,12 +18,30 @@ export const RE_RECORD_REFUSAL_MESSAGES: Record<ReRecordRefusal, string> = {
     "This note was marked resolved by hand in Xero, so recording it again could credit the member twice. Raise any further note in Xero by hand, then confirm it here.",
 };
 
-/** The reasons a confirm may give: the refund was cancelled, or its note was replaced by hand in Xero. */
-export const BANK_REFUND_VOID_CONFIRM_BASES = ["cancelled", "replaced-in-xero"] as const;
-export type BankRefundVoidConfirmBasis = (typeof BANK_REFUND_VOID_CONFIRM_BASES)[number];
+/**
+ * The two reasons a confirm gives, each with its own effect (owner decision 17
+ * Oct 2026): the refund was cancelled - the money never went out, so it is
+ * taken back out of the payment's records - or the note was replaced by hand in
+ * Xero - the money went out and Xero has a live note, so nothing moves. Stored
+ * as its own outcome on the resolution, never as words in the note.
+ */
+export const BANK_REFUND_VOID_CONFIRM_REASONS = ["cancelled", "replaced-in-xero"] as const;
+export type BankRefundVoidConfirmReason = (typeof BANK_REFUND_VOID_CONFIRM_REASONS)[number];
 
-/** How each basis is written at the head of the stored reason, and offered in the dialog. */
-export const CONFIRM_BASIS_LABEL: Record<BankRefundVoidConfirmBasis, string> = {
-  cancelled: "Refund cancelled",
-  "replaced-in-xero": "Replaced by hand in Xero",
+/** The resolution outcome each reason records. */
+export const CONFIRM_REASON_OUTCOME = {
+  cancelled: "CONFIRMED_CANCELLED",
+  "replaced-in-xero": "CONFIRMED_REPLACED_IN_XERO",
+} as const satisfies Record<BankRefundVoidConfirmReason, string>;
+
+/** Each reason as the dialog offers it: its name and what it does, in plain English. */
+export const CONFIRM_REASON_COPY: Record<BankRefundVoidConfirmReason, { label: string; help: string }> = {
+  cancelled: {
+    label: "Refund cancelled",
+    help: "The member was never paid. The refund is taken back out of the payment's records and its ledger line is reversed.",
+  },
+  "replaced-in-xero": {
+    label: "Replaced by hand in Xero",
+    help: "The member was paid, and a credit note you made in Xero records it. Nothing in the club's records changes.",
+  },
 };

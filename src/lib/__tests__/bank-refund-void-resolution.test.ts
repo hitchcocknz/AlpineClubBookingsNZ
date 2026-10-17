@@ -24,6 +24,12 @@ vi.mock("@/lib/prisma", () => ({
           mocks.calls.push(`raw:${strings.join("?")}`);
           return 1;
         },
+        bankRefundVoidResolution: {
+          findUnique: async () => {
+            mocks.calls.push("read-resolution");
+            return { id: "r-1", outcome: "CONFIRMED_CANCELLED", amountCents: 20_000, noteOperationId: null };
+          },
+        },
       }),
   },
 }));
@@ -37,6 +43,7 @@ vi.mock("@/lib/bank-refund-void-report", () => ({
     return mocks.readUnderLock(...args);
   },
   readVoidedNoteCreateRow: vi.fn(),
+  readReRecordNoteState: vi.fn(),
 }));
 vi.mock("@/lib/payment-transactions", () => ({
   lockPaymentForRefundedTotal: async (...args: unknown[]) => {
@@ -58,6 +65,7 @@ import {
   BankRefundVoidResolutionError,
   confirmBankTransferRefundCancelled,
   reRecordBankTransferRefund,
+  retryBankTransferRefundReRecord,
 } from "@/lib/bank-refund-void-resolution";
 
 const input = { linkId: "link-1", expectedAmountCents: 20_000, note: "Paid by bank", actingMemberId: "officer-1" };
@@ -79,7 +87,9 @@ beforeEach(() => {
 describe("the lock order (INV-LOCK-001, INV-LOCK-002)", () => {
   it.each([
     ["record again", () => reRecordBankTransferRefund(input)],
-    ["confirm", () => confirmBankTransferRefundCancelled({ ...input, basis: "cancelled" })],
+    ["confirm", () => confirmBankTransferRefundCancelled({ ...input, reason: "cancelled" })],
+    // Retry stops at its resolution check: the read-under-lock answered CONFIRM, not RE_RECORDED.
+    ["retry", () => retryBankTransferRefundReRecord({ linkId: "link-1", actingMemberId: "officer-1" })],
   ])("MUTATION: %s takes lock(1) first, then the Payment row, then reads the voided note", async (_name, run) => {
     await expect(run()).rejects.toMatchObject({ status: 409 });
     expect(mocks.calls[0]).toBe("raw:SELECT pg_advisory_xact_lock(1)");
@@ -107,7 +117,7 @@ describe("refusals before anything is read", () => {
 
   it("refuses a confirm with no reason chosen", async () => {
     await expect(
-      confirmBankTransferRefundCancelled({ ...input, basis: "lost" as never }),
+      confirmBankTransferRefundCancelled({ ...input, reason: "lost" as never }),
     ).rejects.toMatchObject({ status: 400 });
     expect(mocks.calls).toEqual([]);
   });

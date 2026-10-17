@@ -1,8 +1,10 @@
 -- #4162 (owner decisions 16 and 17 Oct 2026, INV-ADDPAY-042): one row per
 -- voided bank-transfer refund credit note the treasurer has answered - recorded
--- again (RE_RECORDED, which queues one fresh note keyed on this row) or
--- confirmed cancelled (CONFIRMED_CANCELLED). The unique pair is the claim, so a
--- voided note has at most one answer.
+-- again (RE_RECORDED, which queues one fresh note keyed on this row), confirmed
+-- cancelled (CONFIRMED_CANCELLED, which takes the refund back out of the
+-- payment's records), or confirmed replaced by hand in Xero
+-- (CONFIRMED_REPLACED_IN_XERO, which moves nothing). The unique pair is the
+-- claim, so a voided note has at most one answer.
 --
 -- Blue/green EXPAND: a new enum and a new table, no DML. The draining colour
 -- never reads or writes either, and no existing table, column or row changes.
@@ -16,7 +18,7 @@
 -- REVERSE: leave the rows in place. Dropping the table would put every answered
 -- note back on the treasurer's list.
 
-CREATE TYPE "BankRefundVoidOutcome" AS ENUM ('RE_RECORDED', 'CONFIRMED_CANCELLED');
+CREATE TYPE "BankRefundVoidOutcome" AS ENUM ('RE_RECORDED', 'CONFIRMED_CANCELLED', 'CONFIRMED_REPLACED_IN_XERO');
 
 CREATE TABLE "BankRefundVoidResolution" (
     "id" TEXT NOT NULL,

@@ -5268,6 +5268,18 @@ click queues on `lock(1)` and the second reads the row answered and writes
 nothing (`bank-refund-void-resolution.realdb.test.ts`). Registered as
 `reRecordBankTransferRefund#1` and `confirmBankTransferRefundCancelled#1`.
 
+**Retry** (`retryBankTransferRefundReRecord#1`, owner 17 Oct 2026) answers a
+record-again whose own note failed or landed short, in the same tiers: `lock(1)`,
+the Payment row, then the resolution and its note's state re-read. Its claim is
+the status-guarded retirement of the record-again's own failed attempts
+(`replayable` off on the FAILED/PARTIAL rows it read, the count checked), so
+neither the outbox, an operator retry nor a REQUEUE can run them again; then it
+refuses while any other refund-note create on the payment could still mint
+(`findBlockingRefundCreditNoteOperationId`) and queues one row under the same
+resolution. Its Xero key is the failed attempt's (`re-record:<id>:<own
+cover>`), so a note that attempt raised with its answer lost is handed back,
+not raised twice. A double click reads the new row on its way and is refused.
+
 The record-again's note is an outbox row inserted in the same transaction, sized
 from its own record and keyed on it (`re-record:<id>`); the worker is kicked
 after the commit, so no provider call runs under either lock. Its counterparts:

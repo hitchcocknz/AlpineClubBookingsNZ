@@ -6,8 +6,12 @@
   payment's live refund notes beside it, and the Xero health counts, the
   finance sync tile and the nightly Xero digest count it too. With Finance edit
   the treasurer either **records the refund again**, which raises one fresh
-  credit note for the voided note's amount, or **confirms** it: cancelled (the
-  refund is taken back out of the payment's records and its ledger line is
-  reversed) or already replaced by hand in Xero (nothing changes). A reason is
-  required, each note is answered once, and the member is not told. See the
+  credit note for the voided note's amount, or **confirms** it with one of two
+  reasons: **Refund cancelled** (the member was never paid: the refund is taken
+  back out of the payment's records and its ledger line is reversed) or
+  **Replaced by hand in Xero** (the member was paid and Xero already has a
+  note: nothing changes). If a recorded-again note fails to reach Xero, or
+  reaches it short, the row comes back with a **Retry** that sends the same
+  note again under the same key, so it can never raise a second one. A reason
+  is required, each note is answered once, and the member is not told. See the
   [Stuck States guide](../docs/guides/stuck-states.md).

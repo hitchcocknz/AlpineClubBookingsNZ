@@ -387,8 +387,9 @@ const FIGURES = {
    * MEASURED by re-running this census.
    * 377 -> 379 (#4162): the voided bank-transfer refund panel's Record again and
    * Confirm. MEASURED by re-running this census.
+   * 379 -> 380 (#4162, owner 17 Oct 2026): the same panel's Retry.
    */
-  callSites: 379,
+  callSites: 380,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -442,8 +443,9 @@ const FIGURES = {
    * on the composed tree.
    * 321 -> 322 (#4098): "Close: already paid", under the billing panel's banner.
    * 322 -> 324 (#4162): Record again and Confirm, under their panel's banner.
+   * 324 -> 325 (#4162): Retry, under the same banner.
    */
-  optOuts: 324,
+  optOuts: 325,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -532,7 +534,8 @@ const FIGURES = {
    * 286 -> 288 (#4162): Record again and Confirm sit beside the voided
    * bank-transfer refund panel's own banner. MEASURED by re-running this census.
    */
-  staticOptOuts: 288,
+  // 288 -> 289 (#4162): the panel's Retry beside its own banner.
+  staticOptOuts: 289,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
