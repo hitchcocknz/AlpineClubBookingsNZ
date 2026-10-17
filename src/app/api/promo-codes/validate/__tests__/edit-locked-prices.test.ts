@@ -249,3 +249,50 @@ describe("an edit after the rates went up prices the held nights at their sold p
     expect(mocks.prisma.bookingGuest.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe("a booking id makes the preview an edit's, whatever forBookingEdit says (#4202)", () => {
+  // A club whose group discount prices a non-member at the member rate, but not
+  // on later edits (`applyToEdits` off, INV-MOD-026): the quote prices an edit's
+  // added non-member at the full non-member rate.
+  const NON_MEMBER_RATE = 2 * NOW_RATE;
+  beforeEach(() => {
+    mocks.prisma.season.findMany.mockResolvedValue([
+      {
+        id: "season-1",
+        startDate: new Date("2026-01-01"),
+        endDate: new Date("2026-12-31"),
+        type: "WINTER",
+        membershipTypeRates: [
+          { membershipTypeId: "type-full", ageTier: "ADULT", pricePerNightCents: NOW_RATE },
+          { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: NON_MEMBER_RATE },
+        ],
+      },
+    ]);
+    mocks.prisma.groupDiscountSetting.findUnique.mockResolvedValue({
+      id: "default",
+      enabled: true,
+      applyToEdits: false,
+      minGroupSize: 2,
+      summerOnly: false,
+      rateMembershipTypeId: "type-full",
+    });
+    mocks.prisma.promoCode.findUnique.mockResolvedValue(promo({ percentOff: 50 }));
+  });
+  const friend = { ageTier: "ADULT", isMember: false, stayStart: "2026-08-10", stayEnd: "2026-08-14" };
+
+  it("an edit preview that omits forBookingEdit still prices with the edit-time switch", async () => {
+    const res = await post({ forBookingEdit: undefined, guests: [extended, friend] });
+    expect(res.status).toBe(200);
+    expect((await res.json()).totalPriceCents).toBe(EDIT_TOTAL + 4 * NON_MEMBER_RATE);
+  });
+
+  it("a new booking's preview keeps the group discount (the comparison has teeth)", async () => {
+    const res = await post({
+      forBookingEdit: undefined,
+      bookingId: undefined,
+      guests: [{ ...extended, bookingGuestId: undefined }, friend],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).totalPriceCents).toBe(8 * NOW_RATE);
+  });
+});

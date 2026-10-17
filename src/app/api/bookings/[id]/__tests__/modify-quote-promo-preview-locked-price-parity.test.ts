@@ -27,7 +27,12 @@ import { NextRequest } from "next/server";
 const h = vi.hoisted(() => ({
   auth: vi.fn(),
   authorizationRole: vi.fn(),
+  isMemberWholeLodgeBooking: vi.fn(),
+  loadMemberGuestAddPolicy: vi.fn(),
+  computeMemberGuestBoundary: vi.fn(),
+  resolveLinkedBookingMembersWithBoundary: vi.fn(),
   prisma: {
+    otherLodge: { findUnique: vi.fn() },
     manualRefundTask: { findFirst: vi.fn(), findMany: vi.fn() },
     booking: { findUnique: vi.fn() },
     bookingGuest: { findMany: vi.fn() },
@@ -76,25 +81,18 @@ vi.mock("@/lib/booking-member-night-conflicts", () => ({
 vi.mock("@/lib/booking-modify", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/booking-modify")),
   isQuotePricedBooking: vi.fn(async () => false),
-  isMemberWholeLodgeBooking: vi.fn(async () => false),
+  isMemberWholeLodgeBooking: h.isMemberWholeLodgeBooking,
   calculateModificationSettlementOptions: vi.fn(async () => null),
 }));
 vi.mock("@/lib/booking-guests", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/booking-guests")),
-  computeMemberGuestBoundary: vi.fn(async () => ({ scopeByMemberId: new Map(), beyondFamilyMemberIds: [] })),
-  resolveLinkedBookingMembersWithBoundary: vi.fn(async () => ({
-    members: new Map(),
-    boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
-  })),
+  computeMemberGuestBoundary: h.computeMemberGuestBoundary,
+  resolveLinkedBookingMembersWithBoundary: h.resolveLinkedBookingMembersWithBoundary,
   assertLinkedBookingMembersCanBeBooked: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/member-guest-add-policy", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/member-guest-add-policy")),
-  loadMemberGuestAddPolicy: vi.fn(async () => ({
-    wideningEnabled: false,
-    approvalRequired: true,
-    pendingHoldExpiryDays: 0,
-  })),
+  loadMemberGuestAddPolicy: h.loadMemberGuestAddPolicy,
 }));
 vi.mock("@/lib/booking-member-guest-subscriptions", () => ({ findUnpaidMemberGuestNames: vi.fn(async () => []) }));
 vi.mock("@/lib/cancellation", () => ({
@@ -215,6 +213,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.auth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } });
   h.authorizationRole.mockReturnValue("USER");
+  h.isMemberWholeLodgeBooking.mockResolvedValue(false);
+  h.loadMemberGuestAddPolicy.mockResolvedValue({ wideningEnabled: false, approvalRequired: true, pendingHoldExpiryDays: 0 });
+  h.computeMemberGuestBoundary.mockResolvedValue({ scopeByMemberId: new Map(), beyondFamilyMemberIds: [] });
+  h.resolveLinkedBookingMembersWithBoundary.mockResolvedValue({
+    members: new Map(),
+    boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+  });
+  h.prisma.otherLodge.findUnique.mockResolvedValue({ id: "ol-1" });
   h.prisma.manualRefundTask.findFirst.mockResolvedValue(null);
   h.prisma.manualRefundTask.findMany.mockResolvedValue([]);
   h.prisma.booking.findUnique.mockResolvedValue(storedBooking());
@@ -263,7 +269,17 @@ type Edit = {
   boxBody?: Record<string, unknown>;
   boxGuest?: Record<string, unknown>;
   quoteBody?: Record<string, unknown>;
+  /** Further guests the edit adds: as the quote is sent them, and as the box is. */
+  quoteAdd?: Array<Record<string, unknown>>;
+  boxAdd?: Array<Record<string, unknown>>;
+  /** Both routes refuse the code (the case compares the refusals); otherwise both must apply it. */
+  refused?: boolean;
 };
+
+/** What a route answers about the code: the money when it applies, the words when it does not. */
+type Answer =
+  | { valid: true; totalPriceCents: number; discountCents: number; promoAdjustmentCents: number }
+  | { valid: false; error: string };
 
 /** The quote's answer for the edit: its total and the promo line's discount. */
 async function quote(edit: Edit) {
@@ -277,21 +293,35 @@ async function quote(edit: Edit) {
         checkOut: edit.checkOut,
         promoCode: "SAVE",
         ...edit.quoteBody,
-        ...(edit.addFriend
-          ? { addGuests: [{ firstName: "Kiri", lastName: "Friend", ageTier: "ADULT", isMember: false }] }
+        ...(edit.addFriend || edit.quoteAdd
+          ? {
+              addGuests: [
+                ...(edit.addFriend ? [{ firstName: "Kiri", lastName: "Friend", ageTier: "ADULT", isMember: false }] : []),
+                ...(edit.quoteAdd ?? []),
+              ],
+            }
           : {}),
       }),
     }),
     { params: Promise.resolve({ id: "b1" }) },
   );
   const body = await res.json();
-  expect(res.status, JSON.stringify(body)).toBe(200);
-  expect(body.promoValidation?.valid, JSON.stringify(body.promoValidation)).toBe(true);
+  if (res.status !== 200) return { valid: false, error: body.error as string } as Answer;
+  expect(body.promoValidation, JSON.stringify(body)).toBeTruthy();
+  if (!body.promoValidation.valid) return { valid: false, error: body.promoValidation.error as string } as Answer;
   return {
+    valid: true,
     totalPriceCents: body.newTotalPriceCents as number,
     discountCents: body.promoValidation.discountCents as number,
     promoAdjustmentCents: body.newPromoAdjustmentCents as number,
-  };
+  } as Answer;
+}
+
+/** The quote's money, for a case that must apply. */
+async function quoted(edit: Edit) {
+  const answer = await quote(edit);
+  if (!answer.valid) throw new Error(`the quote refused: ${answer.error}`);
+  return answer;
 }
 
 /** The promo box's answer for the same edit, as the booking editor sends it. */
@@ -321,17 +351,28 @@ async function box(edit: Edit) {
             ...edit.boxGuest,
           },
           ...(edit.addFriend ? [{ ageTier: "ADULT", isMember: false }] : []),
+          ...(edit.boxAdd ?? []),
         ],
       }),
     }),
   );
   const body = await res.json();
-  expect(res.status, JSON.stringify(body)).toBe(200);
+  if (res.status !== 200 || !body.valid) return { valid: false, error: body.error as string } as Answer;
   return {
+    valid: true,
     totalPriceCents: body.totalPriceCents as number,
     discountCents: body.discountCents as number,
     promoAdjustmentCents: body.promoAdjustmentCents as number,
-  };
+  } as Answer;
+}
+
+/** Both routes, one assertion over the pair, and never a pair that agrees by both refusing unexpectedly. */
+async function expectParity(edit: Edit) {
+  edit.setup?.();
+  const fromQuote = await quote(edit);
+  const fromBox = await box(edit);
+  expect(fromBox).toEqual(fromQuote);
+  expect(fromQuote.valid, JSON.stringify(fromQuote)).toBe(!edit.refused);
 }
 
 const EDITS: Array<[string, Edit]> = [
@@ -358,22 +399,19 @@ const EDITS: Array<[string, Edit]> = [
 describe("#4202 the promo box and the quote give one discount after the rates moved", () => {
   for (const [name, edit] of EDITS) {
     it(`agrees on the total and the discount: ${name}`, async () => {
-      edit.setup?.();
-      const quoted = await quote(edit);
-      const boxed = await box(edit);
-      expect(boxed).toEqual(quoted);
+      await expectParity(edit);
     });
   }
 
   it("the comparison has teeth: the quote does not price the held nights at today's rate", async () => {
-    const quoted = await quote(EDITS[0]![1]);
-    expect(quoted.totalPriceCents).toBe(3 * SOLD + NOW_RATE);
-    expect(quoted.totalPriceCents).not.toBe(4 * NOW_RATE);
+    const fromQuote = await quoted(EDITS[0]![1]);
+    expect(fromQuote.totalPriceCents).toBe(3 * SOLD + NOW_RATE);
+    expect(fromQuote.totalPriceCents).not.toBe(4 * NOW_RATE);
   });
 
   it("the added-guest case really prices the friend, at today's rate on every night", async () => {
     const [, edit] = EDITS.find(([, candidate]) => candidate.addFriend)!;
-    expect((await quote(edit)).totalPriceCents).toBe(3 * SOLD + NOW_RATE + 4 * NOW_RATE);
+    expect((await quoted(edit)).totalPriceCents).toBe(3 * SOLD + NOW_RATE + 4 * NOW_RATE);
   });
 });
 
@@ -463,16 +501,163 @@ const BOOKING_EDITS: Array<[string, Edit]> = [
 describe("#4202 the box answers for the booking the quote prices", () => {
   for (const [name, edit] of BOOKING_EDITS) {
     it(`agrees on the total and the discount: ${name}`, async () => {
-      edit.setup?.();
-      const quoted = await quote(edit);
-      const boxed = await box(edit);
-      expect(boxed).toEqual(quoted);
+      await expectParity(edit);
     });
   }
 
   it("the other-lodge case has teeth: the bought night is at the member rate, not the non-member one", async () => {
     const [, edit] = BOOKING_EDITS[2]!;
     edit.setup?.();
-    expect((await quote(edit)).totalPriceCents).toBe(3 * SOLD + NOW_RATE);
+    expect((await quoted(edit)).totalPriceCents).toBe(3 * SOLD + NOW_RATE);
+  });
+});
+
+/** The booking's rows, with the one stored guest replaced, for both routes' reads. */
+function storedWith(guest: Record<string, unknown>, booking: Record<string, unknown> = {}) {
+  const row = { ...storedGuest, ...guest };
+  h.prisma.booking.findUnique.mockResolvedValue({ ...storedBooking(), ...booking, guests: [row] });
+  h.prisma.bookingGuest.findMany.mockResolvedValue([row]);
+}
+
+/** Member and non-member rates that differ, so a re-rate moves the price. */
+function memberAndNonMemberRates() {
+  h.prisma.season.findMany.mockResolvedValue([
+    {
+      id: "season-1",
+      startDate: D("2026-06-01"),
+      endDate: D("2026-10-31"),
+      type: "WINTER",
+      membershipTypeRates: [
+        { membershipTypeId: "type-full", ageTier: "ADULT", pricePerNightCents: NOW_RATE },
+        { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 2 * NOW_RATE },
+      ],
+    },
+  ]);
+}
+
+/** A placeholder guest: no member, priced (and sold) at the non-member rate. */
+const PLACEHOLDER = { isMember: false, memberId: null, firstName: "Guest", lastName: "3" };
+const PLACEHOLDER_IN_BOX = { isMember: false, memberId: undefined };
+
+/**
+ * #4202 review: whose booking it is, and the officer re-rates the quote clears
+ * locks for. Each case is the same edit to both routes; `refused` cases compare
+ * the two refusals word for word.
+ */
+const REVIEW_EDITS: Array<[string, Edit]> = [
+  [
+    "a school's booking: an unassigned code is refused, as the quote refuses it",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      refused: true,
+      setup: () => {
+        officerCalling();
+        storedWith(PLACEHOLDER, { memberId: null });
+      },
+      boxGuest: PLACEHOLDER_IN_BOX,
+    },
+  ],
+  [
+    "an officer naming another member than the owner: the owner wins",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50, assignments: [{ memberId: "m1" }], assignedMembersOnlyOwnNights: false },
+      boxBody: { promoGuestIndexes: [0], forMemberId: "m2" },
+      quoteBody: { promoGuestIds: ["g1"] },
+      setup: officerCalling,
+    },
+  ],
+  [
+    "an officer adds another family's member: confirmed as an officer's add, so their code covers them",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50, assignments: [{ memberId: "m3" }], assignedMembersOnlyOwnNights: true },
+      quoteAdd: [{ memberId: "m3", firstName: "Tane", lastName: "Other", ageTier: "ADULT", isMember: true }],
+      boxAdd: [{ ageTier: "ADULT", isMember: true, memberId: "m3", stayStart: "2026-08-24", stayEnd: "2026-08-28" }],
+      setup: () => {
+        officerCalling();
+        const beyond = { scopeByMemberId: new Map([["m3", "BEYOND_FAMILY"]]), beyondFamilyMemberIds: ["m3"] };
+        h.loadMemberGuestAddPolicy.mockResolvedValue({
+          wideningEnabled: true,
+          approvalRequired: true,
+          pendingHoldExpiryDays: 7,
+          timeZone: "Pacific/Auckland",
+        });
+        h.computeMemberGuestBoundary.mockResolvedValue(beyond);
+        h.resolveLinkedBookingMembersWithBoundary.mockResolvedValue({
+          members: new Map([
+            ["m3", { id: "m3", ageTier: "ADULT", active: true, canLogin: true, firstName: "Tane", lastName: "Other" }],
+          ]),
+          boundary: beyond,
+        });
+      },
+    },
+  ],
+  [
+    "an officer ticks a placeholder as another club's member: every night re-rates to the member rate",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      boxGuest: PLACEHOLDER_IN_BOX,
+      quoteBody: { otherLodgeId: "ol-1", otherLodgeMemberGuestIds: ["g1"] },
+      boxBody: { otherLodgeId: "ol-1", otherLodgeMemberGuestIds: ["g1"] },
+      setup: () => {
+        officerCalling();
+        memberAndNonMemberRates();
+        storedWith(PLACEHOLDER);
+      },
+    },
+  ],
+  [
+    "an officer unticks one: every night re-rates to the non-member rate",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      boxGuest: PLACEHOLDER_IN_BOX,
+      quoteBody: { otherLodgeId: "ol-1", otherLodgeMemberGuestIds: [] },
+      boxBody: { otherLodgeId: "ol-1", otherLodgeMemberGuestIds: [] },
+      setup: () => {
+        officerCalling();
+        memberAndNonMemberRates();
+        storedWith({ ...PLACEHOLDER, otherLodgeMember: true }, { otherLodgeId: "ol-1" });
+      },
+    },
+  ],
+  [
+    "an officer links a placeholder to a member (#2337): every night re-rates to the member rate",
+    {
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      boxGuest: PLACEHOLDER_IN_BOX,
+      quoteBody: { linkGuestToMember: [{ guestId: "g1", memberId: "m9" }] },
+      boxBody: { linkGuestToMember: [{ guestId: "g1", memberId: "m9" }] },
+      setup: () => {
+        officerCalling();
+        memberAndNonMemberRates();
+        h.isMemberWholeLodgeBooking.mockResolvedValue(true);
+        storedWith(PLACEHOLDER, { wholeLodgeHold: true });
+      },
+    },
+  ],
+];
+
+describe("#4202 review: the box judges the booking's owner and clears the locks the quote clears", () => {
+  for (const [name, edit] of REVIEW_EDITS) {
+    it(`agrees: ${name}`, async () => {
+      await expectParity(edit);
+    });
+  }
+
+  it("the re-rate cases have teeth: a ticked guest's held nights leave their sold price", async () => {
+    const [, tick] = REVIEW_EDITS[3]!;
+    tick.setup?.();
+    expect((await quoted(tick)).totalPriceCents).toBe(4 * NOW_RATE);
+    const [, untick] = REVIEW_EDITS[4]!;
+    untick.setup?.();
+    expect((await quoted(untick)).totalPriceCents).toBe(4 * 2 * NOW_RATE);
+    const [, link] = REVIEW_EDITS[5]!;
+    link.setup?.();
+    expect((await quoted(link)).totalPriceCents).toBe(4 * NOW_RATE);
   });
 });
