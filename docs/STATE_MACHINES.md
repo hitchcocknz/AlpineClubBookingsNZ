@@ -551,10 +551,19 @@ payment's recorded refunds, by the rule the close used,
 `cardRefundMadeForOperation`, undated), what the record says was paid back,
 and as closed by the club only what the record left unpaid
 (`paidAnotherWayUnpaidCents`). A part the payment no longer held when it
-closed is none of these and is not said. Stated limit: the event's dated part
-keeps what the close found, even a refund that later fails and is owed again
-on its own row; the undated part follows the refunds as recorded now, within
-what the record's paid-back and unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,
+closed is none of these and is not said. A refund the close recorded that
+Stripe later fails, owed again on a row of its own
+(`card_refund_failed_later_<refund>`, #4104), is said by that row - made again
+(dated by its close), on its way, stalled (the club follows it up) or paid
+another way, said with the cancel's own paid-another-way close as one total -
+and taken off the part it was in, the rest keeping its date; a retry that
+fails too is said by the row owing it (#4166). Which row made the refund is
+what the failed-later writer recorded on that row (`madeByOperationId`: by
+metadata, and among several failed-later rows, which all send the same, by the
+slice it fills); a row raised before #4166 is matched by amount. A paid-another-way close's refund is told only if Stripe made it by
+that close, and dated only if recorded by it. The undated part
+follows the refunds as recorded now, within what the record's paid-back and
+unpaid figures leave of the refund due. A cancel made before #4145 wrote its event up front,
 whatever became of the refund, so a later close writes no second one; the
 booking page reads an open or paid-another-way row ahead of that event.
 Stated limit, the deploy boundary, both ways and history only while both
@@ -1750,7 +1759,9 @@ sentence does not say - the rest past the plan, or a part its payment no longer
 held - is followed up). A capacity race's refund is never told as more than its
 rows' frozen plans together (`cardRefundPlanCents`), whatever its state: a
 `CANCELLED` snapshot written before #4125 froze the full charge; a capacity race's row the runner closed before #4125,
-which wrote no event, says it was refunded. No cancellation policy decided a
+which wrote no event, says it was refunded. A refund its event recorded that
+Stripe later fails is said by the row owing it again, as for a member cancel
+(#4166). No cancellation policy decided a
 capacity-race refund, so its narrative names none. That settle records no
 `MEMBER_PAID` event, so the narrative takes the payment from the `CANCELLED`
 snapshot, whose `settledAmountCents` is the plan's total: when the payment
@@ -3724,7 +3735,10 @@ nothing more; the open row that counted it - the slice marked with it
 payment stood before the failure when the refund carries exactly the metadata
 that row's runner sends (`cardRefundOperationRefundMetadata`) - has that slice
 moved to its next key; with none, a new row is raised per failed Stripe refund, for exactly its amount on
-its charge, under a key Stripe has never seen. A row someone may be writing (a
+its charge, under a key Stripe has never seen, recording on its slice which row
+made the refund (`madeByOperationId`, #4166): the one row on the payment whose
+runner metadata the refund carried, or among several the one whose slice it
+fills, else null. A row someone may be writing (a
 worker's attempt, or a row no worker has claimed yet) is never moved: the
 failure is retried later, or, met by that row's own door or worker replaying
 its key, handed back to it as refused. A closed row is never reopened. A new

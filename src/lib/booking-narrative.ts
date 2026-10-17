@@ -58,7 +58,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { nothingToPayNarrative, nothingToPayWithFinancialReviewNarrative } from "@/lib/booking-narrative-nothing-to-pay";
 import type { BookingAmountOwed } from "@/lib/booking-payment-state";
-import { buildCancelledPostPaymentNarrative, capacityRacePaidEvent, type PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
+import { buildCancelledPostPaymentNarrative, capacityRacePaidEvent, type FailedLaterCardRefund, type PaidAnotherWayClose } from "@/lib/booking-narrative-cancelled-post-payment";
 import type { CardRefundState, CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 
 export type BookingNarrativeState =
@@ -168,6 +168,8 @@ export interface ResolveBookingNarrativeInput {
   cardRefundClose?: PaidAnotherWayClose;
   /** #4145: a capacity race's rows' plans together - its card refund's most, where the snapshot froze the full charge. */
   cardRefundPlanCents?: number;
+  /** #4166: the cancel's card refunds an event recorded that Stripe failed later, each by its own row. */
+  cardRefundFailedLater?: readonly FailedLaterCardRefund[];
 }
 
 const PAID_EVENT_TYPES: BookingEventType[] = [
@@ -260,6 +262,7 @@ function buildCancelledNarrative(
   cardRefundState?: CardRefundState,
   cardRefundClose?: PaidAnotherWayClose,
   cardRefundPlanCents?: number,
+  cardRefundFailedLater?: readonly FailedLaterCardRefund[],
 ): BookingNarrative {
   // A booking held for admin review that was rejected is cancelled via the
   // shared cancel flow; surface it as "declined" with the admin's reason.
@@ -328,7 +331,7 @@ function buildCancelledNarrative(
     );
     return buildCancelledPostPaymentNarrative(
       paidEvent,
-      cancelEvent, settlementEvents, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState, cardRefundClose, cardRefundPlanCents,
+      cancelEvent, settlementEvents, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState, cardRefundClose, cardRefundPlanCents, cardRefundFailedLater,
     );
   }
 
@@ -588,6 +591,7 @@ export function resolveBookingNarrative({
   cardRefundState,
   cardRefundClose,
   cardRefundPlanCents,
+  cardRefundFailedLater,
 }: ResolveBookingNarrativeInput, format: ClubFormat): BookingNarrative {
   const ordered = sortedByOccurredAt(events);
   const status = booking.status;
@@ -614,12 +618,12 @@ export function resolveBookingNarrative({
     argument for its own shape.
   */
   if (status === "CANCELLED" || status === "BUMPED") {
-    return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState, cardRefundClose, cardRefundPlanCents);
+    return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState, cardRefundClose, cardRefundPlanCents, cardRefundFailedLater);
   }
 
   if (status === "AWAITING_REVIEW") {
     if (booking.adminReviewStatus === "REJECTED") {
-      return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState, cardRefundClose, cardRefundPlanCents);
+      return buildCancelledNarrative(booking, ordered, club, format, ownerCreditHidden, cardShortfallStatuses, cardRefundState, cardRefundClose, cardRefundPlanCents, cardRefundFailedLater);
     }
     return {
       state: "under_review",

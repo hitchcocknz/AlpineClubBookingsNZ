@@ -309,6 +309,12 @@ import "./capacity-race-refund-event.realdb.test";
 // page's narrative follows each path. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4145-` fixtures.
 import "./cancel-card-refund-event.realdb.test";
+// #4166 reuses it to prove a cancel's card refund that Stripe failed after its
+// REFUNDED event is told by the row that owes it again - on its way, made again,
+// stalled, paid another way - through the real cancel, capacity race, runner,
+// failed-later writer and "paid another way" close. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4166-` fixtures.
+import "./cancel-card-refund-failed-later.realdb.test";
 // #4147 reuses it to prove the booking-ledger census reads a capacity race's
 // cancel by its own refund rows: through the REAL capacity race, back-post and
 // recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post
