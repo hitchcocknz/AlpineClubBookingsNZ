@@ -146,7 +146,6 @@ function OperationItem({
         )}
       </div>
 
-      {/* #4049: a SUCCEEDED row's leftover wait or error code describes an attempt that is over. */}
       {operation.lastErrorMessage && operation.status !== "SUCCEEDED" && (
         <p className="text-sm text-danger-11">
           {operation.lastErrorCode ? `${operation.lastErrorCode}: ` : ""}
