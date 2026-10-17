@@ -900,13 +900,10 @@ export async function enqueueDuplicateCaptureRefundRecovery({
 
 /**
  * The duplicate-capture adjudication lookup (#1992, #4211): the intent ids of
- * this booking's captures a duplicate-capture refund already owns, whatever its
- * operation's status. Read under lock(1) BEFORE enqueueing a new refund: a
- * capture named here is going back to the member, so it is never the
- * settlement an arriving capture duplicates. That stops interleaved webhook
- * replays of a pair refunding both sides (zero net cash), and still refunds a
- * third capture, which the old "any other adjudication, so keep the arrival"
- * reading kept.
+ * this booking's captures a duplicate-capture refund owns, at any status. Read
+ * under lock(1) BEFORE enqueueing a refund: such a capture is going back to the
+ * member, so it is never the settlement an arriving capture duplicates. Replays
+ * of a pair never refund both sides, and a third capture is still refunded.
  */
 export async function listDuplicateCaptureRefundIntentIds({
   bookingId,
