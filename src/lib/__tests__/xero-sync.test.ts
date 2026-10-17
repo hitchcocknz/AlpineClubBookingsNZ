@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   txLinkUpsert: vi.fn(),
   txLinkFindUnique: vi.fn(),
   txLinkFindMany: vi.fn(),
+  txExecuteRaw: vi.fn(),
   operationUpdate: vi.fn(),
   operationUpdateMany: vi.fn(),
   operationFindUniqueOrThrow: vi.fn(),
@@ -386,8 +387,10 @@ describe("upsertXeroObjectLink", () => {
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
     mocks.txLinkFindUnique.mockResolvedValue(null);
     mocks.txLinkFindMany.mockResolvedValue([]);
+    mocks.txExecuteRaw.mockResolvedValue(0);
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
+        $executeRaw: mocks.txExecuteRaw,
         payment: {
           findUnique: mocks.txPaymentFindUnique,
           updateMany: mocks.txPaymentUpdateMany,
@@ -528,6 +531,71 @@ describe("upsertXeroObjectLink", () => {
       expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false }) }));
       expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
       expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#4195: a refund request's own note, voided in Xero (INV-ADDPAY-041)", () => {
+    const writeRequestNote = (status: string | undefined) =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_request", role: "REFUND_REQUEST_CREDIT_NOTE",
+        metadata: { ...(status ? { status } : {}), total: 50 }, mergeMetadata: true,
+      });
+
+    it.each(["VOIDED", "DELETED", "voided"])("MUTATION: a %s mirror is written inactive, and moves no pointer and no sibling", async (status) => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await writeRequestNote(status);
+
+      // Before #4195 the request role skipped every void rule and stayed active.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ active: false }), update: expect.objectContaining({ active: false }) }),
+      );
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a live request note keeps the activity its write gives it", async () => {
+      await writeRequestNote("AUTHORISED");
+      await writeRequestNote(undefined);
+
+      for (const [call] of mocks.txLinkUpsert.mock.calls as Array<[{ create: { active: boolean }; update: { active: boolean } }]>) {
+        expect(call.create.active).toBe(true);
+        expect(call.update.active).toBe(true);
+      }
+      expect(mocks.txLinkUpsert).toHaveBeenCalledTimes(2);
+      // Never the payment's one note: it retires no refund note and reads no payment.
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txPaymentFindUnique).not.toHaveBeenCalled();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION (race): a write naming no status keeps a void the stored row records - inactive, its status kept", async () => {
+      // The inbound void committed while this retry's write waited on the row lock.
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" } });
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_request", role: "REFUND_REQUEST_CREDIT_NOTE",
+        metadata: { amountCents: 5000, refundRequestId: "rr_1" },
+      });
+
+      const [call] = mocks.txLinkUpsert.mock.calls[0] as [{ create: { active: boolean }; update: { active: boolean; metadata: Record<string, unknown> } }];
+      expect(call.update.active).toBe(false);
+      expect(call.create.active).toBe(false);
+      // Replacing the metadata would drop the status the after-void key and the create check read.
+      expect(call.update.metadata).toEqual({ amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" });
+      // The stored row is read under its lock, in the write's own transaction.
+      // F-D: one row, by all five fields of its unique key, so a broader lock fails here.
+      const [template, ...values] = mocks.txExecuteRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+      expect(template.join("?").replace(/\s+/g, " ").trim()).toBe(
+        'SELECT 1 FROM "XeroObjectLink" WHERE "localModel" = ? AND "localId" = ? AND "xeroObjectType" = ? AND "xeroObjectId" = ? AND "role" = ? FOR UPDATE',
+      );
+      expect(values).toEqual(["Payment", "payment_1", "CREDIT_NOTE", "cn_request", "REFUND_REQUEST_CREDIT_NOTE"]);
+      expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
+    });
+
+    it("a write naming a status is judged on it, without reading the stored row", async () => {
+      await writeRequestNote("AUTHORISED");
+      expect(mocks.txExecuteRaw).not.toHaveBeenCalled();
     });
   });
 

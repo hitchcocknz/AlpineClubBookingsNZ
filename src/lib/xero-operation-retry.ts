@@ -52,7 +52,7 @@ import {
   resolveRefundNoteMethod,
 } from "@/lib/xero-refund-method";
 import { queuedReviewTaskId } from "@/lib/xero-review-task-key";
-import { mayRecordAsCanonicalRefundNote } from "@/lib/xero-refund-note-status";
+import { isRetryOfVoidedRefundRequestNote, mayRecordAsCanonicalRefundNote, VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 import type { CashRefundMethod } from "@/lib/xero-refund-method";
 import {
   readBookingClearingNoteRetryInput,
@@ -909,10 +909,7 @@ async function repairRefundCreditNoteFollowUpActions(
   // the payment's one refund note, so it never takes the payment's pointer.
   // #3880 F1: a per-refund note is repaired, never made the payment's canonical one.
   const refundRequestId = readRefundRequestIdFromPayload(operation.requestPayload);
-  if (
-    !refundRequestId &&
-    (await mayRecordAsCanonicalRefundNote(operation.localId!, repair.creditNoteId, prisma))
-  ) {
+  if (!refundRequestId && (await mayRecordAsCanonicalRefundNote(operation.localId!, repair.creditNoteId, prisma))) {
     await prisma.payment.update({
       where: { id: operation.localId! },
       data: {
@@ -1345,6 +1342,7 @@ export async function retryXeroSyncOperation(
   if (!retryMeta.supported) {
     throw new XeroOperationRetryError(retryMeta.reason ?? "This Xero operation cannot be retried.");
   }
+  if (await isRetryOfVoidedRefundRequestNote(operation, prisma)) throw new XeroOperationRetryError(VOIDED_REQUEST_NOTE_RETRY_REASON, 409);
 
   const appliedCreditType = appliedCreditRequeueType(operation);
   if (appliedCreditType) {

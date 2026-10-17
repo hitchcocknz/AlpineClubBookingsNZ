@@ -228,7 +228,9 @@ export function getUnpaidCancellationClearingAmountCents(
  * #3827 review (`INV-PAY-118`): what the payment's refund requests' own notes
  * took out of its refunded total - one amount per request, from its row's
  * payload or its link's `amountCents`. Null when any request's amount cannot
- * be recovered, so the caller cannot size around it.
+ * be recovered, so the caller cannot size around it. #4195: a request whose
+ * note Xero voided counts too - the void moves no refunded total, and the
+ * request, never the cancellation's note, raises its replacement.
  */
 function getRefundRequestNotesTotalCents(
   paymentOperations: XeroOperationRecord[],
