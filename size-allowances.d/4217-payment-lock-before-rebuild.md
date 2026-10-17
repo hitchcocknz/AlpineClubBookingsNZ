@@ -27,10 +27,13 @@ reason: the Internet Banking settle's transaction is the only place its locks
   three guard lines and a two-line comment.
 
 file: src/lib/payment-reconciliation.ts
-lines: 3115
+lines: 3120
 reason: the Stripe settle's transaction body is where its Payment row is first
   reached, so the lock goes straight after that upsert and before the ledger
-  lookup that may backfill: one call and a one-line comment.
+  lookup that may backfill: one call and a one-line comment. The manual-payment
+  reversal's transaction is likewise the only place its locks are taken, so
+  its Payment row lock (#4217 final round) goes there after the lodge key: one
+  read of the payment's id, one call and a three-line comment.
 
 file: src/lib/payment-recovery.ts
 lines: 3382

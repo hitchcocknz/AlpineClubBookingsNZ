@@ -1418,8 +1418,9 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // the bank receipt, mark succeeded / failed - before their first row write),
   // and, through the helper, by the reduction's retire, the saved-card settle,
   // the Stripe settle, the Internet Banking settle, and (review F1) the
-  // recovery runner's claim hold, the re-issue door and the increase's
-  // fold-close, each before the recovery row; still one site, no new key.
+  // recovery runner's claim hold, the re-issue door, the increase's
+  // fold-close and the manual-payment reversal, each before the recovery row;
+  // still one site, no new key.
   // Order: lock(1) -> lodge -> member credit -> Payment -> refund, recovery and
   // transaction rows. See docs/CONCURRENCY_AND_LOCKING.md -> the #3640
   // paragraph and its #4217 sequel.

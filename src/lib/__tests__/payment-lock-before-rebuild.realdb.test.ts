@@ -34,9 +34,11 @@
  *  7. A manual-payment reversal (#4217 review) racing the recovery runner's
  *     claim hold re-queueing a stale ask's cancellation: no deadlock.
  *
- * In each the payment's refunded total must end equal to the sum of its rows.
- * The sixth race - a price reduction's retire against the capture webhook on
- * the same intent - lives beside its fixtures in
+ * In races 1-5 the payment's refunded total must end equal to the sum of its
+ * rows; race 6 is the cost race (a P2028 that writes nothing) and race 7 the
+ * reversal's no-deadlock race. The two reduction races - the retire against
+ * the capture webhook, and a credit give-back's reduction against the runner's
+ * claim hold - live beside their fixtures in
  * `additional-ask-reduction.realdb.test.ts`.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
