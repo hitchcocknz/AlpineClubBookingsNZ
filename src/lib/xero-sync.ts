@@ -20,7 +20,7 @@ import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instruction";
-import { xeroSyncErrorText } from "@/lib/xero-sync-error-text";
+import { namedXeroErrorCode, xeroSyncErrorText } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 
 export interface XeroSyncOperationInput {
@@ -1005,7 +1005,7 @@ export async function failXeroSyncOperation(
   const message = redactSensitiveText(rawMessage);
   const data = {
     status: "FAILED" as const,
-    lastErrorCode: statusCode ? String(statusCode) : null,
+    lastErrorCode: namedXeroErrorCode(error) ?? (statusCode ? String(statusCode) : null),
     lastErrorMessage: message,
     responsePayload: sanitizeForJson(responsePayload ?? error),
     completedAt: new Date(),

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CreditNoteSpentOutsideAppError } from "@/lib/xero-credit-note-spent-outside-app";
 import type { Prisma } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
@@ -1268,6 +1269,36 @@ describe("failXeroSyncOperation keepCancelled", () => {
     await expect(
       failXeroSyncOperation("op_kept", new Error("boom"), undefined, { keepCancelled: true })
     ).resolves.toMatchObject({ status: "FAILED" });
+  });
+});
+
+describe("failXeroSyncOperation named errors (#4218)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.operationCount.mockResolvedValue(0);
+    mocks.operationUpdate.mockResolvedValue({ id: "op_1", status: "FAILED" });
+  });
+
+  it("records the named code for a credit note spent outside the app", async () => {
+    await failXeroSyncOperation(
+      "op_1",
+      new CreditNoteSpentOutsideAppError("only $0.00 left in Xero", "cn_1", 0, 5250)
+    );
+    expect(mocks.operationUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "op_1" },
+        data: expect.objectContaining({
+          status: "FAILED",
+          lastErrorCode: "CREDIT_NOTE_SPENT_OUTSIDE_APP",
+        }),
+      })
+    );
+  });
+
+  it("records no named code for any other failure", async () => {
+    await failXeroSyncOperation("op_1", new Error("bad request"));
+    const { data } = mocks.operationUpdate.mock.calls[0][0];
+    expect(data.lastErrorCode).not.toBe("CREDIT_NOTE_SPENT_OUTSIDE_APP");
   });
 });
 

@@ -62,6 +62,7 @@ import { formatDateOnly } from "@/lib/date-only";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import { buildSyntheticAllocationId } from "./xero-invoice-helpers";
+import { failAllocation } from "@/lib/xero-credit-note-spent-detail";
 import { resolveModificationDocumentLineItems } from "@/lib/xero-modification-line-items";
 import type { CashRefundMethod } from "./xero-invoice-payments";
 import {
@@ -1338,8 +1339,7 @@ export async function allocateCreditNoteToInvoice(
       "Allocated Xero credit note against invoice"
     );
   } catch (error) {
-    await failXeroSyncOperation(operationId!, error);
-    throw error;
+    throw await failAllocation(operationId!, error, creditNoteId, invoiceId, amountCents);
   }
 }
 
