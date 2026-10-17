@@ -107,8 +107,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   (`isCardIntentRetired`): Stripe confirmed the cancel, the intent was already
   `canceled`, or it succeeded and the local ledger shows it refunded (#1765). A
   live capture, or a cancel that throws, is a 409 with no payment write and no
-  invoice. Under lock(1) it refuses a payment now pointing at a different
-  intent.
+  invoice. Under lock(1) it refuses a payment now on a different intent.
 - **Every card door attaches through `attachMintedCardIntent`** —
   `create-payment-intent` and `/pay/<token>` — under lock(1), re-reading the
   payment's source and the booking's status and refusing an Internet Banking or
@@ -124,8 +123,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   second instruments: an ADDITIONAL card row, a capture the #1992 refund owns
   (`INV-PAY-043`), and — on a settled booking — #1765 refund history, a card
   row refunded before the booking moved to Internet Banking, or a capture a
-  superseded-intent refund, its re-send (#4221) or in-flight cancel holds for
-  the member (#4177).
+  superseded-intent refund, a later re-send (#4221) or in-flight cancel holds
+  for the member (#4177).
 - **A replay on a settled booking changes nothing.** COMPLETED takes the
   already-paid arm like PAID.
 - Pinned by `switch-to-internet-banking-route.test.ts`,
@@ -1399,8 +1398,8 @@ short).
   (#4132, owner decision 15 Oct 2026). `createdAt` alone is not an order. Rows
   written in one transaction share it, and PostgreSQL returns a tie in heap
   order, which an update of an indexed column changes. Nor is a cuid `id`.
-  - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
-    sequence the column owns. The database assigns it; code never writes it.
+  - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from its
+    own sequence. The database assigns it; code never writes it.
     The migration numbered each stored tie retired rows first (FAILED,
     withdrawn, or an ask queued for cancellation), live rows last, then
     physical order. A stored tie can change order at that
@@ -1411,7 +1410,7 @@ short).
     store, repair passes.
   - **"The latest" row of a kind, on a tie, is the one inserted last**
     (`latestTransactionOfKind`). The mirror, a reduction's ask and the census
-    take it (formerly the earliest).
+    take it.
   - **Newest-first refund slices** take a tie's last-inserted row first. A
     refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change at this release;
@@ -1419,9 +1418,9 @@ short).
   - **The settling capture is the oldest-inserted qualifying one** (#4177). A
     duplicate-capture refund's is never superseded-owned; a non-card one names
     no card. Xero's conflict (#4163) skips duplicate-refunded captures. When
-    paid, the Xero conflict also skips a capture a superseded refund or
-    in-flight cancel holds, and #1765 refund history (ranked last when
-    cancelled).
+    paid, the Xero conflict also skips a capture a superseded refund, a later
+    re-send (#4221) or in-flight cancel holds, and #1765 refund history
+    (ranked last when cancelled).
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
     and the migration's fixture; the settling capture by
