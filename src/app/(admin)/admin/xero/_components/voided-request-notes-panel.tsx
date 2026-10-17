@@ -31,7 +31,8 @@ export function VoidedRequestNotesPanel({
   const format = useClubFormat()
   const { confirm, confirmDialog } = useConfirm()
   const [requests, setRequests] = useState<VoidedRefundRequestNote[]>([])
-  const [error, setError] = useState("")
+  const [loadError, setLoadError] = useState("")
+  const [actionError, setActionError] = useState("")
   const [raisingKey, setRaisingKey] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -42,9 +43,9 @@ export function VoidedRequestNotesPanel({
         "Failed to load voided refund request notes",
       )
       setRequests(data.data ?? [])
-      setError("")
+      setLoadError("")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load voided refund request notes")
+      setLoadError(err instanceof Error ? err.message : "Failed to load voided refund request notes")
     }
   }, [])
 
@@ -62,7 +63,7 @@ export function VoidedRequestNotesPanel({
     if (!ok) return
     const key = `${request.paymentId}:${request.refundRequestId}`
     setRaisingKey(key)
-    setError("")
+    setActionError("")
     onMessage("")
     try {
       const data = await postJson<{ message?: string }>(
@@ -73,14 +74,14 @@ export function VoidedRequestNotesPanel({
       onMessage(data.message || "A fresh credit note is queued for Xero.")
       onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to queue a fresh credit note")
+      setActionError(err instanceof Error ? err.message : "Failed to queue a fresh credit note")
     } finally {
       setRaisingKey(null)
       await load()
     }
   }
 
-  if (requests.length === 0 && !error) return null
+  if (requests.length === 0 && !loadError && !actionError) return null
 
   return (
     <section aria-labelledby="xero-voided-request-notes-heading" className="space-y-2 rounded-md border border-warning-6 bg-warning-3 p-3">
@@ -92,7 +93,8 @@ export function VoidedRequestNotesPanel({
         Each refund request below was paid back, but its own Xero credit note was voided in Xero and nothing replaces it. No retry
         raises a new one. If the note was voided by mistake, raise a fresh one here; otherwise leave it.
       </p>
-      {error ? <p className="text-sm text-danger">{error}</p> : null}
+      {loadError ? <p className="text-sm text-danger">{loadError}</p> : null}
+      {actionError ? <p className="text-sm text-danger">{actionError}</p> : null}
       <ul className="space-y-2">
         {requests.map((request) => {
           const key = `${request.paymentId}:${request.refundRequestId}`
